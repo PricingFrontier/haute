@@ -509,14 +509,17 @@ class TestPipelineIntegration:
         assert "z" in trace["output_value"]
 
     def test_pipeline_with_error_in_node_code(self, client, tmp_path):
-        """Pipeline with invalid node code returns an error response."""
+        """A syntax error in a node is answered 422 naming the node, as a preview shows it."""
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p, "df = df.with_columns(INVALID_SYNTAX_HERE===)")
 
         resp = _trace_post(client, graph, row_index=0, target_node_id="t")
 
-        # Should get a 500 with error detail
-        assert resp.status_code == 500
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert detail["error_code"] == "trace_node_failed"
+        assert detail["node_id"] == "t"
+        assert detail["message"].startswith("Node 't' failed: invalid syntax")
 
     def test_large_pipeline_trace_returns_steps_in_topo_order(self, client, tmp_path):
         """Pipeline with 5+ nodes returns steps in topological order."""
@@ -577,15 +580,77 @@ class TestErrorHandling:
     """D. Validate error handling at the API layer."""
 
     def test_node_code_raises_exception(self, client, tmp_path):
-        """Node code that raises a Python exception returns an error."""
+        """A node reading a missing column is answered 422 naming the node and the column."""
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p, "df = src.with_columns(z=pl.col('nonexistent_col'))")
 
         resp = _trace_post(client, graph, row_index=0, target_node_id="t")
 
-        assert resp.status_code == 500
-        body = resp.json()
-        assert "detail" in body
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert detail["node_id"] == "t"
+        assert detail["message"].startswith("Node 't' failed:")
+        assert "nonexistent_col" in detail["message"]
+
+    @pytest.mark.parametrize(
+        ("refusal", "status"),
+        [
+            pytest.param("TraceRowMismatchError", 409, id="row-mismatch"),
+            pytest.param("TraceRowAmbiguousError", 409, id="row-ambiguous"),
+            pytest.param("TraceRowOutOfRangeError", 400, id="row-out-of-range"),
+            pytest.param("TraceTargetUnsupportedError", 400, id="target-unsupported"),
+            pytest.param("TraceTargetNotFoundError", 404, id="target-not-found"),
+        ],
+    )
+    @pytest.mark.in_process
+    def test_a_refusal_is_answered_by_its_type_whatever_its_wording(
+        self, client, tmp_path, monkeypatch, refusal: str, status: int
+    ):
+        import haute.errors
+        import haute.routes.pipeline as pipeline_route
+
+        def refused(*_args, **_kwargs):
+            raise getattr(haute.errors, refusal)("Worded any way at all.")
+
+        monkeypatch.setattr(pipeline_route, "execute_trace", refused)
+        graph = _simple_graph(_simple_parquet(tmp_path))
+
+        resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+
+        assert resp.status_code == status
+        assert resp.json()["detail"] == "Worded any way at all."
+
+    @pytest.mark.parametrize(
+        ("refusal", "status"),
+        [
+            pytest.param("TraceRowMismatchError", 409, id="row-mismatch"),
+            pytest.param("TraceRowOutOfRangeError", 400, id="row-out-of-range"),
+            pytest.param("TraceTargetNotFoundError", 404, id="target-not-found"),
+        ],
+    )
+    def test_a_refusal_out_of_a_worker_is_answered_by_the_code_it_carries(
+        self, refusal: str, status: int
+    ):
+        from fastapi import HTTPException
+
+        import haute.errors
+        from haute._interactive_workers import InteractiveWorkerRemoteError
+        from haute.routes.pipeline import _raise_interactive_remote_http_error
+
+        refused = getattr(haute.errors, refusal)("Worded any way at all.")
+        remote = InteractiveWorkerRemoteError(
+            remote_type=refusal,
+            remote_module="haute.errors",
+            remote_message=str(refused),
+            remote_traceback="",
+            public_payload=refused.to_payload(),
+        )
+
+        with pytest.raises(HTTPException) as answered:
+            _raise_interactive_remote_http_error(remote, operation="pipeline_trace")
+
+        assert answered.value.status_code == status
+        assert answered.value.detail == "Worded any way at all."
 
     def test_timeout_returns_504(self, client, tmp_path, monkeypatch, pipeline_settings):
         """If trace execution exceeds the timeout, return 504."""

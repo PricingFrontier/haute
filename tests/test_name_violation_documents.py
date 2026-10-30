@@ -12,13 +12,12 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from haute._flatten import flatten_executable_graph
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._types import PipelineGraph
-from haute.errors import ParseError
+from haute.errors import ParseError, RequestRefusedError
 from haute.parser import parse_pipeline_source_with_name_violations
 from haute.routes._save_pipeline import SavePipelineService
 
@@ -134,7 +133,7 @@ def test_a_clean_file_has_no_violations_and_every_capability(tmp_path: Path) -> 
 def test_save_and_execution_refuse_the_file_until_the_renames_clear_it(project: Path) -> None:
     graph = _parsed(project)
 
-    with pytest.raises(HTTPException, match="takes the name `pl`"):
+    with pytest.raises(RequestRefusedError, match="takes the name `pl`"):
         SavePipelineService(project.parent).validate_graph(graph, source_file="main.py")
     with pytest.raises(ParseError, match="take one name, `transform`"):
         flatten_executable_graph(graph)

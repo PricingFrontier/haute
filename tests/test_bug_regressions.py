@@ -112,7 +112,9 @@ class TestBugB17WsClientsSetIteration:
                     self._on_send()
 
         late_client = FakeWebSocket()
-        mutating_client = FakeWebSocket(lambda: _helpers.ws_clients_add(late_client))
+        mutating_client = FakeWebSocket(
+            lambda: _helpers.ws_clients_add(late_client, connection_id="late", owner=None)
+        )
         stable_client = FakeWebSocket()
 
         with _helpers.ws_clients_lock:

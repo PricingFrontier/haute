@@ -25,9 +25,7 @@ import hashlib
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import NamedTuple
-
-from fastapi import HTTPException
+from typing import Any, NamedTuple
 
 from haute._api_input_schema import is_json_api_input_path
 from haute._ast_helpers import _extract_global_constants_declaration
@@ -42,7 +40,10 @@ from haute._global_constants import (
 )
 from haute._graph_shape import validate_singleton_groups
 from haute._logging import get_logger
-from haute._pipeline_recovery import load_pipeline_editor_document
+from haute._pipeline_recovery import (
+    load_pipeline_editor_document,
+    pipeline_document_fingerprint,
+)
 from haute._sandbox import contained_path, is_contained
 from haute._submodel_paths import (
     SUBMODEL_PACKAGE,
@@ -56,7 +57,15 @@ from haute._types import (
     REQUEST_INPUT_NODE_TYPES,
     SINK_ONLY_NODE_TYPES,
 )
-from haute.errors import ConfigError, ParseError, PathOutsideProjectError
+from haute.errors import (
+    ConfigError,
+    ConflictError,
+    ForbiddenError,
+    InvalidRequestError,
+    ParseError,
+    PathOutsideProjectError,
+    RequestRefusedError,
+)
 from haute.graph_utils import (
     GraphEdge,
     GraphNode,
@@ -71,9 +80,48 @@ from haute.routes._helpers import (
     mark_self_write,
     save_sidecar,
 )
-from haute.schemas import SavePipelineRequest, SavePipelineResponse
+from haute.schemas import (
+    PipelineEditorDocument,
+    PipelineRecoveryDiagnostic,
+    SavePipelineRequest,
+    SavePipelineResponse,
+)
 
 logger = get_logger(component="server.pipeline.save")
+
+
+class _OnDisk(NamedTuple):
+    """The pipeline file as the save found it, read once under the repository's lock."""
+
+    document: PipelineEditorDocument | None  # None: the file does not exist yet
+    graph: PipelineGraph | None  # its strict parse; None when it does not parse
+    parse_error: Exception | None
+
+
+def _diagnostics_summary(diagnostics: Sequence[PipelineRecoveryDiagnostic], limit: int = 5) -> str:
+    """Where each of a refused save's diagnostics is, what it says, and how to fix it."""
+    entries: list[str] = []
+    for diagnostic in diagnostics[:limit]:
+        location = diagnostic.source_file or ""
+        if diagnostic.source_span is not None:
+            location = f"{location}:{diagnostic.source_span.start_line}"
+        entries.append(f"{location}: {diagnostic.message}" if location else diagnostic.message)
+    if len(diagnostics) > limit:
+        entries.append(f"and {len(diagnostics) - limit} more.")
+    fixes = dict.fromkeys(
+        diagnostic.remediation for diagnostic in diagnostics[:limit] if diagnostic.remediation
+    )
+    return "".join(f" {text}" for text in [*entries, *fixes])
+
+
+class CommittedDocument(NamedTuple):
+    """The editor document a save committed, dumped as live sync sends it, and every
+    file the save wrote or removed, by which other documents that read them are found."""
+
+    path: Path
+    payload: dict[str, Any]
+    fingerprint: str
+    artifacts: tuple[Path, ...]
 
 
 class StaleDocumentRevisionError(Exception):
@@ -205,7 +253,7 @@ def _stage_artifact_delete(target: Path, touched: list[_TouchedFile]) -> None:
     if not target.exists():
         return
     if not target.is_file():
-        raise HTTPException(status_code=400, detail="Artifact delete target is not a file.")
+        raise InvalidRequestError("Artifact delete target is not a file.")
     touched.append(_TouchedFile(target=target, previous_bytes=target.read_bytes(), deleted=True))
     mark_self_write(target, deleted=True)
     target.unlink()
@@ -252,6 +300,36 @@ class LedgerCapture(NamedTuple):
     git_sha: str | None
     identity_required: bool
     uncaptured: list[str]
+
+
+def _project_relative(rel_path: str, *, what: str) -> str:
+    """*rel_path* with forward slashes, refused (400) when it is empty, absolute (from ``/``
+    or ``~``) or climbs (a ``..`` part anywhere, so no legitimate-looking prefix can carry
+    one); *what* names the path in the refusal. Windows paths can arrive with mixed
+    separators, so they are normalised before any part is read."""
+    normalised = rel_path.replace("\\", "/")
+    if not normalised:
+        raise InvalidRequestError(f"{what} is empty.")
+    if normalised.startswith(("/", "~")):
+        raise InvalidRequestError(f"{what} must be project-relative.")
+    if any(part == ".." for part in normalised.split("/")):
+        raise InvalidRequestError(f"{what} contains a traversal segment ('..').")
+    return normalised
+
+
+def resolve_definition_file(
+    recorded_path: str, *, parent_path: Path, project_root: Path
+) -> tuple[Path, Path]:
+    """A submodel definition's recorded file, resolved beside *parent_path*, and its config
+    base: 400 for a path that cannot name one, 403 for one leaving the project."""
+    try:
+        return resolve_submodel_reference(
+            recorded_path, pipeline_dir=parent_path.parent, project_root=project_root
+        )
+    except MalformedSubmodelPathError as exc:
+        raise InvalidRequestError(str(exc)) from None
+    except SubmodelPathOutsideProjectError:
+        raise ForbiddenError("Cannot access paths outside the project root") from None
 
 
 def capture_save_in_ledger(
@@ -334,39 +412,86 @@ class SavePipelineService:
     pipeline_root:
         Directory that contains the pipeline file and its ``config/``
         subfolder.  Defaults to *project_root* when not given.
+    require_ready:
+        Refuse (409, with its diagnostics) to replace a pipeline whose
+        editor document is not ready on disk: the editor's own Save. A
+        degraded document still has a revision, which the assistant may
+        save over.
     """
 
-    def __init__(self, project_root: Path, pipeline_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        pipeline_root: Path | None = None,
+        *,
+        require_ready: bool = False,
+    ) -> None:
         self._root = project_root.resolve()
+        self._require_ready = require_ready
         self._pipeline_root = (pipeline_root or project_root).resolve()
         if not is_contained(self._root, self._pipeline_root):
             raise ValueError("pipeline_root must resolve inside project_root")
         self._precondition_identities: dict[str, str | None] | None = None
         self._identity_roots: tuple[Path, ...] = ()
+        # What the last successful save committed, for the route to publish.
+        self.committed: CommittedDocument | None = None
 
-    def _require_base_revision(self, py_path: Path, base_revision: str | None) -> None:
-        """Fail closed unless the client's base revision matches the on-disk document.
+    def _read_on_disk(self, py_path: Path, base_revision: str | None) -> _OnDisk:
+        """Load the pipeline file's editor document and strict graph, once each, for
+        every step of the save after this; only the verification after the write
+        loads them again.
+
+        The editor document it loads must be at the client's base revision
+        (:meth:`_require_base_revision`) and, under *require_ready*, ready. Its
+        strict graph is the baseline the definition lifecycle and the
+        stale-config sweep compare against; a file that does not strictly parse
+        leaves it ``None`` for each of them to say what it does without.
+        """
+        # Never establish a new baseline after authenticating the client's
+        # revision: an external edit in that gap would otherwise be blessed.
+        self._precondition_identities = self._capture_artifact_identities(py_path)
+        document = (
+            load_pipeline_editor_document(py_path, project_root=self._root)
+            if py_path.is_file()
+            else None
+        )
+        if self._require_ready and document is not None and document.load_status != "ready":
+            raise ConflictError(
+                "The pipeline is not ready on disk. Reload it and resolve "
+                "its diagnostics before saving." + _diagnostics_summary(document.diagnostics)
+            )
+        self._require_base_revision(document, base_revision)
+        if document is None:
+            return _OnDisk(None, None, None)
+        from haute.routes._helpers import parse_pipeline_to_graph
+
+        try:
+            graph = parse_pipeline_to_graph(py_path, project_root=self._root)
+        except Exception as exc:  # each step that needs the graph says what it does without
+            return _OnDisk(document, None, exc)
+        return _OnDisk(document, graph, None)
+
+    def _require_base_revision(
+        self, document: PipelineEditorDocument | None, base_revision: str | None
+    ) -> None:
+        """Fail closed unless the client's base revision matches the on-disk *document*.
 
         ``None`` is only valid while the target file does not exist (initial
         creation). An existing file must be reloaded first: a document that
         has no ready revision can never be overwritten through this path.
         """
-        # Never establish a new baseline after authenticating the client's
-        # revision: an external edit in that gap would otherwise be blessed.
-        self._precondition_identities = self._capture_artifact_identities(py_path)
-        if py_path.is_file():
-            document = load_pipeline_editor_document(py_path, project_root=self._root)
+        if document is None:
+            if base_revision is None:
+                return
+            expected = None
+        else:
             expected = document.source_revision
-            if expected is None or expected != base_revision:
-                raise StaleDocumentRevisionError(
-                    expected_revision=expected,
-                    provided_revision=base_revision,
-                )
-        elif base_revision is not None:
-            raise StaleDocumentRevisionError(
-                expected_revision=None,
-                provided_revision=base_revision,
-            )
+            if expected is not None and expected == base_revision:
+                return
+        raise StaleDocumentRevisionError(
+            expected_revision=expected,
+            provided_revision=base_revision,
+        )
 
     def _capture_artifact_identities(self, py_path: Path) -> dict[str, str | None]:
         """Digest every owned artifact as the precondition observes it.
@@ -429,7 +554,7 @@ class SavePipelineService:
         """Validate, generate code, write configs, and persist sidecar.
 
         Returns the canonical ``SavePipelineResponse``.
-        Raises ``HTTPException`` on validation failures.
+        Raises a ``RequestRefusedError`` on validation failures.
 
         Save is transactional: if any write step fails, all files we
         already touched are restored (or deleted for new files) before
@@ -460,10 +585,11 @@ class SavePipelineService:
         warnings = self.validate_graph(graph, source_file=body.source_file)
         warnings.extend(self._global_constant_source_warnings(graph, body.sources))
         py_path = self._resolve_source_file(body.source_file)
-        self._require_base_revision(py_path, body.base_revision)
+        on_disk = self._read_on_disk(py_path, body.base_revision)
         derived_new_files, derived_delete_files = self._derive_definition_file_lifecycle(
             parent_path=py_path,
             graph=graph,
+            on_disk=on_disk,
         )
         absent_module_paths = self._require_module_files_absent(derived_new_files)
         claimed_module_paths = self._resolve_managed_module_claims(
@@ -489,7 +615,7 @@ class SavePipelineService:
         # tools, residue from older haute versions) are not haute's to
         # delete — see `notes-haute/security/SECURITY.md` §3
         # "Stable-layer file ownership".
-        self._prev_config_files = self._compute_disk_prev_config_files(py_path)
+        self._prev_config_files = self._compute_disk_prev_config_files(on_disk)
 
         touched: list[_TouchedFile] = []
         try:
@@ -544,6 +670,7 @@ class SavePipelineService:
             source_revision = committed_document.source_revision
             if committed_document.load_status != "ready" or not source_revision:
                 raise RuntimeError("Committed pipeline did not produce a ready editor revision.")
+            committed_payload = committed_document.model_dump(mode="json", by_alias=True)
         except BaseException:
             self._rollback(touched)
             raise
@@ -554,10 +681,6 @@ class SavePipelineService:
         # remain on disk and will be cleaned up on the next successful save.
         removed = self._remove_stale_config_files(graph)
 
-        # Final save-level self-write marker covers save-wide notifications.
-        # The watcher uses per-path Writer callbacks above.
-        mark_self_write()
-
         # The file-watcher skips self-written paths before invalidating the
         # pipeline index, so a save that renames a pipeline (or adds/removes
         # one) would leave ``_pipeline_index`` mapping the stale name → path.
@@ -567,10 +690,17 @@ class SavePipelineService:
 
         captured = self._capture_save_in_ledger(touched, removed, warnings, commit_message)
 
+        self.committed = CommittedDocument(
+            py_path,
+            committed_payload,
+            pipeline_document_fingerprint(committed_payload),
+            (*(touched_file.target for touched_file in touched), *removed),
+        )
         return SavePipelineResponse(
-            file=str(py_path.relative_to(self._root)),
+            file=py_path.relative_to(self._root).as_posix(),
             pipeline_name=body.name,
             source_revision=source_revision,
+            document_fingerprint=self.committed.fingerprint,
             warnings=warnings,
             **captured._asdict(),
         )
@@ -667,29 +797,21 @@ class SavePipelineService:
         *,
         parent_path: Path,
         graph: PipelineGraph,
+        on_disk: _OnDisk,
     ) -> tuple[list[str], list[str]]:
         """Derive new claims and safe removals at the explicit Save boundary."""
-        if parent_path.is_file():
-            from haute.routes import _helpers
-
-            try:
-                persisted = _helpers.parse_pipeline_to_graph(
-                    parent_path,
-                    project_root=self._root,
-                )
-            except Exception as exc:
+        if on_disk.document is not None:
+            persisted = on_disk.graph
+            if persisted is None:
                 logger.warning(
                     "submodel_lifecycle_baseline_unavailable",
                     path=str(parent_path),
-                    error=str(exc),
+                    error=str(on_disk.parse_error),
                 )
                 if graph.submodels:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            "Cannot safely save submodel changes because the current "
-                            "pipeline cannot be parsed. Reload or repair it first."
-                        ),
+                    raise ConflictError(
+                        "Cannot safely save submodel changes because the current "
+                        "pipeline cannot be parsed. Reload or repair it first."
                     ) from None
                 return [], []
         else:
@@ -701,27 +823,32 @@ class SavePipelineService:
             previous_definition = previous[key]
             submitted_definition = submitted[key]
             if previous_definition.definition_id != submitted_definition.definition_id:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "Submodel module path ownership changed for "
-                        f"{submitted_definition.recorded_path!r} "
-                        f"(persisted {previous_definition.recorded_path!r}): "
-                        f"definitionId {previous_definition.definition_id!r} cannot be "
-                        f"replaced by {submitted_definition.definition_id!r}. "
-                        "Reload the pipeline before saving."
-                    ),
+                raise ConflictError(
+                    "Submodel module path ownership changed for "
+                    f"{submitted_definition.recorded_path!r} "
+                    f"(persisted {previous_definition.recorded_path!r}): "
+                    f"definitionId {previous_definition.definition_id!r} cannot be "
+                    f"replaced by {submitted_definition.definition_id!r}. "
+                    "Reload the pipeline before saving."
                 )
         added = [submitted[key].recorded_path for key in sorted(submitted.keys() - previous.keys())]
 
-        removed: list[str] = []
-        for key in sorted(previous.keys() - submitted.keys()):
-            definition_file = previous[key]
-            if self._can_delete_managed_child(
-                child_path=definition_file.resolved_path,
-                parent_path=parent_path,
-            ):
-                removed.append(definition_file.recorded_path)
+        owned = [
+            previous[key]
+            for key in sorted(previous.keys() - submitted.keys())
+            if self._is_managed_child(previous[key].resolved_path, parent_path=parent_path)
+        ]
+        if not owned:
+            return added, []
+        # One audit of the other pipelines however many definitions go.
+        referenced = self._definition_files_declared_elsewhere(parent_path)
+        if referenced is None:
+            return added, []
+        removed = [
+            definition_file.recorded_path
+            for definition_file in owned
+            if str(definition_file.resolved_path.resolve()).casefold() not in referenced
+        ]
         return added, removed
 
     def _definition_file_map(
@@ -734,30 +861,17 @@ class SavePipelineService:
         resolved: dict[str, _DefinitionFile] = {}
         for definition in (graph.submodels or {}).values():
             recorded_path = definition.file
-            try:
-                child_path, _config_base = resolve_submodel_reference(
-                    recorded_path,
-                    pipeline_dir=parent_path.parent,
-                    project_root=self._root,
-                )
-            except MalformedSubmodelPathError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from None
-            except SubmodelPathOutsideProjectError:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Cannot access paths outside the project root",
-                ) from None
+            child_path, _config_base = resolve_definition_file(
+                recorded_path, parent_path=parent_path, project_root=self._root
+            )
             key = str(child_path.resolve()).casefold()
             existing = resolved.get(key)
             if existing is not None:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"Submodel definitions {existing.definition_id!r} and "
-                        f"{definition.definition_id!r} resolve to the same module file "
-                        f"({existing.recorded_path!r}, {recorded_path!r}). "
-                        "Give each definition its own module path."
-                    ),
+                raise ConflictError(
+                    f"Submodel definitions {existing.definition_id!r} and "
+                    f"{definition.definition_id!r} resolve to the same module file "
+                    f"({existing.recorded_path!r}, {recorded_path!r}). "
+                    "Give each definition its own module path."
                 )
             resolved[key] = _DefinitionFile(
                 recorded_path=recorded_path,
@@ -766,17 +880,15 @@ class SavePipelineService:
             )
         return resolved
 
-    def _can_delete_managed_child(
-        self,
-        *,
-        child_path: Path,
-        parent_path: Path,
-    ) -> bool:
-        """Return true only after ownership and every reference are proven."""
+    def _is_managed_child(self, child_path: Path, *, parent_path: Path) -> bool:
+        """Whether *child_path*'s sidecar records *parent_path* as the pipeline owning it."""
         parent_relative = parent_path.relative_to(self._root).as_posix()
-        if load_sidecar(child_path).get("managed_parent") != parent_relative:
-            return False
+        return load_sidecar(child_path).get("managed_parent") == parent_relative
 
+    def _definition_files_declared_elsewhere(self, parent_path: Path) -> frozenset[str] | None:
+        """The resolved, casefolded definition files every other pipeline in the project
+        declares, or ``None`` when one cannot be read: a managed child is deleted only
+        once no reference to it is proven, so an incomplete audit deletes nothing."""
         from haute.discovery import discover_pipelines
         from haute.routes import _helpers
 
@@ -784,10 +896,10 @@ class SavePipelineService:
             candidates = discover_pipelines(self._root)
         except Exception:
             logger.warning("submodel_reference_audit_failed", exc_info=True)
-            return False
+            return None
 
         parent_key = str(parent_path.resolve()).casefold()
-        child_key = str(child_path.resolve()).casefold()
+        referenced: set[str] = set()
         for candidate in candidates:
             candidate = candidate.resolve()
             if str(candidate).casefold() == parent_key:
@@ -807,10 +919,9 @@ class SavePipelineService:
                     file=str(candidate),
                     exc_info=True,
                 )
-                return False
-            if child_key in sibling_paths:
-                return False
-        return True
+                return None
+            referenced.update(sibling_paths)
+        return frozenset(referenced)
 
     @staticmethod
     def _validate_edge_join_configs(flattened: PipelineGraph) -> None:
@@ -859,7 +970,7 @@ class SavePipelineService:
                     node_label=node.data.label,
                 )
         except (ConfigError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from None
+            raise InvalidRequestError(str(exc)) from None
 
     @staticmethod
     def _validate_singletons(graph: PipelineGraph) -> None:
@@ -867,7 +978,7 @@ class SavePipelineService:
         try:
             validate_singleton_groups(graph)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from None
+            raise InvalidRequestError(str(exc)) from None
 
     @staticmethod
     def _validate_no_source_switch_instances(graph: PipelineGraph) -> None:
@@ -880,12 +991,9 @@ class SavePipelineService:
         for node in graph.nodes:
             original = nodes.get(node.data.config.get("instanceOf") or "")
             if original is not None and original.data.nodeType == NodeType.LIVE_SWITCH:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"{node.data.label!r} cannot be an instance of the Source Switch "
-                        f"{original.data.label!r}; add another Source Switch instead."
-                    ),
+                raise InvalidRequestError(
+                    f"{node.data.label!r} cannot be an instance of the Source Switch "
+                    f"{original.data.label!r}; add another Source Switch instead."
                 )
 
     @staticmethod
@@ -899,13 +1007,10 @@ class SavePipelineService:
                 continue
             target = nodes.get(edge.target)
             target_label = target.data.label if target is not None else edge.target
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Node {source.data.label!r} ({source.data.nodeType.value}) has no "
-                    f"output, so it cannot feed {target_label!r}. "
-                    "Remove that edge. Nothing was saved."
-                ),
+            raise InvalidRequestError(
+                f"Node {source.data.label!r} ({source.data.nodeType.value}) has no "
+                f"output, so it cannot feed {target_label!r}. "
+                "Remove that edge. Nothing was saved."
             )
 
     def _adopt_disk_global_constants_state(self, graph: PipelineGraph, py_path: Path) -> None:
@@ -918,12 +1023,9 @@ class SavePipelineService:
         """
         error = self._disk_global_constants_error(py_path)
         if error is not None and graph.global_constants:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Global constants could not be loaded from {GLOBAL_CONSTANTS_FILE}: "
-                    f"{error} Fix or remove the file, then save again."
-                ),
+            raise InvalidRequestError(
+                f"Global constants could not be loaded from {GLOBAL_CONSTANTS_FILE}: "
+                f"{error} Fix or remove the file, then save again."
             )
         graph.global_constants_error = error
 
@@ -954,12 +1056,9 @@ class SavePipelineService:
     @staticmethod
     def _refuse_preamble_global_constants_binding(preamble: str | None, *, label: str) -> None:
         if preamble and preamble_binds_global_constants(preamble):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"{label} binds {GLOBAL_CONSTANTS_NAME!r}, which is reserved for the "
-                    "pipeline's global constants. Rename it."
-                ),
+            raise InvalidRequestError(
+                f"{label} binds {GLOBAL_CONSTANTS_NAME!r}, which is reserved for the "
+                "pipeline's global constants. Rename it."
             )
 
     @staticmethod
@@ -983,32 +1082,23 @@ class SavePipelineService:
             label = node.data.label
             config = node.data.config
             if any(code_binds_global_constants(code) for code in node_code_sources(config)):
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Node {label!r}'s code binds {GLOBAL_CONSTANTS_NAME!r}, which is "
-                        "reserved for the pipeline's global constants. Rename the variable."
-                    ),
+                raise InvalidRequestError(
+                    f"Node {label!r}'s code binds {GLOBAL_CONSTANTS_NAME!r}, which is "
+                    "reserved for the pipeline's global constants. Rename the variable."
                 )
             if not check_reads:
                 continue
             step_problems = node_step_constant_problems(node, constants_by_name)
             if step_problems:
                 step_index, reason = step_problems[0]
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Node {label!r}, step {step_index + 1}: {reason}",
-                )
+                raise InvalidRequestError(f"Node {label!r}, step {step_index + 1}: {reason}")
             reads = node_constant_reads(config)
             undefined = sorted(reads - defined) if isinstance(reads, frozenset) else []
             if undefined:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Node {label!r} reads global constant(s) {undefined} that the "
-                        "pipeline does not define. Define them in the Constants pane or "
-                        "correct the names."
-                    ),
+                raise InvalidRequestError(
+                    f"Node {label!r} reads global constant(s) {undefined} that the "
+                    "pipeline does not define. Define them in the Constants pane or "
+                    "correct the names."
                 )
 
     @staticmethod
@@ -1036,7 +1126,7 @@ class SavePipelineService:
 
         violations = support_code_violations(graph, utility_reader(self._pipeline_root, self._root))
         if violations:
-            raise HTTPException(status_code=400, detail=format_name_violations(violations))
+            raise InvalidRequestError(format_name_violations(violations))
 
     @staticmethod
     def _validate_executable_names(graph: PipelineGraph) -> None:
@@ -1053,7 +1143,7 @@ class SavePipelineService:
         try:
             check_executable_names(graph)
         except ParseError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from None
+            raise InvalidRequestError(str(exc)) from None
 
     @staticmethod
     def _validate_strict_node_configs(graph: PipelineGraph) -> None:
@@ -1080,12 +1170,9 @@ class SavePipelineService:
                         node.data.nodeType, node.data.config, require_complete=False
                     )
                 except (ValueError, ConfigError) as exc:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            f"Invalid {node.data.nodeType.value} config for "
-                            f"node {node.data.label!r}: {exc}"
-                        ),
+                    raise InvalidRequestError(
+                        f"Invalid {node.data.nodeType.value} config for "
+                        f"node {node.data.label!r}: {exc}"
                     ) from exc
 
     @staticmethod
@@ -1106,9 +1193,7 @@ class SavePipelineService:
                     )
                     reject_form_given_keys(node.data.nodeType, node.data.config)
                 except ConfigError as exc:
-                    raise HTTPException(
-                        status_code=400, detail=f"{exc.message} Nothing was saved."
-                    ) from None
+                    raise InvalidRequestError(f"{exc.message} Nothing was saved.") from None
 
     @staticmethod
     def _validate_quote_input_tables_do_not_shadow_nodes(graph: PipelineGraph) -> None:
@@ -1159,14 +1244,11 @@ class SavePipelineService:
                     clashing = labels_by_name.get(label)
                     if clashing is None:
                         continue
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            f"{kind} {node.data.label!r} has a table {label!r} named "
-                            f"like the node {clashing!r}. A step or parameter reading "
-                            f"{label!r} would read both, so the pipeline could not be "
-                            "reloaded. Rename the table or the node. Nothing was saved."
-                        ),
+                    raise InvalidRequestError(
+                        f"{kind} {node.data.label!r} has a table {label!r} named "
+                        f"like the node {clashing!r}. A step or parameter reading "
+                        f"{label!r} would read both, so the pipeline could not be "
+                        "reloaded. Rename the table or the node. Nothing was saved."
                     )
 
     @staticmethod
@@ -1186,22 +1268,18 @@ class SavePipelineService:
     def _resolve_source_file(self, source_file: str) -> Path:
         """Resolve and validate the main ``.py`` path."""
         if not source_file:
-            raise HTTPException(
-                status_code=400,
-                detail="source_file is required \u2014 the frontend must track"
-                " and send the original pipeline file path",
+            raise InvalidRequestError(
+                "source_file is required \u2014 the frontend must track"
+                " and send the original pipeline file path"
             )
         return contained_path(self._root, source_file)
 
     def _validate_source_file_matches_pipeline_root(self, py_path: Path) -> None:
         """Reject saves whose source file does not belong to ``pipeline_root``."""
         if not is_contained(self._pipeline_root, py_path):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "source_file must be under the active pipeline directory; "
-                    "refusing to write modules/config for a different pipeline."
-                ),
+            raise InvalidRequestError(
+                "source_file must be under the active pipeline directory; "
+                "refusing to write modules/config for a different pipeline."
             )
 
     # ------------------------------------------------------------------
@@ -1224,32 +1302,7 @@ class SavePipelineService:
         than silently skipping so a malformed codegen output cannot
         produce a half-saved pipeline.
         """
-        if not rel_path:
-            raise HTTPException(
-                status_code=400,
-                detail="Codegen output path is empty; refusing to save.",
-            )
-
-        # Windows paths often come back with mixed separators.  Normalise
-        # BEFORE any resolution so traversal components (``..``) are
-        # detected on the raw string.
-        normalised = rel_path.replace("\\", "/")
-
-        # Reject absolute paths and traversal up front — these can never
-        # correspond to a valid allowlist target.
-        if normalised.startswith("/") or normalised.startswith("~"):
-            raise HTTPException(
-                status_code=400,
-                detail="Codegen output paths must be project-relative.",
-            )
-        # Any ``..`` component anywhere is forbidden; a crafted codegen
-        # output must not be able to escape even when combined with a
-        # legitimate-looking prefix.
-        if any(part == ".." for part in normalised.split("/")):
-            raise HTTPException(
-                status_code=400,
-                detail="Codegen output path contains a traversal segment ('..').",
-            )
+        normalised = _project_relative(rel_path, what="Codegen output path")
 
         # Reserved device names are rejected on EVERY platform, mirroring the
         # casefold collision guards: a generated ``modules/NUL.py`` (or a main
@@ -1260,18 +1313,15 @@ class SavePipelineService:
 
         filename = normalised.rsplit("/", 1)[-1]
         if is_windows_reserved_filename(filename):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Codegen output filename {filename!r} is a reserved "
-                    "device name on Windows. Windows treats a filename whose "
-                    "stem is CON, PRN, AUX, NUL, COM1-COM9 or LPT1-LPT9 (any "
-                    "casing, any extension) as a device, not a file, so it "
-                    "cannot be written or checked out there. The name is "
-                    "rejected on every platform so a pipeline saved here "
-                    "stays loadable on a Windows checkout. Rename the node "
-                    "or submodel before saving."
-                ),
+            raise InvalidRequestError(
+                f"Codegen output filename {filename!r} is a reserved "
+                "device name on Windows. Windows treats a filename whose "
+                "stem is CON, PRN, AUX, NUL, COM1-COM9 or LPT1-LPT9 (any "
+                "casing, any extension) as a device, not a file, so it "
+                "cannot be written or checked out there. The name is "
+                "rejected on every platform so a pipeline saved here "
+                "stays loadable on a Windows checkout. Rename the node "
+                "or submodel before saving."
             )
 
         allowed_main = (source_file or "").replace("\\", "/")
@@ -1288,12 +1338,9 @@ class SavePipelineService:
                 rel_path=rel_path,
                 allowed_main=allowed_main,
             )
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Codegen produced an output path outside the allowed set "
-                    "(main pipeline file or 'modules/<name>.py')."
-                ),
+            raise InvalidRequestError(
+                "Codegen produced an output path outside the allowed set "
+                "(main pipeline file or 'modules/<name>.py')."
             )
 
         # Defence in depth: even after the prefix check, the resolved path
@@ -1309,9 +1356,8 @@ class SavePipelineService:
                 rel_path=rel_path,
                 resolved=str(out_path),
             )
-            raise HTTPException(
-                status_code=400,
-                detail="Codegen output path resolves outside the project root.",
+            raise InvalidRequestError(
+                "Codegen output path resolves outside the project root."
             ) from None
         return out_path
 
@@ -1337,46 +1383,19 @@ class SavePipelineService:
 
     def _resolve_module_delete_file(self, rel_path: str) -> Path:
         """Resolve a module file scheduled for deletion through the module allowlist."""
-        normalised = rel_path.replace("\\", "/")
-        if not normalised:
-            raise HTTPException(status_code=400, detail="Submodel delete path is empty.")
-        if normalised.startswith("/") or normalised.startswith("~"):
-            raise HTTPException(
-                status_code=400,
-                detail="Submodel delete paths must be project-relative.",
-            )
-        if any(part == ".." for part in normalised.split("/")):
-            raise HTTPException(
-                status_code=400,
-                detail="Submodel delete path contains a traversal segment ('..').",
-            )
+        normalised = _project_relative(rel_path, what="Submodel delete path")
         target = self._resolve_module_output_path(normalised)
         if target is None:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Submodel delete path must resolve to a direct child of "
-                    "the active pipeline's modules/ directory."
-                ),
+            raise InvalidRequestError(
+                "Submodel delete path must resolve to a direct child of "
+                "the active pipeline's modules/ directory."
             )
 
         return target
 
     def _resolve_existing_module_delete_file(self, rel_path: str) -> Path:
         """Resolve a module deletion to the existing parser-compatible file."""
-        normalised = rel_path.replace("\\", "/")
-        if not normalised:
-            raise HTTPException(status_code=400, detail="Submodel delete path is empty.")
-        if normalised.startswith("/") or normalised.startswith("~"):
-            raise HTTPException(
-                status_code=400,
-                detail="Submodel delete paths must be project-relative.",
-            )
-        if any(part == ".." for part in normalised.split("/")):
-            raise HTTPException(
-                status_code=400,
-                detail="Submodel delete path contains a traversal segment ('..').",
-            )
+        normalised = _project_relative(rel_path, what="Submodel delete path")
 
         target, _base = resolve_submodel_reference(
             normalised,
@@ -1396,19 +1415,13 @@ class SavePipelineService:
             # `_prepare_managed_child_sidecars` applies to metadata paths.
             folded_target = str(target.resolve()).casefold()
             if folded_target in seen:
-                raise HTTPException(
-                    status_code=409,
-                    detail="The requested submodel module path is duplicated.",
-                )
+                raise ConflictError("The requested submodel module path is duplicated.")
             seen.add(folded_target)
             parent = target.parent
             if not parent.exists():
                 continue
             if not parent.is_dir():
-                raise HTTPException(
-                    status_code=409,
-                    detail="The submodel modules path is already occupied by a file.",
-                )
+                raise ConflictError("The submodel modules path is already occupied by a file.")
             candidates = {candidate.name.casefold(): candidate for candidate in parent.iterdir()}
             protected_names = (
                 ("module", target.name),
@@ -1419,12 +1432,9 @@ class SavePipelineService:
                 if collision is None:
                     continue
                 relative = collision.relative_to(self._root).as_posix()
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"Submodel {kind} {relative!r} already exists. "
-                        "Choose a different submodel name."
-                    ),
+                raise ConflictError(
+                    f"Submodel {kind} {relative!r} already exists. "
+                    "Choose a different submodel name."
                 )
         return seen
 
@@ -1461,19 +1471,9 @@ class SavePipelineService:
 
         for name, definition in (graph.submodels or {}).items():
             recorded_path = definition.file
-            try:
-                child_path, _config_base = resolve_submodel_reference(
-                    recorded_path,
-                    pipeline_dir=parent_path.parent,
-                    project_root=self._root,
-                )
-            except MalformedSubmodelPathError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from None
-            except SubmodelPathOutsideProjectError:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Cannot access paths outside the project root",
-                ) from None
+            child_path, _config_base = resolve_definition_file(
+                recorded_path, parent_path=parent_path, project_root=self._root
+            )
             key = str(child_path.resolve()).casefold()
             if key in seen:
                 continue
@@ -1499,13 +1499,10 @@ class SavePipelineService:
             # root records "modules/<name>.py" relative to its own directory,
             # which never matches the allowlist target under the root's
             # modules/ directory. Fail cleanly before any write.
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Submodel module claim does not match the pipeline's recorded "
-                    "module path. The parent pipeline must live directly in the "
-                    "active pipeline directory."
-                ),
+            raise InvalidRequestError(
+                "Submodel module claim does not match the pipeline's recorded "
+                "module path. The parent pipeline must live directly in the "
+                "active pipeline directory."
             )
         return prepared
 
@@ -1601,14 +1598,11 @@ class SavePipelineService:
             out_path = self._validate_output_rel_path(rel_path, source_file)
             folded = str(out_path).casefold()
             if folded in seen:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Codegen produced duplicate output path: {seen[folded]!r} "
-                        f"and {rel_path!r} name the same file on the "
-                        "case-insensitive filesystems macOS and Windows "
-                        "default to. Rename one of the modules before saving."
-                    ),
+                raise InvalidRequestError(
+                    f"Codegen produced duplicate output path: {seen[folded]!r} "
+                    f"and {rel_path!r} name the same file on the "
+                    "case-insensitive filesystems macOS and Windows "
+                    "default to. Rename one of the modules before saving."
                 )
             seen[folded] = rel_path
             resolved.append((out_path, code))
@@ -1752,12 +1746,9 @@ class SavePipelineService:
             if not is_contained(self._pipeline_root, out_path):
                 # A link out of the pipeline folder: writing would leave it,
                 # and skipping would drop the edit while the save succeeds.
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Cannot save {rel_path}: it resolves outside the pipeline folder. "
-                        "Replace the link with a folder inside the project, then save again."
-                    ),
+                raise InvalidRequestError(
+                    f"Cannot save {rel_path}: it resolves outside the pipeline folder. "
+                    "Replace the link with a folder inside the project, then save again."
                 )
             self._stage_write(out_path, json_content, touched)
 
@@ -1856,17 +1847,14 @@ class SavePipelineService:
         if not paths:
             return
         formatted = ", ".join(repr(path) for path in sorted(paths))
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Filename is a reserved device name on Windows: {formatted}. "
-                "Windows treats a filename whose stem is CON, PRN, AUX, NUL, "
-                "COM1-COM9 or LPT1-LPT9 (any casing, any extension) as a "
-                "device, not a file, so it cannot be written or checked out "
-                "there. The name is rejected on every platform so a pipeline "
-                "saved here stays loadable on a Windows checkout. Rename the "
-                "node before saving."
-            ),
+        raise InvalidRequestError(
+            f"Filename is a reserved device name on Windows: {formatted}. "
+            "Windows treats a filename whose stem is CON, PRN, AUX, NUL, "
+            "COM1-COM9 or LPT1-LPT9 (any casing, any extension) as a "
+            "device, not a file, so it cannot be written or checked out "
+            "there. The name is rejected on every platform so a pipeline "
+            "saved here stays loadable on a Windows checkout. Rename the "
+            "node before saving."
         )
 
     @staticmethod
@@ -1874,15 +1862,12 @@ class SavePipelineService:
         if not paths:
             return
         formatted = ", ".join(repr(path) for path in sorted(paths))
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Duplicate config sidecar path detected: {formatted}. "
-                "Sidecar filenames are compared case-insensitively, because "
-                "case-insensitive filesystems (macOS, Windows) treat names "
-                "differing only in case as the same file. Rename one of the "
-                "nodes before saving."
-            ),
+        raise InvalidRequestError(
+            f"Duplicate config sidecar path detected: {formatted}. "
+            "Sidecar filenames are compared case-insensitively, because "
+            "case-insensitive filesystems (macOS, Windows) treat names "
+            "differing only in case as the same file. Rename one of the "
+            "nodes before saving."
         )
 
     def _remove_stale_config_files(self, graph: PipelineGraph) -> list[Path]:
@@ -1931,6 +1916,8 @@ class SavePipelineService:
             if not is_contained(self._pipeline_root, stale_path):
                 continue
             if stale_path.is_file():
+                # The server's own deletion: the watcher must not re-parse for it.
+                mark_self_write(stale_path, deleted=True)
                 stale_path.unlink()
                 removed.append(stale_path)
                 logger.info("stale_config_removed", path=rel)
@@ -1943,7 +1930,7 @@ class SavePipelineService:
             config_dir.rmdir()
         return removed
 
-    def _compute_disk_prev_config_files(self, py_path: Path) -> dict[str, str]:
+    def _compute_disk_prev_config_files(self, on_disk: _OnDisk) -> dict[str, str]:
         """Return the rel-path → JSON map for configs the on-disk graph
         references, used as the stale-cleanup diff baseline.
 
@@ -1966,17 +1953,14 @@ class SavePipelineService:
         haute versions are preserved by virtue of never appearing in
         any parsed graph's reference set.
         """
-        from haute.routes._helpers import parse_pipeline_to_graph
-
-        if not py_path.is_file():
+        if on_disk.document is None:
             return {}
-        try:
-            disk_graph = parse_pipeline_to_graph(py_path)
-        except Exception as exc:
+        disk_graph = on_disk.graph
+        if disk_graph is None:
             logger.warning(
                 "stale_cleanup_baseline_unavailable",
-                path=str(py_path),
-                error=str(exc),
+                path=on_disk.document.source_file,
+                error=str(on_disk.parse_error),
                 detail=(
                     "on-disk pipeline could not be parsed; stale-config "
                     "cleanup will preserve all unknown files this save"
@@ -2003,10 +1987,10 @@ class SavePipelineService:
             ):
                 prev[GLOBAL_CONSTANTS_FILE] = constants_path.read_text(encoding="utf-8")
             return prev
-        except HTTPException as exc:
+        except RequestRefusedError as exc:
             logger.warning(
                 "stale_cleanup_baseline_unavailable",
-                path=str(py_path),
+                path=on_disk.document.source_file,
                 error=str(exc.detail),
                 detail=(
                     "on-disk pipeline has ambiguous config ownership; "

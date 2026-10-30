@@ -561,3 +561,155 @@ export function makeFrontierSelect(
     ...overrides,
   }
 }
+
+// ---------------------------------------------------------------------------
+// Node-data payloads: every field the server sends, with the backend models'
+// defaults, so a test states only what it is about.
+// ---------------------------------------------------------------------------
+
+import type {
+  ExploreColumnStat,
+  NodeDataPointResponse,
+  NodeDataProfile,
+  NodeDataStatusResponse,
+} from "../api/types"
+
+export function makeNodeDataPoint(
+  overrides: Partial<NodeDataPointResponse> = {},
+): NodeDataPointResponse {
+  return {
+    consumer_node_id: "explore",
+    point: { producer_node_id: "source", port_label: null },
+    slot_key: "slot",
+    kind: "node_output",
+    state: "missing",
+    demand: "all",
+    data_version: null,
+    row_count: null,
+    size_bytes: null,
+    retention: null,
+    generation: null,
+    job: null,
+    reads_directly: false,
+    build_endpoint: null,
+    clear_endpoint: null,
+    ...overrides,
+  }
+}
+
+export function makeNodeDataStatus(
+  overrides: Partial<NodeDataStatusResponse> = {},
+): NodeDataStatusResponse {
+  return {
+    status: "running",
+    progress: 0,
+    message: "",
+    terminal_reason: null,
+    error: null,
+    error_code: null,
+    error_detail: null,
+    execution_metrics: null,
+    generation_id: null,
+    outcome: null,
+    profile: null,
+    ...overrides,
+  }
+}
+
+export function makeExploreColumnStat(
+  overrides: Partial<ExploreColumnStat> = {},
+): ExploreColumnStat {
+  return {
+    name: "column",
+    dtype: "String",
+    kind: "Text",
+    null_count: 0,
+    nan_count: null,
+    distinct_count: null,
+    min_value: null,
+    p25_value: null,
+    median_value: null,
+    mean_value: null,
+    p75_value: null,
+    max_value: null,
+    std_value: null,
+    zero_count: null,
+    negative_count: null,
+    unique_ratio: null,
+    is_high_cardinality: false,
+    is_identifier_candidate: false,
+    text_min_length: null,
+    text_mean_length: null,
+    text_max_length: null,
+    temporal_span: null,
+    histogram: null,
+    ...overrides,
+  }
+}
+
+export function makeNodeDataProfile(
+  overrides: Partial<NodeDataProfile> = {},
+): NodeDataProfile {
+  return {
+    row_count: 0,
+    column_count: 0,
+    columns: [],
+    overview_summary: {
+      data_quality: { issue_count: 0, issues: [], duplicate_row_count: null, duplicate_ratio: null },
+      categorical_summary: [],
+    },
+    data_version: "v1",
+    generated_at: 0,
+    ...overrides,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Output and input-cache payloads, complete as the server sends them.
+// ---------------------------------------------------------------------------
+
+import type {
+  InputCacheSnapshotResponse,
+  OutputAssembleDryRunResponse,
+  WriteOutputResponse,
+} from "../api/types"
+
+export function makeWriteOutput(
+  overrides: Partial<WriteOutputResponse> = {},
+): WriteOutputResponse {
+  return {
+    status: "ok",
+    message: "",
+    row_count: 0,
+    path: "",
+    format: "parquet",
+    execution_metrics: null,
+    ...overrides,
+  }
+}
+
+export function makeOutputDryRun(
+  overrides: Partial<OutputAssembleDryRunResponse> = {},
+): OutputAssembleDryRunResponse {
+  return {
+    status: "ok",
+    document: [],
+    row_count: 0,
+    error: null,
+    ...overrides,
+  }
+}
+
+export function makeInputCacheSnapshot(
+  overrides: Partial<InputCacheSnapshotResponse> = {},
+): InputCacheSnapshotResponse {
+  return {
+    schema_version: 1,
+    identity_digest: "digest",
+    state: "missing",
+    freshness: "unknown",
+    generation: null,
+    tables: null,
+    ...overrides,
+  }
+}

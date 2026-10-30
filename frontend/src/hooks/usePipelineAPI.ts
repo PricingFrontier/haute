@@ -11,6 +11,7 @@ import {
   savePipeline,
 } from "../api/client"
 import type { ApiTimeoutError, RetryPolicy } from "../api/client"
+import { syncConnectionId } from "../api/syncConnection"
 import { resolveGraphFromRefs } from "../utils/buildGraph"
 import { toCanonicalGraphPayload } from "../utils/graphSnapshot"
 import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
@@ -1490,6 +1491,7 @@ export default function usePipelineAPI({
         sources: sc,
         active_source: as_,
         preserved_blocks: preservedBlocksRef.current,
+        connection_id: syncConnectionId(),
       })
       // Mark the exact graph snapshot that reached the backend, unless a
       // newer save has already been applied.

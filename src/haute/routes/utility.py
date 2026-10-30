@@ -3,6 +3,9 @@
 Manages Python files in the project's ``utility/`` directory.  These files
 contain reusable helper functions, constants, and imports that pipeline
 nodes can reference via the preamble (``from utility.<module> import *``).
+A write is a project write like any other: staged and renamed into place under
+``project_write``, checked against the revision the editor read, and captured
+on the save ledger. See specs/server-api.
 """
 
 from __future__ import annotations
@@ -10,16 +13,22 @@ from __future__ import annotations
 import ast
 import keyword
 import re
+from collections.abc import Callable
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
+from fastapi import Path as PathParam
 
 from haute._config_io import is_windows_reserved_filename
+from haute._file_ops import atomic_create_text, atomic_write_text, file_revision
 from haute._io import read_user_source, read_user_text
 from haute._logging import get_logger
 from haute._sandbox import contained_path
-from haute.routes._helpers import discover_pipelines, pipeline_dir
+from haute.routes._helpers import discover_pipelines, pipeline_dir, project_write
+from haute.routes._save_pipeline import capture_save_in_ledger
 from haute.schemas import (
+    UTILITY_MODULE_NAME_MAX,
     UtilityCreateRequest,
     UtilityDeleteResponse,
     UtilityFileItem,
@@ -34,11 +43,66 @@ logger = get_logger(component="server.utility")
 router = APIRouter(prefix="/api/utility", tags=["utility"])
 
 _VALID_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+# A module named in the path is bounded as one named in a body: an over-long name is a
+# 422, never a write that fails for the file name's length.
+_Module = Annotated[str, PathParam(max_length=UTILITY_MODULE_NAME_MAX)]
 
 
-def _utility_dir() -> Path:
-    """Return the ``utility/`` directory under the project root."""
-    return pipeline_dir() / "utility"
+def _project_root() -> Path:
+    """The project root ``pipeline_dir`` anchors the pipeline at: the working directory."""
+    return Path.cwd().resolve()
+
+
+def _utility_root(project_root: Path) -> Path:
+    """The pipeline folder's ``utility/``, resolved, and refused (403) unless it lies inside
+    the project: a link or junction at it, or above it, that leads outside would otherwise
+    have every route here list, read and write the outside folder's files."""
+    return contained_path(project_root, pipeline_dir() / "utility")
+
+
+def _module_path(project_root: Path, module: str) -> Path:
+    """``utility/<module>.py``, resolved inside the authenticated folder (403 otherwise)."""
+    return contained_path(_utility_root(project_root), f"{module}.py")
+
+
+def _display(project_root: Path, path: Path) -> str:
+    """*path* relative to the project, POSIX: what messages and the ledger name."""
+    return path.relative_to(project_root).as_posix()
+
+
+def _refusal(status: int, code: str, message: str) -> HTTPException:
+    """A refusal in the flat error contract: the message is the detail; the code is logged."""
+    logger.info("utility_file_refused", code=code, status=status)
+    return HTTPException(status_code=status, detail=message)
+
+
+def _require_file(target: Path) -> None:
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail=f"Utility file not found: {target.name}")
+
+
+def _require_revision(project_root: Path, target: Path, revision: str) -> None:
+    """Refuse (412) a write or delete made against a revision the file no longer has."""
+    if file_revision(target.stat()) != revision:
+        raise _refusal(
+            412,
+            "file_changed",
+            f"{_display(project_root, target)} changed since you opened it. "
+            "Open it again, then retry.",
+        )
+
+
+def _replace_or_remove(project_root: Path, target: Path, change: Callable[[], None]) -> None:
+    """Run *change* on *target*, answering a file another program holds open with 409."""
+    try:
+        change()
+    except PermissionError:
+        raise _refusal(
+            409,
+            "file_in_use",
+            f"{_display(project_root, target)} is open in Haute or another program. "
+            "Try again once it's closed.",
+        ) from None
 
 
 def _validate_module_name(name: str) -> None:
@@ -167,20 +231,48 @@ def _refuse_new_name_violations(module: str, content: str) -> None:
         )
 
 
-def _ensure_init(utility_dir: Path) -> None:
-    """Create ``utility/__init__.py`` if it doesn't exist."""
+_INIT_CONTENT = '"""Project-level utilities \u2014 reusable functions for pipeline nodes."""\n'
+
+
+def _ensure_init(utility_dir: Path) -> list[Path]:
+    """Create ``utility/__init__.py`` when it is missing; the files this created."""
     init = utility_dir / "__init__.py"
-    if not init.exists():
-        init.write_text(
-            '"""Project-level utilities \u2014 reusable functions for pipeline nodes."""\n',
-            encoding="utf-8",
-        )
+    if init.exists():
+        return []
+    try:
+        atomic_create_text(init, _INIT_CONTENT)
+    except FileExistsError:
+        # Another program made it meanwhile: the package has its marker either way.
+        return []
+    return [init]
+
+
+def _write_response(
+    project_root: Path, module: str, target: Path, written: list[Path]
+) -> UtilityWriteResponse:
+    # The revision of the bytes this write published, read before the ledger capture:
+    # a change another editor makes meanwhile then refuses the next write (412)
+    # instead of being answered as this write's own.
+    revision = file_revision(target.stat())
+    warnings: list[str] = []
+    captured = capture_save_in_ledger(
+        project_root, [_display(project_root, path) for path in written], warnings
+    )
+    return UtilityWriteResponse(
+        status="ok",
+        name=f"{module}.py",
+        module=module,
+        import_line=f"from utility.{module} import *",
+        revision=revision,
+        warnings=warnings,
+        **captured._asdict(),
+    )
 
 
 @router.get("", response_model=UtilityListResponse)
 async def list_utility_files() -> UtilityListResponse:
     """List all Python files in ``utility/`` (excluding ``__init__.py``)."""
-    d = _utility_dir()
+    d = _utility_root(_project_root())
     if not d.is_dir():
         return UtilityListResponse(files=[])
 
@@ -192,68 +284,22 @@ async def list_utility_files() -> UtilityListResponse:
 
 
 @router.get("/{module}", response_model=UtilityReadResponse)
-async def read_utility_file(module: str) -> UtilityReadResponse:
-    """Read the content of a utility file."""
+async def read_utility_file(module: _Module) -> UtilityReadResponse:
+    """Read the content of a utility file, with the revision a write must send."""
     _validate_module_name(module)
-    base = _utility_dir()
-    target = contained_path(base, f"{module}.py")
-    if not target.is_file():
-        raise HTTPException(status_code=404, detail=f"Utility file not found: {module}.py")
-
+    target = _module_path(_project_root(), module)
+    _require_file(target)
+    # The revision is read before the content: a change between the two then refuses
+    # the editor's next write (412) instead of letting it overwrite that change.
+    revision = file_revision(target.stat())
     content = read_user_text(target)
-    return UtilityReadResponse(name=f"{module}.py", module=module, content=content)
-
-
-@router.post("", response_model=UtilityWriteResponse)
-async def create_utility_file(body: UtilityCreateRequest) -> UtilityWriteResponse:
-    """Create a new utility file in ``utility/``."""
-    _validate_module_name(body.name)
-    d = _utility_dir()
-    # Containment first: a path escaping the utility folder is refused as such.
-    target = contained_path(d, f"{body.name}.py")
-    _validate_new_module_name(body.name, d)
-
-    d.mkdir(exist_ok=True)
-    _ensure_init(d)
-
-    content = body.content or f'"""Utility module: {body.name}."""\n\nimport polars as pl\n'
-
-    ok, err_msg, err_line = _validate_syntax(content)
-    if not ok:
-        logger.warning(
-            "utility_syntax_error",
-            module=body.name,
-            error=err_msg,
-            error_line=err_line,
-        )
-        raise HTTPException(
-            status_code=400,
-            detail=_format_syntax_error(err_msg, err_line),
-        )
-
-    _refuse_new_name_violations(body.name, content)
-    target.write_text(content, encoding="utf-8")
-    import_line = f"from utility.{body.name} import *"
-    logger.info("utility_file_created", module=body.name)
-
-    return UtilityWriteResponse(
-        status="ok",
-        name=f"{body.name}.py",
-        module=body.name,
-        import_line=import_line,
+    return UtilityReadResponse(
+        name=f"{module}.py", module=module, content=content, revision=revision
     )
 
 
-@router.put("/{module}", response_model=UtilityWriteResponse)
-async def update_utility_file(module: str, body: UtilityWriteRequest) -> UtilityWriteResponse:
-    """Update an existing utility file."""
-    _validate_module_name(module)
-    base = _utility_dir()
-    target = contained_path(base, f"{module}.py")
-    if not target.is_file():
-        raise HTTPException(status_code=404, detail=f"Utility file not found: {module}.py")
-
-    ok, err_msg, err_line = _validate_syntax(body.content)
+def _refuse_syntax_error(module: str, content: str) -> None:
+    ok, err_msg, err_line = _validate_syntax(content)
     if not ok:
         logger.warning(
             "utility_syntax_error",
@@ -266,27 +312,70 @@ async def update_utility_file(module: str, body: UtilityWriteRequest) -> Utility
             detail=_format_syntax_error(err_msg, err_line),
         )
 
-    _refuse_new_name_violations(module, body.content)
-    target.write_text(body.content, encoding="utf-8")
-    logger.info("utility_file_updated", module=module)
 
-    return UtilityWriteResponse(
-        status="ok",
-        name=f"{module}.py",
-        module=module,
-        import_line=f"from utility.{module} import *",
-    )
+def _create(project_root: Path, module: str, content: str) -> UtilityWriteResponse:
+    utility_dir = _utility_root(project_root)
+    # Containment first: a path escaping the utility folder is refused as such.
+    target = contained_path(utility_dir, f"{module}.py")
+    _validate_new_module_name(module, utility_dir)
+    _refuse_syntax_error(module, content)
+    _refuse_new_name_violations(module, content)
+    utility_dir.mkdir(exist_ok=True)
+    written = _ensure_init(utility_dir)
+    try:
+        atomic_create_text(target, content)
+    except FileExistsError:
+        raise _refusal(
+            409, "file_exists", f"{_display(project_root, target)} already exists."
+        ) from None
+    logger.info("utility_file_created", module=module)
+    return _write_response(project_root, module, target, [*written, target])
+
+
+@router.post("", response_model=UtilityWriteResponse)
+async def create_utility_file(body: UtilityCreateRequest) -> UtilityWriteResponse:
+    """Create a new utility file in ``utility/``."""
+    _validate_module_name(body.name)
+    content = body.content or f'"""Utility module: {body.name}."""\n\nimport polars as pl\n'
+    project_root = _project_root()
+    return await project_write(project_root, lambda: _create(project_root, body.name, content))
+
+
+def _update(project_root: Path, module: str, body: UtilityWriteRequest) -> UtilityWriteResponse:
+    target = _module_path(project_root, module)
+    _require_file(target)
+    _refuse_syntax_error(module, body.content)
+    _refuse_new_name_violations(module, body.content)
+    _require_revision(project_root, target, body.revision)
+    _replace_or_remove(project_root, target, lambda: atomic_write_text(target, body.content))
+    logger.info("utility_file_updated", module=module)
+    return _write_response(project_root, module, target, [target])
+
+
+@router.put("/{module}", response_model=UtilityWriteResponse)
+async def update_utility_file(module: _Module, body: UtilityWriteRequest) -> UtilityWriteResponse:
+    """Update an existing utility file, if it is still the revision the editor read."""
+    _validate_module_name(module)
+    project_root = _project_root()
+    return await project_write(project_root, lambda: _update(project_root, module, body))
+
+
+def _delete(project_root: Path, module: str, revision: str) -> UtilityDeleteResponse:
+    target = _module_path(project_root, module)
+    _require_file(target)
+    _require_revision(project_root, target, revision)
+    _replace_or_remove(project_root, target, target.unlink)
+    warnings: list[str] = []
+    captured = capture_save_in_ledger(project_root, [_display(project_root, target)], warnings)
+    logger.info("utility_file_deleted", module=module)
+    return UtilityDeleteResponse(module=module, warnings=warnings, **captured._asdict())
 
 
 @router.delete("/{module}", response_model=UtilityDeleteResponse)
-async def delete_utility_file(module: str) -> UtilityDeleteResponse:
-    """Delete a utility file."""
+async def delete_utility_file(
+    module: _Module, revision: Annotated[str, Query(max_length=512)]
+) -> UtilityDeleteResponse:
+    """Delete a utility file, if it is still the revision the editor read."""
     _validate_module_name(module)
-    base = _utility_dir()
-    target = contained_path(base, f"{module}.py")
-    if not target.is_file():
-        raise HTTPException(status_code=404, detail=f"Utility file not found: {module}.py")
-
-    target.unlink()
-    logger.info("utility_file_deleted", module=module)
-    return UtilityDeleteResponse(module=module)
+    project_root = _project_root()
+    return await project_write(project_root, lambda: _delete(project_root, module, revision))

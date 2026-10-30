@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest"
 import useOutputWriteStore, {
   resetOutputWriteStoreForTests,
 } from "../useOutputWriteStore"
+import { makeWriteOutput } from "../../test-utils/factories"
 
 describe("useOutputWriteStore", () => {
   beforeEach(resetOutputWriteStoreForTests)
@@ -13,7 +14,7 @@ describe("useOutputWriteStore", () => {
 
     useOutputWriteStore.getState().complete("output-1", first!, "config-a", {
       phase: "success",
-      result: { status: "ok", path: "out.csv", row_count: 2 },
+      result: makeWriteOutput({ status: "ok", path: "out.csv", row_count: 2 }),
     })
     const second = useOutputWriteStore.getState().begin("output-1", "config-b")
     useOutputWriteStore.getState().complete("output-1", first!, "config-a", {

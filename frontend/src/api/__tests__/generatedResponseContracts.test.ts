@@ -53,7 +53,7 @@ describe("generated response contracts", () => {
 
   it("name the field of a malformed or incomplete utility payload", () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>("utility_write_response")
-    const { error_line: _errorLine, ...withoutErrorLine } = fixture
+    const { warnings: _warnings, ...withoutWarnings } = fixture
 
     expect(() =>
       expectGeneratedContract("UtilityWriteResponse", validateUtilityWriteResponse, {
@@ -63,8 +63,8 @@ describe("generated response contracts", () => {
     ).toThrow("UtilityWriteResponse: invalid contract at /import_line: type")
     // A defaulted field is still always sent, so its absence is drift.
     expect(() =>
-      expectGeneratedContract("UtilityWriteResponse", validateUtilityWriteResponse, withoutErrorLine),
-    ).toThrow("UtilityWriteResponse: invalid contract at /error_line: required")
+      expectGeneratedContract("UtilityWriteResponse", validateUtilityWriteResponse, withoutWarnings),
+    ).toThrow("UtilityWriteResponse: invalid contract at /warnings: required")
     expect(() =>
       expectGeneratedContract("UtilityListResponse", validateUtilityListResponse, {
         files: [{ name: "helpers" }],

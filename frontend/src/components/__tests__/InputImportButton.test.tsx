@@ -31,6 +31,7 @@ import {
   getInputCacheStatus,
 } from "../../api/client"
 import InputImportButton from "../InputImportButton"
+import { makeInputCacheSnapshot } from "../../test-utils/factories"
 
 const csvConfig = { inputType: "file", format: "csv", mode: "scan", path: "quotes.csv" }
 const emittingTable = { path: "$[:]", label: "quotes", emit: true, columns: [{ name: "id", path: "$[:].id", selected: true }] }
@@ -45,7 +46,7 @@ function onCanvas(...nodes: SimpleNode[]): void {
 }
 
 function snapshot(overrides: Partial<InputCacheSnapshotResponse> = {}): InputCacheSnapshotResponse {
-  return {
+  return makeInputCacheSnapshot({
     schema_version: 1,
     identity_digest: "digest",
     state: "ready",
@@ -60,7 +61,7 @@ function snapshot(overrides: Partial<InputCacheSnapshotResponse> = {}): InputCac
       build_class: "bounded",
     },
     ...overrides,
-  }
+  })
 }
 
 function job(

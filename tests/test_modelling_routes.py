@@ -16,7 +16,7 @@ from fastapi import HTTPException
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._ram_estimate import RamEstimate
-from haute.errors import HauteValidationError
+from haute.errors import HauteValidationError, RequestRefusedError, UnprocessableError
 from haute.modelling._descriptors import DESCRIPTORS
 from haute.projection import ProjectionRequest, plan
 from haute.routes._train_service import (
@@ -671,7 +671,7 @@ class TestTrainBackgroundLaunchFailures:
                 "haute.routes._background_jobs.IsolatedSupervisorThread.start",
                 side_effect=RuntimeError("thread boom"),
             ),
-            pytest.raises(HTTPException) as exc_info,
+            pytest.raises(RequestRefusedError) as exc_info,
         ):
             service._launch_background(
                 job_id,
@@ -3289,26 +3289,26 @@ class TestExecuteAndSinkPlanCleanup:
 
 class TestValidateConfig:
     def test_no_target_raises_400(self):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             TrainService._validate_config({"algorithm": "catboost"})
         assert exc_info.value.status_code == 400
         assert "No target column" in exc_info.value.detail
 
     def test_empty_target_raises_400(self):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             TrainService._validate_config({"target": "", "algorithm": "catboost"})
         assert exc_info.value.status_code == 400
         assert "No target column" in exc_info.value.detail
 
     def test_unknown_algorithm_raises_400(self):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             TrainService._validate_config({"target": "y", "algorithm": "unregistered"})
         assert exc_info.value.status_code == 400
         assert "unregistered" in exc_info.value.detail
         assert "Available algorithms" in exc_info.value.detail
 
     def test_glm_unknown_family_raises_with_suggestions(self):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             TrainService._validate_config(
                 {
                     "target": "y",
@@ -3321,7 +3321,7 @@ class TestValidateConfig:
         assert "gaussian" in exc_info.value.detail
 
     def test_glm_invalid_link_for_family_raises_with_valid_options(self):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             TrainService._validate_config(
                 {
                     "target": "y",
@@ -3362,7 +3362,7 @@ class TestValidateConfig:
     def test_invalid_cross_validation_fails_before_job_creation(
         self, cross_validation: dict[str, object]
     ) -> None:
-        with pytest.raises(HTTPException) as raised:
+        with pytest.raises(RequestRefusedError) as raised:
             TrainService._validate_config(
                 {
                     "target": "y",
@@ -3404,7 +3404,7 @@ class TestValidateConfig:
 
     def test_catboost_missing_loss_raises_400(self):
         """Unset loss must not silently train under CatBoost's RMSE default."""
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             TrainService._validate_config(
                 {
                     "target": "y",
@@ -3425,7 +3425,7 @@ class TestValidateConfig:
         """Features are opt-in: a tree model with no ticked feature is refused, never
         trained on every column. A listed role column is dormant, so ticking only
         the target selects no feature either."""
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             TrainService._validate_config(
                 {
                     "target": "y",
@@ -3475,7 +3475,7 @@ class TestValidateConfig:
         )
 
     def test_a_loss_the_family_lacks_is_refused_in_its_name(self):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             TrainService._validate_config(
                 {
                     "target": "y",
@@ -3489,7 +3489,7 @@ class TestValidateConfig:
         assert "CatBoost does not support the Gamma loss" in exc_info.value.detail
 
     def test_catboost_loss_invalid_for_task_raises_400(self):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             TrainService._validate_config(
                 {
                     "target": "y",
@@ -3503,7 +3503,7 @@ class TestValidateConfig:
 
     def test_glm_empty_family_raises_400(self):
         """Unset family must not silently train a gaussian GLM."""
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             TrainService._validate_config(
                 {
                     "target": "y",
@@ -3516,7 +3516,7 @@ class TestValidateConfig:
 
     def test_glm_empty_terms_raises_400(self):
         """An empty term set must not silently auto-term over every column."""
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             TrainService._validate_config(
                 {
                     "target": "y",
@@ -3528,7 +3528,7 @@ class TestValidateConfig:
         assert "add a term to at least one feature" in exc_info.value.detail.lower()
 
     def test_glm_tweedie_without_variance_power_raises_400(self):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             TrainService._validate_config(
                 {
                     "target": "y",
@@ -3541,7 +3541,7 @@ class TestValidateConfig:
         assert "variance power" in exc_info.value.detail.lower()
 
     def test_glm_elastic_net_without_l1_ratio_raises_400(self):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             TrainService._validate_config(
                 {
                     "target": "y",
@@ -3555,7 +3555,7 @@ class TestValidateConfig:
         assert "l1 ratio" in exc_info.value.detail.lower()
 
     def test_catboost_tweedie_without_variance_power_raises_400(self):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             TrainService._validate_config(
                 {
                     "target": "y",
@@ -3705,7 +3705,7 @@ class TestGlmInputSchemaGate:
         )
         store, service = self._service()
 
-        with pytest.raises(HTTPException) as raised:
+        with pytest.raises(RequestRefusedError) as raised:
             service.start(body)
 
         assert raised.value.status_code == 422
@@ -3735,7 +3735,7 @@ class TestGlmInputSchemaGate:
         )
         store, service = self._service()
 
-        with pytest.raises(HTTPException) as raised:
+        with pytest.raises(RequestRefusedError) as raised:
             service.start_dispersion_estimate(body)
 
         assert raised.value.status_code == 422
@@ -3767,7 +3767,7 @@ class TestGlmInputSchemaGate:
         body = TrainRequest(graph=make_graph(graph), node_id="train")
         store, service = self._service()
 
-        with pytest.raises(HTTPException) as raised:
+        with pytest.raises(RequestRefusedError) as raised:
             service.start(body)
 
         assert raised.value.status_code == 422
@@ -3794,7 +3794,7 @@ class TestGlmInputSchemaGate:
         )
         store, service = self._service()
 
-        with pytest.raises(HTTPException) as raised:
+        with pytest.raises(RequestRefusedError) as raised:
             service.start(body)
 
         assert raised.value.status_code == 422
@@ -3826,7 +3826,7 @@ class TestGlmInputSchemaGate:
         }
         store, service = self._service()
 
-        with pytest.raises(HTTPException) as raised:
+        with pytest.raises(RequestRefusedError) as raised:
             service.start(
                 TrainRequest(
                     graph=_glm_transform_gate_graph(
@@ -3839,7 +3839,7 @@ class TestGlmInputSchemaGate:
         assert "could not be resolved" in str(raised.value.detail)
         assert error_name in str(raised.value.detail)
 
-        with pytest.raises(HTTPException) as raised:
+        with pytest.raises(RequestRefusedError) as raised:
             service.start_dispersion_estimate(
                 DispersionEstimateRequest(
                     graph=_glm_transform_gate_graph(
@@ -4038,14 +4038,14 @@ def _glm_values(**overrides: object) -> dict[str, object]:
 
 class TestValidateGlmConfigValues:
     def test_unknown_family_names_the_supported_families(self):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             _validate_glm_config_values(_glm_values(family="exponential"))
         assert exc_info.value.status_code == 400
         assert "exponential" in exc_info.value.detail
         assert "gaussian" in exc_info.value.detail
 
     def test_invalid_link_names_the_family_links(self):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             _validate_glm_config_values(_glm_values(family="gamma", link="logit"))
         assert exc_info.value.status_code == 400
         assert exc_info.value.detail == (
@@ -4064,7 +4064,7 @@ class TestValidateGlmConfigValues:
         ],
     )
     def test_unsupported_links_and_inverse_gaussian_are_refused(self, family, link):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             _validate_glm_config_values(_glm_values(family=family, link=link))
         assert exc_info.value.status_code == 400
 
@@ -4403,7 +4403,7 @@ class TestDispersionErrorPaths:
         with patch.object(
             TrainService,
             "_execute_and_sink",
-            side_effect=HTTPException(status_code=422, detail="missing column"),
+            side_effect=UnprocessableError("missing column"),
         ):
             response = service.start_dispersion_estimate(body)
             service._join_preparation(response.job_id)
@@ -4734,7 +4734,7 @@ class TestDispersionErrorPaths:
 
     def test_validate_rejects_unknown_param_directly(self):
         _, service = self._service()
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             service._validate_dispersion_config(dict(_NB_ESTIMATION_CONFIG), "alpha")
         assert exc_info.value.status_code == 400
         assert "Unknown dispersion parameter" in exc_info.value.detail
@@ -4742,7 +4742,7 @@ class TestDispersionErrorPaths:
     def test_validate_rejects_missing_target(self):
         _, service = self._service()
         config = {**_NB_ESTIMATION_CONFIG, "target": ""}
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             service._validate_dispersion_config(config, "theta")
         assert exc_info.value.status_code == 400
         assert "target column" in exc_info.value.detail
@@ -4845,7 +4845,7 @@ class TestDispersionErrorPaths:
                 "haute.routes._background_jobs.IsolatedSupervisorThread.start",
                 side_effect=RuntimeError("thread boom"),
             ),
-            pytest.raises(HTTPException) as exc_info,
+            pytest.raises(RequestRefusedError) as exc_info,
         ):
             service._launch_dispersion_background(
                 job_id,
@@ -5006,7 +5006,7 @@ class TestTrainStatusDirect:
     async def test_missing_job_raises_404(self):
         from haute.routes.modelling import train_status
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             await train_status("nonexistent_job_id")
         assert exc_info.value.status_code == 404
 
@@ -5098,7 +5098,7 @@ class TestExportScriptDirect:
 
         graph = make_graph({"nodes": [], "edges": []})
         body = ExportScriptRequest(graph=graph, node_id="nonexistent")
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             await export_script(body)
         assert exc_info.value.status_code == 404
 

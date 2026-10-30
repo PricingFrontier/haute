@@ -3,12 +3,13 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import type { ExploreColumnStat } from "../../../api/types"
 import type { ExploreDataView } from "../exploreDataView"
 import SchemaTableCard from "../SchemaTableCard"
+import { makeExploreColumnStat } from "../../../test-utils/factories"
 
 const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard")
 const originalSecureContext = Object.getOwnPropertyDescriptor(globalThis, "isSecureContext")
 
 function makeColumn(overrides: Partial<ExploreColumnStat> = {}): ExploreColumnStat {
-  return {
+  return makeExploreColumnStat({
     name: "premium",
     dtype: "Float64",
     kind: "Numeric",
@@ -24,7 +25,7 @@ function makeColumn(overrides: Partial<ExploreColumnStat> = {}): ExploreColumnSt
     min_value: "0",
     max_value: "100",
     ...overrides,
-  }
+  })
 }
 
 function makeReport(overrides: Partial<ExploreDataView> = {}): ExploreDataView {

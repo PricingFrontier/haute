@@ -29,7 +29,13 @@ from haute.assistant._tools import (
     build_turn_context,
     context_update,
 )
-from haute.errors import ConfigError, HauteError, InvalidPathError, PathOutsideProjectError
+from haute.errors import (
+    ConfigError,
+    HauteError,
+    InvalidPathError,
+    PathOutsideProjectError,
+    RequestRefusedError,
+)
 from haute.routes._helpers import (
     _INTERNAL_ERROR_DETAIL,
     discover_pipelines,
@@ -107,7 +113,7 @@ async def _bound_source_file(source_file: str) -> str:
 
     try:
         return await asyncio.to_thread(_canonical_source_file, source_file)
-    except (HTTPException, PathOutsideProjectError, InvalidPathError):
+    except (HTTPException, RequestRefusedError, PathOutsideProjectError, InvalidPathError):
         raise
     except HauteError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None

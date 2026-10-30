@@ -23,8 +23,6 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from fastapi import HTTPException
-
 from haute._artifact_housekeeping import (
     create_owned_artifact_directory,
     reap_stale_artifact_directories,
@@ -33,6 +31,7 @@ from haute._logging import get_logger
 from haute._polars_utils import bounded_sink, read_parquet_metadata
 from haute._sandbox import is_contained
 from haute._types import SolveResultLike
+from haute.errors import GoneError, ServiceFailedError
 from haute.routes._job_store import register_artifact_cleaner
 
 if TYPE_CHECKING:
@@ -245,13 +244,12 @@ def _quote_analysis_path(handle: dict[str, Any]) -> Path:
         artifact_path, _artifact_dir = _validate_quote_analysis_artifact_handle(handle)
     except ValueError as exc:
         _log_artifact_load_failure("optimiser_quote_analysis_validation_failed", handle, exc)
-        raise HTTPException(
-            status_code=500,
-            detail="Optimiser quote analysis reference is invalid. Re-run the solve.",
+        raise ServiceFailedError(
+            "Optimiser quote analysis reference is invalid. Re-run the solve."
         ) from exc
     if not artifact_path.is_file():
         logger.warning("optimiser_quote_analysis_missing", path=str(artifact_path))
-        raise HTTPException(status_code=410, detail=QUOTE_ANALYSIS_UNAVAILABLE_DETAIL)
+        raise GoneError(QUOTE_ANALYSIS_UNAVAILABLE_DETAIL)
     return artifact_path
 
 
@@ -501,24 +499,20 @@ def _scan_apply_result_artifact(handle: dict[str, Any]) -> pl.LazyFrame:
         artifact_path, _artifact_dir = _validate_apply_result_artifact_handle(handle)
     except ValueError as exc:
         _log_artifact_load_failure("optimiser_apply_artifact_validation_failed", handle, exc)
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Optimiser apply artifact reference is invalid. Re-run the solve to regenerate it."
-            ),
+        raise ServiceFailedError(
+            "Optimiser apply artifact reference is invalid. Re-run the solve to regenerate it."
         ) from exc
     if not artifact_path.is_file():
         logger.warning("optimiser_apply_artifact_missing", path=str(artifact_path))
-        raise HTTPException(status_code=410, detail=APPLY_RESULT_UNAVAILABLE_DETAIL)
+        raise GoneError(APPLY_RESULT_UNAVAILABLE_DETAIL)
 
     try:
         scan = pl.scan_parquet(artifact_path)
         scan.collect_schema()
     except Exception as exc:
         _log_artifact_load_failure("optimiser_apply_artifact_read_failed", handle, exc)
-        raise HTTPException(
-            status_code=500,
-            detail="Optimiser apply artifact is corrupt. Re-run the solve to regenerate it.",
+        raise ServiceFailedError(
+            "Optimiser apply artifact is corrupt. Re-run the solve to regenerate it."
         ) from exc
     return scan
 
@@ -536,20 +530,18 @@ def _load_ratebook_factors_artifact(handle: dict[str, Any]) -> Any:
         artifact_path, _artifact_dir = _validate_ratebook_factors_artifact_handle(handle)
     except ValueError as exc:
         _log_artifact_load_failure("optimiser_ratebook_artifact_validation_failed", handle, exc)
-        raise HTTPException(
-            status_code=500,
-            detail="Optimiser ratebook factor artifact reference is invalid. Re-run the solve.",
+        raise ServiceFailedError(
+            "Optimiser ratebook factor artifact reference is invalid. Re-run the solve."
         ) from exc
     if not artifact_path.is_file():
         logger.warning("optimiser_ratebook_artifact_missing", path=str(artifact_path))
-        raise HTTPException(status_code=410, detail=RATEBOOK_FACTORS_UNAVAILABLE_DETAIL)
+        raise GoneError(RATEBOOK_FACTORS_UNAVAILABLE_DETAIL)
     try:
         return pl.read_parquet(artifact_path)
     except Exception as exc:
         _log_artifact_load_failure("optimiser_ratebook_artifact_read_failed", handle, exc)
-        raise HTTPException(
-            status_code=500,
-            detail="Optimiser ratebook factor artifact is corrupt. Re-run the solve.",
+        raise ServiceFailedError(
+            "Optimiser ratebook factor artifact is corrupt. Re-run the solve."
         ) from exc
 
 
@@ -568,13 +560,12 @@ def _ratebook_factors_path(handle: dict[str, Any]) -> Path:
             handle,
             exc,
         )
-        raise HTTPException(
-            status_code=500,
-            detail="Optimiser ratebook factor artifact reference is invalid. Re-run the solve.",
+        raise ServiceFailedError(
+            "Optimiser ratebook factor artifact reference is invalid. Re-run the solve."
         ) from exc
     if not artifact_path.is_file():
         logger.warning("optimiser_ratebook_artifact_scan_missing", path=str(artifact_path))
-        raise HTTPException(status_code=410, detail=RATEBOOK_FACTORS_UNAVAILABLE_DETAIL)
+        raise GoneError(RATEBOOK_FACTORS_UNAVAILABLE_DETAIL)
     return artifact_path
 
 
@@ -587,9 +578,8 @@ def _scan_ratebook_factors_artifact(handle: dict[str, Any]) -> Any:
         return pl.scan_parquet(artifact_path)
     except Exception as exc:
         _log_artifact_load_failure("optimiser_ratebook_artifact_scan_failed", handle, exc)
-        raise HTTPException(
-            status_code=500,
-            detail="Optimiser ratebook factor artifact is corrupt. Re-run the solve.",
+        raise ServiceFailedError(
+            "Optimiser ratebook factor artifact is corrupt. Re-run the solve."
         ) from exc
 
 

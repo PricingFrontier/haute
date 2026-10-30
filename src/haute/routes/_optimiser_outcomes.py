@@ -33,8 +33,6 @@ from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, cast
 
-from fastapi import HTTPException
-
 from haute._execution_admission import (
     ExecutionAdmissionError,
     WorkEstimate,
@@ -47,6 +45,12 @@ from haute._execution_context import (
 )
 from haute._polars_utils import bounded_sink, execution_collect, streaming_collect
 from haute._ram_estimate import decoded_frame_row_width_bytes, estimate_choice_query_peak_bytes
+from haute.errors import (
+    GoneError,
+    InsufficientMemoryError,
+    InvalidRequestError,
+    RequestRefusedError,
+)
 from haute.routes import _optimiser_artifacts
 from haute.routes._job_store import ArtifactHandleUnavailableError, JobStore
 from haute.routes._optimiser_input import OptimiserSetupError, carried_analysis_column
@@ -297,9 +301,7 @@ def collect_quote_analysis(
                 query(pl.scan_parquet(path)), execution_context=execution_context
             )
     except ArtifactHandleUnavailableError as exc:
-        raise HTTPException(
-            status_code=410, detail=_optimiser_artifacts.QUOTE_ANALYSIS_UNAVAILABLE_DETAIL
-        ) from exc
+        raise GoneError(_optimiser_artifacts.QUOTE_ANALYSIS_UNAVAILABLE_DETAIL) from exc
 
 
 def scenario_grid_from_values(values: Sequence[float]) -> list[dict[str, int | float]]:
@@ -538,8 +540,8 @@ class ChoiceReducer(Protocol):
         """Run the plan over the *row_count* chosen rows and collect its bounded result."""
 
 
-def _bad_request(message: str) -> HTTPException:
-    return HTTPException(status_code=400, detail=message)
+def _bad_request(message: str) -> RequestRefusedError:
+    return InvalidRequestError(message)
 
 
 def _require_row_bound(name: str, value: int) -> None:
@@ -857,7 +859,7 @@ def lease_apply_frame(
         try:
             handle = stack.enter_context(store.lease(job_id, key))
         except ArtifactHandleUnavailableError as exc:
-            raise HTTPException(status_code=410, detail=unavailable_detail) from exc
+            raise GoneError(unavailable_detail) from exc
         yield _optimiser_artifacts._scan_apply_result_artifact(handle)
 
 
@@ -1074,7 +1076,7 @@ class ChoiceQueryService:
                     )
                 return reducer.run(frames, spec, row_count)
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
-            raise HTTPException(status_code=507, detail=exc.to_payload()) from None
+            raise InsufficientMemoryError(exc.to_payload()) from None
         finally:
             if context is not None:
                 context.release_admission()
@@ -1095,7 +1097,7 @@ class ChoiceQueryService:
         try:
             handle = stack.enter_context(self._store.lease(job_id, key))
         except ArtifactHandleUnavailableError as exc:
-            raise HTTPException(status_code=410, detail=unavailable) from exc
+            raise GoneError(unavailable) from exc
         if handle["row_count"] != row_count:
             raise ChoiceJoinError(
                 f"The {key} side table records {handle['row_count']} rows for {row_count} "

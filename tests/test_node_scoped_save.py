@@ -320,7 +320,7 @@ def test_scoped_save_route_maps_io_failures_without_leaking_details(client, monk
     payload = response.json()
     assert payload["detail"]["code"] == "repair_artifact_unavailable"
     assert payload["detail"]["message"] == (
-        "A save artifact could not be written; original artifacts were restored."
+        "A save artifact could not be read or written, so the save changed nothing."
     )
     assert "private marker" not in response.text
 

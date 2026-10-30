@@ -22,6 +22,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute.errors import RequestRefusedError
 from haute.modelling._split import PARTITION_TRAIN, PARTITION_VALIDATION
 from haute.modelling._training_job import TrainingJob, TrainResult, _PreparedData, _SplitResult
 from haute.routes._job_store import JobStore
@@ -677,7 +678,6 @@ def test_launch_background_releases_admission_on_thread_start_failure(
     tmp_path: Path,
 ) -> None:
     """If we cannot start the worker thread, admission must still be released."""
-    from fastapi import HTTPException
 
     store = JobStore()
     service = TrainService(store, protocol_runner=_inline_protocol_runner)
@@ -691,7 +691,7 @@ def test_launch_background_releases_admission_on_thread_start_failure(
             "haute.routes._background_jobs.IsolatedSupervisorThread.start",
             side_effect=RuntimeError("thread spawn refused"),
         ),
-        pytest.raises(HTTPException) as exc_info,
+        pytest.raises(RequestRefusedError) as exc_info,
     ):
         service._launch_background(
             job_id,

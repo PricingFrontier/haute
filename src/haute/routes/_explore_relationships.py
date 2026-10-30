@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from typing import Literal
 
 import polars as pl
-from fastapi import HTTPException
 
 from haute._analysis_results import SynchronousAnalysisCache
 from haute._data_points import (
@@ -37,6 +36,7 @@ from haute._frame_profile import (
 )
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._polars_utils import cancellable_streaming_collect, streaming_collect
+from haute.errors import InvalidRequestError, UnprocessableError
 from haute.routes._node_data_service import NodeDataService, node_data_project_root
 from haute.routes._synchronous_analysis import run_synchronous_analysis
 from haute.schemas import (
@@ -92,9 +92,9 @@ class _Question:
         return tuple(seen)
 
 
-def _unprocessable(message: str) -> HTTPException:
+def _unprocessable(message: str) -> UnprocessableError:
     """A question this data cannot answer; `detail` stays a plain string (issue #76)."""
-    return HTTPException(status_code=422, detail=message)
+    return UnprocessableError(message)
 
 
 def _distinct(columns: list[str]) -> tuple[str, ...]:
@@ -256,7 +256,7 @@ class ExploreRelationshipsService:
         try:
             consumer = consumer_point(body.graph, body.node_id)
         except NodeDataPointInvalidError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise InvalidRequestError(str(exc)) from exc
         resolver = DataPointResolver(
             body.graph, source=body.source, store=NodeSnapshotStore(node_data_project_root())
         )

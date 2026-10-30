@@ -140,7 +140,6 @@ owns no work; the packages carry the plan, acceptance and evidence.
 |---|---|
 | §1.4 Project-root resolvers | `PCFG-R04` ([pipeline config](pipeline-config.md)) |
 | §2.3 Unreferenced and test-only code | `ENGQ-R01` ([engineering quality](engineering-quality.md)) |
-| §3.1 Error translation; HTTP types in services | `API-R02` ([server API](server-api.md)) |
 | §3.1 Three worker mechanisms | `ROAD-WORKER-05` ([background jobs](background-jobs-api.md)) |
 | §3.2 Results store | `FSH-R03` ([frontend shared](frontend-shared.md)) |
 | §3.3 Editor state inside node config | `PCFG-R08` ([pipeline config](pipeline-config.md)) |

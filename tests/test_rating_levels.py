@@ -265,6 +265,32 @@ def test_levels_are_the_most_common_first_and_capped_at_the_limit(
     assert _column(capped, "region")["distinct_count"] == 4
 
 
+def test_a_column_of_many_levels_returns_only_the_levels_shown(
+    client: TestClient, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sort and the cap run in the lazy plan: no collection returns every level."""
+    import haute.routes._point_analysis as point_analysis
+
+    _write_source(project, pl.DataFrame({"region": [f"r{index:05d}" for index in range(5_000)]}))
+    graph = _graph(project)
+    _build(client, graph)
+    collected: list[int] = []
+    collect = point_analysis.cancellable_streaming_collect
+
+    def counting_collect(frame: pl.LazyFrame, **kwargs: Any) -> pl.DataFrame:
+        result = collect(frame, **kwargs)
+        collected.append(result.height)
+        return result
+
+    monkeypatch.setattr(point_analysis, "cancellable_streaming_collect", counting_collect)
+
+    capped = _levels(client, graph, ["region"], value_limit=10)
+
+    assert len(_values(capped, "region")) == 10
+    assert _column(capped, "region")["distinct_count"] == 5_000
+    assert collected and max(collected) == 10
+
+
 def test_a_blank_is_not_a_level_and_a_missing_value_is_counted_as_one(
     client: TestClient, project: Path
 ) -> None:

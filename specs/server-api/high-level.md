@@ -103,11 +103,13 @@ native commit in the worker.
 
 ## Behaviour
 
-**App lifecycle.** On startup the app clears stale `.pyc` bytecode, configures structured
-logging, loads the project's `.env`, reaps only stale ownership-marked children of the two
+**App lifecycle.** On startup the app configures structured logging, loads the project's
+`.env`, reaps only stale ownership-marked children of the two
 registered optimiser artifact roots, primes the pipeline-name→path index (so the first HTTP
 request doesn't pay for a full filesystem discovery + parse), and starts the background file
-watcher as an `asyncio.Task`. Shutdown cancels the watcher task and awaits it. If the built
+watcher as an `asyncio.Task`. It writes nothing under the installed `haute` package, whose
+bytecode Python's own source-timestamp check keeps current. Shutdown cancels the watcher
+task and awaits it. If the built
 frontend (`src/haute/static/`) is present and complete (`index.html` **and** `assets/` both
 exist — a partial build is treated as absent, not served broken), every unmatched `GET` falls
 through to the SPA `index.html`. In dev mode Vite proxies `/api` and `/ws` while preserving
@@ -133,7 +135,9 @@ the canvas is open. A background watcher (debounced 300ms) detects the change, r
 only the affected pipeline(s) into editor documents, and publishes a
 `pipeline.document.update` (or, for a document that cannot be loaded at all, a
 `parse.error`) event on an in-process event bus; a subscriber wired at import time turns
-that into a WebSocket frame broadcast to every connected canvas. The canvas can also
+that into a WebSocket frame broadcast to every connected canvas. A socket's first frame is
+`{"type": "sync_connection", "connection_id": ...}`, the id the server gave that connection,
+which the canvas sends with its saves. The canvas can also
 request a targeted resync over the same socket by sending
 `{"type": "resync", "source_file": ..., "document_schema_version": 1,
 "document_fingerprint": ...}`; the server replies only to that client, and skips the
@@ -147,10 +151,20 @@ has answered, the server invalidates the name→path index, then publishes every
 pipeline's document and the form's change, as the watcher would for an edit. Every open
 canvas follows a git action as it follows an IDE edit.
 
-Edits the server itself makes (via
-`/api/pipeline/save`) are tagged as self-writes so they never round-trip back through the watcher
-as a phantom external edit. A change to a `modules/*.py` file re-parses only the pipelines
-that import it, `from modules import <name>`, for a registration; a pipeline whose imports or
+Edits the server itself makes are tagged as self-writes, each with the bytes it commits (or
+as a deletion), so they never round-trip back through the watcher as a phantom external
+edit: a save's source, module, config and `.haute.json` sidecar writes, and the stale config
+files it retires, publish nothing through the watcher. Instead the save route publishes the
+saved document once, with its fingerprint, to every other connected canvas, and returns the
+fingerprint to the saver. Each socket is told its own connection id when it opens; a save
+that names its tab's connection id leaves that one socket out of the broadcast, provided the
+socket belongs to the same authorised session as the save (the same platform user when
+hosted), so a canvas never receives an echo of its own save while every other tab of the
+pipeline learns of it. A change to a submodel module a pipeline imports for a registration,
+`from modules import <name>` (the `modules/<name>.py` beside that pipeline, wherever the
+configured pipeline sits: at the project root or in `rating/`), re-parses only the
+pipelines importing that file, whether it was added, edited or deleted; any other `.py`
+file that is not a pipeline publishes nothing. A pipeline whose imports or
 registrations the parser refuses is left out of that module-dependency index with a warning,
 rather than breaking it for every pipeline. A change to a `config/*.json` file re-parses every discovered pipeline (a
 config change can affect any pipeline that reads it). Direct pipeline `.py` additions,
@@ -239,7 +253,8 @@ Editor documents carry `source_revision`, a deterministic digest over raw parent
 source bytes, every referenced node-config file, and every participating `.haute.json`
 sidecar, including role-qualified missing-file sentinels. The digest therefore remains
 available when canonical parsing or JSON decoding fails. Explicit Save returns the newly
-committed revision. Submodel create and dissolve use the current revision as an optimistic
+committed revision and the saved document's fingerprint. A save whose `active_source` is not
+one of its `sources` is refused with HTTP 422 before any file is staged. Submodel create and dissolve use the current revision as an optimistic
 precondition, return it unchanged, and perform no persistence, so a stale transform cannot
 be applied over a newer document.
 
@@ -330,6 +345,19 @@ read as it is and with the module holding the new content, and refuse (HTTP 400,
 written) any name violation the edit adds (codegen "Names cannot collide with support code"),
 naming the pipeline and the colliding node; a pipeline that does not parse is skipped, since
 it fails on its own.
+
+A utility file is written as every other project file is. The write is staged beside its
+target and renamed into place, so a reader (a trace hashing `utility/**/*.py`, a preview
+worker importing `utility.*`) sees the old file or the new one, never part of either; it takes
+its turn with saves, uploads and branch switches under the project write lock; and it is
+captured on the save ledger, answering the same capture fields as every project write. Each
+file has a revision, its size and modification time as a project file's is: a read returns
+it, a write returns the new one, and an update or delete must send the revision it was made
+against, so a file changed since (another editor's save, an edit outside Haute) is refused
+with HTTP 412 and left as it is. A create refuses a file that appeared meanwhile with 409. The
+`utility/` folder must itself resolve inside the project: when it is a link or junction (or
+sits below one) that leads outside, every utility route refuses with HTTP 403 before it lists,
+reads, writes or deletes anything, and each file must also resolve inside the folder.
 
 **OUTPUT assembly dry-run.** `POST /api/output-assemble/dry-run` lets the OUTPUT node editor
 preview the assembled JSON response from an *in-progress, unsaved* field→path mapping: it
@@ -574,34 +602,41 @@ describes. Stale, changed or already-applied plans fail before
 
 ## Failure model
 
-> NOTE: The watcher currently misses imported modules below a nested configured
-> pipeline directory when launched from the project root.
-> [API-R11](../roadmap/server-api.md#api-r11--module-watching-follows-the-configured-pipeline-directory) owns correct module/dependency routing.
-
-> NOTE: The utility directory itself is not authenticated against the project root;
-> a junction/symlink can make utility routes access outside files.
-> [API-R07](../roadmap/server-api.md#api-r07--utility-files-written-like-project-files) includes the root containment check for reads and mutations.
-
 This codebase prefers loud failure over silent fallbacks, and the server layer's job is to
-turn that loudness into a well-typed HTTP response rather than a raw traceback.
+turn that loudness into a well-typed HTTP response rather than a raw traceback. Services
+speak no HTTP: they refuse a request with a domain error naming the reason (a conflict,
+something not found or expired, data that cannot answer), and the application handlers
+answer it, the same way for every route; a background job records the same status and
+detail, and the assistant shows the same message.
 
 - **Explicitly mapped domain errors** carry a hand-authored message (and, for
   `HauteError`, optional structured `**context`) that the relevant route treats as safe to
   surface: save-time `ConfigError` → 400; output dry-run `ConfigError` /
   `ContractMismatchError` → 422; trace `ContractMismatchError` → 422; and preview
-  `ContractMismatchError` / `SchemaMismatchError` failures are embedded in
-  `NodeResult.error` so the canvas can show either mismatch in-situ rather than
-  as a banner. JSON schema inference's `ApiInputSchemaError` uses a direct 422 body
+  `ContractMismatchError` / `SchemaMismatchError` failures, and a `ParseError` a preview
+  meets while it flattens the graph or runs it, are embedded in `NodeResult.error` so the
+  canvas can show them in-situ rather than as a banner.
+- **A graph the user can fix is answered as one.** A graph the browser sent that the
+  flattener or the save refuses (`ParseError`: a name collision, an undeclared handle) is
+  answered 400 with the refusal's message by every route that takes a graph, through one
+  application handler, except the preview: it shows the refusal on the node, where a file
+  loaded with colliding names is read. A trace that fails in a node's own code (a syntax error, a missing
+  column) is answered 422 naming the node with the failure's message, as a preview shows it
+  on the node. A trace the data or the graph cannot answer as asked is refused by the
+  refusal's type: 409 when the clicked row has changed since its preview, 400 for a row or
+  target the trace cannot take, 404 for a target the graph lacks; the wording is free to
+  change, in a thread or out of a worker alike. JSON schema inference's `ApiInputSchemaError` uses a direct 422 body
   with a `type` discriminator, while preview/write execution uses the stable public-contract
   payload under `detail`; `OutputMappingSchemaError` uses FastAPI's
   `{"detail": <message>}` 422 envelope.
 - **Error families are translated once, at the application edge.** Application exception
   handlers (`routes/_error_handlers.py`, installed on the app by `server.py`) answer the
   same way for every route: a public contract error with its stable payload, a memory
-  refusal or overrun with 507, and a `GitError` through the git mapping. A route keeps an
-  `except` clause only where it maps an error differently from its family's handler (the
-  explicit mappings above, a trace row mismatch → 409), and route code never catches
-  `Exception` merely to log it and answer 500.
+  refusal or overrun with 507, a `ParseError` with 400, and a `GitError` through the git
+  mapping. A route keeps an `except` clause only where it maps an error differently from its
+  family's handler (the explicit mappings above, the trace's refusals), and route code never
+  catches `Exception` merely to log it and answer 500. No route answers 400 with the
+  internal-error text: a failure the request did not cause reaches the backstop below.
 - **Everything else** — any exception no handler claims — reaches `_RequestIdMiddleware`,
   which logs it with its error class and traceback and returns `{"detail": "Operation
   failed. Check the server logs for details."}` with the request ID. No response exposes a
@@ -614,6 +649,13 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
   workers are terminated and joined before the terminal response or job transition. Parent
   cleanup then removes the exact private staging artifact, and admission is released only after
   both worker termination and cleanup have completed.
+- **Requests are bounded.** Every free string a request body carries (a name, an id, a
+  path, code), and every list and mapping in it, has a size limit, as does a utility
+  module named in a path, so an over-long value is refused with HTTP 422 before anything
+  acts on it, never failing later as a server error. The pipeline graph and the
+  workbench form a request carries are checked as the files that hold them are. Every project-relative path a
+  response names, a save's `file` and each pipeline summary's included, uses forward
+  slashes on every platform.
 - **Path-safety violations** (`contained_path`, the save-time output-path allowlist,
   runtime-input-path validation) return 400 for malformed input (null bytes, empty codegen
   paths, traversal segments) and 403 for a resolved path that escapes its allowed root —

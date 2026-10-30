@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse
 
 from haute import _git
 from haute._artifact_paths import PathProblem, ordinary_path_problem
-from haute._file_ops import ensure_disk_headroom, publish_staged_file
+from haute._file_ops import ensure_disk_headroom, file_revision, publish_staged_file
 from haute._git_core import _is_git_repo, git_binary_available
 from haute._git_read_models import FileState
 from haute._git_state import read_working_branch
@@ -161,10 +161,6 @@ def _target(project_root: Path, place_name: ProjectFilePlace, path: str) -> _Tar
     return _Target(place, relative, project_relative, resolved)
 
 
-def _revision(info: os.stat_result) -> str:
-    return f"{info.st_size}-{info.st_mtime_ns}"
-
-
 def _hidden(entry: os.DirEntry[str]) -> bool:
     """An entry the panels leave out: a name the project does not version (``versioned_name``),
     or a link or junction."""
@@ -235,7 +231,7 @@ def _list_folder(place_name: ProjectFilePlace, path: str) -> ProjectFolderRespon
                             kind="file",
                             size=info.st_size,
                             modified=info.st_mtime,
-                            revision=_revision(info),
+                            revision=file_revision(info),
                             status=state,
                         )
                     )
@@ -410,7 +406,9 @@ def _publish_write(
     current = target.path.stat() if target.path.is_file() else None
     if replace_revision is None and (current is not None or target.path.exists()):
         raise _refusal(409, "file_exists", f"{display} already exists.")
-    if replace_revision is not None and (current is None or _revision(current) != replace_revision):
+    if replace_revision is not None and (
+        current is None or file_revision(current) != replace_revision
+    ):
         raise _refusal(
             412,
             "file_changed",
@@ -440,7 +438,7 @@ def _publish_write(
     return ProjectFileWriteResponse(
         path=target.relative,
         size=written.st_size,
-        revision=_revision(written),
+        revision=file_revision(written),
         replaced=replace_revision is not None,
         status=status,
         warnings=warnings,
@@ -521,7 +519,7 @@ def _delete(place: ProjectFilePlace, path: str, revision: str) -> ProjectFileDel
     _target(project_root, target.place.name, target.relative)
     if not target.path.is_file():
         raise _refusal(404, "file_missing", f"{display} doesn't exist.")
-    if _revision(target.path.stat()) != revision:
+    if file_revision(target.path.stat()) != revision:
         raise _refusal(
             412,
             "file_changed",

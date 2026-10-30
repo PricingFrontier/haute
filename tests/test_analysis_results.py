@@ -19,6 +19,7 @@ import pytest
 from haute._analysis_results import AnalysisKey, AnalysisResultStore, SynchronousAnalysisCache
 from haute._data_points import CacheRequiredError, DataPoint, DataPointResolver
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+from haute.errors import RequestRefusedError
 from haute.routes import _node_data_service as service_mod
 from haute.schemas import ExploreOverviewSummary, NodeDataProfile
 from tests.conftest import make_edge, make_graph
@@ -856,7 +857,6 @@ def test_a_synchronous_analysis_of_an_uncached_point_reports_that_a_cache_is_req
 def test_a_synchronous_analysis_reports_a_memory_failure_as_507(
     project: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
-    from fastapi import HTTPException
 
     from haute._execution_admission import ExecutionAdmissionError
     from haute._execution_context import ExecutionMemoryLimitExceededError, ExecutionProfile
@@ -880,7 +880,7 @@ def test_a_synchronous_analysis_reports_a_memory_failure_as_507(
         monkeypatch.setattr(sync_mod, "create_admitted_execution_context", refuse_admission)
     compute = _row_count if failure == "admission" else exceed_memory
 
-    with pytest.raises(HTTPException) as raised:
+    with pytest.raises(RequestRefusedError) as raised:
         sync_mod.run_synchronous_analysis(
             _resolver(project, _graph(project)),
             DataPoint("source", None),
@@ -897,7 +897,7 @@ def test_a_synchronous_analysis_reports_a_memory_failure_as_507(
 
 
 async def test_a_disconnected_client_cancels_its_synchronous_analysis() -> None:
-    from fastapi import HTTPException, Request
+    from fastapi import Request
 
     from haute._execution_context import ExecutionCancellationToken
     from haute.routes._synchronous_analysis import run_until_disconnected
@@ -921,7 +921,7 @@ async def test_a_disconnected_client_cancels_its_synchronous_analysis() -> None:
         return 0
 
     request = _DisconnectingRequest()
-    with pytest.raises(HTTPException) as raised:
+    with pytest.raises(RequestRefusedError) as raised:
         await run_until_disconnected(cast(Request, request), analysis, poll_seconds=0.01)
 
     assert raised.value.status_code == 499

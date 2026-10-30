@@ -41,7 +41,13 @@ from haute._pipeline_recovery import pipeline_document_fingerprint
 from haute._pipeline_settings import PipelineSettings
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.deploy._request_rows import RequestRows
-from haute.errors import ContractMismatchError, SchemaMismatchError
+from haute.errors import (
+    ContractMismatchError,
+    InsufficientMemoryError,
+    RequestRefusedError,
+    SchemaMismatchError,
+    TraceTargetNotFoundError,
+)
 from haute.execution import execute_lazy_graph
 from haute.graph_utils import NodeType
 from haute.schemas import ExecutionMetricsPayload
@@ -3689,6 +3695,10 @@ async def test_trace_route_maps_target_not_found_and_unknown_value_errors(
     )
 
     def raise_value_error(*_args, **_kwargs):
+        # The trace refuses a missing target by type; any other ValueError is a
+        # failure of the server.
+        if expected_status == 404:
+            raise TraceTargetNotFoundError(message)
         raise ValueError(message)
 
     monkeypatch.setattr(pipeline_route, "execute_trace", raise_value_error)
@@ -5502,7 +5512,6 @@ def test_optimiser_start_records_setup_stage_metrics_when_memory_limited(
 def test_optimiser_start_preserves_typed_memory_http_exception_metrics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from fastapi import HTTPException
 
     from haute.routes._job_store import JobStore
     from haute.routes._optimiser_service import OptimiserSolveService
@@ -5529,7 +5538,7 @@ def test_optimiser_start_preserves_typed_memory_http_exception_metrics(
         patch.object(
             service,
             "_validate_and_project",
-            side_effect=HTTPException(status_code=507, detail=memory_payload),
+            side_effect=InsufficientMemoryError(memory_payload),
         ),
     ):
         response = service.start(OptimiserSolveRequest(graph=graph, node_id="opt"))
@@ -5762,7 +5771,6 @@ def test_auto_range_background_memory_limit_status_exposes_typed_error(
 
 
 def test_auto_range_background_preserves_typed_memory_http_exception_status() -> None:
-    from fastapi import HTTPException
 
     from haute.routes._job_store import JobStore
     from haute.routes._optimiser_service import OptimiserSolveService
@@ -5799,9 +5807,9 @@ def test_auto_range_background_preserves_typed_memory_http_exception_status() ->
     with patch.object(
         service,
         "_execute_pipeline",
-        side_effect=HTTPException(status_code=507, detail=payload),
+        side_effect=InsufficientMemoryError(payload),
     ):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             service._run_frontier_auto_range_job(
                 body,
                 job_id,

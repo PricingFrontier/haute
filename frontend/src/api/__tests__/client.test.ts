@@ -75,7 +75,7 @@ import {
   testMlflowConnection,
 } from "../client"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
-import { makeGitWorkingBranch } from "../../test-utils/factories"
+import { makeGitWorkingBranch, makeInputCacheSnapshot, makeWriteOutput } from "../../test-utils/factories"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 
 // ---------------------------------------------------------------------------
@@ -150,6 +150,7 @@ function makeSavePipelineResponse() {
     file: "pipe.py",
     pipeline_name: "test",
     source_revision: "revision-save",
+    document_fingerprint: "fingerprint-save",
     warnings: [],
   }
 }
@@ -850,6 +851,7 @@ describe("endpoint contracts", () => {
       source_file: "pipe.py",
       base_revision: "rev-1",
       preserved_blocks: [],
+      connection_id: "tab-1",
     }
     await savePipeline(payload)
     const [url, opts] = mockFetch.mock.calls[0]
@@ -859,12 +861,14 @@ describe("endpoint contracts", () => {
     expect(body.name).toBe("test")
     expect(body.source_file).toBe("pipe.py")
     expect(body.base_revision).toBe("rev-1")
+    expect(body.connection_id).toBe("tab-1")
   })
 
   it("sends source-preservation concurrency metadata for pipeline and submodel writes", async () => {
     await savePipeline({
       name: "test", description: "desc", graph: dummyGraph, preamble: "",
       source_file: "pipe.py", base_revision: "rev-1", preserved_blocks: ["import polars as pl"],
+      connection_id: null,
     })
     await createSubmodel({
       name: "pricing", node_ids: ["n1"], graph: dummyGraph, preamble: "",
@@ -928,7 +932,7 @@ describe("endpoint contracts", () => {
   })
 
   it("writeOutput posts to /api/pipeline/write-output", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ status: "ok" }))
+    mockFetch.mockReturnValue(jsonResponse(makeWriteOutput()))
     await writeOutput({ graph: dummyGraph, nodeId: "sink1" })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/pipeline/write-output")
@@ -1482,7 +1486,7 @@ describe("utility endpoints", () => {
   })
 
   it("readUtilityFile GETs /api/utility/{module} with encoded module", async () => {
-    const data = { name: "helpers", module: "my helpers", content: "def foo(): pass" }
+    const data = loadUiContractFixture("utility_read_response")
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await readUtilityFile("my helpers")
     const [url] = mockFetch.mock.calls[0]
@@ -1491,14 +1495,7 @@ describe("utility endpoints", () => {
   })
 
   it("createUtilityFile POSTs to /api/utility with name and content", async () => {
-    const data = {
-      status: "ok",
-      name: "utils",
-      module: "utils",
-      import_line: "from utility.utils import *",
-      error: null,
-      error_line: null,
-    }
+    const data = loadUiContractFixture("utility_write_response")
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await createUtilityFile({ name: "utils", content: "code" })
     const [url, opts] = mockFetch.mock.calls[0]
@@ -1509,44 +1506,30 @@ describe("utility endpoints", () => {
   })
 
   it("createUtilityFile POSTs with name only when content is omitted", async () => {
-    mockFetch.mockReturnValue(jsonResponse({
-      status: "ok",
-      name: "empty",
-      module: "empty",
-      import_line: "from utility.empty import *",
-      error: null,
-      error_line: null,
-    }))
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("utility_write_response")))
     await createUtilityFile({ name: "empty" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).toEqual({ name: "empty" })
   })
 
-  it("updateUtilityFile PUTs to /api/utility/{module} with content body", async () => {
-    const data = {
-      status: "ok",
-      name: "helpers",
-      module: "helpers",
-      import_line: "from utility.helpers import *",
-      error: null,
-      error_line: null,
-    }
+  it("updateUtilityFile PUTs the content and the revision it was made against", async () => {
+    const data = loadUiContractFixture("utility_write_response")
     mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await updateUtilityFile("helpers", "updated")
+    const result = await updateUtilityFile("helpers", "updated", "12-34")
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/utility/helpers")
     expect(opts.method).toBe("PUT")
     expect(opts.headers["Content-Type"]).toBe("application/json")
-    expect(JSON.parse(opts.body)).toEqual({ content: "updated" })
+    expect(JSON.parse(opts.body)).toEqual({ content: "updated", revision: "12-34" })
     expect(result).toEqual(data)
   })
 
-  it("deleteUtilityFile DELETEs /api/utility/{module}", async () => {
-    const data = { status: "deleted", module: "old-util" }
+  it("deleteUtilityFile DELETEs /api/utility/{module} at the revision it was read", async () => {
+    const data = loadUiContractFixture("utility_delete_response")
     mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await deleteUtilityFile("old-util")
+    const result = await deleteUtilityFile("old-util", "12-34")
     const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/utility/old-util")
+    expect(url).toBe("/api/utility/old-util?revision=12-34")
     expect(opts.method).toBe("DELETE")
     expect(result).toEqual(data)
   })
@@ -1871,7 +1854,7 @@ describe("no request carries streaming_chunk_size", () => {
   })
 
   it("writeOutput body omits streaming_chunk_size", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ status: "ok" }))
+    mockFetch.mockReturnValue(jsonResponse(makeWriteOutput()))
     await writeOutput({ graph: dummyGraph, nodeId: "sink1", source: "live" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
@@ -1922,7 +1905,7 @@ describe("no request carries streaming_chunk_size", () => {
     expect(mockFetch.mock.calls[2][0]).toBe("/api/input-cache/jobs/job%20%2F%201")
     expect(mockFetch.mock.calls[2][1].method).toBe("DELETE")
 
-    const snapshot = { schema_version: 1, identity_digest: "digest", state: "missing", freshness: "unknown", generation: null }
+    const snapshot = makeInputCacheSnapshot()
     mockFetch.mockReturnValueOnce(jsonResponse(snapshot))
     await getInputCacheStatus(source)
     expect(mockFetch.mock.calls[3][0]).toBe("/api/input-cache/status")

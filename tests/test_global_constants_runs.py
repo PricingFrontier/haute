@@ -17,7 +17,7 @@ import pytest
 from haute._global_constants import GlobalConstantsNamespace, bind_function_view, restricted_view
 from haute._types import GlobalConstant, PipelineGraph
 from haute.deploy._validators import _global_constant_errors
-from haute.errors import GlobalConstantError
+from haute.errors import GlobalConstantError, RequestRefusedError
 from haute.executor import _build_node_fn, execute_graph, write_data_output
 from tests.conftest import (
     make_edge,
@@ -763,7 +763,6 @@ class TestFinalReviewFindings:
     def test_saving_through_a_config_link_out_of_the_pipeline_folder_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from fastapi import HTTPException
 
         from haute.routes._save_pipeline import SavePipelineService
         from haute.schemas import SavePipelineRequest
@@ -783,7 +782,7 @@ class TestFinalReviewFindings:
             base_revision=current_source_revision(project / "main.py", project),
         )
 
-        with pytest.raises(HTTPException) as refused:
+        with pytest.raises(RequestRefusedError) as refused:
             SavePipelineService(project).save(request)
 
         assert refused.value.status_code == 400

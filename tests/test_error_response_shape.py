@@ -209,7 +209,7 @@ _ERROR_CASES = [
     pytest.param(
         "put",
         "/api/utility/also_missing",
-        {"content": "x = 1\n"},
+        {"content": "x = 1\n", "revision": "0-0"},
         404,
         id="utility-update-missing",
     ),
@@ -217,7 +217,7 @@ _ERROR_CASES = [
     pytest.param(
         "put",
         "/api/utility/helper",  # expect 404 first unless we set up; paired test below
-        {"content": "if True\n"},
+        {"content": "if True\n", "revision": "0-0"},
         404,
         id="utility-update-missing-syntax-path",
     ),
@@ -298,7 +298,7 @@ class TestUtilitySyntaxErrorDetailIsFlat:
 
         res = isolated_client.put(
             "/api/utility/helper",
-            json={"content": "if True\n"},
+            json={"content": "if True\n", "revision": "0-0"},
         )
         assert res.status_code == 400
         body = res.json()

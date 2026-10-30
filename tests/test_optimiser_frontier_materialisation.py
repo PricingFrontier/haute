@@ -13,6 +13,7 @@ from unittest.mock import ANY, MagicMock, patch
 import polars as pl
 import pytest
 
+from haute.errors import RequestRefusedError
 from tests.job_store_support import seed_job
 from tests.optimiser_fixtures import (
     make_frontier_data as _frontier_data,
@@ -613,7 +614,6 @@ def _apply(client, job_id: str, point_index: int):
 
 
 def test_rapid_stepping_applies_a_then_c_and_replaces_b(clean_job_store):
-    from fastapi import HTTPException
 
     from haute.routes.optimiser import _frontier_service
 
@@ -625,7 +625,7 @@ def test_rapid_stepping_applies_a_then_c_and_replaces_b(clean_job_store):
         ticket_b = _frontier_service.request_point_apply("stepping", 1)
         ticket_c = _frontier_service.request_point_apply("stepping", 2)
 
-        with pytest.raises(HTTPException) as replaced:
+        with pytest.raises(RequestRefusedError) as replaced:
             ticket_b.wait()
         assert replaced.value.status_code == 409
         assert replaced.value.detail["error_code"] == "frontier_point_apply_replaced"
@@ -680,7 +680,7 @@ async def test_a_client_that_leaves_an_apply_request_cancels_the_apply(clean_job
     import asyncio
     from typing import cast
 
-    from fastapi import HTTPException, Request
+    from fastapi import Request
 
     from haute.routes.optimiser import apply_lambdas
     from haute.schemas import OptimiserApplyRequest
@@ -693,7 +693,7 @@ async def test_a_client_that_leaves_an_apply_request_cancels_the_apply(clean_job
             return fake.started[1].is_set()
 
     with patch("price_contour.apply_from_grid", side_effect=fake):
-        with pytest.raises(HTTPException) as left:
+        with pytest.raises(RequestRefusedError) as left:
             await apply_lambdas(
                 OptimiserApplyRequest(job_id="left_point", point_index=1),
                 cast(Request, _LeavingRequest()),
@@ -810,7 +810,6 @@ def test_two_consumers_on_different_points_both_complete(clean_job_store):
 
 
 def test_returning_to_a_cancelling_point_queues_it_afresh(clean_job_store):
-    from fastapi import HTTPException
 
     from haute.routes.optimiser import _frontier_service
 
@@ -840,7 +839,7 @@ def test_returning_to_a_cancelling_point_queues_it_afresh(clean_job_store):
         # A -> B -> A while the first A is cancelling: a fresh A replaces B.
         fake.hold.clear()
         ticket_a_again = _frontier_service.request_point_apply("back_again", 0)
-        with pytest.raises(HTTPException) as replaced:
+        with pytest.raises(RequestRefusedError) as replaced:
             ticket_b.wait()
         assert replaced.value.detail["error_code"] == "frontier_point_apply_replaced"
 

@@ -67,7 +67,7 @@ from haute.assistant._ops import apply_ops
 from haute.assistant._wire_ops import UpdateNodeOp
 from haute.chunking import classify_chunk_local_polars_code
 from haute.codegen import graph_to_code, graph_to_code_multi
-from haute.errors import ConfigError
+from haute.errors import ConfigError, RequestRefusedError
 from haute.executor import execute_graph
 from haute.parser import parse_pipeline_file, parse_pipeline_source
 from haute.routes._save_pipeline import SavePipelineService
@@ -6670,7 +6670,6 @@ def test_render_route_reports_a_reference_the_given_constants_cannot_serve(
 
 
 def test_save_refuses_a_step_constant_of_the_wrong_type(project_root: Path) -> None:
-    from fastapi import HTTPException
 
     steps = [
         source(),
@@ -6680,7 +6679,7 @@ def test_save_refuses_a_step_constant_of_the_wrong_type(project_root: Path) -> N
     graph = _project_graph(project_root, steps)
     graph.global_constants = [GlobalConstant(name="floor", type="float", value=100.0)]
 
-    with pytest.raises(HTTPException) as refused:
+    with pytest.raises(RequestRefusedError) as refused:
         _save(project_root, graph)
 
     assert refused.value.status_code == 400

@@ -181,6 +181,85 @@ export interface ChartValueEncoding {
   stack_normalize: boolean;
   value_id: string;
 }
+/**
+ * Every node of the graph, and everything else the store holds.
+ */
+export interface CacheNodesResponse {
+  nodes: CacheNodeEntry[];
+  other: CacheOwnerEntry[];
+  schema_version: 1;
+  source: string;
+  unattributed_bytes: number;
+  unattributed_generations: number;
+  unmarked_identities: number;
+}
+/**
+ * One node of the graph: what it reads now, and what it holds on disk.
+ *
+ * ``state`` and ``row_count`` describe the generation the node would read
+ * for its own column demand; ``generations`` and ``size_bytes`` are what the
+ * store holds for that node and source across every signature, which is what
+ * the node actually holds on disk.
+ */
+export interface CacheNodeEntry {
+  build_seconds: number | null;
+  generations: number;
+  identity_digests: string[];
+  kind: 'data_input' | 'api_input_table' | 'node_output' | null;
+  newest_created_at: number | null;
+  node_id: string;
+  reads_directly: boolean;
+  reads_from: string | null;
+  retention: 'pinned' | 'automatic' | null;
+  row_count: number | null;
+  shares_snapshot_with: string[];
+  size_bytes: number;
+  state: 'current' | 'stale' | 'partial' | 'missing' | 'building' | 'corrupt' | null;
+  unavailable_reason: string | null;
+}
+/**
+ * Cached data not attributed to any node of the graph as it stands.
+ *
+ * A node that was deleted or renamed, a node's data for another source, or
+ * an input snapshot whose Data Input no longer reads it. Each still occupies
+ * the budget, so each is named.
+ */
+export interface CacheOwnerEntry {
+  bucket: 'node_output' | 'input';
+  build_seconds: number | null;
+  generations: number;
+  identity_digests: string[];
+  label: string;
+  newest_created_at: number | null;
+  node_id: string | null;
+  row_count: number | null;
+  size_bytes: number;
+  source: string | null;
+}
+/**
+ * What the clear actually removed, which is never assumed from the request.
+ *
+ * A digest the store does not hold is reported as not cleared rather than
+ * failing the request: a row acted on from a report a moment out of date is
+ * an ordinary race, not an error.
+ */
+export interface CacheClearResponse {
+  cleared: string[];
+  freed_bytes: number;
+  schema_version: 1;
+}
+/**
+ * The snapshot store's size, and its automatic captures against their budget.
+ *
+ * Only node-output captures no pin protects count toward the budget; input
+ * snapshots and explicit builds are kept until the user clears them.
+ */
+export interface CacheUsageResponse {
+  automatic_budget_bytes: number;
+  automatic_bytes: number;
+  schema_version: 1;
+  total_bytes: number;
+}
 export interface WarehouseListResponse {
   warehouses: WarehouseItem[];
 }
@@ -859,6 +938,39 @@ export interface ExploreDataQualityIssue {
   label: string;
   severity: 'warning' | 'danger';
 }
+export interface ExploreRelationshipsResponse {
+  data_version: string | null;
+  key_check: ExploreKeyCheck | null;
+  point: NodeDataPointResponse;
+  relationships: ExploreRelationship[];
+  status: 'ok' | 'cache_required';
+  target: string | null;
+  total_rows: number;
+  used_rows: number;
+  weight: string | null;
+}
+export interface ExploreKeyCheck {
+  columns: string[];
+  distinct_keys: number;
+  duplicate_rows: number;
+  null_key_rows: number;
+  rows: number;
+  unique: boolean;
+}
+export interface ExploreRelationship {
+  feature: string;
+  kind: 'numeric' | 'categorical';
+  levels: ExploreRelationshipLevel[];
+  levels_truncated: boolean;
+  strength: number;
+}
+export interface ExploreRelationshipLevel {
+  kind: 'value' | 'bin' | 'missing' | 'other';
+  label: string;
+  rows: number;
+  target_mean: number | null;
+  weight: number;
+}
 /**
  * Whole-dataset statistics for one factor, or why there are none.
  */
@@ -1217,6 +1329,80 @@ export interface SaveCapture {
   uncaptured: string[];
   warnings: string[];
 }
+export interface InputCacheBuildResponse {
+  build_class: 'bounded' | 'admitted_eager';
+  forced: boolean;
+  identity_digest: string;
+  job_id: string;
+  joined: boolean;
+  schema_version: 1;
+  status: 'running' | 'blocked';
+}
+export interface InputCacheJobStatusResponse {
+  build_class: 'bounded' | 'admitted_eager' | 'unsupported';
+  error_code: string | null;
+  identity_digest: string;
+  job_id: string;
+  message: string;
+  progress: InputCacheProgress;
+  refresh: boolean;
+  schema_version: 1;
+  snapshot: InputCacheSnapshotStatusResponse | null;
+  status:
+    'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
+  terminal_reason: string | null;
+}
+export interface InputCacheProgress {
+  batches: number;
+  bytes: number;
+  elapsed_seconds: number;
+  phase: 'queued' | 'building' | 'publishing' | 'completed' | 'failed' | 'cancelled';
+  rows: number;
+}
+/**
+ * A Data Input's snapshot, or a structured API Input's tables together.
+ *
+ * For an API Input, ``identity_digest`` names the node's set of tables,
+ * ``state`` and ``freshness`` summarise them (ready only when every table
+ * is), ``generation`` is ``None``, and ``tables`` lists each one; a Data
+ * Input has no ``tables``.
+ */
+export interface InputCacheSnapshotStatusResponse {
+  freshness: 'fresh' | 'stale' | 'unknown';
+  generation: InputCacheGenerationPayload | null;
+  identity_digest: string;
+  schema_version: 1;
+  state: 'missing' | 'building' | 'ready' | 'corrupt' | 'failed';
+  tables: InputCacheTableStatus[] | null;
+}
+export interface InputCacheGenerationPayload {
+  build_class: 'bounded' | 'admitted_eager' | 'unsupported';
+  column_count: number;
+  columns: {
+    [k: string]: string;
+  };
+  created_at: number;
+  generation_id: string;
+  row_count: number;
+  size_bytes: number;
+}
+/**
+ * One emitting table of a structured API Input and its own snapshot.
+ */
+export interface InputCacheTableStatus {
+  freshness: 'fresh' | 'stale' | 'unknown';
+  generation: InputCacheGenerationPayload | null;
+  identity_digest: string;
+  label: string;
+  state: 'missing' | 'building' | 'ready' | 'corrupt' | 'failed';
+}
+export interface InputCacheCancelResponse {
+  cancellation_requested: boolean;
+  job_id: string;
+  schema_version: 1;
+  status:
+    'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
+}
 export interface IoCapabilitiesResponse {
   groups: IoCapabilityGroup[];
   schema_version: 1;
@@ -1432,6 +1618,51 @@ export interface SaveModelResponse {
   feature_contract_path: string;
   path: string;
   status: 'ok';
+}
+export interface NodeDataRunResponse {
+  cached: boolean;
+  job_id: string | null;
+  message: string;
+  point: NodeDataPointResponse;
+  status: 'started' | 'joined' | 'completed' | 'delegated';
+}
+export interface NodeDataStatusResponse {
+  error: string | null;
+  error_code: string | null;
+  error_detail:
+    | ExecutionMemoryLimitErrorPayload
+    | {
+        [k: string]: unknown;
+      }
+    | string
+    | null;
+  execution_metrics: ExecutionMetricsPayload | null;
+  generation_id: string | null;
+  message: string;
+  outcome: 'published' | 'superseded' | null;
+  profile: NodeDataProfile | null;
+  progress: number;
+  status:
+    'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
+  terminal_reason: string | null;
+}
+export interface ExecutionMemoryLimitErrorPayload {
+  baseline_rss_bytes: number | null;
+  error_code: 'memory_limit';
+  headroom_bytes: number | null;
+  job_id: string | null;
+  memory_limit_bytes: number | null;
+  operation: string;
+  process_rss_limit_bytes: number | null;
+  profile: string | null;
+  reason: string;
+  rss_at_admission_bytes: number | null;
+  rss_bytes: number | null;
+  rss_limit_bytes: number | null;
+}
+export interface NodeDataClearResponse {
+  point: NodeDataPointResponse;
+  status: 'cleared' | 'delegated';
 }
 export interface OptimiserSolveResponse {
   error: string | null;
@@ -1865,20 +2096,6 @@ export interface OptimiserFrontierStatusResponse {
     'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
   terminal_reason: string | null;
 }
-export interface ExecutionMemoryLimitErrorPayload {
-  baseline_rss_bytes: number | null;
-  error_code: 'memory_limit';
-  headroom_bytes: number | null;
-  job_id: string | null;
-  memory_limit_bytes: number | null;
-  operation: string;
-  process_rss_limit_bytes: number | null;
-  profile: string | null;
-  reason: string;
-  rss_at_admission_bytes: number | null;
-  rss_bytes: number | null;
-  rss_limit_bytes: number | null;
-}
 export interface OptimiserFrontierAutoRangeStartResponse {
   error: string | null;
   job_id: string | null;
@@ -2022,6 +2239,25 @@ export interface OptimiserSegmentIndexKey {
 export interface OptimiserSegmentIndexStatistic {
   description: string;
   label: string;
+}
+export interface WriteOutputResponse {
+  execution_metrics: ExecutionMetricsPayload | null;
+  format: string;
+  message: string;
+  path: string;
+  row_count: number;
+  status: string;
+}
+export interface OutputDestinationResponse {
+  format: string;
+  path: string;
+  suffix_mismatch: boolean;
+}
+export interface OutputAssembleDryRunResponse {
+  document: unknown[];
+  error: string | null;
+  row_count: number;
+  status: 'ok' | 'error';
 }
 export interface SessionStatusResponse {
   ok: boolean;
@@ -2455,18 +2691,32 @@ export interface UtilityReadResponse {
   content: string;
   module: string;
   name: string;
+  revision: string;
 }
+/**
+ * A written utility file, with its new revision and its save-ledger capture.
+ */
 export interface UtilityWriteResponse {
-  error: string | null;
-  error_line: number | null;
+  git_sha: string | null;
+  identity_required: boolean;
   import_line: string;
   module: string;
   name: string;
+  revision: string;
   status: string;
+  uncaptured: string[];
+  warnings: string[];
 }
+/**
+ * A deleted utility file, with the save-ledger capture of its removal.
+ */
 export interface UtilityDeleteResponse {
+  git_sha: string | null;
+  identity_required: boolean;
   module: string;
   status: string;
+  uncaptured: string[];
+  warnings: string[];
 }
 /**
  * Whether the project's workbench is enabled (``[workbench]`` in ``haute.toml``).
@@ -3201,6 +3451,9 @@ export interface WorkbenchAppPriceRequest {
   form_revision: string;
   release: string;
   values: {
+    /**
+     * @maxItems 10000
+     */
     [k: string]: {
       [k: string]: string | boolean;
     }[];
@@ -3217,12 +3470,18 @@ export interface WorkbenchAppQuoteCreateRequest {
   reference?: string | null;
   release: string;
   shown?: {
+    /**
+     * @maxItems 10000
+     */
     [k: string]: {
       [k: string]: unknown;
     }[];
   } | null;
   source?: WorkbenchAppQuoteSource | null;
   values: {
+    /**
+     * @maxItems 10000
+     */
     [k: string]: {
       [k: string]: string | boolean;
     }[];
@@ -3244,11 +3503,17 @@ export interface WorkbenchAppQuoteReviseRequest {
   operation: string;
   release: string;
   shown?: {
+    /**
+     * @maxItems 10000
+     */
     [k: string]: {
       [k: string]: unknown;
     }[];
   } | null;
   values: {
+    /**
+     * @maxItems 10000
+     */
     [k: string]: {
       [k: string]: string | boolean;
     }[];

@@ -307,7 +307,7 @@ import * as workbenchApi from "../api/workbench"
 import type { WorkbenchTablesResponse } from "../api/types"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
-import { makeGitWorkingBranch, makeTrainResult } from "../test-utils/factories"
+import { makeExploreColumnStat, makeGitWorkingBranch, makeNodeDataPoint, makeNodeDataStatus, makeTrainResult } from "../test-utils/factories"
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Test helpers
@@ -379,18 +379,11 @@ function resetAllStores(): void {
 
 /** Make a React Flow node with the minimum valid shape + a readable label. */
 function missingPoint(nodeId = "explore_1") {
-  return {
+  return makeNodeDataPoint({
     consumer_node_id: nodeId,
     point: { producer_node_id: "source_0", port_label: null },
     slot_key: "source_0||live",
-    kind: "node_output" as const,
-    state: "missing" as const,
-    demand: "all" as const,
-    data_version: null,
-    generation: null,
-    job: null,
-    reads_directly: false,
-  }
+  })
 }
 
 function currentPoint(nodeId = "explore_1") {
@@ -558,14 +551,14 @@ beforeEach(() => {
 
   // Reset all api mocks to their default resolution (empty graph, success).
   vi.mocked(api.loadPipeline).mockReset().mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))
-  vi.mocked(api.savePipeline).mockReset().mockResolvedValue({ file: "pipeline.py", pipeline_name: "main", source_revision: "revision-test" })
+  vi.mocked(api.savePipeline).mockReset().mockResolvedValue({ file: "pipeline.py", pipeline_name: "main", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" })
   vi.mocked(api.previewNode).mockReset().mockResolvedValue({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })
   vi.mocked(api.previewRecoveryNode).mockReset().mockResolvedValue({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })
   vi.mocked(api.applyRemoveUnavailableNode).mockReset()
   vi.mocked(api.getNodeDataPoint).mockReset().mockResolvedValue(missingPoint())
   vi.mocked(api.runNodeData).mockReset().mockResolvedValue({ status: "started", job_id: "node-data-1", cached: false, message: "Caching started", point: missingPoint() })
-  vi.mocked(api.getNodeDataStatus).mockReset().mockResolvedValue({ status: "running", progress: 0, message: "Caching data" })
-  vi.mocked(api.cancelNodeData).mockReset().mockResolvedValue({ status: "cancelled", progress: 1, message: "cancelled" })
+  vi.mocked(api.getNodeDataStatus).mockReset().mockResolvedValue(makeNodeDataStatus({ status: "running", progress: 0, message: "Caching data" }))
+  vi.mocked(api.cancelNodeData).mockReset().mockResolvedValue(makeNodeDataStatus({ status: "cancelled", progress: 1, message: "cancelled" }))
   vi.mocked(api.clearNodeData).mockReset().mockResolvedValue({ status: "cleared", point: missingPoint() })
   vi.mocked(api.getNodeDataProfile).mockReset().mockResolvedValue({ status: "cache_required", job_id: null, message: "Cache it first", result: null, point: missingPoint() })
   vi.mocked(api.getMlflowDestinations).mockReset().mockResolvedValue({
@@ -1334,7 +1327,7 @@ describe("App integration - load a pipeline with nodes", () => {
       point: profiledPoint,
       result: {
         row_count: 1, column_count: 1, generated_at: 1, data_version: "gen-1",
-        columns: [{ name: "post_code_only", dtype: "Utf8", kind: "Text", null_count: 0, distinct_count: 1, unique_ratio: 1, is_high_cardinality: false, is_identifier_candidate: false, text_min_length: 1, text_mean_length: 1, text_max_length: 1, temporal_span: null }],
+        columns: [makeExploreColumnStat({ name: "post_code_only", dtype: "Utf8", kind: "Text", null_count: 0, distinct_count: 1, unique_ratio: 1, is_high_cardinality: false, is_identifier_candidate: false, text_min_length: 1, text_mean_length: 1, text_max_length: 1, temporal_span: null })],
         overview_summary: { data_quality: { issue_count: 0, issues: [], duplicate_row_count: 0, duplicate_ratio: 0 }, categorical_summary: [] },
       },
     })
@@ -1525,7 +1518,7 @@ describe("App integration - save pipeline", () => {
   })
 
   it("shows a success toast when savePipeline resolves", async () => {
-    vi.mocked(api.savePipeline).mockResolvedValueOnce({ file: "demo.py", pipeline_name: "demo", source_revision: "revision-test" })
+    vi.mocked(api.savePipeline).mockResolvedValueOnce({ file: "demo.py", pipeline_name: "demo", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" })
     render(<App />)
     await waitForAppReady()
 

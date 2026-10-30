@@ -133,6 +133,7 @@ describe("client runtime contracts", () => {
         source_file: "pricing.py",
         base_revision: null,
         preserved_blocks: [],
+        connection_id: null,
       }),
     ).rejects.toThrow(/parseSavePipelineResponse/i)
   })
@@ -146,12 +147,14 @@ describe("client runtime contracts", () => {
   it("writeOutput rejects malformed output payloads", async () => {
     mockFetch.mockReturnValue(jsonResponse({ message: "done" }))
 
-    await expect(writeOutput({ graph: dummyGraph, nodeId: "sink1" })).rejects.toThrow(/parseWriteOutputResponse/i)
+    await expect(writeOutput({ graph: dummyGraph, nodeId: "sink1" })).rejects.toThrow(
+      "WriteOutputResponse: invalid contract at /status: required",
+    )
   })
 
   it("writeOutput validates and returns a well-formed output payload", async () => {
     mockFetch.mockReturnValue(
-      jsonResponse({ status: "ok", message: "Wrote 3 rows", row_count: 3, path: "out.parquet", format: "parquet" }),
+      jsonResponse({ status: "ok", message: "Wrote 3 rows", row_count: 3, path: "out.parquet", format: "parquet", execution_metrics: null }),
     )
 
     const result = await writeOutput({ graph: dummyGraph, nodeId: "sink1" })
@@ -171,7 +174,7 @@ describe("client runtime contracts", () => {
 
     await expect(
       resolveOutputDestination({ graph: dummyGraph, nodeId: "sink1" }),
-    ).rejects.toThrow(/parseOutputDestinationResponse/i)
+    ).rejects.toThrow("OutputDestinationResponse: invalid contract at /suffix_mismatch: type")
   })
 
   it("resolveOutputDestination validates its complete response", async () => {
@@ -442,7 +445,9 @@ describe("client runtime contracts", () => {
 
   it("input-cache build rejects a malformed V1 response", async () => {
     mockFetch.mockReturnValue(jsonResponse({ schema_version: 2, job_id: "job", identity_digest: "digest", status: "running", joined: false }))
-    await expect(buildInputCache({ schema_version: 1, config: {}, refresh: false })).rejects.toThrow(/parseInputCacheBuildResponse/i)
+    await expect(buildInputCache({ schema_version: 1, config: {}, refresh: false })).rejects.toThrow(
+      "InputCacheBuildResponse: invalid contract at",
+    )
   })
 
   it("previewInputs asks which inputs a preview reads", async () => {
@@ -909,7 +914,7 @@ describe("client runtime contracts", () => {
 
     await expect(getNodeDataStatus("node-data-7f2c")).rejects.toMatchObject({
       name: "ApiResponseValidationError",
-      message: expect.stringMatching(/could not read node data status.*parseNodeDataStatusResponse/i),
+      message: expect.stringMatching(/could not read node data status.*NodeDataStatusResponse: invalid contract at \/progress/i),
       cause: expect.any(Error),
     })
   })
@@ -1135,25 +1140,25 @@ describe("next-wave client runtime contracts", () => {
       name: "getNodeDataPoint",
       response: { ...loadUiContractFixture<Record<string, unknown>>("node_data_point_response"), state: "warm" },
       call: () => getNodeDataPoint({ graph: dummyGraph, node_id: "explore" }),
-      error: /parseNodeDataPointResponse/i,
+      error: "NodeDataPointResponse: invalid contract at /state",
     },
     {
       name: "runNodeData",
       response: { ...loadUiContractFixture<Record<string, unknown>>("node_data_run_response"), status: "queued" },
       call: () => runNodeData({ graph: dummyGraph, node_id: "banding" }),
-      error: /parseNodeDataRunResponse/i,
+      error: "NodeDataRunResponse: invalid contract at /status",
     },
     {
       name: "getNodeDataStatus",
       response: { ...loadUiContractFixture<Record<string, unknown>>("node_data_status_response"), outcome: "kept" },
       call: () => getNodeDataStatus("node-data-7f2c"),
-      error: /parseNodeDataStatusResponse/i,
+      error: "NodeDataStatusResponse: invalid contract at /outcome",
     },
     {
       name: "clearNodeData",
       response: { ...loadUiContractFixture<Record<string, unknown>>("node_data_clear_response"), status: "gone" },
       call: () => clearNodeData({ graph: dummyGraph, node_id: "explore" }),
-      error: /parseNodeDataClearResponse/i,
+      error: "NodeDataClearResponse: invalid contract at /status",
     },
     {
       name: "createSubmodel",
@@ -1331,14 +1336,14 @@ describe("next-wave client runtime contracts", () => {
     },
     {
       name: "updateUtilityFile",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("utility_write_response"), error_line: "bad" },
-      call: () => updateUtilityFile("helpers", "print('x')"),
-      error: /UtilityWriteResponse: invalid contract at \/error_line: type/,
+      response: { ...loadUiContractFixture<Record<string, unknown>>("utility_write_response"), revision: 42 },
+      call: () => updateUtilityFile("helpers", "print('x')", "1-1"),
+      error: /UtilityWriteResponse: invalid contract at \/revision: type/,
     },
     {
       name: "deleteUtilityFile",
       response: { ...loadUiContractFixture<Record<string, unknown>>("utility_delete_response"), module: 42 },
-      call: () => deleteUtilityFile("helpers"),
+      call: () => deleteUtilityFile("helpers", "1-1"),
       error: /UtilityDeleteResponse: invalid contract at \/module: type/,
     },
     {

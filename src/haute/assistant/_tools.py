@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import polars as pl
-from fastapi import HTTPException
 
 from haute._cache import canonical_json
 from haute._code_extraction import INCOMPLETE_STEPS_MESSAGE, INCOMPLETE_TRANSFORM_MESSAGE
@@ -219,9 +218,8 @@ def _error_message(exc: Exception, *, operation: str) -> str:
         # which can quote data the preamble read at import.
         return _execution_error_message(exc, operation=operation, site=None)
     if isinstance(exc, (HauteError, SourceCacheError, PolarsIoConfigError)):
+        # A service's refusal (RequestRefusedError) is one too: its message.
         return str(exc)
-    if isinstance(exc, HTTPException):
-        return str(exc.detail)
     logger.error(
         "assistant_tool_failed",
         operation=operation,
@@ -2419,7 +2417,7 @@ def _publish_document_update(
     """
 
     from haute._pipeline_recovery import pipeline_document_fingerprint
-    from haute.server import _wire_source_file
+    from haute.routes._helpers import wire_source_file
 
     document_payload = load_pipeline_editor_document(
         Path(source_file), project_root=Path.cwd()
@@ -2428,7 +2426,7 @@ def _publish_document_update(
     payload: PipelineDocumentUpdatePayload = {
         "document": document_payload,
         "document_fingerprint": fingerprint,
-        "source_file": _wire_source_file(Path(source_file)),
+        "source_file": wire_source_file(Path(source_file)),
     }
     if change is not None:
         payload["origin"] = {

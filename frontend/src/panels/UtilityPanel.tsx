@@ -4,6 +4,7 @@ import { CodeEditor } from "./editors/CodeEditor"
 import PanelShell from "./PanelShell"
 import useClickOutside from "../hooks/useClickOutside"
 import { useDebouncedCallback } from "../hooks/useDebouncedCallback"
+import { reportSaveCapture } from "../stores/saveCapture"
 import { confirmed } from "../stores/useQuestionStore"
 import useToastStore from "../stores/useToastStore"
 import {
@@ -14,6 +15,7 @@ import {
   updateUtilityFile,
   deleteUtilityFile,
 } from "../api/client"
+import { apiErrorStatus } from "../api/errors"
 import type { UtilityFile } from "../api/types"
 
 /**
@@ -75,6 +77,20 @@ export default function UtilityPanel({
   // failure separate from the in-flight queue so a later file switch cannot
   // overwrite the only local copy of the draft.
   const failedSaveModuleRef = useRef<string | null>(null)
+  // Each file's revision as its read, create or last save returned it: a save or delete
+  // sends it, so the server refuses one made against a file changed outside the panel.
+  const revisionsRef = useRef(new Map<string, string>())
+  // A file whose save was refused because it changed outside the panel (412), with the
+  // server's message. Its draft stays, unsaved, until Reload or Overwrite.
+  const [conflict, setConflict] = useState<{ module: string; message: string } | null>(null)
+  const conflictModuleRef = useRef<string | null>(null)
+  // Bumped when the open file is read again, so the editor shows what was read.
+  const [readGeneration, setReadGeneration] = useState(0)
+  // A Reload or Overwrite under way: one runs at a time.
+  const [recovering, setRecovering] = useState(false)
+  const recoveringRef = useRef(false)
+  const contentRef = useRef(content)
+  useEffect(() => { contentRef.current = content }, [content])
   const activeModuleRef = useRef(activeModule)
   const mountedRef = useRef(true)
   useEffect(() => { activeModuleRef.current = activeModule }, [activeModule])
@@ -87,8 +103,13 @@ export default function UtilityPanel({
   // are guarded so a stale (switched-away or unmounted) response can't clobber
   // the current file's error UI.
   const persistSave = useCallback(async (module: string, value: string): Promise<boolean> => {
+    if (conflictModuleRef.current === module) return false
     try {
-      await updateUtilityFile(module, value)
+      const revision = revisionsRef.current.get(module)
+      if (revision === undefined) throw new Error(`no revision of ${module} was read`)
+      const saved = await updateUtilityFile(module, value, revision)
+      revisionsRef.current.set(module, saved.revision)
+      reportSaveCapture(saved)
       if (failedSaveModuleRef.current === module) {
         failedSaveModuleRef.current = null
       }
@@ -104,6 +125,9 @@ export default function UtilityPanel({
         if (syntaxErr) {
           setErrorLine(syntaxErr.error_line)
           setErrorMsg(syntaxErr.error)
+        } else if (apiErrorStatus(err) === 412) {
+          conflictModuleRef.current = module
+          setConflict({ module, message: err instanceof Error ? err.message : String(err) })
         } else {
           const detail = err instanceof Error ? err.message : "unknown error"
           addToast("error", `Failed to save utility file "${module}": ${detail}`)
@@ -167,6 +191,7 @@ export default function UtilityPanel({
     if (!await flushSave()) return
     try {
       const res = await readUtilityFile(module)
+      revisionsRef.current.set(module, res.revision)
       setContent(res.content)
       setActiveModule(module)
       setImportsSelected(false)
@@ -178,6 +203,49 @@ export default function UtilityPanel({
       setErrorMsg(`Failed to load ${module}`)
     }
   }, [addToast, flushSave])
+
+  // Reload drops the draft for the file as it is now; Overwrite saves the draft over it.
+  // Either first drops the edit waiting to save and lets the saves already queued
+  // settle (the conflict refuses each), so none lands on the file once it is read.
+  const recoverConflict = useCallback(async (choice: "reload" | "overwrite") => {
+    const module = conflictModuleRef.current
+    if (module === null || recoveringRef.current) return
+    recoveringRef.current = true
+    setRecovering(true)
+    try {
+      pendingSave.cancel()
+      await inflightSaveRef.current
+      let read: { content: string; revision: string }
+      try {
+        read = await readUtilityFile(module)
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : "unknown error"
+        addToast("error", `Failed to load utility file "${module}": ${detail}`)
+        return
+      }
+      // A read the panel has moved on from (closed, or another file) is dropped.
+      if (
+        !mountedRef.current
+        || conflictModuleRef.current !== module
+        || activeModuleRef.current !== module
+      ) return
+      revisionsRef.current.set(module, read.revision)
+      conflictModuleRef.current = null
+      setConflict(null)
+      if (choice === "reload") {
+        failedSaveModuleRef.current = null
+        setContent(read.content)
+        setReadGeneration((generation) => generation + 1)
+        setErrorLine(null)
+        setErrorMsg(null)
+      } else {
+        await queueSave(module, contentRef.current)
+      }
+    } finally {
+      recoveringRef.current = false
+      if (mountedRef.current) setRecovering(false)
+    }
+  }, [addToast, pendingSave, queueSave])
 
   const selectImports = useCallback(async () => {
     if (!await flushSave()) return
@@ -200,6 +268,8 @@ export default function UtilityPanel({
     setCreateError(null)
     try {
       const res = await createUtilityFile({ name })
+      revisionsRef.current.set(res.module, res.revision)
+      reportSaveCapture(res)
       setCreating(false)
       setNewName("")
       // Auto-add import to preamble
@@ -220,7 +290,10 @@ export default function UtilityPanel({
     // Discard any pending save — the file is being removed.
     pendingSave.cancel()
     try {
-      await deleteUtilityFile(activeModule)
+      const revision = revisionsRef.current.get(activeModule)
+      if (revision === undefined) throw new Error(`no revision of ${activeModule} was read`)
+      reportSaveCapture(await deleteUtilityFile(activeModule, revision))
+      revisionsRef.current.delete(activeModule)
       if (failedSaveModuleRef.current === activeModule) {
         failedSaveModuleRef.current = null
       }
@@ -365,14 +438,47 @@ export default function UtilityPanel({
           <div className="h-full flex flex-col">
             <div className="flex-1 min-h-0">
               <CodeEditor
-                key={activeModule}
+                key={`${activeModule}:${readGeneration}`}
                 defaultValue={content}
-                onChange={(val) => { setContent(val); setErrorLine(null); setErrorMsg(null); if (activeModule) autoSave(activeModule, val) }}
+                onChange={(val) => {
+                  setContent(val)
+                  // A file that changed outside the panel saves nothing until Reload or Overwrite.
+                  if (conflictModuleRef.current === activeModule) return
+                  setErrorLine(null)
+                  setErrorMsg(null)
+                  autoSave(activeModule, val)
+                }}
                 errorLine={errorLine}
                 placeholder="# Write reusable helper functions here\n\nimport polars as pl\n\ndef my_helper(df):\n    return df"
               />
             </div>
-            {errorMsg && (
+            {conflict?.module === activeModule ? (
+              <div
+                data-testid="utility-conflict"
+                className="px-3 py-2 text-[11px] shrink-0 flex items-center gap-2"
+                style={{ color: 'var(--danger)', borderTop: '1px solid var(--border)' }}
+              >
+                <span className="flex-1 min-w-0">{conflict.message}</span>
+                <button
+                  type="button"
+                  disabled={recovering}
+                  onClick={() => void recoverConflict("reload")}
+                  className="px-2 py-0.5 text-[11px] font-medium rounded-md transition-colors disabled:opacity-50 hover:bg-[var(--accent-soft-hover)]"
+                  style={{ color: 'var(--accent)', background: 'var(--accent-soft)' }}
+                >
+                  Reload
+                </button>
+                <button
+                  type="button"
+                  disabled={recovering}
+                  onClick={() => void recoverConflict("overwrite")}
+                  className="px-2 py-0.5 text-[11px] font-medium rounded-md transition-colors disabled:opacity-50 hover:bg-[var(--danger-soft)]"
+                  style={{ color: 'var(--danger)' }}
+                >
+                  Overwrite
+                </button>
+              </div>
+            ) : errorMsg && (
               <div className="px-3 py-2 text-[11px] shrink-0" style={{ color: 'var(--danger)', borderTop: '1px solid var(--border)' }}>
                 {errorMsg}
               </div>

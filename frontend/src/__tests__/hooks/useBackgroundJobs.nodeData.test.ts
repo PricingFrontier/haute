@@ -20,11 +20,12 @@ import useNodeDataStore from "../../stores/useNodeDataStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore.ts"
 import useBackgroundJobs from "../../hooks/useBackgroundJobs.ts"
+import { makeNodeDataPoint, makeNodeDataStatus } from "../../test-utils/factories"
 
 const mockNodeDataStatus = vi.mocked(getNodeDataStatus)
 
 function point(): NodeDataPointResponse {
-  return {
+  return makeNodeDataPoint({
     consumer_node_id: "explore",
     point: { producer_node_id: "join", port_label: null },
     slot_key: "join||live",
@@ -35,11 +36,11 @@ function point(): NodeDataPointResponse {
     generation: null,
     job: null,
     reads_directly: false,
-  }
+  })
 }
 
 function status(overrides: Partial<NodeDataStatusResponse> = {}): NodeDataStatusResponse {
-  return { status: "running", progress: 0.5, message: "Caching data", ...overrides }
+  return makeNodeDataStatus({ status: "running", progress: 0.5, message: "Caching data", ...overrides })
 }
 
 describe("useBackgroundJobs - shared node-data builds", () => {

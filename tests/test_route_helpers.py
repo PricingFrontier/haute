@@ -2,8 +2,8 @@
 
 Covers:
   - contained_path  — valid paths, traversal attempts, absolute paths
-  - raise_node_not_found / raise_node_type_error / raise_pipeline_not_found / raise_validation_error
-  - mark_self_write / is_self_write — timing-based self-write detection
+  - raise_node_not_found / raise_node_type_error / raise_pipeline_not_found
+  - mark_self_write / is_self_write — content-identity self-write detection
   - load_sidecar / load_sidecar_positions — valid JSON, corrupt JSON, missing file
   - save_sidecar — round-trip test, scenario state
   - broadcast — WebSocket message fan-out
@@ -19,13 +19,11 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from fastapi import HTTPException
 
 from haute._sandbox import contained_path
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
-from haute.errors import PathOutsideProjectError
+from haute.errors import PathOutsideProjectError, RequestRefusedError
 from haute.routes._helpers import (
-    _SELF_WRITE_COOLDOWN,
     _WATCHER_PAUSE_SETTLE_SECONDS,
     broadcast,
     invalidate_pipeline_index,
@@ -37,7 +35,6 @@ from haute.routes._helpers import (
     raise_node_not_found,
     raise_node_type_error,
     raise_pipeline_not_found,
-    raise_validation_error,
     save_sidecar,
     watcher_is_paused,
     ws_clients,
@@ -108,7 +105,7 @@ class TestContainedPath:
 
 class TestRaiseNodeNotFound:
     def test_raises_404(self):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             raise_node_not_found("node_123")
         assert exc_info.value.status_code == 404
         assert "node_123" in exc_info.value.detail
@@ -116,7 +113,7 @@ class TestRaiseNodeNotFound:
 
 class TestRaiseNodeTypeError:
     def test_raises_400(self):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             raise_node_type_error("n1", "dataInput", "polars")
         assert exc_info.value.status_code == 400
         assert "dataInput" in exc_info.value.detail
@@ -125,18 +122,10 @@ class TestRaiseNodeTypeError:
 
 class TestRaisePipelineNotFound:
     def test_raises_404(self):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             raise_pipeline_not_found("my_pipeline")
         assert exc_info.value.status_code == 404
         assert "my_pipeline" in exc_info.value.detail
-
-
-class TestRaiseValidationError:
-    def test_raises_400(self):
-        with pytest.raises(HTTPException) as exc_info:
-            raise_validation_error("bad input")
-        assert exc_info.value.status_code == 400
-        assert "bad input" in exc_info.value.detail
 
 
 # ===========================================================================
@@ -145,23 +134,7 @@ class TestRaiseValidationError:
 
 
 class TestSelfWriteTracking:
-    def test_mark_then_check(self):
-        mark_self_write()
-        assert is_self_write() is True
-
-    def test_expires_after_cooldown(self):
-        """After the cooldown window, is_self_write returns False."""
-        # We can't actually wait 2+ seconds in a unit test. Instead, we patch
-        # time.monotonic to simulate time passing.
-
-        mark_self_write()
-        original = time.monotonic
-
-        # Simulate time having passed beyond cooldown
-        with patch.object(time, "monotonic", return_value=original() + _SELF_WRITE_COOLDOWN + 1):
-            assert is_self_write() is False
-
-    def test_path_mark_survives_global_cooldown_until_watcher_consumes_it(
+    def test_a_path_mark_survives_until_the_watcher_consumes_it(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -177,9 +150,8 @@ class TestSelfWriteTracking:
 
         try:
             mark_self_write(path, content=content)
-            fake_time[0] += _SELF_WRITE_COOLDOWN + 5.0
+            fake_time[0] += 5.0
 
-            assert is_self_write() is False
             assert is_self_write(path) is True
         finally:
             helpers._self_write_paths.clear()
@@ -290,10 +262,6 @@ class TestSelfWriteTracking:
             mark_self_write(path)
         with pytest.raises(ValueError, match="exactly one of content or deleted"):
             mark_self_write(path, content=b"x", deleted=True)
-        with pytest.raises(ValueError, match="content and deleted require a path"):
-            mark_self_write(content=b"x")
-        with pytest.raises(ValueError, match="content and deleted require a path"):
-            mark_self_write(deleted=True)
 
 
 # ===========================================================================
@@ -1156,7 +1124,7 @@ class TestFindTypedNode:
         from haute.routes._helpers import find_typed_node
 
         graph = PipelineGraph(nodes=[])
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             find_typed_node(graph, "missing", NodeType.MODELLING, "modelling")
         assert exc_info.value.status_code == 404
 
@@ -1171,7 +1139,7 @@ class TestFindTypedNode:
                 ),
             ],
         )
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             find_typed_node(graph, "s1", NodeType.MODELLING, "modelling")
         assert exc_info.value.status_code == 400
         assert "modelling" in exc_info.value.detail

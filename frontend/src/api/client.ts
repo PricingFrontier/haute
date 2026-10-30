@@ -128,9 +128,6 @@ import type {
   SessionStatusResponse,
 } from "./types"
 import {
-  parseCacheClearResponse,
-  parseCacheNodesResponse,
-  parseCacheUsageResponse,
   parseDissolveSubmodelResponse,
   explorePivotMembersFromContract,
   frontierAutoRangeStatusFromContract,
@@ -138,24 +135,15 @@ import {
   optimiserStatusFromContract,
   explorePivotRunFromContract,
   explorePivotStatusFromContract,
-  parseNodeDataClearResponse,
-  parseNodeDataPointResponse,
-  parseNodeDataRunResponse,
-  parseNodeDataStatusResponse,
-  parseInputCacheBuildResponse,
-  parseInputCacheCancelResponse,
-  parseInputCacheJobStatusResponse,
-  parseInputCacheSnapshotResponse,
+  nodeDataStatusFromContract,
   parseJsonCacheSchemaInferenceResponse,
-  parseOutputDestinationResponse,
-  parseOutputAssembleDryRunResponse,
   parsePipelineResponse,
   parsePreviewInputsResponse,
   parsePreviewNodeResponse,
   parsePreviewProgressResponse,
   parseSavePipelineResponse,
   parseSchemaResponse,
-  parseWriteOutputResponse,
+  writeOutputFromContract,
   parseSubmodelCreateResponse,
   parseSubmodelGraphResponse,
   parseTraceResponse,
@@ -165,15 +153,19 @@ import { expectGeneratedContract } from "../types/generatedContractValidation"
 
 // Generated response validators load with their first response, so none of
 // them reaches the initial bundle.
+const cacheValidators = () => import("../generated/api-contracts.cache.validators.mjs")
 const databricksValidators = () => import("../generated/api-contracts.databricks.validators.mjs")
 const editorValidators = () => import("../generated/api-contracts.editor.validators.mjs")
 const exploreValidators = () => import("../generated/api-contracts.explore.validators.mjs")
 const factorsValidators = () => import("../generated/api-contracts.factors.validators.mjs")
 const gitValidators = () => import("../generated/api-contracts.git.validators.mjs")
+const inputCacheValidators = () => import("../generated/api-contracts.input-cache.validators.mjs")
 const ioValidators = () => import("../generated/api-contracts.io.validators.mjs")
 const mlflowValidators = () => import("../generated/api-contracts.mlflow.validators.mjs")
 const modellingValidators = () => import("../generated/api-contracts.modelling.validators.mjs")
+const nodeDataValidators = () => import("../generated/api-contracts.node-data.validators.mjs")
 const optimiserValidators = () => import("../generated/api-contracts.optimiser.validators.mjs")
+const outputValidators = () => import("../generated/api-contracts.output.validators.mjs")
 const sessionValidators = () => import("../generated/api-contracts.session.validators.mjs")
 const utilityValidators = () => import("../generated/api-contracts.utility.validators.mjs")
 import {
@@ -1014,6 +1006,8 @@ export function savePipeline(
     sources?: string[]
     active_source?: string
     preserved_blocks: string[]
+    /** The tab's live-sync connection: the save's broadcast leaves this tab out. */
+    connection_id: string | null
   },
   options?: MutationOptions,
 ): Promise<SavePipelineResponse> {
@@ -1069,7 +1063,11 @@ export function outputAssembleDryRun(
       source: source ?? "live",
     },
     { signal, timeout },
-  ).then(parseOutputAssembleDryRunResponse)
+  ).then(async (data) => expectGeneratedContract(
+    "OutputAssembleDryRunResponse",
+    (await outputValidators()).validateOutputAssembleDryRunResponse,
+    data,
+  ))
 }
 
 export interface TraceCellArgs {
@@ -1122,7 +1120,11 @@ export function resolveOutputDestination(
       node_id: nodeId,
     },
     { signal, timeout },
-  ).then(parseOutputDestinationResponse)
+  ).then(async (data) => expectGeneratedContract(
+    "OutputDestinationResponse",
+    (await outputValidators()).validateOutputDestinationResponse,
+    data,
+  ))
 }
 
 export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse> {
@@ -1143,7 +1145,11 @@ export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse>
       overwrite: overwrite ?? false,
     },
     { signal, timeout },
-  ).then(parseWriteOutputResponse)
+  ).then(async (data) => writeOutputFromContract(expectGeneratedContract(
+    "WriteOutputResponse",
+    (await outputValidators()).validateWriteOutputResponse,
+    data,
+  )))
 }
 
 // ---------------------------------------------------------------------------
@@ -1248,7 +1254,9 @@ export function clearCacheIdentities(
   digests: string[],
   options?: { signal?: AbortSignal },
 ): Promise<CacheClearResponse> {
-  return post<unknown>("/api/cache/clear", { digests }, options).then(parseCacheClearResponse)
+  return post<unknown>("/api/cache/clear", { digests }, options).then(async (data) =>
+    expectGeneratedContract("CacheClearResponse", (await cacheValidators()).validateCacheClearResponse, data),
+  )
 }
 
 /**
@@ -1260,14 +1268,18 @@ export function clearCacheIdentities(
 export function fetchCacheUsage(
   options?: { signal?: AbortSignal },
 ): Promise<CacheUsageResponse> {
-  return request<unknown>("/api/cache/usage", options).then(parseCacheUsageResponse)
+  return request<unknown>("/api/cache/usage", options).then(async (data) =>
+    expectGeneratedContract("CacheUsageResponse", (await cacheValidators()).validateCacheUsageResponse, data),
+  )
 }
 
 export function fetchCacheNodes(
   payload: { graph: unknown; source: string },
   options?: { signal?: AbortSignal },
 ): Promise<CacheNodesResponse> {
-  return post<unknown>("/api/cache/nodes", payload, options).then(parseCacheNodesResponse)
+  return post<unknown>("/api/cache/nodes", payload, options).then(async (data) =>
+    expectGeneratedContract("CacheNodesResponse", (await cacheValidators()).validateCacheNodesResponse, data),
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -1278,35 +1290,45 @@ export function buildInputCache(
   payload: InputCacheBuildRequest,
   options?: { signal?: AbortSignal; timeout?: number },
 ): Promise<InputCacheBuildResponse> {
-  return post<unknown>("/api/input-cache/build", payload, options).then(parseInputCacheBuildResponse)
+  return post<unknown>("/api/input-cache/build", payload, options).then(async (data) =>
+    expectGeneratedContract("InputCacheBuildResponse", (await inputCacheValidators()).validateInputCacheBuildResponse, data),
+  )
 }
 
 export function getInputCacheJob(
   jobId: string,
   options?: { signal?: AbortSignal },
 ): Promise<InputCacheJobStatusResponse> {
-  return request<unknown>(`/api/input-cache/jobs/${encodeURIComponent(jobId)}`, options).then(parseInputCacheJobStatusResponse)
+  return request<unknown>(`/api/input-cache/jobs/${encodeURIComponent(jobId)}`, options).then(async (data) =>
+    expectGeneratedContract("InputCacheJobStatusResponse", (await inputCacheValidators()).validateInputCacheJobStatusResponse, data),
+  )
 }
 
 export function cancelInputCacheJob(
   jobId: string,
   options?: { signal?: AbortSignal },
 ): Promise<InputCacheCancelResponse> {
-  return del<unknown>(`/api/input-cache/jobs/${encodeURIComponent(jobId)}`, options).then(parseInputCacheCancelResponse)
+  return del<unknown>(`/api/input-cache/jobs/${encodeURIComponent(jobId)}`, options).then(async (data) =>
+    expectGeneratedContract("InputCacheCancelResponse", (await inputCacheValidators()).validateInputCacheCancelResponse, data),
+  )
 }
 
 export function getInputCacheStatus(
   payload: InputCacheSourceRequest,
   options?: { signal?: AbortSignal },
 ): Promise<InputCacheSnapshotResponse> {
-  return post<unknown>("/api/input-cache/status", payload, options).then(parseInputCacheSnapshotResponse)
+  return post<unknown>("/api/input-cache/status", payload, options).then(async (data) =>
+    expectGeneratedContract("InputCacheSnapshotStatusResponse", (await inputCacheValidators()).validateInputCacheSnapshotStatusResponse, data),
+  )
 }
 
 export function clearInputCache(
   payload: InputCacheSourceRequest,
   options?: { signal?: AbortSignal },
 ): Promise<InputCacheSnapshotResponse> {
-  return post<unknown>("/api/input-cache/clear", payload, options).then(parseInputCacheSnapshotResponse)
+  return post<unknown>("/api/input-cache/clear", payload, options).then(async (data) =>
+    expectGeneratedContract("InputCacheSnapshotStatusResponse", (await inputCacheValidators()).validateInputCacheSnapshotStatusResponse, data),
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -1329,7 +1351,7 @@ export function getNodeDataPoint(args: NodeDataArgs): Promise<NodeDataPointRespo
       source: payload.source ?? "live",
     },
     { signal },
-  ).then(parseNodeDataPointResponse)
+  ).then(async (data) => expectGeneratedContract("NodeDataPointResponse", (await nodeDataValidators()).validateNodeDataPointResponse, data))
 }
 
 export function runNodeData(
@@ -1343,7 +1365,7 @@ export function runNodeData(
       source: payload.source ?? "live",
     },
     { signal, timeout },
-  ).then(parseNodeDataRunResponse)
+  ).then(async (data) => expectGeneratedContract("NodeDataRunResponse", (await nodeDataValidators()).validateNodeDataRunResponse, data))
 }
 
 export function getNodeDataStatus(
@@ -1351,10 +1373,12 @@ export function getNodeDataStatus(
   options?: { signal?: AbortSignal },
 ): Promise<NodeDataStatusResponse> {
   return request<unknown>(`/api/node-data/status/${encodeURIComponent(jobId)}`, options).then(
-    (data) =>
-      validateApiResponse("Could not read node data status", () =>
-        parseNodeDataStatusResponse(data),
-      ),
+    async (data) => {
+      const { validateNodeDataStatusResponse } = await nodeDataValidators()
+      return validateApiResponse("Could not read node data status", () => nodeDataStatusFromContract(
+        expectGeneratedContract("NodeDataStatusResponse", validateNodeDataStatusResponse, data),
+      ))
+    },
   )
 }
 
@@ -1366,7 +1390,9 @@ export function cancelNodeData(
     `/api/node-data/cancel/${encodeURIComponent(jobId)}`,
     {},
     options,
-  ).then(parseNodeDataStatusResponse)
+  ).then(async (data) => nodeDataStatusFromContract(
+    expectGeneratedContract("NodeDataStatusResponse", (await nodeDataValidators()).validateNodeDataStatusResponse, data),
+  ))
 }
 
 export function getNodeDataProfile(args: NodeDataArgs): Promise<NodeDataProfileResponse> {
@@ -1435,7 +1461,7 @@ export function clearNodeData(args: NodeDataArgs): Promise<NodeDataClearResponse
       source: payload.source ?? "live",
     },
     { signal },
-  ).then(parseNodeDataClearResponse)
+  ).then(async (data) => expectGeneratedContract("NodeDataClearResponse", (await nodeDataValidators()).validateNodeDataClearResponse, data))
 }
 
 // ---------------------------------------------------------------------------
@@ -1996,24 +2022,29 @@ export function createUtilityFile(
   return post<unknown>("/api/utility", payload, options).then(async (data) => expectGeneratedContract("UtilityWriteResponse", (await utilityValidators()).validateUtilityWriteResponse, data))
 }
 
+/** Save *content* over the module, if it is still the *revision* the panel read or last saved. */
 export function updateUtilityFile(
   module: string,
   content: string,
+  revision: string,
   options?: { signal?: AbortSignal },
 ): Promise<UtilityWriteResult> {
   return request<unknown>(`/api/utility/${encodeURIComponent(module)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, revision }),
     ...options,
   }).then(async (data) => expectGeneratedContract("UtilityWriteResponse", (await utilityValidators()).validateUtilityWriteResponse, data))
 }
 
+/** Delete the module, if it is still the *revision* the panel read or last saved. */
 export function deleteUtilityFile(
   module: string,
+  revision: string,
   options?: { signal?: AbortSignal },
 ): Promise<UtilityDeleteResponse> {
-  return del<unknown>(`/api/utility/${encodeURIComponent(module)}`, options).then(async (data) => expectGeneratedContract("UtilityDeleteResponse", (await utilityValidators()).validateUtilityDeleteResponse, data))
+  const query = new URLSearchParams({ revision })
+  return del<unknown>(`/api/utility/${encodeURIComponent(module)}?${query}`, options).then(async (data) => expectGeneratedContract("UtilityDeleteResponse", (await utilityValidators()).validateUtilityDeleteResponse, data))
 }
 
 // ---------------------------------------------------------------------------

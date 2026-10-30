@@ -16,13 +16,13 @@ import time
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from haute._sandbox import contained_path, is_contained, validate_project_path
-from haute.errors import InvalidPathError, PathOutsideProjectError
+from haute.errors import InvalidPathError, PathOutsideProjectError, RequestRefusedError
 from haute.routes._helpers import pipeline_dir as _real_pipeline_dir
 from tests._source_files import REPO_ROOT, source_files
+from tests.conftest import current_source_revision
 from tests.job_store_support import seed_job
 from tests.optimiser_fixtures import make_solved_result
 
@@ -223,7 +223,13 @@ class TestUtilityRoutes:
     def test_inside_and_dotdot(self, layout: tuple[Path, Path], client: TestClient) -> None:
         assert client.get("/api/utility/helpers").status_code == 200
         assert client.get("/api/utility/..%2Foutside").status_code in (400, 404)
-        assert client.put("/api/utility/helpers", json={"content": "X = 3\n"}).status_code == 200
+        revision = client.get("/api/utility/helpers").json()["revision"]
+        assert (
+            client.put(
+                "/api/utility/helpers", json={"content": "X = 3\n", "revision": revision}
+            ).status_code
+            == 200
+        )
         assert client.post("/api/utility", json={"name": "fresh"}).status_code == 200
         assert client.post("/api/utility", json={"name": "../evil"}).status_code == 400
 
@@ -233,8 +239,9 @@ class TestUtilityRoutes:
         project, outside = layout
         _require_links(project)
         assert client.get("/api/utility/link").status_code == 403
-        assert client.put("/api/utility/link", json={"content": "X = 4\n"}).status_code == 403
-        assert client.delete("/api/utility/link").status_code == 403
+        edit = {"content": "X = 4\n", "revision": "0-0"}
+        assert client.put("/api/utility/link", json=edit).status_code == 403
+        assert client.delete("/api/utility/link", params={"revision": "0-0"}).status_code == 403
         assert client.post("/api/utility", json={"name": "link"}).status_code == 403
         assert (outside / "evil.py").read_text(encoding="utf-8") == "X = 2\n"
 
@@ -262,7 +269,7 @@ class TestSaveOutputPaths:
 
     def test_a_dotdot_output_is_refused(self, layout: tuple[Path, Path]) -> None:
         project, _ = layout
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             self._service(project)._validate_output_rel_path("../outside/main.py", "main.py")
         assert exc_info.value.status_code == 400
 
@@ -272,7 +279,7 @@ class TestSaveOutputPaths:
         (project / "modules").symlink_to(outside, target_is_directory=True)
         before = sorted(path.name for path in outside.iterdir())
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             self._service(project)._validate_output_rel_path("modules/pricing.py", "main.py")
 
         assert exc_info.value.status_code == 400
@@ -285,7 +292,7 @@ class TestSaveOutputPaths:
         _require_links(project)
         (project / "main.py").symlink_to(outside / "evil.py")
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             self._service(project)._validate_output_rel_path("main.py", "main.py")
 
         assert exc_info.value.status_code == 400
@@ -817,7 +824,7 @@ class TestSaveService:
             source = rating / "elsewhere" / "main.py"
         else:
             source = rating / ".." / "main.py"
-        with pytest.raises(HTTPException) as refused:
+        with pytest.raises(RequestRefusedError) as refused:
             service._validate_source_file_matches_pipeline_root(source)
         assert refused.value.status_code == 400
 
@@ -836,7 +843,7 @@ class TestSaveService:
         _link(project, project / "elsewhere" / "config", outside)
         linked = self._service(project, project / "elsewhere")
         linked._prev_config_files = {}
-        with pytest.raises(HTTPException) as refused:
+        with pytest.raises(RequestRefusedError) as refused:
             linked._write_config_files(PipelineGraph(nodes=[_data_input("quotes")], edges=[]))
         assert refused.value.status_code == 400
         assert "resolves outside the pipeline folder" in str(refused.value.detail)
@@ -881,7 +888,12 @@ class TestSaveService:
             lambda _self, _graph: ["config/polars/quotes.json", escaping],
         )
 
-        prev = self._service(project)._compute_disk_prev_config_files(project / "main.py")
+        service = self._service(project)
+        # The save reads its file once; the baseline is computed from that read.
+        on_disk = service._read_on_disk(
+            project / "main.py", current_source_revision(project / "main.py", project)
+        )
+        prev = service._compute_disk_prev_config_files(on_disk)
 
         assert "config/polars/quotes.json" in prev
         assert escaping not in prev

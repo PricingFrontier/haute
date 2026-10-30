@@ -24,9 +24,8 @@ from unittest.mock import patch
 
 import polars as pl
 import pytest
-from fastapi import HTTPException
 
-from haute.errors import GroupByExecutionUnsupportedError
+from haute.errors import GroupByExecutionUnsupportedError, RequestRefusedError
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import (
     OptimiserSolveService,
@@ -218,7 +217,7 @@ def test_validate_and_project_names_every_non_finite_column() -> None:
         }
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         service._validate_and_project(
             source_lf,
             _solver_config(),
@@ -282,7 +281,7 @@ def test_validate_and_project_rejects_float64_overflowing_float32() -> None:
         }
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         service._validate_and_project(source_lf, _solver_config(), job_id)
 
     assert exc_info.value.status_code == 400
@@ -306,7 +305,7 @@ def test_validate_and_project_rejects_non_finite_float_scenario_index() -> None:
         }
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         service._validate_and_project(source_lf, _solver_config(), job_id)
 
     assert exc_info.value.status_code == 400
@@ -330,7 +329,7 @@ def test_validate_and_project_null_quote_id_reported_before_non_finite() -> None
         }
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         service._validate_and_project(source_lf, _solver_config(), job_id)
 
     assert exc_info.value.status_code == 400
@@ -354,7 +353,7 @@ def test_build_grid_still_rejects_non_finite_scenario_grid() -> None:
         }
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         service._build_grid(
             scored_lf,
             ["volume"],
@@ -404,7 +403,7 @@ def test_execute_pipeline_adapts_public_contract_errors() -> None:
         patch("haute.executor._pipeline_dir", return_value=None),
         patch("haute.executor._resolve_batch_scenario", return_value="batch"),
     ):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             service._execute_pipeline(body, job_id, resources)
 
     assert exc_info.value.status_code == 422
@@ -421,7 +420,7 @@ def test_build_grid_adapts_public_contract_errors() -> None:
         "haute.routes._optimiser_input.bounded_sink",
         side_effect=_group_by_contract_error(),
     ):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             service._build_grid(
                 _two_quote_frame().lazy(),
                 ["volume"],
@@ -451,7 +450,7 @@ def test_frontier_auto_range_adapts_public_contract_errors(tmp_path) -> None:
 
     with (
         patch.object(service, "_execute_pipeline", side_effect=_group_by_contract_error()),
-        pytest.raises(HTTPException) as exc_info,
+        pytest.raises(RequestRefusedError) as exc_info,
     ):
         service._run_frontier_auto_range_job(body, job_id, **prepared)
 
@@ -843,7 +842,7 @@ def test_setup_steps_raise_typed_failures_without_touching_a_job_store() -> None
     store = JobStore()
     service = OptimiserSolveService(store)
     job_id = store.create_job({"status": "running"})
-    with pytest.raises(HTTPException) as answered:
+    with pytest.raises(RequestRefusedError) as answered:
         service._validate_and_project(frame, _solver_config(), job_id)
     assert answered.value.status_code == 400
     job = store.require_job(job_id)
@@ -859,7 +858,7 @@ def test_constraint_names_that_collide_with_library_outputs_are_rejected(reserve
         "constraints": {"volume": {"min": 1.0}, reserved: {"max": 2.0}},
     }
 
-    with pytest.raises(HTTPException) as caught:
+    with pytest.raises(RequestRefusedError) as caught:
         OptimiserSolveService._validate_config(config)
 
     assert caught.value.status_code == 400
@@ -873,7 +872,7 @@ def test_every_reserved_constraint_name_is_listed_together() -> None:
         "constraints": {"step": {"max": 1.0}, "objective": {"min": 0.0}},
     }
 
-    with pytest.raises(HTTPException) as caught:
+    with pytest.raises(RequestRefusedError) as caught:
         OptimiserSolveService._validate_config(config)
 
     assert "['objective', 'step'] are reserved" in caught.value.detail

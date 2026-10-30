@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from haute._sandbox import _get_project_root, set_project_root
@@ -19,6 +18,7 @@ from haute._workbench_form import WorkbenchFormError
 from haute._workbench_nodes import with_form_tables
 from haute.deploy._config import DeployConfig, resolve_config
 from haute.deploy._utils import shipped_graph
+from haute.errors import RequestRefusedError
 from haute.routes._save_pipeline import SavePipelineService
 from tests._workbench_helpers import tables_form, workbench_project
 from tests.test_workbench_output import FORM_SAMPLE, FORM_TABLES, _priced, _write
@@ -174,7 +174,7 @@ def test_a_save_holding_a_workbench_nodes_tables_is_refused(
     """The editor never sends them: a graph that does, as an older editor's, saves nothing."""
     graph = PipelineGraph(nodes=[_node("node", node_type, config)])
 
-    with pytest.raises(HTTPException) as refused:
+    with pytest.raises(RequestRefusedError) as refused:
         SavePipelineService._validate_declared_config_keys(graph)
 
     assert refused.value.status_code == 400
@@ -195,7 +195,7 @@ def test_a_connection_from_a_table_named_like_a_node_is_refused_at_save() -> Non
         edges=[GraphEdge(id="e", source="quote", target="rated", sourceHandle="quotes")],
     )
 
-    with pytest.raises(HTTPException) as refused:
+    with pytest.raises(RequestRefusedError) as refused:
         SavePipelineService._validate_quote_input_tables_do_not_shadow_nodes(graph)
 
     assert refused.value.status_code == 400

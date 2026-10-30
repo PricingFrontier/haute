@@ -7,7 +7,6 @@ import tests._polars_settings  # noqa: F401
 
 # isort: split
 
-import functools
 import hashlib
 import os
 import shutil
@@ -47,25 +46,6 @@ _TEST_LOCAL_SESSION_TOKEN = "pytest-haute-local-session-token"
 # it to its own @settings.
 hypothesis_settings.register_profile("haute", deadline=None)
 hypothesis_settings.load_profile("haute")
-
-
-@pytest.fixture(autouse=True, scope="session")
-def _keep_package_bytecode() -> Iterator[None]:
-    """Stop server startup deleting the package's bytecode caches during the suite.
-
-    The app lifespan removes every ``__pycache__`` under ``src/haute``; with
-    several workers that races any test walking the source tree. The stub keeps
-    the real function as ``__wrapped__`` for the test that exercises it.
-    """
-    import haute.server as server
-
-    @functools.wraps(server._clear_bytecache)
-    def keep_bytecode() -> None:
-        return None
-
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(server, "_clear_bytecache", keep_bytecode)
-        yield
 
 
 @pytest.fixture(autouse=True, scope="session")

@@ -140,7 +140,7 @@ target dependency resolution. The component roadmaps now carry the resulting pla
 |---|---|
 | `EXEC-R17` | Keep same-size/same-mtime utility freshness and support deferred imports while scoping `sys.path`; bytecode invalidation is a correctness defence. |
 | `EXEC-R13` | Measure actual RSS at a readiness handshake; native VMS, private-commit and cgroup baselines are different accounting. Preserve startup supervision. |
-| `FSH-R07`, `API-R08`, `FSH-R05` | Recover a save only from complete canonical saved-content equality, retain newer dirty edits, and distinguish intended other-tab broadcasts from watcher duplicates and self-echoes. |
+| `FSH-R07`, `FSH-R05` | Recover a save only from complete canonical saved-content equality, retain newer dirty edits, and distinguish intended other-tab broadcasts from watcher duplicates and self-echoes. |
 | `DEP-R11` | Check every response batch before positional pairing; require explicit first-deploy intent or authoritative absence, never infer absence from an outage. |
 | `DEP-R09` | Resolve and verify dependency locks for each target Python/platform and extras. |
 | `WB-10` | Shipped SQLite already has atomic insert-if-absent. Require a real selected-engine concurrency test and correct transaction recovery. |
@@ -203,15 +203,6 @@ these are the Majors still open.
   7.6 s; no job registry is cancelled at shutdown.
 - **A remote user error replaces the warm worker; one failed replacement
   disables the slot for the life of the server** (two Majors, `EXEC-R12`).
-- **Every save round-trips through the file watcher** (Major, `API-R08`): the
-  sidecar write and the stale-config unlink carry no self-write marker, so the
-  saved document is reloaded and broadcast as an external edit.
-- **A graph the flattener refuses, and a trace that fails in the user's node
-  code, are answered with the sanitized 500** (two Majors, `API-R06`); two tests
-  pin the 500.
-- **Utility files are written non-atomically, unlocked and without a revision**
-  (Major, `API-R07`): a second editor's PUT silently wins and a concurrent
-  preview can import a truncated file.
 - **Every save drops authored comments outside the kept regions** (Major,
   `PCFG-R12`; five kinds reproduced) with no diagnostic.
 - **The optimiser's MLflow log writes the complete result artifact without the
@@ -289,12 +280,6 @@ production:
 | Background jobs | WRK-2 | `ROAD-WORKER-06` |
 | Background jobs | WRK-5, WRK-6, WRK-11, WRK-14 | `ROAD-WORKER-07` |
 | Background jobs | WRK-8, WRK-9, WRK-10 | `ROAD-WORKER-08` |
-| Server API | PM-43 | `API-R05` |
-| Server API | SRV-2, SRV-3, SRV-9, SRV-11 | `API-R06` |
-| Server API | SRV-4 | `API-R07` |
-| Server API | SRV-1, SRV-5 | `API-R08` |
-| Server API | SRV-6, SRV-7, SRV-8, SRV-13, SRV-15 | `API-R09` |
-| Server API | SRV-10, SRV-12, SRV-14, SRV-16, SRV-17 | `API-R10` |
 | Pipeline config | PCF-3 | `PCFG-R12` |
 | Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
 | Pipeline config | PCR-8 | `PCFG-R19` |
@@ -320,7 +305,6 @@ production:
 | Explore / EDA | SUB-8, SUB-9, SUB-12 | `EDA-R02` |
 | Frontend shared | FSA-1, FSA-2, FSA-8, FSA-10 | `FSH-R05` |
 | Frontend shared | FSA-3, FSA-4, FSA-5, FSA-6, FSA-7, FSA-9, FSA-12 | `FSH-R06` |
-| Server API | FSA-11 | `API-R08` (extended) |
 | Frontend node editors | FNE-1, FNE-2, FNE-4, FNE-7, FNE-8, FNE-17 | `FNED-R01` |
 | Frontend node editors | FNE-3, FNE-5, FNE-6, FNE-9, FNE-11 | `FNED-R02` |
 | Frontend node editors | FNE-10, FNE-12, FNE-13, FNE-14, FNE-15, FNE-16 | `FNED-R03` |
@@ -349,7 +333,7 @@ Already tracked before this review and not repeated: the `cwd`-captured sandbox
 root used by the deploy modules, the underwriter app and the server
 (`PCFG-R04`); the
 three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
-`HTTPException` raised from service modules (`API-R02`) and the hand-maintained
+the hand-maintained
 browser contract (`API-R03`); the cwd-dependent resolvers in the routes and the
 parser (`PCFG-R04`), editor state inside the config (`PCFG-R08`), the per-type
 validators and branches (`PCFG-R07`, `PCFG-R09`); name-violation reporting
@@ -359,17 +343,14 @@ points without convergence traces (`OPT-PC04`); the optimiser's job registries
 not cancelled at shutdown (`ROAD-WORKER-06`); the test-only
 `_compute_schema_hash` and the training facade (`ENGQ-R01`); fits that exceed
 their budget
-(`MOD-M01`, `MOD-M02`); the trace route's status by message prefix and its
-sanitized 500 for a node failure (`API-R06`); two trace inconsistencies that
+(`MOD-M01`, `MOD-M02`); two trace inconsistencies that
 vanish with node-level instances (`SUB-R01`); the git routes' and the
-assistant's current-directory project root (`PCFG-R04`); the Databricks client
-factory's and the save service's `HTTPException`s (`API-R02`); the assistant
+assistant's current-directory project root (`PCFG-R04`); the assistant
 catalog's hand tables and
 key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
 (`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the Edge
 Join as a boundary (`EXEC-R15`); node-level instances and their
-rewriters (`SUB-R01`), the Explore routes' `ParseError` and the submodel route's
-400 (`API-R06`), the pivot registry at shutdown (`ROAD-WORKER-06`); the
+rewriters (`SUB-R01`), the pivot registry at shutdown (`ROAD-WORKER-06`); the
 browser's hand-written contract mirrors (`API-R03`), `hashConfig`'s exclusion
 list (`PCFG-R08`), the results store's optimiser logic (`FSH-R03`) and the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
@@ -383,9 +364,9 @@ fields the backend defaults (`EDA-R02`); the panel half of the GPU loss-history
 numbering and the GLM `best_iteration` (`MOD-R05`) and a second fabricated
 train-failure sentinel (`FSH-R06`); the browser's frontier
 generation fences that only ever see generation 0 (`OPT-R04`), the optimiser
-panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`),
-`applyFrontierPointSummary`'s null handling (`FSH-R03`) and the trace route's
-409 keyed on its code (`API-R06`); in the workbench UI and the app shell, the
+panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and
+`applyFrontierPointSummary`'s null handling (`FSH-R03`); in the workbench UI and
+the app shell, the
 chart theme observer written twice (`EDA-R03`), the params-folder listing in the
 Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`), browser-locale dates (`FSH-R08`), the bootstrap without
 a deadline (`FSH-R05`), Ctrl+S inside a code box (`FSH-R07`), editor state inside
@@ -448,8 +429,8 @@ All probes live outside the repository and wrote nothing into it.
 | Tool | Result |
 |---|---|
 | radon | 285 functions with cyclomatic complexity ≥ 20; 27 ≥ 50 (the largest in the optimiser service, the save service, the assistant tools and the RAM estimate). |
-| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `EXEC-R17`, `ROAD-WORKER-08`, `DEP-R13`, `CLI-R05`, `API-R10` and `ENGQ-R01`. |
-| jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13`, `EXEC-R17`, `ROAD-WORKER-08` and `API-R09`. |
+| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `EXEC-R17`, `ROAD-WORKER-08`, `DEP-R13`, `CLI-R05` and `ENGQ-R01`. |
+| jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13`, `EXEC-R17` and `ROAD-WORKER-08`. |
 | jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `FNED-R03`, `FNED-R05`, `FMOU-R05`, `EDA-R03` and `FGC-R04`. |
 | knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted; every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
 | sweeps | 35 campaign-named test modules (`ENGQ-R05`). |

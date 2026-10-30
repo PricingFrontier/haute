@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import polars as pl
 import pytest
@@ -85,15 +84,7 @@ def test_preview_response_serializes_non_finite_values_as_sentinels(
         preview=[{"value": float("nan")}, {"value": float("inf")}],
     )
 
-    async def run_blocking(func: Any, *args: Any, operation: str, **kwargs: Any) -> Any:
-        # The route plans the preview's budget before executing it.
-        return None if operation == "pipeline_preview_budget" else {"target": fake_result}
-
-    with patch(
-        "haute.routes.pipeline.run_blocking_with_response_timeout",
-        new_callable=AsyncMock,
-        side_effect=run_blocking,
-    ):
+    with patch("haute.routes.pipeline.execute_graph", return_value={"target": fake_result}):
         resp = client.post(
             "/api/pipeline/preview",
             json={"graph": graph, "node_id": "target"},

@@ -180,7 +180,7 @@ naming the node and the row, and the row is marked before the save; typing
 decimal places, a `%`-less format and a quantile of 1.5 each show a message;
 a Change-types entry with a stale format shows its Format field.
 
-**Dependencies:** `API-R06` adds the application handlers for client errors.
+**Dependencies:** None.
 
 **Evidence:** `frontend/src/panels/editors/banding/BreakpointGrid.tsx`;
 `frontend/src/panels/editors/banding/BandingRulesGrid.tsx`;

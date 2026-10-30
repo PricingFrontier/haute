@@ -23,7 +23,6 @@ from unittest.mock import patch
 import numpy as np
 import polars as pl
 import pytest
-from fastapi import HTTPException
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._worker_isolation import IsolatedWorkerCrashedError, IsolatedWorkerTimeoutError
@@ -32,6 +31,7 @@ from haute._worker_protocol import (
     WorkerFailurePayload,
     WorkerRemoteFailureError,
 )
+from haute.errors import RequestRefusedError
 from haute.modelling._algorithms import CatBoostAlgorithm
 from haute.modelling._target_check import training_target_task_issue
 from haute.modelling._training_job import TrainingJob
@@ -533,7 +533,7 @@ class TestPreDispatchServiceGate:
             operation="training_pipeline",
             profile=ExecutionProfile.TRAINING_PREP,
         )
-        with pytest.raises(HTTPException) as excinfo:
+        with pytest.raises(RequestRefusedError) as excinfo:
             _validate_target_task_pairing(
                 str(tmp_parquet),
                 {"target": "sev", "task": "classification"},
@@ -570,7 +570,7 @@ class TestPreDispatchServiceGate:
             operation="training_pipeline",
             profile=ExecutionProfile.TRAINING_PREP,
         )
-        with pytest.raises(HTTPException) as excinfo:
+        with pytest.raises(RequestRefusedError) as excinfo:
             _validate_target_task_pairing(
                 str(tmp_parquet),
                 {
@@ -627,7 +627,7 @@ class TestPreDispatchServiceGate:
             operation="training_pipeline",
             profile=ExecutionProfile.TRAINING_PREP,
         )
-        with pytest.raises(HTTPException) as excinfo:
+        with pytest.raises(RequestRefusedError) as excinfo:
             _validate_target_task_pairing(
                 str(tmp_parquet),
                 {"target": "sev", "task": "regression", "metrics": "auc"},
@@ -1036,7 +1036,7 @@ class TestWorkerBoundaryUserMessage:
         message (now or via a future to_payload change) cannot expose
         str(exc)."""
         from haute._execution_context import ExecutionMemoryLimitExceededError
-        from haute.routes._train_service import _memory_limit_http_exception
+        from haute.routes._train_service import _memory_limit_refusal
 
         class PayloadMessageError(ExecutionMemoryLimitExceededError):
             def to_payload(self) -> dict[str, object]:
@@ -1049,10 +1049,10 @@ class TestWorkerBoundaryUserMessage:
             rss_bytes=3 * 1024**3,
             limit_bytes=2 * 1024**3,
         )
-        http_exc = _memory_limit_http_exception(exc)
-        assert isinstance(http_exc.detail, dict)
-        assert "training_job" not in http_exc.detail["message"]
-        assert "needs more memory than this server allows" in http_exc.detail["message"]
+        refusal = _memory_limit_refusal(exc)
+        assert isinstance(refusal.detail, dict)
+        assert "training_job" not in refusal.detail["message"]
+        assert "needs more memory than this server allows" in refusal.detail["message"]
 
     def test_overlong_curated_message_truncates_instead_of_raising(self) -> None:
         """A wrapped message beyond the 512-char worker bound must truncate at

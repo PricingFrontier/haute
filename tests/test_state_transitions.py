@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pytest
-from fastapi import HTTPException
 
+from haute.errors import RequestRefusedError
 from haute.routes._job_lifecycle import JobLifecycle
 from haute.routes._job_store import TERMINAL_REASONS, JobStore, TerminalReason
 
@@ -363,14 +363,14 @@ class TestCompletedJobImmutability:
     def test_require_completed_on_running_raises_400(self) -> None:
         store = JobStore()
         job_id = _inject_job(store, "running")
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             store.require_completed_job(job_id)
         assert exc_info.value.status_code == 400
 
     def test_require_completed_on_error_raises_400(self) -> None:
         store = JobStore()
         job_id = _inject_job(store, "error")
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             store.require_completed_job(job_id)
         assert exc_info.value.status_code == 400
 
@@ -450,7 +450,7 @@ class TestJobStoreEdgeCases:
 
     def test_require_job_404_for_missing_id(self) -> None:
         store = JobStore()
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             store.require_job("nonexistent")
         assert exc_info.value.status_code == 404
 
@@ -475,7 +475,7 @@ class TestJobStoreEdgeCases:
         JobLifecycle(store).transition(job_id, to="error", message="boom")
         job = store.require_job(job_id)
         assert job["status"] == "error"
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             store.require_completed_job(job_id)
         assert exc_info.value.status_code == 400
 

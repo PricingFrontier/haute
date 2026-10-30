@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import polars as pl
-from fastapi import HTTPException
 
 from haute._execution_admission import (
     ExecutionAdmissionError,
@@ -54,10 +53,17 @@ from haute._worker_protocol import (
 from haute.errors import (
     BoundedMemoryUnsupportedError,
     ConfigError,
+    ConflictError,
     ContractMismatchError,
     HauteValidationError,
+    InsufficientMemoryError,
+    InvalidRequestError,
+    NotFoundError,
     ParseError,
+    RequestRefusedError,
     SchemaMismatchError,
+    ServiceFailedError,
+    UnprocessableError,
 )
 from haute.execution import (
     AllExceptColumns,
@@ -92,7 +98,7 @@ from haute.routes._background_jobs import (
 )
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
-    contract_error_http_exception,
+    contract_error_refusal,
 )
 from haute.routes._job_lifecycle import (
     JobLifecycle,
@@ -131,9 +137,9 @@ from haute.routes._training_preparation import (
     _check_gpu_vram,
     _clamp_row_limit,
     _find_modelling_node,
-    _gpu_vram_http_exception,
-    _http_failure_job_parts,
-    _memory_limit_http_exception,
+    _gpu_vram_refusal,
+    _memory_limit_refusal,
+    _refusal_job_parts,
     _remove_prepared_parquet,
     _seeded_training_sample,
     _training_projection_keep_columns,
@@ -313,7 +319,7 @@ class TrainService:
         """Validate and return a cancellable handle before preparing training data.
 
         Returns a ``TrainResponse`` with status ``"started"`` and the job ID.
-        Raises ``HTTPException`` only for synchronous validation or preparation-thread
+        Raises a ``RequestRefusedError`` only for synchronous validation or preparation-thread
         launch failures. Preparation and fit outcomes are published through job status.
         """
         node = _find_modelling_node(body.graph, body.node_id)
@@ -399,7 +405,7 @@ class TrainService:
             self._lifecycle.transition(
                 job_id, to="error", message=message, fields={"error": str(exc)}
             )
-            raise HTTPException(status_code=500, detail=message) from exc
+            raise ServiceFailedError(message) from exc
 
     def evaluation_preview(
         self,
@@ -540,18 +546,14 @@ class TrainService:
             )
         except PUBLIC_CONTRACT_ERROR_TYPES as exc:
             # First: a node config the builder rejects is also a ValueError.
-            raise contract_error_http_exception(exc) from None
+            raise contract_error_refusal(exc) from None
         except (TypeError, ValueError) as exc:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Evaluation preview failed: {exc}",
-            ) from exc
+            raise UnprocessableError(f"Evaluation preview failed: {exc}") from exc
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
-            raise _memory_limit_http_exception(exc) from None
+            raise _memory_limit_refusal(exc) from None
         except BoundedMemoryUnsupportedError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Evaluation preview cannot run in bounded mode: {exc}",
+            raise UnprocessableError(
+                f"Evaluation preview cannot run in bounded mode: {exc}"
             ) from exc
         except (
             ContractMismatchError,
@@ -566,10 +568,7 @@ class TrainService:
             # Polars failure here comes from planning or collecting the
             # pipeline's own code and data — the preview shows the same
             # failure as a node error — so it is reported, never a 500.
-            raise HTTPException(
-                status_code=422,
-                detail=f"Evaluation preview failed: {exc}",
-            ) from exc
+            raise UnprocessableError(f"Evaluation preview failed: {exc}") from exc
         finally:
             if execution_context is not None:
                 execution_context.release_admission(preserve_primary_error=True)
@@ -691,7 +690,7 @@ class TrainService:
         """Land a preparation failure in the job, as every preparation owner does.
 
         A cancellation takes the token's reason, an admission or memory failure
-        is ``memory_limited``, an ``HTTPException`` keeps its parts, and anything
+        is ``memory_limited``, a ``RequestRefusedError`` keeps its parts, and anything
         else is a curated ``error`` (the raw text stays in ``error``).
         """
         if isinstance(exc, ExecutionCancelledError):
@@ -703,9 +702,9 @@ class TrainService:
                 elapsed_seconds=_job_elapsed_seconds(self._store.require_job(job_id)),
             )
         elif isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
-            self._persist_preparation_http_failure(job_id, _memory_limit_http_exception(exc))
-        elif isinstance(exc, HTTPException):
-            self._persist_preparation_http_failure(job_id, exc)
+            self._persist_preparation_refusal(job_id, _memory_limit_refusal(exc))
+        elif isinstance(exc, RequestRefusedError):
+            self._persist_preparation_refusal(job_id, exc)
         else:
             logger.exception(f"{kind}_preparation_failed", job_id=job_id)
             self._lifecycle.transition(
@@ -719,8 +718,8 @@ class TrainService:
                 fields={"error": str(exc)},
             )
 
-    def _persist_preparation_http_failure(self, job_id: str, exc: HTTPException) -> None:
-        message, fields = _http_failure_job_parts(exc, job_id=job_id)
+    def _persist_preparation_refusal(self, job_id: str, exc: RequestRefusedError) -> None:
+        message, fields = _refusal_job_parts(exc, job_id=job_id)
         terminal: TerminalReason
         if exc.status_code == 507:
             terminal = "memory_limited"
@@ -739,7 +738,7 @@ class TrainService:
         """Cancel a running training job."""
         job = self._store.require_job(job_id)
         if job.get(_JOB_TYPE_KEY) != _TRAINING_JOB_TYPE:
-            raise HTTPException(status_code=404, detail=f"Training job '{job_id}' not found")
+            raise NotFoundError(f"Training job '{job_id}' not found")
         if job.get("status") != "running":
             return job
         self._training_jobs.cancel(job_id, reason="cancelled")
@@ -911,10 +910,7 @@ class TrainService:
         """Return a dispersion-estimation job, 404ing other job types."""
         job = self._store.require_job(job_id)
         if job.get(_JOB_TYPE_KEY) != _DISPERSION_JOB_TYPE:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Dispersion estimation job '{job_id}' not found",
-            )
+            raise NotFoundError(f"Dispersion estimation job '{job_id}' not found")
         return job
 
     def cancel_dispersion(self, job_id: str) -> JobSnapshot:
@@ -935,41 +931,29 @@ class TrainService:
         """Fast upfront validation for a dispersion-estimation request."""
         expected_family = _DISPERSION_PARAM_FAMILIES.get(param)
         if expected_family is None:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Unknown dispersion parameter '{param}'. Estimable "
-                    f"parameters: {', '.join(_DISPERSION_PARAM_FAMILIES)}."
-                ),
+            raise InvalidRequestError(
+                f"Unknown dispersion parameter '{param}'. Estimable "
+                f"parameters: {', '.join(_DISPERSION_PARAM_FAMILIES)}."
             )
         if not is_glm_config(config):
-            raise HTTPException(
-                status_code=400,
-                detail="Dispersion estimation applies to GLM modelling nodes only.",
-            )
+            raise InvalidRequestError("Dispersion estimation applies to GLM modelling nodes only.")
         _validate_glm_config_values(config)
         family = str(build_train_params(config).get("family", "") or "")
         if family != expected_family:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Dispersion parameter '{param}' belongs to the "
-                    f"{expected_family} family, not '{family}'."
-                ),
+            raise InvalidRequestError(
+                f"Dispersion parameter '{param}' belongs to the "
+                f"{expected_family} family, not '{family}'."
             )
         if not isinstance(config.get("target"), str) or not config.get("target"):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "No target column selected. Open the config panel and choose a target column."
-                ),
+            raise InvalidRequestError(
+                "No target column selected. Open the config panel and choose a target column."
             )
         # The rest of the training objective must be complete before the
         # estimate is meaningful (the profile is conditional on the design).
         # Stub the parameter being estimated so its own gate doesn't fire.
         issue = training_objective_issue({**config, param: _DISPERSION_PARAM_STUBS[param]})
         if issue is not None:
-            raise HTTPException(status_code=400, detail=issue)
+            raise InvalidRequestError(issue)
 
     def _launch_dispersion_protocol(
         self,
@@ -1118,12 +1102,8 @@ class TrainService:
         except Exception as exc:
             cleanup()
             logger.error("dispersion_worker_start_failed", error=str(exc), node_id=node_id)
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Dispersion estimation worker failed to start. "
-                    "Check the server logs for details."
-                ),
+            raise ServiceFailedError(
+                "Dispersion estimation worker failed to start. Check the server logs for details."
             ) from exc
 
     def _launch_dispersion_background(
@@ -1261,20 +1241,15 @@ class TrainService:
         """Fast upfront validation — no pipeline execution yet."""
         target = config.get("target")
         if not target:
-            raise HTTPException(
-                status_code=400,
-                detail="No target column selected."
-                " Open the config panel and choose a target column.",
+            raise InvalidRequestError(
+                "No target column selected. Open the config panel and choose a target column."
             )
 
         algorithm = config.get("algorithm", "catboost")
         if algorithm not in ALGORITHM_REGISTRY:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Unknown algorithm '{algorithm}'. "
-                    f"Available algorithms: {', '.join(ALGORITHM_REGISTRY.keys())}."
-                ),
+            raise InvalidRequestError(
+                f"Unknown algorithm '{algorithm}'. "
+                f"Available algorithms: {', '.join(ALGORITHM_REGISTRY.keys())}."
             )
 
         # Validity checks first, so a wrong value beats an incomplete one: the
@@ -1285,7 +1260,7 @@ class TrainService:
         try:
             validate_modelling_config_values(config)
         except TrainingConfigError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise InvalidRequestError(str(exc)) from exc
 
         # Then require a complete training objective. An unset loss/family, or
         # an unset objective parameter (Tweedie variance power, elastic-net L1
@@ -1294,7 +1269,7 @@ class TrainService:
         # single source of truth with the build-time gate so they can't drift.
         objective_issue = training_objective_issue(config)
         if objective_issue is not None:
-            raise HTTPException(status_code=400, detail=objective_issue)
+            raise InvalidRequestError(objective_issue)
         try:
             reject_removed_evaluation_fields(config)
             feature_issue = feature_selection_issue(config)
@@ -1316,7 +1291,7 @@ class TrainService:
                     configured_metrics=list(metrics),
                 )
         except TrainingConfigError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise InvalidRequestError(str(exc)) from exc
 
     def _validate_glm_input_schema(
         self,
@@ -1365,22 +1340,19 @@ class TrainService:
         except PUBLIC_CONTRACT_ERROR_TYPES as exc:
             # First: a node config the builder rejects is also a
             # HauteValidationError.
-            raise contract_error_http_exception(exc) from None
+            raise contract_error_refusal(exc) from None
         except HauteValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise UnprocessableError(str(exc)) from exc
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
-            raise _memory_limit_http_exception(exc) from None
+            raise _memory_limit_refusal(exc) from None
         except (ParseError, ConfigError, pl.exceptions.PolarsError, ValueError) as exc:
             # A graph shape the engine cannot resolve (an unfed modelling node
             # raises a bare ValueError before the resolver's own guard) is the
             # user's to fix, exactly like a parse or schema failure: name the
             # cause in a 422 rather than let it escape as a 500. Same reasoning
             # as evaluation_preview's (TypeError, ValueError) branch above.
-            raise HTTPException(
-                status_code=422,
-                detail=f"Training input schema could not be resolved: {exc}",
-            ) from exc
-        except HTTPException:
+            raise UnprocessableError(f"Training input schema could not be resolved: {exc}") from exc
+        except RequestRefusedError:
             raise
         except Exception as exc:
             # The schema-only build runs the user's own transform code, which
@@ -1394,12 +1366,9 @@ class TrainService:
                 error=str(exc),
                 exc_info=True,
             )
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "Training input schema could not be resolved at modelling node "
-                    f"{body.node_id!r}: {type(exc).__name__}: {exc}"
-                ),
+            raise UnprocessableError(
+                "Training input schema could not be resolved at modelling node "
+                f"{body.node_id!r}: {type(exc).__name__}: {exc}"
             ) from exc
         finally:
             if execution_context is not None:
@@ -1408,10 +1377,7 @@ class TrainService:
     def _check_no_concurrent_jobs(self) -> None:
         """Reject if a training job is already running."""
         if self._store.has_job_with_status("running"):
-            raise HTTPException(
-                status_code=409,
-                detail="A training job is already running. Please wait for it to finish.",
-            )
+            raise ConflictError("A training job is already running. Please wait for it to finish.")
 
     @staticmethod
     def _compile_preamble(graph: PipelineGraph) -> dict[str, Any] | None:
@@ -1458,10 +1424,7 @@ class TrainService:
                 ),
                 "error": str(exc),
             }
-            raise HTTPException(
-                status_code=422,
-                detail=detail,
-            ) from None
+            raise UnprocessableError(detail) from None
 
         return ram_est
 
@@ -1501,7 +1464,7 @@ class TrainService:
                     available_mb=vram_check.available_mb,
                 )
                 self._store.update_job(job_id, gpu_warning=gpu_warning, warning=gpu_warning)
-                raise _gpu_vram_http_exception(
+                raise _gpu_vram_refusal(
                     warning=gpu_warning,
                     estimated_mb=vram_check.estimated_mb,
                     available_mb=vram_check.available_mb,
@@ -1517,7 +1480,7 @@ class TrainService:
                 self._store.update_job(
                     job_id, gpu_warning=vram_check.warning, warning=vram_check.warning
                 )
-        except HTTPException:
+        except RequestRefusedError:
             raise
         except Exception as exc:
             logger.warning("vram_estimate_failed", error=str(exc))
@@ -1548,7 +1511,7 @@ class TrainService:
         is released by the caller, never here, so it is released exactly once.
 
         Returns the path to the temp parquet file.
-        Raises ``HTTPException`` on failure (no parquet is left behind).
+        Raises a ``RequestRefusedError`` on failure (no parquet is left behind).
         """
         if execution_context is None:
             raise ValueError("training preparation requires an admitted execution context")
@@ -1712,22 +1675,21 @@ class TrainService:
                 except IsolatedWorkerError as exc:
                     self._discard_prepared_parquet(job_id, tmp_parquet)
                     if isolated_worker_failure_is_memory(exc):
-                        http_exc = HTTPException(
-                            status_code=507,
-                            detail=isolated_worker_memory_detail(
+                        refusal = InsufficientMemoryError(
+                            isolated_worker_memory_detail(
                                 exc,
                                 operation=budget.operation,
                                 memory_limit_bytes=budget.memory_limit_bytes,
-                            ),
+                            )
                         )
-                        message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
+                        message, fields = _refusal_job_parts(refusal, job_id=job_id)
                         self._lifecycle.transition(
                             job_id,
                             to="memory_limited",
                             message=message,
                             fields=fields,
                         )
-                        raise http_exc from None
+                        raise refusal from None
                     logger.error(
                         "training_preparation_worker_failed",
                         job_id=job_id,
@@ -1769,10 +1731,7 @@ class TrainService:
                 message=failure.message,
                 fields=dict(failure.fields),
             )
-            raise HTTPException(
-                status_code=failure.http_status_code,
-                detail=failure.http_detail,
-            )
+            raise RequestRefusedError(failure.http_detail, status_code=failure.http_status_code)
 
         prepared_path = Path(tmp_parquet)
         if (
@@ -1800,17 +1759,17 @@ class TrainService:
         job_id: str,
         *,
         message: str = "Training preparation failed. Check the server logs for details.",
-    ) -> HTTPException:
+    ) -> RequestRefusedError:
         """Record a supervisor-side preparation failure and return its 500."""
-        http_exc = HTTPException(status_code=500, detail=message)
-        job_message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
+        refusal = ServiceFailedError(message)
+        job_message, fields = _refusal_job_parts(refusal, job_id=job_id)
         self._lifecycle.transition(
             job_id,
             to="error",
             message=job_message,
             fields=fields,
         )
-        return http_exc
+        return refusal
 
     def _launch_training_protocol(
         self,
@@ -2192,9 +2151,8 @@ class TrainService:
         except Exception as exc:
             cleanup()
             logger.error("training_worker_start_failed", error=str(exc), node_id=node_id)
-            raise HTTPException(
-                status_code=500,
-                detail="Training worker failed to start. Check the server logs for details.",
+            raise ServiceFailedError(
+                "Training worker failed to start. Check the server logs for details."
             ) from exc
 
     def _launch_background(

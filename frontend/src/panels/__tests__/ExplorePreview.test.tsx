@@ -15,6 +15,7 @@ import ExplorePreview from "../ExplorePreview"
 import type { ExploreDataView } from "../explore/exploreDataView"
 import { PREVIEW_PANEL_DIMENSIONS } from "../previewPanelLayout"
 import { PreviewRunContext } from "../previewRunContext"
+import { makeExploreColumnStat, makeNodeDataStatus } from "../../test-utils/factories"
 
 const mockGetNodeDataPoint = vi.fn()
 const mockRunNodeData = vi.fn()
@@ -541,7 +542,7 @@ describe("ExplorePreview", () => {
       row_count: 200,
       column_count: 1,
       columns: [
-        {
+        makeExploreColumnStat({
           name: "a",
           dtype: "Int64",
           kind: "Numeric",
@@ -554,7 +555,7 @@ describe("ExplorePreview", () => {
           text_mean_length: null,
           text_max_length: null,
           temporal_span: null,
-        },
+        }),
       ],
     })
     const nodeWithToggle: SimpleNode = {
@@ -754,7 +755,7 @@ describe("ExplorePreview", () => {
     )
 
     act(() => {
-      useNodeDataStore.getState().finishProfileJob(SLOT_KEY, {
+      useNodeDataStore.getState().finishProfileJob(SLOT_KEY, makeNodeDataStatus({
         status: "completed",
         progress: 1,
         message: "Profile is ready",
@@ -769,7 +770,7 @@ describe("ExplorePreview", () => {
           data_version: DATA_VERSION,
           generated_at: 1,
         },
-      })
+      }))
     })
 
     fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
@@ -1000,11 +1001,11 @@ describe("ExplorePreview", () => {
       expect(useNodeDataStore.getState().profileJobs[SLOT_KEY]?.jobId).toBe("profile-1"),
     )
     act(() => {
-      useNodeDataStore.getState().finishProfileJob(SLOT_KEY, {
+      useNodeDataStore.getState().finishProfileJob(SLOT_KEY, makeNodeDataStatus({
         status: "cancelled",
         progress: 0.5,
         message: "Profile cancelled",
-      })
+      }))
     })
     await screen.findByText(/Profiling failed: Profile cancelled/)
     mockGetNodeDataProfile.mockClear()
@@ -1037,11 +1038,11 @@ describe("ExplorePreview", () => {
     act(() => {
       // The job ends without a profile: the panes have nothing to render, and
       // nothing asks again on its own.
-      useNodeDataStore.getState().finishProfileJob(SLOT_KEY, {
+      useNodeDataStore.getState().finishProfileJob(SLOT_KEY, makeNodeDataStatus({
         status: "memory_limited",
         progress: 0.5,
         message: "Profiling ran out of memory",
-      })
+      }))
     })
 
     expect(await screen.findByText(/Profiling failed: Profiling ran out of memory/)).toBeVisible()
@@ -1085,11 +1086,11 @@ describe("ExplorePreview", () => {
     act(() => {
       // Then the gen-1 job is cancelled: its failure describes gen-1, not the
       // data the point holds now.
-      useNodeDataStore.getState().finishProfileJob(SLOT_KEY, {
+      useNodeDataStore.getState().finishProfileJob(SLOT_KEY, makeNodeDataStatus({
         status: "cancelled",
         progress: 0.4,
         message: "Cancelled",
-      })
+      }))
     })
 
     expect(useNodeDataStore.getState().profileFailures[SLOT_KEY]?.dataVersion).toBe(DATA_VERSION)

@@ -8,9 +8,9 @@ from typing import cast
 from unittest.mock import patch
 
 import pytest
-from fastapi import HTTPException
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute.errors import RequestRefusedError
 from haute.routes._background_jobs import (
     BackgroundJobStoppedError,
     CancellableJobRegistry,
@@ -501,7 +501,7 @@ def test_running_metrics_publisher_propagates_missing_job() -> None:
     )
     bind_running_execution_metrics_publisher(store, "missing", context)
 
-    with pytest.raises(HTTPException, match="missing") as exc_info:
+    with pytest.raises(RequestRefusedError, match="missing") as exc_info:
         context.checkpoint(label="half", node_id="model")
     assert exc_info.value.status_code == 404
 

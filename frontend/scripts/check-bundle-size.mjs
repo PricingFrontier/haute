@@ -193,7 +193,17 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // broken pairs reported with their Repair; GitPanel 19.2 KiB, the editor's index 170.3 ->
 // 170.6 KiB, the initial bundle 299.6 -> 300.0 KiB, inside its 300 KiB) brings it to
 // 1,722.3 KiB; 1,724 KiB restores about 1.7 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1724
+// The node-data and cache responses join the generated contract (API-R03): their lazy
+// validator modules are 18.5 KiB (the data profile's statistics and another copy of the
+// execution-metrics contract among it) and 2.9 KiB, and the Explore relationships
+// response joins the explore validators (20.4 -> 22.0 KiB), while their hand guards
+// leave the initial bundle (300.0 -> 298.1 KiB). The complete production bundle is
+// 1,743.1 KiB; 1,745 KiB restores about 1.9 KiB.
+// The input-cache and output responses join it too: their lazy validator modules are
+// 3.4 KiB and 13.0 KiB (most of the latter another copy of the execution-metrics
+// contract), while their hand guards leave the initial bundle (298.1 -> 297.3 KiB).
+// The complete production bundle is 1,758.5 KiB; 1,760 KiB restores about 1.5 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1760
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

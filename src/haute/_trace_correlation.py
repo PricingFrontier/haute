@@ -42,7 +42,7 @@ from haute._json_safe import row_to_json_safe as _jsonify_row
 from haute._logging import get_logger
 from haute._python_syntax import StructuredSyntaxError, method_call_sites
 from haute._types import RESPONSE_NODE_TYPES, GraphNode, NodeType
-from haute.errors import ConfigError
+from haute.errors import ConfigError, TraceRowOutOfRangeError
 
 logger = get_logger(component="trace_correlation")
 
@@ -1416,7 +1416,7 @@ def _correlate_rows_posthoc(
     """
     target_df = eager_outputs[target_node_id]
     if row_index >= len(target_df):
-        raise ValueError(
+        raise TraceRowOutOfRangeError(
             f"row_index {row_index} is out of range (target node has {len(target_df)} rows)"
         )
 

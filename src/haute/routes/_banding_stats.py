@@ -14,30 +14,22 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 import polars as pl
-from fastapi import HTTPException
 
-from haute._analysis_results import SynchronousAnalysisCache
 from haute._binning import equal_width_bins
-from haute._data_points import (
-    CacheRequiredError,
-    ConsumerPoint,
-    DataPointResolver,
-    LeasedPointFrame,
-    NodeDataPointInvalidError,
-    PointColumnsMissingError,
-    PointDataChangedError,
-    consumer_point,
-)
+from haute._data_points import LeasedPointFrame
 from haute._execution_context import ExecutionCancellationToken, ExecutionContext
-from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._polars_utils import cancellable_streaming_collect
 from haute._rating import (
     banding_rule_claim_expr,
     banding_temporal_ordinal_expr,
     require_banding_type,
 )
-from haute.routes._node_data_service import NodeDataService, node_data_project_root
-from haute.routes._synchronous_analysis import run_synchronous_analysis
+from haute.routes._point_analysis import (
+    PointAnalysisService,
+    columns_missing,
+    most_common_values,
+    unprocessable,
+)
 from haute.schemas import (
     BandingHistogramBin,
     BandingStatsRequest,
@@ -73,18 +65,6 @@ class _BandingStats:
     unmatched_count: int | None = None
 
 
-def _unprocessable(message: str) -> HTTPException:
-    """A factor this data cannot answer for.
-
-    The repository keeps `HTTPException.detail` a plain string (issue #76), so
-    each condition is told apart by its own message rather than by a code in the
-    body: the column is not in the data, the column is not a kind the mode can
-    compare, or the rules are ones execution itself would refuse — in which case
-    the message is execution's own.
-    """
-    return HTTPException(status_code=422, detail=message)
-
-
 def _factor_mode(factor: dict[str, Any]) -> str:
     return str(factor.get("banding") or "")
 
@@ -103,12 +83,13 @@ def _is_date(dtype: Any) -> bool:
     return isinstance(dtype, pl.Date | pl.Datetime) or dtype in (pl.Date, pl.Datetime)
 
 
-class BandingStatsService:
-    """Statistics for the factor being edited, over the node's shared data point."""
+class BandingStatsService(PointAnalysisService):
+    """Statistics for the factor being edited, over the node's shared data point.
 
-    def __init__(self, node_data: NodeDataService) -> None:
-        self._node_data = node_data
-        self._cache: SynchronousAnalysisCache = SynchronousAnalysisCache()
+    Each refusal says its condition: the column is not in the data, it is not a kind
+    the mode can compare, or the rules are ones execution itself would refuse, in
+    which case the message is execution's own.
+    """
 
     def stats(
         self,
@@ -116,29 +97,10 @@ class BandingStatsService:
         *,
         cancellation_token: ExecutionCancellationToken | None = None,
     ) -> BandingStatsResponse:
-        """Return the factor's statistics, or say the data is not there to read.
-
-        The token is the request's: a browser that abandons this question — the
-        editor supersedes its own request on every edit — stops the scan rather
-        than leaving a whole-dataset collection holding its admission and lease
-        until it finishes for nobody.
-        """
-        consumer, resolver = self._consumer(body)
+        """Return the factor's statistics, or say the data is not there to read."""
         column = _factor_column(body.factor)
         if not column:
-            raise _unprocessable("This factor has no input column.")
-        # The factor being edited may name a column the saved node does not, so
-        # the demand covers it: a point without that column is not current for
-        # this request rather than answering from data that lacks it.
-        reader = ConsumerPoint(
-            consumer.consumer_node_id,
-            consumer.point,
-            consumer.demand
-            if consumer.demand.names is None
-            else NodeSnapshotColumns.of({*consumer.demand.names, column}),
-        )
-        point = self._node_data.point_for(reader, resolver)
-
+            raise unprocessable("This factor has no input column.")
         request = {
             "analysis": "banding_stats",
             "version": BANDING_STATS_VERSION,
@@ -150,23 +112,16 @@ class BandingStatsService:
             "histogram_bins": body.histogram_bins,
             "value_limit": body.value_limit,
         }
-        try:
-            stats = run_synchronous_analysis(
-                resolver,
-                reader.point,
-                reader.demand,
-                operation="banding_stats",
-                request=request,
-                cache=self._cache,
-                compute=lambda leased, context: self._compute(body, column, leased, context),
-                cancellation_token=cancellation_token,
-            )
-        except (CacheRequiredError, PointDataChangedError):
+        point, stats = self._analyse(
+            body,
+            [column],
+            operation="banding_stats",
+            request=request,
+            compute=lambda leased, context: self._compute(body, column, leased, context),
+            cancellation_token=cancellation_token,
+        )
+        if stats is None:
             return BandingStatsResponse(status="cache_required", point=point)
-        except PointColumnsMissingError as exc:
-            # A narrower *snapshot* resolves partial above and asks to be
-            # cached; reaching here means the data itself has no such column.
-            raise _unprocessable(f"Column {column!r} is not in the data this node reads.") from exc
         return BandingStatsResponse(
             status="ok",
             point=point,
@@ -186,16 +141,6 @@ class BandingStatsService:
             unmatched_count=stats.unmatched_count,
         )
 
-    def _consumer(self, body: BandingStatsRequest) -> tuple[ConsumerPoint, DataPointResolver]:
-        try:
-            consumer = consumer_point(body.graph, body.node_id)
-        except NodeDataPointInvalidError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        resolver = DataPointResolver(
-            body.graph, source=body.source, store=NodeSnapshotStore(node_data_project_root())
-        )
-        return consumer, resolver
-
     def _compute(
         self,
         body: BandingStatsRequest,
@@ -207,14 +152,14 @@ class BandingStatsService:
         try:
             require_banding_type(mode)
         except ValueError as exc:
-            raise _unprocessable(str(exc)) from exc
+            raise unprocessable(str(exc)) from exc
         frame = leased.scan
         schema = frame.collect_schema()
         if column not in schema:
-            raise _unprocessable(f"Column {column!r} is not in the data this node reads.")
+            raise columns_missing([column])
         dtype = schema[column]
         if mode in NUMERIC_BANDING_MODES and not (_is_numeric(dtype) or _is_date(dtype)):
-            raise _unprocessable(
+            raise unprocessable(
                 f"Column {column!r} is {dtype}, which {mode} banding cannot compare."
             )
 
@@ -275,23 +220,15 @@ class BandingStatsService:
     ) -> _BandingStats:
         # The text execution matches on, so every value shown is a value a
         # categorical rule can be written against.
-        grouped = cancellable_streaming_collect(
-            frame.select(pl.col(column).cast(pl.Utf8).alias("value"))
-            .drop_nulls()
-            .group_by("value")
-            .agg(pl.len().alias("count"))
-            .sort(["count", "value"], descending=[True, False]),
-            execution_context=context,
+        counted, distinct_count = most_common_values(
+            frame, pl.col(column).cast(pl.Utf8), limit=body.value_limit, context=context
         )
-        values = tuple(
-            BandingValueCount(value=str(row["value"]), count=int(row["count"]))
-            for row in grouped.head(body.value_limit).iter_rows(named=True)
-        )
+        values = tuple(BandingValueCount(value=value, count=count) for value, count in counted)
         shown = sum(item.count for item in values)
         return replace(
             stats,
             values=values,
-            distinct_count=grouped.height,
+            distinct_count=distinct_count,
             other_count=stats.total_rows - stats.null_count - shown,
         )
 
@@ -319,7 +256,7 @@ class BandingStatsService:
         except ValueError as exc:
             # Execution's own message, so the editor says what a run would say
             # rather than its own account of the same rules.
-            raise _unprocessable(str(exc)) from exc
+            raise unprocessable(str(exc)) from exc
         counted = cancellable_streaming_collect(
             frame.select(claim).group_by("claim").agg(pl.len().alias("count")),
             execution_context=context,

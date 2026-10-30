@@ -42,8 +42,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from fastapi import HTTPException
-
 from haute._env import int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
@@ -54,6 +52,7 @@ from haute._execution_context import ExecutionContext, ExecutionMemoryLimitExcee
 from haute._logging import get_logger
 from haute._memory_errors import memory_error_in
 from haute._seed_plans import SeedPlanHandoff
+from haute.errors import RequestRefusedError
 from haute.routes._job_lifecycle import TERMINAL_REASONS, TerminalReason
 from haute.routes._job_store import get_job_store
 from haute.routes._optimiser_input import (
@@ -269,16 +268,16 @@ def _failure_before_job_mapping(
     Only the worker's own start-up (its execution context, the re-plan) can
     fail before a job step's mapping runs.
     """
-    from haute.routes._contract_errors import memory_limit_http_exception
+    from haute.routes._contract_errors import memory_limit_refusal
 
     if isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
-        detail = memory_limit_http_exception(exc, operation_noun="Auto-range").detail
+        detail = memory_limit_refusal(exc, operation_noun="Auto-range").detail
         return OptimiserWorkerFailure(
             terminal_reason="memory_limited",
             message=str(detail.get("message", detail)) if isinstance(detail, dict) else "",
             fields={"error_code": "memory_limit", "http_status_code": 507, "error_detail": detail},
         )
-    if isinstance(exc, HTTPException):
+    if isinstance(exc, RequestRefusedError):
         reason: TerminalReason = "contract_error" if 400 <= exc.status_code < 500 else "error"
         return OptimiserWorkerFailure(
             terminal_reason=reason,
@@ -448,7 +447,7 @@ def optimiser_estimate_worker(
         memory_error = memory_error_in(exc)
         if memory_error is not None:
             raise memory_error from None
-        if isinstance(exc, HTTPException):
+        if isinstance(exc, RequestRefusedError):
             return OptimiserEstimateOutcome(failure=(exc.status_code, exc.detail))
         if isinstance(exc, ESTIMATE_MAPPED_ERRORS):
             answer = estimate_failure_http_exception(exc, node_id=body.node_id)

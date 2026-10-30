@@ -124,7 +124,6 @@ def test_server_lifespan_applies_unavailable_qos_before_worker_pool(
                 yield None
             return None
 
-    monkeypatch.setattr(server, "_clear_bytecache", lambda: None)
     monkeypatch.setattr(server, "configure_logging", lambda: events.append("logging"))
     monkeypatch.setattr(
         server, "configure_process_high_qos", lambda: events.append("qos") or "unavailable"

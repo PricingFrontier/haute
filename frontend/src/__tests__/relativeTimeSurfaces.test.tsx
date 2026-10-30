@@ -42,6 +42,7 @@ import useAssistantStore from "../stores/useAssistantStore"
 import { resetGitStoreForTests } from "../stores/useGitStore"
 import { importedTitle } from "../utils/importedTitle"
 import { relativeTime } from "../utils/relativeTime"
+import { makeInputCacheSnapshot } from "../test-utils/factories"
 
 // jsdom has no ResizeObserver; the git panel's rail overlay measures with one.
 class NoResizeObserver {
@@ -148,7 +149,7 @@ describe.each([
     expect(screen.getByTestId("explore-dataset-snapshot-card")).toHaveTextContent(`Cached${said}`)
     expect(
       importedTitle(
-        {
+        makeInputCacheSnapshot({
           schema_version: 1,
           identity_digest: "digest",
           state: "ready",
@@ -162,7 +163,7 @@ describe.each([
             created_at: seconds,
             build_class: "bounded",
           },
-        },
+        }),
         NOW,
       ),
     ).toBe(`Imported ${said}`)

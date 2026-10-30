@@ -50,6 +50,7 @@ from haute._rating import is_rating_dtype_descriptor
 from haute._sandbox import _get_project_root, contained_path
 from haute._types import RatebookSolveResultLike, SolveResultLike
 from haute._worker_isolation import resolve_worker_memory_enforcement
+from haute.errors import RequestRefusedError
 from haute.routes._frontier_point_summary import frontier_point_library_row
 from haute.routes._job_lifecycle import require_job_status
 from haute.routes._job_store import get_job_store
@@ -975,7 +976,7 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
             solve_result=solve_result,
             summary=summary,
         )
-    except HTTPException:
+    except (HTTPException, RequestRefusedError):
         raise
     except Exception as exc:
         raise mlflow_log_http_exception(exc, job_id=body.job_id) from None

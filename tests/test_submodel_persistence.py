@@ -7,9 +7,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from fastapi import HTTPException
 
 from haute._types import PipelineGraph
+from haute.errors import RequestRefusedError
 from haute.parser import parse_pipeline_source
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
@@ -135,7 +135,7 @@ def test_create_no_clobber_is_case_insensitive_and_precedes_writes(tmp_path: Pat
     existing = modules / "Pricing.py"
     existing.write_bytes(b"# hand-authored child\n")
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         service.save_graph_transactionally(
             graph=_managed_graph(
                 definition_id="pricing",
@@ -175,7 +175,7 @@ def test_create_no_clobber_rejects_orphan_child_sidecar(tmp_path: Path) -> None:
     sidecar_original = b'{"managed_parent":"other.py"}\n'
     orphan_sidecar.write_bytes(sidecar_original)
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         service.save_graph_transactionally(
             graph=_managed_graph(),
             name="main",
@@ -229,7 +229,7 @@ def test_new_definition_cannot_claim_hand_authored_child(tmp_path: Path) -> None
     child_original = b"# hand-authored child\n"
     child.write_bytes(child_original)
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         service.save_graph_transactionally(
             graph=_managed_graph(),
             name="main",
@@ -358,7 +358,7 @@ def test_definition_id_cannot_be_replaced_for_the_same_module_path(tmp_path: Pat
     ]
     originals = {path: path.read_bytes() for path in tracked}
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         service.save_graph_transactionally(
             graph=_managed_graph(definition_id="replacement"),
             name="main",
@@ -410,7 +410,7 @@ def test_submitted_definitions_cannot_share_a_canonical_module_path(tmp_path: Pa
         }
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         service.save_graph_transactionally(
             graph=graph,
             name="main",

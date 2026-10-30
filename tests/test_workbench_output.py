@@ -22,7 +22,6 @@ from typing import Any
 
 import polars as pl
 import pytest
-from fastapi import HTTPException
 
 from haute._builders import _build_node_fn
 from haute._execution_admission import create_admitted_execution_context
@@ -51,7 +50,7 @@ from haute.codegen import graph_to_code_multi
 from haute.deploy._config import DeployConfig, resolve_config
 from haute.deploy._pruner import find_deploy_input_nodes, find_output_node
 from haute.deploy._scorer import score_graph
-from haute.errors import ConfigError, ExecutionError
+from haute.errors import ConfigError, ExecutionError, RequestRefusedError
 from haute.execution import ExecutionProfile, execute_lazy_graph
 from haute.executor import execute_graph
 from haute.parser import parse_pipeline_file
@@ -1141,7 +1140,7 @@ def test_a_pipeline_has_one_response_node(project: Path) -> None:
     )
     graph.edges.append(_edge("priced", "quote_response"))
 
-    with pytest.raises(HTTPException) as refused:
+    with pytest.raises(RequestRefusedError) as refused:
         SavePipelineService(project).validate_graph(graph, source_file="main.py")
     assert refused.value.status_code == 400
     assert refused.value.detail == ONE_RESPONSE_NODE

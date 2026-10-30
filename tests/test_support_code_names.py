@@ -12,13 +12,13 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from haute._file_ops import file_revision
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._support_code_names import support_code_violations
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
-from haute.errors import ParseError
+from haute.errors import ParseError, RequestRefusedError
 from haute.parser import parse_pipeline_file
 from haute.routes._save_pipeline import SavePipelineService
 
@@ -441,10 +441,16 @@ def test_a_strict_parse_and_the_editor_load_report_a_submodel_module_collision(
 def test_save_refuses_a_node_named_like_a_preamble_helper(tmp_path: Path) -> None:
     graph = PipelineGraph(nodes=[_node("rate_lookup")], edges=[], preamble=_RATE_LOOKUP)
 
-    with pytest.raises(HTTPException) as excinfo:
+    with pytest.raises(RequestRefusedError) as excinfo:
         SavePipelineService(tmp_path).validate_graph(graph, source_file="main.py")
 
     assert "takes the name `rate_lookup`, which the preamble (line 1) binds" in excinfo.value.detail
+
+
+def _save_rates(client: TestClient, project: Path, content: str):  # noqa: ANN202
+    """Save utility/rates.py through the route, against its revision on disk."""
+    revision = file_revision((project / "utility" / "rates.py").stat())
+    return client.put("/api/utility/rates", json={"content": content, "revision": revision})
 
 
 @pytest.fixture()
@@ -457,7 +463,7 @@ def utility_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_saving_a_utility_that_adds_a_colliding_helper_is_refused(
     utility_project: Path, client: TestClient
 ) -> None:
-    response = client.put("/api/utility/rates", json={"content": _RATE_LOOKUP})
+    response = _save_rates(client, utility_project.parent, _RATE_LOOKUP)
 
     assert response.status_code == 400
     detail = response.json()["detail"]
@@ -469,7 +475,7 @@ def test_saving_a_utility_that_adds_a_colliding_helper_is_refused(
 def test_saving_a_utility_that_adds_an_unrelated_helper_is_accepted(
     utility_project: Path, client: TestClient
 ) -> None:
-    response = client.put("/api/utility/rates", json={"content": "def band(x):\n    return x\n"})
+    response = _save_rates(client, utility_project.parent, "def band(x):\n    return x\n")
 
     assert response.status_code == 200, response.text
 
@@ -511,7 +517,7 @@ def test_saving_a_utility_imported_only_by_a_submodel_is_checked(
         encoding="utf-8",
     )
 
-    response = client.put("/api/utility/rates", json={"content": _RATE_LOOKUP})
+    response = _save_rates(client, tmp_path, _RATE_LOOKUP)
 
     assert response.status_code == 400, response.text
     assert "Node 'rate_lookup' (submodel 'rates')" in response.json()["detail"]

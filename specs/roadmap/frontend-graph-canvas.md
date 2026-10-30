@@ -232,8 +232,8 @@ error remain recoverable, never replaced by disk bytes. Delay B then select Impo
 B cannot steal the newer selection. Successful ordinary navigation still flushes edits
 once and loads the requested module. Cover edit-after-flush as well as edit-before-switch.
 
-**Dependencies:** `API-R07` owns server-side utility writes/containment; it does not
-preserve a browser draft lost before successful persistence.
+**Dependencies:** None. The utility routes refuse a write made against a changed file
+(412, specs/server-api); keeping the draft any failed save leaves is this package's.
 
 **Evidence:** `frontend/src/panels/UtilityPanel.tsx::UtilityPanel.persistSave`; `frontend/src/panels/UtilityPanel.tsx::UtilityPanel.loadFile`; `frontend/src/panels/UtilityPanel.tsx::UtilityPanel.selectImports`; actual
 component/debounce with CodeEditor textarea and API transport seams.
