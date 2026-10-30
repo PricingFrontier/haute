@@ -86,6 +86,7 @@ from haute._workbench_form import (
     quote_details_table,
     with_quote_details,
 )
+from haute._workbench_tables import store_name_problems
 
 #: The folder's files.
 INDEX_FILE = "form.json"
@@ -233,6 +234,10 @@ def folder_name_problems(spec: FormSpec, folder: Path) -> list[str]:
             if column.name in names:
                 problems.append(f"{table.name} has two columns named {column.name!r}")
             names.add(column.name)
+        # Each table is a table of its name in the quote store too.
+        problems.extend(
+            store_name_problems(table.name, table.rows, [column.name for column in table.columns])
+        )
     sheets: dict[str, str] = {}
     for page in spec.pages:
         name = sheet_name(page.title)

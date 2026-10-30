@@ -21,7 +21,7 @@ from haute import _git
 from haute._git_state import write_working_branch
 from haute._git_transactions import commit_milestone
 from haute._workbench_folder import folder_revision
-from haute._workbench_form import QUOTE_DETAILS_COLUMNS
+from haute._workbench_form import QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_STORE_ONLY
 from haute.routes._error_handlers import install_exception_handlers
 from haute.routes.workbench import router
 from tests._workbench_helpers import FORM, enable, form_files, write_form
@@ -63,10 +63,15 @@ PRICING = {
 
 
 #: Haute's quote_details table as the tables route serves it, first in every form.
+#: quote_details as the Workbench Input takes it: without the columns the store keeps alone.
 DETAILS = {
     "name": "quote_details",
     "rows": "one",
-    "columns": [{"name": name, "type": type_} for _, name, type_ in QUOTE_DETAILS_COLUMNS],
+    "columns": [
+        {"name": name, "type": type_}
+        for column_id, name, type_ in QUOTE_DETAILS_COLUMNS
+        if column_id not in QUOTE_DETAILS_STORE_ONLY
+    ],
 }
 
 
@@ -491,10 +496,12 @@ def test_a_form_the_folder_cannot_hold_is_refused_naming_each_reason(project: Pa
     body = served()
     before = files_of(project)
     clashing = {**POLICY, "id": "t3", "name": "Policy_Details"}
+    # A name the quote store keeps for itself, which it could not hold beside its own.
+    reserved = {**POLICY, "id": "t4", "name": "haute_extras"}
     unnamed_sheet = {"id": "p2", "title": "***", "width": 1280, "sections": [section("s2")]}
     unholdable = {
         **body["form"],
-        "schema": {"tables": [*body["form"]["schema"]["tables"], clashing]},
+        "schema": {"tables": [*body["form"]["schema"]["tables"], clashing, reserved]},
         "pages": [*body["form"]["pages"], unnamed_sheet],
     }
 
@@ -503,6 +510,10 @@ def test_a_form_the_folder_cannot_hold_is_refused_naming_each_reason(project: Pa
     assert refused.status_code == 422
     detail = refused.json()["detail"]
     assert "the tables 'policy_details' and 'Policy_Details' share a name" in detail
+    assert (
+        "table 'haute_extras' starts haute_, which the quote store keeps for its own names"
+        in detail
+    )
     assert "the sheet '***' needs a title with a letter or a digit" in detail
     assert files_of(project) == before
 

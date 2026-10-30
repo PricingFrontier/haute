@@ -66,6 +66,20 @@ export const QUOTE_DETAILS_MANAGED: ReadonlySet<string> = new Set([
 ])
 
 /**
+ * The columns of quote_details the app changes over a quote's life, which the quote store
+ * keeps but no request holds (`QUOTE_DETAILS_STORE_ONLY`): changing one never leaves a stored
+ * price that its stored inputs no longer give.
+ */
+export const QUOTE_DETAILS_STORE_ONLY: ReadonlySet<string> = new Set([
+  QUOTE_DETAILS.stage,
+  QUOTE_DETAILS.assignee,
+  QUOTE_DETAILS.archived,
+  QUOTE_DETAILS.modified_date,
+  QUOTE_DETAILS.modified_by,
+  QUOTE_DETAILS.haute_version,
+])
+
+/**
  * The quote's identity at the head of every other table, as id, name and type
  * (`IDENTITY_COLUMNS` in `src/haute/_workbench_form.py`): the same ids in every table.
  */

@@ -254,10 +254,11 @@ def test_a_priced_save_is_priced_again_on_the_server_and_kept(page: Page) -> Non
     # Priced under the quote's own identity, which the pipeline's request names.
     request = answered["revision"]["request"]["quote_details"]
     assert (request["quote_reference"], request["quote_option"]) == ("Q-000001", 1)
-    # The pipeline priced the administration the details row keeps.
-    assert {name: request[name] for name in ADMIN} == {
-        name: quote["details"][name] for name in ADMIN
-    }
+    # The pipeline priced the quote's creation; the rest of its administration is the
+    # store's alone, in no request.
+    made = ("created_date", "created_by")
+    assert {name: request[name] for name in made} == {name: quote["details"][name] for name in made}
+    assert not {"stage", "modified_date", "modified_by", "haute_version"} & request.keys()
     assert answered["revision"]["release"] == page.release
     assert answered["moved"] is False
     assert answered["form"] is None
@@ -286,7 +287,8 @@ def test_one_instant_stamps_a_save_its_request_its_revision_and_its_details(
 
     revision = saved["revision"]
     assert revision["saved_at"] == instant.isoformat()
-    assert revision["request"]["quote_details"]["modified_date"] == "2026-10-12"
+    # When the quote was last changed is the store's alone: the details hold it, no request.
+    assert "modified_date" not in revision["request"]["quote_details"]
     assert saved["quote"]["details"]["modified_date"] == "2026-10-12"
     assert revision["values"]["quote_details"][0]["qd_modified_by"] == "jo@example.com"
     history = page.client.get(f"/api/app/quotes/{made['id']}/history", headers=ANA).json()

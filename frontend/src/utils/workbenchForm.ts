@@ -2172,6 +2172,45 @@ export interface SchemaProblem {
   message: string
 }
 
+/** The longest table or column name the quote store keeps whole (`STORE_NAME_LENGTH`). */
+export const STORE_NAME_LENGTH = 63
+/** The quote store's number for each row of a many-row table, a column of its own there (`QUOTE_ROW`). */
+export const QUOTE_ROW = "quote_row"
+/** What starts a name the quote store keeps for its own tables and columns. */
+const STORE_PREFIX = "haute_"
+
+/** What keeps a table's own name from being a table of the quote store's, as the server holds it (`store_name_problems`). */
+function storeTableProblems(table: SchemaTable): string[] {
+  const problems: string[] = []
+  if (table.name.length > STORE_NAME_LENGTH) {
+    problems.push(`has a name of ${table.name.length} characters: a name is at most ${STORE_NAME_LENGTH}, the longest every database keeps whole`)
+  }
+  if (table.name.startsWith(STORE_PREFIX)) problems.push(`starts ${STORE_PREFIX}, which the quote store keeps for its own names`)
+  if (table.name.startsWith("sqlite_")) problems.push("starts sqlite_, which SQLite keeps for its own tables")
+  return problems
+}
+
+/**
+ * What keeps a column's name from being a column of the quote store's table, as the server
+ * holds it (`store_name_problems`): `folded` holds the names before it by their lower case.
+ */
+function storeColumnProblems(table: SchemaTable, column: SchemaColumn, folded: Map<string, string>): string[] {
+  const problems: string[] = []
+  const lower = column.name.toLowerCase()
+  const earlier = folded.get(lower)
+  if (earlier === undefined) folded.set(lower, column.name)
+  else if (earlier !== column.name) problems.push(`differs from "${earlier}" only in case, so a database cannot hold both`)
+  if (column.name.length > STORE_NAME_LENGTH) {
+    problems.push(`has a name of ${column.name.length} characters: a name is at most ${STORE_NAME_LENGTH}, the longest every database keeps whole`)
+  }
+  // Haute's own quote_details.haute_version is the one name of its own starting so.
+  if (column.name.startsWith(STORE_PREFIX) && !(isQuoteDetails(table) && column.name === "haute_version")) {
+    problems.push(`starts ${STORE_PREFIX}, which the quote store keeps for its own names`)
+  }
+  if (table.rows === "many" && column.name === QUOTE_ROW) problems.push("is the quote store's number for each row of a many-row table")
+  return problems
+}
+
 /** Why `name` cannot name a frame's column, as the server holds it (`is_frame_label`), or null. */
 export function columnNameProblem(name: string): string | null {
   if (!ASCII_IDENTIFIER_RE.test(name)) return "needs a name of letters, digits and _"
@@ -2214,6 +2253,7 @@ export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<strin
       ),
     )
     if (issue !== null) problems.push({ tableId: table.id, message: `${name}: ${issue}` })
+    for (const problem of storeTableProblems(table)) problems.push({ tableId: table.id, message: `${name} ${problem}` })
     if (!isQuoteDetails(table) && !table.columns.some(isIdentityColumn)) {
       for (const column of table.columns) {
         if (IDENTITY_NAMES.has(column.name)) problems.push({ tableId: table.id, message: identityClash(table, column) })
@@ -2229,6 +2269,7 @@ export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<strin
       }
     }
     const columnNames = new Set<string>()
+    const folded = new Map<string, string>()
     for (const column of table.columns) {
       const columnName = `Column "${column.name}" in ${name}`
       const nameProblem = columnNameProblem(column.name)
@@ -2238,6 +2279,7 @@ export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<strin
         problems.push({ tableId: table.id, message: `${columnName} repeats the name ${column.name}` })
       }
       columnNames.add(column.name)
+      for (const problem of storeColumnProblems(table, column, folded)) problems.push({ tableId: table.id, message: `${columnName} ${problem}` })
       if (table.role !== "input" || column.index) continue
       if (!takesOptions(column.type) && column.options.length > 0) {
         const kind = column.type === "bool" ? "a tick box" : "a date"

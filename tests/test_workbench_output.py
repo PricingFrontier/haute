@@ -265,7 +265,7 @@ def test_a_workbench_output_fills_its_tables_from_their_frames(project: Path) ->
 
 def _unfilled() -> PipelineGraph:
     """The priced graph, its pricing table declaring `referral`, a String upstream, an
-    Integer, and two columns no frame column is named exactly: `discount` and `Premium`."""
+    Integer, and two columns no frame column is named exactly: `discount` and `State`."""
     graph = _priced()
     pricing = graph.node_map["response"].data.config["tables"][0]
     pricing["columns"] = [
@@ -273,7 +273,7 @@ def _unfilled() -> PipelineGraph:
         _column("limit", "float"),
         _column("referral", "int"),
         _column("discount", "float"),
-        _column("Premium", "float"),
+        _column("State", "str"),
     ]
     return graph
 
@@ -291,11 +291,11 @@ def test_a_column_the_frame_does_not_fill_is_nulls(project: Path) -> None:
             "limit": pl.Float64,
             "referral": pl.Int64,
             "discount": pl.Float64,
-            "Premium": pl.Float64,
+            "State": pl.String,
         }
     )
     assert tables["pricing"].to_dicts() == [
-        {"premium": 100.0, "limit": 1000.0, "referral": None, "discount": None, "Premium": None}
+        {"premium": 100.0, "limit": 1000.0, "referral": None, "discount": None, "State": None}
     ]
     assert _response(graph)[0]["pricing"] == {"premium": 100.0, "limit": 1000.0}
 
@@ -570,7 +570,7 @@ def test_a_workbench_outputs_cell_beside_nulls_is_traced_from_its_frame(project:
     # The clicked row's nulls are not its frame's values: `referral` holds "none" there, so
     # the row is matched by the columns the frame fills.
     graph = _unfilled()
-    row = {"premium": 100.0, "limit": 1000.0, "referral": None, "discount": None, "Premium": None}
+    row = {"premium": 100.0, "limit": 1000.0, "referral": None, "discount": None, "State": None}
 
     traced = execute_trace(
         graph, target_node_id="response", column="premium", row_values=row, port_label="pricing"
@@ -578,7 +578,7 @@ def test_a_workbench_outputs_cell_beside_nulls_is_traced_from_its_frame(project:
 
     assert (traced.target_node_id, traced.column, traced.output_value) == ("priced", "premium", 100)
     # A column of nulls has no value to trace.
-    for unfilled in ("referral", "discount", "Premium"):
+    for unfilled in ("referral", "discount", "State"):
         with pytest.raises(ValueError, match=f"fills '{unfilled}' with nulls, as the frame"):
             execute_trace(graph, target_node_id="response", column=unfilled, port_label="pricing")
 

@@ -28,7 +28,7 @@ from haute._graph_utils import is_frame_label
 from haute._workbench_form import (
     IDENTITY_COLUMNS,
     QUOTE_DETAILS_ID,
-    QUOTE_DETAILS_MANAGED,
+    QUOTE_DETAILS_STORE_ONLY,
     ColumnType,
 )
 from haute.errors import HauteError
@@ -47,6 +47,64 @@ COLUMN_DTYPES: dict[ColumnType, pl.DataType] = {
 }
 
 _NAME_RULE = "letters, digits and underscores, not starting with a digit and not a Python keyword"
+
+#: The longest table or column name the quote store keeps: PostgreSQL's limit for an
+#: identifier, so no database shortens one and two long names never become one.
+STORE_NAME_LENGTH = 63
+#: The quote store's number for each row of a many-row table, a column of its own there.
+QUOTE_ROW = "quote_row"
+#: What starts a name the quote store keeps for its own tables and columns.
+_STORE_PREFIX = "haute_"
+#: What starts a table name SQLite keeps for its own tables.
+_SQLITE_PREFIX = "sqlite_"
+#: Haute's own columns whose names start as the store's do, by table and column name.
+_HAUTE_COLUMNS = frozenset({(QUOTE_DETAILS_ID, "haute_version")})
+
+
+def store_name_problems(table: str, rows: str, columns: Sequence[str]) -> list[str]:
+    """What keeps *table*'s names from being the quote store's (specs/workbench), each said as
+    ``table 'x' ...``: a name longer than ``STORE_NAME_LENGTH``, a name starting ``haute_``
+    (Haute's own ``quote_details.haute_version`` aside), a table starting ``sqlite_``, two
+    columns whose names differ only in case, which no database holds both of, and a column of
+    a many-row table named ``quote_row``."""
+    problems: list[str] = []
+    if len(table) > STORE_NAME_LENGTH:
+        problems.append(
+            f"table {table!r} has a name of {len(table)} characters: a name is at most "
+            f"{STORE_NAME_LENGTH}, the longest every database keeps whole"
+        )
+    if table.startswith(_STORE_PREFIX):
+        problems.append(
+            f"table {table!r} starts {_STORE_PREFIX}, which the quote store keeps for its own names"
+        )
+    if table.startswith(_SQLITE_PREFIX):
+        problems.append(
+            f"table {table!r} starts {_SQLITE_PREFIX}, which SQLite keeps for its own tables"
+        )
+    folded: dict[str, str] = {}
+    for name in columns:
+        earlier = folded.setdefault(name.casefold(), name)
+        if earlier != name:
+            problems.append(
+                f"table {table!r} has columns {earlier!r} and {name!r}, which differ only in "
+                "case, so a database cannot hold both"
+            )
+        if len(name) > STORE_NAME_LENGTH:
+            problems.append(
+                f"table {table!r} has a column {name!r} of {len(name)} characters: a name is at "
+                f"most {STORE_NAME_LENGTH}, the longest every database keeps whole"
+            )
+        if name.startswith(_STORE_PREFIX) and (table, name) not in _HAUTE_COLUMNS:
+            problems.append(
+                f"table {table!r} has a column {name!r}, and a name starting {_STORE_PREFIX} is "
+                "the quote store's own"
+            )
+        if rows == "many" and name == QUOTE_ROW:
+            problems.append(
+                f"table {table!r} has a column {QUOTE_ROW!r}, the quote store's number for each "
+                "row of a many-row table"
+            )
+    return problems
 
 
 class WorkbenchTablesError(HauteError):
@@ -125,7 +183,9 @@ def check_tables(tables: Sequence[WorkbenchTable], *, owner: str) -> None:
     """Refuse a name that cannot be a port's or a frame column's, or one used twice.
 
     Two tables whose names differ only in case are refused too: the editor binds a port by
-    its name compared without case, as it binds a Quote Input's frames.
+    its name compared without case, as it binds a Quote Input's frames. So is a name the quote
+    store cannot keep as it is (:func:`store_name_problems`), each table being its own table
+    there.
     """
     by_folded_name: dict[str, str] = {}
     for table in tables:
@@ -155,6 +215,11 @@ def check_tables(tables: Sequence[WorkbenchTable], *, owner: str) -> None:
                     f"The {owner}'s table {table.name!r} names a column {column.name!r} twice."
                 )
             names.add(column.name)
+        problems = store_name_problems(
+            table.name, table.rows, [column.name for column in table.columns]
+        )
+        if problems:
+            raise WorkbenchTablesError(f"The {owner}'s {problems[0]}.")
 
 
 def port_tables(tables: Iterable[WorkbenchTable]) -> tuple[WorkbenchTable, ...]:
@@ -229,6 +294,8 @@ def _tables(spec: FormSpec, role: str, *, owner: str) -> tuple[WorkbenchTable, .
 
 
 def _table(table: SchemaTable) -> WorkbenchTable:
+    # quote_details' columns the store keeps alone (QUOTE_DETAILS_STORE_ONLY) are no port's.
+    store_only = QUOTE_DETAILS_STORE_ONLY if table.id == QUOTE_DETAILS_ID else frozenset()
     return WorkbenchTable(
         name=table.name,
         rows=table.rows,
@@ -236,6 +303,7 @@ def _table(table: SchemaTable) -> WorkbenchTable:
         columns=[
             WorkbenchColumn(name=column.name, type="int" if column.index else column.type)
             for column in table.columns
+            if column.id not in store_only
         ],
     )
 
@@ -251,8 +319,9 @@ def sample_quote(
     each filled by its value; but those values are not typing, so a quote holding nothing else
     is empty, as a blank one is, and so are the defaults a new quote starts with, which are
     not typing either. A value in a column the sheets hide is left out, as if it had
-    never been typed, save the columns of ``quote_details`` the app sets
-    (``QUOTE_DETAILS_MANAGED``), which every request holds whatever the sheets hide. Values
+    never been typed, save in ``quote_details``, which every request holds whole whatever the
+    sheets hide, but for the columns the quote store keeps alone
+    (``QUOTE_DETAILS_STORE_ONLY``), which no request holds. Values
     take their column's type: a number typed with a currency sign or separators becomes a
     number, and an unticked box in a filled row is false. A value that isn't of its column's
     type stays as typed, for the Workbench Input to report. A cell of *untyped*, by table and
@@ -271,12 +340,12 @@ def sample_quote(
         rows = preset_rows(table, spec.sample.get(table.id, []))
         if table.rows == "one":
             rows = rows[:1]
-        columns = [
-            column
-            for column in table.columns
-            if (table.id, column.id) not in hidden
-            or (table.id == QUOTE_DETAILS_ID and column.id in QUOTE_DETAILS_MANAGED)
-        ]
+        if table.id == QUOTE_DETAILS_ID:
+            columns = [
+                column for column in table.columns if column.id not in QUOTE_DETAILS_STORE_ONLY
+            ]
+        else:
+            columns = [column for column in table.columns if (table.id, column.id) not in hidden]
         given = preset_column(table)
         typed = typed or any(
             _filled(row.get(column.id)) and not _starting(table, column, row.get(column.id))
