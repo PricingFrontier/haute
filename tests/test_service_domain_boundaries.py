@@ -6,6 +6,8 @@ import ast
 import importlib
 from pathlib import Path
 
+import pytest
+
 from tests._source_files import source_files
 
 ROOT = Path(__file__).parents[1]
@@ -315,6 +317,7 @@ HTTP_EDGE_MODULES = frozenset(
 )
 
 
+@pytest.mark.meta
 def test_only_the_http_edge_imports_http_exceptions() -> None:
     """Services raise refusals (``haute.errors.RequestRefusedError``), never HTTP types:
     only a route module and the edge above import ``HTTPException``."""
