@@ -309,6 +309,8 @@ difference under the instance's occurrence id as `missing` warnings that name
 the input (`SchemaWarning.input`). It reads a frame's columns from the walk's
 recorded schemas (a request input's frame by its handle) and resolves a frame
 the walk did not reach schema-only, from its lazy lineage, collecting no rows.
+That schema-only walk receives the run's execution context, preserving the
+execution boundary while keeping its collection policy empty.
 A frame whose schema cannot be resolved makes that input's comparison one
 `unavailable` warning carrying the error (`SchemaWarning.detail`, with no
 column), never an empty result. The instance's panel lists the warnings by
@@ -510,6 +512,12 @@ Acquires `save_lock`, runs the body in a threadpool:
    graph=result.graph with that same revision)`. No file changes until Save.
 
 ### `POST /api/submodel/instance` (a plain node's Create Instance)
+
+`CreateNodeInstanceRequest` uses the same bounds as create and dissolve:
+node and pipeline names are at most 512 characters (the target node id is
+non-empty), source paths 4,096 characters, and preamble, description and each
+preserved block 16,777,216 characters. There are at most 10,000 preserved blocks.
+Over-limit values are refused with `422` before the route acts.
 
 Acquires `save_lock` and runs the body in a threadpool, as create does:
 

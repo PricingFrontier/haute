@@ -963,6 +963,7 @@ def _submodel_schema_warnings(
     errors: dict[str, str],
     *,
     source: str,
+    execution_context: ExecutionContext | None = None,
 ) -> dict[str, list[SchemaWarning]]:
     """Compare shared public inputs, resolving unvisited lineages without rows."""
     if not graph._submodel_shared_bindings:
@@ -1000,6 +1001,7 @@ def _submodel_schema_warnings(
                     preamble_ns=preamble_ns,
                     source=source,
                     schema_only=True,
+                    execution_context=execution_context,
                 )
             # Keep the original walk's schemas authoritative, including empty schemas.
             for nid, schema in walked.output_columns.items():
@@ -1625,7 +1627,13 @@ def _execute_graph_core(
         results: dict[str, NodeResult] = {
             instance_id: NodeResult(status="ok", schema_warnings=warnings)
             for instance_id, warnings in _submodel_schema_warnings(
-                graph, result_order, output_cols, frame_cols, errors, source=source
+                graph,
+                result_order,
+                output_cols,
+                frame_cols,
+                errors,
+                source=source,
+                execution_context=execution_context,
             ).items()
         }
         for nid in result_order:

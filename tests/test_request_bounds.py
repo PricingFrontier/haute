@@ -11,6 +11,7 @@ from pydantic import BaseModel, ValidationError
 
 from haute.schemas import (
     MAX_REQUEST_ITEMS,
+    CreateNodeInstanceRequest,
     WorkbenchAppPriceRequest,
     WorkbenchAppQuoteChange,
     WorkbenchAppQuoteCreateRequest,
@@ -101,6 +102,13 @@ _COLUMNS = [{"name": "premium", "dtype": "Float64"}]
     ("route", "body", "loc", "kind"),
     [
         pytest.param(
+            "/api/submodel/instance",
+            {"graph": {}, "node_id": "n" * 513, "base_revision": "r1"},
+            ["body", "node_id"],
+            "string_too_long",
+            id="a node instance target",
+        ),
+        pytest.param(
             "/api/rating/levels",
             {"graph": {}, "node_id": "rating", "columns": ["c" * 513]},
             ["body", "columns", 0],
@@ -159,6 +167,35 @@ def test_an_over_long_nested_value_is_refused_before_the_route_acts(
 
     assert response.status_code == 422
     assert [(error["loc"], error["type"]) for error in response.json()["detail"]] == [(loc, kind)]
+
+
+@pytest.mark.parametrize(
+    ("field", "limit", "shape"),
+    [
+        ("node_id", 512, "string"),
+        ("pipeline_name", 512, "string"),
+        ("source_file", 4096, "string"),
+        ("preamble", 16 * 1024 * 1024, "string"),
+        ("pipeline_description", 16 * 1024 * 1024, "string"),
+        ("preserved_blocks", 16 * 1024 * 1024, "entry"),
+        ("preserved_blocks", MAX_REQUEST_ITEMS, "list"),
+    ],
+)
+def test_node_instance_request_accepts_the_limit_and_refuses_one_more(
+    field: str, limit: int, shape: str
+) -> None:
+    def body(size: int) -> dict[str, Any]:
+        value: Any = [""] * size if shape == "list" else "x" * size
+        if shape == "entry":
+            value = [value]
+        return {"node_id": "target", "graph": {}, "base_revision": "r1", field: value}
+
+    CreateNodeInstanceRequest.model_validate(body(limit))
+    with pytest.raises(ValidationError) as caught:
+        CreateNodeInstanceRequest.model_validate(body(limit + 1))
+    error = caught.value.errors(include_input=False)[0]
+    assert error["loc"] == ((field, 0) if shape == "entry" else (field,))
+    assert error["type"] == ("too_long" if shape == "list" else "string_too_long")
 
 
 def test_the_sheets_values_are_bounded_to_the_cell_and_stay_strict() -> None:

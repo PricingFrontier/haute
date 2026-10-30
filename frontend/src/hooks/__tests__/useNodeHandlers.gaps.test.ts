@@ -213,9 +213,15 @@ describe("useNodeHandlers - handleRenameNode", () => {
     expect(params.setNodes).toHaveBeenCalled()
   })
 
-  it("does not apply a resolved instance after the graph changes", async () => {
+  it("does not apply a resolved submodel occurrence after the graph changes", async () => {
     const params = makeParams()
-    const source = makeNode("source")
+    const source = makeNode("source", "submodel", {
+      data: {
+        label: "source",
+        nodeType: "submodel",
+        config: { definitionId: "definition_source", alias: "source" },
+      },
+    })
     params.graphRef.current = { nodes: [source], edges: [] }
     let resolveIdentity!: (nodes: Node[]) => void
     params.resolveNodeIdentities = vi.fn(() => new Promise((resolve) => {
@@ -228,16 +234,23 @@ describe("useNodeHandlers - handleRenameNode", () => {
       creation = result.current.handleCreateInstance("source")
     })
     await vi.waitFor(() => expect(params.resolveNodeIdentities).toHaveBeenCalledOnce())
+    const requestedNodes = params.resolveNodeIdentities.mock.calls[0][0]
+    expect(requestedNodes[0].data.config).toEqual({
+      definitionId: "definition_source", alias: "source_2", instanceOf: "source",
+    })
 
+    const editedGraph = { nodes: [source, makeNode("newer-edit")], edges: [] }
     act(() => {
-      params.graphRef.current = { nodes: [source, makeNode("newer-edit")], edges: [] }
-      resolveIdentity([makeNode("polars_11")])
+      params.graphRef.current = editedGraph
+      resolveIdentity([...requestedNodes])
     })
     await act(async () => {
       await creation
     })
 
     expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(params.graphRef.current).toBe(editedGraph)
     expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/graph changed/)
   })
 })

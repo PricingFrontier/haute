@@ -3160,14 +3160,14 @@ class CreateSubmodelResponse(BaseModel):
 
 
 class CreateNodeInstanceRequest(BaseModel):
-    node_id: str = Field(min_length=1)
+    node_id: BoundedName = Field(min_length=1)
     graph: Graph
-    preamble: str = ""
-    preserved_blocks: list[str] = Field(default_factory=list)
-    source_file: str = ""
+    preamble: BoundedText = ""
+    preserved_blocks: list[BoundedText] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
+    source_file: BoundedPath = ""
     base_revision: RevisionToken
-    pipeline_name: str = "main"
-    pipeline_description: str | None = None
+    pipeline_name: BoundedName = "main"
+    pipeline_description: BoundedText | None = None
 
 
 class CreateNodeInstanceResponse(BaseModel):
