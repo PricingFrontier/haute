@@ -20,6 +20,8 @@ export interface PreviewData {
   nodeId: string
   /** Separate result identity for an occurrence's public output. */
   cacheKey?: string
+  /** Stable public output handle for the occurrence rows shown, even after a rename. */
+  outputHandle?: string
   nodeLabel: string
   status: "ok" | "error" | "loading"
   /** Cache preparation progress while waiting to execute the preview. */

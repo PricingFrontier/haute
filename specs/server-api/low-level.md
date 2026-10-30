@@ -196,7 +196,11 @@ config reference. The request's optional `graph` is the editor document's naming
 `PipelineGraph`, as save receives it, its preserved blocks included). The request's nodes
 are applied to it by id through `_editor_identities.name_candidates`, each in the graph its
 optional `submodel` names (the root without one; a definition the context lacks is HTTP 422),
-renamed there when present and added otherwise, in request order. With `allocate` (which
+renamed there when present and added otherwise, in request order. A new submodel
+instance carries the definition resolved from its `instance_of` owner into
+that insertion, so its generated clone names
+participate in allocation. Creation refuses a missing or non-owner reference,
+missing definition or mismatched output handles with HTTP 422. With `allocate` (which
 requires `graph`) each takes the first name the naming rule allows, trying its label and
 then `<label> 2`, `<label> 3`, … (an occurrence its alias, then `<alias>_2`, …), counting
 the names earlier nodes took; without it each keeps its name and gets as `collision` the

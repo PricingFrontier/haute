@@ -154,6 +154,7 @@ describe("useTracing", () => {
     const { result } = renderHook(() => useTracing(makeParams({
       nodes: [owner, occurrence], edges: [], selectedNode: occurrence, submodels,
       submodelsRef: { current: submodels }, previewFrame: frame === "prices" ? "again_premium" : "again_audit",
+      previewOutputHandle: frame === "prices" ? "out__premium" : "out__audit",
     })))
     await act(async () => result.current.handleCellClick(0, "price", { price: 42 }))
     expect(mockTraceCell).toHaveBeenCalledWith(expect.objectContaining({

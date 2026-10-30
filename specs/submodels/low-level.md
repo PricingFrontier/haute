@@ -244,8 +244,15 @@ carries `instance_of`, its owner's name (absent on the owner), and lists in
 `source_handles` every public output its definition declares, so the
 response's `source_handle_input_names` give each output's name; when the
 request carries the document graph, a node whose `instance_of` or handles
-differ from the graph's is refused (`422`). An occurrence's cached
-`_sourceHandleInputNames` are resolved for the new state before, and replaced
+differ from the graph's is refused (`422`).
+When a creation candidate is separate from the naming graph, its `instance_of`
+identifies the existing editable owner. The server takes that owner's
+`definitionId` and carries it and `instanceOf` into the inserted naming
+candidate, validates its declared output handles, and reserves its generated
+clone names before accepting or allocating an alias. A missing owner, a copy
+used as owner or an unavailable definition is refused (`422`).
+
+An occurrence's cached `_sourceHandleInputNames` are resolved for the new state before, and replaced
 in, the one undoable commit of any edit that changes them: renaming an
 instance, or a definition edit that takes the definition from one public
 output to several or back.
@@ -271,6 +278,9 @@ another when the user picks it from the preview's frame selector, which lists
 the occurrence's outputs. The retained choice is its public `out__<name>` handle,
 not its display name: renaming an instance keeps the chosen port on Refresh and
 derives its new display name from the current authoritative identities.
+The displayed preview data also carries that public output handle. Cell tracing
+uses it to resolve the current source endpoint, including after a rename and
+before Refresh, while the displayed rows still carry their old output label.
 Each output is its own preview request, cache entry
 and Refresh, superseded by a newer request as any preview is; an output whose
 preview fails shows its own error; trace-cell clicks trace that target and

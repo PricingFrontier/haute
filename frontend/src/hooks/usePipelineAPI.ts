@@ -187,6 +187,7 @@ function occurrencePreviewData(data: PreviewData, output: SubmodelOutputPreview 
     ...data,
     nodeLabel: output.outputName,
     cacheKey: output.cacheKey,
+    outputHandle: output.outputHandle,
     selected_frame: output.outputName,
     frame_columns: Object.fromEntries(output.outputNames.map((name) => [name, name === output.outputName ? data.columns : []])),
   }

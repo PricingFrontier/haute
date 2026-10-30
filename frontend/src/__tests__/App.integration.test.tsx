@@ -2644,6 +2644,68 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
 })
 
 describe("App integration - read-only submodel instance", () => {
+  it("traces the displayed output after an instance rename without refreshing", async () => {
+    const owner = makeNode("owner", "owner", "submodel")
+    owner.data.config = { definitionId: "rating", alias: "owner" }
+    owner.data._sourceHandleInputNames = { out__premium: "premium", out__audit: "audit" }
+    const copy = makeNode("again", "again", "submodel")
+    copy.data.config = { definitionId: "rating", alias: "again", instanceOf: "owner" }
+    copy.data._sourceHandleInputNames = { out__premium: "again_premium", out__audit: "again_audit" }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [owner, copy], edges: [], source_revision: "revision-rename-trace",
+      submodels: { rating: {
+        definitionId: "rating", file: "modules/rating.py",
+        graph: { nodes: [makeNode("child", "child")], edges: [] }, inputPorts: [],
+        outputPorts: [
+          { name: "premium", source: { nodeId: "child", handleId: "prices" } },
+          { name: "audit", source: { nodeId: "child", handleId: "checks" } },
+        ],
+      } },
+    }))
+    vi.mocked(api.previewNode).mockResolvedValue({
+      node_id: "submodel_runtime/again/child", status: "ok",
+      columns: [{ name: "value", dtype: "Int64" }], preview: [{ value: 37 }],
+      row_count: 1, column_count: 1,
+    })
+    render(<App />)
+    await waitForAppReady()
+    const copyNode = await waitFor(() => {
+      const element = document.querySelector<HTMLElement>('[data-id="again"]')
+      expect(element).not.toBeNull()
+      return element!
+    })
+    fireEvent.click(copyNode)
+    const selector = await screen.findByLabelText("Select frame to preview")
+    fireEvent.change(selector, { target: { value: "again_audit" } })
+    await waitFor(() => expect(api.previewNode).toHaveBeenLastCalledWith(expect.objectContaining({ portLabel: "checks" })))
+    await screen.findByText("37")
+    const previewsBeforeRename = vi.mocked(api.previewNode).mock.calls.length
+    vi.mocked(api.resolveEditorNodeIdentities).mockImplementationOnce(async ({ nodes }) => ({
+      violations: [],
+      identities: nodes.map(node => ({
+        node_id: node.node_id, label: node.label, alias: node.alias ?? null,
+        collision: null, function_name: node.alias ?? node.label, config_reference: null,
+        default_input_name: null,
+        source_handle_input_names: Object.fromEntries(node.source_handles.map(handle => [
+          handle, node.instance_of ? `${node.alias}_${handle.slice(5)}` : handle.slice(5),
+        ])),
+      })),
+    }))
+    const label = await screen.findByTestId("node-panel-label-input")
+    fireEvent.change(label, { target: { value: "renamed" } })
+    fireEvent.blur(label)
+    await waitFor(() => expect(useGraphStore.getState().nodes.find(node => node.id === "again")?.data._sourceHandleInputNames)
+      .toEqual({ out__premium: "renamed_premium", out__audit: "renamed_audit" }))
+    expect(selector).toHaveValue("again_audit")
+    vi.mocked(api.traceCell).mockImplementationOnce(() => new Promise(() => {}))
+    fireEvent.click(screen.getByText("37"))
+    await waitFor(() => expect(api.traceCell).toHaveBeenLastCalledWith(expect.objectContaining({
+      target_node_id: "submodel_runtime/again/child", port_label: "checks",
+      row_values: { value: 37 },
+    })))
+    expect(api.previewNode).toHaveBeenCalledTimes(previewsBeforeRename)
+  })
+
   it("keeps the shared definition inspectable while disabling every exposed edit surface", async () => {
     const owner = makeNode("inputs", "inputs", "submodel")
     owner.data.config = {

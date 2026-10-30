@@ -310,6 +310,7 @@ async def resolve_pipeline_editor_identities(
     # files the graph's support code star-imports, as save and the executor do.
     read_utility = utility_reader(pipeline_dir(), Path.cwd().resolve())
     try:
+        occurrence_definitions: dict[str, str] = {}
         if body.graph is not None:
             for node in body.nodes:
                 if node.node_type != NodeType.SUBMODEL:
@@ -323,13 +324,27 @@ async def resolve_pipeline_editor_identities(
                 )
                 occurrence = scoped.node_map.get(node.node_id)
                 if occurrence is None:
-                    # Creation candidates have no existing occurrence facts to compare.
-                    continue
-                if node.instance_of != occurrence.data.config.get("instanceOf"):
+                    if node.instance_of is None:
+                        continue
+                    # New copies arrive separately from the graph. Their owner supplies
+                    # the definition whose clone names the candidate must reserve.
+                    owner = scoped.node_map.get(node.instance_of)
+                    if (
+                        owner is None
+                        or owner.data.nodeType != NodeType.SUBMODEL
+                        or owner.data.config.get("instanceOf") is not None
+                    ):
+                        raise ValueError(
+                            f"Submodel {node.node_id!r} requires an editable owner "
+                            f"{node.instance_of!r} in the naming context."
+                        )
+                    definition_id = owner.data.config.get("definitionId")
+                elif node.instance_of != occurrence.data.config.get("instanceOf"):
                     raise ValueError(
                         f"Submodel {node.node_id!r} instance_of differs from the naming context."
                     )
-                definition_id = occurrence.data.config.get("definitionId")
+                else:
+                    definition_id = occurrence.data.config.get("definitionId")
                 if not isinstance(definition_id, str):
                     raise ValueError(f"Submodel {node.node_id!r} requires a definitionId.")
                 definition = (body.graph.submodels or {}).get(definition_id)
@@ -343,6 +358,7 @@ async def resolve_pipeline_editor_identities(
                     raise ValueError(
                         f"Submodel {node.node_id!r} source_handles differ from the naming context."
                     )
+                occurrence_definitions[node.node_id] = definition_id
         candidates = [
             NamingCandidate(
                 node_id=node.node_id,
@@ -350,6 +366,8 @@ async def resolve_pipeline_editor_identities(
                 node_type=node.node_type,
                 alias=node.alias,
                 submodel=node.submodel,
+                definition_id=occurrence_definitions.get(node.node_id),
+                instance_of=node.instance_of,
             )
             for node in body.nodes
         ]

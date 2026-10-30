@@ -7,6 +7,7 @@ export interface SubmodelOutputPreview {
   nodeId: string
   portLabel: string | undefined
   outputName: string
+  outputHandle: string
   outputNames: string[]
   cacheKey: string
 }
@@ -42,6 +43,7 @@ export function submodelOutputPreview(
     nodeId: qualifiedRuntimeNodeId(node.id, selected.port.source.nodeId),
     portLabel: selected.port.source.handleId ?? undefined,
     outputName: selected.outputName,
+    outputHandle: `out__${selected.port.name}`,
     outputNames: outputs.map((output) => output.outputName),
     cacheKey: `submodel_output/${encodeRuntimeIdPart(node.id)}/${encodeRuntimeIdPart(selected.port.name)}`,
   }

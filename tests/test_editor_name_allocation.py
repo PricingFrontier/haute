@@ -106,6 +106,77 @@ def test_generated_clone_names_refuse_renames_and_are_skipped_by_allocation(
     assert allocated["violations"] == []
 
 
+@pytest.mark.parametrize("allocate", [False, True])
+def test_new_occurrence_reserves_clone_names_before_it_is_in_the_context(
+    project: Path, client: TestClient, allocate: bool
+) -> None:
+    definition = _rates_definition()
+    definition.graph.nodes[0].data.label = "calc"
+    graph = PipelineGraph(
+        nodes=[_occurrence("rates", "rates"), _node("taken", "rates_2__calc")],
+        edges=[],
+        submodels={"rates": definition},
+    )
+    candidate = {
+        **_candidate("rates_2", "rates_2", "submodel", alias="rates_2"),
+        "instance_of": "rates",
+    }
+    assert candidate["node_id"] not in graph.node_map
+    body = _post(client, graph, [candidate], allocate=allocate)
+    identity = body["identities"][0]
+    if not allocate:
+        assert identity["collision"] is not None
+        assert "rates_2__calc" in identity["collision"]
+        assert {"rates_2", "taken", "child"} <= {
+            party["node_id"] for party in body["violations"][0]["parties"]
+        }
+        return
+    assert identity["label"] == "rates_2_2"
+    assert identity["collision"] is None
+    assert body["violations"] == []
+    graph.nodes.append(
+        _node(
+            "rates_2",
+            identity["label"],
+            "submodel",
+            definitionId="rates",
+            alias=identity["alias"],
+            instanceOf="rates",
+        )
+    )
+    SavePipelineService(project).validate_graph(graph, source_file="main.py")
+
+
+@pytest.mark.parametrize("invalid", ["missing", "ordinary", "copy", "definition", "handles"])
+def test_new_occurrence_requires_its_owners_definition_and_outputs(
+    project: Path, client: TestClient, invalid: str
+) -> None:
+    owner = _occurrence("rates", "rates")
+    if invalid == "ordinary":
+        owner = _node("rates")
+    elif invalid == "copy":
+        owner.data.config["instanceOf"] = "another"
+    elif invalid == "definition":
+        owner.data.config["definitionId"] = "missing"
+    candidate = {
+        **_candidate("new", "rates_2", "submodel", alias="rates_2"),
+        "instance_of": "absent" if invalid == "missing" else "rates",
+    }
+    if invalid == "handles":
+        candidate["source_handles"] = ["out__extra"]
+    graph = PipelineGraph(nodes=[owner], edges=[], submodels={"rates": _rates_definition()})
+    response = client.post(
+        "/api/pipeline/editor-identities",
+        json={
+            "nodes": [candidate],
+            "graph": graph.model_dump(mode="json", by_alias=True),
+            "allocate": True,
+        },
+    )
+    assert response.status_code == 422, response.text
+    assert "new" in response.text
+
+
 def test_duplicating_twice_gives_copy_then_copy_2(project: Path, client: TestClient) -> None:
     graph = PipelineGraph(nodes=[_node("x", "X")], edges=[])
 
