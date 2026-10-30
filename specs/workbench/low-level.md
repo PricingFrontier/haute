@@ -2685,3 +2685,358 @@ no longer has; and `InputSource` in
   of its connections, `frontend/src/hooks/__tests__/useWorkbenchConnections.test.tsx` that
   connection removed and reported as one it filled, and
   `frontend/src/hooks/__tests__/usePipelineAPI.nodeDataEpoch.test.ts` the preview's first table.
+
+## Approved change contract — the quote store as the form's own tables
+
+This section names the seams, shapes and tests for the behaviour the
+[high-level contract](high-level.md#approved-change-contract--the-quote-store-as-the-forms-own-tables)
+specifies; that section owns the behaviour and this one does not restate it. New modules and
+tests are named in plain text because they do not exist yet. Every record is unresolved until
+its roadmap package lands.
+
+- **Current limitation.** `src/haute/_quote_store/_tables.py` holds Haute's own schema as
+  SQLAlchemy Core tables, which `src/haute/_quote_store/migrations/env.py` and its four
+  numbered scripts build; `src/haute/_quote_store/_store.py` writes each revision whole, its
+  values, request and response as JSON text, with its form; `src/haute/_quote_store/_book.py`
+  keeps the app's quotes over it, `haute_quote_details` the one typed table; the app opens
+  the store from one URL (`src/haute/_workbench_app.py::quote_store_url`); and
+  `src/haute/_workbench_tables.py::sample_quote` puts every column the app sets in the request.
+- **Unresolved target.** The seams below, one paragraph each, tagged with the package that
+  builds them, in the order of [WB-10](../roadmap/workbench.md#wb-10--the-quote-store),
+  [WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments) and
+  [WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql).
+- **Non-goals.** No route outside the app's quote router and the workbench tables route
+  changes. The form folder, the Workbench Input's and Output's tables and Preview are as they
+  are but for the request's columns, Required on output columns and the store-only columns
+  the schema editor shows. Nothing reads the old schema.
+- **Failure and compatibility semantics.** The store's errors stay `WorkbenchError`s, each
+  with its `error_code`: `quote_values_invalid` (422) carries each table, sheet row and column
+  holding a value not of its type; `stale_quote` (409) names who changed the quote and when;
+  `quote_locked` (409) names what would let the change through (Amend, Restore);
+  `quote_not_ready` (409) names each required field without a value, or the release that
+  priced the quote; `write_superseded` (409) names when the repeated write landed and who
+  changed the quote after it; `reference_taken` (409) and `quote_not_found` (404) as today;
+  `quote_store_mismatch` names each difference between a database and a release's form, and
+  `quote_store_environment` a database recorded for another project or environment, an
+  environment the release does not declare, a location given twice or not at all, or a
+  provider Haute does not have; `migration_refused` names each step a migrate cannot take, each
+  table or column the form has that the database lacks, and a plan needing a restore point it
+  was not given. A
+  started app that meets either of the last three does not serve. No error carries a
+  connection URL, a server or a database name, or a secret.
+- **Acceptance evidence.** The testing scenarios at the end of this section, each extending
+  the named module or in a new one.
+- **Roadmap package.** [WB-10](../roadmap/workbench.md#wb-10--the-quote-store),
+  [WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments) and
+  [WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql).
+
+**The derived tables (WB-10).** A new module, src/haute/_quote_store/_schema.py, owns the
+store's shape. `store_tables(form, provider)` answers a SQLAlchemy `MetaData` holding, for each
+table of the form's schema, a `Table` of its name: the form's columns in the form's order,
+typed through the provider's type map, every one of the project's nullable; the identity and,
+in a many-row table, `quote_row`, NOT NULL; and the store-only columns. Each primary key, the
+foreign key from each table's identity to `quote_details` and each index take a name made from
+the table's stable id (`haute_pk_<hash>`, `haute_fk_<hash>`, `haute_ix_<hash>`), so a rename
+leaves them findable. The same `MetaData` holds `haute_store` (one row, its `id` 1: `project`,
+`environment`, `release`, `haute_version`, `migrated_at`, and `schema`, the structural schema
+as one JSON text of tables and columns by stable id with each one's database name, type, role,
+rows, `is_index` and `kept`) and `haute_activity` (`activity_id` generated, `operation_key`
+VARCHAR(64) UNIQUE NOT NULL, `quote_reference`, `quote_option`, `quote_version` (null for a
+note), `occurred_at`, `actor`, `action`, `assignee`, `note`, `reason` and `priced_release`,
+with an index on the identity and `activity_id`). The store-only columns of `quote_details` are
+declared there once: `quote_version` BIGINT NOT NULL, `saved_at` (a UTC moment, `UtcDateTime`
+as `src/haute/_quote_store/_tables.py::UtcDateTime` holds it today) NOT NULL, `priced_release`
+VARCHAR(200), `source_reference` VARCHAR(40), `source_option` BIGINT, `source_relation`
+VARCHAR(20), and the note as it stands, `handover_note` TEXT with `note_by` VARCHAR(320) and
+`note_at` (a UTC moment), so the note, its author and its time are read in one statement,
+indexed on `(archived, assignee, saved_at)` and `(source_reference, source_option)`. The tables route (`src/haute/routes/workbench.py`)
+answers each table's store-only columns, name and kind, from there, which the schema editor
+shows locked. `src/haute/_quote_store/_tables.py` and `src/haute/_quote_store/migrations/env.py`
+with its four scripts go.
+
+**The form (WB-10).** `src/haute/_workbench_form.py` keeps `QUOTE_DETAILS_MANAGED` as the
+columns the app sets and gains `QUOTE_DETAILS_STORE_ONLY`, the ones no request holds
+(`qd_stage`, `qd_assignee`, `qd_archived`, `qd_modified_date`, `qd_modified_by` and
+`qd_haute_version`); `SchemaColumn.required` applies to output columns as to input ones; and
+`stage` holds `draft` or `final`. The name rules of the high-level contract are checked in
+`src/haute/_workbench_tables.py::check_tables`, which store derivation runs once more across
+both roles, in `src/haute/_workbench_folder.py::folder_name_problems` and in
+`frontend/src/utils/workbenchForm.ts`, and apply to the workbench's tables alone.
+
+**The request (WB-10).** `src/haute/_workbench_tables.py::sample_quote`, and so `quote_request`,
+leaves `QUOTE_DETAILS_STORE_ONLY` out of every request and keeps every other `quote_details`
+column whatever the sheets hide, where today `QUOTE_DETAILS_MANAGED` alone escapes hiding; the
+Workbench Input and Preview take the same columns.
+
+**The rows a save writes (WB-10).** One path: the cells, the app's details set over the page's,
+`quote_request`, then `src/haute/_workbench_input.py::read_quote`, whose frames are inserted. A
+value `src/haute/_workbench_input.py::_value` refuses is a `quote_values_invalid`, its row
+mapped back from its place in the request to its row on the sheet through the numbering
+`src/haute/_workbench_tables.py::_record` gives (the request leaves blank rows out), each
+named by its table's and column's labels. `quote_row` is that sheet row. Output rows come from
+the pricing's typed frames, read by a reader beside `read_quote` that shares its typing and
+takes the quote's identity on every row; a non-finite or null value becomes null, and the
+pricing's answer shows it empty. The pricer inside `src/haute/_workbench_app.py::create_app`
+answers the typed request and frames beside the tables the page shows, so no row passes
+through `src/haute/_json_safe.py::to_json_safe`.
+
+**The store (WB-10).** `src/haute/_quote_store/_store.py` and `src/haute/_quote_store/_book.py`
+are rewritten over the derived tables, with `src/haute/_quote_store/__init__.py` exporting what
+the routes use. The store opens a database for a release's form and answers quotes as
+`AppQuote` (the identity, `quote_details` by column name, `stage`, `assignee`, `archived`,
+`version`, `saved_at`, `priced_release`, the source and its relation, the note with its author
+and time, who finalised and who archived it and when) and their contents as cells, outputs and
+`dropped`. `Stage` is `draft` or `final`; `Relation` is `duplicate`, `renewal` or
+`alternative`; an activity's `action` is one of `created`, `saved`, `assigned`, `archived`,
+`restored`, `finalised`, `amended` and `noted`. `QuoteRevision`, `QuoteSummary`,
+`RevisionSummary`, `CarriedValues`, `carry_values`, `migrate_store` and the per-revision
+timeline go. SQLite connections take SQLAlchemy's documented recipe for the pysqlite driver,
+`isolation_level=None` on connect and `BEGIN` on the engine's begin, `BEGIN IMMEDIATE` for a
+write, keep foreign keys on and the rollback journal as `src/haute/_quote_store/_store.py::_engine`
+does, and refuse a SQLite older than 3.35.
+
+**A save (WB-10).** Operation keys first: a key already in `haute_activity` for the same actor,
+quote and action answers the quote when that row's `quote_version` is the quote's own, and
+`write_superseded` otherwise, before the form revision and the release are checked; the same
+key for another actor, quote or action is refused as taken. Then, in one transaction:
+`UPDATE quote_details SET <the frame's columns>, saved_at, priced_release, modified_date,
+modified_by, haute_version, quote_version = quote_version + 1 WHERE quote_reference = :r AND
+quote_option = :o AND quote_version = :v AND stage = 'draft' AND NOT archived`; when no row is
+updated, the transaction rolls back and the key is looked up again, answered as a repeated key
+when another request under it has committed meanwhile, as an identical request sent twice at
+once does, and only otherwise is the row read once to answer `quote_not_found`, `stale_quote`
+or `quote_locked`; then, for each other table of the form in the schema's order, `DELETE` the
+quote's rows and `INSERT` the new ones, batched below SQL Server's 2,100 parameters, outputs
+none when unpriced; then the `saved` activity row; then commit. A unique violation on the
+operation key rolls back and answers the key as above. A save writes only the form's tables: a
+kept column of one of them is left null in the rows it inserts, and a kept table, which the
+form no longer has, is not touched.
+
+**Creation, lifecycle and the note (WB-10).** A creation checks its operation key, then, for a
+new quote, a duplicate or a renewal, refuses a reference held already (`reference_taken`,
+naming the quote), with the primary key as the backstop (a violation rolls back, checks the key
+again and answers `reference_taken`); for an alternative, it holds the source's option 1 with
+`UPDATE quote_details SET quote_version = quote_version WHERE quote_reference = :r AND
+quote_option = 1`, then reads `MAX(quote_option)`, then inserts the next. It writes
+`quote_details` (version 1, stage `draft`, `priced_release` null, `source_*`), the input rows
+and the `created` activity row. `src/haute/_quote_store/_book.py::check_reference` also refuses
+`.` and `..`, and the reference is kept in NFC; `canonical_reference` and the comparison by
+canonical form go. Assign, archive, restore, Mark final and Amend are each one compare-and-swap
+on `quote_details` that moves the version on and sets `modified_date` and `modified_by`, and an
+activity row. Assign and Archive need the quote not archived, and Restore an archived one, in
+either stage. Mark final needs stage `draft`, not archived, `priced_release` the running
+release and a value in every required input and output column, read from the stored rows,
+else `quote_not_ready`. A required column holds a value when, in a one-row table, its cell
+does, and in a many-row table, every row's does, a table without rows passing: text of spaces
+alone is empty, zero and false are values and null is not, so an unticked box in a filled
+input row holds one while a True/false output left unfilled does not, and an output's value is
+finite. Required is checked nowhere else:
+`src/haute/_workbench_app_quotes.py::_required_left` and the New quote window's own check of
+required details (in `frontend/src/app/useNewQuoteStore.ts`) go, and the window still requires
+a reference, the quote's identity. Amend needs stage `final`, not archived, and a reason, and
+sets `draft`. The note holds the row with the no-op update, sets `handover_note`, `note_by` and
+`note_at`, leaves the version where it is and writes a `noted` row; a note never conflicts, so
+a note repeated under its key answers the quote as it stands, whatever note is newest.
+
+**A load (WB-10).** The `quote_details` row by identity, the note with its author and time
+among its columns, each other table's rows ordered by `quote_row`, and the newest `finalised`
+and `archived` activity rows, whose writes change the version, then `quote_version` read
+again; when it moved, read again, three times at most, then refused saying
+the quote kept changing. Cells: an Integer `str(int)`, a Decimal `repr(float)`, a Date its ISO
+text, True a tick, False and null no cell; a many-row table's rows at their `quote_row` places,
+a gap a blank row. Outputs are rendered by the function the pricing route renders with.
+`src/haute/_workbench_tables.py::preset_rows` places preset rows, and each row it leaves out is
+named in `dropped`.
+
+**Routes and pages (WB-10).** `src/haute/_workbench_app_quotes.py::quote_router` answers `GET
+/api/app/quotes`, `POST /api/app/quotes`, `GET /api/app/quotes/{reference}/{option}`, `POST
+/api/app/quotes/{reference}/{option}/save`, `.../assignee`, `.../archive`, `.../restore`,
+`.../final`, `.../amend` and `.../note`, `GET .../activity` and `GET /api/app/people`, the
+reference URL-encoded; the revision, carry and history routes go. Their request and response
+models in `src/haute/schemas.py` name the quote's version where a revision number stood, and
+the generated contracts under frontend/src/generated/ are generated again from them. The
+app's pages are `/`, `/quotes/new` and `/quotes/{reference}/{option}`
+(`src/haute/_workbench_app.py::APP_PAGES`).
+
+**The page (WB-10).** `frontend/src/app/route.ts` reads quotes by reference and option and has
+no revision route. `frontend/src/app/QuoteView.tsx` shows Draft or Final, Amend in place of
+Reopen, a Mark final refusal naming each field, and no revision line or earlier sheets.
+`frontend/src/app/HistoryPanel.tsx` shows the activity and the note, with no Revisions list.
+`frontend/src/app/useOpenQuoteStore.ts` names the version where a revision number stood, takes
+`write_superseded` as done, and shows `quote_values_invalid`'s columns.
+`frontend/src/app/QuotesPage.tsx` lists the stages Draft and Final.
+`frontend/src/app/NewQuoteWindow.tsx` and `frontend/src/app/quoteValues.ts` take references as
+keyed, case included, and refuse `.` and `..`. `frontend/src/workbench/schema/ColumnDetails.tsx`
+offers Required on output columns, and `frontend/src/workbench/SchemaEditor.tsx` shows the
+store-only columns locked. `frontend/src/api/workbench.ts` follows the routes.
+
+**`haute app serve` until WB-42 (WB-10).** `src/haute/cli/_app.py::QUOTES_FILE` becomes
+`.haute/app/store.sqlite`, and `src/haute/cli/_app.py::_local_store` builds its tables from the
+form as it starts; when the file's recorded schema differs from the form, it builds the tables
+that differ afresh and names each whose rows it dropped. WB-42's planner, in dev, replaces that.
+
+**Environments (WB-42).** `src/haute/_workbench_config.py::read_workbench_config` reads the
+`[workbench.store.<name>]` tables (`WORKBENCH_TOML_KEYS` gains `store`): `provider`, one of
+those Haute has, and `auth`, `managed-identity`, `service-principal` (with `client_id_env` and
+`client_secret_env`) or `password` (with `username_env` and `password_env`); any other key,
+and a key holding a secret's value, is refused by name. A new module,
+src/haute/_quote_store/_environment.py, resolves the environment a hosted app or a migrate runs
+in: `HAUTE_ENVIRONMENT`, refused when the release does not declare it; the location from
+`HAUTE_STORE_SERVER`, `HAUTE_STORE_DATABASE` and `HAUTE_STORE_SCHEMA`, or from `HAUTE_STORE_URL`,
+refused when both or neither are given; and the URL the provider builds, never logged, checked
+with `src/haute/_credential_security.py::validate_credential_free_uri` where it is built from
+parts. `STORE_URL_ENV` and `quote_store_url` in `src/haute/_workbench_app.py` go, and
+`create_app` opens the store for the resolved environment. A release carries no `haute.toml`,
+so `src/haute/_workbench_app.py::build_release` writes the declared environments into
+`release.json`, each with its provider and its sign-in (the method and the names of its
+variables, never a value); a hosted app and a migrate read them from the release alone, never
+from a project checkout, and the image installs the drivers their providers need.
+
+**The planner (WB-42).** A new module, src/haute/_quote_store/_migrate.py. A hosted migrate
+first reconciles `haute_store` with the schema's catalogue, reflected with SQLAlchemy's
+`inspect`: a kept column or table the catalogue no longer holds, which the SQL side dropped,
+is forgotten, so its name is free; a table or column the form still has that the catalogue
+lacks is a `migration_refused` naming it; and an object `haute_store` does not record is left
+alone. Then `counts`, the number of non-null values in each column and of rows in each table a
+step may drop or change, is read. `plan(form, recorded, counts, mode)` compares the form's
+structural schema with the reconciled record by stable id and answers its steps, each with
+its kind (create table, add column, rename, keep, bring back, change an empty object, refuse,
+and, in dev alone, drop a removed one) and its rollback class (nothing to reverse, a migrate
+back, a restore), and its refusals; it reads nothing but what it is given. Offline, `--plan --base FORM` plans the
+change from `FORM` to the release's form with no database: it takes the provider the
+environment declares, resolves no location, holds no counts, and reports each step that
+depends on data as conditional (a type, rows or role change made if the object is empty, else
+refused), the plan headed as provisional; a removed column or table is kept there as in every
+hosted plan, its DROP printed for the DBA. A hosted plan holding a step only a restore
+reverses (a change to an empty column or table that the release may fill) is applied only
+given `--restore-point NAME`, the backup or point in time IT can return the database to, which
+`haute_store` records and the plan prints; without one the migrate refuses, naming those
+steps. Dev asks for no restore point. `apply(plan, connection)` runs
+the steps in one transaction through Alembic's `Operations` (`create_table`, `add_column`,
+`alter_column` with `new_column_name` or `type_`, `rename_table`, `drop_column` and
+`drop_table`), each rename in two phases through a `haute_tmp_<hash>` name, a SQLite batch
+rebuild only for a table other than `quote_details`, and the `haute_store` row last. A type
+change of an empty column is made the provider's way, as its paragraph below says: in place
+where the engine converts the pair, and otherwise by replacing the empty column, the new type
+added under a `haute_tmp_<hash>` name, the empty column dropped and the new one renamed, which
+loses nothing since it held no value. `mode` is `hosted`, which drops nothing the form removed
+and nothing holding a value, or `dev`, which also drops removed objects and rebuilds populated
+ones, naming each. `render(plan, dialect)` prints
+the steps for `--plan` and Alembic's offline SQL for `--sql`, which notes a restore point
+wherever the plan needs one. `src/haute/cli/_app.py::handle_app_migrate` reads the form and the
+environments from a built release (`--release DIR`, by default `.haute/app/release`, so CI
+migrates with the release it deploys) and takes `--environment`, `--plan`, `--base FORM`,
+`--sql` and `--restore-point NAME`; `--url` goes.
+
+**The startup check (WB-42).** Opening a hosted store reflects its schema's catalogue with
+SQLAlchemy's `inspect` and compares it with `store_tables` through `haute_store`: every table
+and column the release uses under its id, name, type, primary and foreign keys and, on SQL
+Server, collation; every other column of those tables nullable; `haute_store`'s project and
+environment; and the privileges the provider's probe checks. Each difference is a line of
+`quote_store_mismatch`, closing with `haute app migrate --environment <name>`.
+
+**Providers (WB-43).** A new module, src/haute/_quote_store/_providers.py, holds `sqlite`,
+`sqlserver` and `postgresql`, each with the URL and connect arguments it builds from a location
+and a sign-in, its type map, identifier limit, rename DDL, whether its DDL is transactional, its
+way of retyping an empty column, and its privilege probe. `postgresql` retypes an empty column
+in place for every pair, `ALTER COLUMN ... TYPE ... USING NULL::<type>`, which holds for a
+column of nulls whatever the pair; `sqlserver` retypes in place with `ALTER COLUMN` where SQL
+Server converts the pair implicitly, and otherwise replaces the empty column; `sqlite`, dev's,
+rebuilds the table in batch. `sqlserver` connects through pyodbc and ODBC Driver 18 with `Encrypt=yes`,
+signs in with Entra ID by a token its connect hook sets (`SQL_COPT_SS_ACCESS_TOKEN`), fetched
+for each new connection, with `pool_pre_ping`, and maps Text to `NVARCHAR(max)`, the identity to
+`NVARCHAR(80)` under `Latin1_General_100_BIN2` in every table, a Decimal to `FLOAT(53)`, a
+moment to `DATETIME2(6)` and True/false to `BIT`, all pinned so offline SQL renders as the
+connected dialect does. `postgresql` connects through psycopg and maps Text to `TEXT`, the
+identity to `VARCHAR(40)`, a Decimal to `DOUBLE PRECISION` and a moment to `TIMESTAMP`, its
+identifier limit 63. `src/haute/_workbench_app.py::STORE_DEPENDENCIES` gains each declared
+provider's driver, `pyproject.toml` gains `sqlserver` and `postgresql` extras, and
+`src/haute/deploy/_container.py::prepare_build_directory` installs Microsoft's ODBC Driver 18
+for a release that declares `sqlserver`.
+
+**Testing scenarios.**
+
+- The derived tables (WB-10, a new tests/test_quote_store_schema.py): a form holding
+  `quote_details`, a one-row input table, a many-row input table and an output table derives
+  tables of the schema's names and types, the project's columns nullable, the identity and
+  `quote_row` keys, the foreign keys to `quote_details`, the store-only columns and the two
+  Haute tables; a rename of a table keeps its constraints' names.
+- Saving (WB-10, `tests/test_quote_book.py`): a priced save writes one row for each one-row
+  table and the many-row table's rows at their sheet rows, a blank row between them counted,
+  its outputs beside, and plain SQL over the file reads the values typed; saving again
+  replaces them; an unpriced save deletes the outputs and leaves `priced_release` null; an
+  Integer past 2^53 reads back exactly; `abc` in an Integer column on the third sheet row is
+  refused naming the table, row 3 and the column's label, with nothing written; an empty
+  required input, a value outside its range and a non-finite output each save.
+- Refusals (WB-10, `tests/test_workbench_app_quotes.py`): a save over a version moved on is
+  409 naming who; a final or archived quote's save 409; a reader's 403; nothing typed 422.
+- Repeated writes (WB-10, `tests/test_workbench_app_quotes.py` and
+  `frontend/src/app/__tests__/useOpenQuoteStore.test.ts`): a save repeated with its key answers
+  the quote and writes one activity row; repeated after a colleague's save it is
+  `write_superseded` naming both, and the page lets it go as done; one save sent twice at once
+  under one key answers both as the one write, while two saves under two keys over one version
+  land once and refuse the other as `stale_quote`; a creation repeated makes one quote, an
+  alternative repeated one option; a key reused for another quote is refused; a note repeated
+  after a colleague's note answers the quote with the colleague's.
+- Stages (WB-10, `tests/test_quote_book.py` and `frontend/src/app/__tests__/QuoteView.test.tsx`):
+  Mark final is refused naming an empty required input and an empty required output, and on a
+  price of another release, and made otherwise; in a many-row table a required column filled
+  in two rows and empty in a third refuses it, the table without rows passes, text of spaces
+  alone refuses it, zero and an unticked box in a filled row pass, and a required True/false
+  output whose row holds false passes while the same row holding null refuses it; a New quote
+  window and a creation leave
+  a required detail empty and are made; Amend takes a final quote to draft with its reason in
+  the activity; a final quote refuses a save; assign, archive and restore keep values and
+  prices; the Quotes page counts Draft and Final.
+- References and options (WB-10, `tests/test_quote_book.py` and
+  `frontend/src/app/__tests__/NewQuoteWindow.test.tsx`): `ABC-1` and `abc-1` are both made; `café`
+  keyed composed and decomposed is one reference; `.` and `..` are refused; a taken reference is
+  409 naming its quote; two alternatives made at once take two options.
+- The request (WB-10, `tests/test_workbench_tables.py`): a cell a Show when hides is saved
+  blank and left out of the request; a hidden `quote_details` column is stored and priced; the
+  six store-only details are in the stored row and in no request.
+- Loading (WB-10, `tests/test_quote_book.py` and `tests/test_workbench_app_quotes.py`): cells
+  come back as text (digits, `repr` of a float, ISO date, a tick), many-row rows at their places
+  with the gap blank, the outputs equal to the pricing's answer for the same values, a preset
+  value no longer allowed named in `dropped`; a load racing a save reads again; a load racing a
+  note answers a note whose text, author and time are one note's.
+- Names (WB-10, `tests/test_workbench_tables.py` and
+  `frontend/src/utils/__tests__/workbenchForm.test.ts`): two columns differing only in case, a
+  64-character name, a `haute_` column, a `quote_row` column in a many-row table and a table
+  named `sqlite_x` are each refused naming it, and `quote_details.haute_version` is accepted.
+- The old store (WB-10, `tests/test_quote_store.py`): a SQLite file holding
+  `haute_quote_store_version` is refused naming its tables.
+- The editor (WB-10, `frontend/src/workbench/__tests__/SchemaEditor.test.tsx`): Required is
+  offered on an output column and the store-only columns are shown locked.
+- The browser (WB-10, a new journey under frontend/e2e/): a quote saved in `haute app serve`
+  is read from the SQLite file with SQL, marked final, amended and saved again.
+- The planner (WB-42, a new tests/test_quote_store_migrate.py): each kind of step, a change of
+  case and a swap of two names, a kept column's counts and DROP, a kept id brought back, a retype
+  of an empty column made and of a populated one refused, a one-row table made many-row empty
+  and refused populated, a new column wanting a kept name refused, each step's rollback class,
+  a failure part way leaving nothing changed, and dev dropping and rebuilding while naming each;
+  a kept column dropped on the SQL side is forgotten and a new column then takes its name, while
+  a column the form still has, dropped there, is refused naming it; a table the form drops is
+  kept with every quote's rows through a later save of a quote, and its id brought back returns
+  those rows as they stood; `--plan --base` with no database headed provisional, a dropped column
+  reported as kept with its DROP, and a retype as made if empty, else refused; a hosted plan
+  holding a step only a restore reverses refused without `--restore-point` and applied with one,
+  which `haute_store` records, while dev retypes and drops a populated column with none; a
+  rename migrated back restores the previous release's names.
+- Starting and environments (WB-42, `tests/test_workbench_config.py` and
+  `tests/test_workbench_app.py`): a missing column refuses naming it and the command; an extra
+  NOT NULL column refuses and a nullable one passes; another project's or environment's
+  database refuses naming both; an undeclared `HAUTE_ENVIRONMENT` refuses naming the declared
+  ones; a location given twice refuses; an unknown key or a secret's value in
+  `[workbench.store.<name>]` is refused; a built release started in a folder apart from its
+  project signs in as its `release.json` declares; a captured log and every API answer hold no
+  URL, server, database or secret.
+- Providers (WB-43, a new tests/test_quote_store_providers.py, and the store tests marked to run
+  on the CI job's SQL Server and PostgreSQL containers): on SQL Server `ABC-1` and `abc-1` are
+  two quotes and saving one leaves the other's rows; on PostgreSQL a 64-character name is
+  refused in the plan; a Text column holding no value made an Integer on PostgreSQL (in place,
+  `USING NULL::BIGINT`) and a Date column holding no value made an Integer on SQL Server (by
+  replacement), each applied and each shown in `--sql`'s output; a non-finite float never
+  reaches SQL Server; the `sqlserver` connect hook
+  sets the token from a fake credential; and `tests/test_deploy_container.py` covers the image
+  installing ODBC Driver 18 for a release declaring `sqlserver`.

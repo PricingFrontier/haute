@@ -2475,3 +2475,282 @@ Out of scope:
 - Two response nodes of either type, at the top level or in a submodel, fail save and deploy
   with "Only one Quote Response or Workbench Output node is allowed per pipeline (found 2).",
   and `Pipeline.run` and `Pipeline.score` refuse the pipeline, naming both.
+
+## Approved change contract — the quote store as the form's own tables
+
+This section specifies the quote store before it is rebuilt. Every record in it is unresolved
+until its roadmap package lands. Each package folds its part into the present-tense sections
+of this specification and of [cli](../cli/high-level.md), WB-43 also into the container build's
+row in [deploy](../deploy/low-level.md)'s module map, and the last package to land removes this
+section. The [low-level contract](low-level.md#approved-change-contract--the-quote-store-as-the-forms-own-tables)
+names the seams, shapes and tests.
+
+- **Current limitation.** The quote store is a schema of Haute's own, apart from the form:
+  nine tables prefixed `haute_` that four numbered migrations keep in step with Haute. A
+  quote's values, request and response are JSON text in each revision, the values by table
+  and column id and kept as typed; only `quote_details` is copied into typed columns, so a
+  report reads a premium by parsing JSON. Each revision is kept whole with a copy of the form
+  it was keyed into, so a quote saved on earlier sheets opens on them and is carried onto the
+  current ones. A quote is draft, priced or final, and a final one is reopened to change it.
+  References are compared case-folded. A hosted app reads one opaque URL; nothing names an
+  environment. The details the app sets reach the pipeline in every request, the cells the
+  sheets hide are kept in the store though the request leaves them out, a non-finite output
+  reaches the response as a sentinel, and Required applies to input columns alone, checked
+  only as the New quote window makes a quote.
+- **Unresolved target.** The store is the form's own tables: each table of the schema a SQL
+  table in the user's database, named and typed as the schema says, holding each quote's
+  current state, saved and read with plain SQL, beside two small tables of Haute's own.
+  Quotes are draft or final. A project declares its hosted environments once and a host
+  picks one by name; one planner keeps the tables in step with the form; and the store runs
+  on SQLite, SQL Server and PostgreSQL.
+  [WB-10](../roadmap/workbench.md#wb-10--the-quote-store) builds the store on SQLite,
+  [WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments) the
+  planner and the environments, and
+  [WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql) the server
+  databases.
+- **Non-goals.** No revision history and nothing that rebuilds one: a save replaces the
+  quote's rows. Nothing migrates from today's store; a database holding its tables is
+  refused, naming them, and the old local file is left as it is. In test and prod a type,
+  rows or role change on a column or table that holds values is refused, never converted;
+  Haute drops no column or table there, adopts no table it did not record, and touches none
+  of the database's other tables. No laptop reaches a hosted environment. MySQL, MariaDB,
+  Oracle, Databricks SQL and Snowflake are not store engines. The SQL Export, outcomes and
+  policies are unchanged ([WB-11](../roadmap/workbench.md#wb-11--exports-from-the-app),
+  [WB-13](../roadmap/workbench.md#wb-13--managing-quotes-in-the-underwriter-app)). Preview in
+  the editor keeps no quotes, and the form's own upgrade of an earlier `quote_details` is as
+  it is.
+- **Failure and compatibility semantics.** A save is refused (422), with nothing written,
+  when a value is not of its column's type, naming each table, row and column holding one;
+  otherwise only as today: a quote moved on since the page read it (409, naming who moved
+  it), a final or archived quote (409), one who may only read quotes (403), and nothing typed
+  (422). Mark final is refused (409) naming each required input and output that holds no
+  value, or naming the release when the price is not the running release's. A write repeated
+  under its operation key answers what that write did, or, when the quote has moved on since,
+  a refusal of its own saying the write landed and who changed the quote after it, which the
+  page takes as done. A started app refuses a database that does not hold its release's form,
+  naming each difference and the command that resolves it; a database recorded for another
+  project or environment, naming both; an environment its release does not declare, naming
+  those it does; and a provider Haute does not have, naming those it has. A migrate refuses
+  before any DDL, naming each step it cannot take, a table or column the form still has that
+  the database lacks, and a plan needing a restore point it was not given. Nothing falls back:
+  a value the store
+  cannot hold as its column's type is refused, never kept as something else.
+- **Acceptance evidence.** Each package's acceptance tests, in the testing scenarios of the
+  low-level contract, and one browser test that saves a quote in `haute app serve`, reads its
+  rows from the SQLite file with SQL, marks it final, amends it and saves it again.
+- **Roadmap package.** [WB-10](../roadmap/workbench.md#wb-10--the-quote-store),
+  [WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments) and
+  [WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql), in that
+  order.
+
+**The tables.** Each table of the form's schema is a table of the same name in the store's
+database: `quote_details`, every input table and every output table. Its columns are the
+schema's, under their names and in their types: an Integer a 64-bit integer, a Decimal a
+double, Text unbounded text, True/false a boolean and a Date a date. Every column of the
+project's own is nullable, so a draft saves with any of them empty; Required is checked as a
+quote is marked final, never by the database. Every row holds the quote's identity,
+`quote_reference` and `quote_option`, with which every table but `quote_details` already
+leads, and a row of a many-row table holds `quote_row` too, Haute's number for it: an input
+row's place on its sheet, blank rows counted, so a grid opens as it was saved, and an output
+row's place in the pricing's answer. The identity, with `quote_row` in a many-row table, is
+each table's primary key, and each table's identity refers to its quote's `quote_details`
+row. A one-row table holds one row for each quote, null where nothing was typed. The form's
+own index and key columns are untouched, and the pipeline sees them as today. A report joins
+the tables on `quote_reference` and `quote_option`:
+
+```sql
+SELECT d.broker, SUM(p.total_premium) AS premium
+FROM quote_details AS d
+JOIN premium AS p ON p.quote_reference = d.quote_reference
+                 AND p.quote_option = d.quote_option
+WHERE d.stage = 'final'
+GROUP BY d.broker;
+```
+
+**Haute's own tables.** Beside the form's tables Haute keeps two. `haute_store` holds one row:
+the project, the environment, the release and Haute version last migrated and when, and the
+structural schema it migrated to, each table's and column's stable id with its name in the
+database, its type, its role, its rows and whether it is kept though the form has dropped it.
+`haute_activity` grows by one row for each thing done to a quote (made, saved, assigned,
+archived, restored, marked final, amended, noted), holding who did it and when, the quote's
+version after it, its operation key, and the reason, note or assignee it carried; nothing
+changes or removes a row. Haute writes no other table and reads only these and the form's.
+
+**Columns Haute keeps.** `quote_details` holds, besides the form's columns, store-only ones,
+shown locked in the editor beside the form's and held by no request or frame:
+`quote_version`, which every write that changes the quote moves on; `saved_at`, when the
+newest save was made, in UTC; `priced_release`, the release whose pricing the output tables
+hold, null when the quote was saved unpriced; `source_reference`, `source_option` and
+`source_relation`, the quote this one was made from and how (a duplicate, a renewal or an
+alternative); and the note as it stands, with who wrote it and when (`handover_note`, `note_by`
+and `note_at`), so a quote's note is always read whole. Each many-row table's `quote_row` is
+store-only too. They are defined once, by the store's reading of the form, and the editor
+shows them from there.
+
+**What reaches the pipeline.** The details the app changes over a quote's life, `stage`,
+`assignee`, `archived`, `modified_date`, `modified_by` and `haute_version`, are columns of
+`quote_details` in the database but no longer reach the pipeline, so changing them never
+leaves a stored price that its stored inputs no longer give; `quote_reference`,
+`quote_option`, `created_date`, `created_by` and the details the underwriter types still do.
+Every column of `quote_details` is stored, and each that reaches the pipeline is priced,
+whatever the sheets hide. Any other cell a Show when hides is saved blank, as the request
+already leaves it out, so the input tables hold exactly what the quote was priced on; a value
+typed and then hidden is gone once the quote is saved.
+
+**A save.** A save is priced first, as today, then written in one transaction: the quote's
+`quote_details` row updated where its `quote_version` is the one the page opened or saved it
+at, the version moved on, `saved_at`, `priced_release` and the administration set; then, in
+each other table, the quote's rows deleted and its new rows inserted, an output table's from
+the pricing and none when the quote is saved unpriced; then its activity row. Rows are
+written from typed values, never from the copies made for JSON, so an integer past 2^53 is
+kept exactly. A non-finite or empty output is saved empty. A save is refused, with nothing
+written, when a value is not of its column's type, naming each table, row (as the sheet
+numbers it) and column; otherwise only when the quote has moved on since the page read it,
+naming who moved it, when it is final or archived, for one who may only read quotes, and
+when nothing is typed. Nothing else a quote's cells or outputs hold refuses a save: a required
+input or output left empty, a value outside its range or allowed values, and a non-finite
+output all save.
+
+**Stages.** A quote is `draft` or `final`. A draft can be edited and saved. Mark final makes a
+draft final once it is priced on the running release and every input and output column
+marked Required holds a value, and is refused naming each that does not; the schema editor
+offers Required on output columns as on input columns. A required column holds a value when,
+in a one-row table, its cell does, and in a many-row table, every row's does, a table without
+rows passing; text of spaces alone is empty, zero and false are values and null is not (an
+unticked box in a filled row is false; a True/false output left unfilled is null), and an
+output's value is finite. Required is checked
+nowhere else: the New quote window makes a quote with a required detail empty, asking only
+for the reference, the quote's identity. A final
+quote takes no typing and no save, and what later work gates behind final, exports first
+([WB-11](../roadmap/workbench.md#wb-11--exports-from-the-app)), is offered on it alone. Amend
+takes a final quote back to draft, asking why, and its next save overwrites what was offered:
+an underwriter who needs the offer kept copies the quote first. Assigning, archiving and
+restoring work in both stages and change the quote's administration alone, its values and
+prices kept. Whether a draft holds a price is its `priced_release`, which its page shows. The
+Quotes page's stages are Draft and Final.
+
+**The activity log and repeated writes.** Each write carries an operation key, bound to who
+sent it, the quote and what it does, and the first write under a key is the one that counts.
+A write repeated under its key, as the page repeats one whose answer was lost, answers what
+the first did while that write is still the quote's newest, and otherwise a refusal of its
+own, saying the write landed, when, and who changed the quote after it, which the page takes
+as done rather than as never landed; a write sent twice at once under one key is answered as
+the one write it is. A creation repeated under its key answers the quote it made and never
+makes another, an alternative included. A note never conflicts with another write, so it moves
+no version, and a note repeated under its key answers the quote as it stands. A quote's page
+shows its activity: who
+made, saved, assigned, archived, restored, marked final and amended it and when, Amend's
+reasons, and the notes with their authors.
+
+**Making a quote.** A new quote, a duplicate and a renewal take the reference the underwriter
+keys, and option 1; an alternative takes its source's reference and the next option, its
+source's option 1 held while the highest option is read, so two made at once take two. A
+reference is trimmed, 1 to 40 characters, holds no `/` or control or format character, and is
+not `.` or `..`; it is kept in Unicode's composed form (NFC), and two references are one only
+when they are the same, case included, so `ABC-1` and `abc-1` are two quotes. A reference
+another quote holds is refused naming it. A duplicate, a renewal and an alternative are filled
+from their source as it is stored, without the details the app set for it.
+
+**Opening a quote.** A quote opens at `/quotes/{reference}/{option}` on the current sheets:
+its values from its rows, each typed value written back as the cell text it reads as (an
+Integer its digits, a Decimal the shortest text that reads back as it, a Date its ISO text,
+True/false a tick or none, and null a blank), a many-row table's rows in their places by
+`quote_row`, and its outputs as the pricing answers them. A value comes back as its value, so
+`£1,000` comes back as `1000`, which its column's format shows. A preset row whose value is no
+longer allowed is named as dropped. The quote's tables are read together, and read again if
+the quote moved on while they were read. There is no earlier revision to open and there are
+no earlier sheets: a quote saved before a form change opens on the current form, a renamed
+column keeping its values and a new one blank.
+
+**The Quotes page.** Its lists, searches, orders and counts read `quote_details` alone: My
+work, Team and Archived, the stages Draft and Final, a search matching every word against
+the reference, quote name, insured and broker whatever their case, ordered by `saved_at`, by
+reference or by insured, a page at a time.
+
+**Environments.** A project's quotes live in dev, on the analyst's laptop, and in the hosted
+environments its `haute.toml` declares. Dev is the SQLite file `.haute/app/store.sqlite` that
+`haute app serve` keeps, where schema changes are tried; nothing points a laptop at a hosted
+environment. Each hosted environment is a table naming its provider and how the app signs in,
+`managed-identity`, `service-principal` or `password`, with the names of the variables holding
+any secret, never a value:
+
+```toml
+[workbench.store.test]
+provider = "sqlserver"
+auth = "managed-identity"
+
+[workbench.store.prod]
+provider = "sqlserver"
+auth = "managed-identity"
+```
+
+A host or a CI job picks one with `HAUTE_ENVIRONMENT`, and the host's own environment says
+where it is: `HAUTE_STORE_SERVER`, `HAUTE_STORE_DATABASE` and, optionally, `HAUTE_STORE_SCHEMA`,
+or `HAUTE_STORE_URL` holding a whole connection URL. No credential, server or database name is
+in a file the project versions, so a pull request cannot point an environment elsewhere. A
+release carries the declarations, provider and sign-in, with it, so a hosted app and a
+migrate read them from the release they run, never from a project checkout. A
+project lays its environments out as it likes, a database each, a schema each or both: Haute
+qualifies every name with the schema, the connection's default when none is named, and
+`haute_store` records the project and the environment, so an app pointed at another's
+database refuses to start naming both.
+
+**Schema changes.** `haute app migrate` brings an environment's tables to the release's form,
+comparing them by stable id through `haute_store`, in one transaction, and refuses, before any
+DDL, a step it cannot take. It creates a table the form gains, gives a table a nullable column
+the form gains, renames a table or column the form renamed, in two steps through temporary
+names so a change of case or a swap of two names works, and changes the type, rows or role of
+a column or table that holds no value, in place where the engine converts the pair and
+otherwise by replacing the empty column, which loses nothing. In test and prod it drops nothing
+the form removed and nothing that holds a value: a column or table the form has dropped is
+kept, unused, and every plan lists it with how many quotes hold values
+in it and the DROP statement for the DBA; a migrate first compares its record with the
+database, so one the SQL side has dropped is forgotten and its name is free, while a table or
+column the form still has that the database lacks is refused, naming it. A save writes only the
+form's tables: a kept column of one of them is left empty for each quote saved since, so its
+kept values are those of quotes not saved since, while a kept table, which no save touches,
+keeps every quote's rows as they stood, and they come back with it if its id returns.
+In test and prod it refuses a type, rows or role change on a column or table holding values,
+naming it and how many quotes hold values (the way forward is a new column, or the values
+fixed first), and a new column or table taking a kept one's name until that one is dropped.
+In dev it applies every change, drops included, and names what it dropped. `required` never
+becomes NOT NULL. Every plan says, for each step, whether a migrate back to the previous
+release reverses it, and rolling back is that migrate, then starting the previous release. In
+test and prod, a step only a restore reverses (a change to an empty column or table that the
+release may then fill) is applied only given `--restore-point NAME`, the backup or point in
+time IT can return the database to, which `haute_store` records, the plan prints and a failed
+rollout names; a plan holding one is refused without it. Dev asks for no restore point. `haute app migrate` reads the form and environments
+from the built release it is given, so CI migrates with the release it deploys. `--plan`
+prints the plan for the environment's database; `--plan --base FORM` prints it offline, from
+the change between two forms, for a pull request, headed as provisional, each step that
+depends on the data shown as conditional (a type, rows or role change made if the column or
+table is empty, else refused) and a removed one shown kept, its DROP for the DBA, as in every
+test and prod plan; and `--sql` prints it as the SQL a DBA runs. `haute app serve` migrates dev as it
+starts.
+
+**Starting the app.** A hosted app, before it serves, checks its database without changing it:
+every table and column its release uses is there under its id, with its name, its type and
+its keys; every other column of those tables is nullable; the project and environment are its
+own; and it holds the privileges the store needs. It refuses to start naming each difference
+and the command that resolves it.
+
+**Database providers.** A provider is a family of engines the store runs on, one interface
+each: how it connects and signs in, its types, the binary collation that keeps the identity
+and every other exactly-compared text exact, the bounded lengths of Haute's indexed columns,
+its rename DDL, its identifier limits and whether its DDL is transactional. A provider
+enforces primary, unique and foreign keys, runs a transaction across tables, and runs DDL
+inside one so a failed migrate rolls back. `sqlserver` covers SQL Server 2019 and later, Azure
+SQL Database and Azure SQL Managed Instance, through pyodbc and Microsoft ODBC Driver 18, which
+the app's image installs when an environment names it; `postgresql` covers PostgreSQL and its
+hosted forms (Azure Database for PostgreSQL, Amazon RDS and Aurora, Cloud SQL, Databricks
+Lakebase), through psycopg; `sqlite` is dev's. Sign-in by managed identity or service
+principal goes through Microsoft Entra ID where the engine is Azure's. MySQL, MariaDB and
+Oracle, whose DDL commits as it runs, and Databricks SQL and Snowflake, whose keys are not
+enforced, are not store engines, though any of them can read the store's tables.
+
+**Names.** Every table and column name is quoted in the SQL Haute writes, so a reserved word
+(`order`, `group`) is a name like any other; a report quotes it too. Refused wherever the form
+is saved, naming each: two columns of one table whose names differ only in case, a name longer
+than 63 characters, a name starting `haute_` (Haute's own `haute_version` aside), a column of
+a many-row table named `quote_row`, and a table named starting `sqlite_`. These rules apply to
+the workbench's tables alone.

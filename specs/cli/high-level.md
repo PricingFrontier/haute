@@ -244,3 +244,40 @@ backend with `except Exception`: an unexpected implementation exception retains 
 original type and traceback, while target adapters are responsible for raising
 `DeployError` for expected operational failures such as missing credentials, unavailable
 Docker, or rejected build/push operations.
+
+## Approved change contract — `haute app` and the quote store
+
+This section specifies how `haute app serve` and `haute app migrate` change as the underwriter
+app's quote store becomes the form's own tables; the [workbench
+contract](../workbench/high-level.md#approved-change-contract--the-quote-store-as-the-forms-own-tables)
+owns that behaviour. Every record is unresolved until its roadmap package lands and folds it
+into Behaviour above, and the last package removes this section.
+
+- **Current limitation.** `haute app serve` keeps its quotes in `.haute/app/quotes.sqlite`,
+  migrated as it starts, and `haute app migrate [--url URL]` runs Haute's numbered migrations
+  on the store at `URL` or else at `HAUTE_QUOTE_STORE_URL`.
+- **Unresolved target.** `haute app serve` keeps dev's store in `.haute/app/store.sqlite`,
+  built from the project's form as it starts, every change applied and each table whose rows
+  it dropped named ([WB-10](../roadmap/workbench.md#wb-10--the-quote-store)).
+  `haute app migrate [--release DIR] --environment NAME [--plan [--base FORM]] [--sql]
+  [--restore-point NAME]` brings the named hosted environment's tables to the form of the
+  built release at `DIR` (`.haute/app/release` by default), reading its environments from that
+  release, or prints the plan, offline against `FORM` with `--base`, or prints it as SQL; a
+  hosted plan holding a step only a restore reverses is applied only given a restore point,
+  which dev never asks for
+  ([WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments)). `--url`
+  goes.
+- **Non-goals.** `haute app build` is unchanged but for the drivers its image installs
+  ([WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql)).
+- **Failure and compatibility semantics.** `haute app migrate` exits non-zero, before any DDL,
+  naming each step it refuses, an environment the release does not declare, a location given
+  twice or not at all, a database recorded for another project or environment, a table or
+  column the form has that the database lacks, and a plan needing a restore point it was not
+  given. Nothing it
+  prints holds a connection URL, a server or database name, or a secret.
+- **Acceptance evidence.** The planner, environment and `haute app serve` scenarios of the
+  [workbench low-level
+  contract](../workbench/low-level.md#approved-change-contract--the-quote-store-as-the-forms-own-tables).
+- **Roadmap package.** [WB-10](../roadmap/workbench.md#wb-10--the-quote-store),
+  [WB-42](../roadmap/workbench.md#wb-42--the-stores-schema-changes-and-environments) and
+  [WB-43](../roadmap/workbench.md#wb-43--the-store-on-sql-server-and-postgresql).
