@@ -2715,3 +2715,165 @@ def test_flatten_rejects_boundary_input_names_colliding_after_expansion() -> Non
 
     assert "input names collide after expansion" in str(exc_info.value)
     assert exc_info.value.context["expanded_input_name"] == "Internal_Output"
+
+
+@pytest.mark.parametrize("self_named_input", [False, True])
+def test_one_node_owner_preserves_rows_names_and_config_through_save_and_dissolve(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    client,
+    self_named_input: bool,
+) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute._sandbox import bound_project_root
+    from haute.executor import execute_graph
+    from haute.routes._helpers import parse_pipeline_to_graph
+    from haute.routes._save_pipeline import SavePipelineService
+
+    monkeypatch.chdir(tmp_path)
+    input_name = "calc" if self_named_input else "policies"
+    source_definition = SubmodelDefinition(
+        definitionId="source_definition",
+        file="modules/source_definition.py",
+        graph=PipelineGraph(
+            nodes=[_node("source_node", config={"code": "df = pl.LazyFrame({'x': [2, 5]})"})]
+        ),
+        inputPorts=[],
+        outputPorts=[
+            SubmodelOutputPort(name=input_name, source=SubmodelEndpoint(nodeId="source_node"))
+        ],
+    )
+    plain = PipelineGraph(
+        nodes=[
+            _instance("source_owner", definition_id="source_definition"),
+            _node(
+                "calc",
+                config={"code": f"df = {input_name}.with_columns((pl.col('x') * 2).alias('x'))"},
+                x=120,
+                y=230,
+            ),
+            _node("consumer", config={"code": "df = calc"}),
+        ],
+        edges=[
+            GraphEdge(
+                id="incoming",
+                source="source_owner",
+                sourceHandle=f"out__{input_name}",
+                target="calc",
+            ),
+            GraphEdge(id="outgoing", source="calc", target="consumer"),
+        ],
+        submodels={"source_definition": source_definition},
+        pipeline_name="test",
+    )
+    with bound_project_root(tmp_path):
+        service = SavePipelineService(tmp_path)
+        initial = service.save_graph_transactionally(
+            graph=plain,
+            name="test",
+            description="",
+            preamble="",
+            source_file="main.py",
+            base_revision=None,
+        )
+        response = client.post(
+            "/api/submodel/instance",
+            json={
+                "node_id": "calc",
+                "graph": plain.model_dump(mode="json", by_alias=True),
+                "source_file": "main.py",
+                "base_revision": initial.source_revision,
+            },
+        )
+        assert response.status_code == 200, response.text
+        wrapped = PipelineGraph.model_validate(response.json()["graph"])
+        definition = wrapped.submodels["calc"]
+        child = definition.graph.nodes[0]
+        assert (child.id, child.data.label, child.position) == (
+            "calc_node",
+            "calc_node",
+            {"x": 0, "y": 0},
+        )
+        assert definition.input_ports[0].name == ("calc_2" if self_named_input else "policies")
+        assert definition.output_ports[0].name == "calc"
+        if self_named_input:
+            assert child.data.config["inputMapping"] == {"calc": "calc_2"}
+        assert wrapped.node_map["consumer"].data.config == {"code": "df = calc"}
+        assert execute_graph(flatten_graph(wrapped), target_node_id="consumer")[
+            "consumer"
+        ].preview == [{"x": 4}, {"x": 10}]
+        # Removing the unbound copy allows the owner itself to dissolve.
+        wrapped.nodes = [n for n in wrapped.nodes if n.id != "calc_2"]
+        saved = service.save_graph_transactionally(
+            graph=wrapped,
+            name="test",
+            description="",
+            preamble="",
+            source_file="main.py",
+            base_revision=initial.source_revision,
+        )
+        assert (tmp_path / "modules/calc.py").is_file()
+        reloaded = parse_pipeline_to_graph(tmp_path / "main.py", project_root=tmp_path)
+        assert execute_graph(flatten_graph(reloaded))["consumer"].preview == [{"x": 4}, {"x": 10}]
+        dissolved = client.post(
+            "/api/submodel/dissolve",
+            json={
+                "instance_id": "calc",
+                "graph": reloaded.model_dump(mode="json", by_alias=True),
+                "source_file": "main.py",
+                "base_revision": saved.source_revision,
+            },
+        )
+        assert dissolved.status_code == 200, dissolved.text
+        expanded = PipelineGraph.model_validate(dissolved.json()["graph"])
+        inner = next(n for n in expanded.nodes if n.data.label == "calc_node")
+        assert inner.data.nodeType == NodeType.POLARS
+        assert inner.position == {"x": 120, "y": 230}
+        assert expanded.node_map["consumer"].data.config["inputMapping"] == {"calc": "calc_node"}
+        assert execute_graph(flatten_graph(expanded))["consumer"].preview == [{"x": 4}, {"x": 10}]
+        assert (
+            load_pipeline_editor_document(
+                tmp_path / "main.py", project_root=tmp_path
+            ).source_revision
+            == saved.source_revision
+        )
+
+
+def test_node_instance_saved_config_follows_inside_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute._sandbox import bound_project_root
+    from haute.routes._save_pipeline import SavePipelineService
+    from haute.routes._submodel_ops import create_node_instance_graph
+
+    monkeypatch.chdir(tmp_path)
+    plain = PipelineGraph(nodes=[_node("band", NodeType.BANDING, config={"factors": []})])
+    with bound_project_root(tmp_path):
+        service = SavePipelineService(tmp_path)
+        saved = service.save_graph_transactionally(
+            graph=plain,
+            name="test",
+            description="",
+            preamble="",
+            source_file="main.py",
+            base_revision=None,
+        )
+        assert (tmp_path / "config/banding/band.json").is_file()
+        wrapped = create_node_instance_graph(
+            plain, "band", "band", read_utility=lambda _: None
+        ).graph
+        service.save_graph_transactionally(
+            graph=wrapped,
+            name="test",
+            description="",
+            preamble="",
+            source_file="main.py",
+            base_revision=saved.source_revision,
+        )
+        assert not (tmp_path / "config/banding/band.json").exists()
+        assert json.loads((tmp_path / "config/banding/band_node.json").read_text()) == {
+            "factors": []
+        }
+        assert (
+            'config="config/banding/band_node.json"' in (tmp_path / "modules/band.py").read_text()
+        )

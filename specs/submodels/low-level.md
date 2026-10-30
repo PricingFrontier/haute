@@ -325,6 +325,10 @@ Pydantic route models live in `src/haute/schemas.py`. `CreateSubmodelRequest`
 carries `name`, `node_ids`, the parent graph and support code, `source_file`,
 `base_revision`, and pipeline metadata; `CreateSubmodelResponse` returns both
 file paths, the revised graph, and the unchanged persisted `source_revision`.
+`CreateNodeInstanceRequest` carries `node_id`, the parent graph and support
+code, `source_file`, `base_revision`, and pipeline metadata.
+`CreateNodeInstanceResponse` returns the graph, `owner_name`, `instance_name`,
+`definition_id`, and unchanged `source_revision`; it forbids extra fields.
 `DissolveSubmodelRequest`
 requires one non-empty, unpadded `instance_id` plus the same parent-document
 fields. `DissolveSubmodelResponse` returns the resolved `instance_id` and
@@ -669,6 +673,26 @@ scalar input selectors follow renamed edges. A collision refuses the entire edit
 | Child is hand-authored/shared, ownership is ambiguous, or reference audit is incomplete | Later explicit Save retains the source and sidecar | Uncertainty never authorises deletion. |
 
 ## Testing
+
+- `tests/test_node_instance_proof.py` gates phase-4 type moves with the one-node,
+  differently named input proof: output preview and cell trace, `haute run`, a
+  standalone saved `pipeline.run()`, canonical code/config/port round trip, deploy
+  scoring parity, and a real job for Model Training and Optimiser. Each test owns
+  its Git repository and `haute.toml`; project discovery must not inherit the
+  surrounding checkout, regardless of the pytest temporary-directory location. Source types
+  have no input to remap; sink types have no output to preview or trace. Transform,
+  Data Input, Constant, Banding, Rating Step, Model Score, Edge Join, Scenario
+  Expander, Explore, Optimiser and Apply Optimisation pass. Strict xfails retain
+  Load File (deploy loses the remapped input), Data Output (shared write
+  destination), and Model Training (qualified child id used as an artifact path)
+  on node-level instances; the debt is registered in `tests/test_test_debt.py`.
+- `frontend/src/utils/nodeTypes.ts` owns `WRAPPED_INSTANCE_TYPES`, the browser's
+  phase-4 gate. `frontend/src/hooks/__tests__/useNodeHandlers.test.ts` checks every
+  moved and retained type, and one resolved wrapped-graph commit/Undo/Redo.
+- `frontend/src/hooks/__tests__/useSubmodelNavigation.test.ts` checks atomic
+  refusal on request/identity failure, a missing returned instance, stale state,
+  and a drilled view.
+
 
 Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.py`, `tests/test_submodel_ops.py`,
 `tests/test_submodel_routes.py`, `tests/test_submodel_route_contracts.py`,

@@ -5,7 +5,16 @@ import useNodeHandlers from "../useNodeHandlers"
 import useToastStore from "../../stores/useToastStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import { makeNode } from "../../test-utils/factories"
+import { normalizeEdges } from "../../utils/graphHelpers"
 import { getLayoutedElements } from "../../utils/layout"
+import useSubmodelNavigation from "../useSubmodelNavigation"
+import useGraphStore from "../../stores/useGraphStore"
+import type { SubmodelDefinition } from "../../types/node"
+import { createNodeInstance } from "../../api/client"
+
+vi.mock("../../api/client", () => ({
+  createNodeInstance: vi.fn(), createSubmodel: vi.fn(), dissolveSubmodel: vi.fn(),
+}))
 
 vi.mock("../../utils/layout", () => ({
   getLayoutedElements: vi.fn(async (nodes: Node[]) => nodes),
@@ -38,6 +47,84 @@ describe("useNodeHandlers", () => {
     cleanup()
     vi.restoreAllMocks()
   })
+
+  it("a plain node's Create Instance commits the resolved wrapped graph as one undo step", async () => {
+    const original = makeNode("rate_calc")
+    const params = makeParams()
+    params.graphRef.current = { nodes: [original], edges: [] }
+    useGraphStore.getState().loadGraphSnapshot({ nodes: [original], edges: [], submodels: {}, preamble: "" })
+    const occurrence = (name: string, instanceOf?: string) => makeNode(name, "submodel", {
+      data: { label: name, nodeType: "submodel", config: {
+        definitionId: "rate_calc", alias: name, ...(instanceOf ? { instanceOf } : {}),
+      } },
+    })
+    const wrapped = {
+      nodes: [occurrence("rate_calc"), occurrence("rate_calc_2", "rate_calc")], edges: [],
+      submodels: { rate_calc: { definitionId: "rate_calc", file: "modules/rate_calc.py",
+        inputPorts: [], outputPorts: [{ name: "rate_calc", source: { nodeId: "rate_calc_node", handleId: null } }],
+        graph: { nodes: [makeNode("rate_calc_node")], edges: [] },
+      } },
+    }
+    vi.mocked(createNodeInstance).mockResolvedValue({ status: "ok", graph: wrapped,
+      owner_name: "rate_calc", instance_name: "rate_calc_2", definition_id: "rate_calc", source_revision: "rev-1" })
+    const sourceRevisionRef = { current: "rev-1" }
+    const resolveCanonicalIdentities = vi.fn(async (graph: Parameters<NonNullable<Parameters<typeof useSubmodelNavigation>[0]["resolveCanonicalIdentities"]>>[0]) => ({ ...graph, edges: normalizeEdges([...graph.edges]), submodels: graph.submodels as Record<string, SubmodelDefinition>,
+      nodes: graph.nodes.map(n => ({ ...n, data: { ...n.data, _functionName: n.id,
+        _sourceHandleInputNames: { out__rate_calc: n.id } } })),
+    }))
+    const { result } = renderHook(() => {
+      const navigation = useSubmodelNavigation({
+        ...params, parentGraphRef: { current: null }, setActiveSubmodelIdentity: vi.fn(),
+        submodelsRef: { current: {} }, setNodesRaw: vi.fn(), setEdgesRaw: vi.fn(),
+        preambleRef: { current: "" }, sourceRevisionRef, preservedBlocksRef: { current: [] },
+        descriptionRef: { current: "" }, sourceFileRef: { current: "pipeline.py" },
+        pipelineNameRef: { current: "main" }, reservedApiInputFrameLabels: new Set(),
+        resolveCanonicalIdentities,
+      })
+      return useNodeHandlers({ ...params, createWrappedNodeInstance: navigation.handleCreateNodeInstance })
+    })
+    await act(async () => { await result.current.handleCreateInstance(original.id) })
+    expect(createNodeInstance).toHaveBeenCalledWith(expect.objectContaining({
+      node_id: "rate_calc", base_revision: "rev-1", source_file: "pipeline.py",
+      graph: expect.objectContaining({ nodes: [expect.objectContaining({ id: "rate_calc" })] }),
+    }))
+    expect(resolveCanonicalIdentities).toHaveBeenCalledOnce()
+    expect(useGraphStore.getState().nodes.map(n => n.id)).toEqual(["rate_calc", "rate_calc_2"])
+    expect(useGraphStore.getState().nodes[1].data._sourceHandleInputNames).toEqual({ out__rate_calc: "rate_calc_2" })
+    expect(useGraphStore.getState().submodels).toEqual(wrapped.submodels)
+    expect(useGraphStore.getState().undoStack).toHaveLength(1)
+    expect(sourceRevisionRef.current).toBe("rev-1")
+    act(() => useGraphStore.getState().undo())
+    expect(useGraphStore.getState().nodes).toEqual([original])
+    expect(useGraphStore.getState().submodels).toEqual({})
+    act(() => useGraphStore.getState().redo())
+    expect(useGraphStore.getState().nodes.map(n => n.id)).toEqual(["rate_calc", "rate_calc_2"])
+  })
+
+  it.each(["polars", "dataInput", "constant", "banding", "ratingStep", "modelScore", "edgeJoin",
+    "scenarioExpander", "explore", "optimiser", "optimiserApply"])(
+    "wraps the proven type %s instead of creating an ordinary instance", async (nodeType) => {
+      const params = makeParams()
+      params.graphRef.current = { nodes: [makeNode("original", nodeType)], edges: [] }
+      const createWrappedNodeInstance = vi.fn(async () => ({ ok: true as const }))
+      const { result } = renderHook(() => useNodeHandlers({ ...params, createWrappedNodeInstance }))
+      await act(async () => { await result.current.handleCreateInstance("original") })
+      expect(createWrappedNodeInstance).toHaveBeenCalledWith("original")
+      expect(params.setNodes).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each(["externalFile", "dataOutput", "modelling"])(
+    "retains node-level instancing for the unproven type %s", async (nodeType) => {
+      const params = makeParams()
+      params.graphRef.current = { nodes: [makeNode("original", nodeType)], edges: [] }
+      const createWrappedNodeInstance = vi.fn()
+      const { result } = renderHook(() => useNodeHandlers({ ...params, createWrappedNodeInstance }))
+      await act(async () => { await result.current.handleCreateInstance("original") })
+      expect(createWrappedNodeInstance).not.toHaveBeenCalled()
+      expect(params.setSelectedNode.mock.calls[0][0].data.config).toEqual({ instanceOf: "original" })
+    },
+  )
 
   it("handleDeleteNode removes node and connected edges in ONE atomic step", () => {
     const params = makeParams()
@@ -371,7 +458,7 @@ describe("useNodeHandlers", () => {
       ...candidate!,
       data: { ...candidate!.data, _functionName: "authoritative_instance" },
     }])
-    const n1 = makeNode("n1")
+    const n1 = makeNode("n1", "dataOutput")
     params.graphRef.current = { nodes: [n1], edges: [] }
     const { result } = renderHook(() => useNodeHandlers(params))
     await act(async () => {
@@ -425,8 +512,8 @@ describe("useNodeHandlers", () => {
   // another pointer with no content of its own.
   it("handleCreateInstance points a new instance at the original, not at the instance", async () => {
     const params = makeParams()
-    const original = makeNode("polars_1")
-    const existing = makeNode("polars_2")
+    const original = makeNode("polars_1", "dataOutput")
+    const existing = makeNode("polars_2", "dataOutput")
     existing.data = { ...existing.data, config: { instanceOf: "polars_1" } }
     params.graphRef.current = { nodes: [original, existing], edges: [] }
     const { result } = renderHook(() => useNodeHandlers(params))
@@ -445,10 +532,10 @@ describe("useNodeHandlers", () => {
     "malformed",
   ])("handleCreateInstance refuses %s ordinary-instance identity", (identity) => {
     const params = makeParams()
-    const selected = makeNode("polars_2", "polars", {
+    const selected = makeNode("polars_2", "dataOutput", {
       data: {
         label: "Selected instance",
-        nodeType: "polars",
+        nodeType: "dataOutput",
         config: {
           instanceOf: identity === "self-pointing"
             ? "polars_2"
@@ -458,9 +545,9 @@ describe("useNodeHandlers", () => {
     })
     const owner = makeNode(
       "polars_1",
-      identity === "type-mismatched" ? "dataInput" : "polars",
+      identity === "type-mismatched" ? "dataInput" : "dataOutput",
       identity === "chained"
-        ? { data: { label: "Chained owner", nodeType: "polars", config: { instanceOf: "polars_0" } } }
+        ? { data: { label: "Chained owner", nodeType: "dataOutput", config: { instanceOf: "polars_0" } } }
         : {},
     )
     params.graphRef.current = {

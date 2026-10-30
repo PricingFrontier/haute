@@ -61,6 +61,7 @@ import useSubmodelNavigation, { type SubmodelCreateResult } from "./hooks/useSub
 import useSubmodelBoundaryEditing from "./hooks/useSubmodelBoundaryEditing"
 import useKeyboardShortcuts from "./hooks/useKeyboardShortcuts"
 import useWindowFileDropGuard from "./hooks/useWindowFileDropGuard"
+import { WRAPPED_INSTANCE_TYPES } from "./utils/nodeTypes"
 import useNodeHandlers from "./hooks/useNodeHandlers"
 import useEdgeHandlers from "./hooks/useEdgeHandlers"
 import usePanelGraphContext from "./hooks/usePanelGraphContext"
@@ -1099,7 +1100,7 @@ function FlowEditor() {
     handleDrillIntoSubmodel, handleBreadcrumbNavigate,
     resetToAuthoritativeRoot,
     handleDocumentReload,
-    handleCreateSubmodel, handleDissolveSubmodel,
+    handleCreateSubmodel, handleCreateNodeInstance, handleDissolveSubmodel,
   } = useSubmodelNavigation({
     graphRef, parentGraphRef, activeSubmodelIdentity, setActiveSubmodelIdentity, submodelsRef,
     setNodesRaw, setEdgesRaw, setSubmodelsRaw,
@@ -1501,6 +1502,7 @@ function FlowEditor() {
     setPreviewData, fitView, getInternalNode,
     submodels,
     resolveNodeIdentities: allocateNodeIdentities,
+    createWrappedNodeInstance: handleCreateNodeInstance,
     commitSharedNodeDeletion,
   })
 
@@ -1537,6 +1539,7 @@ function FlowEditor() {
     && !isSingletonType(nodeData(selectedNodes[0]).nodeType)
     && nodeData(selectedNodes[0]).nodeType !== NODE_TYPES.LIVE_SWITCH
     && !selectedSubmodelHasSingleton
+    && (viewStack.length <= 1 || !WRAPPED_INSTANCE_TYPES.has(nodeData(selectedNodes[0]).nodeType))
   // The `can*` flags above drive presentation only. The request paths below
   // enforce policy AND say why they refused, exactly as Ctrl+G does — a
   // toolbar button that swallows the click in silence is the one case where the

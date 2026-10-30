@@ -27,6 +27,7 @@ import type {
 } from "../generated/api-contracts.generated"
 import type {
   CacheClearResponse,
+  NodeInstanceCreateResponse,
   CacheNodeEntry,
   CacheNodesResponse,
   CacheOwnerEntry,
@@ -1347,6 +1348,19 @@ export function parseSubmodelCreateResponse(value: unknown): SubmodelCreateRespo
     parent_file: expectNonBlankString("parseSubmodelCreateResponse", obj.parent_file, "parent_file"),
     graph: parseNestedPipelineResponse("parseSubmodelCreateResponse", obj, "graph"),
     source_revision: expectNonBlankString("parseSubmodelCreateResponse", obj.source_revision, "source_revision"),
+  }
+}
+
+export function parseNodeInstanceCreateResponse(value: unknown): NodeInstanceCreateResponse {
+  const parser = "parseNodeInstanceCreateResponse"
+  const obj = expectPlainObject(parser, value)
+  return {
+    status: expectNonBlankString(parser, obj.status, "status"),
+    graph: parseNestedPipelineResponse(parser, obj, "graph"),
+    owner_name: expectNonBlankString(parser, obj.owner_name, "owner_name"),
+    instance_name: expectNonBlankString(parser, obj.instance_name, "instance_name"),
+    definition_id: expectNonBlankString(parser, obj.definition_id, "definition_id"),
+    source_revision: expectNonBlankString(parser, obj.source_revision, "source_revision"),
   }
 }
 
@@ -2707,4 +2721,3 @@ export function validateReactFlowNode(value: unknown): Node {
   }
   return value as Node
 }
-

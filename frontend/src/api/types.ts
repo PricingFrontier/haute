@@ -468,6 +468,15 @@ export interface SubmodelCreateResponse {
   source_revision: string
 }
 
+export interface NodeInstanceCreateResponse {
+  status: string
+  graph: PipelineGraph
+  owner_name: string
+  instance_name: string
+  definition_id: string
+  source_revision: string
+}
+
 export interface SubmodelGraphResponse {
   status: string
   submodel_name: string

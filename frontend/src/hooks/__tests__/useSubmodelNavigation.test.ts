@@ -9,6 +9,7 @@ import type { SubmodelDefinition } from "../../types/node"
 
 vi.mock("../../api/client", () => ({
   createSubmodel: vi.fn(),
+  createNodeInstance: vi.fn(),
   loadSubmodel: vi.fn(),
   dissolveSubmodel: vi.fn(),
 }))
@@ -17,7 +18,7 @@ vi.mock("../../utils/layout", () => ({
   getLayoutedElements: vi.fn(async (nodes: Node[]) => nodes),
 }))
 
-import { createSubmodel, loadSubmodel, dissolveSubmodel } from "../../api/client"
+import { createSubmodel, createNodeInstance, loadSubmodel, dissolveSubmodel } from "../../api/client"
 import { getLayoutedElements } from "../../utils/layout"
 const mockCreate = vi.mocked(createSubmodel)
 const mockLoad = vi.mocked(loadSubmodel)
@@ -1393,4 +1394,33 @@ describe("useSubmodelNavigation", () => {
     expect(useGraphStore.getState().dirty).toBe(false)
   })
 
+  it.each(["request failure", "identity failure", "missing instance", "stale graph", "drilled"])(
+    "keeps node wrapping atomic on %s", async (failure) => {
+      const params = makeParams()
+      seedCanonicalGraph(params)
+      const before = useGraphStore.getState().nodes
+      const copy = makeOccurrence("pricing_2", "pricing")
+      const response = { status: "ok" as const, owner_name: "pricing", instance_name: "pricing_2",
+        definition_id: DEFINITION_ID, source_revision: "parent-rev-1",
+        graph: { nodes: failure === "missing instance" ? [makeOccurrence()] : [makeOccurrence(), copy],
+          edges: [], submodels: { [DEFINITION_ID]: makeDefinition() } } }
+      vi.mocked(createNodeInstance).mockReset()
+      vi.mocked(createNodeInstance).mockImplementation(async () => {
+        if (failure === "request failure") throw new Error("Revision changed; reload")
+        if (failure === "stale graph") useGraphStore.getState().setNodesRaw(nodes => nodes.map(n => ({ ...n, position: { x: 99, y: 99 } })))
+        return response
+      })
+      if (failure === "identity failure") vi.mocked(params.resolveCanonicalIdentities).mockRejectedValue(new Error("Identity failed"))
+      if (failure === "drilled") params.parentGraphRef.current = { nodes: [], edges: [], submodels: {} }
+      const { result } = renderHook(() => useSubmodelNavigation(params))
+      let outcome: unknown
+      await act(async () => { outcome = await result.current.handleCreateNodeInstance("n1") })
+      expect(outcome).toEqual({ ok: false, error: expect.any(String) })
+      expect(useGraphStore.getState().nodes.map(n => n.id)).toEqual(before.map(n => n.id))
+      expect(useGraphStore.getState().undoStack).toHaveLength(0)
+      expect(params.graphRef.current.nodes).toEqual(before)
+      expect(params.setSelectedNode).not.toHaveBeenCalled()
+      if (failure === "drilled") expect(createNodeInstance).not.toHaveBeenCalled()
+    },
+  )
 })

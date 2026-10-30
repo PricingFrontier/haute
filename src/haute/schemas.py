@@ -3046,6 +3046,28 @@ class CreateSubmodelResponse(BaseModel):
     graph: Graph = Field(default_factory=Graph)
 
 
+class CreateNodeInstanceRequest(BaseModel):
+    node_id: str = Field(min_length=1)
+    graph: Graph
+    preamble: str = ""
+    preserved_blocks: list[str] = Field(default_factory=list)
+    source_file: str = ""
+    base_revision: RevisionToken
+    pipeline_name: str = "main"
+    pipeline_description: str | None = None
+
+
+class CreateNodeInstanceResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = "ok"
+    graph: Graph
+    owner_name: str
+    instance_name: str
+    definition_id: str
+    source_revision: RevisionToken
+
+
 class DissolveSubmodelRequest(BaseModel):
     """Request to dissolve a submodel occurrence back into parent nodes."""
 

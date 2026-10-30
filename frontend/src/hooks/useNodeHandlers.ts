@@ -18,12 +18,14 @@ import {
 import {
   NODE_TYPES,
   NODE_TYPE_META,
+  WRAPPED_INSTANCE_TYPES,
   isSingletonType,
   singletonTypesInSubmodelDefinition,
 } from "../utils/nodeTypes"
 import { getLayoutedElements } from "../utils/layout"
 import type { PreviewData } from "../panels/DataPreview"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
+import type { SubmodelCreateResult } from "./useSubmodelNavigation"
 
 type UseNodeHandlersParams = {
   graphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
@@ -41,6 +43,7 @@ type UseNodeHandlersParams = {
   getInternalNode?: (id: string) => InternalNode | undefined
   submodels: Record<string, unknown>
   resolveNodeIdentities: (nodes: readonly Node[]) => Promise<Node[]>
+  createWrappedNodeInstance?: (nodeId: string) => Promise<SubmodelCreateResult>
   commitSharedNodeDeletion?: (
     nodeIds: ReadonlySet<string>,
     selectedEdgeIds?: ReadonlySet<string>,
@@ -78,6 +81,7 @@ export default function useNodeHandlers({
   getInternalNode,
   submodels,
   resolveNodeIdentities,
+  createWrappedNodeInstance,
   commitSharedNodeDeletion,
 }: UseNodeHandlersParams) {
   const layoutInFlightRef = useRef(false)
@@ -210,6 +214,15 @@ export default function useNodeHandlers({
       return
     }
 
+    if (WRAPPED_INSTANCE_TYPES.has(origNodeType)) {
+      if (!createWrappedNodeInstance) {
+        throw new Error("Create Instance requires the parent document transform handler")
+      }
+      const result = await createWrappedNodeInstance(id)
+      if (!result.ok) addToast("error", result.error)
+      return
+    }
+
     let instanceConfig: Record<string, unknown>
     const occupiedIdentities = new Set(n.map((node) => node.id))
     for (const node of n) {
@@ -336,7 +349,7 @@ export default function useNodeHandlers({
     } catch (err: unknown) {
       addToast("error", `Create node failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast, submodels, resolveNodeIdentities])
+  }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast, submodels, resolveNodeIdentities, createWrappedNodeInstance])
 
   const handleRenameNode = useCallback((id: string) => {
     const { nodes: n } = graphRef.current

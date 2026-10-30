@@ -1321,9 +1321,11 @@ def test_a_multi_port_target_counts_its_bundle_collection_as_a_step(isolated_roo
 # ─── node instance after a multi-frame source (SUB-R06) ───────────
 
 
-def _instance_after_two_frames(config: dict[str, Any]) -> PipelineGraph:
+def _instance_after_two_frames(config: dict[str, Any], *, wrapped: bool = True) -> PipelineGraph:
     """The original reads the ``policies`` frame; its instance runs the same code on ``drivers``."""
-    return PipelineGraph(
+    from haute.routes._submodel_ops import create_node_instance_graph
+
+    plain = PipelineGraph(
         nodes=[
             _api_input_node("api", config),
             GraphNode(
@@ -1334,6 +1336,13 @@ def _instance_after_two_frames(config: dict[str, Any]) -> PipelineGraph:
                     config={"code": "df = policies"},
                 ),
             ),
+        ],
+        edges=[
+            GraphEdge(id="e_o", source="api", target="original", sourceHandle="policies"),
+        ],
+    )
+    if not wrapped:
+        plain.nodes.append(
             GraphNode(
                 id="copy",
                 data=NodeData(
@@ -1341,13 +1350,35 @@ def _instance_after_two_frames(config: dict[str, Any]) -> PipelineGraph:
                     nodeType=NodeType.POLARS,
                     config={"instanceOf": "original"},
                 ),
+            )
+        )
+        plain.edges.append(GraphEdge(id="e_c", source="api", target="copy", sourceHandle="drivers"))
+        return plain
+    graph = create_node_instance_graph(
+        plain, "original", "original", read_utility=lambda _: None
+    ).graph
+    copy = graph.nodes[-1]
+    graph.nodes[-1] = copy.model_copy(
+        update={
+            "id": "copy",
+            "data": copy.data.model_copy(
+                update={
+                    "label": "copy",
+                    "config": {**copy.data.config, "alias": "copy"},
+                }
             ),
-        ],
-        edges=[
-            GraphEdge(id="e_o", source="api", target="original", sourceHandle="policies"),
-            GraphEdge(id="e_c", source="api", target="copy", sourceHandle="drivers"),
-        ],
+        }
     )
+    graph.edges.append(
+        GraphEdge(
+            id="e_c",
+            source="api",
+            target="copy",
+            sourceHandle="drivers",
+            targetHandle="in__policies",
+        )
+    )
+    return graph
 
 
 @pytest.mark.parametrize(
@@ -1377,18 +1408,24 @@ def test_node_instance_after_a_multi_frame_source_previews(
     config = _multi_port_config(data_path)
     _build_cache_for(isolated_root, data_path, config)
 
-    results = execute_graph(_instance_after_two_frames(config), **preview)
+    from haute._flatten import flatten_graph
+    from haute._submodel_instances import qualified_runtime_node_id
 
-    copy = results["copy"]
+    preview = dict(preview)
+    if "target_node_id" in preview:
+        preview["target_node_id"] = qualified_runtime_node_id("copy", "original_node")
+    results = execute_graph(flatten_graph(_instance_after_two_frames(config)), **preview)
+
+    copy = results[qualified_runtime_node_id("copy", "original_node")]
     assert copy.status == "ok", copy.error
     assert copy.row_count == 3
     assert [column.name for column in copy.columns] == ["driver_id", "age_band"]
     # The original reads policy_id from its frame; the copy's frame has none.
-    assert [(warning.column, warning.status) for warning in copy.schema_warnings] == [
+    assert [(warning.column, warning.status) for warning in results["copy"].schema_warnings] == [
         ("policy_id", "missing")
     ]
     if "target_node_id" not in preview:
-        original = results["original"]
+        original = results[qualified_runtime_node_id("original", "original_node")]
         assert original.status == "ok", original.error
         assert original.row_count == 2
         assert [column.name for column in original.columns] == ["policy_id"]
@@ -1412,7 +1449,7 @@ def test_node_instance_unbound_from_a_request_input_reports_its_binding(
     data_path.write_text(json.dumps(_rating_records()))
     config = make_config(data_path)
     _build_cache_for(isolated_root, data_path, config)
-    graph = _instance_after_two_frames(config)
+    graph = _instance_after_two_frames(config, wrapped=False)
     graph = graph.model_copy(
         update={
             "edges": [
@@ -1428,7 +1465,7 @@ def test_node_instance_unbound_from_a_request_input_reports_its_binding(
     copy = results["copy"]
     assert copy.status == "error"
     assert binding_error in (copy.error or "")
-    assert [(warning.column, warning.status) for warning in copy.schema_warnings] == [
+    assert [(warning.column, warning.status) for warning in results["copy"].schema_warnings] == [
         ("policy_id", "missing")
     ]
 
@@ -1440,38 +1477,48 @@ def test_haute_run_executes_a_node_instance_after_a_multi_frame_source(
 
     data_path = isolated_root / "data.json"
     data_path.write_text(json.dumps(_rating_records()))
-    (isolated_root / "config").mkdir()
-    (isolated_root / "config" / "request.json").write_text(
-        json.dumps(_multi_port_config(data_path))
+    from haute.routes._save_pipeline import SavePipelineService
+
+    graph = _instance_after_two_frames(_multi_port_config(data_path))
+    SavePipelineService(isolated_root).save_graph_transactionally(
+        graph=graph,
+        name="instances",
+        description="",
+        preamble="",
+        source_file="main.py",
+        base_revision=None,
     )
     pipeline_path = isolated_root / "main.py"
-    pipeline_path.write_text(
-        "import polars as pl\n"
-        "\n"
-        "import haute\n"
-        "\n"
-        'pipeline = haute.Pipeline("instances")\n'
-        "\n"
-        "\n"
-        '@pipeline.api_input(config="config/request.json")\n'
-        "def request(): ...\n"
-        "\n"
-        "\n"
-        "@pipeline.polars\n"
-        "def policy_rows(policies: pl.LazyFrame) -> pl.LazyFrame:\n"
-        "    return policies\n"
-        "\n"
-        "\n"
-        '@pipeline.instance(of="policy_rows")\n'
-        "def driver_rows(drivers): ...\n"
-        "\n"
-        "\n"
-        'pipeline.connect("request", "policy_rows", source_port="policies")\n'
-        'pipeline.connect("request", "driver_rows", source_port="drivers")\n'
-    )
 
     handle_run(RunConfig(pipeline_file=pipeline_path))
 
     out = capsys.readouterr().out
-    assert "policy_rows: 2 rows × 1 cols" in out
-    assert "driver_rows: 3 rows × 2 cols" in out
+    assert "submodel_runtime/original/original_node: 2 rows × 1 cols" in out
+    assert "submodel_runtime/copy/original_node: 3 rows × 2 cols" in out
+
+
+@pytest.mark.parametrize("source_handle", [None, "nonexistent"])
+def test_wrapped_instance_refuses_an_unidentified_request_frame(isolated_root, source_handle):
+    from haute._flatten import flatten_graph
+    from haute._submodel_instances import qualified_runtime_node_id
+    from haute.errors import ParseError
+
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+    graph = _instance_after_two_frames(config)
+    graph.edges[-1].sourceHandle = source_handle
+    if source_handle is None:
+        with pytest.raises(ParseError, match="executable input name.*source=api"):
+            flatten_graph(graph)
+    else:
+        results = execute_graph(flatten_graph(graph))
+        copied = results[qualified_runtime_node_id("copy", "original_node")]
+        assert copied.status == "error"
+        assert "nonexistent" in copied.error
+        warnings = results["copy"].schema_warnings
+        assert len(warnings) == 1
+        assert warnings[0].status == "unavailable"
+        assert warnings[0].input == "policies"
+        assert "nonexistent" in warnings[0].detail

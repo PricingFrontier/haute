@@ -9,7 +9,15 @@ This node takes multiple inputs and produces multiple outputs, defined by its po
 
 ## Creating a submodel
 
-Select two or more nodes on the canvas, then click **Submodel** in the toolbar (or press Ctrl+G). In the **Create Submodel** dialog, type a **Submodel name** and click **Create**. Haute creates the definition file automatically, and creates ports from the existing connections.
+Select two or more nodes on the canvas, then click **Submodel** in the toolbar (or press Ctrl+G). In the **Create Submodel** dialog, type a **Submodel name** and click **Create**. Haute creates the ports from the existing connections. The graph changes immediately; **Save** writes the definition file.
+
+## Reusing one node
+
+Select one Transform, Data Input, Constant, Banding, Rating Step, Model Score, Edge Join, Scenario Expander, Explore, Optimiser or Apply Optimisation node in the parent pipeline and click **Instance**. Haute wraps it in a one-node definition and places an unbound instance beside it, in one Undo step. Nothing is written until **Save**.
+
+The owner keeps the node's name, position, connections and output name. The inner node is renamed `<name>_node`, suffixed if needed, and its config file follows that name. Public inputs keep the original incoming frame names; a name that conflicts with the output takes a suffix while the code continues reading its old name. The definition and module take the original name, suffixed when occupied, and the new instance normally becomes `<name>_2`.
+
+Connect a different frame to the instance's public input to preview it through the shared definition. Edit through the owner to change every occurrence. After deleting or dissolving the instances, dissolving the owner returns a plain node under its inner name. See [Instances](instances.md) for the supported types and a complete example.
 
 ## The panel
 

@@ -112,6 +112,7 @@ import type {
   SchemaResult,
   WriteOutputResponse,
   SubmodelCreateResponse,
+  NodeInstanceCreateResponse,
   SubmodelGraphResponse,
   TraceResponse,
   TrainEstimate,
@@ -155,6 +156,7 @@ import {
   parseSchemaResponse,
   parseWriteOutputResponse,
   parseSubmodelCreateResponse,
+  parseNodeInstanceCreateResponse,
   parseSubmodelGraphResponse,
   parseTraceResponse,
   isPlainObject,
@@ -1157,6 +1159,13 @@ export function createSubmodel(
   options?: { signal?: AbortSignal },
 ): Promise<SubmodelCreateResponse> {
   return post<unknown>("/api/submodel/create", payload, options).then(parseSubmodelCreateResponse)
+}
+
+export function createNodeInstance(
+  payload: Omit<Parameters<typeof createSubmodel>[0], "name" | "node_ids"> & { node_id: string },
+  options?: { signal?: AbortSignal },
+): Promise<NodeInstanceCreateResponse> {
+  return post<unknown>("/api/submodel/instance", payload, options).then(parseNodeInstanceCreateResponse)
 }
 
 /**

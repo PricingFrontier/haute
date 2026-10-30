@@ -973,6 +973,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/DissolveSubmodelResponse"},
         },
     },
+    "/api/submodel/instance": {
+        "POST": {
+            "request_ref": "#/components/schemas/CreateNodeInstanceRequest",
+            "success_schema": {"$ref": "#/components/schemas/CreateNodeInstanceResponse"},
+        }
+    },
     "/api/submodel/{definition_id}": {
         "GET": {
             "request_ref": None,

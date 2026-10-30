@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Final, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
@@ -25,6 +26,8 @@ from haute.routes._helpers import (
     pipeline_dir,
 )
 from haute.schemas import (
+    CreateNodeInstanceRequest,
+    CreateNodeInstanceResponse,
     CreateSubmodelRequest,
     CreateSubmodelResponse,
     DissolveSubmodelRequest,
@@ -35,6 +38,8 @@ from haute.schemas import (
 logger = get_logger(component="server.submodel")
 
 router = APIRouter(prefix="/api/submodel", tags=["submodel"])
+
+SUBMODEL_INSTANCE_ROUTE: Final[Literal["/api/submodel/instance"]] = "/api/submodel/instance"
 
 
 def _require_parent_source_file(source_file: str) -> None:
@@ -121,7 +126,12 @@ def _apply_sidecar_positions(graph: PipelineGraph, source_path: Path) -> Pipelin
 
 
 def _refuse_new_name_violations(
-    before: PipelineGraph, after: PipelineGraph, name: str, project_root: Path
+    before: PipelineGraph,
+    after: PipelineGraph,
+    name: str,
+    project_root: Path,
+    *,
+    pipeline_root: Path,
 ) -> None:
     """Refuse a grouping whose result breaks the naming rule where its input did not.
 
@@ -139,7 +149,7 @@ def _refuse_new_name_violations(
         labels = sorted(party.label for party in violation.parties)
         return (violation.kind, violation.name, tuple(labels))
 
-    read_utility = utility_reader(pipeline_dir(), project_root)
+    read_utility = utility_reader(pipeline_root, project_root)
     existing = {identity(violation) for violation in name_violations(before, read_utility)}
     added = [
         violation.message()
@@ -220,7 +230,13 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
             )
             raise HTTPException(status_code=400, detail=_INTERNAL_ERROR_DETAIL) from None
 
-        _refuse_new_name_violations(submitted_graph, result.graph, body.name, project_root)
+        _refuse_new_name_violations(
+            submitted_graph,
+            result.graph,
+            body.name,
+            project_root,
+            pipeline_root=pipeline_dir(),
+        )
 
         svc = SavePipelineService(project_root=project_root, pipeline_root=pipeline_dir())
         try:
@@ -241,6 +257,83 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
             parent_file=body.source_file,
             source_revision=source_revision,
             graph=response_graph,
+        )
+
+    async with save_lock:
+        return await run_in_threadpool(_run)
+
+
+@router.post(
+    SUBMODEL_INSTANCE_ROUTE.removeprefix(router.prefix), response_model=CreateNodeInstanceResponse
+)
+async def create_node_instance(body: CreateNodeInstanceRequest) -> CreateNodeInstanceResponse:
+    """Wrap a node in memory; explicit Save owns every file change."""
+    from haute._config_io import is_windows_reserved_filename
+    from haute._support_code_names import utility_reader
+    from haute.graph_utils import _sanitize_func_name
+    from haute.routes._helpers import save_lock
+    from haute.routes._save_pipeline import SavePipelineService
+    from haute.routes._submodel_ops import (
+        SubmodelValidationError,
+        create_node_instance_graph,
+        instance_source_node,
+    )
+
+    def _run() -> CreateNodeInstanceResponse:
+        _require_parent_source_file(body.source_file)
+        project_root, parent_path, revision = _load_parent_document(body.source_file)
+        _require_current_revision(revision, body.base_revision)
+        graph = body.graph.model_copy(
+            update={
+                "preamble": body.preamble,
+                "preserved_blocks": list(body.preserved_blocks),
+            }
+        )
+        try:
+            node = instance_source_node(graph, body.node_id)
+            base = _sanitize_func_name(node.data.label)
+            if is_windows_reserved_filename(f"{base}.py"):
+                raise HTTPException(400, f"Rename {base!r}: it is a Windows reserved module name.")
+            occupied = {key.casefold() for key in graph.submodels or {}}
+            occupied.update(Path(d.file).stem.casefold() for d in (graph.submodels or {}).values())
+            modules = contained_path(project_root, str(parent_path.parent / "modules"))
+            if modules.exists():
+                occupied.update(
+                    p.stem.casefold() for p in modules.iterdir() if p.suffix.casefold() == ".py"
+                )
+            name = base
+            suffix = 2
+            while name.casefold() in occupied:
+                name = f"{base}_{suffix}"
+                suffix += 1
+            result = create_node_instance_graph(
+                graph,
+                body.node_id,
+                name,
+                read_utility=utility_reader(parent_path.parent, project_root),
+            )
+        except SubmodelValidationError as exc:
+            raise HTTPException(exc.status_code, exc.detail) from None
+        except ParseError as exc:
+            raise HTTPException(400, exc.message) from None
+        _refuse_new_name_violations(
+            graph,
+            result.graph,
+            result.owner_name,
+            project_root,
+            pipeline_root=parent_path.parent,
+        )
+        service = SavePipelineService(project_root=project_root, pipeline_root=parent_path.parent)
+        try:
+            service.validate_new_module_files([result.sm_file])
+        except ConfigError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return CreateNodeInstanceResponse(
+            graph=result.graph.model_copy(update={"source_revision": revision}),
+            owner_name=result.owner_name,
+            instance_name=result.instance_name,
+            definition_id=result.definition_id,
+            source_revision=revision,
         )
 
     async with save_lock:
