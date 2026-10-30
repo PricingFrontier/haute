@@ -1741,7 +1741,7 @@ def test_a_base_exception_during_a_spawned_build_is_never_swallowed(
     assert pointer["generation_id"] == spawn.request.generation_id
 
 
-@pytest.mark.parametrize("failing", ["retire_unleased", "reconcile_unpublished"])
+@pytest.mark.parametrize("failing", ["retire_unleased", "reconcile_unpublished", "outcome"])
 def test_a_failure_of_the_parents_own_is_never_taken_for_the_workers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1749,9 +1749,10 @@ def test_a_failure_of_the_parents_own_is_never_taken_for_the_workers(
 ) -> None:
     """Only the worker's failure falls back to a generation published meanwhile.
 
-    Retiring after a worker that published, or reconciling after one that failed,
-    is this process's work: its error propagates as itself. Read as the worker's,
-    the generation the worker had just published would be reported ``reused``.
+    Retiring after a worker that published, reconciling after one that failed, and
+    checking what a worker returned are this process's work: their errors propagate
+    as themselves. Read as the worker's, the generation the worker had just
+    published would be reported ``reused``.
     """
     store = _project(tmp_path, monkeypatch)
     path = tmp_path / "rows.csv"
@@ -1762,15 +1763,18 @@ def test_a_failure_of_the_parents_own_is_never_taken_for_the_workers(
         outcome = build_input_snapshot_worker(request, budget)
         if failing == "reconcile_unpublished":
             raise RuntimeError("worker lost after publishing")
-        return outcome
+        return object() if failing == "outcome" else outcome
 
     def refused(*_args: Any) -> None:
         raise OSError(errno.EIO, f"{failing} failed")
 
-    monkeypatch.setattr(store, failing, refused)
+    expected: tuple[type[Exception], str] = (RuntimeError, "unexpected outcome")
+    if failing != "outcome":
+        monkeypatch.setattr(store, failing, refused)
+        expected = (OSError, f"{failing} failed")
     context = _context()
     try:
-        with pytest.raises(OSError, match=f"{failing} failed"):
+        with pytest.raises(expected[0], match=expected[1]):
             _prepare(
                 _csv_config(path), store=store, base_dir=tmp_path, context=context, spawn=spawn
             )

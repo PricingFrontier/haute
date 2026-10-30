@@ -1102,8 +1102,8 @@ failure sections above are the maintained answers.
   reconciliation by a fresh generation another process published (simulated by publishing
   through a second store handle) is recorded `reused` with the successor's generation id
   and no failure, while a failure of the parent's own (its retirement after a worker that
-  published, its reconciliation after one that failed) propagates as itself rather than
-  being read as the worker's; (15) a host without a native cap under
+  published, its reconciliation after one that failed, a worker outcome of the wrong type)
+  propagates as itself rather than being read as the worker's; (15) a host without a native cap under
   `HAUTE_WORKER_MEMORY_ENFORCEMENT=best_effort` yields `cap_unavailable` before any
   provider access; (16) cache invalidation — a warmed preview (`execute_graph` preview
   cache) returns the new rows and records `refreshed`
