@@ -602,6 +602,7 @@ class TestErrorHandling:
             pytest.param("TraceTargetNotFoundError", 404, id="target-not-found"),
         ],
     )
+    @pytest.mark.in_process
     def test_a_refusal_is_answered_by_its_type_whatever_its_wording(
         self, client, tmp_path, monkeypatch, refusal: str, status: int
     ):

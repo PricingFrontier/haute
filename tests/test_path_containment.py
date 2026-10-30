@@ -16,7 +16,6 @@ import time
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from haute._sandbox import contained_path, is_contained, validate_project_path
@@ -280,7 +279,7 @@ class TestSaveOutputPaths:
         (project / "modules").symlink_to(outside, target_is_directory=True)
         before = sorted(path.name for path in outside.iterdir())
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             self._service(project)._validate_output_rel_path("modules/pricing.py", "main.py")
 
         assert exc_info.value.status_code == 400
@@ -293,7 +292,7 @@ class TestSaveOutputPaths:
         _require_links(project)
         (project / "main.py").symlink_to(outside / "evil.py")
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             self._service(project)._validate_output_rel_path("main.py", "main.py")
 
         assert exc_info.value.status_code == 400
@@ -844,7 +843,7 @@ class TestSaveService:
         _link(project, project / "elsewhere" / "config", outside)
         linked = self._service(project, project / "elsewhere")
         linked._prev_config_files = {}
-        with pytest.raises(HTTPException) as refused:
+        with pytest.raises(RequestRefusedError) as refused:
             linked._write_config_files(PipelineGraph(nodes=[_data_input("quotes")], edges=[]))
         assert refused.value.status_code == 400
         assert "resolves outside the pipeline folder" in str(refused.value.detail)
