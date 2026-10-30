@@ -29,6 +29,8 @@ from haute._json_shred._source_proof import (
     observe_freshness,
 )
 
+_SECOND_NS = 1_000_000_000
+
 
 def _write(path: Path, text: str = "id,value\n1,a\n") -> Path:
     path.write_text(text, encoding="utf-8")
@@ -75,10 +77,36 @@ def test_a_native_revision_is_the_reusable_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = _write(tmp_path / "a.csv")
-    revision = object()
+    revision = _POSIX_REVISION
     monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: revision)
 
     assert observe_freshness(path) == Freshness(revision, reusable=True)
+
+
+def test_a_whole_second_posix_revision_is_reusable_only_once_settled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A change time in whole seconds is a coarse clock, which hides a rewrite in that second."""
+    path = _write(tmp_path / "a.csv")
+    tick = 1_700_000_000
+    coarse = _StrongFileRevision(
+        file_identity=(7, 123), size=12, mtime_ns=tick * _SECOND_NS, change_token=tick * _SECOND_NS
+    )
+    # A USN is a counter, not a time: one that is a multiple of a second says nothing.
+    usn = _StrongFileRevision(
+        file_identity=(7, bytes(range(1, 17))), size=12, mtime_ns=34, change_token=tick * _SECOND_NS
+    )
+    observed = coarse
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: observed)
+    monkeypatch.setattr(_source_proof.time, "time", lambda: tick + SETTLE_SECONDS - 0.5)
+
+    assert observe_freshness(path) == Freshness(coarse, reusable=False)
+    observed = usn
+    assert observe_freshness(path) == Freshness(usn, reusable=True)
+
+    monkeypatch.setattr(_source_proof.time, "time", lambda: tick + SETTLE_SECONDS)
+    observed = coarse
+    assert observe_freshness(path) == Freshness(coarse, reusable=True)
 
 
 def test_without_a_native_revision_only_a_settled_stat_is_reusable(
@@ -381,13 +409,53 @@ def _current_revision_record(path: Path) -> dict[str, object]:
     return _source_proof._revision_record(revision)
 
 
+def test_a_same_size_rewrite_within_a_whole_second_is_proved_again_once_settled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A filesystem that stamps whole seconds keeps the POSIX revision through such a rewrite.
+
+    That revision is trusted only once settled, as a stat is, so the proof made
+    before the rewrite is reused neither in this process nor from a durable record.
+    """
+    path = (tmp_path / "a.csv").resolve()
+    _write(path, "id,value\n1,a\n")
+    tick_ns = path.stat().st_ctime_ns // _SECOND_NS * _SECOND_NS
+    real_stat = Path.stat
+
+    def whole_second_stat(self: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+        observed = real_stat(self, *args, **kwargs)
+        if self != path:
+            return observed
+        seconds = tick_ns / _SECOND_NS
+        times = {f"st_{kind}time": seconds for kind in ("a", "m", "c")}
+        times.update({f"st_{kind}time_ns": tick_ns for kind in ("a", "m", "c")})
+        return os.stat_result(tuple(observed)[:10], times)
+
+    now = tick_ns / _SECOND_NS + 0.5
+    monkeypatch.setattr(Path, "stat", whole_second_stat)
+    monkeypatch.setattr(
+        _source_proof, "_strong_file_revision", _source_proof._posix_strong_file_revision
+    )
+    monkeypatch.setattr(_source_proof.time, "time", lambda: now)
+
+    first = file_signature(path)
+    assert not _record_path(path).exists()
+    path.write_text("id,value\n1,b\n", encoding="utf-8")  # the same size, in the same second
+    now = tick_ns / _SECOND_NS + SETTLE_SECONDS
+
+    reproved = file_signature(path)
+
+    assert reproved.digest == content_hash(path) != first.digest
+    assert _record(path)["digest"] == reproved.digest
+
+
 def test_a_proof_records_the_revision_it_was_made_under(tmp_path: Path) -> None:
     path = _write(tmp_path / "a.csv")
 
     signature = file_signature(path)
 
     assert _record(path) == {
-        "schema_version": 1,
+        "schema_version": 2,
         "path": str(path.resolve()),
         "revision": _current_revision_record(path),
         "hash_algo": "xxh64",
@@ -395,6 +463,59 @@ def test_a_proof_records_the_revision_it_was_made_under(tmp_path: Path) -> None:
         "size": signature.size,
         "mtime_ns": signature.mtime_ns,
     }
+
+
+@pytest.mark.parametrize(
+    ("change_token", "trusted"),
+    [(1_700_000_000_123_456_789, True), (1_700_000_000_000_000_000, False)],
+    ids=["sub_second_ctime", "whole_second_ctime"],
+)
+def test_a_schema_1_record_is_trusted_only_for_a_revision_that_is_never_coarse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    hashes: list[Path],
+    change_token: int,
+    trusted: bool,
+) -> None:
+    """Schema 1 records predate the settle rule for whole-second POSIX revisions.
+
+    One naming such a revision may have been written before the file settled, and
+    a same-size rewrite within that second keeps the revision, so its file is proved
+    again; one naming any other revision is still reused, unhashed.
+    """
+    path = (tmp_path / "a.csv").resolve()
+    _write(path)
+    revision = _StrongFileRevision(
+        file_identity=(7, 123),
+        size=path.stat().st_size,
+        mtime_ns=change_token,
+        change_token=change_token,
+    )
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: revision)
+    legacy_digest = "0" * 16
+    _record_path(path).parent.mkdir(parents=True, exist_ok=True)
+    _replace_record(
+        _record_path(path),
+        json.dumps(
+            {
+                "schema_version": 1,
+                "path": str(path),
+                "revision": _source_proof._revision_record(revision),
+                "hash_algo": "xxh64",
+                "digest": legacy_digest,
+                "size": revision.size,
+                "mtime_ns": revision.mtime_ns,
+            }
+        ).encode("utf-8"),
+    )
+
+    signature = file_signature(path)
+
+    if trusted:
+        assert (signature.digest, hashes) == (legacy_digest, [])
+    else:
+        assert (signature.digest, hashes) == (content_hash(path), [path])
+        assert _record(path)["schema_version"] == 2
 
 
 @pytest.mark.parametrize("rewrite", ["content", "same_size_with_mtime_restored"])
@@ -427,7 +548,7 @@ def test_a_new_process_hashes_a_rewritten_file_and_replaces_its_record(
     "corrupt",
     [
         "not_json",
-        "schema_version_2",
+        "schema_version_3",
         "extra_key",
         "bool_size",
         "another_path",
@@ -448,8 +569,8 @@ def test_an_invalid_record_is_rejected_and_replaced(
     if corrupt == "not_json":
         raw = b"{not json"
     else:
-        if corrupt == "schema_version_2":
-            record["schema_version"] = 2
+        if corrupt == "schema_version_3":
+            record["schema_version"] = 3
         elif corrupt == "extra_key":
             record["generation"] = "g1"
         elif corrupt == "bool_size":

@@ -388,13 +388,13 @@ def run_supervised_api_input_build(
 ) -> dict[str, SourceCacheGeneration]:
     """Build *labels* in a spawned worker and settle exactly that build afterwards.
 
-    The parent chooses every generation id and staging token, so after a
-    worker failure or death it reconciles each one: a generation the child
-    already published stays current, and anything unpublished is removed
-    without touching a previous current generation. The scratch directory is
-    removed either way. When every table was published before the worker
-    stopped the build counts as done; otherwise the worker's failure is raised.
+    The parent chooses every table's generation id and staging token
+    (:func:`haute._input_preparation.supervise_build`), so after a worker
+    failure or death it reconciles each one, and removes the scratch directory.
+    When every table was published before the worker stopped the build counts
+    as done; otherwise the worker's failure is raised.
     """
+    from haute._input_preparation import supervise_build
     from haute._sandbox import _get_project_root
 
     tables = _distinct_tables(source, labels)
@@ -411,25 +411,29 @@ def run_supervised_api_input_build(
         scratch_token=scratch_token,
     )
     by_digest = {table.identity.digest: table for table in tables}
-    try:
-        spawn(build_api_input_tables_worker, request, budget, config=worker_config)
-    except BaseException as exc:
-        settled = {
-            digest: store.reconcile_unpublished(
+
+    def reconcile() -> bool:
+        settled = [
+            store.reconcile_unpublished(
                 by_digest[digest].identity, plan.generation_id, plan.staging_token
             )
             for digest, plan in plans.items()
-        }
+        ]
         shutil.rmtree(scratch_directory(store, scratch_token), ignore_errors=True)
-        # Settle first so nothing is left behind, but never convert a base
-        # exception (an interrupt, a system exit) into this build's success.
-        if not isinstance(exc, Exception) or any(
-            outcome != "published" for outcome in settled.values()
-        ):
-            raise
-    generations = {digest: store.open_generation(by_digest[digest].identity) for digest in plans}
+        return all(outcome == "published" for outcome in settled)
+
+    build = supervise_build(
+        spawn,
+        build_api_input_tables_worker,
+        request,
+        budget,
+        config=worker_config,
+        reconcile=reconcile,
+    )
+    if build.failure is not None:
+        raise build.failure
     # The child deferred retirement; retire here, where this process's own
     # lease counts are visible.
     for table in tables:
         store.retire_unleased(table.identity)
-    return generations
+    return {digest: store.open_generation(by_digest[digest].identity) for digest in plans}

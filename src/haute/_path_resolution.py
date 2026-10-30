@@ -243,6 +243,33 @@ def resolve_runtime_file_path(
     raise RuntimePathOutsideProjectError(f"Path {raw_path!r} resolves outside the project root")
 
 
+def resolve_node_input_path(
+    raw_path: str | Path,
+    *,
+    source_file: str | Path | None = None,
+    pipeline_dir: str | Path | None = None,
+    project_root: str | Path | None = None,
+) -> Path:
+    """Resolve a local path a node's config reads from: the one anchoring rule.
+
+    A relative path names the file under the project root, where the editor's
+    file browser writes paths from, and otherwise the one under the pipeline
+    directory, a glob pattern counting as found where it matches. When both
+    exist the project root's wins, so the registry, the engine and an explicit
+    snapshot build always name the same file. Windows backslashes read as
+    separators; neither candidate may leave the project root, and a path found
+    in neither place keeps the project-root candidate.
+    """
+    return resolve_runtime_file_path(
+        raw_path,
+        source_file=source_file,
+        pipeline_dir=pipeline_dir,
+        project_root=project_root,
+        prefer="project",
+        enforce_project_root=True,
+    )
+
+
 def _exists_or_matches(candidate: Path) -> bool:
     """Whether *candidate* exists, or is a glob pattern matching at least one path."""
     if candidate.exists():

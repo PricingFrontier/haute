@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -328,7 +330,17 @@ def test_reuse_refresh_and_rebuild_follow_the_source_signature(
     assert resolve_data_input(config, store=store, base_dir=tmp_path).collect().height == 4
 
     store.clear(store_identity(config, tmp_path))
-    assert prepare().action == "built"
+    built = prepare()
+    assert built.action == "built"
+
+    # A generation whose directory is gone (evicted by another process, deleted
+    # by hand) is missing, so it is built again rather than refused as corrupt.
+    vanished = store.open_generation(store_identity(config, tmp_path)).directory
+    shutil.rmtree(tmp_path / vanished.relative_to(tmp_path))
+    rebuilt = prepare()
+    assert rebuilt.action == "built"
+    assert rebuilt.generation_id != built.generation_id
+    assert resolve_data_input(config, store=store, base_dir=tmp_path).collect().height == 4
 
 
 # --------------------------------------------------- (5) concurrent execution
@@ -1727,6 +1739,47 @@ def test_a_base_exception_during_a_spawned_build_is_never_swallowed(
     )
     assert spawn.request is not None
     assert pointer["generation_id"] == spawn.request.generation_id
+
+
+@pytest.mark.parametrize("failing", ["retire_unleased", "reconcile_unpublished", "outcome"])
+def test_a_failure_of_the_parents_own_is_never_taken_for_the_workers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failing: str,
+) -> None:
+    """Only the worker's failure falls back to a generation published meanwhile.
+
+    Retiring after a worker that published, reconciling after one that failed, and
+    checking what a worker returned are this process's work: their errors propagate
+    as themselves. Read as the worker's, the generation the worker had just
+    published would be reported ``reused``.
+    """
+    store = _project(tmp_path, monkeypatch)
+    path = tmp_path / "rows.csv"
+    pl.DataFrame({"id": [1, 2]}).write_csv(path)
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
+
+    def spawn(function: Any, request: Any, budget: Any, *, config: Any) -> Any:
+        outcome = build_input_snapshot_worker(request, budget)
+        if failing == "reconcile_unpublished":
+            raise RuntimeError("worker lost after publishing")
+        return object() if failing == "outcome" else outcome
+
+    def refused(*_args: Any) -> None:
+        raise OSError(errno.EIO, f"{failing} failed")
+
+    expected: tuple[type[Exception], str] = (RuntimeError, "unexpected outcome")
+    if failing != "outcome":
+        monkeypatch.setattr(store, failing, refused)
+        expected = (OSError, f"{failing} failed")
+    context = _context()
+    try:
+        with pytest.raises(expected[0], match=expected[1]):
+            _prepare(
+                _csv_config(path), store=store, base_dir=tmp_path, context=context, spawn=spawn
+            )
+    finally:
+        context.release_admission()
 
 
 # --------------------------------------------- (A9) one deadline per preparation

@@ -336,8 +336,10 @@ shared content signature, the same proof a Data Input's snapshot records, so sta
 checks, preparation, builds, runtime identity and later previews share one hash per
 unchanged file. Its reuse follows the one freshness guarantee the
 [caching](../caching/high-level.md) specification states: the file's native revision
-(identity, length, last-write value and change token), or where the platform has none a
-stat trusted only once the file has settled. A proof made under a native revision is
+(identity, length, last-write value and change token; a POSIX change time in whole
+seconds, which a same-size rewrite within that second keeps, only once the file has
+settled), or where the platform has none a stat trusted only once the file has settled. A
+proof made under a settled native revision is
 recorded on disk, so a new server process reuses it while that revision holds rather than
 hashing a multi-gigabyte source again; without a native revision nothing is persisted and a
 new process hashes each source once. A changed token, an atomic replacement, or a file that keeps

@@ -196,9 +196,6 @@ these are the Majors still open.
 - **The RAM estimate reads widths from the nearest source and matches dtype
   tokens** (two Majors, `EXEC-R10`): a widened graph estimates 48,000 bytes
   against 4,016,000 actual.
-- **A vanished generation is reported corrupt; a generation is removed with a
-  bare `rmtree` under the lock; the registry and the engine anchor relative
-  paths differently** (three Majors, `IO-R04`, `IO-R05`).
 - **The one-shot and protocol watchdogs measure a bare interpreter** (Major,
   `EXEC-R13`): 51 MiB tighter than the native cap under a 256 MiB budget.
 - **A graceful server exit joins every in-flight worker** (Major,
@@ -279,11 +276,7 @@ production:
 | Execution engine | STA-4, STA-5, STA-8 | `EXEC-R15` |
 | Execution engine | EXE-3 | `EXEC-R16` (Decision) |
 | Execution engine | EXE-4, EXE-5, EXE-6, EXE-7, EXE-8, EXE-9, EXE-15, STA-6, STA-7, the preamble `sys.path` edit | `EXEC-R17` |
-| IO layer | CIO-2, CIO-3 | `IO-R04` |
-| IO layer | CIO-4 | `IO-R05` |
 | IO layer | CIO-5, CIO-11 | `IO-R06` |
-| IO layer | CIO-8, CIO-9, CIO-10 | `IO-R07` |
-| IO layer | CIO-6, CIO-7 | `IO-R08` |
 | Background jobs | WRK-2 | `ROAD-WORKER-06` |
 | Background jobs | WRK-5, WRK-6, WRK-11, WRK-14 | `ROAD-WORKER-07` |
 | Background jobs | WRK-8, WRK-9, WRK-10 | `ROAD-WORKER-08` |
@@ -355,9 +348,8 @@ vanish with node-level instances (`SUB-R01`); the git routes' and the
 assistant's current-directory project root (`PCFG-R04`); the assistant
 catalog's hand tables and
 key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
-(`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the API
-Input's supervised build (`IO-R08`) and the Edge Join as a boundary
-(`EXEC-R15`); node-level instances and their
+(`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the Edge
+Join as a boundary (`EXEC-R15`); node-level instances and their
 rewriters (`SUB-R01`), the pivot registry at shutdown (`ROAD-WORKER-06`); the
 browser's hand-written contract mirrors (`API-R03`), `hashConfig`'s exclusion
 list (`PCFG-R08`), the results store's optimiser logic (`FSH-R03`) and the dead
@@ -437,8 +429,8 @@ All probes live outside the repository and wrote nothing into it.
 | Tool | Result |
 |---|---|
 | radon | 285 functions with cyclomatic complexity ≥ 20; 27 ≥ 50 (the largest in the optimiser service, the save service, the assistant tools and the RAM estimate). |
-| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `EXEC-R17`, `IO-R08`, `ROAD-WORKER-08`, `DEP-R13`, `CLI-R05` and `ENGQ-R01`. |
-| jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13`, `EXEC-R17`, `IO-R08` and `ROAD-WORKER-08`. |
+| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `EXEC-R17`, `ROAD-WORKER-08`, `DEP-R13`, `CLI-R05` and `ENGQ-R01`. |
+| jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13`, `EXEC-R17` and `ROAD-WORKER-08`. |
 | jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `FNED-R03`, `FNED-R05`, `FMOU-R05`, `EDA-R03` and `FGC-R04`. |
 | knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted; every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
 | sweeps | 35 campaign-named test modules (`ENGQ-R05`). |
