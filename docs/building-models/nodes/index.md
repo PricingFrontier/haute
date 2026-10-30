@@ -32,7 +32,7 @@ Every step in a Haute pipeline is a node. You connect nodes on the canvas to def
 | Profile a dataset, build pivot tables and charts | [Explore](explore.md) |
 | Save results to a file or table | [Data Output](data-output.md) |
 | Group nodes into a reusable block | [Submodel](submodel.md) |
-| Reuse a node's logic with different inputs | [Instances](instances.md) |
+| Reuse a node's logic with different inputs | [Reusing a node](instances.md) |
 
 ---
 
@@ -128,7 +128,7 @@ Nodes that bring data into your pipeline. They have no upstream connections.
 ## Organisation
 
 - **[Submodel](submodel.md)**  - groups nodes into a collapsible, reusable block
-- **[Instances](instances.md)**  - reuse a node's logic with different inputs
+- **[Reusing a node](instances.md)**  - reuse a node's logic with different inputs
 
 ---
 

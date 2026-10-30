@@ -26,6 +26,7 @@ from haute._ast_helpers import (
     _is_pipeline_authored_decorator,
     _is_submodel_authored_decorator,
     is_submodel_import,
+    reject_removed_node_decorator,
     unkept_module_statements,
 )
 from haute._cache import canonical_json
@@ -252,6 +253,8 @@ def _exception_message(exc: BaseException) -> str:
 
 
 def _node_failure_code(exc: BaseException) -> str:
+    if isinstance(exc, ParseError) and "removed_node_instance" in exc.context:
+        return "node_instance_removed"
     if isinstance(exc, ConfigError):
         return "node_config_invalid"
     if isinstance(exc, ParseError):
@@ -311,31 +314,32 @@ def _candidate_from_ast(
     if isinstance(raw_reference, str) and raw_reference.strip():
         config_reference = raw_reference.replace("\\", "/")
 
-    if skeleton.explicit_node_type is None:
-        return _unavailable_candidate(
-            skeleton,
-            recovery_id=recovery_id,
-            node_type=None,
-            description=skeleton.description,
-            config_reference=config_reference,
-            span=span,
-            diagnostic=_diagnostic(
-                code="node_decorator_unknown",
-                scope="node",
-                message=(
-                    f"The authored @{skeleton.decorator_name} node type is not available "
-                    "in this Haute version."
-                ),
-                source_file=source_file,
-                element_id=recovery_id,
-                source_span=span,
-                remediation=(
-                    "Install a compatible node implementation or update the source explicitly."
-                ),
-            ),
-            diagnostics=diagnostics,
-        )
     try:
+        reject_removed_node_decorator(skeleton.decorator)
+        if skeleton.explicit_node_type is None:
+            return _unavailable_candidate(
+                skeleton,
+                recovery_id=recovery_id,
+                node_type=None,
+                description=skeleton.description,
+                config_reference=config_reference,
+                span=span,
+                diagnostic=_diagnostic(
+                    code="node_decorator_unknown",
+                    scope="node",
+                    message=(
+                        f"The authored @{skeleton.decorator_name} node type is not available "
+                        "in this Haute version."
+                    ),
+                    source_file=source_file,
+                    element_id=recovery_id,
+                    source_span=span,
+                    remediation=(
+                        "Install a compatible node implementation or update the source explicitly."
+                    ),
+                ),
+                diagnostics=diagnostics,
+            )
         if skeleton.is_async:
             raise ParseError("Pipeline node bodies must be synchronous; remove the async keyword.")
         raw_node = _resolve_node_skeleton(skeleton, base_dir)
@@ -354,7 +358,9 @@ def _candidate_from_ast(
                 source_file=source_file,
                 element_id=recovery_id,
                 source_span=span,
-                remediation="Open the referenced source or config and correct this node.",
+                remediation=exc.context.get(
+                    "remediation", "Open the referenced source or config and correct this node."
+                ),
             ),
             diagnostics=diagnostics,
         )
@@ -1043,6 +1049,9 @@ def _build_recovery_graph(
                     source_handles=source_handles,
                     config_reference_override=candidate.config_reference,
                     alias=(candidate.config or {}).get("alias") if candidate.config else None,
+                    instance_of=(candidate.config or {}).get("instanceOf")
+                    if candidate.node_type == NodeType.SUBMODEL
+                    else None,
                 )
             except (HauteError, ValueError):
                 resolved_identity = None
@@ -1089,6 +1098,12 @@ def _build_recovery_graph(
                     node_type=source_candidate.node_type,
                     label=source_candidate.authored_id,
                     source_handle=edge.source_handle,
+                    instance_of=(source_candidate.config or {}).get("instanceOf")
+                    if source_candidate.node_type == NodeType.SUBMODEL
+                    else None,
+                    source_handles=[
+                        f"out__{name}" for name in source_candidate.submodel_output_ports
+                    ],
                 )
             except ValueError:
                 input_name = None
@@ -1214,6 +1229,9 @@ def _canonical_snapshot(
             node_type=node.data.nodeType,
             label=node.data.label,
             source_handles=source_handles,
+            instance_of=node.data.config.get("instanceOf")
+            if node.data.nodeType == NodeType.SUBMODEL
+            else None,
             alias=(
                 (node.data.config or {}).get("alias")
                 if node.data.nodeType == NodeType.SUBMODEL
@@ -2026,7 +2044,7 @@ def _mark_scoped_editable(
     """Advisory per-node isolation-save eligibility; the endpoint re-derives it.
 
     Eligible: a known ordinary type that loads (ready or blocked), with a
-    trustworthy source span, not a shared instance, and no config reference
+    trustworthy source span and no config reference
     shared with another node. Document-wide fences stay separate.
     """
     all_nodes: list[RecoveryPipelineNode] = []
@@ -2047,7 +2065,6 @@ def _mark_scoped_editable(
             and node.availability != "unavailable"
             and node.source_file is not None
             and node.source_span is not None
-            and not (node.config or {}).get("instanceOf")
             and (node.config_reference is None or reference_counts[node.config_reference] == 1)
         )
 

@@ -30,7 +30,7 @@
 | `frontend/src/hooks/useNodeDataCache.ts` | One consumer node's view of the data it reads: the point, its availability for that consumer's demand, and `run`, `refresh`, `cancel`, and `clear`. |
 | `frontend/src/hooks/useNodeDataProfile.ts` | The shared `profile` analysis of the data one consumer reads: asked for once per slot and data version while the point is `current`, fenced against a document that has moved on, stored per slot so every pane showing that data gets it, with `cancel` for the running job, and `error` plus `refresh` so a failed attempt is retried rather than left as an empty pane. Each request names the version it asks about, which the job it starts carries. |
 | `frontend/src/utils/operationToken.ts` | `nextOperationToken`: a process-unique token that tells one asynchronous operation apart from the operation that replaced it. |
-| `frontend/src/panels/dataPointIdentity.ts` | `buildNodeDataCacheIdentity`: the identity that gates a consumer's `point` request — its upstream subgraph plus the original of every instance in it, each node's data-affecting configuration (for a Banding or Rating Step consumer itself, only its column demand), every edge with its handles, the submodels, and the preamble. |
+| `frontend/src/panels/dataPointIdentity.ts` | `buildNodeDataCacheIdentity`: the identity that gates a consumer's `point` request — its upstream subgraph, each node's data-affecting configuration (for a Banding or Rating Step consumer itself, only its column demand), every edge with its handles, the submodels, and the preamble. |
 | `frontend/src/stores/useSettingsStore.ts` | Zustand store: row limit, the pipeline settings (loaded from `GET /api/pipeline-settings` and written key by key through `PATCH /api/pipeline-settings`), section open/closed state, the MLflow destinations inventory cache (fetched once with probing, re-fetched by `invalidateMlflow()`), data sources, file-listing cache. The pure destination helpers live in `frontend/src/utils/mlflowDestinations.ts`, and the shared per-node control is the destination selector component described under the MLflow destination surface below. |
 | `frontend/src/stores/useToastStore.ts` | Zustand store: toast queue with dedup, capped at 10 entries. |
 | `frontend/src/stores/useUIStore.ts` | Zustand store: modal/panel open flags (git/utility/constants/assistant, and `filesPlace`, the Files panel's place or `null`, mutually exclusive by construction — each setter clears the others), sync banner, node panel width, the modelling and optimiser results workspaces' docked heights (`modellingPreviewHeight`, `optimiserPreviewHeight`; session-only, 420px initially), per-node Explore/modelling selection memory (editor pane, preview pane, and the configured chart/pivot Configure-subview ids), hover highlight, node search open flag, and the assistant's running-turn mirror, unseen-outcome flag and fix request, whose behaviour [frontend-assistant-ui](../frontend-assistant-ui/low-level.md) specifies. |
@@ -61,7 +61,7 @@
 | `frontend/src/components/MlflowSettingsModal.tsx` | `ModalShell`-based MLflow destinations inventory editor: an MLflow server URL field, a Local folder field showing the resolved folder, a read-only Databricks block (selected profile, the dedicated MLflow host, or the missing configuration), one Test action per remote with its inline categorised result, and Save through `PUT /api/mlflow/settings` (`tracking_uri` and `folder` only) followed by `invalidateMlflow()`. Rendered by the toolbar while the UI store's MLflow-settings-open flag is set; opened from each node's MLflow gear or greyed light. |
 | `frontend/src/components/SourcePipelineControls.tsx` | The Source selector over the Pipeline button, one column straight after the brand in the pipeline editor's toolbar and the workbench's ([workbench](../workbench/low-level.md)), returned as a fragment so the column stays a direct child of the toolbar, with the host's `wsStatus`, `editingDisabled` and `sourceSelectionTrusted`. The two share a two-row grid column with no text labels beside them, so the Pipeline button is exactly as wide as the selector above it whatever the active source is named; both are on the shared `.toolbar-btn` surface and type and spelled alike, the selector's chevron being one the kit's centred action would not take, so their texts line up. The source menu's Remove asks (`confirmed`) before removing a source whose values split constants hold and then removes those values. The Pipeline button reads "Pipeline" whatever the calculation mode, or "Offline" in the danger colour while live sync is `reconnecting` or `disconnected`, and opens `PipelineSettingsModal` from the component's own local state, unlike the MLflow modal's UI-store flag. |
 | `frontend/src/components/PipelineSettingsModal.tsx` | `ModalShell`-based Pipeline settings pane: a Calculation radio group (Automatic / Manual, session-only UI-store state); a Preview section with the preview row limit (0 = no limit, negatives clamp to 0) and chunk rows; a Caching section with the caching switch and the cache size; a Memory section with the preview memory and the memory kept free; a Time limits section with the pipeline, modelling and optimisation limits; the settings file's path; then the Cached data inventory: every node of the open pipeline with its state, size, cached-at time, build duration and per-entry clear control; a group for cached data belonging to no node of it; and a footnote for unattributed bytes. The whole store's size (`CacheStoreSize`) sits beside the Cached data heading. No budget cards, limit variables or generation counts. Reads `POST /api/cache/nodes` on open, explicit Refresh and successful clear. Rendered by the toolbar from its own local open state and opened by the toolbar's Pipeline button. |
-| `frontend/src/utils/inputSnapshotSource.ts`, `frontend/src/utils/instanceOriginal.ts`, `frontend/src/utils/importedTitle.ts` | The one derivation of whether a node reads a snapshot and the input-cache source naming it, and of the input whose source the preview frame's Refresh re-reads (`refreshRereadInput`); the original whose config an input instance runs; and an Import's "last imported" wording, its time by `relativeTime`. |
+| `frontend/src/utils/inputSnapshotSource.ts`, `frontend/src/utils/importedTitle.ts` | The one derivation of whether a node reads a snapshot and the input-cache source naming it, and of the input whose source the preview frame's Refresh re-reads (`refreshRereadInput`); and an Import's "last imported" wording, its time by `relativeTime`. |
 | `frontend/src/hooks/previewProgressPoller.ts` | A preview request's id and the poller of its step progress; see [frontend-graph-canvas](../frontend-graph-canvas/low-level.md). |
 | `frontend/src/stores/useInputImportStore.ts` | Imports in flight by the node that started them, and `startInputImport`, which runs one: its node's work and Stop, every outcome raising the node-data epoch, and a re-preview only for a completed, unstopped import whose node still reads the same source; a completed import moves the data epoch (`useDataEpochStore`). |
 | `frontend/src/components/InputImportButton.tsx` | The preview frame's Import action for a snapshot-backed Data Input; see [frontend-preview-explore](../frontend-preview-explore/low-level.md). |
@@ -203,6 +203,10 @@
   that is exempted from LRU eviction in the four caches trimmed by
   `trimCacheByRecency` and whose pivot entries are likewise exempted by
   `trimExplorePivotCache`.
+  Occurrence output previews use their `PreviewData.cacheKey` as the record key;
+  the data's `nodeId` still names the visible occurrence. Pinning protects that
+  occurrence's most recently touched output, and `clearNode` removes all of its
+  output previews and their recency records.
 - **`SettingsState.mlflow`**: `{status: "pending"|"ready"|"error",
   installed, importable, destinations, detail}` — populated from
   `GET /api/mlflow/destinations?probe=true`
@@ -704,9 +708,7 @@ data of one *point*, and the backend's `/api/node-data/point` response is the on
 it (specified in the [server API](../server-api/low-level.md#node-data-builds)).
 
 1. `panels/dataPointIdentity.ts` builds the identity that gates the request: the consumer's
-   upstream subgraph and the original of every instance in it (execution runs an instance with
-   its original's configuration, and that original can sit outside the consumer's own edges),
-   each node's data-affecting configuration (Explore's overview, pivot, chart, and formula
+   upstream subgraph, each node's data-affecting configuration (Explore's overview, pivot, chart, and formula
    settings excluded), every edge with its source and target handles, the submodels, and the
    preamble. Covering more than the backend's signature costs an extra request, never a wrong
    answer. A Banding or Rating Step consumer reads its input rather than its own output, so its
@@ -799,7 +801,7 @@ same Vitest config.
   that changes nothing, an answer for a superseded identity never landing, a document that has
   moved on never being written — including a clear that lands after it — the shared poller
   completing or failing a build, and the fence dropping every slot. The identity suite covers
-  the instance original of an upstream instance and a moved port handle.
+  a changed shared submodel definition and a moved port handle.
   `frontend/src/stores/__tests__/useNodeDataStore.test.ts` covers the store's record of
   announced captures.
 - **Delegated data-point builds** (`frontend/src/hooks/__tests__/useNodeDataCache.delegation.test.tsx`):

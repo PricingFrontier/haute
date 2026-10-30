@@ -1,6 +1,6 @@
 """Edge-case tests for the builder module (_builders.py).
 
-Covers: resolve_instance_node, _build_constant, _build_output,
+Covers: _build_constant, _build_output,
 _build_live_switch, _build_scenario_expander, _build_banding,
 and the _build_node_fn dispatcher.
 """
@@ -13,7 +13,7 @@ import polars as pl
 import pytest
 
 import haute._builders as builders
-from haute._builders import _build_node_fn, resolve_instance_node
+from haute._builders import _build_node_fn
 from haute._registry import MODELLING_NODE_SEMANTICS
 from haute._types import GraphEdge
 from haute.errors import ExecutionError, LiveSwitchScenarioError
@@ -71,144 +71,6 @@ def test_modelling_passthrough_rejects_an_unrecognised_input_policy(
             [GraphEdge(id="edge", source=upstream.id, target=node.id)],
             {upstream.id: upstream, node.id: node},
         )
-
-
-class TestResolveInstanceNode:
-    def test_valid_instance_merges_original_config(self) -> None:
-        original = _n(
-            {
-                "id": "orig",
-                "data": {
-                    "label": "Original",
-                    "nodeType": "banding",
-                    "config": {
-                        "factors": [
-                            {
-                                "column": "age",
-                                "outputColumn": "age_band",
-                                "banding": "breakpoints",
-                                "rules": [
-                                    {"boundary": "50", "label": "young"},
-                                ],
-                            }
-                        ],
-                    },
-                },
-            }
-        )
-        instance = _n(
-            {
-                "id": "inst",
-                "data": {
-                    "label": "Instance",
-                    "nodeType": "polars",
-                    "config": {"instanceOf": "orig"},
-                },
-            }
-        )
-        node_map = {"orig": original, "inst": instance}
-        resolved = resolve_instance_node(instance, node_map)
-        assert resolved.data.nodeType == "banding"
-        assert "factors" in resolved.data.config
-        assert resolved.data.config["instanceOf"] == "orig"
-
-    def test_empty_instanceOf_returns_node_unchanged(self) -> None:  # noqa: N802 - references camelCase config key `instanceOf`
-        node = _n(
-            {
-                "id": "n1",
-                "data": {
-                    "label": "Plain",
-                    "nodeType": "polars",
-                    "config": {"instanceOf": ""},
-                },
-            }
-        )
-        result = resolve_instance_node(node, {"n1": node})
-        assert result is node
-
-    def test_missing_original_in_node_map_returns_unchanged(self) -> None:
-        node = _n(
-            {
-                "id": "n1",
-                "data": {
-                    "label": "Orphan",
-                    "nodeType": "polars",
-                    "config": {"instanceOf": "nonexistent"},
-                },
-            }
-        )
-        result = resolve_instance_node(node, {"n1": node})
-        assert result is node
-
-    def test_instance_preserves_own_id_and_label(self) -> None:
-        original = _n(
-            {
-                "id": "orig",
-                "data": {
-                    "label": "Original",
-                    "nodeType": "constant",
-                    "config": {"values": [{"name": "x", "value": "1"}]},
-                },
-            }
-        )
-        instance = _n(
-            {
-                "id": "inst_42",
-                "data": {
-                    "label": "My Instance",
-                    "nodeType": "polars",
-                    "config": {"instanceOf": "orig"},
-                },
-            }
-        )
-        node_map = {"orig": original, "inst_42": instance}
-        resolved = resolve_instance_node(instance, node_map)
-        assert resolved.id == "inst_42"
-        assert resolved.data.label == "My Instance"
-        assert resolved.data.nodeType == "constant"
-
-    def test_instance_preserves_input_mapping(self) -> None:
-        original = _n(
-            {
-                "id": "orig",
-                "data": {
-                    "label": "Original",
-                    "nodeType": "polars",
-                    "config": {"code": "df"},
-                },
-            }
-        )
-        instance = _n(
-            {
-                "id": "inst",
-                "data": {
-                    "label": "Inst",
-                    "nodeType": "polars",
-                    "config": {
-                        "instanceOf": "orig",
-                        "inputMapping": {"a": "b"},
-                    },
-                },
-            }
-        )
-        node_map = {"orig": original, "inst": instance}
-        resolved = resolve_instance_node(instance, node_map)
-        assert resolved.data.config["inputMapping"] == {"a": "b"}
-        assert resolved.data.config["code"] == "df"
-
-    def test_no_instanceOf_key_returns_unchanged(self) -> None:  # noqa: N802 - references camelCase config key `instanceOf`
-        node = _n(
-            {
-                "id": "n1",
-                "data": {
-                    "label": "NoRef",
-                    "nodeType": "polars",
-                    "config": {"code": "df"},
-                },
-            }
-        )
-        result = resolve_instance_node(node, {"n1": node})
-        assert result is node
 
 
 class TestBuildConstantEdgeCases:
@@ -518,33 +380,6 @@ class TestBuildNodeFnDispatcher:
         lf = pl.DataFrame({"x": [42]}).lazy()
         with pytest.raises(NotImplementedError):
             fn(lf)
-
-    def test_instance_resolution_before_building(self) -> None:
-        original = _n(
-            {
-                "id": "orig",
-                "data": {
-                    "label": "Original",
-                    "nodeType": "constant",
-                    "config": {"values": [{"name": "rate", "value": "0.05"}]},
-                },
-            }
-        )
-        instance = _n(
-            {
-                "id": "inst",
-                "data": {
-                    "label": "Instance",
-                    "nodeType": "polars",
-                    "config": {"instanceOf": "orig"},
-                },
-            }
-        )
-        node_map = {"orig": original, "inst": instance}
-        func_name, fn, is_source = _build_node_fn(instance, source_names=[], node_map=node_map)
-        assert is_source is True
-        result = fn().collect()
-        assert result["rate"].to_list() == [0.05]
 
     def test_dispatcher_returns_valid_func_name(self) -> None:
         func_name, _, _ = _build(

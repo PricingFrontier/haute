@@ -134,6 +134,35 @@ function makeTrace(nodeIds: string[]): TraceResult {
 }
 
 describe("useTracing", () => {
+  it.each(["prices", "checks"])("traces an occurrence output's qualified child and %s frame", async (frame) => {
+    const child = makeNode("child")
+    const owner = makeNode("owner", "submodel", { data: {
+      label: "owner", nodeType: "submodel", config: { definitionId: "rating", alias: "owner" },
+    } })
+    const occurrence = makeNode("again", "submodel", { data: {
+      label: "again", nodeType: "submodel", config: { definitionId: "rating", alias: "again", instanceOf: "owner" },
+      _sourceHandleInputNames: { out__premium: "again_premium", out__audit: "again_audit" },
+    } })
+    const submodels = { rating: {
+      definitionId: "rating", file: "modules/rating.py", graph: { nodes: [child], edges: [] }, inputPorts: [],
+      outputPorts: [
+        { name: "premium", source: { nodeId: "child", handleId: "prices" } },
+        { name: "audit", source: { nodeId: "child", handleId: "checks" } },
+      ],
+    } }
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: makeTrace(["submodel_runtime/again/child"]) })
+    const { result } = renderHook(() => useTracing(makeParams({
+      nodes: [owner, occurrence], edges: [], selectedNode: occurrence, submodels,
+      submodelsRef: { current: submodels }, previewFrame: frame === "prices" ? "again_premium" : "again_audit",
+      previewOutputHandle: frame === "prices" ? "out__premium" : "out__audit",
+    })))
+    await act(async () => result.current.handleCellClick(0, "price", { price: 42 }))
+    expect(mockTraceCell).toHaveBeenCalledWith(expect.objectContaining({
+      target_node_id: "submodel_runtime/again/child", port_label: frame, row_values: { price: 42 },
+    }))
+    expect(result.current.traceResult).not.toBeNull()
+  })
+
   beforeEach(() => {
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live" })
     useDocumentStatusStore.getState().loadDocumentStatus(

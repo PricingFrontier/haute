@@ -49,6 +49,8 @@
 ## Key types and data structures
 
 - `PreviewData` in `frontend/src/panels/DataPreview.tsx` carries status, schema, preview rows,
+  an optional `cacheKey` for a submodel occurrence's individual output (its `nodeId`
+  remains the visible occurrence),
   optional frame schema/selection, execution diagnostics, and the response's `seed_plan`: the
   shared-snapshot generations the rows were computed from, each `seeded` (read instead of
   computing the node) or `captured` (computed and written by this preview). The table combines preview columns
@@ -400,7 +402,7 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
   "Preparing inputs…" (or the preparation message) with no bar.
 - **Import** (`components/InputImportButton.tsx`) sits beside Refresh in the
   data preview frame of a Data Input that reads a snapshot (`inputSnapshotSource`
-  of the node, or of its original for an instance): one other than a direct
+  of the node): one other than a direct
   Parquet scan. A Quote Input has no Import; its Refresh re-reads its source
   (below). Import re-reads the source with `ensureInputSnapshots([input], { force: true })`,
   showing "Importing · N rows" while a bounded build streams rows and
@@ -425,8 +427,7 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
   Data Input's Refresh keeps its freshness rules; Import is the one action that
   re-reads a source whose changes cannot be detected.
 - **Refresh re-reads a structured Quote Input.** Refresh on a JSON, JSONL,
-  NDJSON or XML Quote Input with an emitting table (or on an instance of one,
-  which re-reads its original's source) re-reads the file and caches every
+  NDJSON or XML Quote Input with an emitting table re-reads the file and caches every
   table again, whether or not the file changed, and then previews the node
   (`refreshPreview`'s `rereadSource`, in
   [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)). The

@@ -1,6 +1,7 @@
 /** Shared node data shape used across hooks and components. */
 
 import type { Edge, Node } from "@xyflow/react"
+import type { SchemaWarning } from "../api/types"
 
 /** Persisted node-type vocabulary shared by runtime guards and canvas metadata. */
 export const PIPELINE_NODE_TYPES = {
@@ -69,7 +70,7 @@ export interface HauteNodeData extends Record<string, unknown> {
   /** Columns per output handle for a multi-frame producer (a submodel's outputs) — set by usePipelineAPI */
   _frameColumns?: Record<string, ColumnInfo[]>
   /** Schema warnings from last preview — set by usePipelineAPI */
-  _schemaWarnings?: { column: string; status: string }[]
+  _schemaWarnings?: SchemaWarning[]
   /** Notes from the last preview of this node (`NodeResult.notes`) — set by usePipelineAPI */
   _notes?: string[]
   /** Active source the column stash (_columns/_availableColumns/_schemaWarnings)
@@ -275,6 +276,11 @@ export type SubmodelBoundaryEdgeData = {
   }
 }
 
+export interface ParentOutputState {
+  nodes: Array<{ id: string; data: Record<string, unknown> }>
+  edges: Array<{ id: string; inputName: unknown }>
+}
+
 export interface SubmodelPortData extends Record<string, unknown> {
   label: string
   instanceId: string
@@ -285,6 +291,8 @@ export interface SubmodelPortData extends Record<string, unknown> {
   _parentBindingScope?: "definition"
   /** Parent edge ids in their authoritative order, so a restored binding returns to its own position. */
   _parentEdgeOrder?: string[]
+  /** Output identities and consumer configs changed by public output-count edits. */
+  _parentOutputState?: ParentOutputState
   externalNodeIds: string[]
   _traceActive?: boolean
   _traceDimmed?: boolean

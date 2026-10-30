@@ -402,14 +402,11 @@ def collect_node_configs(graph: PipelineGraph) -> dict[str, str]:
     ``"config/banding/optimiser_banding.json"``) to JSON content string.
 
     Nodes without a config folder (transforms, submodels) are skipped.
-    Instance nodes are skipped (they reference an original).
     """
     configs: dict[str, str] = {}
     for node in graph.nodes:
         nt = node.data.nodeType
         if not node_emits_sidecar(node):
-            continue
-        if node.data.config.get("instanceOf"):
             continue
         func_name = _sanitize_func_name(node.data.label)
         rel_path = config_path_for_node(nt, func_name).as_posix()

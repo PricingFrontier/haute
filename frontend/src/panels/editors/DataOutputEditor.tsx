@@ -24,7 +24,6 @@ import type { OnReplaceConfig, OnUpdateConfig } from "./_shared"
 import { isPlainObject } from "../../types/guards"
 
 const OUTPUT_COMMON_KEYS = [
-  "instanceOf",
   "inputMapping",
   "selected_columns",
   "column_renames",

@@ -7,8 +7,6 @@ Covers:
   - GraphEdge construction and optional handles
   - PipelineGraph construction, cached properties, defaults
   - _sanitize_func_name (additional edge cases beyond test_graph_utils.py)
-  - build_instance_mapping (additional combos beyond test_graph_utils.py)
-  - resolve_orig_source_names (additional edge cases)
 """
 
 from __future__ import annotations
@@ -20,8 +18,6 @@ from pydantic import ValidationError
 
 from haute._graph_utils import (
     _sanitize_func_name,
-    build_instance_mapping,
-    resolve_orig_source_names,
 )
 from haute._types import (
     GraphEdge,
@@ -413,73 +409,3 @@ class TestSanitizeFuncNameExtended:
 
     def test_single_underscore(self):
         assert _sanitize_func_name("_") == "_"
-
-
-# ===========================================================================
-# build_instance_mapping — additional edge cases
-# ===========================================================================
-
-
-class TestBuildInstanceMappingExtended:
-    def test_empty_lists(self):
-        assert build_instance_mapping([], []) == {}
-
-    def test_more_orig_than_inst(self):
-        """Extra orig names remain unmapped."""
-        result = build_instance_mapping(["a", "b", "c"], ["a"])
-        assert result["a"] == "a"
-        assert "b" not in result
-        assert "c" not in result
-
-    def test_more_inst_than_orig(self):
-        """Extra inst names are unused."""
-        result = build_instance_mapping(["a"], ["a", "b", "c"])
-        assert result == {"a": "a"}
-
-    def test_no_matches_uses_positional(self):
-        result = build_instance_mapping(["x", "y"], ["alpha", "beta"])
-        assert result == {"x": "alpha", "y": "beta"}
-
-    def test_explicit_empty_dict(self):
-        result = build_instance_mapping(["a", "b"], ["a", "b"], explicit={})
-        assert result == {"a": "a", "b": "b"}
-
-    def test_partial_explicit(self):
-        result = build_instance_mapping(["a", "b"], ["x", "y"], explicit={"a": "y"})
-        assert result["a"] == "y"
-        assert result["b"] == "x"
-
-    def test_substring_match_priority_over_positional(self):
-        """Substring match should be preferred over positional."""
-        result = build_instance_mapping(
-            ["data"],
-            ["data_v2", "other"],
-        )
-        assert result["data"] == "data_v2"
-
-
-# ===========================================================================
-# resolve_orig_source_names — additional edge cases
-# ===========================================================================
-
-
-class TestResolveOrigSourceNamesExtended:
-    def test_instance_of_missing_ref(self):
-        """instanceOf points to a node not in node_map — returns None."""
-        node = GraphNode(
-            id="inst",
-            data=NodeData(label="inst", config={"instanceOf": "nonexistent"}),
-        )
-        result = resolve_orig_source_names(node, {"inst": node}, {})
-        assert result is None
-
-    def test_instance_with_no_parents(self):
-        """Original node has no parents — returns empty list."""
-        orig = GraphNode(id="orig", data=NodeData(label="orig"))
-        inst = GraphNode(
-            id="inst",
-            data=NodeData(label="inst", config={"instanceOf": "orig"}),
-        )
-        node_map = {"orig": orig, "inst": inst}
-        result = resolve_orig_source_names(inst, node_map, {})
-        assert result == []

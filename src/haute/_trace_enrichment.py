@@ -910,20 +910,8 @@ def _effective_node_code(
     config: Mapping[str, Any],
     node_map: Mapping[str, GraphNode],
 ) -> str:
-    """Return the code enrichment must attribute to one graph node.
-
-    Instances inherit the referenced original's code unless they carry an
-    explicit ``.with_columns(`` expression of their own. A missing reference
-    leaves the local code intact; an existing code-less original is
-    authoritative and therefore resolves to an empty string.
-    """
-    local_code = config.get("code", "") or ""
-    instance_of = config.get("instanceOf", "")
-    if instance_of and ".with_columns(" not in local_code and instance_of in node_map:
-        original_config = node_map[instance_of].data.config
-        if isinstance(original_config, dict):
-            return original_config.get("code", "") or ""
-    return local_code
+    """Return the node's code; expanded occurrences already carry their definition's."""
+    return config.get("code", "") or ""
 
 
 def _formula_fields(

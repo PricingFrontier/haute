@@ -78,6 +78,7 @@ function requestNode(
   }
   let sourceHandles: string[] = []
   let alias: string | undefined
+  let instanceOf: string | undefined
   // A Workbench Input's ports are the form's tables, which its config does not hold: it
   // asks for no handle identities, each frame being named by its handle.
   if (isRequestInputType(nodeType) && nodeType !== NODE_TYPES.WORKBENCH_INPUT) {
@@ -90,6 +91,7 @@ function requestNode(
       throw new Error(`Cannot resolve editor identity for submodel ${node.id}: malformed occurrence`)
     }
     alias = node.data.config.alias
+    instanceOf = node.data.config.instanceOf
     const definition = submodelDefinition(node, submodels)
     sourceHandles = definition.outputPorts.map((port) => `out__${port.name}`)
   } else if (nodeType === NODE_TYPES.SUBMODEL_PORT) {
@@ -100,6 +102,7 @@ function requestNode(
   }
   return {
     node_id: node.id,
+    ...(instanceOf === undefined ? {} : { instance_of: instanceOf }),
     label,
     node_type: nodeType,
     source_handles: sourceHandles,

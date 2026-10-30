@@ -237,6 +237,220 @@ pipeline.submodel({module}.submodel, "pricing")
 # ---------------------------------------------------------------------------
 
 
+def _instance_body() -> dict:
+    graph = _simple_graph()
+    graph["nodes"][1]["position"] = {"x": 123, "y": 456}
+    graph["nodes"][1]["data"]["config"] = {"code": "df = load"}
+    graph["nodes"].append(
+        {
+            "id": "consumer",
+            "data": {"label": "consumer", "nodeType": "polars", "config": {"code": "df = calc"}},
+        }
+    )
+    graph["edges"].append({"id": "e2", "source": "calc", "target": "consumer"})
+    return {
+        "node_id": "calc",
+        "graph": graph,
+        "source_file": "pipeline.py",
+        "base_revision": _CURRENT_REVISION,
+    }
+
+
+def test_node_instance_wraps_in_place_without_writing(client: TestClient, tmp_path: Path) -> None:
+    body = _instance_body()
+    body["preamble"] = "FACTOR = 2"
+    body["preserved_blocks"] = ["def helper():\n    return FACTOR"]
+    with _patch_parent_document(tmp_path):
+        before = {
+            p.relative_to(tmp_path): p.read_bytes() if p.is_file() else None
+            for p in tmp_path.rglob("*")
+        }
+        response = client.post("/api/submodel/instance", json=body)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["source_revision"] == _CURRENT_REVISION
+    assert (payload["owner_name"], payload["instance_name"], payload["definition_id"]) == (
+        "calc",
+        "calc_2",
+        "calc",
+    )
+    graph = PipelineGraph.model_validate(payload["graph"])
+    assert graph.source_revision == _CURRENT_REVISION
+    assert graph.node_map["calc"].position == {"x": 123, "y": 456}
+    assert graph.node_map["calc_2"].position == {"x": 183, "y": 536}
+    assert graph.node_map["calc"].data.config == {"definitionId": "calc", "alias": "calc"}
+    assert graph.node_map["calc_2"].data.config == {
+        "definitionId": "calc",
+        "alias": "calc_2",
+        "instanceOf": "calc",
+    }
+    assert graph.node_map["consumer"].data.config == {"code": "df = calc"}
+    assert [(e.source, e.target, e.sourceHandle, e.targetHandle) for e in graph.edges] == [
+        ("load", "calc", None, "in__load"),
+        ("calc", "consumer", "out__calc", None),
+    ]
+    assert graph.submodels is not None
+    definition = graph.submodels["calc"]
+    assert definition.file == "modules/calc.py"
+    (child,) = definition.graph.nodes
+    assert child.data.label == "calc_node"
+    assert child.position == {"x": 0, "y": 0}
+    assert child.data.config == {"code": "df = load"}
+    assert definition.graph.preamble == body["preamble"]
+    assert definition.graph.preserved_blocks == body["preserved_blocks"]
+    assert definition.input_ports[0].name == "load"
+    assert definition.input_ports[0].targets[0].node_id == child.id
+    assert definition.output_ports[0].name == "calc"
+    assert definition.output_ports[0].source.node_id == child.id
+    assert {
+        p.relative_to(tmp_path): p.read_bytes() if p.is_file() else None
+        for p in tmp_path.rglob("*")
+    } == before
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "absent",
+        "submodel",
+        "submodelPort",
+        "apiInput",
+        "workbenchInput",
+        "output",
+        "workbenchOutput",
+        "liveSwitch",
+        "dataOutput",
+        "drilled",
+    ],
+)
+def test_node_instance_refuses_invalid_target(
+    client: TestClient, tmp_path: Path, kind: str
+) -> None:
+    body = _instance_body()
+    if kind == "absent":
+        body["node_id"] = "missing"
+    elif kind == "drilled":
+        body["graph"]["nodes"].append(
+            {"id": "input", "data": {"label": "Input", "nodeType": "submodelPort", "config": {}}}
+        )
+    else:
+        body["graph"]["nodes"][1]["data"]["nodeType"] = kind
+    with _patch_parent_document(tmp_path):
+        response = client.post("/api/submodel/instance", json=body)
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "status"),
+    [
+        ("source_file", "", 400),
+        ("base_revision", "stale", 409),
+        ("base_revision", " ", 422),
+    ],
+)
+def test_node_instance_requires_current_document(
+    client: TestClient, tmp_path: Path, field: str, value: str, status: int
+) -> None:
+    body = _instance_body()
+    body[field] = value
+    with _patch_parent_document(tmp_path):
+        response = client.post("/api/submodel/instance", json=body)
+    assert response.status_code == status, response.text
+
+
+def test_node_instance_allocates_module_child_and_copy_names(
+    client: TestClient, tmp_path: Path
+) -> None:
+    body = _instance_body()
+    body["graph"]["submodels"] = _graph_with_submodel()["submodels"]
+    definition = body["graph"]["submodels"].pop(DEFINITION_ID)
+    definition["definitionId"] = "CALC_2"
+    definition["file"] = "modules/other_module.py"
+    body["graph"]["submodels"]["CALC_2"] = definition
+    body["graph"]["nodes"].extend(
+        [
+            {
+                "id": "existing",
+                "data": {
+                    "label": "existing",
+                    "nodeType": "submodel",
+                    "config": {"definitionId": "CALC_2", "alias": "existing"},
+                },
+            },
+            {"id": "other", "data": {"label": "calc_node", "nodeType": "polars", "config": {}}},
+            {"id": "calc_2", "data": {"label": "calc_2", "nodeType": "polars", "config": {}}},
+        ]
+    )
+    (tmp_path / "modules").mkdir()
+    (tmp_path / "modules" / "CaLc.py").write_text(
+        "# do not overwrite\n", encoding="utf-8", newline="\n"
+    )
+    with _patch_parent_document(tmp_path):
+        response = client.post("/api/submodel/instance", json=body)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["definition_id"] == "calc_3"
+    assert payload["owner_name"] == "calc"
+    assert payload["instance_name"] == "calc_3"
+    definition = payload["graph"]["submodels"]["calc_3"]
+    assert definition["file"] == "modules/calc_3.py"
+    assert definition["graph"]["nodes"][0]["data"]["label"] == "calc_node_2"
+    assert (tmp_path / "modules" / "CaLc.py").read_text() == "# do not overwrite\n"
+    assert not (tmp_path / "modules" / "calc_3.py").exists()
+
+
+def test_node_instance_preflight_refuses_orphan_sidecar(client: TestClient, tmp_path: Path) -> None:
+    (tmp_path / "modules").mkdir()
+    sidecar = tmp_path / "modules" / "calc.haute.json"
+    sidecar.write_text("{}", encoding="utf-8")
+    with _patch_parent_document(tmp_path):
+        response = client.post("/api/submodel/instance", json=_instance_body())
+    assert response.status_code == 409, response.text
+    assert sidecar.read_text() == "{}"
+    assert not (tmp_path / "modules" / "calc.py").exists()
+
+
+def test_node_instance_allocation_skips_generated_clone_collisions(
+    client: TestClient, tmp_path: Path
+) -> None:
+    body = _instance_body()
+    body["graph"]["nodes"].append(
+        {
+            "id": "taken",
+            "data": {"label": "calc_2__calc_node", "nodeType": "polars", "config": {}},
+        }
+    )
+    with _patch_parent_document(tmp_path):
+        before = {
+            p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()
+        }
+        response = client.post("/api/submodel/instance", json=body)
+    assert response.status_code == 200, response.text
+    assert response.json()["instance_name"] == "calc_3"
+    assert {
+        p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()
+    } == before
+
+
+def test_node_instance_refuses_removed_node_reuse_without_writing(
+    client: TestClient, tmp_path: Path
+) -> None:
+    body = _instance_body()
+    body["graph"]["nodes"][1]["data"]["config"]["instanceOf"] = "load"
+    with _patch_parent_document(tmp_path):
+        before = {
+            p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()
+        }
+        response = client.post("/api/submodel/instance", json=body)
+    assert response.status_code == 400, response.text
+    assert "instanceOf" in response.json()["detail"]
+    assert 'pipeline.submodel(<name>.submodel, "<instance>"' in response.json()["detail"]
+    assert {
+        p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()
+    } == before
+
+
 class TestCreateSubmodel:
     def test_invalid_node_ids(self, client: TestClient, tmp_path: Path) -> None:
         """An unknown selected id is a stale-selection conflict."""
@@ -1042,3 +1256,107 @@ class TestTransformOnlySubmodelRoutes:
         submitted = flatten.call_args.args[0]
         assert submitted.submodels[DEFINITION_ID].graph.nodes[0].id == "base_rate"
         save.assert_not_called()
+
+
+@pytest.mark.parametrize("kind,outputs", [("polars", ["calc"]), ("explore", [])])
+def test_node_instance_public_output_does_not_depend_on_consumers(client, tmp_path, kind, outputs):
+    body = _instance_body()
+    body["graph"]["nodes"] = body["graph"]["nodes"][:2]
+    body["graph"]["nodes"][1]["data"]["nodeType"] = kind
+    body["graph"]["edges"] = body["graph"]["edges"][:1]
+    with _patch_parent_document(tmp_path):
+        response = client.post("/api/submodel/instance", json=body)
+    assert response.status_code == 200, response.text
+    assert [
+        p["name"] for p in response.json()["graph"]["submodels"]["calc"]["outputPorts"]
+    ] == outputs
+
+
+def test_node_instance_waits_for_save_without_blocking_the_event_loop(tmp_path, monkeypatch):
+    import asyncio
+    import threading
+
+    from haute.routes._helpers import save_lock
+    from haute.routes._save_pipeline import SavePipelineService
+    from haute.routes.submodel import create_node_instance
+    from haute.schemas import CreateNodeInstanceRequest
+
+    entered = threading.Event()
+    release = threading.Event()
+    original = SavePipelineService.validate_new_module_files
+
+    def preflight(service, files):
+        entered.set()
+        assert release.wait(5), "Create Instance blocked the server event loop"
+        return original(service, files)
+
+    monkeypatch.setattr(SavePipelineService, "validate_new_module_files", preflight)
+
+    async def exercise():
+        task = None
+        try:
+            async with save_lock:
+                task = asyncio.create_task(
+                    create_node_instance(CreateNodeInstanceRequest.model_validate(_instance_body()))
+                )
+                assert not await asyncio.to_thread(entered.wait, 0.5)
+                assert not task.done()
+            assert await asyncio.to_thread(entered.wait, 2)
+            # Another coroutine can run while the read-only preflight is blocked.
+            release.set()
+            return await asyncio.wait_for(task, 2)
+        finally:
+            release.set()
+            if task is not None and not task.done():
+                await task
+
+    with _patch_parent_document(tmp_path):
+        response = asyncio.run(exercise())
+    assert response.owner_name == "calc"
+
+
+def test_node_instance_uses_executable_name_instead_of_editor_id(client, tmp_path):
+    body = _instance_body()
+    body["graph"]["nodes"][1]["data"]["label"] = "Policy Premium"
+    body["graph"]["nodes"][2]["data"]["config"] = {"code": "df = Policy_Premium"}
+    with _patch_parent_document(tmp_path):
+        response = client.post("/api/submodel/instance", json=body)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["owner_name"] == "Policy_Premium"
+    assert payload["instance_name"] == "Policy_Premium_2"
+    graph = PipelineGraph.model_validate(payload["graph"])
+    assert "calc" not in graph.node_map
+    assert graph.submodels["Policy_Premium"].file == "modules/Policy_Premium.py"
+    assert [(e.source, e.target) for e in graph.edges] == [
+        ("load", "Policy_Premium"),
+        ("Policy_Premium", "consumer"),
+    ]
+    assert graph.node_map["consumer"].data.config == {"code": "df = Policy_Premium"}
+
+
+def test_node_instance_names_against_the_selected_pipeline_utility(client, tmp_path):
+    body = _instance_body()
+    body["source_file"] = "models/main.py"
+    body["preamble"] = "from utility.rules import *"
+    for relative, symbol in [
+        ("utility/rules.py", "calc_node_2"),
+        ("models/utility/rules.py", "calc_node"),
+    ]:
+        utility = tmp_path / relative
+        utility.parent.mkdir(parents=True)
+        utility.write_text(f"{symbol} = 1\n", encoding="utf-8", newline="\n")
+    # A module beside an unrelated root pipeline must not reserve the child module name.
+    (tmp_path / "modules").mkdir()
+    (tmp_path / "modules/calc.py").write_text(
+        "# unrelated module\n", encoding="utf-8", newline="\n"
+    )
+    with _patch_parent_document(tmp_path, source_file="models/main.py"):
+        response = client.post("/api/submodel/instance", json=body)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["definition_id"] == "calc"
+    assert (
+        payload["graph"]["submodels"]["calc"]["graph"]["nodes"][0]["data"]["label"] == "calc_node_2"
+    )
+    assert not (tmp_path / "models/modules").exists()

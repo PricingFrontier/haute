@@ -56,7 +56,7 @@ hide:
 | Optimisation | [Optimisation](building-models/nodes/optimiser.md) · [Apply Optimisation](building-models/nodes/optimiser-apply.md) |
 | Outputs | [Quote Response](building-models/nodes/output.md) · [Data Output](building-models/nodes/data-output.md) |
 | Analysis | [Explore](building-models/nodes/explore.md) |
-| Organisation | [Submodel](building-models/nodes/submodel.md) · [Instances](building-models/nodes/instances.md) |
+| Organisation | [Submodel](building-models/nodes/submodel.md) · [Reusing a node](building-models/nodes/instances.md) |
 
 </div>
 

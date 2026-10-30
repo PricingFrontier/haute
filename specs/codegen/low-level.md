@@ -42,7 +42,7 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/codegen.py` | Public orchestration API (`graph_to_code`, `graph_to_code_multi`); single-node dispatch (`_node_to_code`, `_generate_node_code`, `_render`); instance-node handling (`_instance_to_code`); the contract decision and value (`_contract_keyword`, `_contract_value`); node emission order (`_emission_order`); module assembly (`_render_module`); a pipeline's submodel imports (`submodel_import_statement`, which the planner removing an unavailable occurrence also uses to rewrite an import: one `from modules import ...` naming each definition's module once, in ruff's isort member order (`_isort_member_order`, a comparison sorted through `functools.cmp_to_key`: constants, classes, then the rest, `_isort_member_rank`; then the names lowercased, not casefolded, then exact, each compared by `_natord`, a port of the natord crate ruff uses, whose `_compare_digit_runs` compares a digit run starting with `0` digit by digit from the left (`02` before `1`) and otherwise ranks the longer run higher (`2` before `10`)), wrapped in parentheses one name per line past 88 columns); the final parse gate (`_assert_emitted_files_parse`). `declares_global_constants` says whether a graph's files name the global constants file (it has constants, or its file failed to load), and `_render_module` then adds the constructor keyword (pipeline files) and the binding of the reserved name after each constructor. |
+| `src/haute/codegen.py` | Public orchestration API (`graph_to_code`, `graph_to_code_multi`); single-node dispatch (`_node_to_code`, `_generate_node_code`, `_render`); the contract decision and value (`_contract_keyword`, `_contract_value`); node emission order (`_emission_order`); module assembly (`_render_module`); a pipeline's submodel imports (`submodel_import_statement`, which the planner removing an unavailable occurrence also uses to rewrite an import: one `from modules import ...` naming each definition's module once, in ruff's isort member order (`_isort_member_order`, a comparison sorted through `functools.cmp_to_key`: constants, classes, then the rest, `_isort_member_rank`; then the names lowercased, not casefolded, then exact, each compared by `_natord`, a port of the natord crate ruff uses, whose `_compare_digit_runs` compares a digit run starting with `0` digit by digit from the left (`02` before `1`) and otherwise ranks the longer run higher (`2` before `10`)), wrapped in parentheses one name per line past 88 columns); the final parse gate (`_assert_emitted_files_parse`). `declares_global_constants` says whether a graph's files name the global constants file (it has constants, or its file failed to load), and `_render_module` then adds the constructor keyword (pipeline files) and the binding of the reserved name after each constructor. |
 | `src/haute/_executable_names.py` | The executable-name rule (codegen high-level "One function per node"): `RESERVED_NAMES` with what the generated module binds each to, `BUILTIN_NAMES`, `function_name_violations` (case-folded buckets over every node function name and occurrence alias in the root and each definition graph, submodel ports excepted; reserved and built-in hits), `input_binding_violations` (edge-derived names, `inputMapping` aliases and submodel input ports a body receives), `data_output_violations` over `data_output_destination` (io-layer: two Data Outputs writing one destination, once per submodel occurrence), `executable_name_violations` (all three), the `NameViolation`/`NameParty` result with one `message()` per violation and `format_name_violations` for the whole list; `function_name_problem` (one candidate label, for the assistant), `reserved_or_builtin` (for the standalone pipeline's registration) and `reserved_input_problem` (for user-code execution). Codegen's check raises the parse error. |
 | `src/haute/_support_code_names.py` | The support-code half of the naming rule (codegen high-level "Names cannot collide with support code"): `support_code_inventory` builds the static `SupportBinding` list (name, provenance, source, line) of the root and submodel preambles, the pipeline's submodel imports (`_submodel_modules`: one `from modules import <name>` binding per definition whose file is a `modules/<name>.py` module, labelled `_SUBMODEL_IMPORTS`), the preserved blocks and their `utility.<module>` star imports, resolved through a `UtilityReader`, collecting the statements it cannot read; `support_code_violations` turns it into the five support kinds of violation (a node or input colliding with a helper, two helpers in conflict, a reserved binding, an unreadable statement), apart from a root occurrence named after a submodel module or a node input of that name, which collide with nothing; `utility_reader` reads `utility/<module>.py` from the first directory holding it; `name_violations` joins them with the executable-name violations. |
 | `src/haute/_codegen_builders.py` | One `_gen_*` builder per `NodeType`, registered into `haute._registry.NODE_REGISTRY` via `@_register_codegen`; each returns a `NodeSource` rather than text. Shared helpers build a configured node's declaration or hook (`_configured_node`), the config-backed decorator keywords (`_config_keywords`), parameters (`_params` — the per-edge input names supplied by the orchestrator; duplicates are rejected by `src/haute/codegen.py::_validate_duplicate_node_inputs`) and the transform body (`_transform_body`, which adds the output declaration only when the code binds `df` nowhere). `render_node_source` prints a `NodeSource` through the shared document printer; `_sanitize_description` and `_docstring_lines` prepare docstring text. |
@@ -50,12 +50,12 @@
 | `src/haute/_python_syntax.py` | Formatting-preserving valid-Python boundary: exact method-call discovery, exact expression/function replacement, and one import inserted below another (`insert_import_after`, used by the node-scoped save), with stable structured syntax failures. It never repairs invalid Python syntax or evaluates source. Codegen no longer edits generated source, so it does not use this module. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): codegen registers and reads per-node code builders through the canonical registry. |
 | `src/haute/_code_extraction.py` | Reverse direction of the builders: recovers the user-authored code from a function body. Three kinds (`polars`, `hook`, `external`) share one engine (`extract_user_code`): strip the docstring, recognise a declaration body (`is_declaration_body`: nothing but `...` or `pass`), strip the transform output declaration or the External File `df = <first input>` binding, recognise the incomplete placeholder, strip the trailing `return df`, and finalise with the Polars rules. |
-| `src/haute/_ast_helpers.py` | Stateless AST/source utilities with no node/graph knowledge: literal evaluation (`_eval_ast_literal`), decorator introspection (`_get_decorator_kwargs`, `_is_pipeline_authored_decorator`, `_get_decorator_node_type`), docstring/whitespace handling (`_strip_docstring`, `_dedent`), one function's body (`_function_body_source`, which keeps the comment lines above its first statement), and whole-file extraction helpers (`_extract_connect_calls`, `_extract_meta`, `_extract_preamble`, from a parsed module only, `_extract_preserved_blocks`) shared with the parser. It also reads the global constants declaration (`_extract_global_constants_declaration`) and refuses module-level bindings of the reserved name (`_reject_reserved_global_constants_bindings`). `is_submodel_import` recognises a statement importing from `modules` in any spelling; in a pipeline file such an import is generated code, so preamble extraction cuts its lines out (`_submodel_import_lines`) and `unkept_module_statements` (the statements a save would drop) does not report one, wherever it sits. |
+| `src/haute/_ast_helpers.py` | Stateless AST/source utilities with no node/graph knowledge: literal evaluation (`_eval_ast_literal`), decorator introspection (`reject_removed_node_decorator` refuses the removed instance and `of=` forms before literal evaluation; `_get_decorator_kwargs`, `_is_pipeline_authored_decorator`, `_get_decorator_node_type`), docstring/whitespace handling (`_strip_docstring`, `_dedent`), one function's body (`_function_body_source`, which keeps the comment lines above its first statement), and whole-file extraction helpers (`_extract_connect_calls`, `_extract_meta`, `_extract_preamble`, from a parsed module only, `_extract_preserved_blocks`) shared with the parser. It also reads the global constants declaration (`_extract_global_constants_declaration`) and refuses module-level bindings of the reserved name (`_reject_reserved_global_constants_bindings`). `is_submodel_import` recognises a statement importing from `modules` in any spelling; in a pipeline file such an import is generated code, so preamble extraction cuts its lines out (`_submodel_import_lines`) and `unkept_module_statements` (the statements a save would drop) does not report one, wherever it sits. |
 
 ## Key types and data structures
 
 - **`NodeSource`** (`_codegen_builders.py`) — frozen dataclass: `decorator` (the
-  registry method name, e.g. `data_input`, `polars`, `instance`), `keywords`
+  registry method name, e.g. `data_input`, `polars`, `model_score`), `keywords`
   (ordered `(name, value)` decorator keywords whose values are literals),
   `params` / `keyword_only` (`Param(name, annotation)` tuples), `returns`
   (`"pl.LazyFrame"` or `None`), `description`, and `body` (`None` for a
@@ -116,7 +116,7 @@
    (`_submodel_paths.submodel_module_name`); a file that is not a `modules/<name>.py`
    module importable by that name raises `ParseError` with the definition id. Then omit occurrence nodes from the root function
    list, translate parent boundary handles only to declared public port names,
-   derive child-boundary parameters from sanitised public input port names and downstream names from sanitised public output port names, and emit one explicit
+   derive child-boundary parameters from sanitised public input port names and downstream names from each output's name (`edge_input_name`: the public output port name from an owner; from an instance, the instance's name, or `<instance>_<port>` when the definition has several outputs), and emit one explicit
    `pipeline.submodel(<module>.submodel, name)` registration per occurrence (with `instance_of=owner_name` for copies), with the pipeline's
    `from modules import ...` (`submodel_import_statement`) naming every definition's module. Parent `connect` calls refer to aliases
    plus public port names; synthetic `in__`/`out__` handles never enter source.
@@ -132,7 +132,7 @@ the imports, one blank line, for a pipeline with submodels its `submodel_import`
 `Pipeline(...)`/`Submodel(...)` construction (an empty `description` is
 omitted), any preserved blocks (`_emit_preserved_block`, wrapped in
 `# haute:preserve-start/-end` markers), then each node function preceded by two
-blank lines (original nodes in emission order, then instance nodes), the
+blank lines (in emission order), the
 submodel registration calls, and the `pipeline.connect(...)`/
 `submodel.connect(...)` calls under the `# Wire nodes together` comment
 (deduped when `dedup_connects=True`). The module ends with exactly one newline.
@@ -201,7 +201,7 @@ fresh markers.
    contract from the current config (`_derive_contract_for_codegen`) and fills
    only that contract's opaque sides from a declared `config["contract"]`
    (`Contract.fill_opaque_sides`), keeping the declaration's `inputs_by_parent`;
-   an instance, or `"declared"` generation, starts from the declaration alone. It
+   a `"declared"` generation starts from the declaration alone. It
    then compares the result with what the parser derives offline
    (`resolve_parse_time_contract`) and returns `None` — no keyword — unless the
    result has a concrete side the offline derivation leaves opaque or carries
@@ -218,13 +218,12 @@ fresh markers.
 
 Every builder except `_gen_transform` describes a configured node.
 
-- **Declaration** (`_configured_node`, and `_instance_to_code` for an instance): no user code. Parameters are the node's
+- **Declaration** (`_configured_node`): no user code. Parameters are the node's
   input names without annotations, there is no return annotation, and the body
   is `...` — or the docstring alone when the node has a description, since a
   docstring is already a complete body. API Input, Data Output, Edge Join,
   Banding, Output, Live Switch, Modelling, Optimiser, Optimiser Apply and
-  Constant nodes are always declarations; so is an instance node, whose
-  decorator carries `of=` and its `inputMapping=`.
+  Constant nodes are always declarations.
 - **Hook** (`_configured_node`): a Data Input, Rating Step, Model Score, Scenario Expander or
   Explore node whose config carries code or steps. The first parameter is
   `df: pl.LazyFrame` in place of the first input (a Data Input has only `df`),
@@ -236,14 +235,13 @@ Every builder except `_gen_transform` describes a configured node.
   object arrives as the keyword-only `obj`, and the body begins with
   `df = <first input>` before the code and the closing `return df`. A
   disconnected External File with code has no positional parameters and no
-  binding line. A non-instance External File carrying `inputMapping` (in its
+  binding line. An External File carrying `inputMapping` (in its
   sidecar, which keeps every non-code config key) is named by the mapping's
   logical names, validated by `resolve_input_mapping_names` as `_gen_transform`
   validates a transform's, so a standalone run binds the frames positionally to
   the names its code reads. As for a transform, the parser reconstructs its
   implicit edges through that mapping (`_graph_builders._edge_param_names_for_node`),
-  never from a node that shares a logical name, and an instance of either is
-  generated against its original's logical names.
+  never from a node that shares a logical name.
 - The code-accepting builders raise `ConfigError` for an input named `df`.
 - Removed `dataSource`/`dataSink` enum values, decorators, templates, and
   extractor aliases have no compatibility path. Round trips preserve the
@@ -290,7 +288,7 @@ compare a step rendering with an extracted body on equal terms.
 
 A `polars` transform's function parameters ARE its inputs: each incoming edge
 binds one parameter (`edge_input_name`, in edge order), and `df` is only the
-node's OUTPUT variable. For a non-instance transform carrying
+node's OUTPUT variable. For a transform carrying
 `inputMapping={logical_name: current_edge_name}`, `_gen_transform` validates a
 one-to-one mapping against the current edge-derived names, emits the logical
 names in the same edge order, and persists the mapping as a decorator kwarg.
@@ -328,7 +326,7 @@ leading `df = <input>`, and its decorator carries
 setting: its shared column settings are written to that sidecar, which the parser reads
 them from, never as decorator keywords beside it. A render
 failure emits the incomplete placeholder body (the save warns which step is
-incomplete); `steps` together with `inputMapping` on an original is a `ConfigError`.
+incomplete); `steps` together with `inputMapping` on a node is a `ConfigError`.
 A stepped frame surface (`config["steps"]` is a list on a Data Input, External File,
 Rating Step, Model Score, Scenario Expander or Explore) is a hook whose body is
 produced by `_stepped_body_code(config, node_type, source_names)`: the rendering by
@@ -485,7 +483,7 @@ empty code.
 | Data Input, External File, Rating Step, Model Score, Scenario Expander or Explore node with an input named `df` | `ConfigError` (node id/label) | `_codegen_builders._reject_df_input` |
 | stepped `polars` transform whose steps cannot be rendered | No error — incomplete placeholder body, warned at save time with the step index | `_codegen_builders._gen_transform`, `_save_pipeline._validate_transforms_are_runnable` |
 | stepped `dataInput`, `externalFile`, `ratingStep`, `modelScore`, `scenarioExpander` or `explore` whose steps cannot be rendered | No error — the hook's body is the `INCOMPLETE_STEPS_MESSAGE` placeholder, warned at save time with the step index | `_codegen_builders._stepped_body_code` and `_configured_node`, `_save_pipeline._validate_transforms_are_runnable` |
-| stepped `polars` original carrying `inputMapping` | `ConfigError` (node id/label) | `_codegen_builders._gen_transform` |
+| stepped `polars` node carrying `inputMapping` | `ConfigError` (node id/label) | `_codegen_builders._gen_transform` |
 | `edgeJoin` codegen called with `!= 2` sources | `ConfigError` | `_codegen_builders._gen_edge_join` |
 | `Explore` node with `!= 1` incoming edge | `ParseError` | `_codegen_builders._gen_explore` |
 | Codegen dispatched on a `SUBMODEL`/`SUBMODEL_PORT` occurrence | `RuntimeError` | `_codegen_builders._gen_submodel_placeholder_unreachable` |
@@ -512,7 +510,7 @@ file tree on disk.
 - `tests/test_executable_names.py` — one table-driven test of the executable-name rule (each
   reserved name, built-ins, near misses such as `Max premium`, case-only and sanitized
   collisions, a root node against a submodel child, an occurrence alias against its own child,
-  and a reserved Quote Input frame, `inputMapping` alias, instance mapping and submodel port),
+  and a reserved Quote Input frame, `inputMapping` alias and submodel port),
   and one test per entry point proving a violation reaches the user through it: save, codegen,
   the strict parse, a standalone import (with the direct `pipeline.polars(f)` form accepted and
   a node named like a preamble helper refused), execution, the assistant and the document's
@@ -522,8 +520,8 @@ file tree on disk.
   feed and U+2028 inside a line, and a form feed between two nodes leaves both bodies and
   the comment holding one intact) and floats written as ruff writes them; the generated-file
   shape: a corpus graph covering every
-  node type as a declaration and every code-accepting type as a hook (plus a transform, an
-  instance and a submodel definition file) generates modules that `ruff format --check`
+  node type as a declaration and every code-accepting type as a hook (plus a transform and
+  submodel definitions with owner and instance occurrences) generates modules that `ruff format --check`
   (ruff's defaults) leaves unchanged and that `ruff check --isolated` passes with the
   pycodestyle, pyflakes, isort, pyupgrade, bugbear, comprehension, simplify, pie and
   empty-docstring rules (not flake8-return: a hook whose code ends by assigning `df` is
@@ -543,7 +541,7 @@ file tree on disk.
   to the same effective contract, and a second save is byte-identical.
 - `tests/test_polars_steps.py::test_codegen_parse_round_trip_reproduces_rendered_code` — a stepped transform's generated module parses back to the rendered code and its steps; `test_stepped_original_rejects_input_mapping` covers the `inputMapping` rejection.
 - `tests/test_polars_steps.py::test_data_input_steps_execute_and_round_trip`, `test_data_input_incomplete_steps_fail_on_every_path`, `test_data_input_hand_edit_discards_steps_without_sidecar_marker` and `test_data_input_free_code_with_redundant_parentheses_reloads_in_step_mode` — a stepped Data Input's generated module is a `df` hook whose body is the rendered lines and parses back to its steps, an unrenderable list emits the `INCOMPLETE_STEPS_MESSAGE` placeholder that reloads as empty code with the steps kept, a hand edit discards the steps without a `_discarded_sidecar` marker, and a rendering the source finaliser normalises still reloads in step mode.
-- `tests/test_polars_steps.py::test_external_file_steps_reach_the_other_inputs_and_obj`, `test_external_file_unknown_input_and_input_mapping_fail_loudly`, `test_rating_step_steps_execute_and_round_trip`, `test_scenario_expander_steps_execute_and_round_trip` and `test_model_score_steps_round_trip_and_fail_before_any_model_loads` — each frame surface's generated module is a hook whose body is the rendering (after `df = <first input>` for an External File) and parses back to its steps, an unrenderable list emits the placeholder (an External File keeping its binding line) and reloads with the steps kept, and a stepped External File original refuses `inputMapping`.
+- `tests/test_polars_steps.py::test_external_file_steps_reach_the_other_inputs_and_obj`, `test_external_file_unknown_input_and_input_mapping_fail_loudly`, `test_rating_step_steps_execute_and_round_trip`, `test_scenario_expander_steps_execute_and_round_trip` and `test_model_score_steps_round_trip_and_fail_before_any_model_loads` — each frame surface's generated module is a hook whose body is the rendering (after `df = <first input>` for an External File) and parses back to its steps, an unrenderable list emits the placeholder (an External File keeping its binding line) and reloads with the steps kept, and a stepped External File node refuses `inputMapping`.
 - `tests/test_rename_stable_binding.py` — executes a coded transform before and after the rename shape the editor produces (edge renamed, `inputMapping` recording the logical name) with equal rows, shows the unmapped shape failing on the old name, and round-trips the mapping through codegen and the parser.
 
 Tests live under `tests/`, organised roughly one file per concern rather
@@ -552,8 +550,7 @@ than one file per module:
 - **`test_codegen.py`** — the largest suite; broad coverage of
   `graph_to_code`/`graph_to_code_multi` across every node type, param
   building, path-literal safety, live-switch/selected-columns/
-  passthrough-vs-behavioural codegen, instance-node mapping (including
-  ambiguous/missing-target error cases), submodel pipeline replacement,
+  passthrough-vs-behavioural codegen, submodel pipeline replacement,
   special-character labels, connect-call deduplication, contract-source
   collision handling, and an explicit single-file guard for `graph_to_code`.
   The input-identity scenarios live here: frame-labelled parameters for

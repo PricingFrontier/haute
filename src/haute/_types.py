@@ -14,12 +14,14 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
 from typing import (
     Any,
     ClassVar,
     Literal,
+    NotRequired,
     Protocol,
     Required,
     Self,
@@ -98,12 +100,9 @@ DECORATOR_TO_NODE_TYPE: dict[str, NodeType] = {
     "scenario_expander": NodeType.SCENARIO_EXPANDER,
     "optimiser_apply": NodeType.OPTIMISER_APPLY,
     "constant": NodeType.CONSTANT,
-    "instance": NodeType.POLARS,  # instances default to polars; real type resolved at runtime
 }
 
-NODE_TYPE_TO_DECORATOR: dict[NodeType, str] = {
-    v: k for k, v in DECORATOR_TO_NODE_TYPE.items() if k != "instance"
-}
+NODE_TYPE_TO_DECORATOR: dict[NodeType, str] = {v: k for k, v in DECORATOR_TO_NODE_TYPE.items()}
 
 #: Node types with no output: nothing may be wired downstream of them. The
 #: editor's ``SINK_ONLY_TYPES`` (``frontend/src/utils/nodeTypes.ts``) is held
@@ -311,7 +310,6 @@ class TransformConfig(TypedDict, total=False):
 
     code: str
     steps: list[dict[str, Any]]
-    instanceOf: str
     inputMapping: dict[str, str]
     selected_columns: list[str]
     column_renames: dict[str, str]
@@ -366,7 +364,6 @@ class ModelScoreConfig(TypedDict, total=False):
     feature_contract_path: str  # the feature contract the model scores under
     code: str  # optional post-processing code
     steps: list[dict[str, Any]]  # low-code post-scoring steps; ``code`` is their rendering
-    instanceOf: str
     inputMapping: dict[str, str]
     mlflow_destination: str  # "databricks" | "server"; absent = the local folder
 
@@ -996,6 +993,7 @@ class SubmodelConfig(TypedDict):
 
     definitionId: str
     alias: str
+    instanceOf: NotRequired[str]
 
 
 class NodeData(BaseModel):
@@ -1369,6 +1367,14 @@ def _reject_duplicate_constant_names(constants: Sequence[GlobalConstant]) -> Non
         seen.add(constant.name)
 
 
+@dataclass(frozen=True)
+class SubmodelSharedBinding:
+    """Expanded sources of one public input bound by an instance and its owner."""
+
+    owner: SubmodelEndpoint
+    instance: SubmodelEndpoint
+
+
 class PipelineGraph(BaseModel):
     """React Flow graph structure used throughout Haute.
 
@@ -1447,6 +1453,10 @@ class PipelineGraph(BaseModel):
     sources: list[str] = Field(default_factory=lambda: ["live"])
     active_source: str = "live"
     _parser_edge_parameter_names: dict[str, list[str]] = PrivateAttr(default_factory=dict)
+    # Execution-only metadata: absent from graph JSON, source and sidecars.
+    _submodel_shared_bindings: dict[str, dict[str, SubmodelSharedBinding]] = PrivateAttr(
+        default_factory=dict
+    )
 
     _parser_definition_id: str | None = PrivateAttr(default=None)
     _parser_input_ports: list[SubmodelInputPort] | None = PrivateAttr(default=None)

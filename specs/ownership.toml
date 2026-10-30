@@ -42,6 +42,12 @@ consumers = ["hosted-project-storage"]
 reason = "The branch indicator hosts the storage and fork chips beside the working-branch control."
 
 [[shared_file]]
+path = "frontend/src/components/ConnectionDropMenu.tsx"
+primary = "frontend-graph-canvas"
+consumers = ["submodels"]
+reason = "The canvas owns the drop picker; submodel bindings reuse it to choose an unbound public input."
+
+[[shared_file]]
 path = "frontend/src/components/ExecutionDiagnosticsSummary.tsx"
 primary = "frontend-modelling-optimiser-ui"
 consumers = ["frontend-preview-explore"]
@@ -238,6 +244,12 @@ path = "frontend/src/utils/buildGraph.ts"
 primary = "frontend-graph-canvas"
 consumers = ["frontend-node-editors"]
 reason = "Graph canvas owns backend graph payload construction; Data Output consumes its semantic request-identity projection."
+
+[[shared_file]]
+path = "frontend/src/utils/canonicalSubmodelBoundaryEditing.ts"
+primary = "frontend-graph-canvas"
+consumers = ["submodels"]
+reason = "The canvas owns boundary edits; submodels specifies occurrence binding and re-targeting semantics."
 
 [[shared_file]]
 path = "frontend/src/utils/configField.ts"

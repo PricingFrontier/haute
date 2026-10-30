@@ -868,8 +868,12 @@ browser without a server or JS bundle.
 - A canvas training run's model becomes available only after the parent validates staged
   size/digest evidence for the complete set in the job's own server-owned artifact directory.
 Every run publishes the model, feature contract, and three evaluation JSON
-artifacts as one set; a tuned run adds its three tuning JSON artifacts. Each job owns its
-directory, so a later run never replaces an earlier job's files: exports read exactly the
+artifacts as one set; a tuned run adds its three tuning JSON artifacts.
+By default artifact names use the node's executable name; a child in an
+instance includes that occurrence's alias prefix. A qualified runtime id is never a
+filename. Explicit model names remain supported, and job directories keep even equal
+names in different occurrences separate. Every artifact reader uses the published paths.
+Each job owns its directory, so a later run never replaces an earlier job's files: exports read exactly the
 bytes their job trained. Completing a newer run for the same node releases the older job's
 directory (unless an export holds it), job eviction and restart reaping remove the rest, and an
 export of a job whose artifacts are gone fails with `410` rather than reading other bytes.

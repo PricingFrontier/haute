@@ -48,9 +48,9 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/hooks/useWebSocketSync.ts` | The `/ws/sync` WebSocket client: connect/reconnect with exponential backoff, keeping the connection id the server's `sync_connection` frame gives each socket (`setSyncConnectionId`; the socket's close, or the hook's cleanup, clears it only while it is still that socket's, `releaseSyncConnectionId`, so a replaced socket closing late leaves its replacement's), document-fingerprint resync, applying accepted `pipeline_document_update` frames through one atomic clean-snapshot transition with the authoritative status fence (including preserved-block/revision refs and graph-scoped dirty blocking), treating `parse_error` as a document system failure, counting each `workbench_form_changed`, and each connection (a change while disconnected went unannounced), on the workbench store's `formChanges`, and session expiry. After an applied frame it fits the whole graph, except that a frame with an assistant `origin` instead calls `setChangeFocus` with the origin's node ids present in the new graph (nothing when none is), and a frame without one clears that focus. |
 | `frontend/src/components/ChangeFocusFit.tsx` | Renderless child of the editor's `<ReactFlow>` that centres the nodes `useUIStore.changeFocus` names once per focus, fitting them with padding and never above the current zoom. |
 | `frontend/src/hooks/useSubmodelNavigation.ts` | `handleCreateSubmodel`/`handleDrillIntoSubmodel`/`handleBreadcrumbNavigate`/`handleDissolveSubmodel` — definition/occurrence-aware view-stack state machine, local embedded-definition drill/project, recursive authoritative identity resolution for canonical transform responses, layout, revision-preconditioned transform requests, and one atomic dirty history entry per create/dissolve. |
-| `frontend/src/utils/submodelViewGraph.ts` | Pure projection from one definition plus its occurrence bindings into collision-safe composite Input/Output nodes and definition-port boundary edges. Input rows retain the definition-wide binding slice so history restoration can restore parent connections atomically while active-occurrence external-node presentation remains local. |
+| `frontend/src/utils/submodelViewGraph.ts` | Pure projection from one definition plus its occurrence bindings into collision-safe composite Input/Output nodes and definition-port boundary edges. Input rows retain the definition-wide binding slice so history restoration can restore parent connections atomically while active-occurrence external-node presentation remains local. `captureParentOutputState` and `restoreParentOutputState` retain output identities and affected parent consumer configs with output-boundary history. |
 | `frontend/src/utils/submodelDeletionPolicy.ts` | `withNativeDeletePolicy` applies the owner-aware React Flow deletion gate while preserving unchanged node identity. |
-| `frontend/src/utils/submodelRuntimeTarget.ts` | `encodeRuntimeIdPart`, `qualifiedRuntimeNodeId`, `resolveDrilledOccurrenceIdentity`, and `runtimeNodeIdForVisibleNode` validate drilled occurrence identity and derive backend runtime targets. |
+| `frontend/src/utils/submodelRuntimeTarget.ts` | `encodeRuntimeIdPart`, `qualifiedRuntimeNodeId`, `resolveDrilledOccurrenceIdentity`, and `runtimeNodeIdForVisibleNode` validate drilled occurrence identity and derive backend runtime targets. `submodelOutputPreview` resolves an occurrence's selected public output to its authoritative display name, qualified child target, frame and cache key, using `canonicalSubmodelBoundary` and `resolveSubmodelBoundaryNodes`. |
 | `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts` | Pure definition-aware boundary transform. It validates canonical identity, maps the collapsed generic input gesture to an existing or newly allocated named public port, edits structured endpoints and opaque public-port ids, preserves boundary positions and authoritative projected identities, reattaches rebuilt edge identities, restores the definition-wide parent-input slice from history projections, preflights incidental interface changes against every bound occurrence, and gives the explicit Input-inspector removal path one coherent cascade across the public port, internal routes, identity map, and all occurrence bindings. |
 | `frontend/src/utils/submodelBoundaryEditing.ts` | Canonical boundary-edit orchestration that validates occurrence identity and delegates structured definition transforms to `canonicalSubmodelBoundaryEditing.ts`. |
 | `frontend/src/hooks/useSubmodelBoundaryEditing.ts` | Adapts canonical pure boundary transforms to the main-canvas generic submodel input, drilled React Flow connection/deletion events, and explicit Input-inspector port removal; accumulates identity-dependent gestures in one pending candidate, validates exact parent-handle identity coverage, and coordinates the history-aware atomic graph setter, `parentGraphRef`, error toasts, and undo/redo reconciliation. |
@@ -66,7 +66,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/utils/makePreviewData.ts` | `makePreviewData` — `PreviewData` constructor with defaults. |
 | `frontend/src/utils/columnFingerprint.ts` | `columnFingerprint`/`columnsEqualByFingerprint` — collision-safe column-schema fingerprinting. |
 | `frontend/src/utils/activePreview.ts` | `previewForActiveNode` — filters preview data to the currently active node. |
-| `frontend/src/utils/validateConfigRefs.ts` | `validateConfigRefs`/`formatConfigRefWarnings` — flags `instanceOf` fields pointing at non-existent node ids; edge-name selectors are validated against their target's exact incoming-edge identities instead. |
+| `frontend/src/utils/validateConfigRefs.ts` | `validateConfigRefs`/`formatConfigRefWarnings` — flags submodel occurrence `instanceOf` fields pointing at non-existent owner occurrences; edge-name selectors are validated against their target's exact incoming-edge identities instead. |
 | `frontend/src/utils/layout.ts` | `getLayoutedElements` plus `nodeIdsNeedingLayout`/`mergeLayoutedNodePositions` for partial imported-graph layout; finite positions including the origin are authoritative. Also owns `clusterSnap`/`alignPositions` coordinate snapping. |
 | `frontend/src/utils/connectionValidation.ts` | `isPipelineConnectionValid` — the graph-level `isValidConnection` React Flow validator, including ordinary executable input-name uniqueness, generic-submodel-input name lookup/allocation policy, strict public-port validation and one-binding-per-input enforcement, and null-API-handle rejection in every gesture direction. |
 | `frontend/src/utils/flowElements.ts` | `appNode`/`appEdge`/`nodeLabel`/`edgeId`/`deselectNodes`/`selectOnlyNode` — node/edge factories and id/selection helpers. |
@@ -85,7 +85,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/components/ComparisonInspector.tsx` | Read-only comparison-view config panel: renders the real node editor `inert` for the available side(s), with a Historical/Current switcher. |
 | `frontend/src/components/ComparisonView.tsx` | The historical-vs-current comparison canvas pair: fetches the historical pipeline, diffs it, and renders two non-interactive `ReactFlow` instances (`ReadonlyCanvas`) with diff-ring highlighting, a draggable split, and orientation toggle. |
 | `frontend/src/utils/canvasHitTest.ts` | `isEmptyCanvasAtPoint`: whether the uppermost element under a client point is the React Flow pane itself. |
-| `frontend/src/components/ConnectionDropMenu.tsx` | Add node menu opened by releasing a source-handle connection on empty canvas: Edge Join plus the palette types that take a data input (not Load File), none of them a singleton, viewport-clamped, arrow-key focus, Escape/outside-click close. |
+| `frontend/src/components/ConnectionDropMenu.tsx` | Drop menu: Edge Join plus the palette types that take a data input (not Load File) on empty canvas; unbound public input choices on an instance. Viewport-clamped, arrow-key focus, Escape/outside-click close. |
 | `frontend/src/components/EdgeJoinInsertionFeedback.tsx` | Renders the conditional polite live-region status for a compatible edge-join insertion candidate. |
 | `frontend/src/components/PolarsIcon.tsx` | Memoized SVG icon for the Polars node type. |
 | `frontend/src/components/RenameDialog.tsx` | Node-rename modal with the shared name-shape validation; shows the rename's refusal (including the server's collision) inline. |
@@ -121,12 +121,13 @@ its alias (`data.label === config.alias`). Hooks and utilities must use
 `node.data.nodeType === 'submodel'` plus the typed config; parsing `submodel__*`
 ids is forbidden.
 
-For ordinary pipeline nodes, Create Instance retains the established
-`config.instanceOf` behavior. Instancing an existing instance first validates
-that its pointer names an existing, same-type canonical owner with no
-`instanceOf` of its own; dangling, self-pointing, type-mismatched, and chained
-identity is rejected rather than traversed or repaired. For a canonical
-`SUBMODEL`, the action is a pure
+For an ordinary pipeline node, Create Instance sends `POST /api/submodel/instance`
+and commits the graph it returns, the node wrapped in a one-node submodel with an
+unbound instance beside it, as one undo step; no ordinary node carries
+`config.instanceOf`. Instancing an existing instance first validates that its
+pointer names an existing canonical owner occurrence with no `instanceOf` of its
+own; dangling, self-pointing, type-mismatched, and chained identity is rejected
+rather than traversed or repaired. For a canonical `SUBMODEL`, the action is a pure
 single-snapshot graph mutation that retains `definitionId`, allocates a fresh
 collision-free immutable node id and deterministic alias (copy numbering
 continues past nine: `scoring_10` clones to `scoring_11`, never
@@ -182,7 +183,9 @@ A successful frame stores both `instanceId` and `definitionId`; failure leaves
 the current view unchanged. Synthetic canonical Input/Output nodes retain that
 `definitionId` marker. Drilled Input edges contribute the sanitised public
 input label to child configs/codegen, while a parent edge sourced from an
-occurrence contributes the sanitised public output port name. Public port ids remain
+occurrence contributes its output name (the sanitised public output port name
+from an owner and, from an instance, the instance's name or, with several
+outputs, `<instance>_<port>`). Public port ids remain
 structural handle identities in both views.
 
 Shared-definition save performs an interface diff by immutable port id and
@@ -319,8 +322,8 @@ reconciliation rather than dropping them or committing a second mutation.
 - **`refreshPreview(node, { rereadSource })`.** The preview frame's Refresh
   (and Ctrl/Cmd+Enter) passes `rereadSource: true`; a trace's re-preview does
   not. When `refreshRereadInput` (`utils/inputSnapshotSource.ts`) names an
-  input for the target — a structured Quote Input with an emitting table, or
-  the original of an instance of one — the target's preview request first runs
+  input for the target — a structured Quote Input with an emitting table —
+  the target's preview request first runs
   `ensureInputSnapshots([input], { force: true })`, which re-reads the file and
   rebuilds every table whether or not the file changed. It runs under that
   request: the loading panel shows the Quote Input preparation messages, with
@@ -403,8 +406,8 @@ reconciliation rather than dropping them or committing a second mutation.
    rebind/prune outcome (owned by `utils/apiInputPorts.ts`). For a frame
    rename, occurrence edges only rebind their external `sourceHandle` because
    the shared definition is already keyed by public port id. Ordinary targets
-   additionally migrate `input_scenario_map` keys and instance `inputMapping`
-   entries, and a coded ordinary polars transform whose input was renamed
+   additionally migrate `input_scenario_map` keys, `inputMapping` entries and a
+   Quote Response's `outputMapping[].source_port`, and a coded ordinary polars transform whose input was renamed
    records the binding `inputMapping[<old name>] = <new name>` (identity
    entries are dropped, an emptied mapping is removed): a rename never edits
    `config.code`, so the transform's parameter names and body stay exactly
@@ -614,9 +617,7 @@ reconciliation rather than dropping them or committing a second mutation.
     executable input name as a stable logical name in
     `inputMapping={logical_name: new_edge_name}`. A repeated split updates the
     existing mapping value instead of nesting or renaming the logical key;
-    existing unrelated entries are preserved. Existing instance mappings have
-    matching values rewritten to the new edge name but are not synthesized
-    when absent. Input names are derived through the same `edgeInputName`
+    existing unrelated entries are preserved. Input names are derived through the same `edgeInputName`
     contract as connection validation, including API-frame and collapsed
     submodel public-output-label identities; callers supply the current submodel
     definitions needed to resolve those boundaries. An unresolved or malformed
@@ -740,7 +741,7 @@ reconciliation rather than dropping them or committing a second mutation.
     inputs the preview reads (`previewInputs`, `POST /api/pipeline/preview/inputs`
     — none above a shared snapshot it seeds from, none outside its lineage) and
     awaits the dynamically loaded `ensureInputSnapshots` on just those graph
-    nodes, an input instance contributing its original's config — its cache-preparation code loads only when a preview requires it,
+    nodes — its cache-preparation code loads only when a preview requires it,
     rather than during initial application startup. Those missing snapshot-backed
     inputs are built or joined first (see the caching spec) — and an ensure
     failure surfaces as that node's preview error; `refreshPreview` (for the
@@ -928,10 +929,13 @@ reconciliation rather than dropping them or committing a second mutation.
     generic target. A drop derives the frame name from the source node's
     server-owned identity and looks it up in the definition's declared input ports
     (`definition.inputPorts.find(p => p.name === inputName)`). A matching name
-    binds that declared port on an owner or copy. A previously unseen name is
-    allowed only on the owner: it mints the port name from `inputName` (adding `_2`,
+    binds that declared port on an owner or copy, refusing an already bound match.
+    For an instance with no matching name, the sole unbound input is chosen;
+    otherwise the drop picker lists the unbound inputs, and commits after selection.
+    With no unbound inputs it refuses with `Every input of <name> is connected`.
+    The owner mints a previously unseen port name from `inputName` (adding `_2`,
     `_3` on collision across both directions) and appends an initially empty target
-    list. Both paths commit the parent edge already retargeted to `in__<name>`
+    list. All paths commit the parent edge already retargeted to `in__<name>`
     in the same history entry. The generic handle is interaction-only and is never
     accepted as a persisted or synchronised edge endpoint; invisible non-interactive
     named anchors at the same row provide React Flow geometry for canonical edges.
@@ -1532,7 +1536,8 @@ again through the editor and save paths.
     snapshot at drag start, no mid-drag/selection-only history churn, and
     structural/non-structural change separation.
   - `frontend/src/hooks/__tests__/useNodeHandlers.test.ts` — ordinary
-    delete-as-one-atomic-step and `config.instanceOf` creation; owner and
+    delete-as-one-atomic-step and a plain node's Create Instance committing the
+    wrapped graph as one undo step; owner and
     malformed-identity deletion refusal with direct instance-copy deletion;
     reusable occurrence creation with retained definition id, collision-free
     immutable id, normalized deterministic alias suffix (including past-nine
@@ -1569,7 +1574,7 @@ again through the editor and save paths.
     `graphRefreshingRef`-guarded deselection skip; node-click panel-open +
     preview fetch (including Optimiser debounce, modelling/explore
     preview, API-input-without-`tables[]` automatic-preview skip,
-    Data Output/output/submodel/submodel-port preview skip, same-node
+    Data Output/output/submodel-port preview skip, same-node
     re-click skip, rapid distinct
     selections); edge deletion; context menu singleton/submodel flags;
     drag-over/drop node creation from palette metadata.
@@ -1609,6 +1614,15 @@ again through the editor and save paths.
     node; well-formed JSON, the empty-string default, and non-object JSON
     (bare array/string) are each exercised explicitly.
 - **Pipeline API — `frontend/src/hooks/__tests__/`:**
+  - `frontend/src/hooks/__tests__/usePipelineAPI.submodelPreview.test.tsx` — owners
+    and instances preview their first declared output and another selected by output
+    name; two outputs of one child use distinct frames, cache entries and Refresh;
+    re-selection returns to the first output; supersession and output-specific errors;
+    no output makes no request; epoch recalculation, manual staleness, cache pinning
+    and deletion, public-handle schema preservation, and refusal of occurrence
+    recovery previews. `frontend/src/__tests__/App.integration.test.tsx` proves the
+    canvas click opens the output preview and exposes Refresh; the occurrence cases
+    in `frontend/src/hooks/__tests__/useTracing.test.ts` prove qualified target/frame tracing.
   - `frontend/src/hooks/__tests__/usePipelineAPI.test.ts` — initial load (cold-start retry policy,
     unmount abort, AbortError suppression, nullable-metadata tolerance,
     load-failure toast); save (success toast, dirty-during-in-flight-save
@@ -1664,8 +1678,8 @@ again through the editor and save paths.
   - `frontend/src/hooks/__tests__/usePipelineAPI.rereadSource.test.ts` — the
     frame's Refresh on a structured Quote Input forces a rebuild of its tables
     before the preview request, raising the node-data epoch so the stored
-    preview is current and not fetched again, with no build toast; an instance
-    re-reads its original's file; a re-preview without the option, a Data Input,
+    preview is current and not fetched again, with no build toast; a re-preview
+    without the option, a Data Input,
     a Quote Input with no emitting table and one reading a flat file keep the
     freshness rules; Stop cancels the re-read and runs no preview; a failed
     re-read is the node's preview error; a graph edited during the re-read
@@ -1766,7 +1780,7 @@ again through the editor and save paths.
     previously-selected-node data hidden; null when there's no active node
     or preview.
   - `frontend/src/utils/__tests__/validateConfigRefs.test.ts` — clean graphs; valid `data_input`
-    reference; stale `data_input`/`banding_source`/`instanceOf` detection;
+    reference; stale submodel owner detection;
     multi-node broken-ref aggregation; empty-string and non-string refs
     ignored; submodel-exported target resolution from canonical nested
     `{graph:{nodes}}` metadata; a target absent from

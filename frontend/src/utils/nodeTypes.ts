@@ -10,6 +10,16 @@ import {
 } from "../types/node"
 
 export const NODE_TYPES = PIPELINE_NODE_TYPES
+// Reusable plain nodes are wrapped in a one-node definition.
+// Data Output cannot be reused: two writers to one destination are refused.
+export const WRAPPED_INSTANCE_TYPES: ReadonlySet<string> = new Set([
+  NODE_TYPES.POLARS, NODE_TYPES.DATA_INPUT, NODE_TYPES.CONSTANT, NODE_TYPES.BANDING,
+  NODE_TYPES.RATING_STEP, NODE_TYPES.MODEL_SCORE, NODE_TYPES.EDGE_JOIN,
+  NODE_TYPES.SCENARIO_EXPANDER, NODE_TYPES.EXPLORE, NODE_TYPES.OPTIMISER,
+  NODE_TYPES.OPTIMISER_APPLY,
+  NODE_TYPES.EXTERNAL_FILE, NODE_TYPES.MODELLING,
+])
+
 export type { NodeTypeValue } from "../types/node"
 
 /**

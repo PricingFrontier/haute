@@ -7,6 +7,8 @@ You want to save results  - scoring a full dataset and writing the output to par
 
 This node takes a single input and passes it on unchanged: running or previewing the pipeline passes data through a Data Output without writing anything. It writes only when you click **Write**.
 
+A Data Output cannot be reused with **Create Instance**: two writers to the same destination are refused. Add a separate Data Output with its own destination.
+
 ## The CONFIG tab
 
 | Field | What it does |

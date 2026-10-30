@@ -517,6 +517,10 @@ def test_every_text_that_names_inputs_states_the_one_naming_rule() -> None:
     def flat(text: str) -> str:
         return " ".join(text.split())
 
+    assert "on the owner" in INPUT_NAMING_RULE
+    assert "on an instance, by the instance's name" in INPUT_NAMING_RULE
+    assert "`<instance>_<port>` when its submodel has several outputs" in INPUT_NAMING_RULE
+
     guide = (
         resources.files("haute.assistant")
         .joinpath("assets", "authoring_guide.md")

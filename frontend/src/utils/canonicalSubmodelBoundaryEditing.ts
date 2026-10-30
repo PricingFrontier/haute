@@ -3,6 +3,7 @@ import {
   isSubmodelDefinition,
   isSubmodelInstanceConfig,
   type PipelineEdge,
+  type ParentOutputState,
   type SubmodelBoundaryEdgeData,
   type SubmodelDefinition,
   type SubmodelEndpoint,
@@ -20,7 +21,7 @@ import {
   UNRESOLVED_INPUT_NAME,
 } from "./apiInputPorts"
 import { appEdge } from "./flowElements"
-import { buildSubmodelViewGraph } from "./submodelViewGraph"
+import { buildSubmodelViewGraph, restoreParentOutputState } from "./submodelViewGraph"
 import type {
   SubmodelBoundaryEditResult,
   SubmodelBoundaryEditState,
@@ -405,13 +406,16 @@ export function reconcileCanonicalSubmodelBoundaryState(
   if (!boundaryNode(state.viewNodes, "input") || !boundaryNode(state.viewNodes, "output")) {
     return null
   }
+  const outputState = boundaryNode(state.viewNodes, "output")!.data._parentOutputState as ParentOutputState | undefined
+  if (!outputState) throw new Error("Canonical Output boundary has no parent output state")
   const projectedParentEdges = parentEdgesForInputProjection(
     state,
     intentionallyOmittedInputPortNames,
   )
-  const effectiveState = projectedParentEdges === state.parentEdges
-    ? state
-    : { ...state, parentEdges: projectedParentEdges }
+  // A connection between two occurrences belongs to both boundary snapshots.
+  // Restore its binding first, then the name resolved for this output count.
+  const restored = restoreParentOutputState(outputState, state.parentNodes, projectedParentEdges)
+  const effectiveState = { ...state, parentNodes: restored.nodes, parentEdges: restored.edges }
   const definition = definitionFor(effectiveState)
   const children = childGraph(effectiveState)
   const childIds = new Set(children.nodes.map((node) => node.id))
@@ -512,16 +516,67 @@ export interface CanonicalSubmodelInputConnectionResult
   name: string
 }
 
+/** Resolve an instance's binding from public declarations, never from edge order. */
+export function chooseInstanceInput(
+  target: { id: string; data: { label?: unknown } },
+  ports: readonly SubmodelInputPort[],
+  edges: readonly { target: string; targetHandle?: string | null }[],
+  inputName: string,
+  chosenInput?: string,
+): { name: string } | { choices: string[] } {
+  const bound = new Set(edges.filter((edge) => edge.target === target.id).map((edge) => edge.targetHandle))
+  const unbound = ports.filter((port) => !bound.has(`in__${port.name}`)).map((port) => port.name)
+  if (unbound.length === 0) throw new Error(`Every input of ${String(target.data.label)} is connected`)
+  const matching = ports.find((port) => port.name === inputName)
+  if (matching) {
+    if (!unbound.includes(matching.name)) throw new Error(`Public input "${matching.name}" is already bound on ${target.id}`)
+    return { name: matching.name }
+  }
+  if (chosenInput !== undefined) {
+    if (!unbound.includes(chosenInput)) throw new Error(`Public input "${chosenInput}" is not unbound on ${target.id}`)
+    return { name: chosenInput }
+  }
+  return unbound.length === 1 ? { name: unbound[0] } : { choices: unbound }
+}
+
+/** Move an existing occurrence connection, removing a displaced binding atomically. */
+export function retargetSubmodelInput(
+  state: CanonicalSubmodelInputConnectionState,
+  occurrenceId: string,
+  portName: string,
+  edgeId: string | null,
+): CanonicalSubmodelInputConnectionState {
+  const node = state.nodes.find((candidate) => candidate.id === occurrenceId)
+  if (!node || node.data.nodeType !== "submodel" || !isSubmodelInstanceConfig(node.data.config)) {
+    throw new Error(`Submodel occurrence ${occurrenceId} is missing or malformed`)
+  }
+  const definition = state.submodels[node.data.config.definitionId]
+  if (!isSubmodelDefinition(definition, node.data.config.definitionId)
+    || !definition.inputPorts.some((port) => port.name === portName)) {
+    throw new Error(`Public input ${portName} is missing on ${occurrenceId}`)
+  }
+  if (edgeId !== null && !state.edges.some((edge) => edge.id === edgeId && edge.target === occurrenceId)) {
+    throw new Error(`Connection ${edgeId} is not incoming to ${occurrenceId}`)
+  }
+  const handle = `in__${portName}`
+  return {
+    ...state,
+    edges: state.edges.filter((edge) => edge.id === edgeId || edge.target !== occurrenceId || edge.targetHandle !== handle)
+      .map((edge) => edge.id === edgeId ? { ...edge, targetHandle: handle } : edge),
+  }
+}
+
 /**
  * Bind a parent frame through a submodel's one visible input socket.
- * Existing frame identities reuse their stable public port on any occurrence;
- * only the owner may extend the definition with a genuinely new identity. The
+ * An instance selects an unbound public input; the owner may extend the
+ * definition for a new incoming frame identity. The
  * committed edge always uses the canonical named handle, so the interaction-
  * only generic id never enters graph state.
  */
 export function connectCanonicalSubmodelInputFromParentConnection(
   state: CanonicalSubmodelInputConnectionState,
   connection: Connection,
+  chosenInput?: string,
 ): CanonicalSubmodelInputConnectionResult | null {
   if (connection.targetHandle !== SUBMODEL_INPUT_HANDLE) return null
   if (!connection.source || !connection.target) {
@@ -560,10 +615,12 @@ export function connectCanonicalSubmodelInputFromParentConnection(
   const existingPort = definition.inputPorts.find((port) => port.name === inputName)
   let name = existingPort?.name ?? null
   let nextSubmodels = state.submodels
+  if (config.instanceOf !== undefined) {
+    const selection = chooseInstanceInput(target, definition.inputPorts, state.edges, inputName, chosenInput)
+    if ("choices" in selection) throw new Error(`Choose an input of ${String(target.data.label)}: ${selection.choices.join(", ")}`)
+    name = selection.name
+  }
   if (name === null) {
-    if (config.instanceOf !== undefined) {
-      throw new Error("New public inputs can only be added through the definition owner")
-    }
     name = mintPortName(definition, inputName)
     const nextDefinition: SubmodelDefinition = {
       ...definition,

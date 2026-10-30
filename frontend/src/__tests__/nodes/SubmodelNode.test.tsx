@@ -5,10 +5,13 @@
  * output port labels, canonical edge anchors, opacity when dimmed,
  * border style (dashed vs solid).
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
-import { render, screen, cleanup } from "@testing-library/react"
-import { ReactFlowProvider, type NodeProps } from "@xyflow/react"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { render, renderHook, act, screen, cleanup } from "@testing-library/react"
+import { ReactFlowProvider, type Node, type Edge, type NodeProps } from "@xyflow/react"
 import SubmodelNode from "../../nodes/SubmodelNode"
+import useNodeHandlers from "../../hooks/useNodeHandlers"
+import { resolveEditorGraphIdentities } from "../../utils/editorIdentities"
+import type { EditorIdentityBatchResponse } from "../../api/types"
 import type { SubmodelDefinition, SubmodelFlowNode, SubmodelNodeData } from "../../types/node"
 import {
   DEFAULT_TARGET_HANDLE,
@@ -54,6 +57,9 @@ function makeProps(
     description: "",
     nodeType: "submodel",
     config: { definitionId: DEFINITION_ID, alias: "pricing" },
+    _sourceHandleInputNames: Object.fromEntries(
+      (useGraphStore.getState().submodels[String(data.config?.definitionId ?? DEFINITION_ID)] as SubmodelDefinition | undefined)?.outputPorts.map((port) => [`out__${port.name}`, port.name]) ?? [],
+    ),
     ...data,
   }
 
@@ -92,6 +98,63 @@ function renderNode(
 // ── Tests ───────────────────────────────────────────────────────
 
 describe("SubmodelNode", () => {
+  it.each([
+    { ports: ["premium"], labels: ["pricing_2"] },
+    { ports: ["premium", "audit"], labels: ["pricing_2_premium", "pricing_2_audit"] },
+  ])("Create Instance renders resolved output labels for $ports", async ({ ports, labels }) => {
+    setDefinition({
+      outputPorts: ports.map((name) => ({ name, source: { nodeId: "score", handleId: null } })),
+    })
+    const owner: Node = {
+      id: "pricing", type: "submodel", position: { x: 0, y: 0 },
+      data: { label: "pricing", nodeType: "submodel", config: { definitionId: DEFINITION_ID, alias: "pricing" } },
+    }
+    const graphRef = { current: { nodes: [owner], edges: [] as Edge[] } }
+    let release!: (response: EditorIdentityBatchResponse) => void
+    const response = new Promise<EditorIdentityBatchResponse>((resolve) => { release = resolve })
+    const setNodes = vi.fn((update: (nodes: Node[]) => Node[]) => {
+      graphRef.current = { ...graphRef.current, nodes: update(graphRef.current.nodes) }
+    })
+    const { result } = renderHook(() => useNodeHandlers({
+      graphRef, nodeIdCounter: { current: 0 }, lastSelectedNodeRef: { current: null },
+      setNodes, setNodesAndEdges: vi.fn(), setSelectedNode: vi.fn(), setPreviewData: vi.fn(),
+      fitView: vi.fn(),
+      submodels: useGraphStore.getState().submodels,
+      resolveNodeIdentities: async (nodes) => (await resolveEditorGraphIdentities({
+        nodes, edges: [], submodels: useGraphStore.getState().submodels,
+        reservedApiInputFrameLabels: new Set(), resolve: () => response,
+      })).nodes,
+    }))
+    let creation!: Promise<void>
+    act(() => { creation = result.current.handleCreateInstance(owner.id) })
+    expect(setNodes).not.toHaveBeenCalled()
+    await act(async () => {
+      release({
+        violations: [],
+        identities: [{
+          node_id: "pricing_2", label: "pricing_2", alias: "pricing_2", collision: null,
+          function_name: "pricing_2", default_input_name: null, config_reference: null,
+          source_handle_input_names: Object.fromEntries(ports.map((port, i) => [`out__${port}`, labels[i]])),
+        }],
+      })
+      await creation
+    })
+    expect(setNodes).toHaveBeenCalledOnce()
+    const created = graphRef.current.nodes[1]
+    // Render the committed node's data, without the fixture's identity defaults.
+    const props = { ...makeProps({ label: "unused" }), id: created.id, data: created.data }
+    render(<ReactFlowProvider><SubmodelNode {...(props as NodeProps<SubmodelFlowNode>)} /></ReactFlowProvider>)
+    const body = screen.getByTestId("submodel-body")
+    for (const label of labels) expect(body).toHaveTextContent(label)
+    for (const port of ports) expect(screen.queryByText(port)).toBeNull()
+  })
+
+  it("labels an instance output with its authoritative executable name", () => {
+    setDefinition({ outputPorts: [{ name: "premium", source: { nodeId: "score", handleId: null } }] })
+    renderNode({ label: "copy", config: { definitionId: DEFINITION_ID, alias: "copy", instanceOf: "pricing" }, _sourceHandleInputNames: { out__premium: "copy_premium" } })
+    expect(screen.getByText("copy_premium")).toBeVisible()
+    expect(screen.queryByText("premium")).toBeNull()
+  })
   it("keeps the standard node type treatment and strengthens the header name", () => {
     renderNode({ label: "My Submodel" })
     const header = screen.getByTestId("submodel-header")

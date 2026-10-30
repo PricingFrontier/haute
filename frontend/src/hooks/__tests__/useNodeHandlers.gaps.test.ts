@@ -205,6 +205,47 @@ describe("useNodeHandlers - handleRenameNode", () => {
     expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/invalid node/)
   })
 
+  it("refuses a plain-node instance when its parent document transform is unavailable", async () => {
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("source")], edges: [] }
+    const graph = params.graphRef.current
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    await act(async () => {
+      await expect(result.current.handleCreateInstance("source")).rejects.toThrow(
+        "Create Instance requires the parent document transform handler",
+      )
+    })
+
+    expect(params.graphRef.current).toBe(graph)
+    expect(params.resolveNodeIdentities).not.toHaveBeenCalled()
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+  })
+
+  it("reports a refused wrap without committing or selecting an instance", async () => {
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("source")], edges: [] }
+    const graph = params.graphRef.current
+    const createWrappedNodeInstance = vi.fn(async () => ({
+      ok: false as const, error: "The pipeline changed; reload before creating an instance.",
+    }))
+    const { result } = renderHook(() => useNodeHandlers({ ...params, createWrappedNodeInstance }))
+
+    await act(async () => { await result.current.handleCreateInstance("source") })
+
+    expect(createWrappedNodeInstance).toHaveBeenCalledWith("source")
+    expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
+      type: "error", text: "The pipeline changed; reload before creating an instance.",
+    })
+    expect(params.graphRef.current).toBe(graph)
+    expect(params.resolveNodeIdentities).not.toHaveBeenCalled()
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+  })
+
   it("applies automatic layout to a non-empty graph", async () => {
     const params = makeParams()
     params.graphRef.current = { nodes: [makeNode("layout")], edges: [] }
@@ -213,9 +254,15 @@ describe("useNodeHandlers - handleRenameNode", () => {
     expect(params.setNodes).toHaveBeenCalled()
   })
 
-  it("does not apply a resolved instance after the graph changes", async () => {
+  it("does not apply a resolved submodel occurrence after the graph changes", async () => {
     const params = makeParams()
-    const source = makeNode("source")
+    const source = makeNode("source", "submodel", {
+      data: {
+        label: "source",
+        nodeType: "submodel",
+        config: { definitionId: "definition_source", alias: "source" },
+      },
+    })
     params.graphRef.current = { nodes: [source], edges: [] }
     let resolveIdentity!: (nodes: Node[]) => void
     params.resolveNodeIdentities = vi.fn(() => new Promise((resolve) => {
@@ -228,16 +275,23 @@ describe("useNodeHandlers - handleRenameNode", () => {
       creation = result.current.handleCreateInstance("source")
     })
     await vi.waitFor(() => expect(params.resolveNodeIdentities).toHaveBeenCalledOnce())
+    const requestedNodes = params.resolveNodeIdentities.mock.calls[0][0]
+    expect(requestedNodes[0].data.config).toEqual({
+      definitionId: "definition_source", alias: "source_2", instanceOf: "source",
+    })
 
+    const editedGraph = { nodes: [source, makeNode("newer-edit")], edges: [] }
     act(() => {
-      params.graphRef.current = { nodes: [source, makeNode("newer-edit")], edges: [] }
-      resolveIdentity([makeNode("polars_11")])
+      params.graphRef.current = editedGraph
+      resolveIdentity([...requestedNodes])
     })
     await act(async () => {
       await creation
     })
 
     expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(params.graphRef.current).toBe(editedGraph)
     expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/graph changed/)
   })
 })

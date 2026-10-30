@@ -84,9 +84,9 @@ function job(
   }
 }
 
-function renderImport(target: SimpleNode, allNodes: SimpleNode[] = [target]) {
+function renderImport(target: SimpleNode) {
   const onImported = vi.fn()
-  const view = render(<InputImportButton node={target} allNodes={allNodes} onImported={onImported} />)
+  const view = render(<InputImportButton node={target} onImported={onImported} />)
   return { onImported, ...view }
 }
 
@@ -115,29 +115,10 @@ describe("InputImportButton", () => {
     renderImport(node("flat", "apiInput", { path: "quotes.csv", tables: [emittingTable] }))
     // A structured Quote Input's Refresh re-reads its source instead.
     renderImport(node("quotes", "apiInput", { path: "quotes.jsonl", tables: [emittingTable] }))
-    const original = node("original", "apiInput", { path: "quotes.xml", tables: [emittingTable] })
-    renderImport(node("instance", "apiInput", { instanceOf: "original" }), [original])
     expect(screen.queryByTestId("input-import")).toBeNull()
 
     renderImport(node("csv", "dataInput", csvConfig))
     expect(screen.getAllByTestId("input-import")).toHaveLength(1)
-  })
-
-  it("re-reads the original's source for an instance, then re-previews and invalidates downstream", async () => {
-    vi.mocked(getInputCacheJob).mockResolvedValue(job("completed"))
-    const original = node("original", "dataInput", csvConfig)
-    const instance = node("instance", "dataInput", { instanceOf: "original" })
-    onCanvas(original, instance)
-    const { onImported } = renderImport(instance, [original, instance])
-    const epoch = useNodeDataStore.getState().epoch
-
-    await act(async () => {
-      fireEvent.click(await screen.findByTestId("input-import"))
-    })
-
-    await waitFor(() => expect(onImported).toHaveBeenCalledWith("instance"))
-    expect(buildInputCache).toHaveBeenCalledWith({ schema_version: 1, config: csvConfig, refresh: true })
-    expect(useNodeDataStore.getState().epoch).toBeGreaterThan(epoch)
   })
 
   it("shows rows read so far, and the node's Stop cancels the import without re-previewing", async () => {
@@ -189,13 +170,13 @@ describe("InputImportButton", () => {
     const a = node("a", "dataInput", csvConfig)
     const b = node("b", "dataInput", { ...csvConfig, path: "other.csv" })
     onCanvas(a, b)
-    const { onImported, rerender } = renderImport(a, [a, b])
+    const { onImported, rerender } = renderImport(a)
     await act(async () => {
       fireEvent.click(await screen.findByTestId("input-import"))
     })
     await waitFor(() => expect(getInputCacheJob).toHaveBeenCalledTimes(2))
 
-    rerender(<InputImportButton node={b} allNodes={[a, b]} onImported={onImported} />)
+    rerender(<InputImportButton node={b} onImported={onImported} />)
 
     // B's button starts nothing and shows nothing of A's import.
     expect(screen.getByTestId("input-import")).toHaveTextContent("Import")

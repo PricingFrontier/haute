@@ -40,7 +40,7 @@ save/load/discovery to the GUI are [server-api](../server-api/high-level.md).
 decorator per authorable node type — `api_input`, `workbench_input`, `polars`, `banding`, `rating_step`,
 `model_score`, `output`, `workbench_output`, `edge_join`, `live_switch`, `optimiser`, `optimiser_apply`,
 `scenario_expander`, `modelling`, `constant`, `data_input`, `data_output`,
-`explore`, `external_file`, `instance` — each a thin wrapper that tags the function with its
+`explore`, `external_file` — each a thin wrapper that tags the function with its
 `NodeType` and delegates to a shared registration path. Configured request inputs (Quote
 and Workbench Inputs), Data Input and Constant nodes are sources whatever their signature; any other function with zero
 positional parameters is treated as a source node; duplicate function names are rejected the
@@ -177,11 +177,15 @@ occurrences of one definition each run its nodes under their own names.
 replaced it, and for anything else that is not a `haute.Submodel`, such as the imported
 module itself, naming `<module>.submodel`; a module that defines no `submodel` fails with
 Python's own `AttributeError` when the pipeline file is imported.
-`@pipeline.instance` registrations are not executable on this live-object surface: the
-decorator records an internal instance marker, and `run()`/`score()` raise `ExecutionError`
-before calling the node regardless of whether `instanceOf` or `inputMapping` is empty. Static
-codegen may resolve an instance into a concrete generated function; the live registry may not
-silently treat an unresolved instance as an ordinary Polars node.
+There are no node-level instances: `Pipeline` and `Submodel` have no `instance` decorator.
+Their live node decorators also refuse the removed `of` and `instanceOf` keywords with
+the same remediation. The parser
+refuses `@pipeline.instance(...)` and an `of=` keyword on any node decorator with a message
+naming the replacement. A node is reused through a one-node submodel, the node in its own
+`modules/<name>.py`, registered once for the original and once per
+instance (`instance_of="<original>"`), with each instance's inputs bound by
+`connect(..., target_port="<input>")`; `run()` and `score()` execute those occurrences as they
+do any submodel's.
 
 `run()` takes the source to run under as the keyword `source`, which it requires: a bare
 `run()` raises `TypeError` before any node runs, naming the sources the pipeline's
@@ -428,10 +432,9 @@ transform code (execution, chunk-local classification, projection, estimation, t
 sees the same program without knowing about steps and a stale `code` in a browser
 payload is overwritten on ingress; in-process config replacement uses the validated
 `GraphNode.with_config` helper rather than an unvalidated model copy so the invariant
-also holds after assistant and submodel operations. A stepped original transform
-addresses its inputs by their current edge names and never carries `inputMapping` (a
-config with both fails loudly); an instance of a stepped transform keeps its own
-`inputMapping`, and submodel flattening rewrites the input references inside a stepped
+also holds after assistant and submodel operations. A stepped transform addresses its
+inputs by their current edge names and never carries `inputMapping` (a config with both
+fails loudly), and submodel flattening rewrites the input references inside a stepped
 transform's steps instead of recording a mapping. When a polars sidecar is referenced,
 parsing loads it, renders its steps against the function's parameter names, and
 compares the result with the code extracted from the body before the node model is

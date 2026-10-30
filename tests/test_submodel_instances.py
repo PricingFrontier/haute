@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ast
 import json
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import polars as pl
@@ -13,6 +15,7 @@ from pydantic import ValidationError
 
 from haute._flatten import flatten_graph
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
+from haute._graph_utils import edge_input_name
 from haute._parser_submodels import extract_submodel_registrations, parse_submodel_source
 from haute._polars_io_registry import validate_data_input_config
 from haute._submodel_instances import (
@@ -71,7 +74,7 @@ def _definition(
             _node("local_input"),
             _node(
                 "local_output",
-                config={"instanceOf": "local_input"},
+                config={"code": "df = local_input"},
             ),
         ],
         edges=[GraphEdge(id="local_edge", source="local_input", target="local_output")],
@@ -120,6 +123,649 @@ def _instance(
         x=x,
         y=y,
     )
+
+
+def _reuse_graph() -> PipelineGraph:
+    definition = _definition(
+        graph=PipelineGraph(
+            nodes=[
+                _node(
+                    "scale",
+                    config={"code": "df = policy.with_columns((pl.col('x') * 10).alias('x'))"},
+                ),
+                _node(
+                    "finish",
+                    config={"code": "df = scale.with_columns((pl.col('x') + 1).alias('x'))"},
+                ),
+            ],
+            edges=[GraphEdge(id="inner", source="scale", target="finish")],
+        ),
+        input_ports=[SubmodelInputPort(name="policy", targets=[SubmodelEndpoint(node_id="scale")])],
+        output_ports=[
+            SubmodelOutputPort(name="premium", source=SubmodelEndpoint(node_id="finish"))
+        ],
+    )
+    nodes = []
+    edges = []
+    for index, name in enumerate(("rating", "rating_ie", "rating_fr"), 1):
+        source = f"source_{index}"
+        nodes.extend(
+            [
+                _node(source, config={"code": f"df = pl.DataFrame({{'x': [{index}]}}).lazy()"}),
+                _instance(name, instance_of=None if index == 1 else "rating"),
+            ]
+        )
+        edges.extend(
+            [
+                GraphEdge(
+                    id=f"input_{index}", source=source, target=name, targetHandle="in__policy"
+                ),
+                GraphEdge(
+                    id=f"output_{index}",
+                    source=name,
+                    target="consumer",
+                    sourceHandle="out__premium",
+                ),
+            ]
+        )
+    nodes.append(
+        _node("consumer", config={"code": "df = pl.concat([premium, rating_ie, rating_fr])"})
+    )
+    return PipelineGraph(nodes=nodes, edges=edges, submodels={"definition_scoring": definition})
+
+
+def _missing_columns_graph() -> PipelineGraph:
+    definition = _definition(
+        graph=PipelineGraph(nodes=[_node("score", config={"code": "df = policy.select('x')"})]),
+        input_ports=[
+            SubmodelInputPort(name=name, targets=[SubmodelEndpoint(node_id="score")])
+            for name in ("policy", "rates")
+        ],
+        output_ports=[SubmodelOutputPort(name="premium", source=SubmodelEndpoint(node_id="score"))],
+    )
+    return PipelineGraph(
+        nodes=[
+            _node(
+                "original_data", config={"code": "df = pl.LazyFrame({'x': [1], 'region': ['GB']})"}
+            ),
+            _node(
+                "owner_branch",
+                config={"code": "df = original_data.with_columns(pl.lit(1).alias('limit'))"},
+            ),
+            _node("other_data", config={"code": "df = pl.LazyFrame({'x': [2], 'extra': [3]})"}),
+            _node("original_rates", config={"code": "df = pl.LazyFrame({'x': [1], 'extra': [4]})"}),
+            _node(
+                "other_rates",
+                config={"code": "df = pl.LazyFrame({'x': [2], 'region': ['IE'], 'limit': [5]})"},
+            ),
+            _instance("owner"),
+            _instance("copy", instance_of="owner"),
+        ],
+        edges=[
+            GraphEdge(id="branch", source="original_data", target="owner_branch"),
+            *[
+                GraphEdge(
+                    id=f"{target}_{port}", source=source, target=target, targetHandle=f"in__{port}"
+                )
+                for target, port, source in (
+                    ("owner", "policy", "owner_branch"),
+                    ("owner", "rates", "original_rates"),
+                    ("copy", "policy", "other_data"),
+                    ("copy", "rates", "other_rates"),
+                )
+            ],
+        ],
+        submodels={"definition_scoring": definition},
+    )
+
+
+@pytest.mark.parametrize("mode", ["full", "target_only", "whole_graph"])
+def test_instance_missing_columns_by_input_agree_across_runs(mode: str) -> None:
+    from structlog.testing import capture_logs
+
+    from haute.executor import execute_graph
+
+    target = qualified_runtime_node_id("copy", "score")
+    options: dict[str, Any] = {} if mode == "whole_graph" else {"target_node_id": target}
+    if mode == "target_only":
+        options["target_preview_only"] = True
+    with capture_logs() as logs:
+        results = execute_graph(flatten_graph(_missing_columns_graph()), **options)
+    executed = next(entry for entry in logs if entry["event"] == "graph_executed")
+    assert executed["node_count"] == {"full": 3, "target_only": 1, "whole_graph": 7}[mode]
+    assert results[target].preview == [{"x": 2}]
+    assert [w.model_dump(exclude_none=True) for w in results["copy"].schema_warnings] == [
+        {"input": "policy", "column": "limit", "status": "missing"},
+        {"input": "policy", "column": "region", "status": "missing"},
+        {"input": "rates", "column": "extra", "status": "missing"},
+    ]
+    assert results[target].schema_warnings == []
+    if mode != "whole_graph":
+        assert "owner_branch" not in results
+        assert qualified_runtime_node_id("owner", "score") not in results
+
+
+def test_instance_missing_columns_resolves_unvisited_owner_without_rows() -> None:
+    from haute.executor import execute_graph
+
+    graph = _missing_columns_graph()
+    # Collection of this branch fails, but its schema is valid.
+    graph.node_map["owner_branch"].data.config["code"] = (
+        "df = original_data.with_columns(pl.col('region').cast(pl.Int64).alias('limit'))"
+    )
+    results = execute_graph(
+        flatten_graph(graph),
+        target_node_id=qualified_runtime_node_id("copy", "score"),
+        target_preview_only=True,
+    )
+    assert [(w.input, w.column, w.status) for w in results["copy"].schema_warnings] == [
+        ("policy", "limit", "missing"),
+        ("policy", "region", "missing"),
+        ("rates", "extra", "missing"),
+    ]
+
+
+@pytest.mark.parametrize("mode", ["full", "target_only", "whole_graph"])
+def test_instance_missing_columns_reports_unavailable_schema(mode: str) -> None:
+    from haute.executor import execute_graph
+
+    graph = _missing_columns_graph()
+    graph.node_map["owner_branch"].data.config["code"] = (
+        "df = original_data.select('absent_column')"
+    )
+    target = qualified_runtime_node_id("copy", "score")
+    options: dict[str, Any] = {} if mode == "whole_graph" else {"target_node_id": target}
+    if mode == "target_only":
+        options["target_preview_only"] = True
+    results = execute_graph(flatten_graph(graph), **options)
+    assert results[target].preview == [{"x": 2}]
+    warnings = results["copy"].schema_warnings
+    assert len(warnings) == 2
+    assert warnings[0].input == "policy"
+    assert warnings[0].status == "unavailable"
+    assert warnings[0].column is None
+    assert "absent_column" in warnings[0].detail
+    assert (warnings[1].input, warnings[1].column, warnings[1].status) == (
+        "rates",
+        "extra",
+        "missing",
+    )
+
+
+@pytest.mark.parametrize("recorded", [False, True])
+def test_instance_missing_columns_rejects_missing_binding_node(recorded: bool) -> None:
+    from haute.executor import _submodel_schema_warnings
+
+    graph = flatten_graph(_missing_columns_graph())
+    shared = graph._submodel_shared_bindings["copy"]
+    shared["policy"] = replace(shared["policy"], owner=SubmodelEndpoint(node_id="missing"))
+    columns = {"missing": [("x", "Int64")]} if recorded else {}
+    with pytest.raises(KeyError, match="missing"):
+        _submodel_schema_warnings(
+            graph, [qualified_runtime_node_id("copy", "score")], columns, {}, {}, source="live"
+        )
+
+
+def test_instance_missing_columns_propagates_invalid_recorded_schema() -> None:
+    from haute.executor import _submodel_schema_warnings
+
+    with pytest.raises(TypeError, match="not iterable"):
+        _submodel_schema_warnings(
+            flatten_graph(_missing_columns_graph()),
+            [qualified_runtime_node_id("copy", "score")],
+            {"owner_branch": None},
+            {},
+            {},
+            source="live",
+        )
+
+
+@pytest.mark.parametrize("mode", ["recorded", "unvisited", "empty_preamble", "failed_preamble"])
+def test_instance_missing_columns_compiles_preamble_once_when_needed(mode: str) -> None:
+    from haute.executor import _compile_preamble, _submodel_schema_warnings
+
+    graph = flatten_graph(_missing_columns_graph())
+    graph.preamble = "limit = 1"
+    if mode == "empty_preamble":
+        graph.preamble = ""
+    elif mode == "failed_preamble":
+        graph.preamble = "raise ValueError('broken warning preamble')"
+    else:
+        graph.node_map["owner_branch"].data.config["code"] = (
+            "df = original_data.with_columns(pl.lit(limit).alias('limit'))"
+        )
+    columns = {
+        "other_data": [("x", "Int64"), ("extra", "Int64")],
+        "other_rates": [("x", "Int64"), ("region", "String"), ("limit", "Int64")],
+    }
+    if mode == "recorded":
+        columns["owner_branch"] = [("x", "Int64"), ("region", "String"), ("limit", "Int64")]
+        columns["original_rates"] = [("x", "Int64"), ("extra", "Int64")]
+    with patch("haute.executor._compile_preamble", wraps=_compile_preamble) as compile_preamble:
+        warnings = _submodel_schema_warnings(
+            graph, [qualified_runtime_node_id("copy", "score")], columns, {}, {}, source="live"
+        )["copy"]
+    if mode == "failed_preamble":
+        assert [(w.input, w.status, w.column) for w in warnings] == [
+            ("policy", "unavailable", None),
+            ("rates", "unavailable", None),
+        ]
+        assert all("broken warning preamble" in w.detail for w in warnings)
+    else:
+        assert [(w.input, w.column, w.status) for w in warnings] == [
+            ("policy", "limit", "missing"),
+            ("policy", "region", "missing"),
+            ("rates", "extra", "missing"),
+        ]
+    assert compile_preamble.call_count == (0 if mode == "recorded" else 1)
+
+
+@pytest.mark.parametrize("warnings_last", [False, True])
+def test_haute_run_reports_executable_nodes_with_instance_warnings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, warnings_last: bool
+) -> None:
+    from click.testing import CliRunner
+
+    from haute.cli import cli
+    from haute.executor import execute_graph
+
+    if warnings_last:
+        # Metadata order has no meaning; exercise the real results in either order.
+        def execute_with_warnings_last(graph: PipelineGraph, **kwargs: Any) -> dict[str, Any]:
+            results = execute_graph(graph, **kwargs)
+            results["copy"] = results.pop("copy")
+            return results
+
+        monkeypatch.setattr("haute.executor.execute_graph", execute_with_warnings_last)
+
+    files = graph_to_code_multi(
+        _missing_columns_graph(), pipeline_name="warnings", source_file="main.py"
+    )
+    for relative_path, source in files.items():
+        destination = tmp_path / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(source, encoding="utf-8", newline="\n")
+    run = CliRunner().invoke(cli, ["run", str(tmp_path / "main.py")], catch_exceptions=False)
+    assert run.exit_code == 0, run.output
+    expected_columns = {
+        "original_data": 2,
+        "owner_branch": 3,
+        "other_data": 2,
+        "original_rates": 2,
+        "other_rates": 3,
+        qualified_runtime_node_id("owner", "score"): 1,
+        qualified_runtime_node_id("copy", "score"): 1,
+    }
+    assert {line for line in run.output.splitlines() if line.startswith("  \u2713 ")} == {
+        f"  \u2713 {node_id}: 1 rows \u00d7 {columns} cols"
+        for node_id, columns in expected_columns.items()
+    }
+    assert f"Output - {qualified_runtime_node_id('owner', 'score')} (1 rows):" in run.output
+
+
+def test_instance_missing_columns_preview_response_and_refresh() -> None:
+    from fastapi.testclient import TestClient
+
+    from haute.server import app
+
+    graph = _missing_columns_graph()
+    client = TestClient(app)
+
+    def preview() -> dict[str, Any]:
+        response = client.post(
+            "/api/pipeline/preview",
+            json={
+                "graph": graph.model_dump(mode="json", by_alias=True),
+                "node_id": qualified_runtime_node_id("copy", "score"),
+            },
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    first = preview()
+    assert first["preview"] == [{"x": 2}]
+    executable_ids = {"other_data", "other_rates", qualified_runtime_node_id("copy", "score")}
+    for key in ("node_statuses", "node_columns", "node_available_columns"):
+        assert set(first[key]) == executable_ids
+    for key in ("timings", "memory"):
+        assert {entry["node_id"] for entry in first[key]} == executable_ids
+    assert first["node_frame_columns"]["copy"] == {
+        "out__premium": [{"name": "x", "dtype": "Int64"}]
+    }
+    assert [(w["input"], w["column"]) for w in first["node_schema_warnings"]["copy"]] == [
+        ("policy", "limit"),
+        ("policy", "region"),
+        ("rates", "extra"),
+    ]
+    # Only the unvisited owner's lineage changes: a cached instance preview
+    # must still recompute its comparison, including the empty warning list.
+    graph.node_map["owner_branch"].data.config["code"] = "df = original_data.select('x')"
+    graph.node_map["original_rates"].data.config["code"] = "df = pl.LazyFrame({'x': [1]})"
+    assert preview()["node_schema_warnings"]["copy"] == []
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_instance_missing_columns_expand_source_occurrences_without_persisting_bindings(
+    staged: bool,
+) -> None:
+    from haute.executor import execute_graph
+
+    graph = create_submodel_graph(
+        _missing_columns_graph(), ["original_data", "owner_branch"], "upstream"
+    ).graph
+    before = graph.model_dump(mode="json", by_alias=True)
+    if staged:
+        graph = flatten_graph(graph, target_instance_id="copy")
+    flat = flatten_graph(graph)
+    results = execute_graph(
+        flat, target_node_id=qualified_runtime_node_id("copy", "score"), target_preview_only=True
+    )
+    assert [(w.input, w.column) for w in results["copy"].schema_warnings] == [
+        ("policy", "limit"),
+        ("policy", "region"),
+        ("rates", "extra"),
+    ]
+    # The execution metadata has no representation in any serialized document.
+    assert "_submodel_shared_bindings" not in flat.model_dump_json()
+    assert all("_submodel_shared_bindings" not in node.data.config for node in flat.nodes)
+    if not staged:
+        assert graph.model_dump(mode="json", by_alias=True) == before
+
+
+@pytest.mark.parametrize("mode", ["full", "target_only", "whole_graph"])
+def test_instance_missing_columns_select_request_input_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    from haute._sandbox import set_project_root
+    from haute.executor import execute_graph
+    from tests.conftest import build_test_api_input_snapshots
+    from tests.test_apiinput_multi_port_runtime import _multi_port_config, _rating_records
+
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(_rating_records()), encoding="utf-8")
+    config = _multi_port_config(path)
+    build_test_api_input_snapshots(path, config)
+    graph = _missing_columns_graph()
+    definition = graph.submodels["definition_scoring"]
+    definition.input_ports = definition.input_ports[:1]
+    definition.graph.node_map["score"].data.config["code"] = "df = policy"
+    graph = graph.model_copy(
+        update={
+            "nodes": [
+                _node("request", NodeType.API_INPUT, config=config),
+                _instance("owner"),
+                _instance("copy", instance_of="owner"),
+            ],
+            "edges": [
+                GraphEdge(
+                    id=name,
+                    source="request",
+                    sourceHandle=frame,
+                    target=name,
+                    targetHandle="in__policy",
+                )
+                for name, frame in (("owner", "policies"), ("copy", "drivers"))
+            ],
+        }
+    )
+    target = qualified_runtime_node_id("copy", "score")
+    options: dict[str, Any] = {} if mode == "whole_graph" else {"target_node_id": target}
+    if mode == "target_only":
+        options["target_preview_only"] = True
+    results = execute_graph(flatten_graph(graph), **options)
+    assert results[target].preview == [
+        {"driver_id": 1, "age_band": "30-59"},
+        {"driver_id": 2, "age_band": "60+"},
+        {"driver_id": 3, "age_band": "60+"},
+    ]
+    assert [(w.input, w.column, w.status) for w in results["copy"].schema_warnings] == [
+        ("policy", "policy_id", "missing")
+    ]
+
+
+def test_instance_missing_columns_cache_hit_collects_no_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute.executor import execute_graph
+
+    graph = flatten_graph(_missing_columns_graph())
+    target = qualified_runtime_node_id("copy", "score")
+    first = execute_graph(graph, target_node_id=target, target_preview_only=True)
+
+    def refuse_collect(*args: object, **kwargs: object) -> None:
+        raise AssertionError("Schema warnings must not collect rows")
+
+    monkeypatch.setattr(pl.LazyFrame, "collect", refuse_collect)
+    again = execute_graph(graph, target_node_id=target, target_preview_only=True)
+    assert again["copy"].schema_warnings == first["copy"].schema_warnings
+
+
+def test_instance_missing_columns_only_compares_shared_bound_inputs() -> None:
+    from haute.executor import execute_graph
+
+    graph = _missing_columns_graph()
+    graph = graph.model_copy(
+        update={"edges": [edge for edge in graph.edges if edge.id != "owner_rates"]}
+    )
+    results = execute_graph(
+        flatten_graph(graph),
+        target_node_id=qualified_runtime_node_id("copy", "score"),
+        target_preview_only=True,
+    )
+    assert [(w.input, w.column) for w in results["copy"].schema_warnings] == [
+        ("policy", "limit"),
+        ("policy", "region"),
+    ]
+
+
+def test_instance_missing_columns_excludes_unvisited_instances() -> None:
+    from haute.executor import execute_graph
+
+    target = qualified_runtime_node_id("owner", "score")
+    results = execute_graph(
+        flatten_graph(_missing_columns_graph()), target_node_id=target, target_preview_only=True
+    )
+    assert results[target].preview == [{"x": 1}]
+    assert "copy" not in results
+
+
+def test_instance_missing_columns_accepts_empty_schema() -> None:
+    from haute.executor import execute_graph
+
+    graph = _missing_columns_graph()
+    graph.node_map["owner_branch"].data.config["code"] = "df = pl.LazyFrame()"
+    results = execute_graph(
+        flatten_graph(graph),
+        target_node_id=qualified_runtime_node_id("copy", "score"),
+        target_preview_only=True,
+    )
+    assert [(w.input, w.column, w.status) for w in results["copy"].schema_warnings] == [
+        ("rates", "extra", "missing")
+    ]
+
+
+def test_instance_output_names_include_unconnected_declarations() -> None:
+    graph = _reuse_graph()
+    edge = graph.edges[3]
+    assert (
+        edge_input_name(edge, graph.node_map[edge.source], submodels=graph.submodels) == "rating_ie"
+    )
+    assert graph.submodels is not None
+    graph.submodels["definition_scoring"].output_ports.append(
+        SubmodelOutputPort(name="audit", source=SubmodelEndpoint(node_id="scale"))
+    )
+    assert (
+        edge_input_name(edge, graph.node_map[edge.source], submodels=graph.submodels)
+        == "rating_ie_premium"
+    )
+    owner_edge = graph.edges[1]
+    assert (
+        edge_input_name(owner_edge, graph.node_map["rating"], submodels=graph.submodels)
+        == "premium"
+    )
+
+
+@pytest.mark.parametrize("frame", [None, "prices", "checks"])
+def test_preview_qualified_instance_output_uses_its_bound_inputs(frame: str | None) -> None:
+    from fastapi.testclient import TestClient
+
+    from haute.server import app
+
+    graph = _reuse_graph()
+    if frame is not None:
+        assert graph.submodels is not None
+        definition = graph.submodels["definition_scoring"]
+        definition.graph.node_map["finish"].data.config["code"] = (
+            "df = {'prices': scale, 'checks': scale.with_columns((pl.col('x') + 1).alias('x'))}"
+        )
+        definition.output_ports = [
+            SubmodelOutputPort(
+                name="premium", source=SubmodelEndpoint(node_id="finish", handle_id="prices")
+            ),
+            SubmodelOutputPort(
+                name="audit", source=SubmodelEndpoint(node_id="finish", handle_id="checks")
+            ),
+        ]
+        graph.node_map["consumer"].data.config["code"] = (
+            "df = pl.concat([premium, rating_ie_premium, rating_fr_premium])"
+        )
+    client = TestClient(app)
+    for occurrence, value in (("rating_ie", 20), ("rating_fr", 30), ("rating_ie", 20)):
+        response = client.post(
+            "/api/pipeline/preview",
+            json={
+                "graph": graph.model_dump(mode="json", by_alias=True),
+                "node_id": qualified_runtime_node_id(occurrence, "finish"),
+                "port_label": frame,
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "ok", response.text
+        assert response.json()["preview"] == [{"x": value + (frame != "prices")}]
+
+
+@pytest.mark.parametrize("target", [None, "rating_ie"])
+def test_instance_clones_and_their_consumers_keep_input_names(target: str | None) -> None:
+    graph = _reuse_graph()
+    flat = flatten_graph(graph, target_instance_id=target)
+    scale = flat.node_map[qualified_runtime_node_id("rating_ie", "scale")]
+    finish = flat.node_map[qualified_runtime_node_id("rating_ie", "finish")]
+    assert scale.data.label == "rating_ie__scale"
+    assert finish.data.label == "rating_ie__finish"
+    assert finish.data.config["inputMapping"] == {"scale": "rating_ie__scale"}
+    assert flat.node_map["consumer"].data.config["inputMapping"]["rating_ie"] == "rating_ie__finish"
+    if target is None:
+        assert flat.node_map[qualified_runtime_node_id("rating", "scale")].data.label == "scale"
+
+
+@pytest.mark.parametrize("multiple_outputs", [False, True])
+def test_owner_and_two_instances_deliver_distinct_rows_through_round_trip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    multiple_outputs: bool,
+) -> None:
+    import subprocess
+    import sys
+
+    from click.testing import CliRunner
+    from fastapi.testclient import TestClient
+
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute.cli import cli
+    from haute.executor import execute_graph
+    from haute.server import app
+
+    graph = _reuse_graph()
+    if multiple_outputs:
+        assert graph.submodels is not None
+        graph.submodels["definition_scoring"].output_ports.append(
+            SubmodelOutputPort(name="audit", source=SubmodelEndpoint(node_id="scale"))
+        )
+        graph.node_map["consumer"].data.config["code"] = (
+            "df = pl.concat([premium, rating_ie_premium, rating_fr_premium])"
+        )
+    expected = [{"x": 11}, {"x": 21}, {"x": 31}]
+    result = execute_graph(flatten_graph(graph))["consumer"]
+    assert result.status == "ok", result.error
+    assert result.preview == expected
+    response = TestClient(app).post(
+        "/api/pipeline/preview",
+        json={"graph": graph.model_dump(mode="json", by_alias=True), "node_id": "consumer"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["preview"] == expected
+    files = graph_to_code_multi(graph, pipeline_name="reuse", source_file="main.py")
+    for relative_path, source in files.items():
+        destination = tmp_path / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(source, encoding="utf-8", newline="\n")
+    reparsed = parse_pipeline_source(
+        files["main.py"], source_file=str(tmp_path / "main.py"), _base_dir=tmp_path
+    )
+    reloaded = execute_graph(flatten_graph(reparsed))["consumer"]
+    assert reloaded.status == "ok", reloaded.error
+    assert reloaded.preview == expected
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    assert document.load_status == "ready"
+    for occurrence_name in ("rating_ie", "rating_fr"):
+        occurrence = next(node for node in document.nodes if node.authored_id == occurrence_name)
+        expected_name = f"{occurrence_name}_premium" if multiple_outputs else occurrence_name
+        assert occurrence.source_handle_input_names["out__premium"] == expected_name
+        assert (
+            next(
+                edge for edge in document.edges if edge.source_authored_id == occurrence_name
+            ).input_name
+            == expected_name
+        )
+    monkeypatch.chdir(tmp_path)
+    dissolved = TestClient(app).post(
+        "/api/submodel/dissolve",
+        json={
+            "graph": reparsed.model_dump(mode="json", by_alias=True),
+            "source_file": "main.py",
+            "base_revision": document.source_revision,
+            "instance_id": "rating_ie",
+        },
+    )
+    assert dissolved.status_code == 200, dissolved.text
+    dissolved_graph = PipelineGraph.model_validate(dissolved.json()["graph"])
+    assert (
+        dissolved_graph.node_map[qualified_runtime_node_id("rating_ie", "finish")].data.label
+        == "rating_ie__finish"
+    )
+    assert execute_graph(flatten_graph(dissolved_graph))["consumer"].preview == expected
+    run = CliRunner().invoke(cli, ["run", "main.py"], catch_exceptions=False)
+    assert run.exit_code == 0, run.output
+    for value in (11, 21, 31):
+        assert str(value) in run.output
+    standalone = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json; from main import pipeline; "
+            "print(json.dumps(pipeline.run(source='live').to_dicts()))",
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert json.loads(standalone.stdout) == expected
+
+
+def test_owner_output_named_like_instance_is_refused_at_consumer() -> None:
+    graph = _reuse_graph()
+    assert graph.submodels is not None
+    graph.submodels["definition_scoring"].output_ports[0].name = "rating_ie"
+    for edge in graph.edges:
+        if edge.sourceHandle:
+            edge.sourceHandle = "out__rating_ie"
+    with pytest.raises(ParseError, match="ambiguously") as error:
+        flatten_graph(graph)
+    assert error.value.context["target_id"] == "consumer"
+    assert error.value.context["input_name"] == "rating_ie"
 
 
 def test_definition_rejects_duplicate_public_port_ids() -> None:
@@ -406,7 +1052,7 @@ def test_staged_dissolve_merges_definition_preamble_once() -> None:
     child_graph = PipelineGraph(
         nodes=[
             _node("local_input"),
-            _node("local_output", config={"instanceOf": "local_input"}),
+            _node("local_output", config={"code": "df = local_input"}),
         ],
         edges=[GraphEdge(id="local_edge", source="local_input", target="local_output")],
         preamble="import child_helpers",
@@ -432,7 +1078,7 @@ def test_preamble_merge_treats_indented_lines_as_distinct_from_top_level() -> No
     child_graph = PipelineGraph(
         nodes=[
             _node("local_input"),
-            _node("local_output", config={"instanceOf": "local_input"}),
+            _node("local_output", config={"code": "df = local_input"}),
         ],
         edges=[GraphEdge(id="local_edge", source="local_input", target="local_output")],
         preamble="import child_helpers",
@@ -454,7 +1100,7 @@ def test_preamble_merge_never_skips_on_partial_line_overlap() -> None:
     child_graph = PipelineGraph(
         nodes=[
             _node("local_input"),
-            _node("local_output", config={"instanceOf": "local_input"}),
+            _node("local_output", config={"code": "df = local_input"}),
         ],
         edges=[GraphEdge(id="local_edge", source="local_input", target="local_output")],
         preamble="import child",
@@ -540,8 +1186,8 @@ def test_flatten_expands_two_instances_with_independent_bindings_and_references(
 
     a_output_node = result.node_map[a_output]
     b_output_node = result.node_map[b_output]
-    assert a_output_node.data.config["instanceOf"] == a_input
-    assert b_output_node.data.config["instanceOf"] == b_input
+    assert a_output_node.data.config["code"] == "df = local_input"
+    assert b_output_node.data.config["code"] == "df = local_input"
     assert "_submodelOrigin" not in a_output_node.data.config
     assert "_submodelOrigin" not in b_output_node.data.config
     assert result.submodels is None
@@ -628,30 +1274,6 @@ def test_public_input_port_can_fan_out_to_ordered_targets() -> None:
         (qualified_runtime_node_id("instance_a", "left"), "left_frame"),
         (qualified_runtime_node_id("instance_a", "right"), "right_frame"),
     ]
-
-
-def test_schema_declared_instance_reference_is_qualified() -> None:
-    child = PipelineGraph(
-        nodes=[
-            _node("referenced"),
-            _node("consumer", config={"instanceOf": "referenced"}),
-        ],
-        edges=[],
-    )
-    definition = _definition(graph=child, input_ports=[], output_ports=[])
-    graph = PipelineGraph(
-        nodes=[_instance("instance_a", "scoring")],
-        edges=[],
-        submodels={"definition_scoring": definition},
-    )
-
-    result = flatten_graph(graph)
-
-    consumer = result.node_map[qualified_runtime_node_id("instance_a", "consumer")]
-    assert consumer.data.config["instanceOf"] == qualified_runtime_node_id(
-        "instance_a",
-        "referenced",
-    )
 
 
 @pytest.mark.parametrize(
@@ -947,24 +1569,16 @@ def test_flatten_keeps_the_input_names_a_load_file_childs_code_reads(tmp_path: P
             GraphEdge(id="r", source="rates", target="loader"),
         ],
     )
-    # A node instance of the loader reads the original's names through it; its
-    # mapping is keyed by those names.
-    copy = _node(
-        "copy",
-        NodeType.EXTERNAL_FILE,
-        label="Copy",
-        config={"instanceOf": "loader", "inputMapping": {"policies": "policies", "rates": "rates"}},
-    )
     definition = _definition(
-        graph=PipelineGraph(nodes=[loader, copy], edges=[]),
+        graph=PipelineGraph(nodes=[loader], edges=[]),
         input_ports=[
             SubmodelInputPort(
                 name="policies",
-                targets=[SubmodelEndpoint(node_id="loader"), SubmodelEndpoint(node_id="copy")],
+                targets=[SubmodelEndpoint(node_id="loader")],
             ),
             SubmodelInputPort(
                 name="rates",
-                targets=[SubmodelEndpoint(node_id="loader"), SubmodelEndpoint(node_id="copy")],
+                targets=[SubmodelEndpoint(node_id="loader")],
             ),
         ],
         output_ports=[
@@ -977,10 +1591,17 @@ def test_flatten_keeps_the_input_names_a_load_file_childs_code_reads(tmp_path: P
             source("policy_table", "Policy table", policies),
             source("rate_table", "Rate table", rates),
             _instance("pricing"),
+            _instance("pricing_copy", instance_of="pricing"),
         ],
         edges=[
             GraphEdge(id="p", source="policy_table", target="pricing", targetHandle="in__policies"),
             GraphEdge(id="r", source="rate_table", target="pricing", targetHandle="in__rates"),
+            GraphEdge(
+                id="cp", source="policy_table", target="pricing_copy", targetHandle="in__policies"
+            ),
+            GraphEdge(
+                id="cr", source="rate_table", target="pricing_copy", targetHandle="in__rates"
+            ),
         ],
         submodels={"definition_scoring": definition},
     )
@@ -995,8 +1616,8 @@ def test_flatten_keeps_the_input_names_a_load_file_childs_code_reads(tmp_path: P
     before = execute_graph(before_grouping)["loader"]
     results = execute_graph(flattened)
     assert before.status == "ok", before.error
-    for child_id in ("loader", "copy"):
-        after = results[qualified_runtime_node_id("pricing", child_id)]
+    for occurrence in ("pricing", "pricing_copy"):
+        after = results[qualified_runtime_node_id(occurrence, "loader")]
         assert after.status == "ok", after.error
         assert (
             after.preview
@@ -1006,19 +1627,18 @@ def test_flatten_keeps_the_input_names_a_load_file_childs_code_reads(tmp_path: P
                 {"k": 2, "x": 20, "rate": 2.0, "premium": 120.0},
             ]
         )
-    # Dissolved and saved, the loader's function takes the names its code reads,
-    # and its instance maps those names to its own inputs.
+    # Dissolved and saved, each loader takes the names its code reads.
     generated = graph_to_code_multi(flattened, pipeline_name="main")["main.py"]
     assert (
         "def Loader(policies: pl.LazyFrame, rates: pl.LazyFrame, *, obj) -> pl.LazyFrame:\n"
         "    df = policies\n"
     ) in generated
-    assert (
-        "@pipeline.instance(\n"
-        '    of="Loader", inputMapping={"policies": "Policy_table", "rates": "Rate_table"}\n'
-        ")\n"
-        "def Copy(Policy_table, Rate_table): ...\n"
-    ) in generated
+    functions = {
+        node.name: node for node in ast.parse(generated).body if isinstance(node, ast.FunctionDef)
+    }
+    for name in ("Loader", "pricing_copy__Loader"):
+        assert [arg.arg for arg in functions[name].args.args] == ["policies", "rates"]
+        assert [arg.arg for arg in functions[name].args.kwonlyargs] == ["obj"]
 
 
 def test_flatten_preserves_public_output_label_for_ordinary_polars_code() -> None:
@@ -1060,89 +1680,6 @@ def test_flatten_preserves_public_output_label_for_ordinary_polars_code() -> Non
     generated = graph_to_code_multi(result, pipeline_name="main")["main.py"]
     assert "def Consumer(results: pl.LazyFrame)" in generated
     assert "df = results" in generated
-
-
-def test_flatten_preserves_public_input_label_for_polars_instances() -> None:
-    child = PipelineGraph(
-        nodes=[
-            _node(
-                "original",
-                NodeType.POLARS,
-                label="Original",
-                config={"code": "df = published"},
-            ),
-            _node(
-                "copy",
-                NodeType.POLARS,
-                label="Copy",
-                config={
-                    "instanceOf": "original",
-                    "inputMapping": {"published": "published"},
-                },
-            ),
-        ],
-        edges=[],
-    )
-    definition = _definition(
-        graph=child,
-        input_ports=[
-            SubmodelInputPort(
-                name="published",
-                targets=[
-                    SubmodelEndpoint(node_id="original"),
-                    SubmodelEndpoint(node_id="copy"),
-                ],
-            )
-        ],
-        output_ports=[],
-    )
-    graph = PipelineGraph(
-        nodes=[
-            _node("source", label="External source"),
-            _instance("instance_a", "scoring"),
-        ],
-        edges=[
-            GraphEdge(
-                id="input",
-                source="source",
-                target="instance_a",
-                targetHandle="in__published",
-            )
-        ],
-        submodels={"definition_scoring": definition},
-    )
-
-    flattened = flatten_graph(graph)
-    original = flattened.node_map[qualified_runtime_node_id("instance_a", "original")]
-    copy = flattened.node_map[qualified_runtime_node_id("instance_a", "copy")]
-
-    assert original.data.config["inputMapping"] == {"published": "External_source"}
-    assert copy.data.config["inputMapping"] == {"published": "External_source"}
-    generated = graph_to_code_multi(flattened, pipeline_name="main")["main.py"]
-    assert "def Original(published: pl.LazyFrame)" in generated
-    assert (
-        '@pipeline.instance(of="Original", inputMapping={"published": "External_source"})\n'
-        "def Copy(External_source): ...\n"
-    ) in generated
-
-
-def test_stale_schema_declared_node_reference_fails_loudly() -> None:
-    child = PipelineGraph(
-        nodes=[_node("consumer", config={"instanceOf": "missing"})],
-        edges=[],
-    )
-    definition = _definition(graph=child, input_ports=[], output_ports=[])
-    graph = PipelineGraph(
-        nodes=[_instance("scoring", "scoring")],
-        edges=[],
-        submodels={"definition_scoring": definition},
-    )
-
-    with pytest.raises(ParseError, match="instanceOf") as exc_info:
-        flatten_graph(graph)
-
-    assert exc_info.value.context["instance_id"] == "scoring"
-    assert exc_info.value.context["local_node_id"] == "consumer"
 
 
 def test_unbound_occurrence_validates_definition_topology_from_public_interface() -> None:
@@ -1512,7 +2049,7 @@ def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_binding
                                 "column_renames": {"_id": "identifier"},
                             },
                         ),
-                        _node("local_output", config={"instanceOf": "local_input"}),
+                        _node("local_output", config={"code": "df = local_input"}),
                     ],
                     edges=[GraphEdge(id="local_edge", source="local_input", target="local_output")],
                 ),
@@ -1826,7 +2363,7 @@ def test_grouping_preserves_child_input_configs_and_uses_public_labels() -> None
             _node(
                 "child_instance",
                 config={
-                    "instanceOf": "child_router",
+                    "code": "df = drivers",
                     "inputMapping": {
                         "drivers": "drivers",
                         "stable_input": "stable_input",
@@ -2069,3 +2606,165 @@ def test_flatten_rejects_boundary_input_names_colliding_after_expansion() -> Non
 
     assert "input names collide after expansion" in str(exc_info.value)
     assert exc_info.value.context["expanded_input_name"] == "Internal_Output"
+
+
+@pytest.mark.parametrize("self_named_input", [False, True])
+def test_one_node_owner_preserves_rows_names_and_config_through_save_and_dissolve(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    client,
+    self_named_input: bool,
+) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute._sandbox import bound_project_root
+    from haute.executor import execute_graph
+    from haute.routes._helpers import parse_pipeline_to_graph
+    from haute.routes._save_pipeline import SavePipelineService
+
+    monkeypatch.chdir(tmp_path)
+    input_name = "calc" if self_named_input else "policies"
+    source_definition = SubmodelDefinition(
+        definitionId="source_definition",
+        file="modules/source_definition.py",
+        graph=PipelineGraph(
+            nodes=[_node("source_node", config={"code": "df = pl.LazyFrame({'x': [2, 5]})"})]
+        ),
+        inputPorts=[],
+        outputPorts=[
+            SubmodelOutputPort(name=input_name, source=SubmodelEndpoint(nodeId="source_node"))
+        ],
+    )
+    plain = PipelineGraph(
+        nodes=[
+            _instance("source_owner", definition_id="source_definition"),
+            _node(
+                "calc",
+                config={"code": f"df = {input_name}.with_columns((pl.col('x') * 2).alias('x'))"},
+                x=120,
+                y=230,
+            ),
+            _node("consumer", config={"code": "df = calc"}),
+        ],
+        edges=[
+            GraphEdge(
+                id="incoming",
+                source="source_owner",
+                sourceHandle=f"out__{input_name}",
+                target="calc",
+            ),
+            GraphEdge(id="outgoing", source="calc", target="consumer"),
+        ],
+        submodels={"source_definition": source_definition},
+        pipeline_name="test",
+    )
+    with bound_project_root(tmp_path):
+        service = SavePipelineService(tmp_path)
+        initial = service.save_graph_transactionally(
+            graph=plain,
+            name="test",
+            description="",
+            preamble="",
+            source_file="main.py",
+            base_revision=None,
+        )
+        response = client.post(
+            "/api/submodel/instance",
+            json={
+                "node_id": "calc",
+                "graph": plain.model_dump(mode="json", by_alias=True),
+                "source_file": "main.py",
+                "base_revision": initial.source_revision,
+            },
+        )
+        assert response.status_code == 200, response.text
+        wrapped = PipelineGraph.model_validate(response.json()["graph"])
+        definition = wrapped.submodels["calc"]
+        child = definition.graph.nodes[0]
+        assert (child.id, child.data.label, child.position) == (
+            "calc_node",
+            "calc_node",
+            {"x": 0, "y": 0},
+        )
+        assert definition.input_ports[0].name == ("calc_2" if self_named_input else "policies")
+        assert definition.output_ports[0].name == "calc"
+        if self_named_input:
+            assert child.data.config["inputMapping"] == {"calc": "calc_2"}
+        assert wrapped.node_map["consumer"].data.config == {"code": "df = calc"}
+        assert execute_graph(flatten_graph(wrapped), target_node_id="consumer")[
+            "consumer"
+        ].preview == [{"x": 4}, {"x": 10}]
+        # Removing the unbound copy allows the owner itself to dissolve.
+        wrapped.nodes = [n for n in wrapped.nodes if n.id != "calc_2"]
+        saved = service.save_graph_transactionally(
+            graph=wrapped,
+            name="test",
+            description="",
+            preamble="",
+            source_file="main.py",
+            base_revision=initial.source_revision,
+        )
+        assert (tmp_path / "modules/calc.py").is_file()
+        reloaded = parse_pipeline_to_graph(tmp_path / "main.py", project_root=tmp_path)
+        assert execute_graph(flatten_graph(reloaded))["consumer"].preview == [{"x": 4}, {"x": 10}]
+        dissolved = client.post(
+            "/api/submodel/dissolve",
+            json={
+                "instance_id": "calc",
+                "graph": reloaded.model_dump(mode="json", by_alias=True),
+                "source_file": "main.py",
+                "base_revision": saved.source_revision,
+            },
+        )
+        assert dissolved.status_code == 200, dissolved.text
+        expanded = PipelineGraph.model_validate(dissolved.json()["graph"])
+        inner = next(n for n in expanded.nodes if n.data.label == "calc_node")
+        assert inner.data.nodeType == NodeType.POLARS
+        assert inner.position == {"x": 120, "y": 230}
+        assert expanded.node_map["consumer"].data.config["inputMapping"] == {"calc": "calc_node"}
+        assert execute_graph(flatten_graph(expanded))["consumer"].preview == [{"x": 4}, {"x": 10}]
+        assert (
+            load_pipeline_editor_document(
+                tmp_path / "main.py", project_root=tmp_path
+            ).source_revision
+            == saved.source_revision
+        )
+
+
+def test_node_instance_saved_config_follows_inside_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute._sandbox import bound_project_root
+    from haute.routes._save_pipeline import SavePipelineService
+    from haute.routes._submodel_ops import create_node_instance_graph
+
+    monkeypatch.chdir(tmp_path)
+    plain = PipelineGraph(nodes=[_node("band", NodeType.BANDING, config={"factors": []})])
+    with bound_project_root(tmp_path):
+        service = SavePipelineService(tmp_path)
+        saved = service.save_graph_transactionally(
+            graph=plain,
+            name="test",
+            description="",
+            preamble="",
+            source_file="main.py",
+            base_revision=None,
+        )
+        assert (tmp_path / "config/banding/band.json").is_file()
+        wrapped = create_node_instance_graph(
+            plain, "band", "band", read_utility=lambda _: None
+        ).graph
+        service.save_graph_transactionally(
+            graph=wrapped,
+            name="test",
+            description="",
+            preamble="",
+            source_file="main.py",
+            base_revision=saved.source_revision,
+        )
+        assert not (tmp_path / "config/banding/band.json").exists()
+        assert json.loads((tmp_path / "config/banding/band_node.json").read_text()) == {
+            "factors": []
+        }
+        assert (
+            'config="config/banding/band_node.json"' in (tmp_path / "modules/band.py").read_text()
+        )

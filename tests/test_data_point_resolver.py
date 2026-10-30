@@ -249,38 +249,6 @@ def test_a_leased_scan_rejects_absent_columns_and_keeps_rows_for_an_empty_demand
             pass
 
 
-def test_instance_nodes_resolve_through_their_originals(project: Path) -> None:
-    graph = _graph(project)
-    instances = [
-        _node("banding_copy", NodeType.BANDING, {"instanceOf": "banding"}),
-        _node("explore_copy", NodeType.EXPLORE, {"instanceOf": "explore_code"}),
-        _node("source_copy", NodeType.DATA_INPUT, {"instanceOf": "source"}),
-    ]
-    graph = graph.model_copy(
-        update={
-            "nodes": [*graph.nodes, *instances],
-            "edges": [
-                *graph.edges,
-                GraphEdge(id="i1", source="join", target="banding_copy"),
-                GraphEdge(id="i2", source="join", target="explore_copy"),
-            ],
-        }
-    )
-
-    banding_copy = consumer_point(graph, "banding_copy")
-    explore_copy = consumer_point(graph, "explore_copy")
-
-    assert banding_copy.point == DataPoint("join", None)
-    assert banding_copy.demand == NodeSnapshotColumns.of(["premium"])
-    assert explore_copy.point == DataPoint("explore_copy", None)
-    source_copy = DataPointResolver(graph, source="live").resolve(
-        DataPoint("source_copy", None), ALL
-    )
-    assert (source_copy.kind, source_copy.state) == ("data_input", "current")
-    with lease_point_frame(graph, DataPoint("source_copy", None), "live", ALL) as leased:
-        assert leased.scan.collect().height == 10
-
-
 def test_node_output_states_missing_stale_building_and_corrupt(project: Path) -> None:
     graph = _graph(project)
     store = NodeSnapshotStore(project)

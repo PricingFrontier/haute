@@ -1,4 +1,4 @@
-# Instances
+# Reusing a node
 
 You have a node that does exactly what you need  - but you want to apply the same logic to a different input. Instead of duplicating the node (and maintaining two copies), you create an **instance** that reuses the original's configuration with different inputs.
 
@@ -7,52 +7,58 @@ You have a node that does exactly what you need  - but you want to apply the sam
     - You want to score the same model against different data splits (e.g. training vs validation).
     - You want to keep logic in one place so a change to the original automatically updates every instance.
 
-An instance points at an existing node (the **original**) and inherits its code or configuration. The only thing that changes is which inputs are connected: the instance outputs what the original's logic produces from its own inputs. When you update the original node, every instance updates automatically.
+An instance shares a definition with its **owner**. Connect different data to its public inputs to run the same logic on different rows. Editing the definition through the owner updates every instance.
 
 ## Creating an instance
 
-Select exactly one node on the canvas and click **Instance** in the toolbar. Haute creates a new node beside it, linked to the original. Connect the new node's inputs to the data you want to process. (For a submodel, you can also right-click it and choose **Create Instance**.)
+In the parent pipeline, select one node and click **Instance** in the toolbar. For Transform, Load File, Data Input, Constant, Banding, Rating Step, Model Score, Edge Join, Scenario Expander, Model Training, Explore, Optimiser and Apply Optimisation, Haute wraps the node in a one-node submodel and places an unconnected instance beside it. The action takes one Undo and writes files only when you click **Save**.
+
+The owner keeps the original node's name, position, connections and output name. Its inner node becomes `<name>_node`, with a numeric suffix if needed. Any config file follows that inner name. The definition and module use the original name, suffixed when another definition or module already uses it. The instance normally starts as `<name>_2`.
+
+Connect the instance to the data you want to process. Each public input keeps the name the original node read. If an input would have the same name as the output, its public name takes a suffix; the code inside still reads its original name. Sources without inputs need no connections, and sinks have no public output.
+
+For an existing submodel, **Instance** adds another occurrence of its definition. You can also right-click a submodel and choose **Create Instance**. Plain nodes use the toolbar.
+
+A Data Output cannot be reused: two writers to the same destination are refused. Add a separate Data Output with its own destination instead.
 
 ## The panel
 
-An instance's panel has no tabs, because its settings belong to the original:
+An instance uses the [Submodel](submodel.md) panel. Its **INPUTS** selectors are its input mapping: each public input can receive any incoming frame, whatever that frame is named. Choosing a connection moves it to that input, replacing its previous connection, in one Undo step. The instance shares its code and configuration with the owner; double-click the owner to edit them.
 
-- **INSTANCE OF** names the original node. The panel reminds you: **This node uses the same logic as the original. To edit the code or config, select the original node. Changes will automatically apply to all instances.**
-- **INPUT MAPPING** (**Map each original input to a connected upstream node.**) lists each of the original's inputs with a selector of this instance's connected inputs (**- unmapped -** when none is chosen).
-- **MISSING COLUMNS (N)** lists columns the original receives that are not available at this instance's position.
+Dropping a connection on the instance binds the public input with the same name as the incoming frame. If that input is already connected, the drop is refused. With no matching name, Haute binds the sole unconnected input or lets you choose among the unconnected inputs. An instance never creates a new public input.
 
-Haute matches the original's inputs to the instance's inputs by exact name first, then by an unambiguous partial name match, then by position. You only need to choose in **INPUT MAPPING** when that matching is ambiguous (several upstream inputs fit one original input): the panel then warns **Name matching is ambiguous for …**, and saving and running are blocked until you choose each input. You can also use the selectors to override the automatic match.
+With one declared output, the instance's frame takes the instance's name. With several, each frame is named `<instance>_<port>`. Unconnected outputs count too. Renaming an instance updates the input names its consumers read.
+
+After preview, **MISSING COLUMNS** lists, by public input, the columns the instance lacks compared with the owner's input. Only inputs connected on both occurrences are compared. If a schema cannot be resolved, its error appears instead. The section is absent when there are no warnings.
+
+Click the instance to preview its first output using its own inputs. Choose another output from the preview's frame selector. **Refresh** runs the selected output again, and clicking a cell traces that output and frame. A definition with no public output has no preview.
 
 ## Example
 
-Suppose you have a Transform node called `clean_policies` that normalises column names. It starts from its input `policies` and has one **Rename columns** step (`Date_Of_Birth` to `date_of_birth`, `Post_Code` to `postcode`).
+Suppose a Transform named `clean_policies` reads `policies` and you want to apply its logic to `claims_data`:
 
-You want to apply the same cleaning to a different dataset called `claims_data`. Instead of duplicating the node:
+1. Select `clean_policies` and click **Instance**.
+2. Connect `claims_data` to the new `clean_policies_2` occurrence's `policies` input.
+3. Click the instance to preview `claims_data` through the shared code.
+4. Double-click the owner and edit `clean_policies_node`; the instance's preview uses the changed logic.
+5. Save. Haute writes `modules/clean_policies.py` and the public input binding in the pipeline file.
 
-1. Select `clean_policies` and click **Instance** in the toolbar.
-2. Connect `claims_data` to the new node.
-3. Its panel shows **INSTANCE OF** `clean_policies`, and under **INPUT MAPPING**, `policies` → `claims_data`.
-
-Wherever the original reads from `policies`, the instance reads from `claims_data` instead; the code stays the same. With a single input, Haute makes this match by position on its own, so choosing it in **INPUT MAPPING** only makes it explicit.
+Renaming the instance changes its output name for consumers. The owner's output stays `clean_policies`. To dissolve the owner, first delete or dissolve its instances; its plain node returns under the inner name `clean_policies_node`.
 
 ## Which node types support instances?
 
-Every node type can have instances except Quote Input and Quote Response, because a pipeline allows only one of each; for the same reason, neither can a submodel that contains one of them. A Source Switch cannot have instances either, because it routes by its own input names: add another Source Switch instead. Submodels have instances too; see [Submodel](submodel.md).
+Quote Input, Workbench Input, Quote Response and Workbench Output cannot have instances, because they are document-wide singletons; for the same reason, neither can a submodel that contains one of them. A Source Switch cannot have instances either, because it routes by its own input names: add another Source Switch instead. Submodels have instances too; see [Submodel](submodel.md).
 
 ??? note "In the pipeline file"
-    An instance has no JSON sidecar. The pipeline's `.py` file declares it with an instance decorator naming the original, and the instance's function takes the instance's own inputs:
+    For a wrapped node, the pipeline imports the definition and registers both occurrences:
 
     ```python
-    @pipeline.instance(of="clean_policies", inputMapping={"policies": "claims_data"})
-    def clean_claims(claims_data): ...
+    from modules import clean_policies
+
+    pipeline.submodel(clean_policies.submodel, "clean_policies")
+    pipeline.submodel(clean_policies.submodel, "clean_policies_2", instance_of="clean_policies")
+    pipeline.connect("claims_data", "clean_policies_2", target_port="policies")
     ```
-
-    | Setting in the editor | Stored as |
-    |---|---|
-    | **INSTANCE OF** | `of` in the decorator (`instanceOf` in the node's config): the name of the original node |
-    | **INPUT MAPPING** | `inputMapping`: a map of the original's input names to this instance's input names. Absent until you choose an input in **INPUT MAPPING**; the automatic match is used meanwhile. |
-
-    A submodel instance is stored differently; see [Submodel](submodel.md).
 
 **See also:**
 

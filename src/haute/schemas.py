@@ -1285,6 +1285,7 @@ class EditorIdentityRequestNode(BaseModel):
     label: str = Field(min_length=1, max_length=2048)
     node_type: NodeType
     alias: Annotated[str, Field(min_length=1, max_length=512)] | None = Field(default=None)
+    instance_of: Annotated[str, Field(min_length=1, max_length=512)] | None = None
     # The submodel definition the node belongs to in the naming context, or
     # ``None`` for the pipeline itself. Ids are unique only within one graph.
     submodel: Annotated[str, Field(min_length=1, max_length=512)] | None = None
@@ -1302,6 +1303,8 @@ class EditorIdentityRequestNode(BaseModel):
 
     @model_validator(mode="after")
     def _identity_inputs_match_node_type(self) -> EditorIdentityRequestNode:
+        if self.instance_of is not None and self.node_type != NodeType.SUBMODEL:
+            raise ValueError("instance_of is only valid for a submodel identity.")
         if self.node_type == NodeType.SUBMODEL:
             for handle in self.source_handles:
                 port_name = handle[len("out__") :] if handle.startswith("out__") else ""
@@ -1561,8 +1564,21 @@ class SavePipelineResponse(SaveCapture):
 
 
 class SchemaWarning(BaseModel):
-    column: str
+    column: str | None = None
     status: str
+    input: str | None = None
+    detail: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_warning(self) -> SchemaWarning:
+        if self.status == "unavailable":
+            if self.column is not None or not self.input or not self.detail:
+                raise ValueError(
+                    "An unavailable schema needs an input and error detail, with no column."
+                )
+        elif self.column is None:
+            raise ValueError("A column is required unless the schema is unavailable.")
+        return self
 
 
 class PortPreview(BaseModel):
@@ -3141,6 +3157,28 @@ class CreateSubmodelResponse(BaseModel):
     parent_file: str = ""
     source_revision: RevisionToken
     graph: Graph = Field(default_factory=Graph)
+
+
+class CreateNodeInstanceRequest(BaseModel):
+    node_id: BoundedName = Field(min_length=1)
+    graph: Graph
+    preamble: BoundedText = ""
+    preserved_blocks: list[BoundedText] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
+    source_file: BoundedPath = ""
+    base_revision: RevisionToken
+    pipeline_name: BoundedName = "main"
+    pipeline_description: BoundedText | None = None
+
+
+class CreateNodeInstanceResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = "ok"
+    graph: Graph
+    owner_name: str
+    instance_name: str
+    definition_id: str
+    source_revision: RevisionToken
 
 
 class DissolveSubmodelRequest(BaseModel):

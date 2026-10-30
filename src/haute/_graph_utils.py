@@ -169,18 +169,32 @@ def edge_input_name(
     """Return the one input name contributed by an incoming edge.
 
     API-input edges use their persisted frame handle verbatim. Submodel
-    outputs use their public port name. Every ordinary edge uses the
+    owners use their public port name; instances use their occurrence name,
+    qualified by the port when the definition declares several outputs. Every ordinary edge uses the
     sanitised source-node label; source handles on ordinary nodes identify
     an output port and are not input names.
     """
     node_type = str(source_node.data.nodeType)
     if node_type in REQUEST_INPUT_KINDS and edge.sourceHandle is None:
         raise ValueError(f"{node_type} edge {edge.id!r} has no sourceHandle/frame label")
-    del submodels  # the port name needs no definition lookup
+    instance_of = source_node.data.config.get("instanceOf") if node_type == "submodel" else None
+    source_handles: list[str] | None = None
+    if instance_of is not None:
+        definition_id = source_node.data.config.get("definitionId")
+        if not isinstance(definition_id, str):
+            raise ValueError(f"Submodel instance {source_node.id!r} requires a definitionId.")
+        definition = (submodels or {}).get(definition_id)
+        if definition is None:
+            raise ValueError(
+                f"Submodel instance {source_node.id!r} has no definition {definition_id!r}."
+            )
+        source_handles = [f"out__{port.name}" for port in definition.output_ports]
     return executable_input_name(
         node_type=source_node.data.nodeType,
         label=source_node.data.label,
         source_handle=edge.sourceHandle,
+        instance_of=instance_of,
+        source_handles=source_handles,
     )
 
 
@@ -265,15 +279,15 @@ def executable_input_name(
     node_type: object,
     label: str,
     source_handle: str | None,
+    instance_of: str | None = None,
+    source_handles: Sequence[str] | None = None,
 ) -> str:
     """Derive one executable input identity without mutating graph data.
 
     A frame is named the way the canvas shows it: an API input by its frame
-    handle, a submodel output by its public port name (the ``out__<name>``
-    handle's ``<name>``, sanitised), a public submodel input port by its
-    sanitised port name, and an ordinary node by its sanitised label. The
-    occurrence alias never takes part, so the code a user reads names the
-    same frames the canvas does.
+    handle, an owner's output by its public port name, and an instance's by
+    its name (qualified by the port when several outputs are declared).
+    A public submodel input uses its port name, and an ordinary node its label.
     """
     kind = str(node_type)
     if kind in REQUEST_INPUT_KINDS:
@@ -288,7 +302,16 @@ def executable_input_name(
             or len(source_handle) == len(prefix)
         ):
             raise ValueError("Submodel output handles must use the canonical 'out__<name>' form.")
-        return _sanitize_func_name(source_handle[len(prefix) :])
+        port_name = _sanitize_func_name(source_handle[len(prefix) :])
+        if instance_of is None:
+            return port_name
+        if source_handles is None or source_handle not in source_handles:
+            raise ValueError(
+                f"Submodel instance {label!r} requires every declared output handle, "
+                f"including {source_handle!r}."
+            )
+        instance_name = _sanitize_func_name(label)
+        return instance_name if len(source_handles) == 1 else f"{instance_name}_{port_name}"
     if kind == "submodelPort":
         if source_handle is None or not isinstance(source_handle, str) or not source_handle:
             raise ValueError("Submodel input identities require a source handle.")
@@ -309,110 +332,6 @@ def duplicate_input_names(names: list[str]) -> list[str]:
         else:
             seen.add(name)
     return duplicates
-
-
-def build_instance_mapping(
-    orig_names: list[str],
-    inst_names: list[str],
-    explicit: dict[str, str] | None = None,
-) -> dict[str, str]:
-    """Map original input parameter names to instance input names.
-
-    Priority: explicit mapping → exact name match → unambiguous substring
-    match → positional. Used by the executor (alias injection) and codegen
-    (kwarg generation). The frontend's InstanceConfig auto-mapping consumes
-    authoritative identity metadata.
-
-    Raises
-    ------
-    ConfigError
-        If *explicit* contains stale entries — keys that do not appear in
-        *orig_names* or non-empty values that do not appear in *inst_names*.
-        Stale entries indicate the UI-stored ``inputMapping`` is out of
-        sync with the current graph and would silently corrupt wiring.
-    ConfigError
-        If a substring pairing is ambiguous — an original name matching
-        several instance sources, or one instance source matching several
-        originals. The old greedy first-fit resolved these silently and
-        could bind frames to the WRONG parameters (swapped inputs, clean
-        run, wrong prices); ambiguity now requires an explicit
-        ``inputMapping`` on the instance node.
-    """
-    from haute.errors import ConfigError
-
-    mapping: dict[str, str] = {}
-    if explicit:
-        orig_set = set(orig_names)
-        inst_set = set(inst_names)
-        stale_keys = [k for k in explicit if k not in orig_set]
-        stale_values = [(k, v) for k, v in explicit.items() if v and v not in inst_set]
-        if stale_keys or stale_values:
-            raise ConfigError(
-                "inputMapping contains stale entries that no longer match the "
-                "current graph; remove or update them in the node config.",
-                stale_keys=stale_keys,
-                stale_values=stale_values,
-                orig_names=list(orig_names),
-                inst_names=list(inst_names),
-            )
-        mapping = {k: v for k, v in explicit.items() if v}
-
-    used: set[int] = set()
-    for v in mapping.values():
-        for i, inst in enumerate(inst_names):
-            if inst == v and i not in used:
-                used.add(i)
-                break
-    # Pass 1: exact match
-    for orig in orig_names:
-        if orig in mapping:
-            continue
-        for i, inst in enumerate(inst_names):
-            if i not in used and inst == orig:
-                mapping[orig] = inst
-                used.add(i)
-                break
-    # Pass 2: substring match (e.g. "claims_aggregate" in
-    # "claims_aggregate_instance") — assigned ONLY when the pairing is
-    # unambiguous in both directions. Substring containment is
-    # many-to-one: with originals ``rate``/``base_rate`` and instance
-    # sources ``x_base_rate``/``x_rate``, the old greedy first-fit gave
-    # ``rate`` → ``x_base_rate`` and left ``base_rate`` to pick up
-    # ``x_rate`` positionally — the two frames bound CROSSWISE, the
-    # pipeline ran clean and priced wrong. A contested pairing now
-    # raises so the user sets ``inputMapping`` explicitly instead of
-    # receiving silently-swapped frames.
-    remaining_origs = [o for o in orig_names if o not in mapping]
-    remaining_idx = [i for i in range(len(inst_names)) if i not in used]
-    cand_by_orig = {o: [i for i in remaining_idx if o in inst_names[i]] for o in remaining_origs}
-    cand_by_idx = {i: [o for o in remaining_origs if o in inst_names[i]] for i in remaining_idx}
-    ambiguous = {
-        o: [inst_names[i] for i in cands]
-        for o, cands in cand_by_orig.items()
-        if cands and not (len(cands) == 1 and len(cand_by_idx[cands[0]]) == 1)
-    }
-    if ambiguous:
-        raise ConfigError(
-            "instance input mapping is ambiguous: name matching cannot "
-            "uniquely pair these original inputs with the instance's "
-            "upstream sources — set the input mapping explicitly on the "
-            "instance node.",
-            ambiguous_originals=ambiguous,
-            orig_names=list(orig_names),
-            inst_names=list(inst_names),
-        )
-    for o, cands in cand_by_orig.items():
-        if len(cands) == 1:
-            mapping[o] = inst_names[cands[0]]
-            used.add(cands[0])
-    # Pass 3: positional fallback for remaining (no substring evidence
-    # at all — e.g. fully renamed sources; order follows the wiring)
-    unused = [i for i in range(len(inst_names)) if i not in used]
-    unmatched = [o for o in orig_names if o not in mapping]
-    for orig, i in zip(unmatched, unused):
-        mapping[orig] = inst_names[i]
-
-    return mapping
 
 
 def resolve_input_mapping_names(
@@ -491,35 +410,13 @@ def resolve_orig_source_names(
 ) -> list[str] | None:
     """Return logical input names that differ from the current edge names.
 
-    For an instance, each name comes from the referenced original's incoming
-    edge.  For ordinary Transform or Load File code with ``inputMapping``, the
+    For Transform or Load File code with ``inputMapping``, the
     mapping preserves stable authored names across a parent-replacement rewrite.
 
     Returns ``None`` when no aliasing is required.
     """
     # Imported here: the steps module reaches this one through user-code execution.
     from haute._polars_steps import stepped_surface_allows_input_references
-
-    ref = node.data.config.get("instanceOf")
-    if ref:
-        if ref not in node_map:
-            return None
-        original = node_map[ref]
-        source_names = [
-            edge_input_name(
-                edge,
-                node_map[edge.source],
-                submodels=submodels,
-            )
-            for edge in incoming_edges_by_target.get(ref, [])
-        ]
-        input_mapping = original.data.config.get("inputMapping")
-        if (
-            stepped_surface_allows_input_references(original.data.nodeType)
-            and input_mapping is not None
-        ):
-            return resolve_input_mapping_names(source_names, input_mapping)
-        return source_names
 
     input_mapping = node.data.config.get("inputMapping")
     if not stepped_surface_allows_input_references(node.data.nodeType) or input_mapping is None:

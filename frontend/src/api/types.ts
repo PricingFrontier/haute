@@ -52,6 +52,7 @@ export interface EditorIdentityRequestNode {
   node_type: NodeTypeValue
   source_handles: string[]
   alias?: string
+  instance_of?: string
   /** The submodel definition the node belongs to in the naming context; absent at the root. */
   submodel?: string
 }
@@ -74,9 +75,16 @@ export type {
   PolarsFreeCodeColumnsResponse,
   PolarsStepsRenderResponse,
 } from "../generated/api-contracts.generated"
-export interface SchemaWarning {
+export type SchemaWarning = {
   column: string
   status: string
+  input?: string | null
+  detail?: string | null
+} | {
+  column?: null
+  status: "unavailable"
+  input: string
+  detail: string
 }
 
 export interface ExecutionStageMetrics {
@@ -458,6 +466,15 @@ export interface SubmodelCreateResponse {
   submodel_file: string
   parent_file: string
   graph: PipelineGraph
+  source_revision: string
+}
+
+export interface NodeInstanceCreateResponse {
+  status: string
+  graph: PipelineGraph
+  owner_name: string
+  instance_name: string
+  definition_id: string
   source_revision: string
 }
 

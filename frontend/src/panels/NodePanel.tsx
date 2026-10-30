@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react"
-import { X, Link2, AlertTriangle, RefreshCw, Lock } from "lucide-react"
+import { X, AlertTriangle, RefreshCw, Lock } from "lucide-react"
 import { fetchExplorePivotMembers } from "../api/client"
 import { NODE_TYPES, NODE_TYPE_META, REQUEST_INPUT_TYPES, isRequestInputType } from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
@@ -118,411 +118,6 @@ const EXPLORE_PANES = [
   { key: "charts", label: "Charts" },
   { key: "export", label: "Export" },
 ] as const satisfies readonly { key: ExplorePane; label: string }[]
-
-// ─── Instance sub-panel (kept inline — it references multiple node-level concerns) ──
-
-type InstanceOriginalResolution =
-  | {
-      status: "found"
-      original: SimpleNode
-      originalNodeMap: Record<string, SimpleNode>
-      originalEdges: SimpleEdge[]
-      definitionId?: string
-    }
-  | { status: "invalid"; rawInstanceOf: unknown }
-  | { status: "missing"; originalId: string }
-  | { status: "ambiguous"; originalId: string; locations: string[] }
-  | { status: "malformedSubmodel"; originalId: string; definitionId: string; reason: string }
-
-function resolveInstanceOriginal(
-  originalId: unknown,
-  visibleNodeMap: Record<string, SimpleNode>,
-  visibleEdges: SimpleEdge[],
-  submodels: Record<string, unknown> | undefined,
-): InstanceOriginalResolution {
-  if (typeof originalId !== "string" || originalId.length === 0) {
-    return { status: "invalid", rawInstanceOf: originalId }
-  }
-
-  const matches: Extract<InstanceOriginalResolution, { status: "found" }>[] = []
-  const visibleOriginal = visibleNodeMap[originalId]
-  if (visibleOriginal) {
-    matches.push({
-      status: "found",
-      original: visibleOriginal,
-      originalNodeMap: visibleNodeMap,
-      originalEdges: visibleEdges,
-      definitionId: undefined,
-    })
-  }
-
-  for (const [definitionId, value] of Object.entries(submodels ?? {})) {
-    if (!isSubmodelDefinition(value, definitionId)) {
-      return {
-        status: "malformedSubmodel",
-        originalId,
-        definitionId,
-        reason: "definition does not satisfy the canonical identity and port contract",
-      }
-    }
-    const nodes = value.graph.nodes as unknown as SimpleNode[]
-    const edges = value.graph.edges as SimpleEdge[]
-    const matchingNodes = nodes.filter((node) => node.id === originalId)
-    if (matchingNodes.length === 0) continue
-    if (matchingNodes.length > 1) {
-      return {
-        status: "ambiguous",
-        originalId,
-        locations: matchingNodes.map((_, index) => definitionId + "#" + (index + 1)),
-      }
-    }
-    matches.push({
-      status: "found",
-      original: matchingNodes[0],
-      originalNodeMap: Object.fromEntries(nodes.map((node) => [node.id, node])),
-      originalEdges: edges,
-      definitionId,
-    })
-  }
-
-  if (matches.length === 1) return matches[0]
-  if (matches.length > 1) {
-    return {
-      status: "ambiguous",
-      originalId,
-      locations: matches.map((match) => match.definitionId ?? "visible graph"),
-    }
-  }
-  return { status: "missing", originalId }
-}
-function uniquePreservingOrder(values: string[]): string[] {
-  const seen = new Set<string>()
-  const unique: string[] = []
-  for (const value of values) {
-    if (seen.has(value)) continue
-    seen.add(value)
-    unique.push(value)
-  }
-  return unique
-}
-
-function resolveOriginalInputNames({
-  originalId,
-  originalEdges,
-  originalNodeMap,
-  visibleEdges,
-  visibleNodeMap,
-  definitionId,
-  submodels,
-}: {
-  originalId: string
-  originalEdges: SimpleEdge[]
-  originalNodeMap: Record<string, SimpleNode>
-  visibleEdges: SimpleEdge[]
-  visibleNodeMap: Record<string, SimpleNode>
-  definitionId?: string
-  submodels?: Record<string, unknown>
-}): string[] {
-  const internalInputs = originalEdges
-    .filter((edge) => edge.target === originalId)
-    .map((edge) => {
-      const sourceNode = originalNodeMap[edge.source]
-      if (!sourceNode) {
-        throw new Error(
-          "Cannot derive instance input name: source node " + edge.source + " is missing",
-        )
-      }
-      return edgeInputName(edge, sourceNode, submodels)
-    })
-
-  if (!definitionId) return uniquePreservingOrder(internalInputs)
-
-  const definition = submodels?.[definitionId]
-  if (!isSubmodelDefinition(definition, definitionId)) {
-    throw new Error(
-      "Cannot derive instance inputs: definition " + definitionId + " is missing or malformed",
-    )
-  }
-  const publicInputPortNames = new Set(
-    definition.inputPorts
-      .filter((port) => port.targets.some((target) => target.nodeId === originalId))
-      .map((port) => port.name),
-  )
-  if (publicInputPortNames.size === 0) return uniquePreservingOrder(internalInputs)
-
-  const occurrenceIds = new Set<string>()
-  for (const visibleNode of Object.values(visibleNodeMap)) {
-    if (visibleNode.data.nodeType !== NODE_TYPES.SUBMODEL) continue
-    if (!isSubmodelInstanceConfig(visibleNode.data.config)) {
-      throw new Error(
-        "Cannot derive instance inputs: submodel occurrence "
-        + visibleNode.id + " has malformed identity config",
-      )
-    }
-    if (visibleNode.data.config.definitionId === definitionId) {
-      occurrenceIds.add(visibleNode.id)
-    }
-  }
-
-  const boundaryInputs = visibleEdges
-    .filter((edge) => {
-      if (!occurrenceIds.has(edge.target) || !edge.targetHandle?.startsWith("in__")) {
-        return false
-      }
-      return publicInputPortNames.has(edge.targetHandle.slice("in__".length))
-    })
-    .map((edge) => {
-      const sourceNode = visibleNodeMap[edge.source]
-      if (!sourceNode) {
-        throw new Error(
-          "Cannot derive instance input name: source node " + edge.source + " is missing",
-        )
-      }
-      return edgeInputName(edge, sourceNode, submodels)
-    })
-
-  return uniquePreservingOrder([...internalInputs, ...boundaryInputs])
-}
-function InstanceReferenceDiagnostic({
-  resolution,
-}: {
-  resolution: Exclude<InstanceOriginalResolution, { status: "found" }>
-}) {
-  const detail = resolution.status === "invalid"
-    ? "Instance config must use a non-empty string instanceOf id."
-    : resolution.status === "malformedSubmodel"
-      ? `Submodel "${resolution.definitionId}" has invalid metadata: ${resolution.reason}.`
-      : resolution.status === "ambiguous"
-        ? `Found more than one original named "${resolution.originalId}" in: ${resolution.locations.join(", ")}.`
-        : `No visible node or submodel original exists with id "${resolution.originalId}".`
-  const configDiagnostic = resolution.status === "invalid"
-    ? { instanceOf: resolution.rawInstanceOf }
-    : { instanceOf: resolution.originalId }
-  return (
-    <div className="px-4 py-3 flex flex-col gap-3">
-      <div
-        role="alert"
-        className="flex flex-col gap-2 rounded-lg px-3 py-3"
-        style={{ background: 'var(--warning-soft)', border: '1px solid var(--warning-border)' }}
-      >
-        <div className="flex items-center gap-2">
-          <AlertTriangle size={14} style={{ color: 'var(--warning-strong)' }} className="shrink-0" />
-          <span className="text-[12px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--warning-strong)' }}>
-            Broken instance reference
-          </span>
-        </div>
-        <p className="text-[12px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
-          {detail}
-        </p>
-        <pre
-          className="text-[11px] leading-relaxed font-mono whitespace-pre-wrap break-words rounded-md px-3 py-2 select-text overflow-x-auto"
-          style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-        >
-          {JSON.stringify(configDiagnostic, null, 2)}
-        </pre>
-      </div>
-    </div>
-  )
-}
-
-function InstancePanel({
-  node,
-  config,
-  nodeMap,
-  handleConfigUpdate,
-}: {
-  node: SimpleNode
-  config: Record<string, unknown>
-  nodeMap: Record<string, SimpleNode>
-  handleConfigUpdate: OnUpdateConfig
-}) {
-  const { edges, submodels } = useGraph()
-  const originalResolution = resolveInstanceOriginal(config.instanceOf, nodeMap, edges, submodels)
-  if (originalResolution.status !== "found") {
-    return <InstanceReferenceDiagnostic resolution={originalResolution} />
-  }
-  const {
-    original: orig,
-    originalNodeMap,
-    originalEdges,
-    definitionId,
-  } = originalResolution
-  const origId = orig.id
-  return (
-    <div className="px-4 py-3 flex flex-col gap-3">
-      <div className="flex items-center gap-2 px-3 py-2 rounded-lg" style={{ background: 'var(--accent-soft)', border: '1px solid var(--text-accent-line)' }}>
-        <Link2 size={13} style={{ color: 'var(--accent)' }} className="shrink-0" />
-        <div className="min-w-0">
-          <div className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--accent)' }}>Instance of</div>
-          <div className="text-[13px] font-semibold truncate" style={{ color: 'var(--text-primary)' }}>
-            {orig.data.label}
-          </div>
-          {definitionId && (
-            <div className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>
-              in {definitionId}
-            </div>
-          )}
-        </div>
-      </div>
-      <p className="text-[11px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-        This node uses the same logic as the original. To edit the code or config, select the original node. Changes will automatically apply to all instances.
-      </p>
-
-      {/* Input Mapping */}
-      {(() => {
-        const origInputs = resolveOriginalInputNames({
-          originalId: origId,
-          originalEdges,
-          originalNodeMap,
-          visibleEdges: edges,
-          visibleNodeMap: nodeMap,
-          definitionId,
-          submodels,
-        })
-        const instInputs = edges
-          .filter((e) => e.target === node.id)
-          .map((e) => {
-            const srcNode = nodeMap[e.source]
-            return {
-              name: srcNode ? edgeInputName(e, srcNode, submodels) : (() => {
-                throw new Error(`Cannot derive instance input name: source node ${e.source} is missing`)
-              })(),
-              label: srcNode ? edgeInputName(e, srcNode, submodels) : e.source,
-            }
-          })
-
-        if (origInputs.length === 0 && instInputs.length === 0) return null
-
-        const currentMapping = (config.inputMapping || {}) as Record<string, string>
-
-        // Auto-initialise mapping if empty or stale. Mirrors the backend's
-        // build_instance_mapping: exact match, then substring ONLY when the
-        // pairing is unambiguous in both directions, then positional for
-        // names with no substring evidence at all. A contested substring
-        // pairing (e.g. originals rate/base_rate against sources
-        // x_base_rate/x_rate) is deliberately left unmapped: the old greedy
-        // pick could bind the frames crosswise, and the backend now refuses
-        // to save/run an ambiguous mapping — the user must choose here.
-        const autoMap: Record<string, string> = {}
-        const usedInst = new Set<string>()
-        for (const orig of origInputs) {
-          const exact = instInputs.find((i) => i.name === orig && !usedInst.has(i.name))
-          if (exact) { autoMap[orig] = exact.name; usedInst.add(exact.name) }
-        }
-        const subOrigs = origInputs.filter((o) => !autoMap[o])
-        const subInsts = instInputs.filter((i) => !usedInst.has(i.name))
-        const candByOrig = new Map(
-          subOrigs.map((o) => [o, subInsts.filter((i) => i.name.includes(o))]),
-        )
-        const candCountByInst = new Map(
-          subInsts.map((i) => [i.name, subOrigs.filter((o) => i.name.includes(o)).length]),
-        )
-        const ambiguousOrigs = new Set(
-          subOrigs.filter((o) => {
-            const cands = candByOrig.get(o) ?? []
-            return cands.length > 0 && !(cands.length === 1 && candCountByInst.get(cands[0].name) === 1)
-          }),
-        )
-        for (const o of subOrigs) {
-          const cands = candByOrig.get(o) ?? []
-          if (cands.length === 1 && candCountByInst.get(cands[0].name) === 1) {
-            autoMap[o] = cands[0].name
-            usedInst.add(cands[0].name)
-          }
-        }
-        const remaining = instInputs.filter((i) => !usedInst.has(i.name))
-        const unmapped = origInputs.filter((o) => !autoMap[o] && !ambiguousOrigs.has(o))
-        unmapped.forEach((orig, idx) => {
-          if (idx < remaining.length) autoMap[orig] = remaining[idx].name
-        })
-
-        const effectiveMap: Record<string, string> = {}
-        const instNames = new Set(instInputs.map((i) => i.name))
-        for (const orig of origInputs) {
-          if (currentMapping[orig] && instNames.has(currentMapping[orig])) {
-            effectiveMap[orig] = currentMapping[orig]
-          } else {
-            effectiveMap[orig] = autoMap[orig] || ""
-          }
-        }
-        const unresolvedAmbiguous = [...ambiguousOrigs].filter((o) => !effectiveMap[o])
-
-        const handleMappingChange = (origParam: string, instVar: string) => {
-          const newMapping = { ...effectiveMap, [origParam]: instVar }
-          handleConfigUpdate("inputMapping", newMapping)
-        }
-
-        return (
-          <div className="flex flex-col gap-2">
-            <div className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>
-              Input Mapping
-            </div>
-            <p className="text-[10px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-              Map each original input to a connected upstream node.
-            </p>
-            {unresolvedAmbiguous.length > 0 && (
-              <div className="flex items-start gap-1.5 px-2 py-1.5 rounded-md" style={{ background: 'var(--warning-soft)', border: '1px solid var(--warning-border)' }}>
-                <AlertTriangle size={11} style={{ color: 'var(--warning-strong)' }} className="shrink-0 mt-0.5" />
-                <span className="text-[10px] leading-relaxed" style={{ color: 'var(--warning-strong)' }}>
-                  Name matching is ambiguous for {unresolvedAmbiguous.join(", ")} - several upstream
-                  sources fit. Pick each one explicitly; saving and running are blocked until mapped.
-                </span>
-              </div>
-            )}
-            <div className="flex flex-col gap-1.5">
-              {origInputs.map((orig) => (
-                <div key={orig} className="flex items-center gap-2 px-2 py-1.5 rounded-md" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)' }}>
-                  <span className="text-[11px] font-mono shrink-0 min-w-[90px] truncate" style={{ color: 'var(--text-secondary)' }} title={orig}>
-                    {orig}
-                  </span>
-                  <span className="text-[10px] shrink-0" style={{ color: 'var(--text-muted)' }}>→</span>
-                  <select
-                    className="flex-1 min-w-0 text-[11px] font-mono px-1.5 py-1 rounded border bg-transparent appearance-none cursor-pointer truncate"
-                    style={{ color: 'var(--text-primary)', borderColor: 'var(--border)', background: 'var(--bg-panel)' }}
-                    value={effectiveMap[orig] || ""}
-                    onChange={(e) => handleMappingChange(orig, e.target.value)}
-                  >
-                    <option value="">- unmapped -</option>
-                    {instInputs.map((i) => (
-                      <option key={i.name} value={i.name}>{i.label}</option>
-                    ))}
-                  </select>
-                </div>
-              ))}
-            </div>
-          </div>
-        )
-      })()}
-
-      {(() => {
-        const warnings = (node.data._schemaWarnings as { column: string; status: string }[]) || []
-        if (warnings.length === 0) return null
-        return (
-          <div className="flex flex-col gap-1.5 px-3 py-2 rounded-lg" style={{ background: 'var(--warning-soft)', border: '1px solid var(--warning-border)' }}>
-            <div className="flex items-center gap-1.5">
-              <AlertTriangle size={11} style={{ color: 'var(--warning-strong)' }} className="shrink-0" />
-              <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--warning-strong)' }}>
-                Missing columns ({warnings.length})
-              </span>
-            </div>
-            <p className="text-[10px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-              The original node receives columns that are not available at this instance&apos;s position:
-            </p>
-            <div className="flex flex-wrap gap-1 mt-0.5">
-              {warnings.map((w) => (
-                <span key={w.column} className="px-1.5 py-0.5 rounded text-[10px] font-mono" style={{ background: 'var(--warning-soft-emphasis)', color: 'var(--warning)' }}>
-                  {w.column}
-                </span>
-              ))}
-            </div>
-          </div>
-        )
-      })()}
-    </div>
-  )
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────
 
 type ColumnInfo = { name: string; dtype: string }
 
@@ -693,7 +288,6 @@ function clearCachedResultShape(
   }
   return next
 }
-
 
 type NodeRecoveryStatusProps = {
   recoveryId: string | null
@@ -946,15 +540,12 @@ function diagnosticsFor(data: HauteNodeData, diagnostics: PipelineDiagnostic[]):
   return diagnostics.filter((diagnostic) => diagnosticIds.has(diagnostic.diagnostic_id))
 }
 
-/** Recover and Reset rebuild a known ordinary node: never a submodel, its port or an instance. */
+/** Recover and Reset rebuild a known ordinary node: never a submodel or its port. */
 function rebuildsSettings(node: RecoveryNode): boolean {
-  const data = node.data as HauteNodeData
   const nodeType = effectiveNodeType(node)
   return Object.hasOwn(NODE_TYPE_META, nodeType)
     && nodeType !== NODE_TYPES.SUBMODEL
     && nodeType !== NODE_TYPES.SUBMODEL_PORT
-    && !(typeof data.config?.instanceOf === "string")
-    && data._authoredDecorator !== "instance"
 }
 
 /** Reset writes a new node's settings; a new Edge Join has no keys, and cannot be written. */
@@ -962,9 +553,9 @@ function resettable(node: RecoveryNode): boolean {
   return rebuildsSettings(node) && effectiveNodeType(node) !== NODE_TYPES.EDGE_JOIN
 }
 
-/** Wrong connections, which rebuilding the settings cannot mend: only removal helps. */
+/** Diagnostics that rebuilding settings cannot mend: only removal is supported. */
 function connectionsBroken(data: HauteNodeData, diagnostics: PipelineDiagnostic[]): boolean {
-  return diagnosticsFor(data, diagnostics).some((diagnostic) => diagnostic.code === "node_topology_invalid")
+  return diagnosticsFor(data, diagnostics).some((diagnostic) => ["node_topology_invalid", "node_instance_removed"].includes(diagnostic.code))
 }
 
 /** An unavailable submodel's own unavailable nodes: the editor does not open its definition. */
@@ -1723,16 +1314,15 @@ function NodePanelContent({
     )
   }
 
-  const isInstance = !!config.instanceOf
   const nodeType = effectiveNodeType(node)
   const isKnownNodeType = Object.hasOwn(NODE_TYPE_META, nodeType)
-  const showColumnsTab = isKnownNodeType && !isInstance && !NO_COLUMNS_TAB.has(nodeType)
-  const showPolarsTab = isKnownNodeType && !isInstance && POLARS_TAB_TYPES.has(nodeType)
-  const showExplorePanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.EXPLORE
+  const showColumnsTab = isKnownNodeType && !NO_COLUMNS_TAB.has(nodeType)
+  const showPolarsTab = isKnownNodeType && POLARS_TAB_TYPES.has(nodeType)
+  const showExplorePanes = isKnownNodeType && nodeType === NODE_TYPES.EXPLORE
   const activeExplorePane = showExplorePanes ? rememberedExplorePane ?? "code" : "code"
   const algorithm = typeof config.algorithm === "string" ? config.algorithm.toLowerCase() : ""
   const modellingPanes = modellingPanesFor(algorithm)
-  const showModellingPanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.MODELLING && modellingPanes.length > 0
+  const showModellingPanes = isKnownNodeType && nodeType === NODE_TYPES.MODELLING && modellingPanes.length > 0
   const activeModellingPane = showModellingPanes ? resolveModellingPane(algorithm, rememberedModellingPane) : "target"
   const flaggedModellingPanes = showModellingPanes && modellingPaneIssues.nodeId === node.id
     ? modellingPaneIssues.panes
@@ -1745,7 +1335,7 @@ function NodePanelContent({
         ? { kind: "warning" as const, label: `${pane.label} needs attention`, compact: true }
         : undefined,
   }))
-  const showOptimiserPanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.OPTIMISER
+  const showOptimiserPanes = isKnownNodeType && nodeType === NODE_TYPES.OPTIMISER
   const activeOptimiserPane = resolveOptimiserPane(showOptimiserPanes ? rememberedOptimiserPane : undefined)
   const flaggedOptimiserPanes = showOptimiserPanes && optimiserPaneIssues.nodeId === node.id
     ? optimiserPaneIssues.panes
@@ -1762,16 +1352,10 @@ function NodePanelContent({
   const accentColor = NODE_TYPE_META[nodeType as NodeTypeValue]?.color ?? "var(--accent)"
   const configEditor = !isKnownNodeType ? (
     <UnknownNodeTypeDiagnostic nodeType={nodeType} config={config} />
-  ) : isInstance ? (
-    <InstancePanel
-      node={node}
-      config={config}
-      nodeMap={nodeMap}
-      handleConfigUpdate={handleConfigUpdate}
-    />
   ) : (
     <NodeConfigEditor
       nodeType={nodeType as NodeTypeValue}
+      readOnly={nodeType === NODE_TYPES.SUBMODEL && (effectiveReadOnly || documentReadOnly)}
       config={config}
       configWithNodeId={configWithNodeId}
       node={node}
@@ -1877,7 +1461,7 @@ function NodePanelContent({
         />
       )}
 
-      {!isInstance && !showExplorePanes && (
+      {!showExplorePanes && (
         <SchemaWarningBanner
           warnings={schemaWarnings}
           dismissedSignature={dismissedWarningSignature}

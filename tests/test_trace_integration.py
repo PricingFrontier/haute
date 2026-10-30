@@ -1191,40 +1191,6 @@ class TestLongChain:
             assert ids[i] == f"n{i}"
 
 
-class TestInstanceNode:
-    """F.4: Pipeline with instance node
-
-    Instance nodes reference another node's definition. The trace must
-    resolve through the instance to the original node's logic.
-    Why: Instance nodes are used for submodel reuse; trace must handle indirection.
-
-    NOTE: Full instance node support requires the executor's resolve_instance_node
-    infrastructure. This test validates the trace works on a graph where the
-    instance has already been resolved (flattened).
-    """
-
-    def test_trace_resolves_through_instance_equivalent(self, tmp_path):
-        """Tests a pre-resolved instance pattern (two nodes with same logic)."""
-        p = tmp_path / "data.parquet"
-        pl.DataFrame({"x": [1, 2, 3]}).write_parquet(p)
-
-        graph = _g(
-            {
-                "nodes": [
-                    _source_node("src", str(p)),
-                    _transform_node("t", "df = src.with_columns(y=pl.col('x') * 2)"),
-                    # "instance" of t -- same logic applied to same input
-                    _transform_node("t_inst", "df = src.with_columns(y=pl.col('x') * 2)"),
-                ],
-                "edges": [_edge("src", "t"), _edge("src", "t_inst")],
-            }
-        )
-
-        result = execute_trace(graph, row_index=0, target_node_id="t_inst")
-        t_inst_step = _step_by_id(result, "t_inst")
-        assert t_inst_step.output_values["y"] == 2
-
-
 # ===========================================================================
 # G. Submodel Tests
 # ===========================================================================

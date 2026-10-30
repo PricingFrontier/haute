@@ -9,7 +9,7 @@ import {
   resolveCanonicalGraphIdentities,
   resolveEditorGraphIdentities,
 } from "../utils/editorIdentities"
-import { createSubmodel, dissolveSubmodel } from "../api/client"
+import { createNodeInstance, createSubmodel, dissolveSubmodel } from "../api/client"
 import useToastStore from "../stores/useToastStore"
 import useGraphStore from "../stores/useGraphStore"
 import {
@@ -57,6 +57,7 @@ export interface SubmodelNavReturn {
   handleDocumentReload: (reloaded: { nodes: Node[]; edges: Edge[] }) => void
   /** Creates the submodel, or says why not; the dialog shows a refusal inline. */
   handleCreateSubmodel: (name: string, nodeIds: string[]) => Promise<SubmodelCreateResult>
+  handleCreateNodeInstance: (nodeId: string) => Promise<SubmodelCreateResult>
   handleDissolveSubmodel: (instanceId: string) => Promise<void>
 }
 
@@ -178,18 +179,15 @@ export default function useSubmodelNavigation({
     sourceRevisionRef,
   ])
 
-  const handleCreateSubmodel = useCallback(async (
-    name: string,
-    nodeIds: string[],
+  const createSubmodelTransform = useCallback(async (
+    selection: { name: string; nodeIds: string[] } | { nodeId: string },
   ): Promise<SubmodelCreateResult> => {
     if (parentGraphRef.current) {
       return { ok: false, error: "Return to the main pipeline before creating a submodel." }
     }
     try {
       const request = beginTransformRequest()
-      const data = await createSubmodel({
-        name,
-        node_ids: nodeIds,
+      const payload = {
         graph: request.graph,
         preamble: request.preamble,
         source_file: request.sourceFile,
@@ -197,7 +195,10 @@ export default function useSubmodelNavigation({
         pipeline_description: descriptionRef.current,
         base_revision: request.sourceRevision,
         preserved_blocks: request.preservedBlocks,
-      })
+      }
+      const data = "nodeId" in selection
+        ? await createNodeInstance({ ...payload, node_id: selection.nodeId })
+        : await createSubmodel({ ...payload, name: selection.name, node_ids: selection.nodeIds })
       if (transformRequestIsStale(request)) {
         return { ok: false, error: STALE_CREATE_SUBMODEL }
       }
@@ -217,17 +218,32 @@ export default function useSubmodelNavigation({
         if (transformRequestIsStale(request)) {
           return { ok: false, error: STALE_CREATE_SUBMODEL }
         }
-        graphRef.current = { nodes: resolved.nodes, edges: resolved.edges }
+        const committedNodes = "instance_name" in data
+          ? resolved.nodes.map(node => ({ ...node, selected: node.id === data.instance_name }))
+          : resolved.nodes
+        const selected = "instance_name" in data
+          ? committedNodes.find(node => node.id === data.instance_name)
+          : undefined
+        if ("instance_name" in data && !selected) {
+          throw new Error(`Create Instance returned no occurrence ${data.instance_name}. Reload the pipeline and retry.`)
+        }
+        graphRef.current = { nodes: committedNodes, edges: resolved.edges }
         submodelsRef.current = resolved.submodels
         preambleRef.current = nextPreamble
         preservedBlocksRef.current = nextPreservedBlocks
         useGraphStore.getState().setNodesAndEdgesAndSubmodels(
-          resolved.nodes,
+          committedNodes,
           resolved.edges,
           resolved.submodels,
           nextPreamble,
         )
-        addToast("success", `Submodel "${name}" created - save to apply`)
+        if (selected) {
+          setSelectedNode(selected)
+          setLastSelectedId?.(selected.id)
+        }
+        addToast("success", "nodeId" in selection
+          ? "Instance created"
+          : `Submodel "${selection.name}" created - save to apply`)
         setTimeout(() => fitView({ padding: 0.8 }), 100)
       }
       return { ok: true }
@@ -237,7 +253,12 @@ export default function useSubmodelNavigation({
         error: `Create submodel failed: ${err instanceof Error ? err.message : String(err)}`,
       }
     }
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveCanonicalIdentities])
+  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveCanonicalIdentities, setSelectedNode, setLastSelectedId])
+
+  const handleCreateSubmodel = useCallback((name: string, nodeIds: string[]) =>
+    createSubmodelTransform({ name, nodeIds }), [createSubmodelTransform])
+  const handleCreateNodeInstance = useCallback((nodeId: string) =>
+    createSubmodelTransform({ nodeId }), [createSubmodelTransform])
 
   const handleDrillIntoSubmodel = useCallback(async (nodeId: string) => {
     transformRequestSerialRef.current += 1
@@ -476,6 +497,7 @@ export default function useSubmodelNavigation({
     resetToAuthoritativeRoot,
     handleDocumentReload,
     handleCreateSubmodel,
+    handleCreateNodeInstance,
     handleDissolveSubmodel,
   }
 }

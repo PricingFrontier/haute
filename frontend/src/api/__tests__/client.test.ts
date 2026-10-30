@@ -27,6 +27,7 @@ import {
   solveOptimiser,
   listFiles,
   createSubmodel,
+  createNodeInstance,
   dissolveSubmodel,
   loadSubmodel,
   getMlflowDestinations,
@@ -981,6 +982,22 @@ describe("endpoint contracts", () => {
     expect(url).toContain("/api/files?")
     expect(url).toContain("dir=data")
     expect(url).toContain("extensions=.csv%2C.parquet")
+  })
+
+  it("createNodeInstance sends the canonical node, graph and revision and requires its identities", async () => {
+    const payload = { node_id: "calc", graph: dummyGraph, source_file: "pipe.py", base_revision: "revision-parent",
+      preamble: "", pipeline_name: "main", preserved_blocks: [] }
+    const response = { status: "ok", graph: dummyGraph, owner_name: "calc", instance_name: "calc_2",
+      definition_id: "calc", source_revision: "revision-parent" }
+    mockFetch.mockReturnValue(jsonResponse(response))
+    expect(await createNodeInstance(payload)).toEqual(expect.objectContaining(response))
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/submodel/instance")
+    expect(JSON.parse(opts.body)).toEqual(payload)
+    for (const field of ["graph", "owner_name", "instance_name", "definition_id", "source_revision"]) {
+      mockFetch.mockReturnValue(jsonResponse({ ...response, [field]: undefined }))
+      await expect(createNodeInstance(payload)).rejects.toThrow()
+    }
   })
 
   it("createSubmodel posts to /api/submodel/create", async () => {

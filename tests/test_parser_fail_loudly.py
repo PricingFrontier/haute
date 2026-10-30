@@ -8,9 +8,6 @@ Covered items:
     #18 — Silent config-path recovery on Windows
           ``src/haute/_config_builder.py``
 
-    #19 — Instance mapping overrides stale explicit entries
-          ``src/haute/codegen.py:884-887`` + ``src/haute/_types.py:597-642``
-
     #20 — Submodel cross-boundary edge resolution unvalidated
           ``src/haute/codegen.py:1180-1189`` + ``src/haute/_parser_submodels.py:125-133``
 
@@ -48,9 +45,8 @@ from haute._code_extraction import (
 )
 from haute._codegen_builders import _func_name, _gen_transform, render_node_source
 from haute._config_builder import _resolve_node_config
-from haute._graph_utils import build_instance_mapping
 from haute._types import NODE_TYPE_TO_DECORATOR, GraphNode, NodeType, PipelineGraph
-from haute.codegen import _instance_to_code, graph_to_code, graph_to_code_multi
+from haute.codegen import graph_to_code, graph_to_code_multi
 from haute.errors import ConfigError, HauteError, ParseError
 from haute.executor import execute_graph
 from haute.parser import parse_pipeline_source
@@ -243,119 +239,6 @@ class TestItem18ConfigPathFailsLoudly:
                 func_name="broken",
                 explicit_node_type=NodeType.DATA_INPUT,
             )
-
-
-# ===========================================================================
-# Item #19 — Instance mapping overrides stale explicit entries
-# ===========================================================================
-#
-# Current behaviour (``codegen.py:884-887`` + ``_types.py:597-642``): the
-# instance builder consumes ``data.config["inputMapping"]`` verbatim, then
-# fills in any missing ``orig_name`` via substring / positional fallbacks.
-# If the UI-stored ``inputMapping`` contains **stale** keys (the user
-# previously had ``inputMapping={"claims": "raw"}`` but ``raw`` is no longer
-# a real instance input), the stale entry is kept silently and the positional
-# fallback fills the rest — producing wrong wiring.
-#
-# After the fix:
-#   - ``build_instance_mapping`` validates explicit keys against ``orig_names``
-#     and values against ``inst_names``.  Stale keys OR values raise
-#     ``ConfigError`` with the stale key(s) named.
-#   - The caller (``_instance_to_code``) surfaces the same error so users
-#     can see exactly which inputMapping entries are no longer valid.
-# ===========================================================================
-
-
-class TestItem19StaleInstanceMappingRaises:
-    """Stale ``inputMapping`` entries must raise ``ConfigError`` instead of
-    being silently overridden by positional fallbacks."""
-
-    def test_happy_path_valid_explicit_mapping(self) -> None:
-        """Sanity: a fully-valid explicit mapping still produces the expected result."""
-        mapping = build_instance_mapping(
-            orig_names=["claims", "premiums"],
-            inst_names=["claims_v2", "premiums_v2"],
-            explicit={"claims": "claims_v2", "premiums": "premiums_v2"},
-        )
-        assert mapping == {"claims": "claims_v2", "premiums": "premiums_v2"}
-
-    def test_stale_explicit_key_raises_config_error(self) -> None:
-        """An explicit key naming an orig_name that no longer exists is stale.
-
-        Scenario: the user previously had an original parameter ``old_param``.
-        The pipeline was edited so the original is now called ``new_param``.
-        The frontend-stored inputMapping still references ``old_param``.
-        """
-        with pytest.raises(ConfigError):
-            build_instance_mapping(
-                orig_names=["new_param"],
-                inst_names=["something"],
-                explicit={"old_param": "something"},
-            )
-
-    def test_stale_explicit_value_raises_config_error(self) -> None:
-        """An explicit value pointing to an inst_name that is no longer an
-        upstream input (e.g. upstream node deleted) is stale."""
-        with pytest.raises(ConfigError):
-            build_instance_mapping(
-                orig_names=["claims"],
-                inst_names=["actual_upstream"],
-                explicit={"claims": "deleted_upstream"},
-            )
-
-    def test_stale_key_error_names_stale_keys(self) -> None:
-        """The raised ``ConfigError`` must name the stale key(s) so users
-        know exactly which inputMapping entries to fix."""
-        with pytest.raises(ConfigError) as exc_info:
-            build_instance_mapping(
-                orig_names=["fresh"],
-                inst_names=["upstream"],
-                explicit={"stale_key": "upstream", "also_stale": "upstream"},
-            )
-        rendered = str(exc_info.value)
-        ctx_values = [str(v) for v in exc_info.value.context.values()]
-        # At least one of the stale keys must appear either in the
-        # rendered string or in the context.
-        assert "stale_key" in rendered or any("stale_key" in v for v in ctx_values), (
-            f"Stale key not named in error: {rendered!r}, ctx={exc_info.value.context!r}"
-        )
-
-    def test_instance_to_code_surfaces_stale_mapping_error(self) -> None:
-        """The codegen path must propagate the ``ConfigError`` rather than
-        silently calling ``build_instance_mapping`` with broken data."""
-        instance_node = _n(
-            {
-                "id": "inst1",
-                "data": {
-                    "label": "MyInstance",
-                    "nodeType": "polars",
-                    "config": {
-                        "instanceOf": "original_node_id",
-                        # This mapping is stale: "deleted_orig_param" is no
-                        # longer in the original node's parameter list.
-                        "inputMapping": {"deleted_orig_param": "upstream_a"},
-                    },
-                },
-            }
-        )
-        with pytest.raises(ConfigError):
-            _instance_to_code(
-                instance_node,
-                original_func_name="original_node_id",
-                source_names=["upstream_a"],
-                orig_source_names=["current_orig_param"],
-            )
-
-    def test_partial_explicit_no_stale_entries_still_works(self) -> None:
-        """A partial explicit mapping with only fresh keys still fills
-        the gaps via the existing match + positional rules."""
-        mapping = build_instance_mapping(
-            orig_names=["a", "b"],
-            inst_names=["x", "y"],
-            explicit={"a": "x"},
-        )
-        assert mapping["a"] == "x"
-        assert mapping["b"] == "y"  # positional fill for the remaining orig
 
 
 # ===========================================================================

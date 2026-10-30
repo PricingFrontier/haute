@@ -152,46 +152,22 @@ describe("buildNodeDataCacheIdentity for a consumer that reads its input", () =>
 })
 
 describe("buildNodeDataCacheIdentity execution dependencies", () => {
-  const original: SimpleNode = {
-    id: "original_1", type: "polars",
-    data: { label: "Original", description: "", nodeType: "polars", config: { code: "df = df.head(5)" } },
-  }
-  const instance: SimpleNode = {
-    id: "instance_1", type: "polars",
-    data: { label: "Instance", description: "", nodeType: "polars", config: { instanceOf: "original_1" } },
-  }
   const consumer: SimpleNode = {
     id: "banding_1", type: "banding",
     data: { label: "Banding", description: "", nodeType: "banding", config: { factors: [] } },
   }
-  // The original is not upstream of the consumer: only the instance is.
-  const instanceEdges: SimpleEdge[] = [
-    { id: "source-instance", source: "source_1", target: "instance_1" },
-    { id: "instance-banding", source: "instance_1", target: "banding_1" },
-  ]
-
-  function instanceIdentity(originalNode = original) {
-    return buildNodeDataCacheIdentity({
-      node: consumer,
-      allNodes: [source, originalNode, instance, consumer],
-      edges: instanceEdges,
-      preamble: "",
+  it("changes when an upstream occurrence's shared definition changes", () => {
+    const owner: SimpleNode = { id: "owner", data: { label: "owner", description: "", nodeType: "submodel", config: { definitionId: "shared", alias: "owner" } } }
+    const copy: SimpleNode = { id: "copy", data: { label: "copy", description: "", nodeType: "submodel", config: { definitionId: "shared", alias: "copy", instanceOf: "owner" } } }
+    const identityFor = (code: string) => buildNodeDataCacheIdentity({
+      node: consumer, allNodes: [owner, copy, consumer],
+      edges: [{ id: "input", source: "copy", target: consumer.id, sourceHandle: "out__result" }],
+      submodels: { shared: { definitionId: "shared", file: "modules/shared.py", inputPorts: [],
+        outputPorts: [{ name: "result", source: { nodeId: "transform", handleId: null } }],
+        graph: { nodes: [{ id: "transform", data: { label: "transform", nodeType: "polars", config: { code } } }], edges: [] },
+      } },
     })
-  }
-
-  it("covers the configuration an instance actually executes with", () => {
-    const identityNodes = instanceIdentity().nodes as { id: string }[]
-
-    expect(identityNodes.map((entry) => entry.id)).toContain("original_1")
-  })
-
-  it("changes when the original of an upstream instance changes", () => {
-    const edited: SimpleNode = {
-      ...original,
-      data: { ...original.data, config: { code: "df = df.head(50)" } },
-    }
-
-    expect(JSON.stringify(instanceIdentity(edited))).not.toBe(JSON.stringify(instanceIdentity()))
+    expect(identityFor('df = pl.LazyFrame({"x": [1]})')).not.toEqual(identityFor('df = pl.LazyFrame({"x": [2]})'))
   })
 
   it("changes when an edge moves to another port of the same producer", () => {

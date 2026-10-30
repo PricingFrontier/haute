@@ -9,6 +9,11 @@ You have an object on disk  - a pickled or joblib model from a colleague, or a J
 
 A Load File node takes the data to score as its first input and outputs that data with whatever your steps or code add. Your steps and code see the first input as `df`; any further inputs are available by their names, and **Join another input** and **Append inputs** steps can use them. With no steps and no code, the node passes its first input through unchanged. The panel has three tabs: **CONFIG**, **TRANSFORM** and **COLUMNS**.
 
+Inside a submodel, code keeps the input names it was written against when another
+frame is bound to a public input. This applies to the owner and every instance,
+in previews and in the deployed bundle. **Instance** on a Load File node creates
+a shared one-node submodel; see [Reusing a node](instances.md).
+
 ## The CONFIG tab
 
 The **INPUT** chips at the top name the node's connections; the × on a chip removes that connection. Below them:

@@ -839,15 +839,6 @@ class TestDecoratorAliases:
 
         assert reg.nodes[0].config["_node_type"] == NodeType.OPTIMISER_APPLY
 
-    def test_instance(self):
-        reg = NodeRegistry("test")
-
-        @reg.instance
-        def inst(df: pl.DataFrame) -> pl.DataFrame:
-            return df
-
-        assert reg.nodes[0].config["_node_type"] == NodeType.POLARS
-
 
 # ---------------------------------------------------------------------------
 # Pipeline edge cases
@@ -1396,58 +1387,6 @@ class TestApiInputDecoratorMarksSeed:
             config={"_node_type": NodeType.API_INPUT},
         )
         assert n.is_deploy_input is True
-
-
-# ---------------------------------------------------------------------------
-# Instance references cannot be silently ignored (F516)
-# ---------------------------------------------------------------------------
-
-
-class TestInstanceReferencesFailLoud:
-    def test_instance_of_reference_raises_in_standalone_run(self):
-        p = Pipeline("instance_run")
-
-        @p.data_input
-        def src() -> pl.DataFrame:
-            return pl.DataFrame({"x": [1]})
-
-        @p.instance(instanceOf="some_other_node")
-        def inst(df: pl.DataFrame) -> pl.DataFrame:
-            return df
-
-        p.connect("src", "inst")
-        with pytest.raises(ExecutionError, match="instanceOf.*inputMapping|cannot resolve"):
-            p.run(source="batch")
-
-    def test_instance_decorator_without_reference_values_still_raises(self):
-        p = Pipeline("instance_marker")
-
-        @p.api_input
-        def src() -> pl.DataFrame:
-            return pl.DataFrame({"x": [1]})
-
-        @p.instance
-        def inst(df: pl.DataFrame) -> pl.DataFrame:
-            return df
-
-        p.connect("src", "inst")
-
-        with pytest.raises(ExecutionError, match="instance"):
-            p.run(source="batch")
-        with pytest.raises(ExecutionError, match="instance"):
-            p.score(pl.DataFrame({"x": [2]}))
-
-    def test_zero_parameter_instance_raises_in_run_and_score(self):
-        p = Pipeline("zero_parameter_instance")
-
-        @p.instance
-        def inst() -> pl.DataFrame:
-            return pl.DataFrame({"stub": [1]})
-
-        with pytest.raises(ExecutionError, match="instance"):
-            p.run(source="batch")
-        with pytest.raises(ExecutionError, match="instance"):
-            p.score(pl.DataFrame({"x": [2]}))
 
 
 # ---------------------------------------------------------------------------

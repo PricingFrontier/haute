@@ -164,7 +164,7 @@ The preview shows your input rows with a new `predicted_frequency` column.
 
 ## Instances
 
-Instances let you reuse the same scoring configuration with different inputs  - for example, scoring the same model against both training and validation data. See [Instances](instances.md) for full details.
+Instances let you reuse the same scoring configuration with different inputs  - for example, scoring the same model against both training and validation data. See [Reusing a node](instances.md) for full details.
 
 ??? note "In the pipeline file"
     The node's settings are stored in a JSON sidecar, `config/model_scoring/<node name>.json`, which the pipeline's `.py` file names in the node's decorator: `@pipeline.model_score(config="config/model_scoring/<node name>.json")`. When the node has **TRANSFORM** steps, their generated code is the body of the node's function, which receives the scored frame as `df`.

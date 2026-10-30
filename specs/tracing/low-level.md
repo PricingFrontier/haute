@@ -133,11 +133,8 @@
   mislabelled.
 - **`_effective_node_code(config, node_map)`** (`_trace_enrichment.py`) — the
   single code-selection rule used for the current step, recursive input-source
-  enrichment, and upstream-creator enrichment. Ordinary nodes use their own
-  code. An `instanceOf` node uses the referenced original's code when the
-  reference resolves, except that instance-local code containing
-  `.with_columns(` is authoritative. A missing reference leaves the local code
-  unchanged; an existing original with no code resolves to the empty string.
+  enrichment, and upstream-creator enrichment: every node uses its own code, a
+  submodel instance's expanded nodes carrying their definition's.
 
 ## Control flow
 
@@ -601,8 +598,7 @@ its public facade.
 
 1. Resolves the node's code through `_effective_node_code`; the same helper is
    used when deriving recursive input sources and when borrowing an upstream
-   creator's expression, so all three enrichment paths follow the identical
-   `instanceOf`/`.with_columns(` rule.
+   creator's expression, so all three enrichment paths read code the same way.
 2. Parses/evaluates the expression for `column` when the column is
    added/modified at this step or its code assigns it (`assigns_column` in
    `_expression_parser.py`: `assignment_phases` or `_locate_defining_expression`
@@ -912,11 +908,6 @@ snapshot deterministically.
   such parent whose edge's frame has it, and to every such parent when that frame is
   unknown. An unresolved node that the walk reaches depends on every input column, so
   every attempted ancestor above it stays relevant.
-- **`instanceOf` code resolution goes through `_effective_node_code`**
-  (`enrich_steps`, `input_source_entry`, the lineage's `_Derivation`) — a cloned
-  node instance whose own code lacks `.with_columns(` borrows the *original*
-  node's code so the step that structurally created a column gets the correct
-  expression, not a blank one.
 - **The trace cache fingerprint includes the canonical dataframe graph input fingerprint** so
   an out-of-band re-export of a file-backed `dataInput`/`externalFile`, a
   model-artifact signature change, or a rebuilt `apiInput` table snapshot

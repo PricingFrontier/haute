@@ -707,7 +707,6 @@ _UNIVERSAL_CONFIG_FIELD_CLASSIFICATIONS: Mapping[str, CacheConfigFieldClassifica
         {
             field_name: CacheConfigFieldClassification(CacheInputClass.NODE_CONFIG)
             for field_name in (
-                "instanceOf",
                 "inputMapping",
                 "selected_columns",
                 "column_renames",
@@ -965,7 +964,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
         ),
         NodeType.CONSTANT: _classify_config_fields(node_config=("values",)),
         NodeType.SUBMODEL: _classify_config_fields(
-            node_config=("alias", "definitionId"),
+            node_config=("alias", "definitionId", "instanceOf"),
         ),
         NodeType.SUBMODEL_PORT: _classify_config_fields(include_universal=False),
     }

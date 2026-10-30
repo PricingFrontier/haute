@@ -43,8 +43,7 @@ not an inventory of all active work; see [Not scheduled](#not-scheduled).
 | B | 8 | Worker primitive | `ROAD-WORKER-05` | — | L | One worker primitive and one failure family, mapped once to HTTP and job states, after the estimate has moved and services raise domain errors. |
 | C | 9 | Project context | `PCFG-R04` | 8 | L | The worker request format changes once, after the primitive. Two or more PRs: the context, accessor, fixture and ratchet with the first modules, then the remaining `chdir` migration and the deletion of the fallbacks. |
 | D | 10 | Generated contracts | `API-R03`: one shared execution-metrics validator | 8 | M | The node-data, cache, input-cache and output groups are generated (29 October 2026, ahead of this round); a job failure record that round 8 changes is one model edit and a regeneration. |
-| D | 11 | Reuse | `SUB-R01` | — | L | Node-level instances go before the editor-state move and the typed configs would have to model them. Its first step proves the one-node submodel form and stops if an instance use is not covered. |
-| E | 12 | Editor state | `PCFG-R08`, `CACHE-S25` | 11 | M | `CACHE-S25` keys caches on the whole config once editor state has left it. |
+| E | 12 | Editor state | `PCFG-R08`, `CACHE-S25` | — | M | `CACHE-S25` keys caches on the whole config once editor state has left it. |
 | E | 13 | Typed node configs | `PCFG-R07`, then `API-R03`: pipeline load and save, preview, trace, submodel, recovery and repair, and JSON-cache inference | 10, 12 | L | These `API-R03` groups carry node configs or the editor document, so they follow the typed models. The existing Model Scoring file source supplies its config seam; round 21 extends the same models with external-family selection and pyfunc trust. Completes `API-R03`. |
 | E | 14 | Node specification and results store | `PCFG-R09`, `FSH-R03` | 13 | M | Both build on the typed models and the complete generated contract. |
 | F | 15 | Cache measurements | `CACHE-S17`, `CACHE-S22`, `CACHE-S18`, `CACHE-S13` | 12 | M | Each runs its measurement and builds only past its gate, once the planner and config changes above have landed. |
@@ -60,8 +59,6 @@ Sizes are rough: M is a day or so, L several days or more than one PR.
 These packages change what a user sees or relies on. Each was decided on the
 date its entry records; raise an objection before its round starts.
 
-- `SUB-R01`: `@pipeline.instance` and `instanceOf` are rejected; **Create
-  Instance** makes a one-node submodel with a second occurrence.
 - `MSC-06`: Model Scoring reads XGBoost and LightGBM files saved under their
   libraries' generic suffixes (`.json`, `.txt`), and a contract can declare an
   XGBoost model's missing-value sentinel.

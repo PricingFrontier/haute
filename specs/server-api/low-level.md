@@ -186,13 +186,21 @@ execution/preview/submodel/repair fence and carries a sorted unique
 `node_id`, `label`, canonical `node_type`, nullable submodel alias, and at most
 1,024 unique bounded source handles. Validators enforce node-type-specific alias
 and handle rules; API-input handles must already be non-keyword ASCII identifiers,
-while submodel outputs use `out__<port_id>`. `EditorIdentitiesResponse` returns one exact-order identity per
+while submodel outputs use `out__<port_id>`. A `submodel` node also carries `instance_of`, its
+owner's name (absent on the owner), and lists in `source_handles` every public output its
+definition declares, since an instance's output names depend on both (see
+[submodels](../submodels/low-level.md)); with a naming context, a node whose `instance_of` or
+handles differ from the context's is HTTP 422. `EditorIdentitiesResponse` returns one exact-order identity per
 request node with non-empty function/default/handle identities and an optional
 config reference. The request's optional `graph` is the editor document's naming context (a
 `PipelineGraph`, as save receives it, its preserved blocks included). The request's nodes
 are applied to it by id through `_editor_identities.name_candidates`, each in the graph its
 optional `submodel` names (the root without one; a definition the context lacks is HTTP 422),
-renamed there when present and added otherwise, in request order. With `allocate` (which
+renamed there when present and added otherwise, in request order. A new submodel
+instance carries the definition resolved from its `instance_of` owner into
+that insertion, so its generated clone names
+participate in allocation. Creation refuses a missing or non-owner reference,
+missing definition or mismatched output handles with HTTP 422. With `allocate` (which
 requires `graph`) each takes the first name the naming rule allows, trying its label and
 then `<label> 2`, `<label> 3`, … (an occurrence its alias, then `<alias>_2`, …), counting
 the names earlier nodes took; without it each keeps its name and gets as `collision` the
@@ -485,8 +493,8 @@ milestone, restore or switch never meets a half-written save
    graph), and that no Quote Input table is labelled like another node's sanitized name. A
    submodel boundary cannot hide a
    second singleton, and creating another occurrence of a definition that contains one counts
-   as another executable singleton. A node whose `instanceOf` names a `liveSwitch` is refused
-   (a switch routes by its own input names, which an instance's inputs do not share).
+   as another executable singleton. A node other than a submodel occurrence carrying
+   `instanceOf` is refused.
 2. Resolve and validate `source_file` against the active pipeline root, and load
    the file's editor document and its strict graph, once each: they serve every
    later step, and only the reparse of what was written (step 10) loads them again.

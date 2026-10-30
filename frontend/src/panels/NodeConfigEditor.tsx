@@ -226,7 +226,7 @@ export function NodeConfigEditor({
       return <EdgeJoinEditor config={config} onUpdate={onUpdateConfig} nodeId={node.id} accentColor={accentColor} onDeleteInput={onDeleteEdge} onSwapInputs={onSwapEdgeJoinInputs ? () => onSwapEdgeJoinInputs(node.id) : undefined} />
 
     case NODE_TYPES.SUBMODEL:
-      return <SubmodelEditor config={config} accentColor={accentColor} />
+      return <SubmodelEditor nodeId={node.id} config={config} accentColor={accentColor} readOnly={readOnly} />
 
     case NODE_TYPES.SUBMODEL_PORT:
       return (

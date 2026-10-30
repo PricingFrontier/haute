@@ -431,9 +431,10 @@ Tests live under `tests/`, split by concern:
   occurrence, no dangling edge, and every sink computes the generated source rows. The
   `hypothesis.find` negative control rewrites one legal connection into the private form and
   shows the acceptance flip naming exactly that connection. Consumers of an occurrence
-  output name their parameter after the sanitised public output port name, as
-  codegen emits; a parameter named after the occurrence alias is rejected unless
-  explicitly bound through `inputMapping`.
+  output name their parameter after the output's name (the sanitised public output
+  port name from an owner; from an instance, the instance's name, or
+  `<instance>_<port>` when the definition has several outputs), as codegen emits; any other parameter name is rejected
+  unless explicitly bound through `inputMapping`.
 - **`test_parser_conservation.py`** — regression tests asserting that parsing (and the implicit
   regeneration path) conserves source structure: boilerplate, docstrings, parameter buckets, node
   function shape, alias awareness, implicit-edge dedup, exact node/edge/handle/submodel identity,
@@ -451,8 +452,8 @@ Tests live under `tests/`, split by concern:
 - **`test_parser_project_layout.py`**, **`test_parser_internals.py`**, and
   **`test_parser_sanitize_contracts.py`** — project-root/base-directory handling, internal
   parser invariants, and sanitisation contracts.
-- **`test_parser_fail_loudly.py`** — a fail-loud sweep pinning config-path failures, stale
-  instance mapping, submodel cross-boundary handle validation, extend-path staleness, and empty
+- **`test_parser_fail_loudly.py`** — a fail-loud sweep pinning config-path failures,
+  submodel cross-boundary handle validation, extend-path staleness, and empty
   Polars code to *raise* rather than silently degrade.
 - **`test_expression_parser.py`** (~1480 lines) — the primary TDD suite: arithmetic/unary
   operator precedence, `when`/`then`/`otherwise`, horizontal functions, `cast`/`fill_null`/

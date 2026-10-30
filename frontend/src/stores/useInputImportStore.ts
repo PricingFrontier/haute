@@ -4,7 +4,6 @@ import type { Node } from "@xyflow/react"
 
 import { apiErrorMessage } from "../api/errors"
 import { inputSnapshotSource } from "../utils/inputSnapshotSource"
-import { instanceOriginal } from "../utils/instanceOriginal"
 import useDocumentStatusStore, {
   captureDocumentExecutionFence,
   isDocumentExecutionFenceCurrent,
@@ -36,8 +35,7 @@ function currentSourceKey(nodeId: string): string | null {
   const nodes = useGraphStore.getState().nodes
   const node = nodes.find((candidate) => candidate.id === nodeId)
   if (!node) return null
-  const effective = instanceOriginal(node, new Map(nodes.map((candidate) => [candidate.id, candidate])))
-  const source = inputSnapshotSource(effective)
+  const source = inputSnapshotSource(node)
   return source ? JSON.stringify(source) : null
 }
 
@@ -50,8 +48,7 @@ function setRun(nodeId: string, run: InputImportRun | null): void {
 }
 
 /**
- * Re-read *input*'s source (the node's own input, or its original's for an
- * instance) and publish it as a new snapshot, on behalf of *nodeId*.
+ * Re-read *input*'s source and publish it as a new snapshot, on behalf of *nodeId*.
  *
  * Every outcome raises the node-data epoch, since a build can publish before a
  * stop or a failure reaches it. *onImported* runs only after a completed,
@@ -62,7 +59,7 @@ function setRun(nodeId: string, run: InputImportRun | null): void {
 const RETIRED_CANCEL_ATTEMPTS = 5
 const RETIRED_CANCEL_INTERVAL_MS = 2_000
 
-export function startInputImport(nodeId: string, input: Node, onImported: (nodeId: string) => void): void {
+export function startInputImport(nodeId: string, input: Pick<Node, "data">, onImported: (nodeId: string) => void): void {
   if (useInputImportStore.getState().runs[nodeId]) return
   const source = inputSnapshotSource(input)
   if (!source) return

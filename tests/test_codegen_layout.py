@@ -2,7 +2,7 @@
 
 ``specs/codegen/low-level.md`` (Testing) describes what this module pins: a
 corpus graph covering every configured node type as a declaration and every
-code-accepting type as a hook, plus a transform, an instance and submodel
+code-accepting type as a hook, plus a transform and submodel
 definition files, generates modules that read like a formatted, hand-written
 file. They are a fixed point of ``ruff format`` at its defaults, they lint
 clean, they carry no generated scaffolding, and they are laid out and ordered
@@ -287,7 +287,7 @@ def _occurrence(node_id: str, alias: str, definition_id: str, **extra: str) -> G
 def _corpus_graph() -> PipelineGraph:
     """Every configured type as a declaration and every code-accepting type as a hook.
 
-    Also a transform, an instance, two submodel definitions (one with a
+    Also a transform, two submodel definitions (one with a
     copy occurrence), sources consumed once, twice or never, and labels long
     enough that decorators, signatures, registrations and connect calls break
     in each of the layouts ruff uses. A lone parameter or argument that
@@ -379,15 +379,6 @@ def _corpus_graph() -> PipelineGraph:
         _node("keyed", "Keyed Quote", NodeType.WORKBENCH_INPUT, _WORKBENCH_INPUT),
         _node("filled", "Workbench Response", NodeType.WORKBENCH_OUTPUT, _WORKBENCH_OUTPUT),
         _node("sink", "Results File", NodeType.DATA_OUTPUT, _DATA_OUTPUT),
-        _node(
-            "inst",
-            "Prepared Frame Copy",
-            NodeType.POLARS,
-            {
-                "instanceOf": "prep",
-                "inputMapping": {"Live_Or_Batch": "Policy_Claims", "Base_Rates": "Base_Rates"},
-            },
-        ),
         _occurrence("occ", "territory_rating", "territory_rating"),
         _occurrence(
             "occ-copy", "territory_rating_second_copy", "territory_rating", instanceOf="occ"
@@ -423,8 +414,6 @@ def _corpus_graph() -> PipelineGraph:
         _edge("apply", "filled", target_handle="pricing_output"),
         _edge("apply", "sink"),
         _edge("occ", "sink", source_handle="out__rated"),
-        _edge("join", "inst"),
-        _edge("rates", "inst"),
         _edge("prep", "occ", target_handle="in__records"),
         _edge("join", "occ-copy", target_handle="in__records"),
     ]
@@ -659,14 +648,14 @@ def test_corpus_covers_every_declaration_and_hook_type(corpus: Corpus) -> None:
         for function in _functions(text):
             decorator = _decorator_name(function)
             decorators.add(decorator)
-            if decorator in {"instance", "polars"}:
+            if decorator == "polars":
                 continue
             kind = declarations if _is_declaration(function) else hooks
             kind.add(DECORATOR_TO_NODE_TYPE[decorator])
 
     assert declarations == CONFIGURED_TYPES
     assert hooks == CODE_NODE_TYPES
-    assert {"instance", "polars"} <= decorators
+    assert "polars" in decorators
     assert sorted(corpus.files) == ["main.py", _SHARED_FILE, _TERRITORY_FILE]
 
 
@@ -745,13 +734,6 @@ BROKEN_CALLS = {
         "    },\n"
         ")\n"
         "def Frequency_Score(Area_Rating): ...\n"
-    ),
-    "decorator, instance mapping": (
-        "@pipeline.instance(\n"
-        '    of="Prepared_Frame",\n'
-        '    inputMapping={"Live_Or_Batch": "Policy_Claims", "Base_Rates": "Base_Rates"},\n'
-        ")\n"
-        "def Prepared_Frame_Copy(Policy_Claims, Base_Rates): ...\n"
     ),
     "signature, parameters on an indented line": (
         "def Prepared_Frame(\n"
@@ -1007,9 +989,7 @@ def test_declarations_have_no_annotations_and_the_description_is_the_whole_body(
         lines = text.splitlines()
         for function in _functions(text):
             node = module.node_named(function.name)
-            declared = node.data.config.get("instanceOf") or (
-                node.data.nodeType in CONFIGURED_TYPES and not node.data.config.get("code")
-            )
+            declared = node.data.nodeType in CONFIGURED_TYPES and not node.data.config.get("code")
             if not declared:
                 continue
             params = _parameters(function)
@@ -1045,7 +1025,7 @@ def test_hooks_and_transforms_hold_only_the_authored_code(corpus: Corpus) -> Non
     for path, module in corpus.modules.items():
         for function in _functions(corpus.files[path]):
             node = module.node_named(function.name)
-            if node.data.config.get("instanceOf") or not node.data.config.get("code"):
+            if not node.data.config.get("code"):
                 continue
             inputs = module.inputs.get(node.id, [])
             params = _parameters(function)
@@ -1333,22 +1313,13 @@ def test_each_input_less_source_is_emitted_directly_before_its_first_consumer() 
 
 
 def test_corpus_modules_follow_the_emission_order(corpus: Corpus) -> None:
-    """Sources move down to their first consumer; everything else keeps topological order.
-
-    Instances come last, in graph order.
-    """
+    """Sources move down to their first consumer; everything else keeps topological order."""
     for path, module in corpus.modules.items():
         names = {node.id: _sanitize_func_name(node.data.label) for node in module.nodes}
-        instances = [node.id for node in module.nodes if node.data.config.get("instanceOf")]
-        topological = [
-            node_id
-            for node_id in topo_sort_ids([node.id for node in module.nodes], module.edges)
-            if node_id not in instances
-        ]
+        topological = topo_sort_ids([node.id for node in module.nodes], module.edges)
         parents: dict[str, list[str]] = {}
         for edge in module.edges:
-            if edge.source not in instances and edge.target not in instances:
-                parents.setdefault(edge.target, []).append(edge.source)
+            parents.setdefault(edge.target, []).append(edge.source)
         consumed = {source for sources in parents.values() for source in sources}
         moved = {
             node_id for node_id in topological if node_id not in parents and node_id in consumed
@@ -1357,9 +1328,8 @@ def test_corpus_modules_follow_the_emission_order(corpus: Corpus) -> None:
             next(n for n, name in names.items() if name == function)
             for function in _function_order(corpus.files[path])
         ]
-        originals, tail = emitted[: len(topological)], emitted[len(topological) :]
-
-        assert tail == instances, path
+        assert set(emitted) == set(topological), path
+        originals = emitted
         assert [n for n in originals if n not in moved] == [
             n for n in topological if n not in moved
         ], path

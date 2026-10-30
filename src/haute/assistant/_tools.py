@@ -820,7 +820,7 @@ def _node_inputs(graph: PipelineGraph, flat: PipelineGraph, node: str) -> tuple[
         inputs.append(
             _NodeInput(
                 name=(
-                    edge_input_name(edge, source_node)
+                    edge_input_name(edge, source_node, submodels=graph.submodels)
                     if occurrence is None
                     else bound_input_port(occurrence, edge).name
                 ),
@@ -1220,7 +1220,13 @@ def _output_columns(output: object) -> tuple[tuple[str | None, tuple[str, ...]],
     return ((None, tuple(_frame_column_names(output, None))),)
 
 
-def _brief_port(node: GraphNode, name: str, source_handle: str) -> BriefPort:
+def _brief_port(
+    node: GraphNode,
+    name: str,
+    source_handle: str,
+    *,
+    source_handles: Sequence[str] | None = None,
+) -> BriefPort:
     """An output port of *node*, with the handle an edge selects it by and the
     input name that edge gives, derived as the executor derives it."""
 
@@ -1228,7 +1234,13 @@ def _brief_port(node: GraphNode, name: str, source_handle: str) -> BriefPort:
         name,
         source_handle,
         executable_input_name(
-            node_type=node.data.nodeType, label=node.data.label, source_handle=source_handle
+            node_type=node.data.nodeType,
+            label=node.data.label,
+            source_handle=source_handle,
+            instance_of=node.data.config.get("instanceOf")
+            if node.data.nodeType == NodeType.SUBMODEL
+            else None,
+            source_handles=source_handles,
         ),
     )
 
@@ -1303,7 +1315,12 @@ def _brief_nodes(graph: PipelineGraph, flat: PipelineGraph) -> tuple[BriefNode, 
             if output is None:
                 return None
             # A parent edge selects a public output port by its `out__<name>` handle.
-            port = _brief_port(occurrence.node, name, f"out__{name}")
+            port = _brief_port(
+                occurrence.node,
+                name,
+                f"out__{name}",
+                source_handles=[f"out__{port.name}" for port in occurrence.definition.output_ports],
+            )
             frames.append(BriefFrame(port, tuple(_frame_column_names(output, handle))))
         return tuple(frames)
 

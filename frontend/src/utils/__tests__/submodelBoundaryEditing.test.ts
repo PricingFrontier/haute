@@ -12,6 +12,7 @@ import {
   type SubmodelBoundaryEditState,
 } from "../submodelBoundaryEditing"
 import { SUBMODEL_INPUT_HANDLE } from "../flowHandles"
+import { chooseInstanceInput, retargetSubmodelInput } from "../canonicalSubmodelBoundaryEditing"
 function state(bound = false): SubmodelBoundaryEditState {
   const children = ["prepare", "score"].map((id) => makeNode(id, "polars", {
     data: {
@@ -86,6 +87,36 @@ function state(bound = false): SubmodelBoundaryEditState {
 }
 const boundary = (nodes: Node[], direction: "input" | "output") => nodes.find((node) => node.type === "submodelPort" && (node.data as SubmodelPortData).portDirection === direction)!
 describe("submodelBoundaryEditing", () => {
+  it("chooses an instance input by name, sole unbound input, or explicit pick, never position", () => {
+    const definition = state().submodels.definition_pricing as SubmodelDefinition
+    const ports = ["policy", "rates", "claims"].map((name) => ({ name, targets: [] }))
+    const target = makeNode("copy", "submodel", { data: { label: "copy", config: { definitionId: definition.definitionId, alias: "copy", instanceOf: "pricing" } } })
+    const incoming = (name: string): PipelineEdge => ({ id: name, source: name, target: "copy", targetHandle: `in__${name}` })
+    expect(chooseInstanceInput(target, ports, [], "rates")).toEqual({ name: "rates" })
+    expect(() => chooseInstanceInput(target, ports, [incoming("rates")], "rates")).toThrow(/rates.*already bound/)
+    expect(chooseInstanceInput(target, ports, [incoming("rates"), incoming("claims")], "other")).toEqual({ name: "policy" })
+    expect(chooseInstanceInput(target, ports, [incoming("policy"), incoming("rates")], "other")).toEqual({ name: "claims" })
+    expect(chooseInstanceInput(target, ports, [incoming("rates")], "other")).toEqual({ choices: ["policy", "claims"] })
+    expect(chooseInstanceInput(target, ports, [incoming("rates")], "other", "claims")).toEqual({ name: "claims" })
+    expect(() => chooseInstanceInput(target, ports, ports.map((p) => incoming(p.name)), "other")).toThrow("Every input of copy is connected")
+    expect(() => chooseInstanceInput(target, ports, [incoming("rates")], "other", "rates")).toThrow(/rates/)
+  })
+
+  it("retargets an occurrence connection and unbinds the displaced edge without removing its declaration", () => {
+    const current = state()
+    const definition = current.submodels.definition_pricing as SubmodelDefinition
+    definition.inputPorts.push({ name: "rates", targets: [] })
+    const root = { nodes: current.parentNodes, submodels: current.submodels, edges: [
+      { id: "policy", source: "a", target: "pricing_2", targetHandle: "in__policy" },
+      { id: "rates", source: "b", target: "pricing_2", targetHandle: "in__rates" },
+    ] }
+    const moved = retargetSubmodelInput(root, "pricing_2", "policy", "rates")
+    expect(moved.edges).toEqual([{ ...root.edges[1], targetHandle: "in__policy" }])
+    expect(moved.submodels).toBe(root.submodels)
+    expect(root.edges).toHaveLength(2)
+    expect(retargetSubmodelInput(moved, "pricing_2", "policy", null).edges).toEqual([])
+    expect(() => retargetSubmodelInput(root, "pricing_2", "missing", "rates")).toThrow(/missing/)
+  })
   it("creates the first named public input from a parent connection", () => {
     const current = state()
     const definition = current.submodels.definition_pricing as SubmodelDefinition
@@ -231,7 +262,7 @@ describe("submodelBoundaryEditing", () => {
     })])
   })
 
-  it("rejects new names on copies and duplicate occurrence bindings", () => {
+  it("binds differently named frames to the sole unbound copy input and rejects duplicates", () => {
     const current = state()
     const unseenSource = makeNode("unseen", "polars", {
       data: { _defaultInputName: "unseen_frame" },
@@ -260,12 +291,12 @@ describe("submodelBoundaryEditing", () => {
       }] as PipelineEdge[],
       submodels: current.submodels,
     }
-    expect(() => connectSubmodelInputFromParentConnection(root, {
+    expect(connectSubmodelInputFromParentConnection(root, {
       source: unseenSource.id,
       sourceHandle: null,
       target: "pricing_2",
       targetHandle: SUBMODEL_INPUT_HANDLE,
-    })).toThrow(/owner/i)
+    })?.edges.at(-1)).toMatchObject({ target: "pricing_2", targetHandle: "in__policy" })
     expect(() => connectSubmodelInputFromParentConnection(root, {
       source: matchingSource.id,
       sourceHandle: null,

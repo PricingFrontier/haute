@@ -20,7 +20,6 @@ import PathPickerField from "./shared/PathPickerField"
 type Direction = "input" | "output"
 
 const INPUT_COMMON_KEYS = new Set([
-  "instanceOf",
   "inputMapping",
   "selected_columns",
   "column_renames",
@@ -33,7 +32,6 @@ const INPUT_COMMON_KEYS = new Set([
 ])
 
 const OUTPUT_COMMON_KEYS = new Set([
-  "instanceOf",
   "inputMapping",
   "selected_columns",
   "column_renames",

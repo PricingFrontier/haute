@@ -3,6 +3,7 @@ import {
   isSubmodelDefinition,
   isSubmodelInstanceConfig,
   type PipelineEdge,
+  type ParentOutputState,
   type SubmodelBoundaryEdgeData,
   type SubmodelDefinition,
   type SubmodelPortData,
@@ -23,6 +24,48 @@ export interface SubmodelViewGraphInput {
 export interface SubmodelViewGraph {
   nodes: Node[]
   edges: Edge[]
+}
+
+/** The parent fields an output-name change can edit, retained with boundary history. */
+export function captureParentOutputState(
+  definitionId: string,
+  nodes: Node[],
+  edges: PipelineEdge[],
+): ParentOutputState {
+  const occurrences = new Set(nodes.filter((node) => (
+    node.data.nodeType === NODE_TYPES.SUBMODEL
+    && isSubmodelInstanceConfig(node.data.config)
+    && node.data.config.definitionId === definitionId
+  )).map((node) => node.id))
+  const outgoing = edges.filter((edge) => occurrences.has(edge.source))
+  const consumers = new Set(outgoing.map((edge) => edge.target))
+  return {
+    nodes: nodes.flatMap<ParentOutputState["nodes"][number]>((node) => {
+      if (occurrences.has(node.id)) {
+        return [{ id: node.id, data: { _sourceHandleInputNames: node.data._sourceHandleInputNames } }]
+      }
+      if (consumers.has(node.id)) {
+        return [{ id: node.id, data: { config: node.data.config } }]
+      }
+      return []
+    }),
+    edges: outgoing.map((edge) => ({ id: edge.id, inputName: edge.data?._inputName })),
+  }
+}
+
+export function restoreParentOutputState(
+  snapshot: ParentOutputState,
+  nodes: Node[],
+  edges: PipelineEdge[],
+): { nodes: Node[]; edges: PipelineEdge[] } {
+  const savedNodes = new Map(snapshot.nodes.map((node) => [node.id, node.data]))
+  const savedEdges = new Map(snapshot.edges.map((edge) => [edge.id, edge.inputName]))
+  return {
+    nodes: nodes.map((node) => savedNodes.has(node.id)
+      ? { ...node, data: { ...node.data, ...savedNodes.get(node.id) } } : node),
+    edges: edges.map((edge) => savedEdges.has(edge.id)
+      ? { ...edge, data: { ...edge.data, _inputName: savedEdges.get(edge.id) } } : edge),
+  }
 }
 
 function buildCanonicalSubmodelViewGraph(
@@ -182,6 +225,8 @@ function buildCanonicalSubmodelViewGraph(
         outputExternalIds,
         instanceId,
         definition.definitionId,
+        [],
+        captureParentOutputState(definition.definitionId, parentNodes, parentEdges as PipelineEdge[]),
       ),
     ],
     edges: normalizeEdges([...childEdges, ...syntheticEdges]),
@@ -199,6 +244,7 @@ function boundaryNode(
   instanceId: string,
   definitionId: string,
   parentEdgeOrder: string[] = [],
+  parentOutputState?: ParentOutputState,
 ): Node<BoundaryData> {
   return {
     id,
@@ -216,7 +262,7 @@ function boundaryNode(
             _parentBindingScope: "definition" as const,
             _parentEdgeOrder: parentEdgeOrder,
           }
-        : {}),
+        : { _parentOutputState: parentOutputState }),
       externalNodeIds,
     },
   }

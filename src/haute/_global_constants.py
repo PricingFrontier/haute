@@ -141,23 +141,14 @@ def node_constant_reads(config: Mapping[str, Any]) -> ConstantReads:
     return frozenset(reads)
 
 
-def executed_config(node: GraphNode, node_map: Mapping[str, GraphNode]) -> Mapping[str, Any]:
-    """The configuration *node* executes: an instance runs its original's."""
-    config = node.data.config
-    original = config.get("instanceOf")
-    if isinstance(original, str) and original in node_map:
-        return node_map[original].data.config
-    return config
-
-
 def graph_constant_reads(
     nodes: Iterable[GraphNode],
     node_map: Mapping[str, GraphNode],
 ) -> ConstantReads:
-    """The constants any of *nodes* reads, instances resolved through *node_map*."""
+    """The constants any of the expanded *nodes* reads."""
     reads: set[str] = set()
     for node in nodes:
-        node_reads = node_constant_reads(executed_config(node, node_map))
+        node_reads = node_constant_reads(node.data.config)
         if isinstance(node_reads, _EveryConstant):
             return EVERY_CONSTANT
         reads |= node_reads

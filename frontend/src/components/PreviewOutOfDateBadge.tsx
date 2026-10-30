@@ -15,7 +15,7 @@ export default function PreviewOutOfDateBadge({ data }: { data: PreviewData }) {
   const manual = useUIStore((s) => s.calculationMode === "manual")
   const structuralVersion = useGraphStore((s) => s.structuralVersion)
   const nodeDataEpoch = useNodeDataStore((s) => s.epoch)
-  const stored = useNodeResultsStore((s) => s.previews[data.nodeId])
+  const stored = useNodeResultsStore((s) => s.previews[data.cacheKey ?? data.nodeId])
   if (!manual || data.status !== "ok" || !stored || stored.data !== data) return null
   if (stored.structuralVersion === structuralVersion && stored.nodeDataEpoch === nodeDataEpoch) return null
   return (

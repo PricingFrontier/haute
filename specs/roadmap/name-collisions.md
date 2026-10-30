@@ -21,7 +21,7 @@ and their editor surfaces in
 
 ### NAME-09 — Input-binding editors show their violations inline
 **Why:** An input binding that is not a node's own name (an API Input frame label,
-an `inputMapping` alias, a submodel input port) can be reserved or collide with a
+or a submodel input port) can be reserved or collide with a
 support-code helper. A reserved frame label is refused inline
 (`reserved_api_input_frame_labels`), but every other such violation reaches the user
 only when save or a strict parse refuses it, without a link to the editor that made
@@ -31,16 +31,15 @@ it.
 identity request with the document's naming context and no candidate nodes, and
 shows inline the returned violations of kind `reserved_input` or `support_input`
 whose origin is the edited binding. The violation result gains the binding's source
-(node id and handle, or mapping key) so the editor can match it without parsing the
+(node id and handle) so the editor can match it without parsing the
 message.
 
 **Specification:** the editor identity request's violation shape in `server-api`;
-the API Input, instance mapping and submodel port editors in `frontend-node-editors`.
+the API Input and submodel port editors in `frontend-node-editors`.
 
 **Acceptance:** Setting an API Input frame label to the name of a preamble helper
-shows the support-code collision under that frame's label field; setting an
-`inputMapping` alias to `pl` shows the reserved-input violation in the instance
-mapping editor; a submodel input port named like a utility helper shows it in the
+shows the support-code collision under that frame's label field; a submodel input
+port named like a utility helper shows it in the
 port editor. Fixing the name clears each.
 
 **Dependencies:** None.

@@ -489,6 +489,8 @@ def _running_training_job(store: JobStore) -> str:
             "progress": 0.0,
             "message": "Starting",
             "job_type": "training",
+            "node_id": "train",
+            "node_label": "train",
             "start_time": time.monotonic(),
             "timeout": 60,
         }

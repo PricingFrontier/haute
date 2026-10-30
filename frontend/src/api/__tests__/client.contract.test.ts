@@ -558,6 +558,25 @@ describe("client runtime contracts", () => {
     )
   })
 
+  it("previewNode preserves occurrence inputs and unavailable schema errors", async () => {
+    const warnings = [
+      { input: "policy", column: "region", status: "missing", detail: null },
+      { input: "rates", column: null, status: "unavailable", detail: "Rates schema could not be resolved" },
+    ]
+    mockFetch.mockReturnValue(jsonResponse({ ...(loadUiContractFixture("preview_node") as Record<string, unknown>), node_schema_warnings: { copy: warnings } }))
+    const result = await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
+    expect(result.node_schema_warnings?.copy).toEqual(warnings)
+  })
+
+  it.each([
+    { input: "policy", column: null, status: "missing" },
+    { input: "rates", column: "x", status: "unavailable", detail: "Failed" },
+    { input: "rates", column: null, status: "unavailable" },
+  ])("previewNode refuses invalid schema warnings: %j", async (warning) => {
+    mockFetch.mockReturnValue(jsonResponse({ ...(loadUiContractFixture("preview_node") as Record<string, unknown>), node_schema_warnings: { copy: [warning] } }))
+    await expect(previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })).rejects.toThrow()
+  })
+
   it("previewNode preserves per-node schema maps from preview responses", async () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
 
@@ -572,7 +591,7 @@ describe("client runtime contracts", () => {
       "segment",
     ])
     expect(result.node_schema_warnings?.score).toEqual([
-      { column: "premium", status: "computed" },
+      { column: "premium", status: "computed", input: null, detail: null },
     ])
   })
 

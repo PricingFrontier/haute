@@ -226,7 +226,7 @@ The **COLUMNS** tab chooses which of the node's output columns it passes on, as 
 
 ## Reusing the node with instances
 
-If you have the same logic applied to different inputs, you don't need to duplicate the node. An **instance** reuses the original node's steps or code with different inputs, and a change to the original updates every instance. See [Instances](instances.md).
+If you have the same logic applied to different inputs, you don't need to duplicate the node. An **instance** reuses the original node's steps or code with different inputs, and a change to the original updates every instance. See [Reusing a node](instances.md).
 
 ## Example
 
@@ -269,7 +269,7 @@ df = df.with_columns(
     | The code, after **Switch to code** | the function body (`code` in the node's configuration) |
     | **COLUMNS** tab | `selected_columns`, a decorator argument: the columns passed on (absent passes every column) |
 
-    An instance of the node is written as `@pipeline.instance(of="<original>")`, with an `inputMapping` argument when its inputs need matching by hand; see [Instances](instances.md).
+    **Create Instance** wraps the node in a one-node submodel and adds another occurrence of its definition; see [Reusing a node](instances.md).
 
 **See also:**
 

@@ -83,7 +83,7 @@
   carries one identity: `name` is the input's single name — chip text, code argument, and the
   key persisted contracts use (the live-switch `input_scenario_map`, the instance
   `inputMapping`) — derived per edge by `edgeInputName` (an API-input edge's frame label
-  verbatim; a submodel `out__` edge's input name is the sanitised public output port name, resolved by the backend identity endpoint; else the sanitised source-node
+  verbatim; a submodel `out__` edge's input name is the output's name (the sanitised public output port name from an owner and, from an instance, the instance's name or, with several outputs, `<instance>_<port>`), resolved by the backend identity endpoint; else the sanitised source-node
   label). `sourceLabel` is provenance metadata used only to explain an unresolved source;
   resolved tooltips, removal titles, and selectors identify the edge by `name`, never by the
   source-node label or id;
@@ -296,7 +296,7 @@ target file need not exist yet. A format whose input capability reports
 folder** action to the browser's header once it has opened a folder below the
 project root; it selects that folder as the path.
 
-**Shared Transform tab.** Known non-instance Data Input, External File, Scenario
+**Shared Transform tab.** Known Data Input, External File, Scenario
 Expander, Rating Step, and Model Score nodes expose `Config`, `Transform`, then
 (when applicable) `Columns` tabs. Their supplementary code is rendered only in
 the shared `PolarsCodePanel`; Config retains only the node-specific settings,
@@ -634,11 +634,12 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   state as chips) and read/write `input_scenario_map` by that same `name` — two frames from one
   API input are two distinct map keys, individually routable for the first time. A frame
   rename's atomic commit updates every name-referencing config in the same pass that rebinds
-  the edges: `input_scenario_map` keys on downstream live-switches, instance `inputMapping`
-  **values** on downstream instance nodes, and instance `inputMapping` **keys** on every node
-  whose `instanceOf` references an affected *original* (the original's input names are the
-  mapping keys, so renaming a frame feeding the original would otherwise stale-key every
-  instance). The commit is **preflighted**: before anything mutates, every affected target's
+  the edges: `input_scenario_map` keys on downstream live-switches, `inputMapping` values
+  on downstream Transform and Load File nodes, and `outputMapping[].source_port` on a
+  downstream Quote Response, whose enabled entries must stay distinct. Disabled entries
+  follow the rename but do not participate in collision checks, matching save and flattening.
+  An instance's input mapping is its edges'
+  `in__<name>` handles, which a frame rename does not change. The commit is **preflighted**: before anything mutates, every affected target's
   post-rename input-name set is checked for duplicates (the new name colliding with another
   input already on that target), and a collision rejects the entire rename with an inline
   error naming the target and the colliding name — no config, edge, or mapping mutation
@@ -662,8 +663,8 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   boundary, or unknown row is an invariant violation and throws rather than falling back to the
   composite node's literal `INPUT` label.
 - `edgeInputName` treats only API-input sources' handles as frame names; a submodel
-  `out__` edge's input name is the sanitised public output port name, resolved by the backend identity endpoint; and every other
-  node type derives the sanitised source label. Renaming an occurrence renames its alias (the node id follows at Save, when the reparse re-keys it to the name, so `node.id == data.label == config.alias` holds in every parsed document), validates identifier syntax (refusing with `Occurrence names must be identifiers; use "<functionName>".`) and uniqueness among parent nodes (refusing with `"<name>" is already used by another node.`), and leaves downstream public port names unchanged.
+  `out__` edge's input name is the output's name, resolved by the backend identity endpoint; and every other
+  node type derives the sanitised source label. Renaming an occurrence renames its alias (the node id follows at Save, when the reparse re-keys it to the name, so `node.id == data.label == config.alias` holds in every parsed document), validates identifier syntax (refusing with `Occurrence names must be identifiers; use "<functionName>".`) and uniqueness among parent nodes (refusing with `"<name>" is already used by another node.`), and leaves downstream public port names unchanged; an instance's outputs are named after it, so an instance's rename renames those frames and reconciles their consumers as an ordinary node rename does.
 - The API-input editor rejects a frame label that fails backend invariant B4 (not an ASCII
   identifier, or a Python hard keyword) at commit time with the same inline validation used
   for blank/duplicate labels (`apiInputLabelIssue` — the exact ASCII mirror) — the label is
@@ -727,6 +728,11 @@ serve the documentation.
 
 ## Testing
 
+- `frontend/src/__tests__/editors/SubmodelEditor.test.tsx` covers per-input missing
+  columns, unavailable error text, owner panels without instance warnings and
+  clearing the section after a new preview; `frontend/src/api/__tests__/client.contract.test.ts`
+  covers parsing these warnings and refusing a columnless `missing` or an
+  `unavailable` without its error.
 - `frontend/src/panels/editors/polarsSteps/__tests__/PolarsStepsEditor.test.tsx` — quick-add seeds the start input, a chosen start input is written when there are several, the grouped menu adds a step and the rendered code is written into the config, one card opens at a time through the disclosure with Escape collapsing, move, delete and drag rewrite the list (the open card following its step), a render error badges its card without moving the user and "Go to error" opens it, source errors read "Start from", execution lines map to steps, the switch waits for a successful render and confirms (in the zero-input state too), a malformed persisted step renders as an invalid card that can be deleted, and a zero-input node switches to empty code. Its frame-mode cases: no start card and no selector, the render request carries `start: "frame"` and the eligible names, an added step is Step 1 and is written without a source step, the first card can be moved and opened by "Go to error", a persisted `source` step is an invalid card, `Add step` withholds join and concat while keeping group by, pivot and unpivot, and the switch on an empty list writes empty code. Its experience cases: with the real canvas shortcut handler mounted and a step card's select focused, Delete, Backspace, Ctrl+A, Ctrl+C (the clipboard unchanged, no toast), Ctrl+V (a populated clipboard, no paste) and Ctrl+G (two nodes selected, no dialog or toast) leave the graph alone while Ctrl+S and Ctrl+Z still act; focus moves into a new card's first field (Add column's name, with the formula box showing its example), a preset entry adds a step computed as it, from its own copy of the preset, and the card is titled by its calculation ("Round" from Number function, then "Clip" once its Function changes), read as its form reads it with the earlier variables and Alt+arrows move a card keeping its focus; stale code dimmed with a neutral note naming the unfinished step and the card's "Needs" line, a failed render request marking no card, and a successful render clearing both; a run failure on a step's lines badging that card with the message's first line and "Go to error"; collapsed cards naming unknown columns, also after a reorder; summary parts with column-change notes, none where the columns are not exactly known; the free-code columns request carrying the node id and the inputs' known columns, a free-code card noting the column its resolved columns add, a later card flagging a name outside them and offering the new column, and an unresolved free-code card saying why; three action slots on every card, the summary in the label's column and the number as muted text; card and code lines linked both ways, multi-line ranges tinted whole, and the code highlighted; the card's text tokens reaching 4.5:1 on its surface; and the code fading only after 400 ms of pending.
 - `frontend/src/panels/editors/polarsSteps/__tests__/AddStepMenu.test.tsx` — the five sections in order with the Add column entries first, the search box takes focus, arrow keys move between it and the entries and wrap, Escape closes and returns focus to the button, Close closes without adding, a chosen entry is handed back with its preset, search reaching the other calculations, the window aggregates and the Change types presets with each hit naming the step it adds (`sum` telling Window: sum from Group and aggregate, `join` finding Join text while Join another input is withheld), matching name, description and Polars call (not SAS or Excel names), ranking an exact name or Polars call first and capping the list at ten, Enter adding the first hit and leaving focus to the new step, the foot showing the focused entry's description and Polars call, withheld kinds staying withheld while filtering, and a disabled button staying closed.
 - `frontend/src/panels/editors/polarsSteps/__tests__/calculations.test.ts` — every "Computed as" entry starting an expression the step check accepts and naming itself back through `calculationOf`, a typed formula and a saved hidden function read as the Formula, the type conversions and `fill_null` left out of the list, `calculationExpr` carrying a function's Of, a window's value and a sum across's first part and keeping same-kind arguments, and `stepTitle`/`stepIcon` for an Add column card and any other kind.
@@ -776,7 +782,7 @@ and field-level invalid-key borders.
 
 The input-identity work is pinned by `frontend/src/panels/__tests__/NodePanel.test.tsx`
 (`name` derivation for API-frame edges — sole frame included — ordinary sources, and submodel
-`out__` edges whose input name is the sanitised public output port name, resolved by the backend identity endpoint; the `frameUnresolved` warning chip for a
+`out__` edges whose input name is the output's name, resolved by the backend identity endpoint; the `frameUnresolved` warning chip for a
 zero-eligible-frame API source; the unresolved→resolved transition under an unchanged name
 string clearing the warning; signature-driven refresh on a frame rename; two frames from one
 API input rendering two distinct, independently removable chips whose names equal the
@@ -889,7 +895,7 @@ contract is owned by
 The behaviour is defined by
 [the modelling/optimiser UI contract](../frontend-modelling-optimiser-ui/high-level.md#optimiser-config-panes).
 
-`frontend/src/panels/NodePanel.tsx` renders an optimiser strip for every non-instance optimiser
+`frontend/src/panels/NodePanel.tsx` renders an optimiser strip for every optimiser
 node from `OPTIMISER_PANES`: Data, Factors, Constraints, Solve and Export, in both modes.
 It uses the same shared tab control, remembers the pane per node in the UI store, and opens Data
 when none is remembered, for both the tab and the editor body. Its descriptors add
@@ -921,6 +927,16 @@ preview/train/cache/schema/publication actions behind the App-level capability f
 Created read-only submodel instances retain the normal inert editor presentation, and all read-only
 update handlers reject calls.
 
+**Occurrence panels.** Every submodel occurrence's panel lists its definition's public
+inputs under INPUTS, each with a selector of the occurrence's incoming connections (shown by
+their frame names) or "not connected"; choosing a connection re-targets that edge to the
+input, as one undoable edit, and an input left without one shows "not connected". The
+selector is live on an instance, whose definition is otherwise read-only. An instance's
+panel also lists MISSING COLUMNS by input: the `missing` schema warnings reported under its
+occurrence id, one per column, or an input's `unavailable` warning with its error. A panel
+is the same whatever the definition holds.
+No MISSING COLUMNS section is rendered when the instance has no such warnings.
+
 ## Minimal unavailable-node removal implementation
 
 `NodePanel` renders the repair affordance only for an `unavailable` recovery
@@ -931,13 +947,15 @@ Known unavailable ordinary nodes offer `Recover settings` as the primary action
 and `Reset node` as the destructive alternative, except an Edge Join, which offers no
 Reset: a new join has no keys, and a join without keys cannot be written. A node whose
 connections are wrong (a `node_topology_invalid` diagnostic) offers neither, since
-rebuilding its settings cannot mend them; removal stays. Submodels, instances, unknown
-types and blocked nodes cannot reset or recover. The editor does not open an
+rebuilding its settings cannot mend them; removal stays. Submodels, unknown types and
+blocked nodes cannot reset or recover; a node refused for a removed node-level instance
+form (`@pipeline.instance`, `of=`, `instanceOf`) offers removal only, with the parser's
+message naming the one-node submodel form. The editor does not open an
 unavailable submodel's definition, so that submodel's inspector lists the
 definition's unavailable nodes (`submodels[config.definitionId]`) under
 "Unavailable nodes in this submodel", each with its diagnostics, `Recover settings`
 and `Reset node` for a known ordinary node, and `Remove node` for any of them (an
-unknown decorator or an instance has nothing to rebuild), all submitted with that
+unknown decorator has nothing to rebuild), all submitted with that
 node's own `_recoveryId` and `_sourceFile` (the submodel's file). `PipelineRepairTarget.action` chooses the dialog
 transport and confirmation labels. Reset explicitly warns that settings/custom
 code are replaced and configuration may be needed; recover explains that valid

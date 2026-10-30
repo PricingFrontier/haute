@@ -45,6 +45,7 @@ const LIVE_HISTORY_NODE_METADATA_FIELDS = new Set([
   "_configReference",
   "_parentBindingScope",
   "_parentEdgeOrder",
+  "_parentOutputState",
 ])
 
 const LIVE_HISTORY_EDGE_IDENTITY_FIELDS = new Set(["_inputName"])

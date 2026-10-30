@@ -42,7 +42,6 @@ from haute._api_input_schema import is_json_api_input_path
 from haute._builders import (
     PASS_THROUGH_NODE_TYPES,
     pass_through_selected_edge,
-    resolve_instance_nodes,
 )
 from haute._cache import GraphFingerprintMemo, canonical_json, graph_fingerprint
 from haute._data_points import DataPoint, DataPointResolver, point_kind
@@ -288,10 +287,9 @@ def _merge_required(
 
 
 def _canonical_graph(graph: PipelineGraph) -> PipelineGraph:
-    from haute._builders import resolve_instance_nodes
     from haute.execution import canonical_dataframe_execution_graph
 
-    return canonical_dataframe_execution_graph(resolve_instance_nodes(graph))
+    return canonical_dataframe_execution_graph(graph)
 
 
 def seed_plan_lineage_fingerprint(
@@ -405,11 +403,7 @@ class _Resolver:
             )
             if edge is not None:
                 self.pass_through_edges[node_id] = edge
-        # Instance nodes run their original's config; what a node does is read
-        # from that, while projection stays on the graph the engine plans.
-        self.effective_node_map: Mapping[str, GraphNode] = resolve_instance_nodes(
-            self.prepared.graph
-        ).node_map
+        self.effective_node_map: Mapping[str, GraphNode] = self.prepared.graph.node_map
         self.recompute = projection_planner.recompute_facts_by_node(
             self.order,
             self.effective_node_map,

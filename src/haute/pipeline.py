@@ -132,15 +132,6 @@ class Node:
         """
         return self._input_arity
 
-    def _raise_if_unresolved_instance(self) -> None:
-        if self.config.get("_instance") or self.config.get("instanceOf"):
-            raise ExecutionError(
-                "Standalone run()/score() cannot resolve an @pipeline.instance "
-                "node's 'instanceOf' reference. Run the pipeline through "
-                "the graph executor, or inline the referenced logic into this node.",
-                node=self.name,
-            )
-
     def _run_configured(
         self,
         fn: Callable,
@@ -173,7 +164,6 @@ class Node:
         *target_ports* are the input ports *dfs* arrive on, aligned, when a run knows
         them: a Workbench Output fills the table each port names.
         """
-        self._raise_if_unresolved_instance()
         fn = self.fn if constants is None else bind_function_view(self.fn, constants)
         if self.is_source:
             if dfs:
@@ -382,6 +372,10 @@ class NodeRegistry:
         delegate to this method.
         """
 
+        from haute._config_validation import reject_removed_node_reuse_kwargs
+
+        reject_removed_node_reuse_kwargs(config)
+
         def _register(f: Callable) -> Callable:
             node_type = NodeType(config.get("_node_type", NodeType.POLARS))
             if is_configured(node_type, config):
@@ -404,7 +398,7 @@ class NodeRegistry:
             )
             self._nodes.append(n)
             self._node_map[n.name] = n
-            if n.kind == "transform" and not n.config.get("_instance"):
+            if n.kind == "transform":
                 return f
             # A declaration's body does nothing, so the name it defines runs the
             # node instead: calling it does what a pipeline run does.
@@ -494,22 +488,6 @@ class NodeRegistry:
     def constant(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for constant nodes."""
         return self._register_node(fn, _node_type=NodeType.CONSTANT, **config)
-
-    def instance(self, fn: Callable | None = None, **config: Any) -> Callable:
-        """Decorator alias for instance nodes (registered as ``polars``).
-
-        ``instanceOf``/``inputMapping`` are resolved by the graph executor and
-        code generator, which bake the referenced node's logic into a concrete
-        node.  The standalone :meth:`Pipeline.run`/:meth:`Pipeline.score`
-        executor cannot resolve those references and will raise loudly rather
-        than silently ignore them; provide a real function body if you invoke
-        the pipeline object directly.
-        """
-        return self._register_node(
-            fn,
-            _node_type=NodeType.POLARS,
-            **{**config, "_instance": True},
-        )
 
     def connect(
         self,
@@ -835,8 +813,7 @@ class Pipeline(NodeRegistry):
 
         Shared by :meth:`run` and :meth:`score`.  Fails loud when the node
         has no inbound edges and does not run unconnected, when an upstream
-        result is missing, or when the node carries unresolved instance
-        references the standalone executor cannot honour.
+        result is missing.
         """
         input_edges = self._get_input_edges(n.name)
         if not input_edges and not n.runs_unconnected:
@@ -1013,7 +990,6 @@ class Pipeline(NodeRegistry):
                     )
                 seed_value = df
             for n in sources:
-                n._raise_if_unresolved_instance()
                 if n.name in seed_names:
                     outputs[n.name] = seed_value
                 else:
