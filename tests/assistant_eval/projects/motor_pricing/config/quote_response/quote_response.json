@@ -1,4 +1,5 @@
 {
+  "outputFormat": "json",
   "outputMapping": [
     {
       "source_port": "base_premium",
@@ -30,6 +31,5 @@
       "output_path": "$[:].pricing.factors.region",
       "enabled": true
     }
-  ],
-  "outputFormat": "json"
+  ]
 }

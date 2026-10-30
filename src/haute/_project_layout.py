@@ -37,16 +37,16 @@ def versioned_name(relative: str) -> bool:
 def pipeline_folder(project_root: Path) -> str | None:
     """The configured pipeline folder, relative to *project_root* in POSIX form.
 
-    ``None`` when no pipeline is configured or it sits at the root (or outside it):
-    there is then no folder to version as a whole. Malformed ``haute.toml`` raises.
+    ``None`` when no pipeline is configured or it sits at the root: there is then
+    no folder to version as a whole. Malformed ``haute.toml``, or a pipeline it
+    names outside the root, raises.
     """
     configured = _toml_configured_pipeline(project_root)
     if configured is None:
         return None
     root = project_root.resolve()
     folder = configured.parent.resolve()
-    # not contained_path: a pipeline at or outside the root has no folder to version
-    if folder == root or not folder.is_relative_to(root):
+    if folder == root:
         return None
     return folder.relative_to(root).as_posix()
 

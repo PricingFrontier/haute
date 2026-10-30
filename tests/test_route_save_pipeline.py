@@ -1037,35 +1037,6 @@ class TestSaveSimpleGraph:
         # Should be relative, not absolute
         assert not result.file.startswith("/")
 
-    def test_save_rejects_load_error_nodes_before_writing_code(self, tmp_path: Path) -> None:
-        svc = SavePipelineService(tmp_path)
-        py_file = tmp_path / "broken.py"
-        py_file.write_text("# original broken source\n")
-        graph = _make_graph(
-            _make_node("src", "Source", "dataInput", {"path": "data.parquet"}),
-            _make_node(
-                "bad",
-                "Broken Transform",
-                "polars",
-                {"_load_error": "body could not be parsed"},
-            ),
-            edges=[_make_edge("src", "bad")],
-        )
-        body = SavePipelineRequest(
-            name="broken",
-            description="",
-            graph=graph,
-            source_file="broken.py",
-            base_revision=current_source_revision(tmp_path / "broken.py", tmp_path),
-        )
-
-        with pytest.raises(HTTPException) as exc_info:
-            svc.save(body)
-
-        assert exc_info.value.status_code == 400
-        assert "failed to load or parse" in exc_info.value.detail
-        assert py_file.read_text() == "# original broken source\n"
-
 
 # ---------------------------------------------------------------------------
 # _write_code with submodels
@@ -1244,7 +1215,7 @@ class TestWriteConfigFiles:
         graph = _make_graph(
             _make_node("parent", "Shared", "dataInput", {"path": "parent.csv"}),
         )
-        child = _make_node("child", "Shared", "dataInput", {"_load_error": "duplicate key"})
+        child = _make_node("child", "Shared", "dataInput", {"path": "child.csv"})
         graph.submodels = {"pricing": _submodel_definition("pricing", child)}
 
         with pytest.raises(HTTPException) as exc_info:
@@ -1302,29 +1273,6 @@ class TestWriteConfigFiles:
 
         assert prev == {}
 
-    def test_stale_cleanup_protects_submodel_child_config_load_errors(self, tmp_path: Path) -> None:
-        """Corrupt child configs skipped on write must be protected from cleanup."""
-        svc = SavePipelineService(tmp_path)
-        config_dir = tmp_path / "config" / "banding"
-        config_dir.mkdir(parents=True)
-        child_config = config_dir / "child_banding.json"
-        child_config.write_text("{ broken json")
-
-        child = _make_node(
-            "banding",
-            "child_banding",
-            "banding",
-            {"_load_error": "duplicate key"},
-        )
-        graph = _make_graph()
-        graph.submodels = {"pricing": _submodel_definition("pricing", child)}
-
-        svc._prev_config_files = {"config/banding/child_banding.json": "{ broken json"}
-        svc._write_config_files(graph)
-        svc._remove_stale_config_files(graph)
-
-        assert child_config.exists()
-
 
 class TestRemoveStaleConfigFiles:
     """Diff-based cleanup contract.
@@ -1332,7 +1280,7 @@ class TestRemoveStaleConfigFiles:
     Bundle 6 sub-task C reworked this code path: `_prev_config_files`
     is computed by `save()` from the on-disk graph BEFORE any writes,
     and `_remove_stale_config_files` consumes that pre-computed prev
-    via plain diff (`stale = prev - current - protected`).  The
+    via plain diff (`stale = prev - current`).  The
     previous full-scan fallback that deleted unknown files when prev
     was empty has been removed because it actively violated the trust
     model (`notes-haute/security/SECURITY.md` §3).
@@ -1357,7 +1305,6 @@ class TestRemoveStaleConfigFiles:
         # the current graph drops the corresponding node.
         svc._prev_config_files = {"config/banding/old_banding.json": "{}"}
         svc._last_config_files = {}
-        svc._protected_config_files = set()
 
         svc._remove_stale_config_files(_make_graph())
 
@@ -1393,7 +1340,6 @@ class TestRemoveStaleConfigFiles:
         # which should be cleaned up too.
         svc._prev_config_files = {"config/banding/old.json": "{}"}
         svc._last_config_files = {}
-        svc._protected_config_files = set()
 
         svc._remove_stale_config_files(_make_graph())
 
@@ -1442,7 +1388,6 @@ class TestRemoveStaleConfigFiles:
             "config/banding/old_banding.json": "{}",
             # NOTE: manual_orphan deliberately absent from prev.
         }
-        svc._protected_config_files = set()
 
         svc._remove_stale_config_files(graph)
 
@@ -2037,31 +1982,10 @@ class TestRemoveStaleConfigDiffPath:
         # Manually set prev_config_files with a traversal path
         svc._prev_config_files = {"../../etc/evil.json": "{}"}
         svc._last_config_files = {}
-        svc._protected_config_files = set()
 
         graph = _make_graph()
         svc._remove_stale_config_files(graph)
         # Should not raise or delete anything outside project root
-
-    def test_protected_config_files_preserved(self, tmp_path: Path) -> None:
-        """Protected config files are not removed even when stale."""
-        svc = SavePipelineService(tmp_path)
-
-        # Create a config file
-        config_dir = tmp_path / "config" / "banding"
-        config_dir.mkdir(parents=True)
-        protected_file = config_dir / "protected_banding.json"
-        protected_file.write_text("{}")
-
-        # Set up prev/current diff where protected file would be stale
-        svc._prev_config_files = {"config/banding/protected_banding.json": "{}"}
-        svc._last_config_files = {}
-        svc._protected_config_files = {"config/banding/protected_banding.json"}
-
-        graph = _make_graph()
-        svc._remove_stale_config_files(graph)
-
-        assert protected_file.exists()  # protected file survives
 
 
 # ---------------------------------------------------------------------------

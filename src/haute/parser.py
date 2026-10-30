@@ -16,7 +16,6 @@ from pathlib import Path
 
 from haute._ast_helpers import (
     _extract_connect_calls,
-    _extract_function_bodies,
     _extract_global_constants_declaration,
     _extract_pipeline_meta,
     _extract_preamble,
@@ -39,7 +38,7 @@ from haute._graph_builders import (
     _extract_decorated_nodes,
 )
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
-from haute._io import read_user_text
+from haute._io import read_user_source
 from haute._logging import get_logger
 from haute._parser_bindings import assert_polars_parameters_bound, assert_request_frames_named
 from haute._parser_conservation import (
@@ -55,6 +54,7 @@ from haute._parser_submodels import (
 from haute._parser_submodels import merge_submodels as _merge_submodels
 from haute._parser_submodels import parse_submodel_source as _parse_submodel_source
 from haute._project import get_project_root
+from haute._source_layout import python_lines
 from haute._submodel_paths import resolve_submodel_reference, submodel_source_key
 from haute._support_code_names import UtilityReader, support_code_violations, utility_reader
 from haute._types import GLOBAL_CONSTANTS_FILE, GlobalConstant
@@ -80,18 +80,6 @@ def _infer_parse_base_dir(filepath: Path) -> Path:
         return get_project_root(filepath.parent)
     except ConfigError:
         return filepath.parent
-
-
-def _format_load_error_warning(labels: list[str]) -> str | None:
-    """Build a user-facing warning when config files failed to load."""
-    if not labels:
-        return None
-    names = ", ".join(labels[:3])
-    suffix = f" and {len(labels) - 3} more" if len(labels) > 3 else ""
-    return (
-        f"Config files could not be loaded for: {names}{suffix}. "
-        "These configs will not be overwritten on save."
-    )
 
 
 def load_declared_global_constants(
@@ -134,21 +122,14 @@ def load_declared_global_constants(
         return [], str(exc)
 
 
-def _graph_warning(load_error_labels: list[str], global_constants_error: str | None) -> str | None:
-    parts = [
-        part
-        for part in (
-            _format_load_error_warning(load_error_labels),
-            (
-                f"Global constants could not be loaded: {global_constants_error} "
-                "The file will not be overwritten on save."
-                if global_constants_error
-                else None
-            ),
-        )
-        if part
-    ]
-    return " ".join(parts) or None
+def _graph_warning(global_constants_error: str | None) -> str | None:
+    """The graph's warning: a declared global constants file that failed to load."""
+    if not global_constants_error:
+        return None
+    return (
+        f"Global constants could not be loaded: {global_constants_error} "
+        "The file will not be overwritten on save."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +149,7 @@ def parse_pipeline_file(filepath: str | Path, *, flatten: bool = False) -> Pipel
     exposed separately by :mod:`haute._pipeline_recovery`.
     """
     filepath = Path(filepath)
-    source = read_user_text(filepath)
+    _raw, source = read_user_source(filepath)
     submodel_base_dir = _infer_parse_base_dir(filepath)
     return parse_pipeline_source(
         source,
@@ -192,7 +173,7 @@ def parse_submodel_file(
     Defaults to ``filepath.parent`` if not provided.
     """
     filepath = Path(filepath)
-    source = read_user_text(filepath)
+    _raw, source = read_user_source(filepath)
     return _parse_submodel_source(
         source,
         source_file=str(filepath),
@@ -258,14 +239,11 @@ def parse_pipeline_source_with_name_violations(
         _read_submodel_source: Override for reading a registered submodel
             file. Editor recovery injects its first-read byte capture here so
             one load never pairs parsed child content with different bytes
-            than its revision authenticates. Defaults to ``read_user_text``.
+            than its revision authenticates. Defaults to ``read_user_source``.
         _read_global_constants_bytes: The same override for the global
             constants file the constructor names. Defaults to reading it.
     """
-    if not source_file and _base_dir is not None:
-        source_file = str((_base_dir / "__source__.py").resolve())
-
-    # Canonical consumers must never receive a regex-recovered graph.
+    # Invalid syntax is refused: canonical consumers never receive a recovered graph.
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:
@@ -287,11 +265,9 @@ def parse_pipeline_source_with_name_violations(
     )
 
     # Find @pipeline.<type> decorated functions
-    func_bodies = _extract_function_bodies(source, tree=tree)
     raw_nodes = _extract_decorated_nodes(
         tree,
         _is_pipeline_authored_decorator,
-        func_bodies,
         _base_dir,
         source=source,
     )
@@ -301,7 +277,7 @@ def parse_pipeline_source_with_name_violations(
     rf_nodes = _build_rf_nodes(raw_nodes)
     preamble = _extract_preamble(source, tree=tree)
     preserved_blocks = _extract_preserved_blocks(source)
-    preserved = _module_preserve_spans(source.splitlines())
+    preserved = _module_preserve_spans(python_lines(source))
     for statement in tree.body:
         if is_submodel_import(statement) and any(
             first <= statement.lineno - 1 <= last for first, last in preserved
@@ -314,7 +290,6 @@ def parse_pipeline_source_with_name_violations(
             )
 
     # Surface config load errors as a graph-level warning for the GUI.
-    load_error_labels = [n.data.label for n in rf_nodes if n.data.config.get("_load_error")]
 
     graph = PipelineGraph(
         nodes=rf_nodes,
@@ -326,12 +301,9 @@ def parse_pipeline_source_with_name_violations(
         global_constants=global_constants,
         global_constants_error=global_constants_error,
         source_file=source_file,
-        warning=_graph_warning(load_error_labels, global_constants_error),
+        warning=_graph_warning(global_constants_error),
     )
     graph._parser_global_constants_declared = declares_global_constants
-    graph._parser_parameter_names = {
-        str(node["func_name"]): [str(name) for name in node["param_names"]] for node in raw_nodes
-    }
     graph._parser_edge_parameter_names = {
         str(node["func_name"]): [str(name) for name in node["edge_param_names"]]
         for node in raw_nodes
@@ -403,7 +375,7 @@ def parse_pipeline_source_with_name_violations(
             child_source = (
                 _read_submodel_source(sm_filepath)
                 if _read_submodel_source is not None
-                else read_user_text(sm_filepath)
+                else read_user_source(sm_filepath)[1]
             )
             child_graph = _parse_submodel_source(
                 child_source,

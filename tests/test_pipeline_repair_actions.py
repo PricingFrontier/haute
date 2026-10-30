@@ -382,6 +382,7 @@ def test_stale_revision_conflict_preserves_authored_bytes(
     monkeypatch.chdir(tmp_path)
     before_files = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     request = _request(tmp_path, "source", "reset").model_dump()
+    current_revision = request["source_revision"]
     request["source_revision"] = "0" * 64
 
     response = client.post("/api/pipeline/repair/recover/apply", json=request)
@@ -391,6 +392,7 @@ def test_stale_revision_conflict_preserves_authored_bytes(
         "message": (
             "The pipeline changed after this recovery document loaded; reload before repairing."
         ),
+        "current_revision": current_revision,
     }
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before_files
 
@@ -487,6 +489,112 @@ def test_recover_retains_valid_settings_and_reports_outcomes(tmp_path):
     assert "code" not in written
 
 
+def test_recover_reports_a_sidecar_backed_nodes_decorator_keywords_as_removed(tmp_path):
+    """The parse refuses the keywords beside config=, and Recover takes the settings
+    from the sidecar alone: each keyword is reported removed and none reaches the file."""
+    from haute._pipeline_repair import build_recover_unavailable_node_plan
+    from haute.errors import ConfigError
+    from haute.parser import parse_pipeline_file
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    sidecar = tmp_path / "config" / "constant" / "rates.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text('{"values": [{"name": "base", "value": "1"}]}\n', encoding="utf-8")
+    (tmp_path / "main.py").write_text(
+        'import haute\npipeline = haute.Pipeline("demo")\n\n\n'
+        '@pipeline.constant(config="config/constant/rates.json", '
+        'values=[{"name": "base", "value": "2"}], colour="red")\n'
+        "def rates(): ...\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="'colour', 'values' would be ignored"):
+        parse_pipeline_file(tmp_path / "main.py")
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    assert next(node for node in document.nodes if node.authored_id == "rates").availability == (
+        "unavailable"
+    )
+
+    request = _request(tmp_path, "rates", "recover")
+    plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
+    outcomes = {(change.path, change.outcome) for change in plan.response.field_changes}
+    assert ("/values", "removed") in outcomes
+    assert ("/colour", "removed") in outcomes
+    result = _apply(tmp_path, request)
+    assert result.document.load_status == "ready"
+    assert json.loads(sidecar.read_text(encoding="utf-8")) == {
+        "values": [{"name": "base", "value": "1"}]
+    }
+    source = (tmp_path / "main.py").read_text(encoding="utf-8")
+    assert '@pipeline.constant(config="config/constant/rates.json")' in source
+    assert "colour" not in source
+
+
+def test_recover_reports_a_source_type_keyword_rather_than_converting_it(tmp_path):
+    from haute._pipeline_repair import build_recover_unavailable_node_plan
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    sidecar = tmp_path / "config" / "model_scoring" / "score.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text('{"sourceType": "run", "run_id": "abc"}\n', encoding="utf-8")
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n\n\n'
+        "@pipeline.polars\ndef quotes() -> pl.LazyFrame:\n"
+        '    df = pl.LazyFrame({"x": [1]})\n    return df\n\n\n'
+        '@pipeline.model_score(config="config/model_scoring/score.json", '
+        'source_type="registered")\n'
+        "def score(quotes): ...\n",
+        encoding="utf-8",
+    )
+
+    plan = build_recover_unavailable_node_plan(
+        project_root=tmp_path, request=_request(tmp_path, "score", "recover")
+    )
+    changes = {change.path: change.outcome for change in plan.response.field_changes}
+    assert changes["/source_type"] == "removed"
+    assert plan.response.previous_config is not None
+    assert plan.response.previous_config["sourceType"] == "run"
+
+
+def test_both_save_paths_write_one_sidecar_for_one_configuration(tmp_path):
+    """The whole-document save and Recover write the same bytes, without the contract the
+    decorator carries, whatever order the configuration's keys came in."""
+    from haute._config_io import collect_node_configs
+    from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+
+    config = {
+        "values": [{"name": "base", "value": "1"}, {"name": "Prämie", "value": "2"}],
+        "contract": "opaque",
+    }
+    reordered = dict(reversed(list(config.items())))
+
+    def whole_document(values: dict) -> str:
+        node = GraphNode(
+            id="rates",
+            data=NodeData(label="rates", nodeType=NodeType.CONSTANT, config=values),
+        )
+        [content] = collect_node_configs(PipelineGraph(nodes=[node], edges=[])).values()
+        return content
+
+    assert whole_document(config) == whole_document(reordered)
+    assert "contract" not in json.loads(whole_document(config))
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    sidecar = tmp_path / "config" / "constant" / "rates.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(json.dumps({**reordered, "retired": True}), encoding="utf-8")
+    (tmp_path / "main.py").write_text(
+        'import haute\npipeline = haute.Pipeline("demo")\n\n\n'
+        '@pipeline.constant(config="config/constant/rates.json")\n'
+        "def rates(): ...\n",
+        encoding="utf-8",
+    )
+    result = _apply(tmp_path, _request(tmp_path, "rates", "recover"))
+
+    assert result.document.load_status == "ready"
+    assert sidecar.read_text(encoding="utf-8") == whole_document(config)
+
+
 def test_recover_regenerates_a_stale_contract_annotation(tmp_path):
     """A factor edited back to a draft leaves the saved annotation promising a
     column the node no longer creates, so the node cannot load. Recover rebuilds
@@ -547,10 +655,9 @@ def test_recover_regenerates_a_stale_contract_annotation(tmp_path):
 
 def test_recover_reports_what_it_could_not_fix_as_completeness(tmp_path):
     """The worked example: a Scenario Expander sidecar from before the stepCount rename
-    (`steps: 11`, no `stepCount`) that has also lost its `min_value`. The recover
-    applies: `stepCount` takes the palette default, and the engine's issue about the
-    range, which has no default, reaches the plan as completeness instead of being
-    dropped."""
+    (`steps: 11`) whose `stepCount` was then hand-edited to 0. The recover applies: the
+    stale `steps` is removed, and the engine's refusal of the count, a value it will not
+    invent, reaches the plan as completeness instead of being dropped."""
     from haute._config_io import collect_node_configs
     from haute._pipeline_repair import build_recover_unavailable_node_plan
     from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
@@ -593,8 +700,7 @@ def test_recover_reports_what_it_could_not_fix_as_completeness(tmp_path):
         config_file.write_text(content)
     sidecar = tmp_path / "config/expander/grid.json"
     stale = json.loads(sidecar.read_text())
-    del stale["stepCount"]
-    del stale["min_value"]
+    stale["stepCount"] = 0
     stale["steps"] = 11
     sidecar.write_text(json.dumps(stale))
     document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
@@ -605,18 +711,18 @@ def test_recover_reports_what_it_could_not_fix_as_completeness(tmp_path):
     plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
 
     assert [(entry.path, entry.code, entry.message) for entry in plan.response.completeness] == [
-        ("/", "incomplete_range", "Scenario range and stepCount are required.")
+        ("/stepCount", "invalid_value", "Scenario expander requires stepCount >= 1, got 0")
     ]
     assert all(entry.element_id == target.recovery_id for entry in plan.response.completeness)
     outcomes = {(change.path, change.outcome) for change in plan.response.field_changes}
-    assert ("/stepCount", "defaulted") in outcomes
+    assert ("/steps", "removed") in outcomes
     result = _apply(tmp_path, request)
-    assert [entry.code for entry in result.completeness] == ["incomplete_range"]
+    assert [entry.code for entry in result.completeness] == ["invalid_value"]
     applied = next(node for node in result.document.nodes if node.authored_id == "grid")
     assert applied.availability == "ready"
     written = json.loads(sidecar.read_text())
-    assert written["stepCount"] == 21
-    assert "min_value" not in written
+    assert written["stepCount"] == 0
+    assert "steps" not in written
 
 
 def test_recover_empty_locator_applies_as_incomplete(tmp_path):
@@ -812,6 +918,70 @@ def test_recover_gives_a_join_saved_without_its_order_the_order_for_its_type(tmp
     assert 'maintain_order="right_left"' in (tmp_path / "main.py").read_text()
     joined = parse_pipeline_file(tmp_path / "main.py").node_map["joined"]
     assert joined.data.config["maintainOrder"] == "right_left"
+
+
+def test_recover_refuses_an_asof_join_with_the_engines_message_at_how(tmp_path):
+    """Edge Join supports no asof join: Recover names the setting and the engine's
+    reason instead of a bare failure to generate the node."""
+    from haute._edge_join import build_edge_join_kwargs
+    from haute._pipeline_repair import PipelineRepairError, build_recover_unavailable_node_plan
+    from haute.errors import ConfigError
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n\n'
+        + _ORDERLESS_JOIN.replace("OWNER", "pipeline").replace("HOW", "asof")
+    )
+    before = (tmp_path / "main.py").read_bytes()
+    with pytest.raises(ConfigError) as engine:
+        build_edge_join_kwargs({"how": "asof", "on": ["quote_id"], "maintainOrder": "left"})
+
+    with pytest.raises(PipelineRepairError) as refused:
+        build_recover_unavailable_node_plan(
+            project_root=tmp_path, request=_request(tmp_path, "joined", "recover")
+        )
+    assert refused.value.code == "repair_action_unsupported"
+    assert f"/how: {engine.value}" in refused.value.message
+    assert refused.value.fields["issues"] == [
+        {"path": "/how", "code": "invalid_value", "message": engine.value.to_payload()["message"]}
+    ]
+    assert (tmp_path / "main.py").read_bytes() == before
+
+
+def test_recover_inside_a_submodel_keeps_a_local_pipeline_name_in_the_code(tmp_path):
+    """The regenerated function is written on the submodel's receiver; the node's own
+    code, which binds a local named ``pipeline``, is not rewritten."""
+    from haute.schemas import PipelineRepairRecoverRequest
+
+    parent = _submodel_with_an_unbound_node(tmp_path, parent_node="priced")
+    child = tmp_path / "modules" / "Inputs.py"
+    child.write_text(
+        child.read_text(encoding="utf-8").replace(
+            "    df = ghost\n",
+            '    pipeline = pl.LazyFrame({"quote_id": [1]})\n    df = pipeline\n',
+        ),
+        encoding="utf-8",
+    )
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+    assert document.submodels is not None
+    (definition,) = document.submodels.values()
+    inner = next(n for n in definition.graph.nodes if n.authored_id == "uses")
+
+    result = _apply(
+        tmp_path,
+        PipelineRepairRecoverRequest(
+            source_file=document.source_file,
+            source_revision=document.source_revision,
+            target_source_file=inner.source_file,
+            target_recovery_id=inner.recovery_id,
+            action="recover",
+        ),
+    )
+
+    assert result.document.load_status == "ready"
+    source = child.read_text(encoding="utf-8")
+    assert "@submodel.polars\ndef uses() -> pl.LazyFrame:\n" in source
+    assert '    pipeline = pl.LazyFrame({"quote_id": [1]})\n    df = pipeline\n' in source
 
 
 def test_recover_reaches_a_join_saved_without_its_order_inside_a_submodel(tmp_path):

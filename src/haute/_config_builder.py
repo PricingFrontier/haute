@@ -22,7 +22,6 @@ from haute._code_extraction import (
 )
 from haute._config_io import NODE_TYPE_TO_FOLDER, has_config_folder, load_node_config
 from haute._config_validation import (
-    reject_form_given_keys,
     reject_removed_config_keys,
     reject_unrecognized_config_keys,
     validate_node_config,
@@ -45,12 +44,6 @@ from haute._polars_steps import (
 from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import (
     COLUMN_CONFIG_KEYS,
-    MODEL_SCORE_CONFIG_KEYS,
-    MODELLING_CONFIG_KEYS,
-    OPTIMISER_APPLY_CONFIG_KEYS,
-    OPTIMISER_CONFIG_KEYS,
-    REQUEST_INPUT_NODE_TYPES,
-    SCENARIO_EXPANDER_CONFIG_KEYS,
     NodeType,
 )
 from haute.errors import ConfigError, ContractMismatchError, ParseError
@@ -89,112 +82,16 @@ def _build_node_config(
     body: str,
     param_names: list[str],
 ) -> dict[str, Any]:
-    """Build the config dict for a node given its type and decorator kwargs."""
-    reject_removed_config_keys(node_type, decorator_kwargs)
-    # A workbench node's tables and sample are the form's, given where it runs.
-    reject_form_given_keys(node_type, decorator_kwargs)
-    config: dict[str, Any] = {}
-    if node_type in REQUEST_INPUT_NODE_TYPES:
-        # A Workbench Input reads no file; a Quote Input's previews read `path`.
-        if node_type == NodeType.API_INPUT:  # the Quote Input alone
-            config["path"] = decorator_kwargs.get("path", "")
-            # `tables[]` is the schema mapping, typically loaded from the sidecar
-            # by ``_resolve_node_config``; `row_id_column` belongs to each table.
-            if isinstance(decorator_kwargs.get("tables"), list):
-                config["tables"] = decorator_kwargs["tables"]
-        if isinstance(decorator_kwargs.get("contract"), str):
-            config["contract"] = decorator_kwargs["contract"]
-    elif node_type == NodeType.LIVE_SWITCH:
-        config["input_scenario_map"] = decorator_kwargs.get("input_scenario_map", {})
-        config["inputs"] = param_names
-    elif node_type == NodeType.EDGE_JOIN:
-        config.update(normalise_edge_join_decorator_kwargs(decorator_kwargs))
-    elif node_type == NodeType.MODEL_SCORE:
-        for key in MODEL_SCORE_CONFIG_KEYS:
-            # Decorator uses snake_case "source_type"; config uses camelCase "sourceType"
-            decorator_key = "source_type" if key == "sourceType" else key
-            if decorator_key in decorator_kwargs:
-                config[key] = decorator_kwargs[decorator_key]
-        config["code"] = extract_user_code(body, kind="hook") if body else ""
-    elif node_type == NodeType.BANDING:
-        if "factors" in decorator_kwargs:
-            # Multi-factor format: factors=[{...}, {...}]
-            raw_factors = decorator_kwargs["factors"]
-            config["factors"] = [
-                {
-                    "banding": f.get("banding", ""),
-                    "column": f.get("column", ""),
-                    "outputColumn": f.get("output_column", ""),
-                    "rules": f.get("rules", []),
-                    "default": f.get("default"),
-                }
-                for f in (raw_factors if isinstance(raw_factors, list) else [])
-            ]
-        else:
-            # Single-factor format → wrap into factors array
-            config["factors"] = [
-                {
-                    "banding": decorator_kwargs.get("banding", ""),
-                    "column": decorator_kwargs.get("column", ""),
-                    "outputColumn": decorator_kwargs.get("output_column", ""),
-                    "rules": decorator_kwargs.get("rules", []),
-                    "default": decorator_kwargs.get("default"),
-                }
-            ]
-    elif node_type == NodeType.RATING_STEP:
-        config["tables"] = [
-            {
-                "factors": table.get("factors", []),
-                "outputColumn": table.get("output_column", ""),
-                "defaultValue": table.get("default_value"),
-                "entries": table.get("entries", []),
-            }
-            for table in decorator_kwargs.get("tables", [])
-        ]
+    """Build the config of a node that keeps its settings on its decorator.
 
-        combined_outputs = decorator_kwargs.get("combined_outputs")
-        if combined_outputs is not None:
-            config["combinedOutputs"] = [
-                {
-                    "outputColumn": output.get("output_column", ""),
-                    "operation": output.get("operation", "multiply"),
-                    "baseValue": output.get("base_value"),
-                }
-                for output in combined_outputs
-            ]
-        config["code"] = extract_user_code(body, kind="hook") if body else ""
-    elif node_type == NodeType.SCENARIO_EXPANDER:
-        _copy_config_keys(config, decorator_kwargs, SCENARIO_EXPANDER_CONFIG_KEYS)
-        config["code"] = extract_user_code(body, kind="hook") if body else ""
-    elif node_type == NodeType.OPTIMISER_APPLY:
-        for key in OPTIMISER_APPLY_CONFIG_KEYS:
-            decorator_key = "source_type" if key == "sourceType" else key
-            if decorator_key in decorator_kwargs:
-                config[key] = decorator_kwargs[decorator_key]
-    elif node_type == NodeType.OPTIMISER:
-        _copy_config_keys(config, decorator_kwargs, OPTIMISER_CONFIG_KEYS)
-    elif node_type == NodeType.MODELLING:
-        _copy_config_keys(config, decorator_kwargs, MODELLING_CONFIG_KEYS)
-    elif node_type == NodeType.CONSTANT:
-        raw_values = decorator_kwargs.get("values", [])
-        config["values"] = [
-            {"name": v.get("name", ""), "value": str(v.get("value", ""))}
-            for v in (raw_values if isinstance(raw_values, list) else [])
-        ]
-    elif node_type in (
-        NodeType.DATA_INPUT,
-        NodeType.DATA_OUTPUT,
-        NodeType.EXTERNAL_FILE,
-        NodeType.OUTPUT,
-        NodeType.WORKBENCH_OUTPUT,
-    ):
-        # Config-folder nodes: format/mode/source fields/arguments live in the
-        # JSON sidecar loaded via config= *before* this builder runs, so this
-        # branch is unreachable on the healthy path (the caller raises
-        # ConfigError when the sidecar is absent). Kept
-        # explicit so a stray inline decorator can't fall to the transform
-        # branch and pick up a `code` config.
-        pass
+    Only an Edge Join, an Explore and a transform do: every other node type
+    keeps them in a JSON sidecar, which ``_resolve_node_config`` loads, or
+    refuses the node for lacking, before this runs.
+    """
+    reject_removed_config_keys(node_type, decorator_kwargs)
+    config: dict[str, Any] = {}
+    if node_type == NodeType.EDGE_JOIN:
+        config.update(normalise_edge_join_decorator_kwargs(decorator_kwargs))
     elif node_type == NodeType.EXPLORE:
         code = extract_user_code(body, kind="hook") if body else ""
         if code:
@@ -227,11 +124,12 @@ def _build_node_config(
             )
             if charts:
                 config["charts"] = charts
-    else:
-        # transform
+    elif node_type == NodeType.POLARS:
         config["code"] = (
             extract_user_code(body, kind="polars", param_names=param_names) if body else ""
         )
+    else:
+        raise ValueError(f"{node_type!r} nodes keep their settings in a JSON sidecar.")
     _copy_config_keys(config, decorator_kwargs, COLUMN_CONFIG_KEYS)
     # Instance reference (works for any node type)
     if "of" in decorator_kwargs:
@@ -377,16 +275,16 @@ def _sidecar_required_error(node_type: NodeType, func_name: str) -> ConfigError:
     """Build the error for a folder-backed node used without a ``config=`` sidecar.
 
     Names the concrete config folder resolved from ``NODE_TYPE_TO_FOLDER`` (not a
-    ``<type>`` placeholder), states that any inline keyword arguments were
-    ignored, and points at ``haute init`` as a starter-sidecar generator. Raised
-    from the parse path (:func:`_resolve_node_config`), which editor recovery
-    shares, so both surface the same guidance.
+    ``<type>`` placeholder), says the settings belong in that file rather than
+    in decorator keywords, and points at ``haute init`` as a starter-sidecar
+    generator. Raised from the parse path (:func:`_resolve_node_config`), which
+    editor recovery shares, so both surface the same guidance.
     """
     folder = NODE_TYPE_TO_FOLDER[node_type]
     return ConfigError(
         f"Node type {node_type.value!r} stores its config in a JSON sidecar; "
-        f'reference it with config="config/{folder}/<name>.json" '
-        f"(inline keyword arguments are ignored for this node type). "
+        f'reference it with config="config/{folder}/<name>.json" and put its '
+        f"settings in that file, not in decorator keywords. "
         f"Run `haute init` to scaffold a starter project with example "
         f"sidecars, or create config/{folder}/<name>.json by hand.",
         func_name=func_name,
@@ -495,8 +393,9 @@ def _validate_node_function(
 
 
 def _comments(code: str) -> list[str]:
+    """The comments of *code*, each without the trailing whitespace ``ruff format`` removes."""
     return [
-        token.string
+        token.string.rstrip()
         for token in tokenize.generate_tokens(io.StringIO(code).readline)
         if token.type == tokenize.COMMENT
     ]
@@ -619,7 +518,6 @@ def _resolve_node_config(
     decorator_kwargs: dict[str, Any],
     body: str,
     param_names: list[str],
-    n_params: int,
     base_dir: Path | None,
     func_name: str = "",
     explicit_node_type: NodeType | None = None,
@@ -665,6 +563,18 @@ def _resolve_node_config(
             node_type=node_type.value,
         )
     if config_ref:
+        if decorator_kwargs:
+            # The sidecar holds every setting; a keyword beside it would be
+            # dropped here and by the next save, so it fails the parse by name.
+            keywords = sorted(decorator_kwargs)
+            raise ConfigError(
+                f"Node {func_name!r} takes its settings from {config_ref}, so its decorator "
+                f"keywords {', '.join(repr(key) for key in keywords)} would be ignored: move "
+                "them into that file, or remove them.",
+                func_name=func_name,
+                node_type=node_type.value,
+                keywords=keywords,
+            )
         normalised_ref = config_ref.replace("\\", "/")
         base = base_dir or Path.cwd()
         try:

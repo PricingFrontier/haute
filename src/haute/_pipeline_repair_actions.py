@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import json
 from collections.abc import Sequence
 from copy import deepcopy
 from pathlib import Path
@@ -11,8 +10,8 @@ from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any, Literal
 
 from haute._config_io import (
-    _prepare_config_for_sidecar,
     config_path_for_node,
+    node_config_json,
     node_emits_sidecar,
     palette_default_config,
 )
@@ -24,6 +23,7 @@ from haute._pipeline_repair import (
     RepairArtifactEdit,
     _bounded_diff,
     _decode_utf8_artifact,
+    _document_at_revision,
     _find_target,
     _iter_recovery_nodes,
     _recovery_structure,
@@ -171,6 +171,7 @@ def _reset_node(
     replacement_config: dict[str, Any] | None = None,
     shared_config_confirmed: bool = False,
     recover: bool = False,
+    unresolved_issues: Sequence[RecoveryIssue] = (),
 ) -> list[RepairArtifactEdit]:
     from haute._graph_utils import executable_input_name
     from haute.codegen import _node_to_code
@@ -284,8 +285,23 @@ def _reset_node(
         # The annotation is regenerated from the settings as the reload's parse
         # check derives it, never loading a model: a reset Model Score has no
         # model yet, and an old annotation carried forward goes stale.
-        generated = _node_to_code(node, source_names=source_names, contract_source="offline")
+        generated = _node_to_code(
+            node, source_names=source_names, contract_source="offline", receiver=receiver
+        )
     except (HauteError, ValueError) as exc:
+        unresolved = [issue for issue in unresolved_issues if issue.severity == "error"]
+        if unresolved:
+            # The engine's own refusal, at the setting it names, is why the node
+            # cannot be written: say which setting to correct in its source.
+            raise PipelineRepairError(
+                "repair_action_unsupported",
+                "Recover settings cannot write this node until its source corrects "
+                + "; ".join(f"{issue.path or '/'}: {issue.message}" for issue in unresolved),
+                issues=[
+                    {"path": issue.path, "code": issue.code, "message": issue.message}
+                    for issue in unresolved
+                ],
+            ) from exc
         raise _unsupported(
             f"This node cannot be generated from these settings and connections: {exc}"
         ) from exc
@@ -340,16 +356,7 @@ def _reset_node(
             generated.encode("utf-8"),
             [(literal, quote_string(reference)) for literal in literals],
         ).decode("utf-8")
-        # The annotation lives on the decorator; a sidecar copy is what goes stale.
-        sidecar_config = {key: value for key, value in config.items() if key != "contract"}
-        after = (
-            json.dumps(
-                _prepare_config_for_sidecar(node_type, sidecar_config, node_label=target.label),
-                indent=2,
-                ensure_ascii=False,
-            )
-            + "\n"
-        ).encode("utf-8")
+        after = node_config_json(node_type, config, node_label=target.label).encode("utf-8")
         edits.append(
             _edit(
                 config_path,
@@ -361,15 +368,6 @@ def _reset_node(
                 else "Replace this node's settings with the current palette defaults.",
             )
         )
-    if receiver == "submodel":
-        receiver_names = [
-            name
-            for name in ast.walk(ast.parse(generated))
-            if isinstance(name, ast.Name) and name.id == "pipeline"
-        ]
-        generated = _replace_spans(
-            generated.encode("utf-8"), [(name, "submodel") for name in receiver_names]
-        ).decode("utf-8")
     # LibCST matches the function's definition span and replaces its decorators too.
     updated = _with_polars_import(_replace_spans(before, [(function, generated.rstrip("\n"))]))
     edits.insert(
@@ -416,6 +414,7 @@ def _recover_node(
         document,
         replacement_config=result.config,
         recover=True,
+        unresolved_issues=result.issues,
     )
     # A dropped body's report replaces the engine's view of the empty code slot it left.
     body_dropped = any(change.path == "/code" for change in raw_changes)
@@ -506,13 +505,7 @@ def build_recovery_action_plan(
     *, project_root: Path, request: PipelineRepairRecoverRequest
 ) -> PipelineRepairPlan:
     root = project_root.resolve()
-    root_path = _resolve_project_file(root, request.source_file, suffix=".py")
-    document = load_pipeline_editor_document(root_path, project_root=root)
-    if document.source_revision != request.source_revision:
-        raise PipelineRepairError(
-            "repair_revision_conflict",
-            "The pipeline changed after this recovery document loaded; reload before repairing.",
-        )
+    root_path, document = _document_at_revision(root, request.source_file, request.source_revision)
     path = _resolve_project_file(root, request.target_source_file, suffix=".py")
     target = _find_target(
         document,
@@ -634,13 +627,12 @@ def apply_scoped_node_save(
     from haute._pipeline_repair import _commit_repair_plan
 
     root = project_root.resolve()
-    root_path = _resolve_project_file(root, request.source_file, suffix=".py")
-    document = load_pipeline_editor_document(root_path, project_root=root)
-    if document.source_revision != request.source_revision:
-        raise PipelineRepairError(
-            "repair_revision_conflict",
-            "The pipeline changed after this document loaded; reload before saving.",
-        )
+    root_path, document = _document_at_revision(
+        root,
+        request.source_file,
+        request.source_revision,
+        stale_message="The pipeline changed after this document loaded; reload before saving.",
+    )
     path = _resolve_project_file(root, request.target_source_file, suffix=".py")
     target = _find_target(
         document,

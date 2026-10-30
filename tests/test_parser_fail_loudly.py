@@ -74,29 +74,12 @@ from tests.conftest import write_node_config
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
 # ===========================================================================
-# Item #18 — Silent config-path recovery on Windows
+# Item #18 — A missing config fails loudly
 # ===========================================================================
 #
-# Current behaviour: when ``load_node_config``
-# fails with ``FileNotFoundError`` / ``json.JSONDecodeError`` / ``OSError`` /
-# ``ValueError``, the code logs a warning and silently falls back to scanning
-# every config folder for a file named ``{func_name}.json``.  If that scan
-# also fails, it writes an empty config with a ``_load_error`` marker.
-#
-# Problems:
-#   1. A genuinely missing config is masked by the recovery scan — users
-#      never learn the real path is wrong.
-#   2. If the recovery scan finds an unrelated file with the same name in a
-#      different folder, the wrong config is silently loaded for the node.
-#   3. The ``_load_error`` marker is inconsistently respected by downstream
-#      code paths, producing subtle divergence between parse and save.
-#
-# After the fix:
-#   - A missing config raises ``ConfigError`` with the original path and a
-#     remediation hint.
-#   - The recovery scan is either removed outright OR opt-in via an explicit
-#     kwarg (e.g. ``recover_mangled_paths=True``); it is never silent.
-#   - No ``_load_error`` marker is written on disk.
+# A ``config=`` path that does not load raises ``ConfigError`` naming the
+# path, with a remediation hint. Nothing scans the other config folders for
+# a file of the node's name, and nothing stands an empty config in for it.
 # ===========================================================================
 
 
@@ -114,7 +97,6 @@ class TestItem18ConfigPathFailsLoudly:
                 {"config": "config/data_input/does_not_exist.json"},
                 body="",
                 param_names=[],
-                n_params=0,
                 base_dir=tmp_path,
                 func_name="does_not_exist",
                 explicit_node_type=NodeType.DATA_INPUT,
@@ -130,7 +112,6 @@ class TestItem18ConfigPathFailsLoudly:
                 {"config": reference},
                 body="...",
                 param_names=["upstream"],
-                n_params=1,
                 base_dir=tmp_path,
                 func_name="banded",
                 explicit_node_type=NodeType.BANDING,
@@ -146,7 +127,6 @@ class TestItem18ConfigPathFailsLoudly:
                 {"contract": contract},
                 body="    df = upstream\n    return df\n",
                 param_names=["upstream"],
-                n_params=1,
                 base_dir=tmp_path,
                 func_name="later",
                 explicit_node_type=NodeType.POLARS,
@@ -162,7 +142,6 @@ class TestItem18ConfigPathFailsLoudly:
                 {"config": referenced_path},
                 body="",
                 param_names=[],
-                n_params=0,
                 base_dir=tmp_path,
                 func_name="missing_file",
                 explicit_node_type=NodeType.DATA_INPUT,
@@ -186,7 +165,6 @@ class TestItem18ConfigPathFailsLoudly:
                 {"config": "config/banding/no_such_band.json"},
                 body="",
                 param_names=["df"],
-                n_params=1,
                 base_dir=tmp_path,
                 func_name="no_such_band",
                 explicit_node_type=NodeType.BANDING,
@@ -199,29 +177,16 @@ class TestItem18ConfigPathFailsLoudly:
             f"Error should include remediation guidance. Got: {rendered!r}"
         )
 
-    def test_no_silent_load_error_marker_written(self, tmp_path: Path) -> None:
-        """After the fix, a missing config must NOT silently return a dict
-        containing ``_load_error`` — it must raise instead."""
-        # The old behaviour returned ``(node_type, {"_load_error": ...})``.
-        # The new behaviour is to raise.  Either way the internal
-        # marker must never surface.
-        try:
-            _, cfg = _resolve_node_config(
+    def test_a_missing_config_raises(self, tmp_path: Path) -> None:
+        """A missing config is never an empty config with a marker: it raises."""
+        with pytest.raises(ConfigError):
+            _resolve_node_config(
                 {"config": "config/data_input/missing.json"},
                 body="",
                 param_names=[],
-                n_params=0,
                 base_dir=tmp_path,
                 explicit_node_type=NodeType.DATA_INPUT,
             )
-        except ConfigError:
-            return  # raising is acceptable
-        # If it does NOT raise, then at minimum it must not have
-        # inserted a silent _load_error marker.
-        assert "_load_error" not in cfg, (
-            "Silent _load_error marker is a fallback that hides the real "
-            "path problem. Fail loudly instead."
-        )
 
     def test_windows_path_recovery_is_not_silent(self, tmp_path: Path) -> None:
         """Even when a recovery-by-func-name scan would succeed, it must not
@@ -247,7 +212,6 @@ class TestItem18ConfigPathFailsLoudly:
                 {"config": mangled_path},
                 body="",
                 param_names=["df"],
-                n_params=1,
                 base_dir=tmp_path,
                 func_name="age_band",
                 explicit_node_type=NodeType.BANDING,
@@ -275,7 +239,6 @@ class TestItem18ConfigPathFailsLoudly:
                 {"config": "config/data_input/broken.json"},
                 body="",
                 param_names=[],
-                n_params=0,
                 base_dir=tmp_path,
                 func_name="broken",
                 explicit_node_type=NodeType.DATA_INPUT,

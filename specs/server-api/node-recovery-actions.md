@@ -46,7 +46,8 @@ carries as its remediation (for the file path, `from modules import rates`, then
   and resolvable incoming connections. It never requires healthy upstream nodes: a
   damaged chain resets in any order, binding inputs from authored identities. It uses
   the same default configuration as adding that type from the palette and the current
-  single-node code generator. It preserves
+  single-node code generator, which writes a submodel node's decorator on `submodel`
+  directly (`receiver=`), so no name in the node's own code is rewritten. It preserves
   identity, description, position and authored connections, but replaces that node's
   settings and function body. Existing config references are preserved and their content
   replaced only when exclusively owned by this node. Unknown types, node instances,
@@ -79,7 +80,13 @@ carries as its remediation (for the file path, `from modules import rates`, then
   declared-incomplete form and surface as completeness, not as a blocked plan. Every
   error-level engine issue that survives the recover, for any node type, is reported
   as a completeness entry on the target with the engine's own message, so nothing
-  unresolved reads as fixed. Authored
+  unresolved reads as fixed. The issues come from the validators the engine runs
+  itself wherever one exists, never a restatement of them: an Edge Join's
+  `build_edge_join_kwargs`, a Scenario Expander's `scenario_step_count`, a Constant's
+  `constant_frame`, a Model Score's `parse_model_source` and an External File's
+  `validate_external_file_config`. Every issue path is a JSON pointer into the config
+  (`/how`, `/input_scenario_map/quotes`, `/factors/0`), and the empty pointer for a
+  whole-config issue; an engine refusal sits at the setting it names. Authored
   code in a declared code slot is retained when the function has its node type's current
   form: a declaration, or a hook (first parameter `df`; an External File's keyword-only
   `obj`). A body the decorator never calls — code on a type that carries none, or code
@@ -225,5 +232,6 @@ regenerated annotation and a sidecar without the stale `contract` copy), a funct
 in the pre-declaration generated form on a type without code and on a hook type (recover
 keeps the settings, regenerates the declaration and reports the body removed), the same
 on a stepped node (its steps survive and regenerate the hook), a reset below an
-unavailable upstream, and the UI's
+unavailable upstream, an Edge Join `how="asof"` recovered with the engine's message at
+`/how`, a submodel hook binding a local `pipeline` name reset with that name unchanged, and the UI's
 action-specific confirmation/apply and failure behaviour.

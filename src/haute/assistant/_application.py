@@ -12,7 +12,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any
 
-from haute._ast_helpers import _extract_function_bodies, _is_pipeline_authored_decorator
+from haute._ast_helpers import _is_pipeline_authored_decorator
 from haute._banding_config import normalise_banding_factors
 from haute._builders import load_external_file_object
 from haute._config_io import collect_node_configs, config_path_for_node, node_emits_sidecar
@@ -892,7 +892,6 @@ def _prove_steps_survive_save(
         for skeleton in _extract_decorated_node_skeletons(
             tree,
             _is_pipeline_authored_decorator,
-            _extract_function_bodies(source, tree=tree),
             source=source,
         )
     }

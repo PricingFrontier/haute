@@ -290,29 +290,6 @@ class TestPreambleAliasAware:
         assert "BuildPipeline" not in preamble
         assert "pipeline =" not in preamble
 
-    def test_from_import_alias_uses_same_boundary_in_syntax_fallback(self) -> None:
-        source = textwrap.dedent(
-            """\
-            import polars as pl
-            from haute import Pipeline as BuildPipeline
-
-            CONST = 1
-
-            pipeline = BuildPipeline(
-                "main",
-                description="multiline",
-            )
-
-            @pipeline.polars
-            def broken(:
-                pass
-            """
-        )
-
-        preamble = _extract_preamble(source)
-
-        assert preamble == "CONST = 1"
-
 
 # ---------------------------------------------------------------------------
 # F312 — implicit param-name edges were not de-duplicated, so a duplicated

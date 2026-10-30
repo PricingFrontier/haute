@@ -15,7 +15,6 @@ import polars as pl
 import pytest
 
 from haute._builders import _apply_online, _apply_ratebook, _build_node_fn
-from haute._config_builder import _build_node_config
 from haute._types import GraphNode, NodeData, NodeType
 from haute.codegen import _node_to_code
 from haute.errors import ConfigError, RatingFactorDtypeContractError
@@ -118,67 +117,6 @@ class TestEnumValue:
 # ---------------------------------------------------------------------------
 # Config building
 # ---------------------------------------------------------------------------
-
-
-class TestBuildConfig:
-    def test_build_config(self):
-        config = _build_node_config(
-            node_type=NodeType.OPTIMISER_APPLY,
-            decorator_kwargs={
-                "optimiser_apply": True,
-                "source_type": "file",
-                "artifact_path": "artifacts/opt_v1.json",
-                "version_column": "__opt_ver__",
-                "optimised_value_column": "selected_price_factor",
-            },
-            body="",
-            param_names=["df"],
-        )
-        assert config["sourceType"] == "file"
-        assert config["artifact_path"] == "artifacts/opt_v1.json"
-        assert config["version_column"] == "__opt_ver__"
-        assert config["optimised_value_column"] == "selected_price_factor"
-
-    def test_build_config_minimal(self):
-        config = _build_node_config(
-            node_type=NodeType.OPTIMISER_APPLY,
-            decorator_kwargs={"optimiser_apply": True},
-            body="",
-            param_names=["df"],
-        )
-        assert "artifact_path" not in config
-
-    def test_build_config_mlflow_keys(self):
-        config = _build_node_config(
-            node_type=NodeType.OPTIMISER_APPLY,
-            decorator_kwargs={
-                "optimiser_apply": True,
-                "source_type": "registered",
-                "registered_model": "my_opt_model",
-                "version": "3",
-                "mlflow_destination": "local",
-            },
-            body="",
-            param_names=["df"],
-        )
-        assert config["sourceType"] == "registered"
-        assert config["registered_model"] == "my_opt_model"
-        assert config["version"] == "3"
-        assert config["mlflow_destination"] == "local"
-
-    def test_build_config_ratebook_input(self):
-        config = _build_node_config(
-            node_type=NodeType.OPTIMISER_APPLY,
-            decorator_kwargs={
-                "optimiser_apply": True,
-                "source_type": "file",
-                "artifact_path": "artifacts/ratebook.json",
-                "ratebook_input": "banded_quotes",
-            },
-            body="",
-            param_names=["scored_quotes", "banded_quotes"],
-        )
-        assert config["ratebook_input"] == "banded_quotes"
 
 
 class TestApplyFromConfigDestination:

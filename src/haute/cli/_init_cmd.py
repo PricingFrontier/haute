@@ -522,6 +522,7 @@ def _add_workbench(project_dir: Path) -> None:
     from haute._project import resolve_pipeline_file
     from haute._scaffold import starter_form
     from haute._workbench_config import FORM_FOLDER
+    from haute.errors import ConfigError
 
     def refuse(message: str) -> NoReturn:
         click.echo(f"Error: {message}", err=True)
@@ -539,6 +540,9 @@ def _add_workbench(project_dir: Path) -> None:
         pipeline_file = resolve_pipeline_file(project_dir)
     except FileNotFoundError as exc:
         refuse(f"the workbench's form goes beside the pipeline: {exc}")
+    except ConfigError as exc:
+        # haute.toml names a pipeline outside the project (through a link, say).
+        refuse(f"the workbench's form goes beside the pipeline: {exc.message}")
     folder = pipeline_file.parent / FORM_FOLDER
     try:
         relative = folder.resolve().relative_to(project_dir.resolve()).as_posix()
