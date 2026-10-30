@@ -5910,7 +5910,8 @@ class TestModuleWatchingFollowsTheConfiguredPipeline:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, folder: str
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        pipeline, module = _module_project(tmp_path, folder)
+        pipeline, _ = _module_project(tmp_path, folder)
+        module = tmp_path / folder / "modules" / "rates.py"
         module.write_text(_RATES_MODULE.format(premium=150), encoding="utf-8")
 
         frames = _watch({(Change.modified, str(module))})
@@ -5949,7 +5950,8 @@ class TestModuleWatchingFollowsTheConfiguredPipeline:
         from haute.routes._helpers import mark_self_write
 
         monkeypatch.chdir(tmp_path)
-        _pipeline, module = _module_project(tmp_path, "rating")
+        _module_project(tmp_path, "rating")
+        module = tmp_path / "rating" / "modules" / "rates.py"
         content = _RATES_MODULE.format(premium=175).encode("utf-8")
         mark_self_write(module, content=content)
         module.write_bytes(content)
