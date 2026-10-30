@@ -84,20 +84,73 @@ function connectionEndState({
 
 const mouseUpEvent = { clientX: 200, clientY: 150 } as MouseEvent
 
-it("offers unbound instance inputs at the drop and commits only the picked binding", () => {
+function makeSubmodelInputParams() {
   const params = makeParams()
-  params.graphRef.current.nodes = [identifiedNode("source"), identifiedNode("copy", NODE_TYPES.SUBMODEL)]
-  params.validateConnection = vi.fn((connection) => connection.targetHandle === SUBMODEL_INPUT_HANDLE
-    ? { ok: true as const, inputChoices: ["policy", "rates"] } : { ok: true as const })
-  const { result } = renderHook(() => useEdgeHandlers(params))
-  act(() => result.current.onConnectEnd(mouseUpEvent, connectionEndState({ from: "source", to: "copy", toHandleId: SUBMODEL_INPUT_HANDLE })))
-  expect(params.setEdges).not.toHaveBeenCalled()
-  expect(result.current.submodelInputMenu).toMatchObject({ x: 200, y: 150, choices: ["policy", "rates"] })
-  act(() => result.current.selectSubmodelInput("rates"))
-  expect(params.setEdges).toHaveBeenCalledOnce()
-  const committed = params.setEdges.mock.results[0].value
-  expect(committed).toEqual([expect.objectContaining({ source: "source", target: "copy", targetHandle: "in__rates" })])
-  expect(result.current.submodelInputMenu).toBeNull()
+  const submodels = {
+    pricing: {
+      definitionId: "pricing", file: "modules/pricing.py",
+      graph: { nodes: [], edges: [] },
+      inputPorts: [{ name: "policy", targets: [] }, { name: "rates", targets: [] }],
+      outputPorts: [],
+    },
+  }
+  params.graphRef.current.nodes = [
+    identifiedNode("source"), identifiedNode("other"),
+    identifiedNode("owner", NODE_TYPES.SUBMODEL, { config: { definitionId: "pricing", alias: "owner" } }),
+    identifiedNode("copy", NODE_TYPES.SUBMODEL, { config: { definitionId: "pricing", alias: "copy", instanceOf: "owner" } }),
+  ]
+  params.validateConnection = (connection) => validatePipelineConnection(
+    connection, params.graphRef.current.nodes as unknown as SimpleNode[],
+    params.graphRef.current.edges, submodels,
+  )
+  return { ...params, submodels }
+}
+
+describe("submodel input picker", () => {
+  afterEach(() => {
+    cleanup()
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
+  })
+
+  it.each(["source-to-target", "target-to-source"])(
+    "offers unbound instance inputs and commits only the picked binding for %s drags", (direction) => {
+      const params = makeSubmodelInputParams()
+      const { result } = renderHook(() => useEdgeHandlers(params))
+      const endState = direction === "source-to-target"
+        ? connectionEndState({ from: "source", to: "copy", toHandleId: SUBMODEL_INPUT_HANDLE })
+        : connectionEndState({ from: "copy", to: "source", fromHandleId: SUBMODEL_INPUT_HANDLE,
+          fromHandleType: "target", toHandleType: "source" })
+      act(() => result.current.onConnectEnd(mouseUpEvent, endState))
+      expect(params.setEdges).not.toHaveBeenCalled()
+      expect(result.current.submodelInputMenu).toMatchObject({ x: 200, y: 150, choices: ["policy", "rates"] })
+      act(() => result.current.selectSubmodelInput("rates"))
+      expect(params.setEdges).toHaveBeenCalledOnce()
+      const committed = params.setEdges.mock.results[0].value
+      expect(committed).toEqual([expect.objectContaining({ source: "source", target: "copy", targetHandle: "in__rates" })])
+      expect(result.current.submodelInputMenu).toBeNull()
+    },
+  )
+
+  it("refuses a picked input that became bound while the menu was open", () => {
+    const params = makeSubmodelInputParams()
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    act(() => result.current.onConnectEnd(mouseUpEvent,
+      connectionEndState({ from: "source", to: "copy", toHandleId: SUBMODEL_INPUT_HANDLE })))
+    expect(result.current.submodelInputMenu?.choices).toEqual(["policy", "rates"])
+
+    const existingBinding = { id: "other_rates", source: "other", target: "copy", targetHandle: "in__rates" }
+    params.graphRef.current.edges = [existingBinding]
+    act(() => result.current.selectSubmodelInput("rates"))
+
+    expect(params.setEdges).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.graphRef.current.edges).toEqual([existingBinding])
+    expect(result.current.submodelInputMenu).toBeNull()
+    expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
+      type: "error", text: 'Connection rejected: input name "rates" is already connected',
+    })
+  })
 })
 
 function identifiedNode(

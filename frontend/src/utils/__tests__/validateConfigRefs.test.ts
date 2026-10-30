@@ -81,6 +81,14 @@ describe("validateConfigRefs", () => {
     expect(validateConfigRefs([makeNode("owner", "owner", {}, "submodel"), makeNode("copy", "copy", { instanceOf: "owner" }, "submodel")])).toEqual([])
   })
 
+  it("rejects malformed occurrence identity even when its owner exists", () => {
+    const nodes = [
+      makeNode("owner", "owner", {}, "submodel"),
+      makeNode("copy", "copy", { definitionId: "", instanceOf: "owner" }, "submodel"),
+    ]
+    expect(() => validateConfigRefs(nodes)).toThrow('Submodel "copy" has invalid identity configuration.')
+  })
+
 })
 
 describe("formatConfigRefWarnings", () => {
