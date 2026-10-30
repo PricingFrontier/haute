@@ -13,6 +13,7 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useUIStore from "../../stores/useUIStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
+import { nodeData } from "../../types/node"
 
 vi.mock("../../api/client", async (original) => ({
   ...await original<typeof import("../../api/client")>(),
@@ -83,6 +84,32 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe("submodel occurrence previews", () => {
+  it("keeps the chosen public output after renaming an instance and refreshing", async () => {
+    const hook = await loaded(fixture(true, true))
+    act(() => hook.result.current.fetchPreview(hook.occurrence, { debounceMs: 0 }))
+    await settled(hook)
+    act(() => hook.result.current.previewNodeFrame("again", "again_audit"))
+    await settled(hook)
+    const renamed = { ...hook.occurrence, data: { ...hook.occurrence.data,
+      label: "renamed", config: { ...nodeData(hook.occurrence).config, alias: "renamed" },
+      _sourceHandleInputNames: { out__premium: "renamed_premium", out__audit: "renamed_audit" },
+    } }
+    hook.params.graphRef.current = { nodes: [renamed], edges: [] }
+    hook.params.selectedNode = renamed
+    hook.rerender()
+    vi.mocked(previewNode).mockResolvedValueOnce(response(33))
+    act(() => hook.result.current.refreshPreview(renamed))
+    await settled(hook)
+    expect(previewNode).toHaveBeenCalledTimes(3)
+    expect(previewNode).toHaveBeenLastCalledWith(expect.objectContaining({
+      nodeId: "submodel_runtime/again/finish", portLabel: "checks",
+    }))
+    expect(hook.result.current.previewData).toMatchObject({
+      nodeLabel: "renamed_audit", selected_frame: "renamed_audit", preview: [{ value: 33 }],
+    })
+    expect(Object.keys(hook.result.current.previewData!.frame_columns!)).toEqual(["renamed_premium", "renamed_audit"])
+  })
+
   it.each([false, true])("previews the first output and selects another by its output name (instance=%s)", async (instance) => {
     const hook = await loaded(fixture(instance))
     act(() => hook.result.current.fetchPreview(hook.occurrence, { debounceMs: 0 }))

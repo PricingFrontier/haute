@@ -411,6 +411,28 @@ def test_node_instance_preflight_refuses_orphan_sidecar(client: TestClient, tmp_
     assert not (tmp_path / "modules" / "calc.py").exists()
 
 
+def test_node_instance_allocation_skips_generated_clone_collisions(
+    client: TestClient, tmp_path: Path
+) -> None:
+    body = _instance_body()
+    body["graph"]["nodes"].append(
+        {
+            "id": "taken",
+            "data": {"label": "calc_2__calc_node", "nodeType": "polars", "config": {}},
+        }
+    )
+    with _patch_parent_document(tmp_path):
+        before = {
+            p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()
+        }
+        response = client.post("/api/submodel/instance", json=body)
+    assert response.status_code == 200, response.text
+    assert response.json()["instance_name"] == "calc_3"
+    assert {
+        p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()
+    } == before
+
+
 def test_node_instance_refuses_removed_node_reuse_without_writing(
     client: TestClient, tmp_path: Path
 ) -> None:

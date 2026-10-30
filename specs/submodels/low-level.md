@@ -146,8 +146,10 @@ Expansion is a pure transform per instance:
    instances, under distinct physical names. The consumers of a renamed clone,
    its siblings inside the clone and the parent consumers of its outputs, keep
    the names they read through step 3's rename. A dissolve names an instance's
-   nodes the same way, and a name that then collides with another node's is a
-   name violation, as any is.
+   nodes the same way. The executable-name rule reserves these generated names
+   before expansion, across the root graph, definitions and other instances;
+   a collision is refused at authoring time with the instance, child and
+   conflicting name, including when any of them is renamed.
 3. Build one schema-declared reference map per occurrence from local node ids
    to qualified runtime ids and from each bound public input port id to its
    upstream parent identity. Rewrite cloned child configs through that map.
@@ -266,7 +268,10 @@ nodeId)`, as a drilled child is targeted, with `handleId` as the request's
 preview their own frames. The preview shows one output at a time, under its
 output name: the first declared output when the occurrence is selected, and
 another when the user picks it from the preview's frame selector, which lists
-the occurrence's outputs. Each output is its own preview request, cache entry
+the occurrence's outputs. The retained choice is its public `out__<name>` handle,
+not its display name: renaming an instance keeps the chosen port on Refresh and
+derives its new display name from the current authoritative identities.
+Each output is its own preview request, cache entry
 and Refresh, superseded by a newer request as any preview is; an output whose
 preview fails shows its own error; trace-cell clicks trace that target and
 frame. An occurrence with no public output previews nothing.
@@ -390,7 +395,13 @@ supplies pre-read bytes to authenticate exact caller content against concurrent 
    `target_instance_id` selects exactly one occurrence; no target selects all.
 2. For each selected canonical occurrence, clone definition nodes using
    delimiter-safe ids derived from `(instanceId, localNodeId)` and add the
-   occurrence position to each definition-local position. Do not attach
+   occurrence position to each definition-local position. Owners retain child
+   labels; instances use `<instance>__<child>`. Before expansion, the executable-name
+   rule reserves every instance clone's sanitized name, ignoring case, against
+   all authored node/occurrence names and other clone names. Its collision names
+   the instance, definition child and conflicting node; save, codegen, strict
+   parse, editor identity requests and allocation apply this same rule, including
+   when an instance or definition child is renamed. Do not attach
    composition metadata to `NodeData.config`; executor builders validate that
    mapping as the node type's domain config.
 3. Rewrite only schema-declared node-id config fields through the local-to-runtime
@@ -522,10 +533,14 @@ Acquires `save_lock` and runs the body in a threadpool, as create does:
    port name.
 5. Place an instance of the definition with `instanceOf` the owner, named and
    positioned as the browser names and places a submodel copy (`<name>_2`,
-   collision-free), with no bindings.
+   collision-free), with no bindings. Its allocation candidate includes the
+   definition and owner, so allocation also skips aliases whose clone names
+   would collide with existing executable names.
 6. Run the read-only module no-clobber preflight for the definition's module
    and return the graph, the owner and instance names, the definition id and
    the unchanged `source_revision`. Nothing is written until Save.
+   The browser commits the returned instance as the sole selected canvas node
+   and shows that same node in the inspector, in the one undoable graph change.
 
 ### `GET /api/submodel/{definition_id}?source_file=<parent>` (`get_submodel` -> `_get_submodel_blocking`)
 

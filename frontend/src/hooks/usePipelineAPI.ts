@@ -41,6 +41,7 @@ import { workbenchNodePorts, type WorkbenchTables } from "../utils/workbenchTabl
 import {
   runtimeNodeIdForVisibleNode,
   submodelOutputPreview,
+  submodelOutputHandle,
   type SubmodelOutputPreview,
   type DrilledOccurrenceIdentity,
 } from "../utils/submodelRuntimeTarget"
@@ -493,7 +494,7 @@ export default function usePipelineAPI({
   // so the node-data epoch it is current at — and the frame to fetch again — is
   // kept beside the object the panel shows.
   const framePreviewEpochs = useRef(new WeakMap<PreviewData, { epoch: number; portLabel: string }>())
-  // Frame names for ordinary nodes, authoritative output names for occurrences.
+  // Frame names for ordinary nodes, stable public output handles for occurrences.
   // Refresh and recalculation retain the choice; selecting an occurrence resets it.
   const chosenFrames = useRef(new Map<string, string>())
   const outputFor = useCallback((node: Node) =>
@@ -1316,12 +1317,14 @@ export default function usePipelineAPI({
   const previewNodeFrame = useCallback((nodeId: string, portLabel: string) => {
     const node = graphRef.current.nodes.find((n) => n.id === nodeId)
     if (!node || !canPreviewNode(node)) return
-    chosenFrames.current.set(nodeId, portLabel)
     if (effectiveNodeType(node) === NODE_TYPES.SUBMODEL) {
+      const handle = submodelOutputHandle(node, portLabel)
+      chosenFrames.current.set(nodeId, handle)
       previewDebounce.cancel()
       fetchPreviewImmediate(node)
       return
     }
+    chosenFrames.current.set(nodeId, portLabel)
     const requestId = ++previewRequestSeq.current
     previewTarget.current = node
     stopRetry.current = null

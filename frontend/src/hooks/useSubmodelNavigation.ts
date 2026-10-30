@@ -218,18 +218,21 @@ export default function useSubmodelNavigation({
         if (transformRequestIsStale(request)) {
           return { ok: false, error: STALE_CREATE_SUBMODEL }
         }
+        const committedNodes = "instance_name" in data
+          ? resolved.nodes.map(node => ({ ...node, selected: node.id === data.instance_name }))
+          : resolved.nodes
         const selected = "instance_name" in data
-          ? resolved.nodes.find(node => node.id === data.instance_name)
+          ? committedNodes.find(node => node.id === data.instance_name)
           : undefined
         if ("instance_name" in data && !selected) {
           throw new Error(`Create Instance returned no occurrence ${data.instance_name}. Reload the pipeline and retry.`)
         }
-        graphRef.current = { nodes: resolved.nodes, edges: resolved.edges }
+        graphRef.current = { nodes: committedNodes, edges: resolved.edges }
         submodelsRef.current = resolved.submodels
         preambleRef.current = nextPreamble
         preservedBlocksRef.current = nextPreservedBlocks
         useGraphStore.getState().setNodesAndEdgesAndSubmodels(
-          resolved.nodes,
+          committedNodes,
           resolved.edges,
           resolved.submodels,
           nextPreamble,

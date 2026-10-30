@@ -591,11 +591,19 @@ def create_node_instance_graph(
     result = result.model_copy(update={"submodels": {**definitions, definition_name: definition}})
     # Match the browser's copy numbering, including copies numbered above nine.
     base = re.sub(r"_([2-9]|[1-9]\d+)$", "", owner_name)
+    candidate = GraphNode(
+        id=uuid4().hex,
+        data=NodeData(
+            label=base,
+            nodeType=NodeType.SUBMODEL,
+            config={"definitionId": definition_name, "alias": base, "instanceOf": owner_name},
+        ),
+    )
     names, _ = name_candidates(
-        result,
+        result.model_copy(update={"nodes": [*result.nodes, candidate]}),
         [
             NamingCandidate(
-                node_id=uuid4().hex,
+                node_id=candidate.id,
                 label=base,
                 node_type=NodeType.SUBMODEL,
                 alias=base,

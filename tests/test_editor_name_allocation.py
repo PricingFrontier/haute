@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
 from haute.errors import RequestRefusedError
 from haute.routes._save_pipeline import SavePipelineService
+from tests._git_helpers import init_repo
 
 
 def _node(node_id: str, label: str | None = None, node_type: str = "polars", **config: Any):
@@ -60,9 +61,49 @@ def _post(client: TestClient, graph: PipelineGraph, candidates: list[dict], allo
 
 @pytest.fixture()
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    init_repo(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("haute.routes.pipeline.pipeline_dir", lambda: tmp_path)
     return tmp_path
+
+
+@pytest.mark.parametrize("role", ["node", "instance", "child"])
+def test_generated_clone_names_refuse_renames_and_are_skipped_by_allocation(
+    project: Path, client: TestClient, role: str
+) -> None:
+    copy = _node(
+        "copy_id", "copy", "submodel", definitionId="rates", alias="copy", instanceOf="rates"
+    )
+    ordinary = _node("ordinary", "spare")
+    candidate = _candidate("ordinary", "copy__rate_child")
+    expected = "copy__rate_child 2"
+    if role == "instance":
+        ordinary = _node("ordinary", "copy__rate_child")
+        copy.data.label = "again"
+        copy.data.config["alias"] = "again"
+        candidate = {
+            **_candidate("copy_id", "copy", "submodel", alias="copy"),
+            "instance_of": "rates",
+        }
+        expected = "copy_2"
+    elif role == "child":
+        ordinary = _node("ordinary", "copy__renamed")
+        candidate = {**_candidate("child", "renamed"), "submodel": "rates"}
+        expected = "renamed 2"
+    graph = PipelineGraph(
+        nodes=[_occurrence("rates", "rates"), copy, ordinary],
+        edges=[],
+        submodels={"rates": _rates_definition()},
+    )
+
+    refused = _post(client, graph, [candidate], allocate=False)
+    collision = refused["identities"][0]["collision"]
+    assert collision is not None
+    assert "copy__" in collision and "copy" in collision and "rates" in collision
+    allocated = _post(client, graph, [candidate], allocate=True)
+    assert allocated["identities"][0]["label"] == expected
+    assert allocated["identities"][0]["collision"] is None
+    assert allocated["violations"] == []
 
 
 def test_duplicating_twice_gives_copy_then_copy_2(project: Path, client: TestClient) -> None:

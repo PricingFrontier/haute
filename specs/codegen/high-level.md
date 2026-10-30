@@ -107,6 +107,11 @@ Out of scope (owned by neighbouring components):
   - node function names and submodel occurrence aliases are unique across the root graph and
     every submodel graph, compared with `str.casefold`, so `Claims` and `claims` collide, as
     do two labels that sanitize to one identifier or are identical;
+  - an instance also reserves every generated clone name, `<instance>__<child>`,
+    sanitized and compared with `str.casefold` against authored names and other
+    clones. A collision names the instance, definition child and conflicting
+    node. Creation and renaming of any of these use the same rule, including
+    editor identity requests and allocation; allocation skips a colliding name;
   - none is a *reserved name*, one the generated module binds itself: `haute`, `pl`,
     `pipeline`, `submodel` (a submodel file's binding) and `global_constants`, compared
     exactly;

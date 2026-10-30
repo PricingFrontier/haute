@@ -16,6 +16,7 @@ import {
   qualifiedRuntimeNodeId,
   runtimeNodeIdForVisibleNode,
   submodelOutputPreview,
+  submodelOutputHandle,
   type DrilledOccurrenceIdentity,
 } from "../utils/submodelRuntimeTarget"
 import {
@@ -370,7 +371,8 @@ export default function useTracing({
         current.capabilities?.can_execute === true
     }
     const output = nodeData(selectedNode).nodeType === NODE_TYPES.SUBMODEL
-      ? submodelOutputPreview(selectedNode, submodelsRef.current, previewFrame)
+      ? submodelOutputPreview(selectedNode, submodelsRef.current,
+        previewFrame === undefined ? undefined : submodelOutputHandle(selectedNode, previewFrame))
       : undefined
     if (output === null) return
     const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)

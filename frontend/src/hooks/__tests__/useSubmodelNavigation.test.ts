@@ -1394,6 +1394,32 @@ describe("useSubmodelNavigation", () => {
     expect(useGraphStore.getState().dirty).toBe(false)
   })
 
+  it("selects the created instance on the canvas and in the inspector in one undoable change", async () => {
+    const params = makeParams({ setLastSelectedId: vi.fn() })
+    params.graphRef.current.nodes = params.graphRef.current.nodes.map(node => ({ ...node, selected: true }))
+    seedCanonicalGraph(params)
+    const before = useGraphStore.getState().nodes
+    const owner = { ...makeOccurrence(), selected: true }
+    const copy = makeOccurrence("pricing_2", "pricing")
+    vi.mocked(createNodeInstance).mockResolvedValueOnce({
+      status: "ok", owner_name: "pricing", instance_name: copy.id,
+      definition_id: DEFINITION_ID, source_revision: "parent-rev-1",
+      graph: { nodes: [owner, copy], edges: [], submodels: { [DEFINITION_ID]: makeDefinition() } },
+    })
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+    await act(async () => {
+      expect(await result.current.handleCreateNodeInstance("n1")).toEqual({ ok: true })
+    })
+    const nodes = useGraphStore.getState().nodes
+    expect(nodes.filter(node => node.selected).map(node => node.id)).toEqual([copy.id])
+    expect(params.graphRef.current.nodes).toEqual(nodes)
+    expect(params.setSelectedNode).toHaveBeenCalledWith(nodes.find(node => node.id === copy.id))
+    expect(params.setLastSelectedId).toHaveBeenCalledWith(copy.id)
+    expect(useGraphStore.getState().undoStack).toHaveLength(1)
+    act(() => useGraphStore.getState().undo())
+    expect(useGraphStore.getState().nodes.map(node => node.id)).toEqual(before.map(node => node.id))
+  })
+
   it.each(["request failure", "identity failure", "missing instance", "stale graph", "drilled"])(
     "keeps node wrapping atomic on %s", async (failure) => {
       const params = makeParams()

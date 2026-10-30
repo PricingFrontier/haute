@@ -112,6 +112,11 @@ class NameViolation:
             )
         if self.kind == "duplicate":
             nodes = " and ".join(party.describe() for party in self.parties)
+            if self.origin:
+                return (
+                    f"Nodes {nodes} collide on `{self.name}`, also taken by {self.origin}. "
+                    "Rename the conflicting node, instance or definition child."
+                )
             return (
                 f"Nodes {nodes} take one name, `{self.name}`; node names must differ "
                 "by more than case across the pipeline and its submodels."
@@ -198,22 +203,62 @@ def _named_parties(graph: PipelineGraph) -> Iterator[tuple[str, NameParty]]:
             yield _function_name(node), party
 
 
+@dataclass(frozen=True)
+class _NameClaim:
+    name: str
+    parties: tuple[NameParty, ...]
+    origin: str = ""
+
+
+def _name_claims(graph: PipelineGraph) -> Iterator[_NameClaim]:
+    """Authored names and generated clone names, with every node that can rename them."""
+    for name, party in _named_parties(graph):
+        yield _NameClaim(name, (party,))
+    definitions = graph.submodels or {}
+    for module, scoped in _named_graphs(graph):
+        for occurrence in scoped.nodes:
+            config = occurrence.data.config
+            if occurrence.data.nodeType != NodeType.SUBMODEL or config.get("instanceOf") is None:
+                continue
+            definition_id = config.get("definitionId")
+            alias = config.get("alias")
+            # Naming also runs on incomplete editor candidates; their shape is validated separately.
+            if not isinstance(definition_id, str) or not isinstance(alias, str):
+                continue
+            definition = definitions.get(definition_id)
+            if definition is None:
+                continue
+            instance_party = NameParty(occurrence.id, occurrence.data.label, module)
+            for child in definition.graph.nodes:
+                if child.data.nodeType in _STRUCTURAL_TYPES:
+                    continue
+                child_party = NameParty(child.id, child.data.label, definition_id)
+                yield _NameClaim(
+                    _sanitize_func_name(f"{alias}__{child.data.label}"),
+                    (instance_party, child_party),
+                    f"the generated clone of {child_party.describe()} in instance {alias!r}",
+                )
+
+
 def function_name_violations(graph: PipelineGraph) -> list[NameViolation]:
     """Collisions and reserved or built-in hits among node function names."""
     violations: list[NameViolation] = []
-    buckets: dict[str, list[tuple[str, NameParty]]] = {}
-    for name, party in _named_parties(graph):
-        buckets.setdefault(name.casefold(), []).append((name, party))
-        kind = reserved_or_builtin(name)
+    buckets: dict[str, list[_NameClaim]] = {}
+    for claim in _name_claims(graph):
+        buckets.setdefault(claim.name.casefold(), []).append(claim)
+        kind = reserved_or_builtin(claim.name)
         if kind is not None:
-            violations.append(NameViolation(kind=kind, name=name, parties=(party,)))
+            violations.append(NameViolation(kind=kind, name=claim.name, parties=claim.parties))
     for entries in buckets.values():
         if len(entries) > 1:
             violations.append(
                 NameViolation(
                     kind="duplicate",
-                    name=entries[0][0],
-                    parties=tuple(party for _, party in entries),
+                    name=entries[0].name,
+                    parties=tuple(
+                        dict.fromkeys(party for claim in entries for party in claim.parties)
+                    ),
+                    origin=" and ".join(claim.origin for claim in entries if claim.origin),
                 )
             )
     return violations
@@ -406,11 +451,16 @@ def function_name_problem(
     party = NameParty(node_id=excluding_node_id or "", label=label, module=ROOT_MODULE)
     if kind is not None:
         return NameViolation(kind=kind, name=name, parties=(party,)).message()
-    for existing, other in _named_parties(graph):
-        if other.node_id == excluding_node_id and other.module == ROOT_MODULE:
+    for claim in _name_claims(graph):
+        if any(
+            other.node_id == excluding_node_id and other.module == ROOT_MODULE
+            for other in claim.parties
+        ):
             continue
-        if existing.casefold() == name.casefold():
-            return NameViolation(kind="duplicate", name=name, parties=(other, party)).message()
+        if claim.name.casefold() == name.casefold():
+            return NameViolation(
+                kind="duplicate", name=name, parties=(*claim.parties, party), origin=claim.origin
+            ).message()
     return None
 
 
