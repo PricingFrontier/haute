@@ -5631,17 +5631,19 @@ def _write_other_importing_the_child(pipeline_dir: Path) -> None:
     invalidate_pipeline_index()
 
 
-def _frames_of_a_save(client: TestClient, child_code: str, base_revision: str) -> list[dict]:
-    """The frames a tab receives for a save of ``owner.py``."""
+def _frames_of_a_save(
+    client: TestClient, child_code: str, base_revision: str
+) -> tuple[dict, list[dict]]:
+    """A save of ``owner.py``'s answer, and the frames a tab receives for it."""
     with client.websocket_connect("/ws/sync", headers={"origin": "http://localhost"}) as tab:
         assert tab.receive_json()["type"] == "sync_connection"
-        _save_owner(client, child_code, base_revision)
+        saved = _save_owner(client, child_code, base_revision)
         # A probe sent after the save: its answer follows every frame the save sent.
         tab.send_json({"type": "resync", "source_file": "missing.py", "document_schema_version": 1})
         published = []
         while (frame := tab.receive_json())["type"] != "parse_error":
             published.append(frame)
-    return published
+    return saved, published
 
 
 class TestSaveNeverRoundTripsTheWatcher:
@@ -5732,7 +5734,7 @@ class TestSaveNeverRoundTripsTheWatcher:
         first = _save_owner(client, "return df", None)
         _write_other_importing_the_child(pipeline_dir)
 
-        published = _frames_of_a_save(client, "return df.head(1)", first["source_revision"])
+        _saved, published = _frames_of_a_save(client, "return df.head(1)", first["source_revision"])
 
         assert [frame["type"] for frame in published] == ["pipeline_document_update"] * 2
         assert [frame["source_file"] for frame in published] == ["owner.py", "other.py"]
@@ -5753,8 +5755,30 @@ class TestSaveNeverRoundTripsTheWatcher:
 
         monkeypatch.setattr(helpers, "load_pipeline_editor_document", locked)
 
-        published = _frames_of_a_save(client, "return df.head(1)", first["source_revision"])
+        _saved, published = _frames_of_a_save(client, "return df.head(1)", first["source_revision"])
 
+        assert [frame["source_file"] for frame in published] == ["owner.py"]
+
+    def test_a_discovery_that_fails_after_the_save_leaves_the_save_standing(
+        self, client: TestClient, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Finding the other documents reads every candidate pipeline file, one of which
+        may be unreadable: the save has committed by then, and answers as it did."""
+        import haute.routes._helpers as helpers
+        from haute.errors import ConfigError
+
+        first = _save_owner(client, "return df", None)
+        _write_other_importing_the_child(pipeline_dir)
+
+        def unreadable() -> list[Path]:
+            raise ConfigError("Could not read candidate pipeline file", path="locked.py")
+
+        monkeypatch.setattr(helpers, "discover_pipelines", unreadable)
+
+        saved, published = _frames_of_a_save(client, "return df.head(1)", first["source_revision"])
+
+        assert saved["status"] == "saved"
+        assert saved["source_revision"] not in {None, first["source_revision"]}
         assert [frame["source_file"] for frame in published] == ["owner.py"]
 
     def test_a_connection_of_another_owner_is_never_left_out(self) -> None:

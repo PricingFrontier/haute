@@ -321,7 +321,11 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
    panel (412) keeps the draft and shows the server's message with **Reload** and
    **Overwrite** (`utility-conflict`); until one is chosen, edits save nothing and a switch
    stops as for any refused save. Reload reads the file as it is now and shows it, dropping
-   the draft; Overwrite reads the file's current revision and saves the draft over it. Every
+   the draft; Overwrite reads the file's current revision and saves the draft over it. One
+   runs at a time, both buttons disabled meanwhile. Each first drops the edit waiting for
+   its debounce and lets the saves already queued settle, which the conflict refuses, so
+   none lands once the file is read; a read is applied only while the panel is still on
+   that file's conflict. Every
    create, save and delete reports its ledger capture through `reportSaveCapture`, as the
    pipeline's save does.
 5. Delete explicitly cancels a pending save for the deleted file. Create refreshes the list,

@@ -1271,14 +1271,20 @@ async def save_pipeline(body: SavePipelineRequest, request: Request) -> SavePipe
             )
             # Another open document reading what the save wrote (a shared submodel's
             # module or sidecar) is published too: the watcher no longer sees the write.
-            for update in await run_in_threadpool(
-                partial(
-                    shared_document_updates,
-                    committed.artifacts,
-                    saved=committed.path,
-                    project_root=project_root,
+            # The save has committed, so failing to find them is only logged.
+            try:
+                shared = await run_in_threadpool(
+                    partial(
+                        shared_document_updates,
+                        committed.artifacts,
+                        saved=committed.path,
+                        project_root=project_root,
+                    )
                 )
-            ):
+            except Exception as exc:
+                logger.warning("save_shared_documents_unpublished", error=str(exc))
+                shared = []
+            for update in shared:
                 default_bus.publish("pipeline.document.update", update)
             return response
     except StaleDocumentRevisionError as exc:

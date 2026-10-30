@@ -564,8 +564,11 @@ milestone, restore or switch never meets a half-written save
     then publishes, to every tab, each other pipeline's document the save changed
     (`shared_document_updates`): one importing a module the save wrote, or whose
     recovery manifest names a file it wrote (`pipelines_naming_artifacts`), as when
-    two pipelines share a submodel. A document that cannot be loaded is logged
-    (`save_shared_document_unpublished`) and left out; the save's answer stands.
+    two pipelines share a submodel. The save has committed by then, so nothing there
+    changes its answer: a document that cannot be loaded is logged
+    (`save_shared_document_unpublished`) and left out, and a failure to find them at
+    all (an unreadable candidate pipeline file, say) is logged
+    (`save_shared_documents_unpublished`) with none published.
 
 **Executable graph request containment.** Before work starts, every route that
 executes or profiles a client-supplied graph confines it to the configured

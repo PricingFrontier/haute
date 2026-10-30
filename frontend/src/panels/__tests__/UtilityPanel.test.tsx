@@ -597,6 +597,78 @@ describe("UtilityPanel auto-save", () => {
     await waitFor(() => expect(screen.queryByTestId("utility-conflict")).not.toBeInTheDocument())
   })
 
+  // A save outstanding while the next edit waits for its debounce: the save is refused.
+  const refuseWithAnEditWaiting = async () => {
+    let refuse: (err: unknown) => void = () => {}
+    mockUpdateFile.mockImplementationOnce(() => new Promise((_resolve, reject) => { refuse = reject }))
+    render(<UtilityPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("code-editor")).toBeInTheDocument())
+    fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "x = 7\n" } })
+    await act(async () => { vi.advanceTimersByTime(600) })
+    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledTimes(1))
+    fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "x = 8\n" } })
+    await act(async () => { refuse(new MockApiError(changedOutside, 412, changedOutside)) })
+    await waitFor(() => expect(screen.getByTestId("utility-conflict")).toBeInTheDocument())
+    mockReadFile.mockResolvedValueOnce({
+      name: "features.py", module: "features", content: "x = 9\n", revision: "5-5",
+    })
+    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", revision: "6-6" })
+  }
+
+  it("lets no edit that waited to save land after a reload", async () => {
+    await refuseWithAnEditWaiting()
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }))
+    await waitFor(() => expect(screen.getByTestId("code-editor")).toHaveValue("x = 9\n"))
+    await act(async () => { vi.advanceTimersByTime(600) })
+
+    expect(mockUpdateFile).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId("code-editor")).toHaveValue("x = 9\n")
+  })
+
+  it("lets no edit that waited to save replace the draft an overwrite saved", async () => {
+    await refuseWithAnEditWaiting()
+    fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "x = 11\n" } })
+
+    fireEvent.click(screen.getByRole("button", { name: "Overwrite" }))
+    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith("features", "x = 11\n", "5-5"))
+    await act(async () => { vi.advanceTimersByTime(600) })
+
+    expect(mockUpdateFile.mock.calls.map(([, content]) => content)).toEqual(["x = 7\n", "x = 11\n"])
+  })
+
+  it("recovers one way at a time and applies no read the panel has moved on from", async () => {
+    mockListFiles.mockResolvedValue({
+      files: [{ name: "features.py", module: "features" }, { name: "helpers.py", module: "helpers" }],
+    })
+    await refuseAsChangedOutside()
+    const answers: Array<(read: unknown) => void> = []
+    mockReadFile.mockImplementation((module: string) => module === "helpers"
+      ? Promise.resolve({ name: "helpers.py", module, content: "y = 1\n", revision: "1-1" })
+      : new Promise((resolve) => { answers.push(resolve) }))
+    const read = (content: string) => ({ name: "features.py", module: "features", content, revision: "5-5" })
+    const switchToHelpers = async () => {
+      fireEvent.click(screen.getByText("features"))
+      fireEvent.click(await screen.findByText("helpers"))
+    }
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }))
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }))
+    await act(async () => {})
+    expect(answers).toHaveLength(1)
+    expect(screen.getByRole("button", { name: "Overwrite" })).toBeDisabled()
+    // The file cannot be left while its conflict stands.
+    await switchToHelpers()
+    await act(async () => { answers[0](read("x = 9\n")) })
+    await waitFor(() => expect(screen.getByTestId("code-editor")).toHaveValue("x = 9\n"))
+    expect(mockReadFile).not.toHaveBeenCalledWith("helpers")
+
+    await switchToHelpers()
+    await waitFor(() => expect(screen.getByTestId("code-editor")).toHaveValue("y = 1\n"))
+    await act(async () => { for (const answer of answers.slice(1)) answer(read("x = 5\n")) })
+    expect(screen.getByTestId("code-editor")).toHaveValue("y = 1\n")
+  })
+
   it("reports a save's ledger capture as every project write does", async () => {
     mockUpdateFile.mockResolvedValue({
       status: "ok", name: "features.py", module: "features", import_line: "", revision: "2-2",

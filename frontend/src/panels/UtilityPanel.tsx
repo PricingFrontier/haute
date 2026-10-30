@@ -86,6 +86,9 @@ export default function UtilityPanel({
   const conflictModuleRef = useRef<string | null>(null)
   // Bumped when the open file is read again, so the editor shows what was read.
   const [readGeneration, setReadGeneration] = useState(0)
+  // A Reload or Overwrite under way: one runs at a time.
+  const [recovering, setRecovering] = useState(false)
+  const recoveringRef = useRef(false)
   const contentRef = useRef(content)
   useEffect(() => { contentRef.current = content }, [content])
   const activeModuleRef = useRef(activeModule)
@@ -202,41 +205,47 @@ export default function UtilityPanel({
   }, [addToast, flushSave])
 
   // Reload drops the draft for the file as it is now; Overwrite saves the draft over it.
-  const readConflicted = useCallback(async (module: string): Promise<string | null> => {
+  // Either first drops the edit waiting to save and lets the saves already queued
+  // settle (the conflict refuses each), so none lands on the file once it is read.
+  const recoverConflict = useCallback(async (choice: "reload" | "overwrite") => {
+    const module = conflictModuleRef.current
+    if (module === null || recoveringRef.current) return
+    recoveringRef.current = true
+    setRecovering(true)
     try {
-      const res = await readUtilityFile(module)
-      revisionsRef.current.set(module, res.revision)
-      return res.content
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : "unknown error"
-      addToast("error", `Failed to load utility file "${module}": ${detail}`)
-      return null
+      pendingSave.cancel()
+      await inflightSaveRef.current
+      let read: { content: string; revision: string }
+      try {
+        read = await readUtilityFile(module)
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : "unknown error"
+        addToast("error", `Failed to load utility file "${module}": ${detail}`)
+        return
+      }
+      // A read the panel has moved on from (closed, or another file) is dropped.
+      if (
+        !mountedRef.current
+        || conflictModuleRef.current !== module
+        || activeModuleRef.current !== module
+      ) return
+      revisionsRef.current.set(module, read.revision)
+      conflictModuleRef.current = null
+      setConflict(null)
+      if (choice === "reload") {
+        failedSaveModuleRef.current = null
+        setContent(read.content)
+        setReadGeneration((generation) => generation + 1)
+        setErrorLine(null)
+        setErrorMsg(null)
+      } else {
+        await queueSave(module, contentRef.current)
+      }
+    } finally {
+      recoveringRef.current = false
+      if (mountedRef.current) setRecovering(false)
     }
-  }, [addToast])
-
-  const reloadConflicted = useCallback(async () => {
-    const module = conflictModuleRef.current
-    if (module === null) return
-    const read = await readConflicted(module)
-    if (read === null) return
-    conflictModuleRef.current = null
-    failedSaveModuleRef.current = null
-    if (!mountedRef.current) return
-    setConflict(null)
-    setContent(read)
-    setReadGeneration((generation) => generation + 1)
-    setErrorLine(null)
-    setErrorMsg(null)
-  }, [readConflicted])
-
-  const overwriteConflicted = useCallback(async () => {
-    const module = conflictModuleRef.current
-    if (module === null) return
-    if (await readConflicted(module) === null) return
-    conflictModuleRef.current = null
-    if (mountedRef.current) setConflict(null)
-    await queueSave(module, contentRef.current)
-  }, [readConflicted, queueSave])
+  }, [addToast, pendingSave, queueSave])
 
   const selectImports = useCallback(async () => {
     if (!await flushSave()) return
@@ -452,16 +461,18 @@ export default function UtilityPanel({
                 <span className="flex-1 min-w-0">{conflict.message}</span>
                 <button
                   type="button"
-                  onClick={() => void reloadConflicted()}
-                  className="px-2 py-0.5 text-[11px] font-medium rounded-md transition-colors hover:bg-[var(--accent-soft-hover)]"
+                  disabled={recovering}
+                  onClick={() => void recoverConflict("reload")}
+                  className="px-2 py-0.5 text-[11px] font-medium rounded-md transition-colors disabled:opacity-50 hover:bg-[var(--accent-soft-hover)]"
                   style={{ color: 'var(--accent)', background: 'var(--accent-soft)' }}
                 >
                   Reload
                 </button>
                 <button
                   type="button"
-                  onClick={() => void overwriteConflicted()}
-                  className="px-2 py-0.5 text-[11px] font-medium rounded-md transition-colors hover:bg-[var(--danger-soft)]"
+                  disabled={recovering}
+                  onClick={() => void recoverConflict("overwrite")}
+                  className="px-2 py-0.5 text-[11px] font-medium rounded-md transition-colors disabled:opacity-50 hover:bg-[var(--danger-soft)]"
                   style={{ color: 'var(--danger)' }}
                 >
                   Overwrite
