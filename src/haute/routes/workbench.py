@@ -40,7 +40,12 @@ from haute._workbench_folder import (
 )
 from haute._workbench_form import FormDocument, FormSpec, WorkbenchFormError, with_quote_details
 from haute._workbench_params import read_param_file
-from haute._workbench_tables import WorkbenchTablesError, workbench_tables
+from haute._workbench_tables import (
+    WorkbenchTablesError,
+    input_tables,
+    output_tables,
+    workbench_tables,
+)
 from haute.routes._contract_errors import contract_error_http_exception
 from haute.routes._helpers import project_write
 from haute.routes._save_pipeline import (
@@ -257,10 +262,16 @@ def _store_sql(
     from haute._quote_store._migrate import PROVIDER_DIALECTS
     from haute._quote_store._providers import PROVIDERS
 
-    found = _default_branch_form(config) if body.start == "branch" else None
-    branch, base = found if found is not None else (None, None)
     # quote_details as every form holds it once read, whatever the view sent of it.
     spec = with_quote_details(body.form)
+    try:
+        # Each name checked as the tables' are: the SQL holds none a database cannot.
+        input_tables(spec)
+        output_tables(spec)
+    except WorkbenchTablesError as exc:
+        raise contract_error_http_exception(exc) from exc
+    found = _default_branch_form(config) if body.start == "branch" else None
+    branch, base = found if found is not None else (None, None)
     environments = [
         WorkbenchStoreSqlEnvironment(
             name=environment.name,

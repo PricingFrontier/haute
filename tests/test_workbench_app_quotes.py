@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import sqlite3
+import threading
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from functools import partial
@@ -871,6 +872,44 @@ def test_a_store_the_app_cannot_reach_is_answered_503_naming_none_of_it(
     assert "hidden" not in str(quotes)
 
 
+def test_closing_the_quotes_on_an_unreachable_store_never_stalls_the_app(
+    page: Page, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A check holding the gate while it waits on the store: closing the quotes waits for it,
+    # and the app answers every other request meanwhile.
+    waiting, checked = threading.Event(), threading.Event()
+    closing = _workbench_app_store.StoreGate.unreachable
+
+    def after_the_check(gate: _workbench_app_store.StoreGate) -> None:
+        waiting.set()
+        checked.wait(10)
+        closing(gate)
+
+    def unreachable(*_args: Any, **_kwargs: Any) -> Any:
+        raise OperationalError(None, None, Exception("no route to host"))
+
+    monkeypatch.setattr(_workbench_app_store.StoreGate, "unreachable", after_the_check)
+    monkeypatch.setattr(QuoteBook, "page", unreachable)
+    answers: dict[str, Any] = {}
+
+    def ask(name: str, path: str) -> None:
+        answers[name] = page.client.get(path, headers=ANA)
+
+    listing = threading.Thread(target=ask, args=("quotes", "/api/app/quotes?view=team"))
+    listing.start()
+    try:
+        assert waiting.wait(10)
+        health = threading.Thread(target=ask, args=("health", "/health"))
+        health.start()
+        health.join(5)
+        assert not health.is_alive(), "the app stopped answering while the gate was held"
+        assert answers["health"].status_code == 200
+    finally:
+        checked.set()
+        listing.join(10)
+    assert answers["quotes"].status_code == 503
+
+
 def test_a_write_from_a_page_of_another_site_is_refused(page: Page) -> None:
     cross = page.create(headers={**ANA, "sec-fetch-site": "cross-site"})
     foreign = page.create(headers={**ANA, "origin": "https://elsewhere.example"})
@@ -1182,6 +1221,15 @@ def test_a_hosted_app_opens_the_store_of_the_environment_the_host_names(
         quotes = app.get("/api/app/release", headers=ANA).json()["quotes"]
         assert (quotes["open"], quotes["error_code"]) == (False, "quote_store_environment")
         assert "'prod'" in quotes["message"] and "declares test" in quotes["message"]
+
+    # A URL its engine cannot open starts the app closed too, the URL said nowhere.
+    monkeypatch.setenv(ENVIRONMENT_ENV, TEST)
+    monkeypatch.delenv("HAUTE_STORE_DATABASE")
+    monkeypatch.setenv("HAUTE_STORE_URL", "sqlite://hidden-db/quotes.sqlite")
+    with TestClient(create_app(release_dir, store=partial(hosted_store, release_dir))) as app:
+        answered = app.get("/api/app/release", headers=ANA)
+        assert answered.json()["quotes"]["error_code"] == "quote_store_environment"
+        assert "hidden" not in answered.text
 
 
 def test_a_release_carries_the_environments_its_project_declares(release_dir: Path) -> None:

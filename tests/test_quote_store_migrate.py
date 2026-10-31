@@ -336,6 +336,33 @@ def test_a_removed_table_or_column_is_a_drop_left_commented_out() -> None:
     ] == []
 
 
+def test_a_removed_column_s_drop_names_its_table_as_the_renames_leave_it() -> None:
+    # Two tables swap names while one loses a column: its DROP names the table under its new
+    # name, never the other table now holding its old one.
+    base = form(POLICY, table("cover", column("level")))
+    release = form(
+        table("cover", column("region"), id_="t_policy"),
+        table("policy", column("level"), id_="t_cover"),
+    )
+
+    written = script(base, release, "postgresql")
+
+    assert "-- ALTER TABLE cover DROP COLUMN value;" in written
+    assert "DROP COLUMN value;" not in written.replace("-- ALTER TABLE cover DROP COLUMN", "")
+
+
+def test_a_refusal_naming_a_name_of_many_lines_stays_a_comment() -> None:
+    hostile = "a\nDELETE FROM policy;\n--"
+    base = form(table("policy", column(hostile)))
+    release = form(table("policy", column(hostile, id_="c_other")))
+
+    written = script(base, release, "postgresql")
+
+    assert "-- Not written: the new column policy.a" in written
+    assert "-- DELETE FROM policy;" in written
+    assert "DELETE FROM policy;" not in [line.strip() for line in written.splitlines()]
+
+
 def test_what_the_sql_cannot_make_is_a_note() -> None:
     base = form(POLICY, table("vehicles", column("reg"), rows="many"))
 

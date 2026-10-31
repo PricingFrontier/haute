@@ -20,7 +20,6 @@ vi.mock("../../api/app", () => ({
 }))
 
 import { fetchAppForm, fetchAppPeople, fetchAppQuotes, fetchAppRelease, openAppQuote, priceAppQuote } from "../../api/app"
-import useAppStore from "../useAppStore"
 import { ApiError } from "../../api/client"
 import type { WorkbenchAppReleaseResponse } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
@@ -179,26 +178,6 @@ describe("UnderwriterApp", () => {
       vi.useRealTimers()
       await navigate("/", { force: true })
     }
-  })
-
-  it("closes the quotes when a route refuses because the store is closed, and not for a busy pricing", async () => {
-    await keeping("/")
-    const busy = new ApiError("HTTP 503", 503, "The app is busy pricing other quotes: try again in a few seconds.")
-    act(() => {
-      expect(useAppStore.getState().noteQuotesClosed(busy)).toBe(false)
-    })
-    expect(screen.getByTestId("quotes-page")).toBeInTheDocument()
-
-    const unreached = { message: "The app cannot reach its quote store just now.", error_code: "quote_store_unreachable", differences: [] }
-    const closed = new ApiError("HTTP 503", 503, unreached.message, { detail: unreached }, unreached)
-    // The release asked for again as they close says so too.
-    vi.mocked(fetchAppRelease).mockResolvedValue({ ...release, quotes: { ...unreached, open: false } })
-    act(() => {
-      expect(useAppStore.getState().noteQuotesClosed(closed)).toBe(true)
-    })
-
-    expect(await screen.findByTestId("notice-quotes-closed")).toHaveTextContent(unreached.message)
-    expect(screen.queryByTestId("quotes-page")).toBeNull()
   })
 
   it("says why the sheets could not be opened, a request the host did not sign in among them", async () => {

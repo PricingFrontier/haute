@@ -1058,17 +1058,25 @@ def _store_sql(spec: dict[str, Any], start: str = "branch") -> Any:
     return client().post("/api/workbench/store-sql", json={"form": spec, "start": start})
 
 
+def _exposure_named(name: str) -> dict[str, Any]:
+    """POLICY with its exposure column, the same by id, under *name*."""
+    return {**POLICY, "columns": [POLICY["columns"][0], column(name, "float", id="c_exposure")]}
+
+
 def test_the_tables_sql_starts_from_the_form_the_default_branch_holds(project: Path) -> None:
     enable(project, "[workbench]\nenabled = true\n" + STORES)
     write_form(project, form(POLICY))
     _committed_on_main(project)
+    # A feature branch checked out, its own form committed, and another unsaved on disk: the
+    # SQL starts from neither, only from the default branch's.
+    git(project, "checkout", "-b", "feature")
+    write_form(project, form(_exposure_named("exposure_feature")))
+    git(project, "commit", "-am", "the feature's form")
+    write_form(project, form(_exposure_named("exposure_disk")))
     on_disk = files_of(project)
-    renamed = {
-        **POLICY,
-        "columns": [POLICY["columns"][0], column("value", "float", id="c_exposure")],
-    }
+    status = git(project, "status", "--porcelain")
 
-    answered = _store_sql(form(renamed))
+    answered = _store_sql(form(_exposure_named("value")))
 
     assert answered.status_code == 200, answered.text
     body = answered.json()
@@ -1082,9 +1090,12 @@ def test_the_tables_sql_starts_from_the_form_the_default_branch_holds(project: P
     assert "ALTER TABLE policy_details RENAME exposure TO haute_tmp_" in test
     assert "EXEC sp_rename 'policy_details.exposure', haute_tmp_" in prod
     assert "CREATE TABLE" not in test + prod
-    # Read from git with nothing checked out: the folder on disk is as it was.
+    assert "exposure_feature" not in test + prod
+    assert "exposure_disk" not in test + prod
+    # Read from git with nothing checked out: the branch and the folder on disk are as they were.
+    assert git(project, "branch", "--show-current") == "feature"
     assert files_of(project) == on_disk
-    assert git(project, "status", "--porcelain") == ""
+    assert git(project, "status", "--porcelain") == status
 
 
 def test_the_tables_sql_starts_from_none_when_asked_or_when_the_branch_holds_no_form(
@@ -1126,6 +1137,11 @@ def test_the_tables_sql_refuses_a_body_that_is_not_a_form_and_a_disabled_workben
     enable(project)
     assert _store_sql({"schema": "no"}).status_code == 422
     assert client().post("/api/workbench/store-sql", json={"form": form(POLICY)}).status_code == 422
+    # A name no table may hold is refused as the tables refuse it, never written into SQL.
+    hostile = {**POLICY, "columns": [column("a\nDELETE FROM policy_details;\n--", "float")]}
+    refused = _store_sql(form(hostile))
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["detail"]["error_code"] == "workbench_tables_invalid"
 
     enable(project, "")
     assert _store_sql(form(POLICY)).status_code == 404

@@ -8,6 +8,7 @@ import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
 import AppHeader from "./AppHeader"
 import NewQuoteWindow from "./NewQuoteWindow"
 import { openRelease } from "./openRelease"
+import { quotesClosedBy } from "./quoteValues"
 import QuotesPage from "./QuotesPage"
 import QuoteView from "./QuoteView"
 import type { WorkbenchAppQuoteStore } from "../api/types"
@@ -34,6 +35,11 @@ export default function UnderwriterApp() {
     let live = true
     // Whichever of the app's calls meets a closed store, the quotes close.
     watchQuotesClosed((error) => {
+      if (quotesClosedBy(error) === null) return
+      // Text typed into a field and not yet left is committed as leaving it commits it, so
+      // the draft the open quote keeps as it closes holds it.
+      const typed = document.activeElement
+      if (typed instanceof HTMLElement) typed.blur()
       useAppStore.getState().noteQuotesClosed(error)
     })
     Promise.all([fetchAppRelease(), fetchAppForm()])

@@ -48,8 +48,19 @@ def test_an_environment_the_release_does_not_declare_is_refused_naming_those_it_
         ({"HAUTE_STORE_SERVER": "hidden.db.example"}, "has no server and no schema"),
         ({"HAUTE_STORE_DATABASE": "hidden-a", "HAUTE_STORE_SCHEMA": "hidden-quotes"}, "no schema"),
         ({"HAUTE_STORE_URL": "postgresql://hidden.db.example/quotes"}, "not a sqlite URL"),
+        # The engine would refuse it only as the app opens its store, repeating it.
+        ({"HAUTE_STORE_URL": "sqlite://hidden-db/quotes.sqlite"}, "not a sqlite file's URL"),
+        ({"HAUTE_STORE_URL": "sqlite://hidden:secret@/quotes.sqlite"}, "naming no server"),
     ],
-    ids=["not at all", "twice", "a server", "a schema", "another provider's URL"],
+    ids=[
+        "not at all",
+        "twice",
+        "a server",
+        "a schema",
+        "another provider's URL",
+        "a file's URL naming a server",
+        "a file's URL holding a sign-in",
+    ],
 )
 def test_a_location_given_twice_not_at_all_or_unfit_is_refused_naming_no_location(
     environ: dict[str, str], says: str

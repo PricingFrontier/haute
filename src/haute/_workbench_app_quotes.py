@@ -211,7 +211,8 @@ async def _call(app: QuoteApp, work: Callable[[], T], identity: tuple[str, int] 
             # The driver's own text names the server, its port and who signs in: none of it
             # said. The quotes close until a check reaches the store again.
             logger.warning("quote_store_unreachable", error_type=type(exc).__name__)
-            app.gate.unreachable()
+            # On a worker thread: the gate's lock may be held by a check still waiting.
+            await run_in_threadpool(app.gate.unreachable)
             raise HTTPException(
                 503,
                 detail={

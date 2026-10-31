@@ -540,7 +540,7 @@ def _emit(operations: Operations, plan: Plan, schema: StoreSchema) -> None:
         elif step.kind == "reshape table":
             _reshape_note(operations, plan, step)
         elif step.kind in ("keep table", "keep column"):
-            _removed_note(operations, old, step, owner)
+            _removed_note(operations, step, owner)
     if before is None:
         # A database holding none of the store takes Haute's tables with the form's.
         _create_haute_tables(operations, schema)
@@ -553,12 +553,17 @@ def _create_haute_tables(operations: Operations, schema: StoreSchema) -> None:
     operations.impl.create_table(schema.activity)
 
 
+def _commented(text: str) -> str:
+    """*text* as SQL comments, each of its lines one, so no name in it ends a comment."""
+    return "\n".join(f"-- {line}" for line in text.splitlines())
+
+
 def _note(operations: Operations, text: str) -> None:
     """*text* as a comment in a script's SQL, where the step it concerns falls."""
     impl = operations.impl
     if not isinstance(impl, DefaultImpl):
         raise TypeError("A script's notes are written by an offline migration context alone.")
-    impl.static_output("\n".join(f"-- {line}" for line in text.splitlines()))
+    impl.static_output(_commented(text))
 
 
 def _structure_table(structure: Mapping[str, Any] | None, table_id: str) -> dict[str, Any]:
@@ -658,13 +663,12 @@ def _reshape_note(operations: Operations, plan: Plan, step: Step) -> None:
     )
 
 
-def _removed_note(
-    operations: Operations, old: Mapping[str, dict[str, Any]], step: Step, owner: str | None
-) -> None:
+def _removed_note(operations: Operations, step: Step, owner: str | None) -> None:
     """A script's note on a table or column the form removed, with its DROP commented out: the
-    app's check passes a column or table it no longer uses, so dropping it is the owners' call."""
+    app's check passes a column or table it no longer uses, so dropping it is the owners' call.
+    The DROP names the table as the script leaves it: a removed column's by its new name."""
     preparer = operations.impl.dialect.identifier_preparer
-    table = preparer.format_table(Table(old[step.table_id]["name"], MetaData(schema=owner)))
+    table = preparer.format_table(Table(step.table, MetaData(schema=owner)))
     if step.kind == "keep table":
         _note(
             operations,
@@ -833,7 +837,7 @@ def render_sql(plan: Plan, form: FormSpec, dialect: str, *, sql_schema: str | No
         raise ValueError("Only a script is written as SQL: dev's plan is applied by the planner.")
     buffer = io.StringIO()
     for refusal in plan.refusals:
-        buffer.write(f"-- Not written: {refusal}.\n")
+        buffer.write(_commented(f"Not written: {refusal}.") + "\n")
     if not plan.steps:
         if not plan.refusals:
             buffer.write("-- The tables already fit the form: nothing to change.\n")

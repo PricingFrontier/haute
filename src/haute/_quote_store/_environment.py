@@ -89,6 +89,21 @@ def _sign_in(environment: StoreEnvironment, environ: Mapping[str, str]) -> SignI
     )
 
 
+def _file_location_url(environment: StoreEnvironment, url: str) -> None:
+    """Refuse *url*, a file provider's whole URL, unless its engine can open it: a file's URL
+    names no server, port or sign-in, so the engine's own refusal, which repeats the URL, is
+    never met as the app opens its store."""
+    try:
+        parsed = make_url(url)
+    except ArgumentError:
+        parsed = None
+    if parsed is None or any((parsed.username, parsed.password, parsed.host, parsed.port)):
+        raise QuoteStoreEnvironmentError(
+            f"{STORE_URL_ENV} for the {environment.name} store is not a {environment.provider} "
+            f"file's URL: {environment.provider}:/// and the file's path, naming no server."
+        )
+
+
 def _server_location_url(environment: StoreEnvironment, url: str) -> str:
     """*url*, a whole connection URL a host gives, once it holds no sign-in and names the
     driver of the provider *environment* declares; refused saying which, never showing it."""
@@ -159,6 +174,7 @@ def resolve_store(
                     f"{STORE_URL_ENV} is not a {environment.provider} URL, the provider the "
                     f"{name} environment declares."
                 )
+            _file_location_url(environment, url)
             return StoreLocation(name, url)
         if database is None:
             raise QuoteStoreEnvironmentError(
