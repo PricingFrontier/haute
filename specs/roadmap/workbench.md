@@ -208,10 +208,10 @@ response's JSON onto columns. Whether actions are declared alone (a statement or
 request with named parameters) or Python actions are allowed too. Where the pieces live:
 the Import's settings beside the schema in the form file, as they are, since they name
 tables and columns by id and version with the sheets; the connection its name stands
-for and the names of its credential variables in `haute.toml`; the values in the
-environment, never in a file the ledger pushes. Whether a press in Build writes the
+for in `connections.toml`, the file of named connections WB-45 decides, with the names
+of its credential variables; the values in `.env`, never in a file the ledger pushes. Whether a press in Build writes the
 sample, which Save then writes to disk, or actions run in Preview alone. Then the
-slices: the sources table of `haute.toml`, which an Import's connection names; a route
+slices: the connections of `connections.toml`, which an Import's connection names; a route
 under the workbench router that takes the sheet's values, resolves the Import's
 parameters, runs its query on the server with a row cap and returns rows in the
 sample's shape, typed by the columns they fill; a CSV or a workbook the underwriter
@@ -394,12 +394,20 @@ the started app reads it, and only to close its quotes. Nothing points the edito
 database: a location and a sign-in are read from the host's variables, one environment per
 process.
 
-**Plan:** Decisions first, recorded here before the first slice: how the editor on an
-analyst's machine places and signs in to each declared environment (a location variable per
-environment, named in its `[workbench.store.<name>]` table as its sign-in's variables are, or a
-file of the clone's own kept out of the project's history), and whether the comparison reads
-under the analyst's own identity. Then, in the schema pane, an environment chosen among those
-declared: Haute connects through the store's providers, reads the catalogue as the app's check
+**Plan:** Decided with the owner (31 October 2026): the editor reaches each database through
+`connections.toml` at the project root, committed with the project and written by
+`haute init --workbench`, a table for each named connection holding its provider, server,
+database and SQL schema, and how the analyst signs in, by the names of the variables that
+hold the secrets (as a store environment names its sign-in's), whose values live in the
+clone's `.env`, which git ignores, and `.env.example` naming each. It holds no secret, so
+the team shares one set of connections; a value written into it is refused naming the
+variable it belongs in. It is the analyst's own sign-in, a password from `.env` or their
+Microsoft Entra ID sign-in, never the app's managed identity, and the editor reads under it
+alone. A hosted app and a release never read the file: a host still places the app's
+database through its own variables, so a pull request changing the file repoints no hosted
+app. A connection named as a declared environment is that environment's. Then, in the schema
+pane, an environment chosen among those declared that has a connection: Haute connects
+through the store's providers, reads the catalogue as the app's check
 does, with the quotes holding values in each column a change would touch, and changes nothing.
 Each table and column of the form is marked where it differs there (missing, of another kind,
 taking a null otherwise, keyed or referring otherwise, under another collation on SQL Server),
@@ -420,9 +428,11 @@ beyond it and counts the quotes a change would convert; the SQL it writes, run o
 database, leaves the app's check finding nothing, on SQL Server and on PostgreSQL; a pair the
 analyst marks is renamed, keeping its values; a database it cannot reach or sign in to is said
 naming the variables, never the server or the user; nothing is written to the database, the
-project or the logs.
+project or the logs. `haute init --workbench` writes `connections.toml` and names its
+variables in `.env.example`; a secret's value written into the file is refused naming the
+variable it belongs in; and a hosted app reads nothing of the file.
 
-**Dependencies:** The decisions above.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_quote_store/_store.py::_catalogue_differences` (the app's check and
 its differences); `src/haute/_quote_store/_migrate.py::counts`, `::offline_plan` and
@@ -430,4 +440,6 @@ its differences); `src/haute/_quote_store/_migrate.py::counts`, `::offline_plan`
 `src/haute/routes/workbench.py::store_sql` and `src/haute/_workbench_folder.py::form_at_ref`
 (the SQL from the default branch's form); `src/haute/_quote_store/_environment.py::resolve_store`
 (a location and a sign-in from one process's variables); `frontend/src/workbench/SchemaPane.tsx`
-and `frontend/src/workbench/StoreSqlWindow.tsx` (where the SQL is shown now).
+and `frontend/src/workbench/StoreSqlWindow.tsx` (where the SQL is shown now);
+`src/haute/deploy/_config.py` (`.env` read with python-dotenv) and `src/haute/_scaffold.py`
+(`.env.example` written by `haute init`).
