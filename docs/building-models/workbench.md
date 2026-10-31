@@ -10,8 +10,10 @@ versioned beside the pipeline: a file for each table and each sheet
 
 !!! note "Enabling it"
     `haute init --workbench` switches it on: in a new project, or in one that has no
-    workbench yet, it adds the table to `haute.toml` and writes the blank workbench's
-    files.
+    workbench yet, it adds the table to `haute.toml`, declaring the quote store's `dev`,
+    `staging` and `prod` ([The underwriter app](#the-underwriter-app)), writes the blank
+    workbench's files and `connections.toml`, and names its sign-in variables in
+    `.env.example`.
 
     ```toml
     [workbench]
@@ -646,12 +648,11 @@ builder on screen. With a quote store it is where they manage their quotes too.
   `http://127.0.0.1:8001/`, signed in as your git identity, so you can see the sheets and
   the Quotes page as underwriters will before you merge. Only your machine can reach it, at
   `127.0.0.1` or `localhost`: the app refuses any other name for your machine. The
-  quotes you save there are kept in `.haute/app/store.sqlite`, which a rebuild leaves as it
-  is: its tables are your schema's (see [Reading quotes with SQL](#reading-quotes-with-sql)),
-  brought to it as the app starts: a table or column you add or rename keeps every quote's
-  values, and one you remove, or change while it holds values, is dropped or built again, the
-  app naming each table or column whose values went. `haute app serve --reader` signs you in
-  as an underwriter who may only read quotes.
+  quotes you save there are kept in the `dev` environment's database (below), reached through
+  its connection in `connections.toml`; the app checks its tables as the hosted app checks
+  its own, so after a change to your schema its quotes stay closed, naming what differs,
+  until you run the schema's SQL on `dev`. `haute app serve --reader` signs you in as an
+  underwriter who may only read quotes.
 - `haute app build` writes a **release** to `.haute/app/release` (or the folder you name):
   the pipeline, checked and bundled
   as `haute deploy` does it (the test quotes included), with the sheets and an `app.py` that
@@ -683,16 +684,18 @@ builder on screen. With a quote store it is where they manage their quotes too.
   base_image = "python:3.11.9-slim"
   ```
 
-- The hosted app keeps quotes in the database of an environment you declare in
-  `haute.toml`, as your schema's tables. Declare each environment by name with its database's
-  provider: `sqlserver` (SQL Server 2019 and later, Azure SQL Database and Azure SQL Managed
-  Instance), `postgresql` (PostgreSQL, Azure Database for PostgreSQL, Amazon RDS and Aurora,
-  Cloud SQL and Databricks Lakebase) or `sqlite` (a file). A server database also says how
-  the app signs in, `auth`, naming the environment variable that holds each thing it needs,
-  never the value; where the database is never goes in the file:
+- The app keeps quotes in the database of an environment you declare in `haute.toml`, as
+  your schema's tables: `dev` for `haute app serve`, and the hosted app's own, `staging` and
+  `prod` in a project `haute init --workbench` made. Declare each environment by name with
+  its database's provider: `sqlserver` (SQL Server 2019 and later, Azure SQL Database and
+  Azure SQL Managed Instance), `postgresql` (PostgreSQL, Azure Database for PostgreSQL,
+  Amazon RDS and Aurora, Cloud SQL and Databricks Lakebase) or `sqlite` (a file). A server
+  database also says how the hosted app signs in, `auth`, naming the environment variable
+  that holds each thing it needs, never the value; where the database is never goes in the
+  file:
 
   ```toml
-  [workbench.store.test]
+  [workbench.store.staging]
   provider = "sqlserver"
   auth = "managed-identity"
 
@@ -721,18 +724,56 @@ builder on screen. With a quote store it is where they manage their quotes too.
   prod can share a database; for `sqlite`, `HAUTE_STORE_DATABASE` (the file's path) or
   `HAUTE_STORE_URL`. Install `haute[sqlserver]` or `haute[postgresql]` wherever you build
   the release, as the image installs the versions installed there.
-- Haute never changes a hosted database's tables: the people who own the database make and
-  change them in SQL, as they do any other table. To start them off, open **Schema** while
-  building and press **SQL**. For each environment you declare it shows the SQL that brings
-  that environment's tables to the schema you are building, in its database's own SQL,
-  starting from the schema your default branch holds, which is what test and prod run, or
-  from nothing, for a new database. It adds tables and columns, renames a table or column by
-  its id rather than dropping it and adding another, changes a column's type in place (a
-  value that does not convert stops it), and leaves a table or column you removed with its
-  DROP commented out, since the app does not need it gone. What it cannot write, such as a
-  table changing between one row and many rows per quote, it says in a comment. The SQL is
-  one transaction, so a statement that fails changes nothing, and Haute keeps no record of
-  it: copy it, have it reviewed and adapted, and run it in each environment in turn.
+- On your machine, the editor and `haute app serve` reach each environment's database
+  through `connections.toml` at the project root, which `haute init --workbench` writes and
+  you commit, so your team shares it. Each connection is named as its environment is and
+  says where the database is and how **you** sign in, by the names of the variables that
+  hold your sign-in, whose values go in your `.env` (which git ignores; `.env.example` names
+  them). Fill in each server and database:
+
+  ```toml
+  [dev]
+  provider = "sqlserver"
+  server = "tcp:pricing-dev.database.windows.net,1433"
+  database = "pricing_dev"
+  auth = "password"
+  username_env = "HAUTE_DEV_USERNAME"
+  password_env = "HAUTE_DEV_PASSWORD"
+  ```
+
+  | `auth` | Signs in with | Names |
+  |---|---|---|
+  | `password` | A database login | `username_env` and `password_env` |
+  | `entra` | Your own Microsoft Entra ID account, in the browser the first time a connection is made | nothing on SQL Server; `username_env`, your role, on PostgreSQL |
+  | `service-principal` | A service principal, through Microsoft Entra ID | `tenant_id_env`, `client_id_env` and `client_secret_env` |
+
+  `schema`, optionally, is the SQL schema the tables are in. A `sqlite` connection names only
+  its `database`, the file's path from the project root. A password or a connection string
+  written into the file is refused, as is `managed-identity`, which is the hosted app's own.
+  The hosted app never reads `connections.toml`.
+- Haute never changes an environment's tables, `dev` included: the people who own the
+  database make and change them in SQL, as they do any other table. To see how a database
+  differs from the schema you are building, open **Schema** and choose an environment in
+  **Compare**: Haute reads that database through its connection (and again when you press
+  the refresh beside it) and marks each table and column that differs, such as **missing**,
+  **renamed** or **type**, the mark's tooltip saying how and how many quotes hold values
+  there. Above the tables it lists what the database holds that your schema does not, with
+  its quotes; pick **Rename to…** beside such a column to pair it with a column of yours the
+  database lacks, so the SQL renames it rather than adding one and leaving the other, and
+  undo a pairing under **Renamed**. When nothing differs it says the database matches.
+- To change the tables, press **SQL** while building. For each environment you declare it
+  shows the SQL that brings that environment's tables to the schema you are building, in its
+  database's own SQL, starting from the tables the database holds (on the tab of the
+  environment Compare shows), from the schema your default branch holds, which is what
+  staging and prod run, or from nothing, for a new database. It adds tables and columns,
+  renames a table or column (by its id, or as you paired it) rather than dropping it and
+  adding another, changes a column's type in place (a value that does not convert stops it),
+  and leaves a table or column your schema does not have with its DROP commented out, since
+  the app does not need it gone. What it cannot write, such as a table changing between one
+  row and many rows per quote, or a column taking no null, it says in a comment, with the
+  quotes holding values there. The SQL is one transaction, so a statement that fails changes
+  nothing, and Haute keeps no record of it: copy it, have it reviewed and adapted, and run it
+  in each environment in turn.
 - The app starts whatever its database holds. Until the tables fit its release it opens no
   quote, new or saved, and prices none, and the page says quotes are unavailable and why: a
   table or column missing or of another type, a permission the app's identity lacks, a
@@ -775,8 +816,7 @@ save; **priced_release**, the release that priced it; **source_reference**,
 **source_option** and **source_relation**, the quote it was made from and how; and the
 handover note with who wrote it and when. The schema shows them under each table, locked.
 Beside yours sits `haute_activity`, a row for each thing done to a quote, who did it and
-when. The SQLite file `haute app serve` keeps also holds `haute_store`, Haute's record of
-that file's tables; a hosted database holds no such table.
+when.
 
 Names reach the database as the schema writes them, so the schema refuses a name the
 database could not keep: two columns of a table whose names differ only in case, a name

@@ -18,6 +18,8 @@ from haute._scaffold import (
     azure_devops_yml,
     ci_files,
     ci_secret_names,
+    connection_variables,
+    connections_toml,
     env_example,
     env_example_placeholders,
     github_ci_yml,
@@ -114,12 +116,69 @@ class TestHauteToml:
             haute_toml("motor", "unknown", "github")
 
     def test_workbench_table_only_when_asked(self) -> None:
-        """The [workbench] table switches the project's workbench on (specs/workbench)."""
+        """The [workbench] table switches the project's workbench on and declares the quote
+        store's environments, each on SQL Server signed in to by the hosted app's managed
+        identity (specs/workbench)."""
+        from haute._workbench_config import store_environments
+
         assert "[workbench]" not in haute_toml("motor", "databricks", "github")
 
         doc = tomllib.loads(haute_toml("motor", "databricks", "github", workbench=True))
-        assert doc["workbench"] == {"enabled": True}
+        hosted = {"provider": "sqlserver", "auth": "managed-identity"}
+        assert doc["workbench"] == {
+            "enabled": True,
+            "store": {"dev": hosted, "staging": hosted, "prod": hosted},
+        }
+        assert list(doc["workbench"]["store"]) == ["dev", "staging", "prod"]
         assert doc["project"]["name"] == "motor"
+        # Declared as the project's workbench config reads them.
+        declared = store_environments(doc["workbench"]["store"], "[workbench.store]")
+        assert [(each.name, each.provider, each.auth) for each in declared] == [
+            ("dev", "sqlserver", "managed-identity"),
+            ("staging", "sqlserver", "managed-identity"),
+            ("prod", "sqlserver", "managed-identity"),
+        ]
+
+
+class TestConnectionsToml:
+    """connections_toml() and the variables its sign-ins read, which .env.example names."""
+
+    def test_a_connection_for_each_environment_left_for_the_analyst_to_fill_in(self) -> None:
+        connections = tomllib.loads(connections_toml())
+
+        assert list(connections) == ["dev", "staging", "prod"]
+        for name, connection in connections.items():
+            assert connection == {
+                "provider": "sqlserver",
+                "server": "",
+                "database": "",
+                "auth": "password",
+                "username_env": f"HAUTE_{name.upper()}_USERNAME",
+                "password_env": f"HAUTE_{name.upper()}_PASSWORD",
+            }
+
+    def test_env_example_names_the_variables_the_connections_sign_ins_read(
+        self, tmp_path: Path
+    ) -> None:
+        assert connection_variables(tmp_path) == []
+        (tmp_path / "connections.toml").write_text(connections_toml(), encoding="utf-8")
+
+        variables = connection_variables(tmp_path)
+
+        assert variables == [
+            "HAUTE_DEV_USERNAME",
+            "HAUTE_DEV_PASSWORD",
+            "HAUTE_STAGING_USERNAME",
+            "HAUTE_STAGING_PASSWORD",
+            "HAUTE_PROD_USERNAME",
+            "HAUTE_PROD_PASSWORD",
+        ]
+        assert env_example("databricks", variables) == env_example("databricks") + (
+            "\n# The sign-ins connections.toml names, for the editor and haute app serve\n"
+            + "".join(f"{variable}=\n" for variable in variables)
+        )
+        # Without connections, .env.example is the target's alone.
+        assert env_example("databricks", []) == env_example("databricks")
 
 
 class TestEnvExample:

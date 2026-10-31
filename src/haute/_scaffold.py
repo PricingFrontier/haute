@@ -1547,7 +1547,7 @@ These are imported into main.py so your pipeline nodes stay clean and readable.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 
 import polars as pl
 

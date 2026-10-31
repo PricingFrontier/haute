@@ -80,14 +80,17 @@ def test_the_store_tables_declare_the_hosted_environments_by_provider(tmp_path: 
     enable(tmp_path)
     assert read_workbench_config(tmp_path).store == ()
 
+    # dev is declared as any other environment is.
     enable(
         tmp_path,
-        "[workbench]\nenabled = true\n\n[workbench.store.test]\nprovider = 'sqlite'\n\n"
+        "[workbench]\nenabled = true\n\n[workbench.store.dev]\nprovider = 'sqlite'\n\n"
+        "[workbench.store.test]\nprovider = 'sqlite'\n\n"
         "[workbench.store.prod]\nprovider = 'sqlite'\n",
     )
 
     store = read_workbench_config(tmp_path).store
     assert [(each.name, each.provider, each.auth) for each in store] == [
+        ("dev", "sqlite", None),
         ("test", "sqlite", None),
         ("prod", "sqlite", None),
     ]
@@ -197,10 +200,6 @@ def test_the_app_table_names_the_role_that_may_change_quotes(tmp_path: Path) -> 
             "[workbench.app].host must be one of azure-container-apps; got {'name': 'azure'}",
         ),
         ("[workbench]\nenabled = true\nstore = 'test'\n", "[workbench.store] must be a table"),
-        (
-            "[workbench]\nenabled = true\n[workbench.store.dev]\nprovider = 'sqlite'\n",
-            "[workbench.store.dev]: dev is the analyst's laptop",
-        ),
         (
             "[workbench]\nenabled = true\n[workbench.store.Prod]\nprovider = 'sqlite'\n",
             "[workbench.store.Prod]: an environment's name is up to 32 lower-case letters",

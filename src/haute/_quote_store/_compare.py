@@ -205,20 +205,20 @@ class _Matcher:
 
 def read_store_catalogue(location: StoreLocation) -> Catalogue:
     """The store's tables the database at *location* holds, with the quotes counted in each,
-    read under its sign-in and nothing written. A database not reached is said naming what
-    places it (:func:`._store.reaching`), and one that refuses to show its tables to the
-    sign-in naming the environment alone, never what the driver said."""
+    read under its sign-in and nothing written. A server not reached is said naming what places
+    it (:func:`._store.reaching`), and any other refusal of the database's, a file that is no
+    database or tables its sign-in may not read, naming the same, never what the driver
+    said."""
     engine = make_engine(location.url, sign_in=location.sign_in)
     try:
         with reaching(location.url, location.environment, location.named_by):
             with engine.connect() as connection:
-                try:
-                    return read_catalogue(connection, location.sql_schema, count=True)
-                except DBAPIError:
-                    raise QuoteStoreEnvironmentError(
-                        f"The {location.environment} database's tables could not be read: "
-                        f"check that the sign-in {location.named_by} names may read them."
-                    ) from None
+                return read_catalogue(connection, location.sql_schema, count=True)
+    except DBAPIError:
+        raise QuoteStoreEnvironmentError(
+            f"The {location.environment} database's tables could not be read: check "
+            f"{location.named_by}, and that the database lets its sign-in read them."
+        ) from None
     finally:
         engine.dispose()
 
@@ -338,16 +338,26 @@ def _match_table(
         if column["id"] in matched:
             continue
         pairing = paired.get(column["id"])
-        was = pairing.was if pairing is not None else earlier_names.get(column["id"])
-        if was is None or was in form_columns or was in claimed:
-            continue
-        found_column = found.column(was)
-        if found_column is None or was in IDENTITY:
-            continue
-        matched[column["id"]] = (found_column, was)
-        claimed.add(was)
-        if pairing is not None:
-            taken.append(pairing)
+        # The analyst's pairing first, then the default branch's name for the column's id.
+        candidates: list[tuple[str, Rename | None]] = (
+            [(pairing.was, pairing)] if pairing is not None else []
+        )
+        if column["id"] in earlier_names:
+            candidates.append((earlier_names[column["id"]], None))
+        for held_as, by in candidates:
+            found_column = found.column(held_as)
+            if (
+                found_column is None
+                or held_as in form_columns
+                or held_as in claimed
+                or held_as in IDENTITY
+            ):
+                continue
+            matched[column["id"]] = (found_column, held_as)
+            claimed.add(held_as)
+            if by is not None:
+                taken.append(by)
+            break
     # The store's own columns, quote_row among them whatever the table's rows, are no extras.
     own = ({column.name for column in expected.columns} - form_columns) | {QUOTE_ROW}
     live: list[dict[str, Any]] = []

@@ -578,20 +578,24 @@ def _add_workbench(project_dir: Path) -> None:
         refuse(problem)
     env_path = project_dir / ".env.example"
     env_original = env_path.read_bytes() if env_path.is_file() else None
+    env_written = False
     try:
         _write_form_folder(folder, files)
         connections_path.write_bytes(connections_toml().encode("utf-8"))
         env_text = env_example(target, connection_variables(project_dir))
         atomic_write_bytes(env_path, env_text.encode("utf-8"))
+        env_written = True
         table = workbench_table().encode("utf-8")
         atomic_write_bytes(toml_path, original.rstrip() + b"\n\n" + table)
     except (OSError, ValueError) as exc:
-        # The folder and connections.toml did not exist before this run, so they are its own.
+        # The folder and connections.toml did not exist before this run, so they are its own;
+        # .env.example is put back only once this run replaced it, a failed atomic write
+        # having left it as it was.
         shutil.rmtree(folder, ignore_errors=True)
         connections_path.unlink(missing_ok=True)
-        if env_original is None:
+        if env_written and env_original is None:
             env_path.unlink(missing_ok=True)
-        else:
+        elif env_written and env_original is not None:
             atomic_write_bytes(env_path, env_original)
         refuse(f"the workbench could not be added: {exc}")
     click.echo(f"Added the workbench to '{name}'\n")

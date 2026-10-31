@@ -13,6 +13,7 @@ vi.mock("../../api/workbench", async (importOriginal) => ({
 
 import { ApiError } from "../../api/client"
 import { fetchStoreSql } from "../../api/workbench"
+import useStoreCompareStore from "../../stores/useStoreCompareStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import StoreSqlWindow from "../StoreSqlWindow"
 import { sheetForm } from "./fixtures"
@@ -34,6 +35,32 @@ describe("StoreSqlWindow", () => {
     cleanup()
     vi.clearAllMocks()
     vi.unstubAllGlobals()
+    useStoreCompareStore.getState().reset()
+  })
+
+  it("starts from the tables Compare read, on its environment's tab, the other starts still offered", async () => {
+    vi.mocked(fetchStoreSql).mockResolvedValue(ANSWER)
+    const form = useWorkbenchFormStore.getState().form
+    if (form === null) throw new Error("no form")
+    useStoreCompareStore.setState({
+      environment: "prod",
+      compared: {
+        status: "compared",
+        form,
+        answer: { differences: [], extras: [], renames: [], matches: false, sql: "-- from the prod database", branch: null },
+      },
+    })
+    render(<StoreSqlWindow onClose={vi.fn()} />)
+
+    expect(await screen.findByTestId("store-sql")).toHaveTextContent("ALTER TABLE policy ADD COLUMN seats BIGINT;")
+    fireEvent.click(screen.getByRole("tab", { name: /prod/ }))
+    expect(screen.getByTestId("store-sql")).toHaveTextContent("-- from the prod database")
+    const start = screen.getByRole("combobox")
+    expect(start).toHaveValue("database")
+    expect(screen.getByRole("option", { name: "The prod database" })).toBeInTheDocument()
+
+    fireEvent.change(start, { target: { value: "branch" } })
+    expect(screen.getByTestId("store-sql")).toHaveTextContent("ALTER TABLE policy ADD seats BIGINT NULL;")
   })
 
   it("shows each environment's SQL for the form the view holds, from the default branch's form", async () => {

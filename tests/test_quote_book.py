@@ -125,11 +125,10 @@ def store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Target]:
 
 @pytest.fixture
 def book(store: Target) -> Iterator[QuoteBook]:
-    store.make(FORM, project=PROJECT)
+    store.make(FORM)
     with open_book(
         store.url,
         FORM,
-        project=PROJECT,
         environment=store.environment,
         haute_version=HAUTE,
         clock=Clock(),
@@ -652,11 +651,10 @@ def test_a_preset_row_whose_value_is_no_longer_allowed_is_named_as_dropped(
         )
 
     url, sign_in, environment = store.url, store.sign_in, store.environment
-    store.make(perils_form(["AOP", "EQ"]), project=PROJECT)
+    store.make(perils_form(["AOP", "EQ"]))
     with open_book(
         url,
         perils_form(["AOP", "EQ"]),
-        project=PROJECT,
         environment=environment,
         haute_version=HAUTE,
         sign_in=sign_in,
@@ -670,7 +668,6 @@ def test_a_preset_row_whose_value_is_no_longer_allowed_is_named_as_dropped(
     with open_book(
         url,
         perils_form(["AOP"]),
-        project=PROJECT,
         environment=environment,
         haute_version=HAUTE,
         sign_in=sign_in,

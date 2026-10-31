@@ -17,7 +17,11 @@ import type {
   WorkbenchFormResponse,
   WorkbenchFormSaveResponse,
   WorkbenchParamFileResponse,
+  WorkbenchCatalogueTable,
   WorkbenchStatusResponse,
+  WorkbenchStoreCatalogueResponse,
+  WorkbenchStoreCompareResponse,
+  WorkbenchStoreRename,
   WorkbenchStoreSqlResponse,
   WorkbenchTablesResponse,
 } from "./types"
@@ -44,7 +48,7 @@ export async function fetchWorkbenchTables(): Promise<WorkbenchTablesResponse> {
 }
 
 /**
- * The SQL that brings each hosted environment the project declares to `form`, as the view
+ * The SQL that brings each environment the project declares to `form`, as the view
  * holds it, from the form the default branch holds (`branch`) or from none.
  */
 export async function fetchStoreSql(form: FormSpec, start: "branch" | "none"): Promise<WorkbenchStoreSqlResponse> {
@@ -56,6 +60,45 @@ export async function fetchStoreSql(form: FormSpec, start: "branch" | "none"): P
   return expectGeneratedContract(
     "WorkbenchStoreSqlResponse",
     (await workbenchValidators()).validateWorkbenchStoreSqlResponse,
+    data,
+  )
+}
+
+/**
+ * The tables `environment`'s database holds, read through its connection in connections.toml
+ * under the analyst's own sign-in, with the quotes holding values in each table and column.
+ */
+export async function fetchStoreCatalogue(environment: string): Promise<WorkbenchStoreCatalogueResponse> {
+  const data = await request<unknown>("/api/workbench/store-catalogue", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ environment }),
+  })
+  return expectGeneratedContract(
+    "WorkbenchStoreCatalogueResponse",
+    (await workbenchValidators()).validateWorkbenchStoreCatalogueResponse,
+    data,
+  )
+}
+
+/**
+ * `form`, as the view holds it, compared with `tables`, what `environment`'s database holds,
+ * the columns in `renames` paired as renames: its differences, extras and the SQL from them.
+ */
+export async function fetchStoreCompare(
+  form: FormSpec,
+  environment: string,
+  tables: WorkbenchCatalogueTable[],
+  renames: WorkbenchStoreRename[],
+): Promise<WorkbenchStoreCompareResponse> {
+  const data = await request<unknown>("/api/workbench/store-compare", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ form, environment, tables, renames }),
+  })
+  return expectGeneratedContract(
+    "WorkbenchStoreCompareResponse",
+    (await workbenchValidators()).validateWorkbenchStoreCompareResponse,
     data,
   )
 }

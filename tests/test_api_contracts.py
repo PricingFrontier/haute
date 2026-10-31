@@ -1037,6 +1037,18 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/WorkbenchParamFileResponse"},
         },
     },
+    "/api/workbench/store-catalogue": {
+        "POST": {
+            "request_ref": "#/components/schemas/WorkbenchStoreCatalogueRequest",
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchStoreCatalogueResponse"},
+        },
+    },
+    "/api/workbench/store-compare": {
+        "POST": {
+            "request_ref": "#/components/schemas/WorkbenchStoreCompareRequest",
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchStoreCompareResponse"},
+        },
+    },
     "/api/workbench/store-sql": {
         "POST": {
             "request_ref": "#/components/schemas/WorkbenchStoreSqlRequest",

@@ -7,10 +7,10 @@ which a pyodbc URL needs or it takes the server for a DSN, or PostgreSQL's ``pos
 signed in to as the login ``HAUTE_TEST_<NAME>_USER`` and
 ``HAUTE_TEST_<NAME>_PASSWORD`` name, which may make and drop databases. Each test is given a
 database of its own on it, dropped after the test, so its tables are its own and a plain SQL
-read names them as a report would. A store on SQLite is dev's, which the planner keeps; one
-on a server is a hosted environment's, its tables made from the SQL Haute writes, as the
-people who own a hosted database make them. A server's runs are marked ``store_servers``;
-with none named, a store test runs on SQLite alone and nothing is skipped.
+read names them as a report would. On every backend a store's tables are made from the SQL
+Haute writes, as the people who own a database make them, and it is opened in one
+environment, :data:`HOSTED`, whatever the backend. A server's runs are marked
+``store_servers``; with none named, a store test runs on SQLite alone and nothing is skipped.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
-from haute._quote_store import DEV, SignIn, offline_plan, prepare_store, render_sql, store_url
+from haute._quote_store import SignIn, offline_plan, render_sql, store_url
 from haute._quote_store._migrate import PROVIDER_DIALECTS
 from haute._quote_store._providers import PROVIDERS
 from haute._quote_store._store import make_engine
@@ -37,7 +37,7 @@ from haute._workbench_form import FormSpec
 
 #: The servers a store test may run on besides SQLite.
 SERVERS = ("sqlserver", "postgresql")
-#: The hosted environment a store on a server is opened in.
+#: The environment a test's store is opened in, on every backend.
 HOSTED = "test"
 
 
@@ -69,17 +69,14 @@ class Target:
 
     @property
     def environment(self) -> str:
-        """The environment a store on this database is opened in: dev's on SQLite, a hosted
-        one's on a server."""
-        return DEV if self.backend == "sqlite" else HOSTED
+        """The environment a store on this database is opened in: the same on every
+        backend, as every environment's database is checked alike."""
+        return HOSTED
 
-    def make(self, form: FormSpec, *, project: str, base: FormSpec | None = None) -> None:
-        """The store's tables brought to *form*: by dev's planner on SQLite, and on a server
-        by running the SQL Haute writes from *base*'s tables, or from none, as the people who
-        own a hosted database run it."""
-        if self.backend == "sqlite":
-            prepare_store(self.url, form, project=project)
-            return
+    def make(self, form: FormSpec, *, base: FormSpec | None = None) -> None:
+        """The store's tables brought to *form* by running the SQL Haute writes for this
+        backend from *base*'s tables, or from none, as the people who own a database run
+        it."""
         self.script(self.sql(form, base))
 
     def sql(self, form: FormSpec, base: FormSpec | None = None, **where: Any) -> str:
