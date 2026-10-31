@@ -17,6 +17,7 @@ packages come from the [25 October 2026 codebase review](codebase-review-2026-10
 | CLI-R04 | Planned | P3 | `haute init` edits `pyproject.toml` through `tomlkit` instead of a hand-written TOML scanner. |
 | CLI-R05 | Planned | P3 | Unexpected errors keep their tracebacks, the transport helper raises instead of exiting, and `haute serve` opens the browser when the server is ready. |
 | CLI-R06 | Planned | P3 | Generated workflows pin actions by commit, and the generated pre-commit hook formats only what is staged. |
+| CLI-R07 | Planned | P2 | `haute impact` confines `impact_dataset` to the project root and preserves non-string scalar fields from `test_quotes_dir`, `haute app migrate --sql` honours `--base` schemas and refuses restoring plans without `--restore-point`, and `haute lint` and `haute run` catch `ConfigError` from `resolve_pipeline_file`. |
 
 ## Planned improvements
 
@@ -143,3 +144,61 @@ partially staged file commits only its staged hunks under the hook.
 
 **Evidence:** `src/haute/_scaffold.py::github_ci_yml`, `::github_deploy_yml`,
 `::github_deploy_prod_yml` and `::pre_commit_hook`.
+
+### CLI-R07 — `impact` dataset confinement, `app migrate --sql` schema and restore-point checks, and `lint`/`run` pipeline resolution errors
+**Why:** Four CLI defects affect `haute impact`, `haute app migrate`, `haute lint`
+and `haute run`:
+1. `_impact_records` resolves `config.safety.impact.dataset_path` with
+   `(project_root / impact_path).resolve()` without `contained_path(project_root, impact_path)`,
+   allowing a relative `../` or absolute `impact_dataset` in `haute.toml` to read
+   outside the project root. When `impact_dataset` is unset and `haute impact`
+   falls back to `test_quotes_dir`, `_impact_records` builds `records_df` with
+   `[{k: v for k, v in r.items() if isinstance(v, str)} for r in records]`, which
+   drops non-string scalar fields (numeric and boolean policy attributes and
+   identifiers) from `records_df`.
+2. In `handle_app_migrate`, when `--base` and `--sql` are passed together
+   (`haute app migrate --environment prod --base <dir> --sql`), the `base is not None`
+   branch resolves only the `[workbench.store]` environment list and never calls
+   `resolve_store`, leaving `sql_schema = None` even when `HAUTE_STORE_SCHEMA` is set.
+3. `render_sql(plan, environment=..., restore_point=..., schema=...)` does not derive
+   `mode: Mode = "dev" if environment == DEV else "hosted"` and call
+   `_refuse(plan, restore_point, mode)` before rendering DDL, so
+   `haute app migrate --sql` without `--restore-point` on a restoring migration
+   renders SQL with `restore_point=None` instead of raising `MigrationRefusedError`
+   as live migration does.
+4. `lint` (`src/haute/cli/_lint.py`) and `run` (`src/haute/cli/_run.py`) catch only
+   `FileNotFoundError` around `resolve_pipeline_file(pipeline_file)`, whereas
+   `resolve_pipeline_file` also raises `ConfigError` when `[project].pipeline` in
+   `haute.toml` escapes the project root or `haute.toml` is malformed, producing an
+   unhandled traceback instead of a clean CLI error exit.
+
+**Plan:** Validate `impact_dataset` with `contained_path(project_root, impact_path)`
+and preserve scalar top-level fields (`str`, `int`, `float`, `bool`) in
+`_impact_records`. In `handle_app_migrate`, read the stripped `HAUTE_STORE_SCHEMA` via
+`_given(environ, STORE_SCHEMA_ENV)` (matching `resolve_store` in
+`_quote_store/_environment.py:143`, which passes `schema` through to SQLAlchemy
+`MetaData(schema=schema)` in `_quote_store/_schema.py:291` while refusing
+`HAUTE_STORE_SCHEMA` on file-provider environments) when `--base` and `--sql` are
+combined, and derive `mode: Mode = "dev" if environment == DEV else "hosted"` inside
+`render_sql` and call `_refuse(plan, restore_point, mode)` so restoring plans require
+`restore_point` in `--sql` mode too. Catch `(FileNotFoundError, ConfigError)` around
+`resolve_pipeline_file` in `lint` and `run`.
+
+**Acceptance:** An `impact_dataset` outside `project_root` is refused before reading;
+`haute impact` with `test_quotes_dir` quotes containing numeric and boolean scalar
+fields preserves those columns in `records_df`; `haute app migrate --base <dir> --sql`
+with `HAUTE_STORE_SCHEMA=underwriting` qualifies DDL with `"underwriting"`;
+`render_sql` on a restoring plan for a hosted environment (`environment="prod"`) with
+`restore_point=None` raises `MigrationRefusedError`; and `haute lint` / `haute run`
+exit with code 1 and the error message when `[project].pipeline` in `haute.toml` is
+out of bounds or `haute.toml` is malformed.
+
+**Dependencies:** Coordinates with `CLI-R05`.
+
+**Evidence:** `src/haute/cli/_impact.py::_impact_records`;
+`src/haute/cli/_app.py::handle_app_migrate`;
+`src/haute/_quote_store/_migrate.py::render_sql`;
+`src/haute/_quote_store/_migrate.py::_refuse`;
+`src/haute/cli/_lint.py::lint`;
+`src/haute/cli/_run.py::run`;
+`src/haute/_project.py::resolve_pipeline_file`.

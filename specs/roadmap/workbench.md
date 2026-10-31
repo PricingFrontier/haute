@@ -34,6 +34,7 @@ Allowed field.
 | WB-13 | Planned | P3 | An underwriter records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
+| WB-41 | Planned | P2 | `resolve_store` rejects authority/host or embedded credentials in a `sqlite:` `HAUTE_STORE_URL`, `useQuoteListStore` fences `loadingMore` across list switches, `priceSample` resolves `WORKBENCH_OUTPUT` inside submodels via `qualifiedRuntimeNodeId`, and the workbench high-level specification removes the stale `The blank form is a form` bullet. |
 
 ## Planned improvements
 
@@ -376,3 +377,57 @@ specification and the field stop calling the shape older.
 
 **Evidence:** `frontend/src/workbench/schema/AllowedField.tsx::TYPED_IN`,
 `src/haute/_workbench_form.py::FormSpec`, `frontend/src/utils/workbenchForm.ts`.
+
+### WB-41 — Validate `HAUTE_STORE_URL` for `sqlite` environments, fence `loadingMore` in `useQuoteListStore`, resolve submodel `WORKBENCH_OUTPUT` runtime targets in `priceSample`, and remove stale blank-form rationale
+**Why:** Four defects affect the quote store environment resolver, the underwriter
+app's quote list pagination store, live sample pricing in the Workbench view, and
+the workbench high-level specification:
+1. In `resolve_store` (`src/haute/_quote_store/_environment.py`), when
+   `environment.provider == "sqlite"` and `HAUTE_STORE_URL` is set in `environ`,
+   `resolve_store` checks `url.startswith("sqlite:")` and returns
+   `StoreLocation(url=url, ...)` without calling `validate_credential_free_uri(url)`
+   or rejecting a non-empty authority/host (`sqlite://user:pass@host/db`), accepting
+   a `sqlite:` URI with embedded credentials or a remote authority.
+2. In `useQuoteListStore` (`frontend/src/app/useQuoteListStore.ts`), `load` does not
+   reset `loadingMore: false` when switching to a new list while a previous `more()`
+   request is in flight, and `more()`'s `finally` block runs
+   `set({ loadingMore: false })` unconditionally without checking
+   `listAsked.is(attempt)`, clearing `loadingMore` for a newer list load's own
+   pagination request.
+3. In `priceSample` (`frontend/src/workbench/priceSample.ts`), the module docstring
+   states that every `Workbench Input` and `Workbench Output` at the top level or
+   inside a submodel is supported, and `WORKBENCH_INPUT` is collected from both
+   `graph.nodes` and `graph.submodels`, but `const output = graph.nodes.find((node) => node.data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT)`
+   searches only top-level `graph.nodes`, failing with
+   `"The pipeline has no Workbench Output..."` when `Workbench Output` lives inside a
+   submodel.
+4. `specs/workbench/high-level.md` retains a stale rationale bullet (`The blank form
+   is a form. A project whose workbench was enabled by hand has no file yet...`) that
+   directly contradicts the earlier rationale bullet (`A missing folder is a loss,
+   not a new form`) and the folder-backed form loader.
+
+**Plan:** Validate `sqlite:` `HAUTE_STORE_URL` values in `resolve_store` with
+`validate_credential_free_uri` and refuse any non-empty authority/host with
+`QuoteStoreEnvironmentError`; reset `loadingMore: false` in `useQuoteListStore.load`
+and guard `set({ loadingMore: false })` in `more()` with `if (listAsked.is(attempt))`;
+search both `graph.nodes` and `graph.submodels` for `NODE_TYPES.WORKBENCH_OUTPUT` in
+`priceSample` and resolve a submodel child output's qualified runtime node ID through
+`qualifiedRuntimeNodeId` before calling `previewNode`; and remove the stale
+`The blank form is a form` bullet from `specs/workbench/high-level.md`.
+
+**Acceptance:** Setting `HAUTE_STORE_URL` to a `sqlite:` URI with a host or embedded
+credentials raises `QuoteStoreEnvironmentError`; switching quote lists while `more()`
+is in flight resets `loadingMore` immediately and the stale `more()` completion cannot
+clear a newer list's `loadingMore` state; `priceSample` prices a workbench pipeline
+whose `Workbench Output` is inside a submodel by sending the qualified runtime node ID
+to `/api/pipeline/preview` and returning its priced tables; and
+`specs/workbench/high-level.md` states one consistent missing-folder rule.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_environment.py::resolve_store`;
+`src/haute/_quote_store/_environment.py::validate_credential_free_uri`;
+`frontend/src/app/useQuoteListStore.ts::useQuoteListStore`;
+`frontend/src/workbench/priceSample.ts::priceSample`;
+`frontend/src/utils/submodelRuntimeTarget.ts::qualifiedRuntimeNodeId`;
+`specs/workbench/high-level.md`.

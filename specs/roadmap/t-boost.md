@@ -40,6 +40,7 @@ above what the consumer supports) is refused by name, never approximated.
 | TBOOST-08 | Decision | P3 | The rating tables download as a workbook, rebased to the analyst's chosen base levels. |
 | TBOOST-09 | Decision | P3 | Training and scoring report how much exposure falls in cells the model never saw in training. |
 | TBOOST-10 | Decision | P3 | t-boost's surviving interactions are offered as GLM interaction candidates beside the GLM's own relativities. |
+| TBOOST-11 | Planned | P2 | `_report_table` guards `np.exp(scores)` overflow so extreme link scores isolate to a `"tboost_tables"` record in `diagnostics_errors`, and `_validated_record` validates `class_labels`. |
 
 ## Planned improvements
 
@@ -309,3 +310,37 @@ interaction to the GLM node's configuration, which then trains.
 
 **Evidence:** `src/haute/modelling/_glm_terms.py`; t-boost 0.6.2 table
 `sobol` shares.
+
+### TBOOST-11 — Guard `_report_table` relativity overflow and validate `class_labels` in `_validated_record`
+**Why:** Two defects affect t-boost table reporting and metadata validation:
+1. In `_report_table`, when `link == "log"`, `relativities = np.exp(scores)` is
+   computed without checking whether `np.exp(scores)` overflows float64 to `inf`.
+   When a cell's link score exceeds ~709.78, `relativities` contains `inf`, which
+   passes `TrainingJob._compute_metrics` (`algo.tboost_tables(model)`) without
+   raising and then fails `_assert_json_finite` when constructing the worker response
+   (`_training_worker.py`), aborting the entire training job instead of appending a
+   `{"diagnostic": "tboost_tables", "error": ..., "error_type": ...}` entry to
+   `diagnostics_errors`.
+2. In `_validated_record`, when `task == "classification"`, `class_labels` is checked
+   only for `isinstance(labels, list)` and `len(labels) == 2`, without verifying that
+   its elements are valid scalar labels (`str`, `int` or `bool`, not `None`, `dict`,
+   `list` or duplicate values).
+
+**Plan:** Check `np.all(np.isfinite(relativities))` in `_report_table` and raise a
+descriptive `ValueError` when `np.exp(scores)` overflows so
+`TrainingJob._compute_metrics` isolates the failure as a `"diagnostic": "tboost_tables"`
+entry in `diagnostics_errors`; validate in `_validated_record` that `class_labels`
+contains two distinct scalar labels.
+
+**Acceptance:** A t-boost table with an extreme log-link score (`> 710`) records a
+`"diagnostic": "tboost_tables"` diagnostic error in `diagnostics_errors` while the
+training job still completes with its fitted model and passes `_assert_json_finite`; a
+`.tboost` record whose `class_labels` contains non-scalars or duplicate labels is
+refused by `_validated_record` with `ConfigError`.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/modelling/_tboost.py::_report_table`;
+`src/haute/modelling/_tboost.py::_validated_record`;
+`src/haute/modelling/_training_job.py::TrainingJob._compute_metrics`;
+`src/haute/routes/_training_worker.py::_assert_json_finite`.
