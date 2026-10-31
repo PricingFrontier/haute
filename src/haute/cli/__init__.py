@@ -13,10 +13,10 @@ from haute.cli._app import app
 from haute.cli._ci import ci
 from haute.cli._deploy import deploy
 from haute.cli._gpu_setup import gpu_setup
-from haute.cli._helpers import utf8_output
 from haute.cli._impact import impact
 from haute.cli._init_cmd import init
 from haute.cli._lint import lint
+from haute.cli._output import utf8_output
 from haute.cli._run import run
 from haute.cli._serve import serve
 from haute.cli._smoke import smoke

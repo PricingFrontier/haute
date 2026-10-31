@@ -5,7 +5,7 @@
  * the SQLite file it keeps its quotes in, read with plain SQL.
  */
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process"
-import { existsSync } from "node:fs"
+import { existsSync, writeFileSync } from "node:fs"
 import { createServer } from "node:net"
 import { resolve } from "node:path"
 import { expect } from "@playwright/test"
@@ -98,12 +98,28 @@ export interface AppServe {
 }
 
 /**
+ * Pin the journeys' project to the Python `uv run` starts the app on, `major.minor`: a
+ * release is built only on the Python its project pins, and the project's scaffold pins
+ * Haute's default, which the browser job's Python need not be. The project's reset puts
+ * the scaffold's pin back.
+ */
+function pinProjectPython(): void {
+  const version = execFileSync(
+    "uv",
+    ["run", "--project", repoRoot, "python", "-I", "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+    { cwd: e2eProjectRoot, encoding: "utf8" },
+  ).trim()
+  writeFileSync(resolve(e2eProjectRoot, ".python-version"), `${version}\n`)
+}
+
+/**
  * `haute app serve` started in the journeys' project, as an analyst starts it, with the page
  * in `staticDir`: answered once it has built the project's release, made dev's quote store
  * hold the form's tables and answers its health check; refused with its output when it stops
  * first or does not answer in time.
  */
 export async function startAppServe(staticDir: string): Promise<AppServe> {
+  pinProjectPython()
   const port = await freePort()
   const url = `http://127.0.0.1:${port}`
   // The repository's Haute, in the project: `uv run` there would make the project an

@@ -605,6 +605,9 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
     ),
     # GitHub's supplied output-file path is an external integration string.
     ("src/haute/cli/_impact.py", "<module>.handle_impact", "GITHUB_STEP_SUMMARY", "os.environ.get"),
+    # Python's own stream-encoding variable: an encoding the user chose for the CLI's
+    # output is kept, a mark it cannot hold shown as ``?``, rather than replaced by UTF-8.
+    ("src/haute/cli/_output.py", "<module>.utf8_output", "PYTHONIOENCODING", "os.environ.get"),
 }
 
 

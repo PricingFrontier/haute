@@ -853,7 +853,20 @@ def test_a_started_app_refuses_a_sign_in_lacking_a_privilege_naming_it(server: T
     finally:
         if server.backend == "sqlserver":
             server.run(f"DROP USER {reader}")
-            server.run(f"DROP LOGIN {reader}")
+            # The ODBC driver manager may pool the refused app's connection: end it first,
+            # outside a transaction, which KILL takes no part in.
+            engine = make_engine(server.url, sign_in=server.sign_in)
+            try:
+                with engine.execution_options(isolation_level="AUTOCOMMIT").connect() as admin:
+                    admin.exec_driver_sql(
+                        "DECLARE @end nvarchar(max) = N''; "
+                        "SELECT @end += N'KILL ' + CAST(session_id AS nvarchar(10)) + N'; ' "
+                        f"FROM sys.dm_exec_sessions WHERE login_name = N'{reader}'; "
+                        "EXEC sp_executesql @end;"
+                    )
+                    admin.exec_driver_sql(f"DROP LOGIN {reader}")
+            finally:
+                engine.dispose()
         else:
             server.run(f"DROP OWNED BY {reader}", f"DROP ROLE {reader}")
 

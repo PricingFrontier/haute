@@ -16,7 +16,7 @@ import polars as pl
 import pytest
 
 from haute.cli import cli
-from haute.cli._helpers import utf8_output
+from haute.cli._output import utf8_output
 from tests.conftest import write_data_input_config
 
 if TYPE_CHECKING:
