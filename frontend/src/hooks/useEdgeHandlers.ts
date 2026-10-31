@@ -44,6 +44,7 @@ import {
   type ConnectionValidationResult,
 } from "../utils/connectionValidation"
 import useToastStore from "../stores/useToastStore"
+import useUIStore from "../stores/useUIStore"
 import type { FetchPreviewOptions } from "./usePipelineAPI"
 import type { PreviewData } from "../panels/DataPreview"
 import type { SimpleNode } from "../panels/editors/_shared"
@@ -631,7 +632,11 @@ export default function useEdgeHandlers({
 
   /** Opens a node's panel, refreshing its preview when it is a different node. */
   const openNode = useCallback((node: Node) => {
-    const previousNodeId = selectedNode?.id ?? lastSelectedNodeRef.current?.id
+    const previousNodeId = lastSelectedNodeRef.current
+      ? lastSelectedNodeRef.current.id
+      : selectedNode === node
+        ? selectedNode.id
+        : undefined
     const shouldRefreshPreview = previousNodeId !== node.id
     setSelectedNode(node)
     setLastSelectedId?.(node.id)
@@ -659,10 +664,21 @@ export default function useEdgeHandlers({
     setLastSelectedId,
   ])
 
+  /** Activates a node as a canvas click does: closes side panes, selects the node, and opens its panel/preview. */
+  const activateNode = useCallback((node: Node) => {
+    useUIStore.getState().closeSidePanes()
+    setNodesRaw((nds) => {
+      const target = nds.find((n) => n.id === node.id)
+      if (!target || target.selected) return nds
+      return selectOnlyNode(nds, node.id)
+    })
+    openNode(node)
+  }, [openNode, setNodesRaw])
+
   /** Opens panel on a full click (mousedown+mouseup) — skipped for drags. */
   const onNodeClick = useCallback(
-    (_event: React.MouseEvent, node: Node) => openNode(node),
-    [openNode],
+    (_event: React.MouseEvent, node: Node) => activateNode(node),
+    [activateNode],
   )
 
   const handleDeleteEdge = useCallback((edgeId: string) => {
@@ -757,6 +773,7 @@ export default function useEdgeHandlers({
     createNodeFromConnectionDrop,
     onSelectionChange,
     openNode,
+    activateNode,
     onNodeClick,
     handleDeleteEdge,
     onNodeContextMenu,

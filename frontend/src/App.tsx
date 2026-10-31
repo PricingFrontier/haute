@@ -61,6 +61,7 @@ import useTracing, { type TraceRequestState } from "./hooks/useTracing"
 import useSubmodelNavigation, { type SubmodelCreateResult } from "./hooks/useSubmodelNavigation"
 import useSubmodelBoundaryEditing from "./hooks/useSubmodelBoundaryEditing"
 import useKeyboardShortcuts from "./hooks/useKeyboardShortcuts"
+import { inModalDialog, isFormControl } from "./hooks/keyboardTargets"
 import useWindowFileDropGuard from "./hooks/useWindowFileDropGuard"
 import { WRAPPED_INSTANCE_TYPES } from "./utils/nodeTypes"
 import useNodeHandlers from "./hooks/useNodeHandlers"
@@ -770,7 +771,7 @@ function FlowEditor() {
   const filesPlace = useUIStore((s) => s.filesPlace)
   const setFilesPlace = useUIStore((s) => s.setFilesPlace)
   const assistantOpen = useUIStore((s) => s.assistantOpen)
-  const setAssistantOpen = useUIStore((s) => s.setAssistantOpen)
+  const closeSidePanes = useUIStore((s) => s.closeSidePanes)
   const assistantTurnRunning = useUIStore((s) => s.assistantTurn !== null)
   const askAssistantToFix = useUIStore((s) => s.askAssistantToFix)
   const setSubmodelDialog = useUIStore((s) => s.setSubmodelDialog)
@@ -850,10 +851,8 @@ function FlowEditor() {
     lastSelectedNodeRef.current = null
     setLastSelectedId(null)
     setPreviewDataRef.current(null)
-    setUtilityOpen(false)
-    setConstantsOpen(false)
-    setGitOpen(false)
-  }, [setUtilityOpen, setConstantsOpen, setGitOpen])
+    closeSidePanes()
+  }, [closeSidePanes])
 
   // Node results store — background jobs + cached results
   const getOptimiserPreview = useNodeResultsStore((s) => s.getOptimiserPreview)
@@ -1135,29 +1134,6 @@ function FlowEditor() {
     [documentRootNodes, submodels],
   )
 
-  const handleRepairApplied = useCallback((
-    document: import("./types/pipelineDocument").PipelineEditorDocument,
-  ) => {
-    const recoverTargetId =
-      pipelineRepairTarget?.action === "recover" ? pipelineRepairTarget.recoveryId : null
-    // The repair response names no document fingerprint; the next resync fetches the document.
-    adoptPipelineDocument(document, null)
-    resetToAuthoritativeRoot(
-      document.source_file,
-      document.pipeline_name ?? "main",
-    )
-    setPipelineRepairTarget(null)
-    if (recoverTargetId) {
-      const restored = graphRef.current.nodes.find((item) => item.id === recoverTargetId)
-      if (restored) {
-        setSelectedNode(restored)
-        setLastSelectedId(recoverTargetId)
-        return
-      }
-    }
-    closePanel()
-  }, [adoptPipelineDocument, closePanel, pipelineRepairTarget, resetToAuthoritativeRoot])
-
   const activeView = viewStack[viewStack.length - 1]
   const activeSubmodelName = activeView?.type === "submodel" ? activeView.name : null
   const activeSubmodelInstanceId = activeView?.type === "submodel" ? activeView.instanceId ?? null : null
@@ -1180,29 +1156,6 @@ function FlowEditor() {
     typeof selectedNodeData?._sourceFile === "string" &&
     typeof selectedNodeData?._recoveryId === "string"
 
-  const selectedNodeRef = useRef<Node | null>(null)
-  useEffect(() => {
-    selectedNodeRef.current = selectedNode ?? null
-  }, [selectedNode])
-  const applyScopedSaveDocument = useCallback(
-    (document: import("./types/pipelineDocument").PipelineEditorDocument, savedNodeId: string) => {
-      const selectionUnchanged = selectedNodeRef.current?.id === savedNodeId
-      // The scoped save response names no document fingerprint; the next resync fetches the document.
-      adoptPipelineDocument(document, null)
-      resetToAuthoritativeRoot(document.source_file, document.pipeline_name ?? "main")
-      if (selectionUnchanged) {
-        const restored = graphRef.current.nodes.find((item) => item.id === savedNodeId)
-        if (restored) {
-          setSelectedNode(restored)
-          setLastSelectedId(savedNodeId)
-        } else {
-          closePanel()
-        }
-      }
-    },
-    [adoptPipelineDocument, closePanel, resetToAuthoritativeRoot],
-  )
-
   const {
     commitBoundaryConnection,
     deleteBoundaryEdge,
@@ -1222,6 +1175,139 @@ function FlowEditor() {
     setNodesAndEdgesAndSubmodels,
     reservedApiInputFrameLabels,
   })
+
+  const shouldSkipAutomaticPreview = useCallback(
+    (node: Node) => {
+      if (nodeData(node).nodeType !== NODE_TYPES.OPTIMISER) return false
+      const hasPreview = !!getOptimiserPreview(node.id)
+      if (hasPreview) touchOptimiserPreview(node.id)
+      return hasPreview
+    },
+    [getOptimiserPreview, touchOptimiserPreview],
+  )
+
+  const findEdgeIdAtPoint = useCallback((point: { x: number; y: number }) => {
+    const elements = document.elementsFromPoint(point.x, point.y)
+    for (const element of elements) {
+      if (element.closest?.(".react-flow__handle, .react-flow__node")) return null
+      const edgeElement = element.closest?.(".react-flow__edge[data-id]")
+      const edgeId = edgeElement?.getAttribute("data-id")
+      if (edgeId) return edgeId
+    }
+    return null
+  }, [])
+
+  const isBoundaryConnection = useCallback((connection: Connection | Edge) => {
+    if (!activeSubmodelName) return false
+    return graphRef.current.nodes.some(
+      (node) =>
+        (node.id === connection.source || node.id === connection.target)
+        && nodeData(node).nodeType === NODE_TYPES.SUBMODEL_PORT,
+    )
+  }, [activeSubmodelName, graphRef])
+
+  const isValidConnection = useCallback((connection: Connection | Edge) => {
+    if (editingReadOnly) return false
+    if (isBoundaryConnection(connection)) return true
+    return validatePipelineConnection(
+      connection,
+      panelGraph.allNodes,
+      panelGraph.edges,
+      submodelsRef.current,
+      useWorkbenchStore.getState().tables,
+    ).ok
+  }, [editingReadOnly, isBoundaryConnection, panelGraph])
+
+  const validateConnection = useCallback((connection: Connection): ConnectionValidationResult => {
+    if (editingReadOnly) {
+      return {
+        ok: false,
+        reason: { kind: "invalid-connection", message: "This pipeline document is read-only." },
+      }
+    }
+    if (isBoundaryConnection(connection)) return { ok: true }
+    return validatePipelineConnection(
+      connection,
+      panelGraph.allNodes,
+      panelGraph.edges,
+      submodelsRef.current,
+      useWorkbenchStore.getState().tables,
+    )
+  }, [editingReadOnly, isBoundaryConnection, panelGraph])
+
+  const {
+    onConnect, onSelectionChange, openNode, activateNode, onNodeClick, handleDeleteEdge,
+    onConnectStart, onConnectEnd, onConnectionPointerMove, clearEdgeJoinCandidate,
+    edgeJoinCandidateEdgeId, onNodeContextMenu, onDragOver, onDrop,
+    connectionDropMenu, closeConnectionDropMenu, createNodeFromConnectionDrop,
+    submodelInputMenu, selectSubmodelInput,
+  } = useEdgeHandlers({
+    selectedNode, graphRef, submodels, nodeIdCounter, lastSelectedNodeRef,
+    setNodes, setEdges, setNodesRaw, setEdgesRaw, pushSnapshot,
+    setSelectedNode, setPreviewData, setContextMenu,
+    setLastSelectedId,
+    fetchPreview,
+    cancelPreview,
+    shouldSkipAutomaticPreview,
+    clearTrace,
+    screenToFlowPosition,
+    graphRefreshingRef,
+    existingSingletonTypes,
+    resolveGraphIdentities: resolveCandidateGraphIdentities,
+    findEdgeIdAtPoint,
+    isPaneAtPoint: isEmptyCanvasAtPoint,
+    validateConnection,
+    commitBoundaryConnection,
+    deleteBoundaryEdge,
+  })
+
+  const handleRepairApplied = useCallback((
+    document: import("./types/pipelineDocument").PipelineEditorDocument,
+  ) => {
+    const recoverTargetId =
+      pipelineRepairTarget?.action === "recover" ? pipelineRepairTarget.recoveryId : null
+    // The repair response names no document fingerprint; the next resync fetches the document.
+    adoptPipelineDocument(document, null)
+    previousDocumentRevisionRef.current = document.source_revision
+    resetToAuthoritativeRoot(
+      document.source_file,
+      document.pipeline_name ?? "main",
+    )
+    setPipelineRepairTarget(null)
+    if (recoverTargetId) {
+      const restored = graphRef.current.nodes.find((item) => item.id === recoverTargetId)
+      if (restored) {
+        lastSelectedNodeRef.current = null
+        activateNode(restored)
+        return
+      }
+    }
+    closePanel()
+  }, [activateNode, adoptPipelineDocument, closePanel, pipelineRepairTarget, resetToAuthoritativeRoot])
+
+  const selectedNodeRef = useRef<Node | null>(null)
+  useEffect(() => {
+    selectedNodeRef.current = selectedNode ?? null
+  }, [selectedNode])
+  const applyScopedSaveDocument = useCallback(
+    (document: import("./types/pipelineDocument").PipelineEditorDocument, savedNodeId: string) => {
+      const selectionUnchanged = selectedNodeRef.current?.id === savedNodeId
+      // The scoped save response names no document fingerprint; the next resync fetches the document.
+      adoptPipelineDocument(document, null)
+      previousDocumentRevisionRef.current = document.source_revision
+      resetToAuthoritativeRoot(document.source_file, document.pipeline_name ?? "main")
+      if (selectionUnchanged) {
+        const restored = graphRef.current.nodes.find((item) => item.id === savedNodeId)
+        if (restored) {
+          lastSelectedNodeRef.current = null
+          activateNode(restored)
+        } else {
+          closePanel()
+        }
+      }
+    },
+    [activateNode, adoptPipelineDocument, closePanel, resetToAuthoritativeRoot],
+  )
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
     if (!editingReadOnly) {
       const removedNodeIds = new Set(changes
@@ -1572,91 +1658,6 @@ function FlowEditor() {
     handleCreateInstance(selectedNodeIds[0])
   }, [editingReadOnly, selectedNodeIds, handleCreateInstance, addToast])
 
-  const shouldSkipAutomaticPreview = useCallback(
-    (node: Node) => {
-      if (nodeData(node).nodeType !== NODE_TYPES.OPTIMISER) return false
-      const hasPreview = !!getOptimiserPreview(node.id)
-      if (hasPreview) touchOptimiserPreview(node.id)
-      return hasPreview
-    },
-    [getOptimiserPreview, touchOptimiserPreview],
-  )
-
-  const findEdgeIdAtPoint = useCallback((point: { x: number; y: number }) => {
-    const elements = document.elementsFromPoint(point.x, point.y)
-    for (const element of elements) {
-      if (element.closest?.(".react-flow__handle, .react-flow__node")) return null
-      const edgeElement = element.closest?.(".react-flow__edge[data-id]")
-      const edgeId = edgeElement?.getAttribute("data-id")
-      if (edgeId) return edgeId
-    }
-    return null
-  }, [])
-
-  const isBoundaryConnection = useCallback((connection: Connection | Edge) => {
-    if (!activeSubmodelName) return false
-    return graphRef.current.nodes.some(
-      (node) =>
-        (node.id === connection.source || node.id === connection.target)
-        && nodeData(node).nodeType === NODE_TYPES.SUBMODEL_PORT,
-    )
-  }, [activeSubmodelName, graphRef])
-
-  const isValidConnection = useCallback((connection: Connection | Edge) => {
-    if (editingReadOnly) return false
-    if (isBoundaryConnection(connection)) return true
-    return validatePipelineConnection(
-      connection,
-      panelGraph.allNodes,
-      panelGraph.edges,
-      submodelsRef.current,
-      useWorkbenchStore.getState().tables,
-    ).ok
-  }, [editingReadOnly, isBoundaryConnection, panelGraph])
-
-  const validateConnection = useCallback((connection: Connection): ConnectionValidationResult => {
-    if (editingReadOnly) {
-      return {
-        ok: false,
-        reason: { kind: "invalid-connection", message: "This pipeline document is read-only." },
-      }
-    }
-    if (isBoundaryConnection(connection)) return { ok: true }
-    return validatePipelineConnection(
-      connection,
-      panelGraph.allNodes,
-      panelGraph.edges,
-      submodelsRef.current,
-      useWorkbenchStore.getState().tables,
-    )
-  }, [editingReadOnly, isBoundaryConnection, panelGraph])
-
-  const {
-    onConnect, onSelectionChange, openNode, onNodeClick, handleDeleteEdge,
-    onConnectStart, onConnectEnd, onConnectionPointerMove, clearEdgeJoinCandidate,
-    edgeJoinCandidateEdgeId, onNodeContextMenu, onDragOver, onDrop,
-    connectionDropMenu, closeConnectionDropMenu, createNodeFromConnectionDrop,
-    submodelInputMenu, selectSubmodelInput,
-  } = useEdgeHandlers({
-    selectedNode, graphRef, submodels, nodeIdCounter, lastSelectedNodeRef,
-    setNodes, setEdges, setNodesRaw, setEdgesRaw, pushSnapshot,
-    setSelectedNode, setPreviewData, setContextMenu,
-    setLastSelectedId,
-    fetchPreview,
-    cancelPreview,
-    shouldSkipAutomaticPreview,
-    clearTrace,
-    screenToFlowPosition,
-    graphRefreshingRef,
-    existingSingletonTypes,
-    resolveGraphIdentities: resolveCandidateGraphIdentities,
-    findEdgeIdAtPoint,
-    isPaneAtPoint: isEmptyCanvasAtPoint,
-    validateConnection,
-    commitBoundaryConnection,
-    deleteBoundaryEdge,
-  })
-
   // The workbench prices its sample on the document as it is then: the whole pipeline,
   // even while a submodel is open.
   const resolveWorkbenchGraph = useCallback(
@@ -1732,25 +1733,15 @@ function FlowEditor() {
   const handleSelectRecoveryElement = useCallback((elementId: string) => {
     const node = graphRef.current.nodes.find((candidate) => candidate.id === elementId)
     if (!node) return
-    setSelectedNode(node)
-    setLastSelectedId(node.id)
-    lastSelectedNodeRef.current = node
-    setUtilityOpen(false)
-    setConstantsOpen(false)
-    setGitOpen(false)
-  }, [setGitOpen, setConstantsOpen, setUtilityOpen])
+    activateNode(node)
+  }, [activateNode])
 
   const handleNodeSearchSelect = useCallback((nodeId: string) => {
     const node = graphRef.current.nodes.find((candidate) => candidate.id === nodeId) ?? null
     if (!node) return
-    setSelectedNode(node)
-    setLastSelectedId(node.id)
-    lastSelectedNodeRef.current = node
-    setUtilityOpen(false)
-    setConstantsOpen(false)
-    setGitOpen(false)
+    activateNode(node)
     centreNode(node.id, NODE_SEARCH_FOCUS_ZOOM)
-  }, [centreNode, setGitOpen, setConstantsOpen, setUtilityOpen])
+  }, [activateNode, centreNode])
 
   // A name violation's nodes: those at the root, and the occurrences of a
   // submodel holding the rest. The first is opened as a click would.
@@ -1772,8 +1763,8 @@ function FlowEditor() {
       id: node.id,
       selected: selected.includes(node),
     })))
-    handleSelectRecoveryElement(selected[0].id)
-  }, [handleSelectRecoveryElement, onNodesChange])
+    activateNode(selected[0])
+  }, [activateNode, onNodesChange])
 
   // Point the assistant at a failing node: select it alone, as a click would,
   // and open the panel with its preview error on the next message.
@@ -1841,10 +1832,8 @@ function FlowEditor() {
   useEffect(() => {
     if (!pipelineActive) return
     const handler = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.key !== "Enter") return
-      const el = e.target as HTMLElement | null
-      const tag = el?.tagName
-      if (tag === "INPUT" || tag === "TEXTAREA" || el?.closest?.(".cm-editor")) return
+      if (e.defaultPrevented || !(e.ctrlKey || e.metaKey) || e.key !== "Enter") return
+      if (inModalDialog(e.target) || isFormControl(e.target)) return
       e.preventDefault()
       handlePanelPreviewRefresh()
     }
@@ -2085,15 +2074,13 @@ function FlowEditor() {
                 onMoveStart={handleActiveNodeMoveStart}
                 onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
                 onNodeMouseLeave={() => setHoveredNodeId(null)}
-                onNodeClick={(event, node) => { setUtilityOpen(false); setConstantsOpen(false); setGitOpen(false); setHoveredNodeId(null); onNodeClick(event, node) }}
+                onNodeClick={(event, node) => { setHoveredNodeId(null); onNodeClick(event, node) }}
                 onNodeContextMenu={editingReadOnly ? undefined : onNodeContextMenu}
                 onNodeDoubleClick={(_event, node) => {
                   if (nodeData(node).nodeType === NODE_TYPES.SUBMODEL) {
                     const config = nodeData(node).config
                     if (isSubmodelInstanceConfig(config) && config.instanceOf !== undefined) {
-                      setUtilityOpen(false)
-                      setConstantsOpen(false)
-                      setAssistantOpen(false)
+                      closeSidePanes()
                       setContextMenu(null)
                       setRenameDialog(null)
                       setSubmodelDialog(null)

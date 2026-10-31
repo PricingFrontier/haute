@@ -3,6 +3,7 @@ import { renderHook, cleanup, act } from "@testing-library/react"
 import type { Node, Edge, Connection } from "@xyflow/react"
 import useEdgeHandlers from "../useEdgeHandlers"
 import useToastStore from "../../stores/useToastStore"
+import useUIStore from "../../stores/useUIStore"
 import { NODE_TYPES, type NodeTypeValue } from "../../utils/nodeTypes"
 import { DEFAULT_TARGET_HANDLE, SUBMODEL_INPUT_HANDLE } from "../../utils/flowHandles"
 import { validatePipelineConnection } from "../../utils/connectionValidation"
@@ -2954,4 +2955,32 @@ describe("useEdgeHandlers connection drop menu", () => {
     expect(params.setNodesRaw).not.toHaveBeenCalled()
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
   })
+
+  it("activateNode closes all five side panes and opens the node with preview", () => {
+    useUIStore.setState({
+      utilityOpen: true,
+      constantsOpen: true,
+      assistantOpen: true,
+      gitOpen: true,
+      filesPlace: "pipeline",
+    })
+    const params = makeParams()
+    const node = { id: "n1", data: { label: "N1", nodeType: NODE_TYPES.POLARS } } as unknown as Node
+    params.graphRef.current = { nodes: [node], edges: [] }
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.activateNode(node)
+    })
+
+    const uiState = useUIStore.getState()
+    expect(uiState.utilityOpen).toBe(false)
+    expect(uiState.constantsOpen).toBe(false)
+    expect(uiState.assistantOpen).toBe(false)
+    expect(uiState.gitOpen).toBe(false)
+    expect(uiState.filesPlace).toBeNull()
+    expect(params.setSelectedNode).toHaveBeenCalledWith(node)
+    expect(params.fetchPreview).toHaveBeenCalledWith(node, {})
+  })
 })
+

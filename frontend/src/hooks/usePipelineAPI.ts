@@ -602,9 +602,11 @@ export default function usePipelineAPI({
     sourceRevisionRef.current = data.source_revision ?? ""
     preservedBlocksRef.current = data.preserved_blocks
     useDocumentStatusStore.getState().loadDocumentStatus(data, false, documentFingerprint)
+    const normalizedEdges = normalizeEdges(pipelineEdges)
+    graphRef.current = { nodes: pipelineNodes, edges: normalizedEdges }
     useGraphStore.getState().loadGraphSnapshot({
       nodes: pipelineNodes,
-      edges: normalizeEdges(pipelineEdges),
+      edges: normalizedEdges,
       preamble: loadedPreamble,
       submodels: loadedSubmodels,
       globalConstants: constantDrafts(data.global_constants),
@@ -619,7 +621,7 @@ export default function usePipelineAPI({
       if (data.active_source) useSettingsStore.getState().setActiveSource(data.active_source)
     }
     nodeIdCounterRef.current = computeNextNodeId(pipelineNodes)
-  }, [preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, submodelsRef, nodeIdCounterRef])
+  }, [graphRef, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, submodelsRef, nodeIdCounterRef])
 
   // Initial pipeline load
   useEffect(() => {

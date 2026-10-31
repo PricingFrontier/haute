@@ -498,8 +498,8 @@ candidate, with the error toast.
   current source and row limit — or the empty "Refresh to preview" state —
   and sends nothing; a moved node-data epoch does not refetch it; the header
   marks a shown result "Out of date" once the structural version or epoch has
-  moved past it. Refresh, or Ctrl/Cmd+Enter outside a text field, calculates
-  in either mode.
+  moved past it. Refresh, or Ctrl/Cmd+Enter outside a form control or modal
+  dialog, calculates in either mode.
 - **Preview fetching.** Selecting or refreshing a node debounces, then
   fetches its preview; a cache hit for the same structural version, source,
   and row limit paints instantly and skips the network call, otherwise

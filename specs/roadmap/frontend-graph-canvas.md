@@ -15,7 +15,6 @@ packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FGC-R01 | Planned | P2 | Every path that makes a node active opens it as a click does, so Automatic calculation computes its preview; the refresh shortcut honours editable controls and open dialogs; the side panes close through one action. |
 | FGC-R02 | Planned | P2 | Every node renderer draws every flag the canvas stamps: the comparison diff ring, the trace and change focus rings and the trace value on a submodel occurrence, the selection border and hover dimming on a boundary card; an unknown node type is as loud on the canvas as in the inspector. |
 | FGC-R03 | Planned | P3 | The editor's chrome does not re-render on every drag frame, measured by render count before and after. |
 | FGC-R04 | Planned | P3 | One copy of each shell mechanism (menu keyboard handling, the radio group, the committed draft), every error shown with the server's detail, the Hotkeys list derived from the bindings, the dead prop gone and the swallowed context fetches logged. |
@@ -29,36 +28,6 @@ packages come from the
 | FGC-R12 | Planned | P2 | `previewPortLabel` honours `chosenFrame` on multi-table `apiInput` and `workbenchInput` nodes, `computeStructuralFingerprint` and `computePanelContextFingerprint` include `submodels` and submodel boundary `ports`, `Ctrl+V` refuses `submodel` and `submodelPort` nodes, and `Escape` in a non-empty `SearchField` does not close an enclosing `ModalShell`. |
 
 ## Planned improvements
-
-### FGC-R01 — Every selection path opens the node as a click does
-**Why:** Node search, the recovery banner's go-to, a name-violation click, a repair
-applied and a scoped save applied each set the active node by hand (`setSelectedNode`,
-`setLastSelectedId`, the ref) and skip `openNode`, the one place a selection calls
-`fetchPreview`; in Automatic calculation they open the inspector without computing the
-node's preview and without the trace and preview reset a click performs. The Ctrl/Cmd+Enter
-refresh shortcut hand-rolls its typing test (`INPUT`, `TEXTAREA`, `.cm-editor`) instead
-of `keyboardTargets.ts`, so it is swallowed from a focused checkbox, fires from a select,
-fires inside an open modal dialog and ignores `defaultPrevented`. The "close the side
-panes" block is written five times with three store setters each, although any one UI-store
-setter already closes every other pane, so the real effect (a node click also closes the
-Assistant and Files panels) is invisible at the call sites.
-
-**Plan:** One `activateNode(node)` (beside `openNode`) that closes the side panes through
-one `closeSidePanes()` store action, selects the node and, in Automatic calculation,
-fetches its preview; the five sites call it, node search keeping its centring step. The
-refresh handler returns on `defaultPrevented`, `inModalDialog` or `isFormControl`.
-
-**Acceptance:** App tests: node search in Automatic calculation fetches the selected
-node's preview; the recovery go-to does the same; Ctrl+Enter from a focused select or
-inside an open dialog refreshes nothing; the UI store has one `closeSidePanes` and
-`App.tsx` no three-setter block.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/App.tsx::handleNodeSearchSelect`,
-`frontend/src/App.tsx::handleSelectRecoveryElement`,
-`frontend/src/App.tsx::handleSelectNameViolation`, `frontend/src/hooks/useEdgeHandlers.ts::openNode`,
-`frontend/src/stores/useUIStore.ts`, `frontend/src/hooks/keyboardTargets.ts::isFormControl`.
 
 ### FGC-R02 — Every node renderer draws every canvas flag
 **Why:** The comparison view stamps `_diffStatus` on every node and `useTracing` stamps
