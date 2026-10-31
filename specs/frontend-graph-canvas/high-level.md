@@ -216,15 +216,20 @@ candidate, with the error toast.
   column, and a valid (non-blank, non-duplicate) raw label — and a long
   name truncates with the full name available as a tooltip. Frame labels
   use the same semibold primary-text typography as node names.
-- **Visual state.** Nodes show: a selection border; a dashed border for
-  submodel instances; a "LIVE" badge on live-switch nodes when the active
-  data source is live; one run-status dot that is green for a clean success,
-  yellow for a successful run with an execution or schema warning, red for an
-  error, and pulsing while running; a standalone yellow warning dot only when
-  schema warnings exist without a completed run status; trace-active/dimmed/
-  hover-dimmed opacity and glow; and, in the read-only comparison view, a
+- **Visual state.** Every node renderer (`PipelineNode`, `SubmodelNode`, and
+  `SubmodelPortNode`) draws every canvas flag from one shared derivation: a
+  selection border; a dashed resting border for submodel occurrences; a "LIVE"
+  badge on live-switch nodes when the active data source is live; one
+  run-status dot that is green for a clean success, yellow for a successful run
+  with an execution or schema warning, red for an error, and pulsing while
+  running; a standalone yellow warning dot only when schema warnings exist
+  without a completed run status; trace-active glow and border, trace/hover-dimmed
+  opacity (`0.25`), trace/change focus ring (`_traceFocused` / `_changeFocused`),
+  and the active `_traceValue` pill; and, in the read-only comparison view, a
   diff ring (solid glow for added/removed/changed, dashed outline for
-  moved-only). Edge-join status and warning dots stay within the visible
+  moved-only). An unknown `nodeType` reached by `PipelineNode` renders the
+  unavailable card (`UnavailablePipelineNode`) rather than falling back to a
+  Transform card. Edge-join status and warning dots stay within the visible
   marker ellipse.
 - **Submodel nodes** use the same opaque card, full-width coloured header,
   and frame-row presentation as a full-detail API-input node. The header

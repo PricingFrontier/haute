@@ -87,6 +87,11 @@ export const NODE_TYPE_META: Record<NodeTypeValue, {
  */
 export const REQUEST_INPUT_TYPES = new Set<NodeTypeValue>([NODE_TYPES.API_INPUT, NODE_TYPES.WORKBENCH_INPUT])
 
+/** Whether a runtime string names a known persisted/canvas node type. */
+export function isKnownNodeType(nodeType: unknown): nodeType is NodeTypeValue {
+  return typeof nodeType === "string" && Object.hasOwn(NODE_TYPE_META, nodeType)
+}
+
 /** Whether a node of this type reads the quote request. */
 export function isRequestInputType(nodeType: unknown): boolean {
   return typeof nodeType === "string" && REQUEST_INPUT_TYPES.has(nodeType as NodeTypeValue)

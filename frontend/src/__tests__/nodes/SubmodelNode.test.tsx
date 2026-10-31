@@ -414,13 +414,13 @@ describe("SubmodelNode", () => {
     )).toBeNull()
   })
 
-  it("sets opacity to 0.3 when _traceDimmed is true", () => {
+  it("sets opacity to 0.25 when _traceDimmed is true", () => {
     const { container } = renderNode({
       label: "Dimmed",
       _traceDimmed: true,
     })
     const wrapper = container.querySelector(".rounded-xl") as HTMLElement
-    expect(wrapper.style.opacity).toBe("0.3")
+    expect(wrapper.style.opacity).toBe("0.25")
   })
 
   it("sets full opacity when _traceDimmed is false", () => {
@@ -554,7 +554,7 @@ describe("SubmodelNode", () => {
       _hoverDimmed: true,
     })
     const wrapper = container.querySelector(".rounded-xl") as HTMLElement
-    expect(wrapper.style.opacity).toBe("0.3")
+    expect(wrapper.style.opacity).toBe("0.25")
   })
 
   it("disables trace motion transitions when requested by the tracing hook", () => {
@@ -570,5 +570,48 @@ describe("SubmodelNode", () => {
     const { container } = renderNode({ label: "Full" })
     const wrapper = container.querySelector(".rounded-xl") as HTMLElement
     expect(wrapper.style.opacity).toBe("1")
+  })
+
+  it("draws the comparison diff ring and moved outline on a submodel occurrence", () => {
+    const { container } = renderNode({
+      label: "Diffed Submodel",
+      _diffStatus: "changed",
+    })
+    const wrapper = container.querySelector(".rounded-xl") as HTMLElement
+    expect(wrapper.style.boxShadow).toContain("var(--diff-changed)")
+    cleanup()
+
+    const { container: movedContainer } = renderNode({
+      label: "Moved Submodel",
+      _diffStatus: "moved",
+    })
+    const movedWrapper = movedContainer.querySelector(".rounded-xl") as HTMLElement
+    expect(movedWrapper.style.outline).toContain("dashed")
+  })
+
+  it("draws the focus ring from _traceFocused and _changeFocused on a submodel occurrence", () => {
+    const { container } = renderNode({
+      label: "Trace Focused",
+      _traceFocused: true,
+    })
+    const wrapper = container.querySelector(".rounded-xl") as HTMLElement
+    expect(wrapper.style.boxShadow).toContain("0 0 0 3px var(--accent)")
+    cleanup()
+
+    const { container: changeContainer } = renderNode({
+      label: "Change Focused",
+      _changeFocused: true,
+    })
+    const changeWrapper = changeContainer.querySelector(".rounded-xl") as HTMLElement
+    expect(changeWrapper.style.boxShadow).toContain("0 0 0 3px var(--accent)")
+  })
+
+  it("renders the trace value pill when _traceActive and _traceValue are set", () => {
+    renderNode({
+      label: "Traced Submodel",
+      _traceActive: true,
+      _traceValue: 184.75,
+    })
+    expect(screen.getByText("184.75")).toBeInTheDocument()
   })
 })

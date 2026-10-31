@@ -1,11 +1,9 @@
 import { cleanup, render, screen } from "@testing-library/react"
-import { ReactFlowProvider, type Node, type NodeProps } from "@xyflow/react"
+import { ReactFlowProvider, type NodeProps } from "@xyflow/react"
 import { afterEach, describe, expect, it } from "vitest"
 
-import UnavailablePipelineNode from "../UnavailablePipelineNode"
-import type { HauteNodeData } from "../../types/node"
-
-type UnavailableNode = Node<HauteNodeData, "unavailablePipelineNode">
+import UnavailablePipelineNode, { type UnavailableNode } from "../UnavailablePipelineNode"
+import type { UnavailableNodeData } from "../../types/node"
 
 describe("UnavailablePipelineNode", () => {
   afterEach(cleanup)
@@ -19,7 +17,7 @@ describe("UnavailablePipelineNode", () => {
         nodeType: "removed_type",
         _authoredDecorator: "removed_type",
         _loadAvailability: "unavailable",
-      } satisfies HauteNodeData,
+      } satisfies UnavailableNodeData,
       selected: false,
       isConnectable: false,
       positionAbsoluteX: 0,
@@ -52,7 +50,7 @@ describe("UnavailablePipelineNode", () => {
         _authoredDecorator: "removed_type",
         _authoredReceiver: "submodel",
         _loadAvailability: "unavailable",
-      } satisfies HauteNodeData,
+      } satisfies UnavailableNodeData,
       selected: false,
       isConnectable: false,
       positionAbsoluteX: 0,

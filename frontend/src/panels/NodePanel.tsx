@@ -277,14 +277,14 @@ const CACHED_PREVIEW_KEYS: readonly (keyof HauteNodeData)[] = [
   "_columnsStructuralVersion",
 ]
 
-function clearCachedResultShape(
-  data: HauteNodeData,
+function clearCachedResultShape<T extends Record<string, unknown>>(
+  data: T,
   { preserveAvailableColumns = false }: { preserveAvailableColumns?: boolean } = {},
-): HauteNodeData {
+): T {
   const next = { ...data }
   for (const key of CACHED_PREVIEW_KEYS) {
     if (preserveAvailableColumns && key === "_availableColumns") continue
-    delete next[key]
+    delete next[key as keyof T]
   }
   return next
 }

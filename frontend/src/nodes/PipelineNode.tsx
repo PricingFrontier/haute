@@ -1,9 +1,7 @@
-import { memo, useEffect, useMemo, type CSSProperties } from "react"
+import { memo, useEffect, useMemo } from "react"
 import { Handle, Position, useStore, useUpdateNodeInternals, type InternalNode, type NodeProps, type ReactFlowState } from "@xyflow/react"
 import { AlertTriangle, Radio } from "lucide-react"
-import PolarsIcon from "../components/PolarsIcon"
-import { NODE_TYPES, NODE_TYPE_META, SOURCE_ONLY_TYPES, SINK_ONLY_TYPES, PILL_TYPES, isRequestInputType, nodeTypeIcons, nodeTypeColors, nodeTypeLabels, type NodeTypeValue } from "../utils/nodeTypes"
-import { formatValueCompact } from "../utils/formatValue"
+import { NODE_TYPES, NODE_TYPE_META, SOURCE_ONLY_TYPES, SINK_ONLY_TYPES, PILL_TYPES, isKnownNodeType, isRequestInputType, type NodeTypeValue } from "../utils/nodeTypes"
 import useSettingsStore from "../stores/useSettingsStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { STATUS_COLORS } from "../theme/colors"
@@ -13,6 +11,8 @@ import { OUTPUT_ORIGIN_HANDLE_CLASS } from "../utils/flowHandles"
 import { requestInputSourceHandles } from "../utils/apiInputPorts"
 import { workbenchNodePorts } from "../utils/workbenchTables"
 import FramePortRows, { DefaultInputPort } from "./FramePortRows"
+import UnavailablePipelineNode, { type UnavailableNode } from "./UnavailablePipelineNode"
+import { deriveNodeCanvasFlags, NodeTraceValuePill } from "./nodeCanvasStyle"
 
 const statusColors: Record<string, string> = {
   ok: "var(--success)",
@@ -152,23 +152,17 @@ function _EdgeJoinTargetHandles({
   )
 }
 
-function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNode>) {
-  const nodeType = nodeData.nodeType || NODE_TYPES.POLARS
-  const Icon = nodeTypeIcons[nodeType] || PolarsIcon
-  const accent = nodeTypeColors[nodeType] || nodeTypeColors[NODE_TYPES.POLARS]
-  const typeLabel = nodeTypeLabels[nodeType] || "NODE"
-  const isDeployInput = isRequestInputType(nodeType)
-  const isWorkbenchOutput = nodeType === NODE_TYPES.WORKBENCH_OUTPUT
+function PipelineNode(props: NodeProps<PipelineFlowNode>) {
+  const { id, data: nodeData, selected } = props
+  const knownType = isKnownNodeType(nodeData.nodeType)
+  const nodeType: NodeTypeValue = knownType ? nodeData.nodeType : NODE_TYPES.POLARS
+  const isDeployInput = knownType && isRequestInputType(nodeType)
+  const isWorkbenchOutput = knownType && nodeType === NODE_TYPES.WORKBENCH_OUTPUT
   // A workbench node's ports are the tables the workbench store fetched (specs/workbench),
   // so a fetch re-renders the workbench nodes alone.
   const workbench = useWorkbenchStore((state) => (
-    nodeType === NODE_TYPES.WORKBENCH_INPUT || isWorkbenchOutput ? state.tables : null
+    knownType && (nodeType === NODE_TYPES.WORKBENCH_INPUT || isWorkbenchOutput) ? state.tables : null
   ))
-  const isLiveSwitch = nodeType === NODE_TYPES.LIVE_SWITCH
-  const isSourceOnly = SOURCE_ONLY_TYPES.has(nodeType)
-  const isSinkOnly = SINK_ONLY_TYPES.has(nodeType)
-  const isPill = PILL_TYPES.has(nodeType)
-  const isCompactNode = NODE_TYPE_META[nodeType as NodeTypeValue]?.size === "compact"
   const sourceHandlesCanEnd = !useStore(_isDraggingFromEdgeJoinOutput)
 
   // Bundle 3c — one ordered frame-label list is the source of truth for
@@ -205,6 +199,21 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
     updateNodeInternals,
   ])
 
+  if (!knownType) {
+    return <UnavailablePipelineNode {...(props as unknown as NodeProps<UnavailableNode>)} />
+  }
+
+  const meta = NODE_TYPE_META[nodeType]
+  const Icon = meta.icon
+  const accent = meta.color
+  const typeLabel = meta.label
+  const typeName = meta.name
+  const isCompactNode = meta.size === "compact"
+  const isLiveSwitch = nodeType === NODE_TYPES.LIVE_SWITCH
+  const isSourceOnly = SOURCE_ONLY_TYPES.has(nodeType)
+  const isSinkOnly = SINK_ONLY_TYPES.has(nodeType)
+  const isPill = PILL_TYPES.has(nodeType)
+
   const sourceHandle = !isSinkOnly
     && !isDeployInput
     && nodeType !== NODE_TYPES.EDGE_JOIN ? (
@@ -225,16 +234,6 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   // Visible frame rows own the API-input source Handles. `_SourceHandle`
   // covers output-producing ordinary nodes; a zero-frame API input has none.
   const showApiInputFrameRows = isDeployInput && frameLabels.length > 0
-  const traceActive = !!nodeData._traceActive
-  const traceDimmed = !!nodeData._traceDimmed
-  const hoverDimmed = !!nodeData._hoverDimmed
-  // The node a trace card or derivation row points at, and each node the latest
-  // assistant change touched, gets an accent ring.
-  const focusShadow = nodeData._traceFocused || nodeData._changeFocused
-    ? "0 0 0 3px var(--accent), 0 0 18px 4px color-mix(in srgb, var(--accent) 55%, transparent)"
-    : null
-  const traceValue = nodeData._traceValue
-  const traceMotionDisabled = !!nodeData._traceMotionDisabled
   const hasWarnings = (nodeData._schemaWarnings?.length ?? 0) > 0
   const visualStatus = nodeData._status === "ok" && hasWarnings
     ? "warning"
@@ -250,23 +249,23 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
     : loadBlocked
       ? "var(--warning-strong)"
       : accent
-  const dimmed = traceDimmed || hoverDimmed
 
-  // Comparison-view diff highlight (S11): a ring on the CARD — the same element as
-  // the selection border — so the highlight is consistent across views and the
-  // correct shape for every node type (pills follow the card's border-radius).
-  // Solid glow for add/remove/change; dashed outline for a moved-only node.
-  const diffStatus = nodeData._diffStatus
-  const diffVar = diffStatus ? `var(--diff-${diffStatus})` : null
-  const diffShadow =
-    diffVar && diffStatus !== "moved"
-      ? `0 0 0 2px ${diffVar}, 0 0 14px 2px color-mix(in srgb, ${diffVar} 45%, transparent)`
-      : null
-  const diffOutline: CSSProperties =
-    diffStatus === "moved" ? { outline: "2px dashed var(--diff-moved)", outlineOffset: "3px" } : {}
+  const {
+    traceActive,
+    dimmed,
+    focusShadow,
+    traceValue,
+    showTraceValue,
+    traceMotionDisabled,
+    containerStyle,
+  } = deriveNodeCanvasFlags(nodeData, {
+    accent,
+    selected,
+    restBorder: `3px solid color-mix(in srgb, ${accent} 19%, var(--bg-canvas))`,
+    overrideBorder: loadAvailability !== "ready" ? `3px solid ${loadAccent}` : null,
+  })
 
   // Accessible label: "{Type} node: {label}" + status
-  const typeName = NODE_TYPE_META[nodeType as NodeTypeValue]?.name || typeLabel
   const statusText = visualStatus ? `, status: ${visualStatus}` : ""
   const loadStatusText = loadAvailability === "ready" ? "" : `, load status: ${loadAvailability}`
   const ariaLabel = `${typeName} node: ${nodeData.label}${loadStatusText}${statusText}${traceActive ? ", trace active" : ""}`
@@ -341,29 +340,6 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
         )}
       </div>
     )
-  }
-
-  // Every layer is OPAQUE so none of the
-  // canvas bleeds through (S38): the tinted border and banner are composited as
-  // solid colours via color-mix (over the canvas for the border, over the card
-  // surface for the banner) rather than drawn as semi-transparent overlays.
-  const border = loadAvailability !== "ready"
-    ? `3px solid ${loadAccent}`
-    : traceActive || selected
-    ? `3px solid ${accent}`
-    : `3px solid color-mix(in srgb, ${accent} 19%, var(--bg-canvas))`
-  const shadow = traceActive
-    ? `0 0 12px ${accent}40, var(--node-shadow)`
-    : "var(--node-shadow)"
-  // No background on the container itself — the opaque face (banner + body) is
-  // sized to the border MEDIAN below, so the card background never extends under
-  // the full border (where it would otherwise read as a tinted bleed-through).
-  const containerStyle: CSSProperties = {
-    border,
-    boxShadow: [focusShadow, diffShadow, shadow].filter(Boolean).join(", "),
-    ...diffOutline,
-    opacity: dimmed ? 0.25 : 1,
-    transition: traceMotionDisabled ? "none" : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
   }
 
   // The banner AND the body track the MEDIAN of the 3px border on every boundary
@@ -466,18 +442,8 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
           )
         ) : showApiInputFrameRows ? (
           <>
-            {traceActive && traceValue !== undefined && (
-              <div
-                className="mb-1 px-1.5 py-0.5 rounded text-[11px] font-mono truncate"
-                style={{
-                  background: `${accent}18`,
-                  color: accent,
-                  border: `1px solid ${accent}30`,
-                  maxWidth: "100%",
-                }}
-              >
-                {formatValueCompact(traceValue)}
-              </div>
+            {showTraceValue && (
+              <NodeTraceValuePill accent={accent} value={traceValue} className="mb-1" />
             )}
             <FramePortRows
               ports={frameLabels.map((label) => ({ id: label, label, parentEdges: [] }))}
@@ -511,18 +477,8 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
                 {sourceHandle}
               </div>
             )}
-            {traceActive && traceValue !== undefined && (
-              <div
-                className="mt-1 px-1.5 py-0.5 rounded text-[11px] font-mono truncate"
-                style={{
-                  background: `${accent}18`,
-                  color: accent,
-                  border: `1px solid ${accent}30`,
-                  maxWidth: "100%",
-                }}
-              >
-                {formatValueCompact(traceValue)}
-              </div>
+            {showTraceValue && (
+              <NodeTraceValuePill accent={accent} value={traceValue} className="mt-1" />
             )}
           </>
         )}

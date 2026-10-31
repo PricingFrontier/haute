@@ -15,7 +15,6 @@ packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FGC-R02 | Planned | P2 | Every node renderer draws every flag the canvas stamps: the comparison diff ring, the trace and change focus rings and the trace value on a submodel occurrence, the selection border and hover dimming on a boundary card; an unknown node type is as loud on the canvas as in the inspector. |
 | FGC-R03 | Planned | P3 | The editor's chrome does not re-render on every drag frame, measured by render count before and after. |
 | FGC-R04 | Planned | P3 | One copy of each shell mechanism (menu keyboard handling, the radio group, the committed draft), every error shown with the server's detail, the Hotkeys list derived from the bindings, the dead prop gone and the swallowed context fetches logged. |
 | FGC-R05 | Planned | P1 | Finishing auto-layout changes positions without restoring older node data or replacing a different graph. |
@@ -28,33 +27,6 @@ packages come from the
 | FGC-R12 | Planned | P2 | `previewPortLabel` honours `chosenFrame` on multi-table `apiInput` and `workbenchInput` nodes, `computeStructuralFingerprint` and `computePanelContextFingerprint` include `submodels` and submodel boundary `ports`, `Ctrl+V` refuses `submodel` and `submodelPort` nodes, and `Escape` in a non-empty `SearchField` does not close an enclosing `ModalShell`. |
 
 ## Planned improvements
-
-### FGC-R02 — Every node renderer draws every canvas flag
-**Why:** The comparison view stamps `_diffStatus` on every node and `useTracing` stamps
-`_hoverDimmed`, `_traceFocused`, `_changeFocused` and `_traceValue` on every node, but
-only `PipelineNode` draws from all of them. `SubmodelNode` reads the trace-active,
-trace-dimmed, hover-dimmed and motion flags alone, so a submodel occurrence draws no
-diff ring, no focus ring and no trace value; `SubmodelPortNode` reads the three trace
-flags and never `selected` or `_hoverDimmed`, so a boundary card draws no selection
-border and never hover-dims. The specification asks for a consistent highlight on every
-node type. Separately, `PipelineNode` renders an unknown `nodeType` as a Transform card
-through `||` fallbacks while the parser rejects unknown types and the inspector renders an
-explicit diagnostic.
-
-**Plan:** Extract the ring and opacity derivation from `PipelineNode` (focus shadow, diff
-shadow and outline, dimmed opacity, selection border) into one helper and apply it in all
-three renderers. Type `nodeType` as the node-type union and render the unavailable card
-for an unknown type as the inspector does.
-
-**Acceptance:** A test per flag per renderer: a submodel occurrence shows the diff ring in
-the comparison view and the focus ring from `_changeFocused`; a boundary card shows the
-selection border and hover-dims; an unknown type renders the unavailable card.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/nodes/PipelineNode.tsx`, `frontend/src/nodes/SubmodelNode.tsx`,
-`frontend/src/nodes/SubmodelPortNode.tsx`, `frontend/src/components/ComparisonView.tsx::prepNodes`,
-`frontend/src/hooks/useTracing.ts`, `frontend/src/utils/graphDiff.ts`.
 
 ### FGC-R03 — The chrome does not re-render per drag frame
 **Why:** `FlowEditor` subscribes to `nodes`, which `useGraphCanvasState` writes for each
