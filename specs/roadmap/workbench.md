@@ -34,6 +34,7 @@ Allowed field.
 | WB-13 | Planned | P3 | An underwriter records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
+| WB-41 | Planned | P2 | `useQuoteListStore` fences `loadingMore` across list switches, `priceSample` resolves `WORKBENCH_OUTPUT` inside submodels via `qualifiedRuntimeNodeId`, and the workbench high-level specification removes the stale `The blank form is a form` bullet. |
 | WB-45 | Planned | P2 | The schema pane compares the form with the tables a hosted environment's database holds, marking each difference, and writes the SQL that brings those tables to the form from what is there, for the analyst to run. |
 
 ## Planned improvements
@@ -380,6 +381,48 @@ specification and the field stop calling the shape older.
 
 **Evidence:** `frontend/src/workbench/schema/AllowedField.tsx::TYPED_IN`,
 `src/haute/_workbench_form.py::FormSpec`, `frontend/src/utils/workbenchForm.ts`.
+
+### WB-41 — Fence `loadingMore` in `useQuoteListStore`, resolve submodel `WORKBENCH_OUTPUT` runtime targets in `priceSample`, and remove stale blank-form rationale
+**Why:** Three defects affect the underwriter app's quote list pagination store, live
+sample pricing in the Workbench view, and the workbench high-level specification:
+1. In `useQuoteListStore` (`frontend/src/app/useQuoteListStore.ts`), `load` does not
+   reset `loadingMore: false` when switching to a new list while a previous `more()`
+   request is in flight, and `more()`'s `finally` block runs
+   `set({ loadingMore: false })` unconditionally without checking
+   `listAsked.is(attempt)`, clearing `loadingMore` for a newer list load's own
+   pagination request.
+2. In `priceSample` (`frontend/src/workbench/priceSample.ts`), the module docstring
+   states that every `Workbench Input` and `Workbench Output` at the top level or
+   inside a submodel is supported, and `WORKBENCH_INPUT` is collected from both
+   `graph.nodes` and `graph.submodels`, but `const output = graph.nodes.find((node) => node.data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT)`
+   searches only top-level `graph.nodes`, failing with
+   `"The pipeline has no Workbench Output..."` when `Workbench Output` lives inside a
+   submodel.
+3. `specs/workbench/high-level.md` retains a stale rationale bullet (`The blank form
+   is a form. A project whose workbench was enabled by hand has no file yet...`) that
+   directly contradicts the earlier rationale bullet (`A missing folder is a loss,
+   not a new form`) and the folder-backed form loader.
+
+**Plan:** Reset `loadingMore: false` in `useQuoteListStore.load` and guard
+`set({ loadingMore: false })` in `more()` with `if (listAsked.is(attempt))`; search
+both `graph.nodes` and `graph.submodels` for `NODE_TYPES.WORKBENCH_OUTPUT` in
+`priceSample` and resolve a submodel child output's qualified runtime node ID through
+`qualifiedRuntimeNodeId` before calling `previewNode`; and remove the stale
+`The blank form is a form` bullet from `specs/workbench/high-level.md`.
+
+**Acceptance:** Switching quote lists while `more()` is in flight resets `loadingMore`
+immediately and the stale `more()` completion cannot clear a newer list's `loadingMore`
+state; `priceSample` prices a workbench pipeline whose `Workbench Output` is inside a
+submodel by sending the qualified runtime node ID to `/api/pipeline/preview` and
+returning its priced tables; and `specs/workbench/high-level.md` states one consistent
+missing-folder rule.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/app/useQuoteListStore.ts::useQuoteListStore`;
+`frontend/src/workbench/priceSample.ts::priceSample`;
+`frontend/src/utils/submodelRuntimeTarget.ts::qualifiedRuntimeNodeId`;
+`specs/workbench/high-level.md`.
 
 ### WB-45 — Comparing the form with an environment's tables
 **Why:** Analysts migrate a hosted quote store's tables themselves: Haute writes the SQL and

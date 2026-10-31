@@ -26,6 +26,7 @@ retired.
 | EXEC-R16 | Decision | P3 | Preview cache extension either extends the cached preview or is removed with its specification sentence. |
 | EXEC-R17 | Planned | P3 | The engine's never-fed evidence, dead entry points, test-only hooks and clone pairs are removed, and the preamble compile stops editing `sys.path` and bytecode caches. |
 | EXEC-R18 | Planned | P3 | A node's optional inputs relax only the edges that feed it, not every column of that name in the graph. |
+| EXEC-R19 | Planned | P2 | `_eager_execute` reports `PreambleError` without running nodes against an empty preamble, `execute_graph` validates `port_label`, `_build_optimiser_apply` honours `ctx.schema_only`, `run_worker_protocol` forwards `worker_config.environment`, `DedicatedWorker.start` and `wait_for_process_exit` clean up IPC/OS handles, `Pipeline.score` guards empty pipelines, and `flatten_executable_graph` resolves the project root. |
 
 ## Planned improvements
 
@@ -338,3 +339,79 @@ when the source lacks it, while the Model Score alone still prices a full policy
 
 **Evidence:** `src/haute/projection.py::ProjectionPlan`;
 `src/haute/_graph_walker.py::_WalkProjection`.
+
+### EXEC-R19 — Eager preamble failures, multi-frame `port_label` checks, schema-only online Optimiser Apply, worker environment/handle cleanup, `Pipeline.score` empty guard, and `flatten_executable_graph` project root
+**Why:** Seven execution and worker lifecycle defects surface across preview, schema
+walks, worker supervision and standalone scoring:
+1. In `_eager_execute`, when `_compile_preamble` raises `PreambleError`, execution
+   still runs `walk_graph` with `preamble_ns={}` and only records
+   `errors[nid] = str(preamble_error)` when `nid not in errors` and `nodeType` is
+   `POLARS` or `LIVE_SWITCH`. Any `POLARS` node that references a preamble symbol
+   fails during `walk_graph` with `NameError: name '...' is not defined`, masking
+   the `PreambleError`, while `LIVE_SWITCH` nodes that never execute Python code
+   are marked `error` with the preamble failure.
+2. In `execute_graph`, when a singular `port_label` is requested for a multi-frame
+   target (`isinstance(df, dict)`), `df = df[port_label]` does not check
+   `if port_label not in df:`, raising an unhandled `KeyError` (whereas plural
+   `port_labels` validates membership and raises a descriptive `ValueError`).
+3. In `_build_optimiser_apply` / `_apply_online`, when an online optimiser artifact
+   has ratio constraints (`uses_ratio_constraints(constraints)`), `_apply_online`
+   collects the entire input `LazyFrame` and runs `ApplyOptimiser` even when
+   `ctx.schema_only` is `True`.
+4. `run_worker_protocol` calls `start_process_with_environment(process, {})` instead
+   of passing `worker_config.environment`, dropping any per-worker environment
+   overrides configured on `WorkerProtocolConfig`.
+5. `DedicatedWorker.start` in `_dedicated_workers.py` adds `self` to `_REGISTRY` and
+   allocates `_request_queue`, `_result_queue`, `_progress`, `_evidence` and
+   `_cancel_cell` before entering the `try: ... except ...: self.terminate("error")`
+   block, leaking opened queues and shared-memory segments and leaving `self` in
+   `_REGISTRY` with `_death = None` if any allocation before `try` fails. Similarly,
+   `wait_for_process_exit` in `_parent_watch.py` opens a Win32 process `HANDLE` via
+   `OpenProcess` on Windows and a file descriptor via `pidfd_open` on Linux, and
+   returns without calling `kernel32.CloseHandle(handle)` or `os.close(fd)` in a
+   `finally` block (handle hygiene before the watcher process exits).
+6. `Pipeline.score` in `pipeline.py` has no empty-pipeline guard (unlike
+   `Pipeline.run`), crashing with `IndexError: list index out of range` at
+   `self._nodes[0]` in `_run_constants("live")` when `global_constants` is set or
+   raising `"Pipeline has multiple terminal nodes ...: []"` when `self._nodes` is
+   empty.
+7. `flatten_executable_graph` in `_flatten.py` hardcodes `project_root=Path.cwd()`
+   when calling `with_form_tables(flatten_graph(graph), project_root=Path.cwd(), form=form)`
+   instead of resolving `_get_project_root()`.
+
+**Plan:** Short-circuit or attribute `PreambleError` directly in `_eager_execute`
+without running `POLARS` nodes against an empty `preamble_ns` or failing
+`LIVE_SWITCH` nodes; validate `port_label in df` in `execute_graph` and raise a
+descriptive `ValueError`; return `pl.DataFrame(schema=schema).lazy()` in
+`_apply_online` when `ctx.schema_only` is `True` after validating required columns
+and deriving the output schema; pass `worker_config.environment` to
+`start_process_with_environment` in `run_worker_protocol`; wrap IPC/shared-memory
+allocation and `_REGISTRY` registration inside `try` in `DedicatedWorker.start` and
+close the `OpenProcess` handle and `pidfd_open` descriptor in `finally` blocks in
+`wait_for_process_exit`; guard `Pipeline.score` against empty pipelines with the
+same `ValueError("Pipeline has no nodes")` as `Pipeline.run`; and resolve the
+project root in `flatten_executable_graph`.
+
+**Acceptance:** A syntax error in the preamble reports the `PreambleError` on
+dependent Polars nodes rather than `NameError` and leaves `LIVE_SWITCH` nodes
+unaffected; requesting an unknown singular `port_label` raises `ValueError` naming
+the available frames; a `schema_only=True` walk through an online Optimiser Apply
+node with ratio constraints does not collect rows; `run_worker_protocol` forwards
+`worker_config.environment` to the child process; `DedicatedWorker.start` cleans up
+partially allocated IPC cells on failure and `wait_for_process_exit` closes its OS
+handle/fd; `Pipeline.score` on an empty `Pipeline` raises
+`ValueError("Pipeline has no nodes")`; and `flatten_executable_graph` resolves form
+tables from the configured project root.
+
+**Dependencies:** Coordinates with `PCFG-R04` (one project context).
+
+**Evidence:** `src/haute/executor.py::_eager_execute`;
+`src/haute/executor.py::execute_graph`;
+`src/haute/_builders.py::_build_optimiser_apply`;
+`src/haute/_builders.py::_apply_online`;
+`src/haute/_worker_protocol.py::run_worker_protocol`;
+`src/haute/_dedicated_workers.py::DedicatedWorker.start`;
+`src/haute/_parent_watch.py::wait_for_process_exit`;
+`src/haute/pipeline.py::Pipeline._run_constants`;
+`src/haute/pipeline.py::Pipeline.score`;
+`src/haute/_flatten.py::flatten_executable_graph`.

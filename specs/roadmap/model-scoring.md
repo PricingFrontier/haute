@@ -46,6 +46,7 @@ file defaults to a family.
 | MSC-09 | Planned | P3 | Loader errors keep their meaning: a Haute refusal is not retried as corruption and a CatBoost metadata failure is not swallowed. |
 | MSC-10 | Planned | P3 | A model records whether its offset is an exposure or a base premium, so only an exposure scores as a full policy term when a quote leaves it out. |
 | MSC-11 | Planned | P2 | Model Score consumes a declared classifier output without flattening a two-column prediction table into twice as many rows. |
+| MSC-12 | Planned | P2 | `EBMModel.load`, `XGBoostModel.load` and `LightGBMModel.load` validate their native metadata records (`haute-ebm:` header line, `haute` booster attribute, `haute:` model line) and raise `ConfigError` instead of raw `KeyError` or `TypeError`. |
 
 ## Planned improvements
 
@@ -253,3 +254,43 @@ flattening.
 **Dependencies:** None.
 
 **Evidence:** `src/haute/modelling/_native_pyfunc.py`; `src/haute/_mlflow_io.py::_wrap_pyfunc`; `src/haute/_mlflow_io.py::load_mlflow_model`; `src/haute/_model_scorer.py`.
+
+### MSC-12 — Validate native metadata records in `EBMModel.load`, `XGBoostModel.load` and `LightGBMModel.load`
+**Why:** `EBMModel.load` (leading `haute-ebm:` JSON record line, `_RECORD_PREFIX = b"haute-ebm:"`),
+`XGBoostModel.load` (booster attribute `haute`, `_META_ATTRIBUTE = "haute"`) and
+`LightGBMModel.load` (model text line prefixed `haute:`, `_META_PREFIX = "haute:"`)
+index and iterate their embedded native metadata records directly
+(`meta["engine_version"]`, `meta["features"]`, `meta["categorical_features"]`,
+`meta["task"]`, `meta["link"]`, `meta["offset_column"]`, `meta["offset_link"]` and
+`meta["class_labels"]` in `EBMModel.load`, and `meta["features"]`,
+`meta["categorical_levels"]`, `meta["task"]`, `meta["link"]`,
+`meta.get("offset_column")`, `meta.get("offset_link")` and `meta.get("class_labels")`
+in `XGBoostModel.load` and `LightGBMModel.load`) without validating field presence or
+types, unlike `TBoostModel._validated_record`. A model file with a partial or malformed
+native metadata record raises a raw `KeyError` or `TypeError`, which escapes
+`inspect_model_file` (`GET /api/model-file`, which catches only `RuntimePathError`,
+`ConfigError` and `FeatureMismatchError`) as an unhandled HTTP 500 instead of a 400
+naming the invalid metadata field.
+
+**Plan:** Validate the native metadata record structure and field types (`engine_version`
+before `restricted_joblib_load` in `EBMModel.load`, plus `features`, `task`, `link`,
+`categorical_features` in `EBMModel.load` / `categorical_levels` in `XGBoostModel.load`
+and `LightGBMModel.load`, `offset_column`, `offset_link` and `class_labels`) in
+`EBMModel.load`, `XGBoostModel.load` and `LightGBMModel.load` (or a shared native-record
+validator alongside the separate feature-contract boundary) and raise `ConfigError`
+when a required key is missing or has the wrong type.
+
+**Acceptance:** Loading a `.ebm`, `.ubj` or `.lgbm` file whose embedded native
+metadata record (`haute-ebm:` header line, `haute` booster attribute, or `haute:`
+model line) is missing `engine_version` (for `.ebm`, checked before unpickling),
+`features` or `task`, or has a non-list `features`, raises `ConfigError` naming the
+field while preserving the separate feature-contract boundary, and `GET /api/model-file`
+answers 400 with that message instead of 500.
+
+**Dependencies:** Coordinates with `MOD-R06` (shared native wrapper base).
+
+**Evidence:** `src/haute/modelling/_ebm.py::EBMModel.load`;
+`src/haute/modelling/_xgboost.py::XGBoostModel.load`;
+`src/haute/modelling/_lightgbm.py::LightGBMModel.load`;
+`src/haute/routes/files.py::inspect_model_file`;
+`src/haute/routes/files.py::_inspect_model_file_blocking`.

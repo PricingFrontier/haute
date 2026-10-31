@@ -44,6 +44,7 @@ applicable" below):
 | OPT-R03 | Planned | P3 | Optimiser failures are classified once, a library error is never reported as the user's input's fault, and both MLflow summaries use one key scheme. |
 | OPT-R04 | Decision | P3 | The frontier recompute sweep either gets a browser action or is retired with its generation fencing. |
 | OPT-R05 | Planned | P3 | The optimiser's test-only production paths are gone, the Optimiser Apply builder refuses a missing input name, and one test pins a binding constraint against a hand-computed answer. |
+| OPT-R06 | Planned | P1 | `OptimiserFrontierService.select_point` serializes updates under `parent_lock(body.job_id)`, and `load_configured_optimiser_artifact` and `_load_artifact_from_config` share `resolve_node_input_path` so trace explainability and direct loader callers enforce project-root containment and pipeline-relative resolution. |
 
 ## Planned improvements
 
@@ -276,6 +277,61 @@ binding-constraint test exists and fails when the bound is mis-anchored.
 `src/haute/routes/_optimiser_service.py::_launch_background`;
 `src/haute/_builders.py::_build_optimiser_apply`; `src/haute/_builders.py::_optimiser_select`;
 `tests/test_optimiser_routes_real_library.py`.
+
+### OPT-R06 — Serialize `select_point` under `parent_lock` and share `resolve_node_input_path` across `load_configured_optimiser_artifact` and trace explainability
+**Why:** Two optimiser defects affect frontier-point selection concurrency and
+file-backed Optimiser Apply artifact resolution:
+1. In `OptimiserFrontierService.select_point` (`_optimiser_frontier.py`), unlike
+   `_publish_sweep`, `materialise_ratebook_point` and `select_applied_point`, which
+   serialize parent-job reads and updates under `with self.parent_lock(body.job_id):`,
+   `select_point` reads `job = self._store.require_completed_job(body.job_id)` and
+   calls `self._store.atomic_update(...)` without acquiring `self.parent_lock(body.job_id)`
+   or re-checking `_FRONTIER_GENERATION_KEY` inside the lock. A concurrent
+   `_publish_sweep` completing generation $N+1$ between `select_point`'s read and
+   `atomic_update` has its `base_result`, `result` (including `frontier` and
+   `frontier_generation`) and `selected_frontier_point` overwritten with stale
+   generation-$N$ data.
+2. While normal pipeline execution resolves and confines runtime node input paths via
+   `canonical_dataframe_execution_graph` (`src/haute/execution.py`),
+   `_load_artifact_from_config` in `_optimiser_apply_explainability.py` calls
+   `Path(artifact_path)` directly without passing `pipeline_dir`
+   (`_configured_pipeline_dir()`) or enforcing sandbox containment, so trace
+   explainability for a file-backed Optimiser Apply node resolves relative paths against
+   `Path.cwd()` instead of the pipeline directory and does not confine `artifact_path`
+   to the project root. Similarly, `_resolve_artifact_path` in
+   `load_configured_optimiser_artifact` (`_node_apply.py`) resolves
+   `(base_dir / p).resolve()` (or `p` directly when `p.is_absolute()`) without calling
+   `resolve_node_input_path`, leaving direct callers of
+   `load_configured_optimiser_artifact` unconfined.
+
+**Plan:** Guard `OptimiserFrontierService.select_point` with
+`with self.parent_lock(body.job_id):` while verifying `_FRONTIER_GENERATION_KEY`
+inside the lock before committing; route file-backed `artifact_path` resolution in
+`load_configured_optimiser_artifact` (`_resolve_artifact_path`) through
+`resolve_node_input_path(artifact_path, pipeline_dir=base_dir, project_root=...)` and
+have `_load_artifact_from_config` in `_optimiser_apply_explainability.py` call
+`load_configured_optimiser_artifact(config, base_dir=_configured_pipeline_dir())` so
+direct loader callers and trace explainability share one sandboxed resolver.
+
+**Acceptance:** A deterministic concurrency test where `select_point` acquires
+`parent_lock(body.job_id)` and pauses at a barrier inside the lock while a concurrent
+`_publish_sweep` is started verifies that `_publish_sweep` blocks on
+`parent_lock(body.job_id)` until `select_point` releases the lock and that generation
+$N+1$, `result` and `selected_frontier_point` remain coherent after both complete; an
+Optimiser Apply `artifact_path` pointing outside the project root (absolute or `../`) is
+refused with `RuntimePathOutsideProjectError` (`RuntimePathError`) in both
+`load_configured_optimiser_artifact` and trace explainability; and a pipeline-relative
+`artifact_path` loads identically in trace explainability when `Path.cwd()` differs from
+the pipeline directory.
+
+**Dependencies:** Coordinates with `PCFG-R04` (one project context) and `OPT-R04`.
+
+**Evidence:** `src/haute/routes/_optimiser_frontier.py::OptimiserFrontierService.select_point`;
+`src/haute/routes/_optimiser_frontier.py::OptimiserFrontierService._publish_sweep`;
+`src/haute/_node_apply.py::_resolve_artifact_path`;
+`src/haute/_node_apply.py::load_configured_optimiser_artifact`;
+`src/haute/_optimiser_apply_explainability.py::_load_artifact_from_config`;
+`src/haute/_path_resolution.py::resolve_node_input_path`.
 
 ## Out of scope and not applicable
 

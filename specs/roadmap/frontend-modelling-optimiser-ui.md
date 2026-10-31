@@ -18,6 +18,7 @@ These packages come from the
 | FMOU-R04 | Planned | P2 | A save never retires an auto-range run, a percentage constraint is shown and edited as one instead of being rewritten as an absolute bound, and the frontier marker that looks selected is the selected point. |
 | FMOU-R05 | Planned | P3 | The optimiser workspace has one fenced point-request lifecycle, one formatter, no raw Float32 collar, a specification that matches its Summary, and no dead exports. |
 | FMOU-R06 | Planned | P2 | A late theta/power estimate cannot replace a parameter edited for a newer target, source or training configuration. |
+| FMOU-R07 | Planned | P2 | Pre-job training failures preserve any retained model handle, `onTrain` hashes the current training identity synchronously, `OptimiserPublishSection` and `MlflowExportSection` fence prompts and log-again state, `ModelFileExportSection` keys destination checks by `(path, algorithm)`, `OptimiserFactorsTable` disarms `pendingPrune` on identical schemas, `ModellingPreview` fences `fixBestParameters`, `OptimiserPreview` clamps `xConstraintIdx` across frontier sweeps, `useConstraintHandlers` generates unique fallback keys, `useOptimiserScenarioData` and `buildSeriesScale` handle quote-set and constant-series changes, and `optimiserSolveReadiness` checks objective/constraint columns in `dataInputColumns`. |
 
 ## Planned improvements
 
@@ -154,3 +155,99 @@ including the request graph/source construction in ModellingConfig.
 **Dependencies:** None. `FNED-R06` owns schema inference; this package owns model-derived parameter edits.
 
 **Evidence:** `frontend/src/panels/modelling/GLMTargetConfig.tsx::GLMTargetConfig` (unmount abort effect); `frontend/src/panels/modelling/GLMTargetConfig.tsx::GLMTargetConfig.handleEstimate`; `frontend/src/panels/ModellingConfig.tsx::ModellingConfig.onEstimateDispersion`.
+
+### FMOU-R07 — Retained model handles, synchronous training hash, fenced export/publish and factor pruning, frontier axis clamping, and optimiser readiness/quote-explorer checks
+**Why:** Eight UI state defects affect the modelling and optimiser workspaces:
+1. In `ModellingConfig.onTrain`, `startTrainJob` receives `estimate.configHash` from
+   the debounced `useRamEstimate` hook (which lags by 300 ms or stays `undefined`
+   while the estimate is in flight) instead of hashing `trainingIdentity(config)`
+   synchronously. In addition, when `startTrain` rejects before a job is created
+   (or returns `status === "error"`), `ModellingConfig` calls `completeTrainJob`
+   with a synthetic error `TrainResponse`, and `completeTrainJob` calls
+   `clearTrainedJobHandle(sourceFile, nodeId)`, wiping the retained `sessionStorage`
+   handle for a previously completed model run on that node.
+2. In `OptimiserPublishSection`, `overwritePrompt` stays open when `version`,
+   `selectedFrontierPointIndex` or `isStale` changes before the user clicks
+   **Replace existing file**, allowing a stale overwrite confirmation to submit.
+   `useOptimiserPublishStore` also has no document fence or reset on pipeline load.
+   Similarly, in `MlflowExportSection`, `confirmingLogAgain` is not reset when
+   `mlflow_destination`, `mlflow_experiment` or `availability.available` changes, and
+   the `"Log as a new run"` confirmation button has no `disabled` guard; and in
+   `ModelFileExportSection`, `destinationState` keys only by `path` and not
+   `algorithm`, exposing stale `suffixMismatch` and destination metadata when
+   `algorithm` changes while `path` stays the same.
+3. In `OptimiserFactorsTable`, changing `Validation input` (`analysis_input`) sets
+   `pendingPrune.current = true`, and the effect clears it only when `inputColumns`
+   changes; if the newly selected input frame has identical column names and dtypes,
+   `pendingPrune.current` stays `true` and silently prunes `analysis_columns` on a
+   later unrelated schema edit.
+4. In `ModellingPreview.fixBestParameters`, the post-`await confirmed(...)` callback
+   mutates `useGraphStore.getState().setNodes(...)` without checking the document
+   execution fence or read-only status.
+5. In `useConstraintHandlers.handleAddConstraint`, the fallback key is generated as
+   `` `constraint_${Object.keys(constraints).length + 1}` `` without checking whether
+   that key already exists in `constraints`, overwriting `constraint_2` after
+   `constraint_1` is deleted.
+6. In `OptimiserPreview`, `reviewKey` is `JSON.stringify([nodeId, jobId])` without
+   `frontierGeneration`; when a frontier sweep is recomputed on the same `jobId` with
+   fewer swept axes while `xConstraintIdx > 0` was selected, `xConstraintIdx`
+   is not clamped against `frontier.swept_axes` and `OptimiserPreview` throws
+   `Error: Frontier x constraint ${xConstraintIdx} is not one of its swept constraints [...]`
+   during render.
+7. In `useOptimiserScenarioData`, quote navigation resets only when `quoteIds.length`
+   changes (`navigation.quoteCount !== quoteIds.length`), preserving a stale `index`
+   and `search` when `quoteIdCol` or upstream data changes to a different quote set
+   of the same length; and `buildSeriesScale` in `OptimiserScenarioPanes.tsx` sets
+   `rawRange = vMax - vMin || 1` instead of using `chartDomain`, plotting constant
+   series at the bottom of the chart and stretching floating-point rounding noise
+   across the full vertical axis.
+8. In `optimiserSolveReadiness` (`solveReadiness.ts`), `dataInputColumns` is checked
+   for `quote_id`, `scenario_index` and `scenario_value`, but never for the
+   configured `objective` column or `Object.keys(constraints)` (leaving
+   `canSolve === true` when `objective` or a constraint column is absent from
+   `dataInputColumns`), and in ratebook mode `malformedBandingSource` and
+   `missingExplicitBandingSource` are collapsed into a generic message instead of the
+   specific messages used in online mode.
+
+**Plan:** Compute `hashConfig(trainingIdentity(config))` synchronously in `onTrain`
+and record pre-job start failures without calling `clearTrainedJobHandle` on a
+retained completed model handle; close `overwritePrompt` and `confirmingLogAgain`
+when publish/export inputs or availability change, reset `useOptimiserPublishStore` on
+document switches, and key `ModelFileExportSection`'s `destinationState` by
+`(path, algorithm)`; clear `pendingPrune.current` whenever the selected
+`analysis_input` schema settles even if its columns equal the previous frame's; fence
+`fixBestParameters` on the document execution generation and read-only status;
+generate non-colliding fallback keys in `handleAddConstraint`; clamp `xConstraintIdx`
+when `frontier.swept_axes` changes in `OptimiserPreview`; key quote navigation
+by the quote-ID list identity in `useOptimiserScenarioData` and use `chartDomain` in
+`buildSeriesScale`; and validate `objective` and constraint column presence against
+`dataInputColumns` (plus distinct banding-source errors in ratebook mode) in
+`optimiserSolveReadiness`.
+
+**Acceptance:** Clicking Train within 300 ms of a config edit records the current
+config's hash, and a pre-job `startTrain` rejection leaves a previously completed
+run's `sessionStorage` handle intact; changing `version`, `isStale`, destination or
+`algorithm` dismisses stale export/publish confirmations and re-evaluates suffix
+mismatches; switching `analysis_input` between two identically structured tables does
+not leave `pendingPrune` armed; `fixBestParameters` no-ops if the document or its
+editability changed while the dialog was open; adding a constraint after deleting
+`constraint_1` does not overwrite `constraint_2`; recomputing a frontier with fewer
+`frontier.swept_axes` clamps `xConstraintIdx` without throwing; and
+`optimiserSolveReadiness` blocks `canSolve` when `objective` or a constraint column is
+missing from `dataInputColumns`.
+
+**Dependencies:** Coordinates with `FSH-R06` (`failTrainJob`).
+
+**Evidence:** `frontend/src/panels/ModellingConfig.tsx::ModellingConfig`;
+`frontend/src/stores/useNodeResultsStore.ts::useNodeResultsStore`;
+`frontend/src/panels/optimiser/OptimiserPublishSection.tsx::OptimiserPublishSection`;
+`frontend/src/stores/useOptimiserPublishStore.ts::useOptimiserPublishStore`;
+`frontend/src/panels/modelling/MlflowExportSection.tsx::MlflowExportSection`;
+`frontend/src/panels/modelling/ModelFileExportSection.tsx::ModelFileExportSection`;
+`frontend/src/panels/optimiser/OptimiserFactorsTable.tsx::OptimiserFactorsTable`;
+`frontend/src/panels/ModellingPreview.tsx::ModellingPreview`;
+`frontend/src/hooks/useConstraintHandlers.ts::useConstraintHandlers`;
+`frontend/src/panels/OptimiserPreview.tsx::OptimiserPreview`;
+`frontend/src/panels/optimiser/useOptimiserScenarioData.ts::useOptimiserScenarioData`;
+`frontend/src/panels/optimiser/OptimiserScenarioPanes.tsx::buildSeriesScale`;
+`frontend/src/panels/optimiser/solveReadiness.ts::optimiserSolveReadiness`.
