@@ -1920,8 +1920,9 @@ Out of scope:
   saved since, and a kept table, which no save touches, keeps every quote's rows as they
   stood, and they come back with it if its id returns. Hosted, it refuses a type, rows or role
   change on a column or table holding values, naming it, how many quotes hold values and the
-  way forward (a new column or table, or emptying it first), and a new column or table taking
-  a kept one's name. In dev it drops what the form removed and builds again what changed
+  way forward (a new column or table, or emptying it first), and a new or renamed column or
+  table taking a kept one's name, one the form removes in the same release included, which
+  the store keeps under it. In dev it drops what the form removed and builds again what changed
   while holding values, naming each table whose quotes' rows went and each column whose
   values went, and builds the whole store afresh when an earlier Haute made it with other
   columns of its own, which a hosted migrate refuses. `required` never becomes NOT NULL. Every plan says, for

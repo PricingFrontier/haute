@@ -292,6 +292,21 @@ def test_a_new_column_or_table_taking_a_kept_ones_name_is_refused(url: str) -> N
         assert "takes the name of" in refused.value.refusals[0]
 
 
+def test_a_rename_onto_a_name_a_kept_column_or_table_holds_is_refused(url: str) -> None:
+    migrate(url, POLICY, table("extras", column("notes")))
+
+    # region renamed to value while the form removes value, which the store keeps under its
+    # name: the rename could never be made.
+    onto_column = form(table("policy", column("value", id_="c_region")))
+    with pytest.raises(MigrationRefusedError, match="policy.region, renamed value, takes the name"):
+        migrate(url, table("policy", column("value", id_="c_region")))
+    assert plan_store(url, onto_column, project=PROJECT, environment=TEST).refusals
+    # policy renamed to extras while the form removes extras, kept the same way.
+    with pytest.raises(MigrationRefusedError, match="the table policy, renamed extras, takes"):
+        migrate(url, {**POLICY, "name": "extras"})
+    assert columns(url, "policy") == ["quote_reference", "quote_option", "region", "value"]
+
+
 def test_a_kept_column_the_sql_side_dropped_is_forgotten_and_its_name_free(url: str) -> None:
     migrate(url, POLICY)
     migrate(url, table("policy", column("region")))

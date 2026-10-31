@@ -12,8 +12,10 @@ from __future__ import annotations
 import io
 import sqlite3
 import struct
+import threading
 import uuid
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -583,25 +585,46 @@ def _columns_in_order(server: Target, owner: str, table_name: str) -> str:
     )
 
 
-def _run_script(server: Target, script: str) -> None:
-    """*script* run as a DBA runs it: on a connection of its own, committing nothing itself,
-    each statement's result read so a later one's error is raised."""
+@contextmanager
+def _script_run(server: Target, script: str) -> Iterator[tuple[Any, BaseException | None]]:
+    """*script* run as a DBA runs it, on a connection of its own in autocommit, each
+    statement's result read so a later one's error is raised; the connection, and the error
+    if one was raised, given before the connection is closed, so what the script left open
+    is seen as it left it."""
     engine = make_engine(server.url, sign_in=server.sign_in)
+    raw = engine.raw_connection()
     try:
-        raw = engine.raw_connection()
+        raw.driver_connection.autocommit = True  # type: ignore[union-attr]
+        cursor = raw.cursor()
+        raised: BaseException | None = None
         try:
-            raw.driver_connection.autocommit = True  # type: ignore[union-attr]
-            cursor = raw.cursor()
             cursor.execute(script)
             if server.backend == "sqlserver":
                 # pyodbc raises a statement's error once its result is reached.
                 while cursor.nextset():
                     pass
-            cursor.close()
-        finally:
-            raw.close()
+        except Exception as exc:  # noqa: BLE001 - the driver's own error is the evidence
+            raised = exc
+        yield raw, raised
     finally:
+        raw.close()
         engine.dispose()
+
+
+def _left_open(server: Target, raw: Any) -> bool:
+    """Whether the script left on *raw* a transaction that a COMMIT could still commit,
+    whatever of it ran: rolled back by nothing yet, only the connection's closing would undo
+    it. A PostgreSQL transaction that failed can only roll back, so it is not one."""
+    if server.backend == "postgresql":
+        import psycopg
+
+        status = raw.driver_connection.info.transaction_status
+        return bool(status == psycopg.pq.TransactionStatus.INTRANS)
+    cursor = raw.cursor()
+    cursor.execute("SELECT @@TRANCOUNT")
+    (open_transactions,) = cursor.fetchone()
+    cursor.close()
+    return bool(open_transactions)
 
 
 def test_a_plan_exported_as_sql_runs_on_the_server_whole_or_not_at_all(server: Target) -> None:
@@ -622,21 +645,24 @@ def test_a_plan_exported_as_sql_runs_on_the_server_whole_or_not_at_all(server: T
         restore_point=None,
         sql_schema="pricing",
     )
-    commit = "COMMIT;" if server.backend == "postgresql" else "COMMIT TRANSACTION;"
+    recorded = "SELECT release FROM pricing.haute_store"
 
-    # A statement failing before the COMMIT leaves every step undone, the rename included.
-    failing = script.replace(commit, "SELECT * FROM pricing.haute_no_such_table;\n" + commit)
-    # The driver's own error, as the DBA's client shows it.
-    with pytest.raises(Exception, match="haute_no_such_table"):
-        _run_script(server, failing)
-    assert [name for (name,) in server.read(_columns_in_order(server, "pricing", "policy"))] == [
-        "quote_reference",
-        "quote_option",
-        "region",
-    ]
+    # A column the SQL side added since takes the rename's name: the rename fails part way,
+    # after its first phase, and the script leaves nothing changed and nothing open.
+    server.run("ALTER TABLE pricing.policy ADD area BIGINT")
+    with _script_run(server, script) as (raw, raised):
+        assert raised is not None
+        assert not _left_open(server, raw)
+        assert [
+            name for (name,) in server.read(_columns_in_order(server, "pricing", "policy"))
+        ] == ["quote_reference", "quote_option", "region", "area"]
+        assert server.read(recorded) == [(None,)]
+    server.run("ALTER TABLE pricing.policy DROP COLUMN area")
 
     # Run whole, it brings the store to the release: the app opens it.
-    _run_script(server, script)
+    with _script_run(server, script) as (raw, raised):
+        assert raised is None and not _left_open(server, raw)
+    assert server.read(recorded) == [("r2",)]
     with open_book(
         server.url, renamed, project=PROJECT, environment=TEST, haute_version="1", **where
     ) as book:
@@ -722,6 +748,56 @@ def test_a_migrate_holds_writers_off_from_its_counts_to_its_ddl(
     assert store.read("SELECT quote_reference, region, note FROM policy") == [
         ("A-1", "north", None)
     ]
+
+
+def test_a_migrate_waiting_on_another_plans_against_the_tables_that_one_left(
+    any_store: Target, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = any_store
+    sign_in = store.sign_in
+    prepare_store(store.url, form(POLICY), project=PROJECT, environment=TEST, sign_in=sign_in)
+    renamed = form({**POLICY, "name": "policies"})
+    first_counted = threading.Event()
+    go_on = threading.Event()
+    counted = _migrate.counts
+
+    def counting(*args: Any, **kwargs: Any) -> Any:
+        found = counted(*args, **kwargs)
+        if threading.current_thread().name == "first":
+            # The first migrate holds the store while the second starts and waits for it.
+            first_counted.set()
+            assert go_on.wait(30)
+        return found
+
+    monkeypatch.setattr(_migrate, "counts", counting)
+    made: dict[str, Any] = {}
+
+    def migrate(name: str) -> None:
+        try:
+            made[name] = prepare_store(
+                store.url, renamed, project=PROJECT, environment=TEST, sign_in=sign_in
+            )
+        except Exception as exc:  # noqa: BLE001 - the test reads what each migrate met
+            made[name] = exc
+
+    first = threading.Thread(target=migrate, args=("first",), name="first")
+    first.start()
+    assert first_counted.wait(30)
+    second = threading.Thread(target=migrate, args=("second",), name="second")
+    second.start()
+    # The second waits on the first's hold of the store, whatever it read before.
+    second.join(timeout=1.0)
+    assert second.is_alive()
+    go_on.set()
+    first.join(timeout=60)
+    second.join(timeout=60)
+
+    assert [(step.kind, step.table) for step in made["first"].steps] == [
+        ("rename table", "policies")
+    ]
+    # The second plans against the tables the first left: nothing more to do.
+    assert not isinstance(made["second"], Exception), made["second"]
+    assert made["second"].steps == () and made["second"].refusals == ()
 
 
 def test_a_sign_in_the_server_refuses_is_said_naming_no_server_or_user(server: Target) -> None:

@@ -12,8 +12,9 @@ A plan is made from the form's structure, the reconciled record and the counts a
 ``hosted`` mode, a test or prod environment's, it drops nothing: a table or column the form
 removed is kept, listed with how many quotes hold values in it and the DROP statement for the
 DBA; a type, rows or role change of a table or column holding values is refused, as is a new
-table or column taking a kept one's name. In ``dev`` mode, the analyst's laptop's, it drops what
-the form removed and builds again what changed while holding values, naming each. Offline (no
+or renamed table or column taking a kept one's name, one the form removes now included. In
+``dev`` mode, the analyst's laptop's, it drops what the form removed and builds again what
+changed while holding values, naming each. Offline (no
 counts), each step that depends on data is conditional: made if the object holds no value, else
 refused. Each step says what reverses it: nothing, a migrate back to the previous release, or
 only a restore, which a hosted plan holding one needs a restore point for.
@@ -107,11 +108,17 @@ PROVIDER_DIALECTS: Mapping[str, str] = {name: each.dialect for name, each in PRO
 #: The steps made only while what they change holds no value: a migrate checks that as it
 #: applies them, holding the tables, and a script a DBA runs later cannot, so none is printed.
 _DATA_BOUND = frozenset({"retype column", "reshape table"})
-#: How each dialect's script opens and closes the one transaction that holds all of it: SQL
-#: Server rolling back at the first error (XACT_ABORT), PostgreSQL turning the COMMIT of a
-#: failed transaction into a rollback, and SQLite's shell stopping before it with -bail.
+#: How each dialect's script opens and closes the one transaction that holds all of it.
+#: SQL Server rolls back at an error that ends the batch (XACT_ABORT), and its TRY ... CATCH
+#: at one a procedure raises and goes on from, as sp_rename does, raising it again;
+#: PostgreSQL turns the COMMIT of a failed transaction into a rollback; and SQLite's shell
+#: stops before the COMMIT with -bail.
 _SCRIPT_TRANSACTIONS: Mapping[str, tuple[str, str]] = {
-    "mssql": ("SET XACT_ABORT ON;\nBEGIN TRANSACTION;\n\n", "COMMIT TRANSACTION;\n"),
+    "mssql": (
+        "SET XACT_ABORT ON;\nBEGIN TRANSACTION;\nBEGIN TRY\n\n",
+        "COMMIT TRANSACTION;\nEND TRY\nBEGIN CATCH\n"
+        "    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;\n    THROW;\nEND CATCH;\n",
+    ),
     "postgresql": ("BEGIN;\n\n", "COMMIT;\n"),
     "sqlite": (
         "-- Run with sqlite3 -bail, which stops at a failing statement before the COMMIT.\n"
@@ -303,7 +310,11 @@ def _plan(
     old = _by_id(recorded["tables"])
     new = _by_id(form["tables"])
     recorded_after: list[dict[str, Any]] = []
-    kept_names = {table["name"].casefold() for table in recorded["tables"] if table["kept"]}
+    # The names a hosted store's kept tables hold after the plan: those kept already and those
+    # the form removes now. No table of the form may take one, made or renamed.
+    kept_names = {
+        table["name"].casefold() for table in recorded["tables"] if table["id"] not in new
+    }
 
     for table in form["tables"]:
         before = old.get(table["id"])
@@ -356,6 +367,13 @@ def _plan(
                 )
                 recorded_after.append(table)
             continue
+        if hosted and before["name"] != table["name"] and table["name"].casefold() in kept_names:
+            refusals.append(
+                f"the table {before['name']}, renamed {table['name']}, takes the name of a table "
+                "the store keeps: rename one, or drop the kept table on the SQL side first"
+            )
+            recorded_after.append(before)
+            continue
         if before["kept"]:
             steps.append(Step("bring back table", table["name"], table["id"], was=before["name"]))
         elif before["name"] != table["name"]:
@@ -398,10 +416,10 @@ def _plan_columns(
     holds after them."""
     old = _by_id(before["columns"])
     new = _by_id(table["columns"])
+    # The names this table's kept columns hold after the plan, hosted: those kept already and
+    # those the form removes now. No column of the form may take one, added or renamed.
     kept_names = {
-        column["name"].casefold()
-        for column in before["columns"]
-        if column["kept"] and column["id"] not in new
+        column["name"].casefold() for column in before["columns"] if column["id"] not in new
     }
     after: list[dict[str, Any]] = []
     name = table["name"]
@@ -417,6 +435,13 @@ def _plan_columns(
                 continue
             steps.append(Step("add column", name, table["id"], column["name"], column["id"]))
             after.append(column)
+            continue
+        if hosted and was["name"] != column["name"] and column["name"].casefold() in kept_names:
+            refusals.append(
+                f"the column {name}.{was['name']}, renamed {column['name']}, takes the name of a "
+                "column the store keeps: rename one, or drop the kept column on the SQL side first"
+            )
+            after.append(was)
             continue
         if was["kept"]:
             steps.append(
@@ -818,8 +843,11 @@ def _planned(
     _refuse_old_store(names)
     wanted = structure(form)
     if hold and STORE_TABLE in names:
-        # Two migrates take turns here, so the record read next is the one this one changes.
+        # Two migrates take turns here, so the record read next is the one this one changes,
+        # and the tables are read again: another migrate may have changed them meanwhile.
         _hold(connection, owner, [STORE_TABLE])
+        catalogue = inspect(connection)
+        names = set(catalogue.get_table_names(schema=owner))
     held = _recorded(connection, schema) if STORE_TABLE in names else None
     mode: Mode = "dev" if environment == DEV else "hosted"
     if held is None:
