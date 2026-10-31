@@ -213,17 +213,21 @@ export function makeDevStore(): void {
 
 /** Run `sql` on the `dev` environment's quote store, as its owner runs the SQL Haute writes. */
 export function runOnStore(sql: string): void {
+  // Handed over as a file beside the store, which the project's reset cleans away.
+  const script = resolve(e2eProjectRoot, ".haute", "app", "change.sql")
+  writeFileSync(script, sql)
   python(
     [
       "import sqlite3, sys",
+      "from pathlib import Path",
       "connection = sqlite3.connect(sys.argv[1])",
       "try:",
-      "    connection.executescript(sys.argv[2])",
+      "    connection.executescript(Path(sys.argv[2]).read_text(encoding='utf-8'))",
       "finally:",
       "    connection.close()",
     ].join("\n"),
     storeFile,
-    sql,
+    script,
   )
 }
 

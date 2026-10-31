@@ -122,7 +122,7 @@ the quote store's `WORKBENCH_ENVIRONMENTS` declared, `connections_toml`, their c
 `env_example` adds to `.env.example`, and the blank form as `starter_form`;
 `src/haute/cli/_init_cmd.py` writes them for `haute init --workbench`, and
 `src/haute/cli/_ci.py` `.env.example` again for `haute ci update`;
-`src/haute/_git_setup.py` seeds the pipeline folder's `workbench/` into an unborn repository's root commit.
+`src/haute/_git_setup.py` seeds the pipeline folder's `workbench/` and `connections.toml` into an unborn repository's root commit.
 
 The view's host is in files other components own. `frontend/src/App.tsx`
 ([frontend-graph-canvas](../frontend-graph-canvas/low-level.md)) hides and fences the

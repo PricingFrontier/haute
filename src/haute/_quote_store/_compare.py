@@ -38,7 +38,12 @@ from haute._quote_store._environment import StoreLocation
 from haute._quote_store._migrate import Key, Plan, held, plan
 from haute._quote_store._providers import Provider
 from haute._quote_store._schema import ACTIVITY_TABLE, StoreSchema, store_schema, structure
-from haute._quote_store._store import QuoteStoreEnvironmentError, make_engine, reaching
+from haute._quote_store._store import (
+    QuoteStoreEnvironmentError,
+    QuoteStoreUnreachableError,
+    make_engine,
+    reaching,
+)
 from haute._workbench_form import QUOTE_DETAILS_ID, FormSpec
 from haute._workbench_tables import QUOTE_ROW
 
@@ -50,6 +55,12 @@ _FORM_TYPES: Mapping[str, str] = {
     "boolean": "bool",
     "date": "date",
 }
+#: What a database not reached may be, which an analyst reading one should know: a
+#: database that pauses when idle, as Azure SQL Database's serverless tier does.
+_WAKING = (
+    "A database that pauses when idle refuses the first connection while it wakes: try again "
+    "in a minute."
+)
 #: The id a table or column the form does not have is planned under.
 _THE_DATABASE_S = "database:"
 
@@ -208,12 +219,14 @@ def read_store_catalogue(location: StoreLocation) -> Catalogue:
     read under its sign-in and nothing written. A server not reached is said naming what places
     it (:func:`._store.reaching`), and any other refusal of the database's, a file that is no
     database or tables its sign-in may not read, naming the same, never what the driver
-    said."""
+    said, a database not reached saying it may be waking from a pause (_WAKING)."""
     engine = make_engine(location.url, sign_in=location.sign_in)
     try:
         with reaching(location.url, location.environment, location.named_by):
             with engine.connect() as connection:
                 return read_catalogue(connection, location.sql_schema, count=True)
+    except QuoteStoreUnreachableError as exc:
+        raise QuoteStoreUnreachableError(f"{exc} {_WAKING}") from None
     except DBAPIError:
         raise QuoteStoreEnvironmentError(
             f"The {location.environment} database's tables could not be read: check "

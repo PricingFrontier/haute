@@ -163,6 +163,31 @@ describe("Compare", () => {
     expect(screen.queryByTestId("database-mark-policy-policy.state")).not.toBeInTheDocument()
   })
 
+  it("says why the form could not be compared, the database read", async () => {
+    vi.mocked(fetchStoreCompare).mockRejectedValue(new ApiError("A column name is refused.", 422))
+    open()
+    choose("dev")
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("A column name is refused.")
+    expect(fetchStoreCatalogue).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId("database-mark-policy-policy.state")).not.toBeInTheDocument()
+  })
+
+  it("compares with nothing once Compare is set back to none, and reads nothing again without an environment", async () => {
+    open()
+    choose("dev")
+    await screen.findByTestId("database-mark-policy-policy.state")
+
+    choose("")
+
+    expect(screen.queryByTestId("store-compare")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("database-mark-policy-policy.state")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /Read the .* database again/ })).not.toBeInTheDocument()
+    expect(useStoreCompareStore.getState()).toMatchObject({ environment: null, read: { status: "idle" }, renames: [] })
+    useStoreCompareStore.getState().readAgain()
+    expect(fetchStoreCatalogue).toHaveBeenCalledTimes(1)
+  })
+
   it("closes the comparison with the pane", async () => {
     const shown = open()
     choose("dev")

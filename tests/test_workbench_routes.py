@@ -1291,4 +1291,5 @@ def test_an_environment_the_editor_cannot_read_is_said_naming_what_to_set(
     assert (
         "check connections.toml [dev] and the variables its sign-in reads (DEV_USER, DEV_PASSWORD)"
     ) in unreached.text
+    assert "A database that pauses when idle refuses the first connection" in unreached.text
     assert "hidden" not in unreached.text
