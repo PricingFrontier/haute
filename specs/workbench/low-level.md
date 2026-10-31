@@ -2728,8 +2728,9 @@ no longer has; and `InputSource` in
   `frontend/src/app/__tests__/useQuoteListStore.test.ts` a list loaded and loaded again
   only when asked, its rows kept, an answer to a list since left dropped, the list shown
   loaded again whichever it is, the next page, past the last, and failures;
-  `frontend/src/app/__tests__/useAppStore.test.ts` the people, none when unread, and one
-  question at a time;
+  `frontend/src/app/__tests__/useAppStore.test.ts` the people, none when unread, one
+  question at a time, and the quotes closed by a closed store's refusal and not by a busy
+  pricing's;
   `frontend/src/app/__tests__/QuotesPage.test.tsx` the table of the quotes' details under
   the sheets' labels with the lists' and stages' counts, the list, stage, order and assignee
   in the address, the search after a pause and from the address, each empty list's reason,
