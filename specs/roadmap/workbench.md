@@ -425,8 +425,8 @@ each difference or missing privilege; `GET /api/app/release` says the quotes are
 why; and the page opens no quote, new or saved, saying the quotes are unavailable, so nothing
 is keyed or priced that could not be saved. A quote open as they close stops pricing and
 saving, its values kept in the browser as unsaved values are now and offered back once they
-open. An app started with no environment named keeps nothing and prices its one quote as it
-does now. A refused request checks again at most once every 10 seconds, the requests in
+open. An app started with no environment named is closed the same way, naming
+`HAUTE_ENVIRONMENT`, and prices no quote. A refused request checks again at most once every 10 seconds, the requests in
 between answered with the last check's refusal, and the page asks again on the same bound,
 so tables put right in SQL open the quotes with no restart, no new image and no reload. A
 statement the database refuses because a table or column is not as the check found it sends
@@ -455,7 +455,8 @@ recheck bound, with no restart. The app started on a database missing a table or
 holding a column of another kind, unreachable, or whose sign-in lacks a privilege serves the
 page with no quote open, new or saved, and refuses every quote route and the pricing route
 naming each difference; a quote open as its tables stop fitting stops pricing and saving, its
-unsaved values offered back once they fit again. A copy of prod's
+unsaved values offered back once they fit again; an app started with no environment named
+opens and prices no quote either. A copy of prod's
 tables serves test with nothing changed in it. No command, route or workflow of Haute's
 changes a hosted database's tables. The SQL for a rename renames rather than dropping and
 adding. `haute app serve` builds its own file as now.
