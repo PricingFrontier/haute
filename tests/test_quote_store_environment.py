@@ -51,6 +51,7 @@ def test_an_environment_the_release_does_not_declare_is_refused_naming_those_it_
         # The engine would refuse it only as the app opens its store, repeating it.
         ({"HAUTE_STORE_URL": "sqlite://hidden-db/quotes.sqlite"}, "not a sqlite file's URL"),
         ({"HAUTE_STORE_URL": "sqlite://hidden:secret@/quotes.sqlite"}, "naming no server"),
+        ({"HAUTE_STORE_URL": "sqlite://hidden-db:bad/quotes.sqlite"}, "not a sqlite file's URL"),
     ],
     ids=[
         "not at all",
@@ -60,6 +61,7 @@ def test_an_environment_the_release_does_not_declare_is_refused_naming_those_it_
         "another provider's URL",
         "a file's URL naming a server",
         "a file's URL holding a sign-in",
+        "a file's URL whose port is no number",
     ],
 )
 def test_a_location_given_twice_not_at_all_or_unfit_is_refused_naming_no_location(

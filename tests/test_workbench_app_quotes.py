@@ -1225,11 +1225,12 @@ def test_a_hosted_app_opens_the_store_of_the_environment_the_host_names(
     # A URL its engine cannot open starts the app closed too, the URL said nowhere.
     monkeypatch.setenv(ENVIRONMENT_ENV, TEST)
     monkeypatch.delenv("HAUTE_STORE_DATABASE")
-    monkeypatch.setenv("HAUTE_STORE_URL", "sqlite://hidden-db/quotes.sqlite")
-    with TestClient(create_app(release_dir, store=partial(hosted_store, release_dir))) as app:
-        answered = app.get("/api/app/release", headers=ANA)
-        assert answered.json()["quotes"]["error_code"] == "quote_store_environment"
-        assert "hidden" not in answered.text
+    for unfit in ("sqlite://hidden-db/quotes.sqlite", "sqlite://hidden-db:bad/quotes.sqlite"):
+        monkeypatch.setenv("HAUTE_STORE_URL", unfit)
+        with TestClient(create_app(release_dir, store=partial(hosted_store, release_dir))) as app:
+            answered = app.get("/api/app/release", headers=ANA)
+            assert answered.json()["quotes"]["error_code"] == "quote_store_environment"
+            assert "hidden" not in answered.text
 
 
 def test_a_release_carries_the_environments_its_project_declares(release_dir: Path) -> None:

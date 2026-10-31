@@ -95,7 +95,8 @@ def _file_location_url(environment: StoreEnvironment, url: str) -> None:
     never met as the app opens its store."""
     try:
         parsed = make_url(url)
-    except ArgumentError:
+    except (ArgumentError, ValueError):
+        # A port that is no number is SQLAlchemy's ValueError.
         parsed = None
     if parsed is None or any((parsed.username, parsed.password, parsed.host, parsed.port)):
         raise QuoteStoreEnvironmentError(

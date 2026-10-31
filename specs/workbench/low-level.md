@@ -1806,8 +1806,8 @@ no longer has; and `InputSource` in
   clock the test moves; a column dropped under a running app refusing the next save 503
   with the difference, a statement failing on tables as checked raised as it was; and a
   database that stops answering closing the quotes as unreachable, the app answering
-  `GET /health` while the gate is held by a check; a SQLite URL naming a server starting
-  the app with its quotes closed, the URL in no answer.
+  `GET /health` while the gate is held by a check; a SQLite URL naming a server, or a port
+  that is no number, starting the app with its quotes closed, the URL in no answer.
 - `tests/test_quote_book.py` runs on SQLite and on each SQL Server or PostgreSQL server the
   environment names, a database of each test's own, a server's tables made from the SQL
   Haute writes (tests/_store_servers.py), and covers a saved
@@ -1892,8 +1892,8 @@ no longer has; and `InputSource` in
 - `tests/test_quote_store_environment.py` covers a SQLite environment at the file its
   database variable names and at a whole URL, its URL never in its `repr`; an environment the
   release does not declare refused naming those it does; and a location given twice, not at
-  all, with a server or a schema, of another provider, or a SQLite URL naming a server or a
-  sign-in, each refused naming none of the values given.
+  all, with a server or a schema, of another provider, or a SQLite URL naming a server, a
+  sign-in or a port that is no number, each refused naming none of the values given.
 - `tests/test_quote_store_providers.py` covers a server's location made from its parts with
   no sign-in in it, nothing of it in its `repr`, an Entra ID sign-in reading only what its
   identity needs, a location unfit, holding a sign-in or not a URL refused naming neither,
