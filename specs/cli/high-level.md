@@ -45,12 +45,15 @@ Out of scope, owned elsewhere:
 - `haute init [--target ...] [--ci ...] [--workbench] [--force]` scaffolds a new project in the
   current directory: `haute.toml`, a blank `rating/` pipeline package, `.env.example`, test-quote
   fixtures, CI/CD workflow files for the chosen provider, a git pre-commit hook, and `.gitignore`
-  guard entries; with `--workbench`, the `[workbench]` table in `haute.toml` and a blank form
-  folder, `rating/workbench/` ([workbench](../workbench/high-level.md)).
+  guard entries; with `--workbench`, the `[workbench]` table in `haute.toml`, declaring the
+  quote store's `dev`, `staging` and `prod`, a blank form folder, `rating/workbench/`, and
+  `connections.toml`, their connections for the editor and `haute app serve`, whose
+  variables `.env.example` names ([workbench](../workbench/high-level.md)).
   Refuses to run if `haute.toml` already exists unless `--force` is given, but for
   `--workbench` alone, which in a project that has a `haute.toml` adds the `[workbench]`
-  table to it and writes the blank form folder in its pipeline folder, touching nothing
-  else, and refuses when the table or the folder is already there. Either way a path of
+  table to it, writes the blank form folder in its pipeline folder and `connections.toml`,
+  and writes `.env.example` again, touching nothing else, and refuses when the table, the
+  folder or `connections.toml` is already there. Either way a path of
   the form folder reached through a link or junction refuses the init before anything is
   written. A root `main.py` is
   always deleted: `uv init` recreates that placeholder every time it runs, and a Haute project's
@@ -87,7 +90,8 @@ Out of scope, owned elsewhere:
   and reports any a later Push finds missing so the push panel can offer to set them
   ([frontend git UI](../frontend-git-ui/high-level.md)); the editor sets only secrets the
   repository lacks, and the command is how a changed value reaches CI.
-- `haute ci update` rewrites the CI files `haute init` generated, and `.env.example`, for the
+- `haute ci update` rewrites the CI files `haute init` generated, and `.env.example`, with
+  the variables `connections.toml` names when the project has one, for the
   installed Haute and the project's `[ci]` table, so a project takes up fixed workflows, a
   changed `[ci.staging] endpoint_suffix`, or a `[ci.production] environment` whose reviewers
   then gate production, without being initialised again.
@@ -120,13 +124,13 @@ Out of scope, owned elsewhere:
   under `.haute/app/release` and serves the underwriter app on `127.0.0.1` alone (port
   8001 by default), every request signed in as the analyst's git identity, able to
   change quotes unless `--reader` signs it in as one who reads them; without an identity
-  it refuses to start. It keeps the quotes saved in it in dev's quote store,
-  `.haute/app/store.sqlite`, which a rebuild leaves as it is: the form's own tables, brought
-  to the release's form as it starts by the store's planner in dev's mode, which drops what
-  the form removed and builds again what changed while holding values, naming each table
-  whose quotes' rows went and each column whose values went. No command changes a hosted
-  environment's tables: the people who own its database change them in SQL, starting from
-  the SQL the Workbench view's Build mode writes ([workbench](../workbench/high-level.md)).
+  it refuses to start. It keeps the quotes saved in it in the `dev` environment, at the
+  database `connections.toml`'s `[dev]` connection names, signed in as it says, refusing to
+  start while `haute.toml` declares no `dev` or the file holds no `[dev]`; the app checks
+  that database's tables as a hosted app checks its own, its quotes closed, naming each
+  difference, until they fit the release's form. No command changes any environment's
+  tables: the people who own its database change them in SQL, starting from the SQL the
+  Workbench view's schema pane writes ([workbench](../workbench/high-level.md)).
 - `haute status [model_name] [--version-only]` looks up a model's latest version/stage in the MLflow
   Model Registry.
 - `haute impact [--sample] [--batch-size] [--endpoint-suffix]` scores a configured safety dataset,

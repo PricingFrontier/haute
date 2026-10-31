@@ -35,7 +35,7 @@ Allowed field.
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
 | WB-41 | Planned | P2 | `useQuoteListStore` fences `loadingMore` across list switches, `priceSample` resolves `WORKBENCH_OUTPUT` inside submodels via `qualifiedRuntimeNodeId`, and the workbench high-level specification removes the stale `The blank form is a form` bullet. |
-| WB-45 | Planned | P2 | The schema pane compares the form with the tables a hosted environment's database holds, marking each difference, and writes the SQL that brings those tables to the form from what is there, for the analyst to run. |
+| WB-45 | Planned | P2 | `haute app serve` connects to `dev` through `connections.toml` as a hosted app connects to `staging` or `prod`, checking its tables and never changing them; the schema pane compares the form with the tables an environment's database holds, marking each difference, and writes the SQL that brings those tables to the form from what is there, for the analyst to run. |
 
 ## Planned improvements
 
@@ -425,31 +425,42 @@ missing-folder rule.
 `specs/workbench/high-level.md`.
 
 ### WB-45 — Comparing the form with an environment's tables
-**Why:** Analysts migrate a hosted quote store's tables themselves: Haute writes the SQL and
-they run it in their database (the owner's ruling, 31 October 2026); nothing in CI writes or
-runs it. Today the schema pane's SQL (`POST /api/workbench/store-sql`) writes the change from
-the form the default branch holds, read from git, or from none, so it takes the database to
-hold exactly that form's tables. It cannot see what the database really holds: a column
-someone added, retyped or dropped in SQL, one the form removed and the database kept, a script
-run part way, an environment behind or ahead of `main`, or which columns hold values a change
-would convert. The app's check (`_catalogue_differences`) finds each such difference, but only
-the started app reads it, and only to close its quotes. Nothing points the editor at a hosted
+**Why:** Analysts migrate a quote store's tables themselves: Haute writes the SQL and they run
+it in their database (the owner's ruling, 31 October 2026); nothing in CI or `haute app serve`
+writes or runs it. Today `haute app serve` keeps a local `.haute/app/store.sqlite` file of its
+own, auto-migrating it on startup (`prepare_store` and `haute_store`), and `[workbench.store]`
+refuses `dev` as an environment, instead of connecting `haute app serve` to the `dev` SQL
+database as `staging` connects to `staging` and `prod` connects to `prod`. Meanwhile the schema
+pane's SQL (`POST /api/workbench/store-sql`) writes the change from the form the default branch
+holds, read from git, or from none, so it takes the database to hold exactly that form's tables.
+It cannot see what the database really holds: a column someone added, retyped or dropped in SQL,
+one the form removed and the database kept, a script run part way, an environment behind or
+ahead of `main`, or which columns hold values a change would convert. The app's check
+(`_catalogue_differences`) finds each such difference, but only the started app reads it, and
+only to close its quotes. Nothing points the editor or `haute app serve` at a configured SQL
 database: a location and a sign-in are read from the host's variables, one environment per
 process.
 
-**Plan:** Decided with the owner (31 October 2026): the editor reaches each database through
-`connections.toml` at the project root, committed with the project and written by
-`haute init --workbench`, a table for each named connection holding its provider, server,
+**Plan:** Decided with the owner (31 October 2026): the editor and `haute app serve` reach each
+database through `connections.toml` at the project root, committed with the project and written
+by `haute init --workbench` alongside `dev`, `staging` and `prod` in `[workbench.store.<name>]`,
+a table for each named connection (`[dev]`, `[staging]`, `[prod]`) holding its provider, server,
 database and SQL schema, and how the analyst signs in, by the names of the variables that
 hold the secrets (as a store environment names its sign-in's), whose values live in the
 clone's `.env`, which git ignores, and `.env.example` naming each. It holds no secret, so
 the team shares one set of connections; a value written into it is refused naming the
 variable it belongs in. It is the analyst's own sign-in, a password from `.env` or their
-Microsoft Entra ID sign-in, never the app's managed identity, and the editor reads under it
-alone. A hosted app and a release never read the file: a host still places the app's
-database through its own variables, so a pull request changing the file repoints no hosted
-app. A connection named as a declared environment is that environment's. Then, in the schema
-pane, an environment chosen among those declared that has a connection: Haute connects
+Microsoft Entra ID sign-in, never the app's managed identity. `dev` is a declared environment
+like `staging` and `prod`, with no `.haute/app/store.sqlite` special case, no `haute_store`
+table and no auto-migration planner (`prepare_store`): `haute app serve` connects to `dev`
+through `connections.toml` (and `.env`), checks its catalogue through `StoreGate` as a hosted
+app checks `staging` or `prod` (closing its quotes naming what is missing or differs until the
+analyst runs the SQL on `dev`), and never changes its tables. A hosted app (`staging` on
+staging, `prod` on production) and a release never read `connections.toml`: a host still places
+the app's database through its own variables (`HAUTE_ENVIRONMENT`, `HAUTE_STORE_*`), so a pull
+request changing the file repoints no hosted app. A connection named as a declared environment
+is that environment's. Then, in the schema pane, an environment chosen among those declared
+(`dev`, `staging`, `prod`) that has a connection: Haute connects
 through the store's providers, reads the catalogue as the app's check
 does, with the quotes holding values in each column a change would touch, and changes nothing.
 Each table and column of the form is marked where it differs there (missing, of another kind,
@@ -465,24 +476,33 @@ nothing. The SQL from the default branch's form or from none stays for a databas
 cannot reach. No location, credential or value read is shown, logged or written to the
 project.
 
-**Acceptance:** With an environment reachable from the analyst's machine, the schema pane marks
+**Acceptance:** `haute app serve` connects to `dev` through `connections.toml` and `.env`,
+checks its catalogue through `StoreGate` without auto-migrating, and `.haute/app/store.sqlite`,
+`haute_store` and `prepare_store` are gone; hosted `staging` and `prod` connect through the
+host's variables and read nothing of `connections.toml`. With an environment (`dev`, `staging`
+or `prod`) reachable from the analyst's machine, the schema pane marks
 each table and column whose catalogue differs from the form, lists what the database holds
 beyond it and counts the quotes a change would convert; the SQL it writes, run on that
 database, leaves the app's check finding nothing, on SQL Server and on PostgreSQL; a pair the
 analyst marks is renamed, keeping its values; a database it cannot reach or sign in to is said
-naming the variables, never the server or the user; nothing is written to the database, the
-project or the logs. `haute init --workbench` writes `connections.toml` and names its
+naming the variables, never the server or the user; nothing is written to the database by the
+editor or by `haute app serve`, nor to the project or the logs. `haute init --workbench` writes
+`connections.toml` and `[workbench.store]` for `dev`, `staging` and `prod` and names their
 variables in `.env.example`; a secret's value written into the file is refused naming the
-variable it belongs in; and a hosted app reads nothing of the file.
+variable it belongs in.
 
 **Dependencies:** None.
 
-**Evidence:** `src/haute/_quote_store/_store.py::_catalogue_differences` (the app's check and
-its differences); `src/haute/_quote_store/_migrate.py::counts`, `::offline_plan` and
-`::render_sql` (the quotes holding values, the plan between two structures and its SQL);
-`src/haute/routes/workbench.py::store_sql` and `src/haute/_workbench_folder.py::form_at_ref`
-(the SQL from the default branch's form); `src/haute/_quote_store/_environment.py::resolve_store`
-(a location and a sign-in from one process's variables); `frontend/src/workbench/SchemaPane.tsx`
-and `frontend/src/workbench/StoreSqlWindow.tsx` (where the SQL is shown now);
+**Evidence:** `src/haute/cli/_app.py::handle_app_serve` and `::_local_store` (`haute app serve`'s
+local SQLite store and auto-migration); `src/haute/_workbench_config.py::DEV_ENVIRONMENT` and
+`::store_environments` (`dev` refused as a declared environment);
+`src/haute/_quote_store/_store.py::_catalogue_differences` and `::_check_record` (the app's
+check, its differences and `haute_store`); `src/haute/_quote_store/_migrate.py::prepare_store`,
+`::counts`, `::offline_plan` and `::render_sql` (dev's planner, the quotes holding values, the
+plan between two structures and its SQL); `src/haute/routes/workbench.py::store_sql` and
+`src/haute/_workbench_folder.py::form_at_ref` (the SQL from the default branch's form);
+`src/haute/_quote_store/_environment.py::resolve_store` (a location and a sign-in from one
+process's variables); `frontend/src/workbench/SchemaPane.tsx` and
+`frontend/src/workbench/StoreSqlWindow.tsx` (where the SQL is shown now);
 `src/haute/deploy/_config.py` (`.env` read with python-dotenv) and `src/haute/_scaffold.py`
 (`.env.example` written by `haute init`).
