@@ -322,7 +322,6 @@ production:
 | Engineering quality | PM-50 | `ENGQ-R01` (evidence added) |
 | Engineering quality | the campaign-named test modules recounted | `ENGQ-R05` (evidence added) |
 | Workbench UI | FWB-7 | `WB-38` (Decision) |
-| App shell and canvas | FAP-9 | `FGC-R03` |
 | App shell and canvas | FAP-4, FAP-6, FAP-7, FAP-8, FAP-10, FAP-12, FAP-13, FAP-15 | `FGC-R04` |
 | Tests, scripts and CI | ENG-6 | `ENGQ-R01` |
 | Tests, scripts and CI | ENG-17 | `ENGQ-R11` (Decision) |

@@ -490,12 +490,17 @@ reconciliation rather than dropping them or committing a second mutation.
    current state) and `savedPersistedFingerprint`, then recomputes `dirty`.
    Loads use the atomic load action directly; `markSaved` remains the
    successful-save boundary.
-10. **Panel context refresh.** `usePanelGraphContext` rebuilds its snapshot
-    only when `panelContextVersion` changes (a `useMemo` keyed on it,
-    reading fresh `nodes`/`edges` from `useGraphStore.getState()` at that
-    moment). `App.tsx` passes this snapshot's `allNodes`/`edges`, plus the
-    store-subscribed `submodels` and `preamble` values, into
-    `<GraphProvider>` wrapping `NodePanel`.
+10. **Panel context refresh and chrome drag isolation.** `usePanelGraphContext`
+    rebuilds its snapshot only when `panelContextVersion` changes (a `useMemo`
+    keyed on it, reading fresh `nodes`/`edges` from `useGraphStore.getState()`
+    at that moment). `App.tsx` passes this snapshot's `allNodes`/`edges`, plus
+    the store-subscribed `submodels` and `preamble` values, into
+    `<GraphProvider>` wrapping `NodePanel`, and memoises `Toolbar`,
+    `NodePropertiesPanel`/`NodePanel`, and `ActiveNodePreview`/`DataPreview`
+    with stable callbacks (`useTracing` and `useSubmodelBoundaryEditing` read
+    live `nodes` via refs inside their action callbacks rather than recreating
+    callbacks per drag frame) so `Toolbar`, `NodePanel`, and `DataPreview`
+    render at most once during a multi-frame node drag.
 11. **`PipelineNode` render.** Checks `isKnownNodeType(nodeData.nodeType)` and
     delegates an unknown `nodeType` to `UnavailablePipelineNode` instead of
     falling back to Transform metadata; for a known type it reads `accent`/
@@ -1533,6 +1538,9 @@ again through the editor and save paths.
   - `frontend/src/__tests__/App.backgroundJobsIsolation.test.tsx` — the background-job store
     subscription that feeds toolbar counts does not re-render the editor
     toolbar on solve/train progress ticks.
+  - `frontend/src/__tests__/App.dragIsolation.test.tsx` — a multi-frame node drag
+    re-renders `Toolbar`, `NodePanel`, and `DataPreview` at most once across the
+    drag sequence.
 - **Node/edge handlers — `frontend/src/hooks/__tests__/`:**
   - `frontend/src/hooks/__tests__/useGraphCanvasState.test.ts` and
     `frontend/src/hooks/__tests__/useGraphCanvasState.dragSimplification.test.ts`

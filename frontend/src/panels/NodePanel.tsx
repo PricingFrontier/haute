@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react"
+import { memo, useCallback, useMemo, useState } from "react"
 import { X, AlertTriangle, RefreshCw, Lock } from "lucide-react"
 import { fetchExplorePivotMembers } from "../api/client"
 import { NODE_TYPES, NODE_TYPE_META, REQUEST_INPUT_TYPES, isRequestInputType } from "../utils/nodeTypes"
@@ -1079,10 +1079,12 @@ function NodeEditorBody({
 
 type ActiveNodePanelProps = Omit<NodePanelProps, "node"> & { node: SimpleNode }
 
-export default function NodePanel(props: NodePanelProps) {
+const NodePanel = memo(function NodePanel(props: NodePanelProps) {
   if (!props.node) return null
   return <NodePanelContent key={props.node.id} {...props} node={props.node} />
-}
+})
+
+export default NodePanel
 
 function NodePanelContent({
   node,

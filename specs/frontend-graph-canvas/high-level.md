@@ -637,11 +637,16 @@ candidate, with the error toast.
 
 - **Selector isolation is a hard contract**, not a convention: `useGraphStore`
   consumers must subscribe via selectors (`useGraphStore((s) => s.nodes)`),
-  never the whole store. This exists because React Flow drag events replay
-  many `position` changes per animation frame; a whole-store subscription
-  would re-render every consumer on every frame of every drag. A dedicated
-  "selector isolation (reviewer gate)" test block enforces this by render
-  count.
+  never the whole store, and `FlowEditor` memoises its chrome children
+  (`Toolbar`, `NodePropertiesPanel`/`NodePanel`, and `ActiveNodePreview`/
+  `DataPreview`) with stable callbacks so mid-drag position updates do not
+  re-render the toolbar, inspector, or preview table on every drag frame
+  (rendering at most once per drag, when `canUndo`/`canRedo` flips on the
+  first drag frame). This exists because React Flow drag events replay
+  many `position` changes per animation frame; a whole-store subscription or
+  unmemoised chrome props would re-render every consumer on every frame of
+  every drag. Dedicated selector-isolation and drag render-count tests enforce
+  this by render count.
 - **History-aware vs raw actions** exist to keep undo granularity at the
   gesture level. A raw path lets a 60fps drag update node positions without
   ballooning undo to one entry per pixel; a history-aware path snapshots

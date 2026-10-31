@@ -15,7 +15,6 @@ packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FGC-R03 | Planned | P3 | The editor's chrome does not re-render on every drag frame, measured by render count before and after. |
 | FGC-R04 | Planned | P3 | One copy of each shell mechanism (menu keyboard handling, the radio group, the committed draft), every error shown with the server's detail, the Hotkeys list derived from the bindings, the dead prop gone and the swallowed context fetches logged. |
 | FGC-R05 | Planned | P1 | Finishing auto-layout changes positions without restoring older node data or replacing a different graph. |
 | FGC-R06 | Planned | P1 | A delayed drill-in cannot replace a newer graph, source path or navigation stack. |
@@ -27,28 +26,6 @@ packages come from the
 | FGC-R12 | Planned | P2 | `previewPortLabel` honours `chosenFrame` on multi-table `apiInput` and `workbenchInput` nodes, `computeStructuralFingerprint` and `computePanelContextFingerprint` include `submodels` and submodel boundary `ports`, `Ctrl+V` refuses `submodel` and `submodelPort` nodes, and `Escape` in a non-empty `SearchField` does not close an enclosing `ModalShell`. |
 
 ## Planned improvements
-
-### FGC-R03 — The chrome does not re-render per drag frame
-**Why:** `FlowEditor` subscribes to `nodes`, which `useGraphCanvasState` writes for each
-mid-drag position change, and passes freshly created inline callbacks to unmemoised
-children (`Toolbar`, the inspector with its selectors, memos and lazy editor, the preview
-table), so the chrome re-renders at drag-frame rate with unchanged inputs. The
-specification's selector-isolation gate exists for exactly this cost. The review did not
-measure it; the package starts with the measurement.
-
-**Plan:** A render-count test (as the selector-isolation gate does) for the toolbar, the
-inspector and the preview during a drag; then `memo` the chrome children and hoist the
-inline closures into the existing `useCallback`s, or host `<ReactFlow>` in a child that
-owns the `nodes` subscription.
-
-**Acceptance:** The render-count test shows the toolbar, inspector and preview rendering
-at most once per drag; if the measurement shows no cost, the package is retired with the
-test kept.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/App.tsx`, `frontend/src/hooks/useGraphCanvasState.ts::setNodesRaw`,
-`frontend/src/panels/NodePanel.tsx`, `frontend/src/panels/DataPreview.tsx`.
 
 ### FGC-R04 — One copy of each shell mechanism, errors with their detail
 **Why:** Six error surfaces in the utility panel and the comparison view build their text

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import type { ComponentProps, ReactNode } from "react"
 import {
   ReactFlow,
@@ -221,7 +221,7 @@ type ActiveNodePreviewProps = {
   onAskAssistantToFix?: (nodeId: string) => void
 }
 
-function ActiveNodePreview({
+const ActiveNodePreview = memo(function ActiveNodePreview({
   documentCanExecute,
   activeNodeId,
   activeNode,
@@ -262,7 +262,7 @@ function ActiveNodePreview({
       />
     </PreviewRunContext.Provider>
   )
-}
+})
 
 function ActiveNodePreviewBody({
   documentCanExecute,
@@ -283,19 +283,43 @@ function ActiveNodePreviewBody({
   onAskAssistantToFix,
 }: Omit<ActiveNodePreviewProps, "run">) {
   const activeNodeType = activeNode ? effectiveNodeType(activeNode) : undefined
-  const canRefresh = activeNode
+  const canRefresh = Boolean(
+    activeNode
     && activeNodeType !== NODE_TYPES.SUBMODEL_PORT
     && nodeData(activeNode)._loadAvailability !== "unavailable"
-    && nodeData(activeNode)._loadAvailability !== "blocked"
+    && nodeData(activeNode)._loadAvailability !== "blocked",
+  )
   const refreshAction = canRefresh ? onRefresh : undefined
   // The assistant reproduces the error of a top-level executable node only.
-  const askAssistant = onAskAssistantToFix
+  const canAskAssistant = Boolean(
+    onAskAssistantToFix
     && activeNodeId !== null
     && previewData?.status === "error"
     && activeNodeType !== NODE_TYPES.SUBMODEL
-    && activeNodeType !== NODE_TYPES.SUBMODEL_PORT
-    ? () => onAskAssistantToFix(activeNodeId)
-    : undefined
+    && activeNodeType !== NODE_TYPES.SUBMODEL_PORT,
+  )
+  const handleAskAssistant = useCallback(() => {
+    if (onAskAssistantToFix && activeNodeId !== null) {
+      onAskAssistantToFix(activeNodeId)
+    }
+  }, [activeNodeId, onAskAssistantToFix])
+  const handleSelectFrame = useCallback(
+    (portLabel: string) => {
+      if (activeNodeId !== null) previewNodeFrame(activeNodeId, portLabel)
+    },
+    [activeNodeId, previewNodeFrame],
+  )
+  const inputAction = useMemo(
+    () =>
+      documentCanExecute && canRefresh && activeNode ? (
+        <InputImportButton node={activeNode} onImported={onImported} />
+      ) : undefined,
+    [activeNode, canRefresh, documentCanExecute, onImported],
+  )
+  const errorAction = useMemo(
+    () => (canAskAssistant ? <AskAssistantButton onClick={handleAskAssistant} /> : undefined),
+    [canAskAssistant, handleAskAssistant],
+  )
   if (
     documentCanExecute
     && activeNode
@@ -364,20 +388,14 @@ function ActiveNodePreviewBody({
   return (
     <DataPreview
       data={previewData}
-      nodeLabel={canRefresh ? String(nodeData(activeNode).label) : undefined}
+      nodeLabel={canRefresh && activeNode ? String(nodeData(activeNode).label) : undefined}
       nodeType={activeNodeType}
       onRefresh={refreshAction}
       onCellClick={documentCanExecute ? onCellClick : undefined}
       tracedCell={tracedCell}
-      onSelectFrame={
-        activeNodeId ? (portLabel) => previewNodeFrame(activeNodeId, portLabel) : undefined
-      }
-      inputAction={
-        documentCanExecute && canRefresh && activeNode ? (
-          <InputImportButton node={activeNode} onImported={onImported} />
-        ) : undefined
-      }
-      errorAction={askAssistant ? <AskAssistantButton onClick={askAssistant} /> : undefined}
+      onSelectFrame={activeNodeId ? handleSelectFrame : undefined}
+      inputAction={inputAction}
+      errorAction={errorAction}
     />
   )
 }
@@ -576,7 +594,7 @@ type NodePropertiesPanelProps = {
   onOpenNode: (nodeId: string) => void
 }
 
-function NodePropertiesPanel({
+const NodePropertiesPanel = memo(function NodePropertiesPanel({
   gitOpen,
   filesPlace,
   utilityOpen,
@@ -723,7 +741,7 @@ function NodePropertiesPanel({
       <ErrorBoundary name="NodePanel">{content}</ErrorBoundary>
     </aside>
   )
-}
+})
 
 // Note: the ReactFlow node-type → component registry now lives in
 // ./utils/nodeTypeRegistry (imported as `nodeTypes` above), shared with the
@@ -1628,7 +1646,7 @@ function FlowEditor() {
   const handleToolbarSubmodelAction = useCallback(() => {
     if (selectedSubmodelId === null) {
       requestSubmodelCreation({
-        nodes,
+        nodes: graphRef.current.nodes,
         readOnly: editingReadOnly,
         isInsideSubmodel: viewStack.length > 1,
         setSubmodelDialog,
@@ -1645,18 +1663,57 @@ function FlowEditor() {
     void handleDissolveSubmodel(selectedSubmodelId).finally(() => {
       toolbarDissolveInFlightRef.current = false
     })
-  }, [selectedSubmodelId, nodes, editingReadOnly, viewStack.length, setSubmodelDialog, addToast, handleDissolveSubmodel])
+  }, [selectedSubmodelId, graphRef, editingReadOnly, viewStack.length, setSubmodelDialog, addToast, handleDissolveSubmodel])
   const handleToolbarCreateInstance = useCallback(() => {
     if (editingReadOnly) {
       addToast("info", "This pipeline document is read-only")
       return
     }
-    if (selectedNodeIds.length !== 1) {
+    const currentSelectedIds = graphRef.current.nodes.filter((n) => n.selected).map((n) => n.id)
+    if (currentSelectedIds.length !== 1) {
       addToast("info", "Select exactly one node to create an instance of it")
       return
     }
-    handleCreateInstance(selectedNodeIds[0])
-  }, [editingReadOnly, selectedNodeIds, handleCreateInstance, addToast])
+    handleCreateInstance(currentSelectedIds[0])
+  }, [editingReadOnly, graphRef, handleCreateInstance, addToast])
+
+  const handleZoomIn = useCallback(() => {
+    void zoomIn()
+  }, [zoomIn])
+  const handleZoomOut = useCallback(() => {
+    void zoomOut()
+  }, [zoomOut])
+  const handleCentre = useCallback(() => {
+    void fitView({ padding: 0.15 })
+  }, [fitView])
+  const handleOpenUtility = useCallback(() => {
+    setUtilityOpen(true)
+    setSelectedNode(null)
+    setLastSelectedId(null)
+    lastSelectedNodeRef.current = null
+    setPreviewDataRef.current(null)
+    setContextMenu(null)
+  }, [setUtilityOpen, setSelectedNode, setLastSelectedId, lastSelectedNodeRef, setPreviewDataRef, setContextMenu])
+  const handleOpenConstants = useCallback(() => {
+    setConstantsOpen(true)
+    setSelectedNode(null)
+    setLastSelectedId(null)
+    lastSelectedNodeRef.current = null
+    setPreviewDataRef.current(null)
+    setContextMenu(null)
+  }, [setConstantsOpen, setSelectedNode, setLastSelectedId, lastSelectedNodeRef, setPreviewDataRef, setContextMenu])
+  const handleCloseGit = useCallback(() => {
+    setGitOpen(false)
+  }, [setGitOpen])
+  const handleCloseFiles = useCallback(() => {
+    setFilesPlace(null)
+  }, [setFilesPlace])
+  const handleCloseUtility = useCallback(() => {
+    setUtilityOpen(false)
+  }, [setUtilityOpen])
+  const handleCloseConstants = useCallback(() => {
+    setConstantsOpen(false)
+  }, [setConstantsOpen])
 
   // The workbench prices its sample on the document as it is then: the whole pipeline,
   // even while a submodel is open.
@@ -1889,16 +1946,16 @@ function FlowEditor() {
           canRedo={canRedo}
           onUndo={undo}
           onRedo={redo}
-          onZoomIn={() => zoomIn()}
-          onZoomOut={() => zoomOut()}
-          onOpenUtility={() => { setUtilityOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
-          onOpenConstants={() => { setConstantsOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
+          onZoomIn={handleZoomIn}
+          onZoomOut={handleZoomOut}
+          onOpenUtility={handleOpenUtility}
+          onOpenConstants={handleOpenConstants}
           submodelAction={selectedSubmodelId === null ? "create" : "dissolve"}
           canRunSubmodelAction={canRunSubmodelAction}
           onSubmodelAction={handleToolbarSubmodelAction}
           canCreateInstance={canCreateInstance}
           onCreateInstance={handleToolbarCreateInstance}
-          onCentre={() => fitView({ padding: 0.15 })}
+          onCentre={handleCentre}
           onAutoLayout={handleAutoLayout}
           isAutoLayouting={isAutoLayouting}
           onSave={requestSave}
@@ -2149,10 +2206,10 @@ function FlowEditor() {
           utilityOpen={utilityOpen}
           constantsOpen={constantsOpen}
           assistantOpen={assistantOpen}
-          onCloseGit={() => setGitOpen(false)}
-          onCloseFiles={() => setFilesPlace(null)}
-          onCloseUtility={() => setUtilityOpen(false)}
-          onCloseConstants={() => setConstantsOpen(false)}
+          onCloseGit={handleCloseGit}
+          onCloseFiles={handleCloseFiles}
+          onCloseUtility={handleCloseUtility}
+          onCloseConstants={handleCloseConstants}
           onSave={saveProject}
           preamble={preamble}
           onImportAdded={handleImportAdded}
