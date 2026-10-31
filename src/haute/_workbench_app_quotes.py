@@ -1,6 +1,7 @@
 """The underwriter app's quotes (specs/workbench): its routes to list, open, save and change
-the quotes it keeps in its quote store, mounted by ``haute._workbench_app.create_app`` when
-the app has a store.
+the quotes it keeps in its quote store, mounted by ``haute._workbench_app.create_app``, each
+taking the open book from the store's gate (``haute._workbench_app_store``) as it starts and
+answering 503 with the refusal while the quotes are closed.
 
 A quote is named by its reference and option, ``/api/app/quotes/{reference}/{option}``, the
 reference URL-encoded. Its details are the row of the sheets' ``quote_details`` table: the
@@ -15,7 +16,9 @@ refusals answer as the app's: a quote it does not keep 404; a quote moved on 409
 quote as it is now; a quote that does not take the change, one not ready to be marked final,
 a repeated save superseded and a reference held 409; values not of their columns' types, and
 anything else it refuses, 422. A store the app cannot reach, or that refuses its sign-in, 503,
-said and logged without what the driver said of where it is.
+said and logged without what the driver said of where it is, closing the quotes; and a
+statement the database refuses makes the gate check the tables again at once, 503 when they
+no longer fit.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ from typing import Any, Literal, TypeVar
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ValidationError
+from sqlalchemy.exc import DBAPIError
 from starlette.concurrency import run_in_threadpool
 
 from haute._json_safe import to_json_safe
@@ -53,6 +57,7 @@ from haute._quote_store import (
 from haute._quote_store._book import MAX_PAGE_SIZE, PAGE_SIZE
 from haute._quote_store._store import unreached
 from haute._workbench_app import Pricing
+from haute._workbench_app_store import QuoteStoreClosedError, StoreGate
 from haute._workbench_form import QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, FormSpec
 from haute._workbench_tables import (
     IDENTITY_SHAPE,
@@ -104,13 +109,13 @@ _APP_SET_CELLS = frozenset((QUOTE_DETAILS_ID, column_id) for column_id in QUOTE_
 
 @dataclass(frozen=True)
 class QuoteApp:
-    """What the quote routes work with: the release running, its sheets, the book of quotes
-    and the release's pricing."""
+    """What the quote routes work with: the release running, its sheets, the gate of its
+    quote store and the release's pricing."""
 
     release_id: str
     form_revision: str
     form: FormSpec
-    book: QuoteBook
+    gate: StoreGate
     price: Pricer
 
 
@@ -158,6 +163,15 @@ def _refusal(status: int, exc: QuoteStoreError, **extra: Any) -> HTTPException:
     )
 
 
+async def _book(app: QuoteApp) -> QuoteBook:
+    """The open book, from the gate on a worker thread, as it may check the store; a closed
+    gate answered 503 with its refusal."""
+    try:
+        return await run_in_threadpool(app.gate.book)
+    except QuoteStoreClosedError as refusal:
+        raise HTTPException(503, detail=refusal.detail) from None
+
+
 async def _call(app: QuoteApp, work: Callable[[], T], identity: tuple[str, int] | None = None) -> T:
     """*work* on a worker thread, the store's refusals answered as the app's; a quote moved on
     with the quote *identity* names as it is now."""
@@ -168,7 +182,8 @@ async def _call(app: QuoteApp, work: Callable[[], T], identity: tuple[str, int] 
     except StaleQuoteError as exc:
         current = None
         if identity is not None:
-            current = quote_model(await run_in_threadpool(app.book.get, *identity)).model_dump()
+            book = await _book(app)
+            current = quote_model(await run_in_threadpool(book.get, *identity)).model_dump()
         raise _refusal(409, exc, quote=current) from None
     except QuoteNotReadyError as exc:
         raise _refusal(409, exc, missing=exc.missing) from None
@@ -192,17 +207,25 @@ async def _call(app: QuoteApp, work: Callable[[], T], identity: tuple[str, int] 
     except QuoteStoreError as exc:
         raise _refusal(422, exc) from None
     except Exception as exc:
-        if not unreached(exc):
-            raise
-        # The driver's own text names the server, its port and who signs in: none of it said.
-        logger.warning("quote_store_unreachable", error_type=type(exc).__name__)
-        raise HTTPException(
-            503,
-            detail={
-                "message": "The app cannot reach its quote store just now: try again shortly.",
-                "error_code": "quote_store_unreachable",
-            },
-        ) from None
+        if unreached(exc):
+            # The driver's own text names the server, its port and who signs in: none of it
+            # said. The quotes close until a check reaches the store again.
+            logger.warning("quote_store_unreachable", error_type=type(exc).__name__)
+            app.gate.unreachable()
+            raise HTTPException(
+                503,
+                detail={
+                    "message": "The app cannot reach its quote store just now.",
+                    "error_code": "quote_store_unreachable",
+                    "differences": [],
+                },
+            ) from None
+        if isinstance(exc, DBAPIError):
+            # A statement refused: the tables may have changed under the running app.
+            refusal = await run_in_threadpool(app.gate.recheck)
+            if refusal is not None:
+                raise HTTPException(503, detail=refusal.detail) from None
+        raise
 
 
 def _editor(http: Request) -> str:
@@ -292,7 +315,6 @@ def _related(quote: RelatedQuote) -> WorkbenchAppRelatedQuote:
 
 def quote_router(app: QuoteApp) -> APIRouter:
     """The routes of the app's quotes, under ``/api/app``."""
-    book = app.book
     router = APIRouter(prefix="/api/app")
 
     def answer(
@@ -321,6 +343,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
         limit: int = Query(default=PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     ) -> WorkbenchAppQuotesResponse:
         actor: str = http.state.principal
+        book = await _book(app)
         page = await _call(
             app,
             lambda: book.page(
@@ -344,6 +367,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
     async def create_quote(http: Request) -> WorkbenchAppQuoteResponse:
         actor = _editor(http)
         body = await _body(http, WorkbenchAppQuoteCreateRequest)
+        book = await _book(app)
         # A creation repeated with its key answers the quote it made, whichever release the
         # page was drawn for.
         replay = await _call(app, lambda: book.replayed(body.operation, actor, "created"))
@@ -370,12 +394,14 @@ def quote_router(app: QuoteApp) -> APIRouter:
 
     @router.get("/quotes/{reference}/{option}", response_model=WorkbenchAppQuoteResponse)
     async def open_quote(reference: str, option: int) -> WorkbenchAppQuoteResponse:
+        book = await _book(app)
         return answer(await _call(app, lambda: book.read(reference, option)))
 
     @router.post("/quotes/{reference}/{option}/save", response_model=WorkbenchAppQuoteResponse)
     async def save_quote(reference: str, option: int, http: Request) -> WorkbenchAppQuoteResponse:
         actor = _editor(http)
         body = await _body(http, WorkbenchAppQuoteSaveRequest)
+        book = await _book(app)
         identity = (reference, option)
         # A save repeated with its key after its answer was lost is answered with what that key
         # wrote, nothing priced or written again, whichever release the page was drawn for.
@@ -417,15 +443,16 @@ def quote_router(app: QuoteApp) -> APIRouter:
     def change(
         path: str,
         model: type[WorkbenchAppQuoteChange],
-        apply: Callable[[str, int, Any, str], AppQuote],
+        apply: Callable[[QuoteBook, str, int, Any, str], AppQuote],
     ) -> None:
         async def route(
             reference: str, option: int, http: Request
         ) -> WorkbenchAppQuoteChangeResponse:
             actor = _editor(http)
             body = await _body(http, model)
+            book = await _book(app)
             quote = await _call(
-                app, lambda: apply(reference, option, body, actor), (reference, option)
+                app, lambda: apply(book, reference, option, body, actor), (reference, option)
             )
             return WorkbenchAppQuoteChangeResponse(quote=quote_model(quote))
 
@@ -440,27 +467,29 @@ def quote_router(app: QuoteApp) -> APIRouter:
     change(
         "assignee",
         WorkbenchAppQuoteAssign,
-        lambda r, o, b, a: book.assign(r, o, version=b.version, actor=a, assignee=b.assignee),
+        lambda book, r, o, b, a: book.assign(r, o, version=b.version, actor=a, assignee=b.assignee),
     )
     change(
         "archive",
         WorkbenchAppQuoteChange,
-        lambda r, o, b, a: book.archive(r, o, version=b.version, actor=a),
+        lambda book, r, o, b, a: book.archive(r, o, version=b.version, actor=a),
     )
     change(
         "restore",
         WorkbenchAppQuoteChange,
-        lambda r, o, b, a: book.restore(r, o, version=b.version, actor=a),
+        lambda book, r, o, b, a: book.restore(r, o, version=b.version, actor=a),
     )
     change(
         "final",
         WorkbenchAppQuoteChange,
-        lambda r, o, b, a: book.finalise(r, o, version=b.version, actor=a, release=app.release_id),
+        lambda book, r, o, b, a: book.finalise(
+            r, o, version=b.version, actor=a, release=app.release_id
+        ),
     )
     change(
         "amend",
         WorkbenchAppQuoteAmend,
-        lambda r, o, b, a: book.amend(r, o, version=b.version, actor=a, reason=b.reason),
+        lambda book, r, o, b, a: book.amend(r, o, version=b.version, actor=a, reason=b.reason),
     )
 
     @router.post(
@@ -469,6 +498,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
     async def note(reference: str, option: int, http: Request) -> WorkbenchAppQuoteChangeResponse:
         actor = _editor(http)
         body = await _body(http, WorkbenchAppQuoteNote)
+        book = await _book(app)
         quote = await _call(
             app, lambda: book.set_note(reference, option, actor=actor, note=body.note)
         )
@@ -478,6 +508,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
         "/quotes/{reference}/{option}/activity", response_model=WorkbenchAppQuoteActivityResponse
     )
     async def activity(reference: str, option: int) -> WorkbenchAppQuoteActivityResponse:
+        book = await _book(app)
         done = await _call(app, lambda: book.activity(reference, option))
         return WorkbenchAppQuoteActivityResponse(
             entries=[
@@ -499,6 +530,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
 
     @router.get("/people", response_model=WorkbenchAppPeopleResponse)
     async def people() -> WorkbenchAppPeopleResponse:
+        book = await _book(app)
         return WorkbenchAppPeopleResponse(people=await _call(app, book.people))
 
     return router

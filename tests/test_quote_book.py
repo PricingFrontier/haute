@@ -29,7 +29,6 @@ from haute._quote_store import (
     StaleQuoteError,
     WriteSupersededError,
     open_book,
-    prepare_store,
 )
 from haute._workbench_form import FormSpec, with_quote_details
 from haute._workbench_tables import finite_document, priced_tables
@@ -126,11 +125,12 @@ def store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Target]:
 
 @pytest.fixture
 def book(store: Target) -> Iterator[QuoteBook]:
-    prepare_store(store.url, FORM, project=PROJECT, sign_in=store.sign_in)
+    store.make(FORM, project=PROJECT)
     with open_book(
         store.url,
         FORM,
         project=PROJECT,
+        environment=store.environment,
         haute_version=HAUTE,
         clock=Clock(),
         sign_in=store.sign_in,
@@ -651,10 +651,15 @@ def test_a_preset_row_whose_value_is_no_longer_allowed_is_named_as_dropped(
             )
         )
 
-    url, sign_in = store.url, store.sign_in
-    prepare_store(url, perils_form(["AOP", "EQ"]), project=PROJECT, sign_in=sign_in)
+    url, sign_in, environment = store.url, store.sign_in, store.environment
+    store.make(perils_form(["AOP", "EQ"]), project=PROJECT)
     with open_book(
-        url, perils_form(["AOP", "EQ"]), project=PROJECT, haute_version=HAUTE, sign_in=sign_in
+        url,
+        perils_form(["AOP", "EQ"]),
+        project=PROJECT,
+        environment=environment,
+        haute_version=HAUTE,
+        sign_in=sign_in,
     ) as wide:
         typed = {
             "t_perils": [{"c_peril": "AOP", "c_limit": "100"}, {"c_peril": "EQ", "c_limit": "50"}]
@@ -663,7 +668,12 @@ def test_a_preset_row_whose_value_is_no_longer_allowed_is_named_as_dropped(
 
     # The allowed values are the form's rules, not its structure: the tables stay as they are.
     with open_book(
-        url, perils_form(["AOP"]), project=PROJECT, haute_version=HAUTE, sign_in=sign_in
+        url,
+        perils_form(["AOP"]),
+        project=PROJECT,
+        environment=environment,
+        haute_version=HAUTE,
+        sign_in=sign_in,
     ) as narrow:
         opened = narrow.read("P-1", 1)
 

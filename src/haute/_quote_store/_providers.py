@@ -272,8 +272,9 @@ def retypes_in_place(provider: Provider, was: str, now: str) -> bool:
 
 def _privileges(schema: StoreSchema) -> list[tuple[str, str]]:
     """Each table of *schema* with each privilege a started app needs on it: quote_details read,
-    written and changed, every other table of the form's read, written and emptied, the
-    activity read and written, and haute_store read."""
+    written and changed, every other table of the form's read, written and emptied, and the
+    activity read and written. A server database holds no haute_store, which only dev's
+    SQLite file keeps."""
     needed: list[tuple[str, str]] = []
     for stored in schema.tables:
         kinds = (
@@ -287,7 +288,6 @@ def _privileges(schema: StoreSchema) -> list[tuple[str, str]]:
         )
         needed.extend((stored.table.name, kind) for kind in kinds)
     needed.extend((schema.activity.name, kind) for kind in ("SELECT", "INSERT"))
-    needed.append((schema.store.name, "SELECT"))
     return needed
 
 

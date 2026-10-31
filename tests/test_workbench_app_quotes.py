@@ -1,8 +1,8 @@
 """The underwriter app's quotes (specs/workbench): the routes that list, open, save and change
 the quotes the app keeps in the form's own tables, a save priced again on the server, the
 version every change names, operation keys that make a repeated write write once, the release
-a page was drawn for, writes from other sites refused, and ``haute app serve`` and ``haute app
-migrate`` with the store."""
+a page was drawn for, writes from other sites refused, the quotes closed while the store's
+tables do not fit, and ``haute app serve`` with dev's store."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote as escaped
@@ -19,12 +20,11 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
 
-from haute import _workbench_app_quotes
+from haute import _workbench_app_quotes, _workbench_app_store
 from haute._quote_store import (
     DEV,
     QuoteBook,
     QuoteStoreEnvironmentError,
-    QuoteStoreMismatchError,
     StoreLocation,
     open_book,
     prepare_store,
@@ -45,6 +45,7 @@ from haute._workbench_config import ENVIRONMENT_ENV, StoreEnvironment
 from haute._workbench_form import QUOTE_DETAILS_ID, FormSpec, with_quote_details
 from haute._workbench_tables import input_tables
 from haute.deploy._utils import shipped_graph
+from tests._store_servers import Target
 from tests.test_workbench_app import _graph
 from tests.test_workbench_routes import POLICY, PRICING, form
 
@@ -115,10 +116,16 @@ def _write_release(
 
 
 def _prepared(path: Path, release_dir: Path, environment: str = TEST) -> str:
-    """The URL of a store at *path* holding the tables of *release_dir*'s form."""
+    """The URL of a store at *path* holding the tables of *release_dir*'s form: dev's made by
+    its planner, a hosted environment's from the SQL Haute writes, as the people who own its
+    database make them."""
     url = store_url(path)
     release, spec, _ = read_release(release_dir)
-    prepare_store(url, spec, project=release.pipeline_name, environment=environment)
+    if environment == DEV:
+        prepare_store(url, spec, project=release.pipeline_name)
+    else:
+        hosted = Target("sqlite", url)
+        hosted.script(hosted.sql(spec))
     return url
 
 
@@ -198,6 +205,11 @@ class Page:
             **fields,
         }
 
+    def price(self, values: dict[str, Any], headers: dict[str, str] = ANA) -> Any:
+        """*values* priced through the app's route, as the page prices what is typed."""
+        body = {"form_revision": self.revision, "release": self.release, "values": values}
+        return self.client.post("/api/app/price", json=body, headers=headers)
+
     def save(self, quote: dict[str, Any], headers: dict[str, str] = ANA, **fields: Any) -> Any:
         return self.client.post(
             f"{address(quote)}/save", json=self.body(quote, **fields), headers=headers
@@ -229,13 +241,22 @@ def page(client: TestClient) -> Page:
 # ── Saving and opening ────────────────────────────────────────────────────
 
 
-def test_the_release_says_the_app_keeps_quotes(client: TestClient, release_dir: Path) -> None:
-    assert client.get("/api/app/release", headers=ANA).json()["quotes"] is True
+def test_the_release_says_whether_the_quotes_are_open(
+    client: TestClient, release_dir: Path
+) -> None:
+    assert client.get("/api/app/release", headers=ANA).json()["quotes"] == {
+        "open": True,
+        "error_code": None,
+        "message": None,
+        "differences": [],
+    }
     with TestClient(create_app(release_dir)) as storeless:
-        assert storeless.get("/api/app/release", headers=ANA).json()["quotes"] is False
+        quotes = storeless.get("/api/app/release", headers=ANA).json()["quotes"]
+        assert (quotes["open"], quotes["error_code"]) == (False, "quote_store_environment")
         refused = storeless.get("/api/app/quotes", headers=ANA)
         assert refused.status_code == 503
-        assert ENVIRONMENT_ENV in refused.json()["detail"]
+        assert refused.json()["detail"]["error_code"] == "quote_store_environment"
+        assert ENVIRONMENT_ENV in refused.json()["detail"]["message"]
 
 
 def test_a_priced_save_is_priced_again_on_the_server_and_kept_in_the_forms_tables(
@@ -844,6 +865,10 @@ def test_a_store_the_app_cannot_reach_is_answered_503_naming_none_of_it(
     assert answered.status_code == 503
     assert answered.json()["detail"]["error_code"] == "quote_store_unreachable"
     assert "hidden" not in answered.text
+    # The quotes close until the next check: the release says so, naming none of it.
+    quotes = page.client.get("/api/app/release", headers=ANA).json()["quotes"]
+    assert (quotes["open"], quotes["error_code"]) == (False, "quote_store_unreachable")
+    assert "hidden" not in str(quotes)
 
 
 def test_a_write_from_a_page_of_another_site_is_refused(page: Page) -> None:
@@ -874,15 +899,72 @@ def test_the_apps_pages_are_its_one_page(release_dir: Path, url: str, tmp_path: 
         assert client.get("/quotes/ABC-1/2").status_code == 401
 
 
-def test_the_app_does_not_start_on_a_database_without_the_forms_tables(
-    release_dir: Path, tmp_path: Path
+def test_an_app_on_a_database_without_its_forms_tables_starts_with_its_quotes_closed(
+    release_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with pytest.raises(QuoteStoreMismatchError, match="holds no quote store yet"):
-        create_app(release_dir, store=StoreLocation(TEST, store_url(tmp_path / "fresh.sqlite")))
-    # A store of the release's tables in dev is the analyst's laptop's, not a hosted app's.
-    dev = _prepared(tmp_path / "dev.sqlite", release_dir, environment=DEV)
-    with pytest.raises(QuoteStoreEnvironmentError, match="in 'dev', not of 'motor' in 'test'"):
-        create_app(release_dir, store=StoreLocation(TEST, dev))
+    # Each request past the bound checks again: the bound itself is the gate's to keep.
+    monkeypatch.setattr(_workbench_app_store, "RECHECK_SECONDS", 0.0)
+    fresh = store_url(tmp_path / "fresh.sqlite")
+
+    with TestClient(create_app(release_dir, store=StoreLocation(TEST, fresh))) as app:
+        assert app.get("/health").status_code == 200
+        assert app.get("/api/app/form", headers=ANA).status_code == 200
+        quotes = app.get("/api/app/release", headers=ANA).json()["quotes"]
+        assert (quotes["open"], quotes["error_code"]) == (False, "quote_store_mismatch")
+        assert "the table quote_details is missing" in quotes["differences"]
+        page = Page(app)
+        for refused in (
+            app.get("/api/app/quotes", headers=ANA),
+            page.create(),
+            page.price(VALUES),
+        ):
+            assert refused.status_code == 503, refused.text
+            assert refused.json()["detail"]["error_code"] == "quote_store_mismatch"
+        assert (
+            not (tmp_path / "fresh.sqlite").exists()
+            or sql(tmp_path / "fresh.sqlite", "SELECT name FROM sqlite_master") == []
+        )
+
+        # The tables made in SQL open the quotes with no restart.
+        _prepared(tmp_path / "fresh.sqlite", release_dir)
+        assert app.get("/api/app/release", headers=ANA).json()["quotes"]["open"] is True
+        assert page.priced()["reference"]
+    # A dev store is checked against its record: a fresh file holds no store yet.
+    with TestClient(
+        create_app(release_dir, store=StoreLocation(DEV, store_url(tmp_path / "dev.sqlite")))
+    ) as dev:
+        quotes = dev.get("/api/app/release", headers=ANA).json()["quotes"]
+        assert quotes["open"] is False
+        assert "holds no quote store yet" in quotes["message"]
+
+
+def test_a_column_dropped_under_a_running_app_closes_its_quotes(page: Page, path: Path) -> None:
+    saved = page.priced()
+    with sqlite3.connect(path) as raw:
+        raw.execute("PRAGMA foreign_keys=OFF")
+        raw.execute("ALTER TABLE policy_details DROP COLUMN exposure")
+
+    refused = page.save(saved)
+
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["detail"]["error_code"] == "quote_store_mismatch"
+    assert "policy_details.exposure is missing" in refused.json()["detail"]["differences"]
+    # Closed until a check finds the tables fit, the next request answered as closed.
+    assert page.client.get("/api/app/quotes", headers=ANA).status_code == 503
+
+
+def test_a_statement_failing_on_tables_as_checked_is_raised_as_it_was(
+    page: Page, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fails(*_args: Any, **_kwargs: Any) -> Any:
+        raise OperationalError("SELECT 1", {}, Exception("disk I/O error"))
+
+    monkeypatch.setattr(QuoteBook, "page", fails)
+
+    with pytest.raises(OperationalError, match="disk I/O error"):
+        page.client.get("/api/app/quotes?view=team", headers=ANA)
+    # The tables still fit: the quotes stay open.
+    assert page.client.get("/api/app/release", headers=ANA).json()["quotes"]["open"] is True
 
 
 # ── Who may change quotes ─────────────────────────────────────────────────
@@ -1088,13 +1170,18 @@ def test_a_hosted_app_opens_the_store_of_the_environment_the_host_names(
     store = hosted_store(release_dir)
     assert store == StoreLocation(TEST, url)
     with TestClient(create_app(release_dir, store=store)) as client:
-        assert client.get("/api/app/release", headers=ANA).json()["quotes"] is True
+        assert client.get("/api/app/release", headers=ANA).json()["quotes"]["open"] is True
         # What the release declares of its environments is no answer of the app's.
         assert "environments" not in client.get("/api/app/release", headers=ANA).json()
 
     monkeypatch.setenv(ENVIRONMENT_ENV, "prod")
     with pytest.raises(QuoteStoreEnvironmentError, match="'prod'.*declares test"):
         hosted_store(release_dir)
+    # As the release's entry point passes it, the app starts with its quotes closed.
+    with TestClient(create_app(release_dir, store=partial(hosted_store, release_dir))) as app:
+        quotes = app.get("/api/app/release", headers=ANA).json()["quotes"]
+        assert (quotes["open"], quotes["error_code"]) == (False, "quote_store_environment")
+        assert "'prod'" in quotes["message"] and "declares test" in quotes["message"]
 
 
 def test_a_release_carries_the_environments_its_project_declares(release_dir: Path) -> None:
@@ -1102,89 +1189,3 @@ def test_a_release_carries_the_environments_its_project_declares(release_dir: Pa
 
     assert release.environments == {TEST: {"provider": "sqlite"}}
     assert [each.name for each in release.store_environments()] == [TEST]
-
-
-def test_haute_app_migrate_makes_the_tables_of_a_built_releases_form(
-    release_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from click.testing import CliRunner
-
-    from haute.cli import cli
-
-    hosted = tmp_path / "hosted.sqlite"
-    built = ["--environment", TEST, "--release", str(release_dir)]
-    monkeypatch.delenv("HAUTE_STORE_DATABASE", raising=False)
-    monkeypatch.delenv("HAUTE_STORE_URL", raising=False)
-    unnamed = CliRunner().invoke(cli, ["app", "migrate", "--release", str(release_dir)])
-    assert unnamed.exit_code != 0
-    assert "--environment" in unnamed.output
-    unbuilt = CliRunner().invoke(
-        cli, ["app", "migrate", "--environment", TEST, "--release", str(tmp_path / "none")]
-    )
-    assert unbuilt.exit_code != 0
-    assert "run haute app build first" in unbuilt.output
-    unlocated = CliRunner().invoke(cli, ["app", "migrate", *built])
-    assert unlocated.exit_code == 1
-    assert "HAUTE_STORE_DATABASE" in unlocated.output
-    undeclared = CliRunner().invoke(
-        cli, ["app", "migrate", "--environment", "prod", "--release", str(release_dir)]
-    )
-    assert undeclared.exit_code == 1
-    assert "declares test" in undeclared.output
-
-    monkeypatch.setenv("HAUTE_STORE_DATABASE", str(hosted))
-    made = CliRunner().invoke(cli, ["app", "migrate", *built])
-    assert made.exit_code == 0, made.output
-    # Nothing it says names where the database is.
-    assert str(hosted) not in made.output and hosted.name not in made.output
-    release, spec, _ = read_release(release_dir)
-    open_book(store_url(hosted), spec, project="motor", environment=TEST, haute_version="1").close()
-    # Run again for the same form, it changes nothing.
-    assert CliRunner().invoke(cli, ["app", "migrate", *built]).exit_code == 0
-
-    # A release whose form gained a column: planned and printed, then applied.
-    other = json.loads(json.dumps(FORM))
-    other["schema"]["tables"][1]["columns"].append(
-        {"id": "c_seats", "name": "seats", "type": "int"}
-    )
-    changed = _write_release(tmp_path / "changed", other)
-    on_changed = ["--environment", TEST, "--release", str(changed)]
-    planned = CliRunner().invoke(cli, ["app", "migrate", *on_changed, "--plan"])
-    assert planned.exit_code == 0, planned.output
-    assert "add column policy_details.seats" in planned.output
-    script = CliRunner().invoke(cli, ["app", "migrate", *on_changed, "--sql"])
-    assert script.exit_code == 0, script.output
-    assert "ALTER TABLE policy_details ADD COLUMN seats BIGINT" in script.output
-    # Neither changed anything; the migrate does.
-    with sqlite3.connect(hosted) as raw:
-        assert "seats" not in [row[1] for row in raw.execute("PRAGMA table_info(policy_details)")]
-    applied = CliRunner().invoke(cli, ["app", "migrate", *on_changed])
-    assert applied.exit_code == 0, applied.output
-    with sqlite3.connect(hosted) as raw:
-        assert "seats" in [row[1] for row in raw.execute("PRAGMA table_info(policy_details)")]
-
-    # Offline, from the release before, with no database: provisional.
-    offline = CliRunner().invoke(
-        cli, ["app", "migrate", *on_changed, "--plan", "--base", str(release_dir)]
-    )
-    assert offline.exit_code == 0, offline.output
-    assert "Provisional plan" in offline.output
-    assert "add column policy_details.seats" in offline.output
-    alone = CliRunner().invoke(cli, ["app", "migrate", *on_changed, "--base", str(release_dir)])
-    assert alone.exit_code != 0 and "give --plan or --sql" in alone.output
-
-    # A change only a restore reverses needs a restore point.
-    retyped = json.loads(json.dumps(other))
-    for each in retyped["schema"]["tables"][1]["columns"]:
-        if each["name"] == "seats":
-            each["type"] = "str"
-    restoring = _write_release(tmp_path / "retyped", retyped)
-    on_retyped = ["--environment", TEST, "--release", str(restoring)]
-    refused = CliRunner().invoke(cli, ["app", "migrate", *on_retyped])
-    assert refused.exit_code == 1
-    assert "--restore-point NAME" in refused.output
-    restored = CliRunner().invoke(
-        cli, ["app", "migrate", *on_retyped, "--restore-point", "backup-2026-10-30"]
-    )
-    assert restored.exit_code == 0, restored.output
-    assert "retype column policy_details.seats" in restored.output

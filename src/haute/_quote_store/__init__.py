@@ -1,5 +1,6 @@
 """The workbench's quote store (specs/workbench): the form's own tables in the user's
-database, each quote's current state in them, and Haute's two tables beside them.
+database, each quote's current state in them, and Haute's activity beside them, with dev's
+record of its tables in the analyst's SQLite file.
 
 Imported where a store is used, never on the scorer's import path, so a deployed pipeline
 loads no database client.
@@ -33,10 +34,8 @@ from haute._quote_store._migrate import (
     Plan,
     Step,
     offline_plan,
-    plan_store,
     prepare_store,
     render_sql,
-    render_text,
 )
 from haute._quote_store._providers import SignIn
 from haute._quote_store._rows import input_rows
@@ -49,6 +48,7 @@ from haute._quote_store._store import (
     QuoteStoreEnvironmentError,
     QuoteStoreError,
     QuoteStoreMismatchError,
+    QuoteStoreUnreachableError,
     QuoteValuesError,
     ReferenceTakenError,
     StaleQuoteError,
@@ -70,9 +70,10 @@ def open_book(
     sql_schema: str | None = None,
     sign_in: SignIn | None = None,
 ) -> QuoteBook:
-    """The book of quotes on the database at *url*, signed in as *sign_in* says, which must
-    hold *form*'s tables for *project* in *environment* in the SQL schema *sql_schema*
-    (:func:`open_engine`), written by an app running Haute *haute_version*."""
+    """The book of quotes on the database at *url*, signed in as *sign_in* says, whose
+    catalogue must hold *form*'s tables in the SQL schema *sql_schema*, and, in dev, whose
+    record must be *project*'s (:func:`open_engine`), written by an app running Haute
+    *haute_version*."""
     engine, schema = open_engine(
         url,
         form,
@@ -102,6 +103,7 @@ __all__ = [
     "QuoteStoreEnvironmentError",
     "QuoteStoreError",
     "QuoteStoreMismatchError",
+    "QuoteStoreUnreachableError",
     "QuoteValuesError",
     "ReferenceTakenError",
     "RelatedQuote",
@@ -119,10 +121,8 @@ __all__ = [
     "open_book",
     "offline_plan",
     "open_engine",
-    "plan_store",
     "prepare_store",
     "render_sql",
-    "render_text",
     "resolve_store",
     "store_url",
     "with_details",

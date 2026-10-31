@@ -1,28 +1,24 @@
-"""The quote store's schema changes (specs/workbench): one planner bringing a database's tables
-to a release's form, comparing them by stable id through what ``haute_store`` records.
+"""The quote store's schema changes (specs/workbench): dev's planner, bringing the analyst's
+SQLite store to a release's form by stable id through what its ``haute_store`` records, and the
+SQL Haute writes for the people who own a hosted database to change its tables with.
 
-A migrate first reconciles that record with the database's own catalogue (:func:`reconcile`):
-a kept table or column the SQL side dropped is forgotten, so its name is free, and one the form
-still has that the catalogue lacks refuses the migrate. It then counts the quotes holding values
-in each table and column a step may keep, drop or change (:func:`counts`), plans
-(:func:`plan`), and applies the plan in the one transaction it runs in, ``haute_store``'s row
-last, so a migrate that fails part way leaves nothing changed.
+Dev's planner first reconciles the record with the database's own catalogue
+(:func:`reconcile`): a table or column the form has that the catalogue lacks refuses it. It then
+counts the quotes holding values in each table and column a step may drop or change
+(:func:`counts`), plans (:func:`plan`), and applies the plan in the one transaction it runs in,
+``haute_store``'s row last, so a plan that fails part way leaves nothing changed. It drops what
+the form removed and builds again what changed while holding values, naming each.
 
-A plan is made from the form's structure, the reconciled record and the counts alone. In
-``hosted`` mode, a test or prod environment's, it drops nothing: a table or column the form
-removed is kept, listed with how many quotes hold values in it and the DROP statement for the
-DBA; a type, rows or role change of a table or column holding values is refused, as is a new
-or renamed table or column taking a kept one's name, one the form removes now included. In
-``dev`` mode, the analyst's laptop's, it drops what the form removed and builds again what
-changed while holding values, naming each. Offline (no
-counts), each step that depends on data is conditional: made if the object holds no value, else
-refused. Each step says what reverses it: nothing, a migrate back to the previous release, or
-only a restore, which a hosted plan holding one needs a restore point for.
+A script (:func:`offline_plan`) is made from two forms' structures, or from none, with no
+database: it keeps what the form removed, which its SQL drops only in a comment, makes each
+change of a type, rows or role a step its SQL notes, and refuses a table or column taking a
+removed one's name. :func:`render_sql` writes it for an engine, one transaction holding nothing
+of Haute's beyond the tables, for the people who own a hosted database to read, change and run.
 
-Every step runs in the store's SQL schema, the connection's default when its environment names
-none. A plan for a server's engine refuses a name longer than that engine keeps whole, and
-changes the type of a column holding no value in place where the engine can
-(:func:`._providers.retypes_in_place`), replacing the empty column elsewhere.
+Every step runs in the store's SQL schema, the connection's default when it names none. A plan
+for a server's engine refuses a name longer than that engine keeps whole. Dev changes the type
+of a column holding no value in place where the engine can (:func:`._providers.retypes_in_place`),
+replacing the empty column elsewhere; a script changes it in place, converting its values.
 """
 
 from __future__ import annotations
@@ -35,6 +31,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+from alembic.ddl.impl import DefaultImpl
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import (
@@ -45,7 +42,6 @@ from sqlalchemy import (
     func,
     insert,
     inspect,
-    literal,
     select,
     update,
 )
@@ -53,7 +49,6 @@ from sqlalchemy import (
 from haute._quote_store._providers import (
     PROVIDERS,
     Provider,
-    SignIn,
     dialect_provider,
     name_problems,
     retypes_in_place,
@@ -74,16 +69,13 @@ from haute._quote_store._store import (
     _refuse_old_store,
     _refuse_other,
     make_engine,
-    reaching,
     writing,
 )
 from haute._workbench_form import QUOTE_DETAILS_ID, FormSpec
 
-#: How a migrate treats what the form removed and what changed while holding values: a hosted
-#: environment's keeps and refuses, dev's drops and builds again.
-Mode = Literal["dev", "hosted"]
-#: What reverses a step: nothing, a migrate back to the previous release, or only a restore.
-Rollback = Literal["nothing", "a migrate back", "a restore"]
+#: How a plan treats what the form removed and what changed while holding values: dev's drops
+#: and builds again; a script keeps what was removed and notes each change in its SQL.
+Mode = Literal["dev", "script"]
 StepKind = Literal[
     "create table",
     "add column",
@@ -91,8 +83,6 @@ StepKind = Literal[
     "rename column",
     "keep table",
     "keep column",
-    "bring back table",
-    "bring back column",
     "retype column",
     "reshape table",
     "drop table",
@@ -103,11 +93,10 @@ StepKind = Literal[
 ]
 #: A table's or a column's count, keyed by the table's id and the column's, None for the table.
 Key = tuple[str, str | None]
-#: The SQL dialect each provider's offline plan is printed in.
+#: The SQL dialect each provider's script is written in.
 PROVIDER_DIALECTS: Mapping[str, str] = {name: each.dialect for name, each in PROVIDERS.items()}
-#: The steps made only while what they change holds no value: a migrate checks that as it
-#: applies them, holding the tables, and a script a DBA runs later cannot, so none is printed.
-_DATA_BOUND = frozenset({"retype column", "reshape table"})
+#: How a script's notes name a table's rows.
+_ROWS: Mapping[str, str] = {"one": "one row per quote", "many": "many rows per quote"}
 #: How each dialect's script opens and closes the one transaction that holds all of it.
 #: SQL Server rolls back at an error that ends the batch (XACT_ABORT), and its TRY ... CATCH
 #: at one a procedure raises and goes on from, as sp_rename does, raising it again;
@@ -129,7 +118,7 @@ _SCRIPT_TRANSACTIONS: Mapping[str, tuple[str, str]] = {
 
 
 class MigrationRefusedError(QuoteStoreError):
-    """A migrate refused before any DDL: each step it cannot take is in *refusals*."""
+    """Dev's plan refused before any DDL: each step it cannot take is in *refusals*."""
 
     error_code = "migration_refused"
 
@@ -140,10 +129,9 @@ class MigrationRefusedError(QuoteStoreError):
 
 @dataclass(frozen=True, slots=True)
 class Step:
-    """One change a plan makes, or one thing it keeps: its kind, the table and column it
-    concerns by their names after it and by their ids, the name each had before when renamed,
-    how many quotes hold values in what it concerns (None unknown, offline), what reverses it,
-    and whether it is made only if the object holds no value (offline)."""
+    """One change a plan makes, or, in a script, one thing it keeps: its kind, the table and
+    column it concerns by their names after it and by their ids, the name each had before
+    when renamed, and how many quotes hold values in what it concerns (None in a script)."""
 
     kind: StepKind
     table: str
@@ -152,27 +140,19 @@ class Step:
     column_id: str | None = None
     was: str | None = None
     quotes: int | None = None
-    rollback: Rollback = "a migrate back"
-    conditional: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class Plan:
-    """A plan's steps and refusals, the structure ``haute_store`` records once it is applied,
-    whether it was made with no database (provisional), and the record it was made from."""
+    """A plan's steps and refusals, the structure dev's ``haute_store`` records once it is
+    applied, its mode, and the record or earlier form it was made from (None for an empty
+    database, or a script from none)."""
 
     steps: tuple[Step, ...]
     refusals: tuple[str, ...]
     recorded: dict[str, Any] = field(repr=False)
-    provisional: bool = False
-    #: What ``haute_store`` recorded, reconciled, the plan was made from; None for an empty
-    #: database.
+    mode: Mode = "dev"
     before: dict[str, Any] | None = field(default=None, repr=False)
-
-    @property
-    def restoring(self) -> tuple[Step, ...]:
-        """The steps only a restore reverses."""
-        return tuple(step for step in self.steps if step.rollback == "a restore")
 
     @property
     def dropped(self) -> list[str]:
@@ -201,21 +181,13 @@ def _named(key: str) -> str:
     return f"haute_tmp_{hashlib.sha1(key.encode('utf-8')).hexdigest()[:12]}"
 
 
-def _quotes(count: int | None) -> str:
-    return "1 quote" if count == 1 else f"{count} quotes"
-
-
 def _by_id(items: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {item["id"]: item for item in items}
 
 
-def _kept(item: dict[str, Any]) -> dict[str, Any]:
-    return {**item, "kept": True}
-
-
 def _count(counts: Mapping[Key, int] | None, key: Key) -> int | None:
-    """The quotes holding values in what *key* names, None offline. A count the plan needs and
-    was not given is a fault, never taken for none, which would let a change through."""
+    """The quotes holding values in what *key* names, None in a script. A count dev's plan
+    needs and was not given is a fault, never taken for none, which would drop values unsaid."""
     if counts is None:
         return None
     if key not in counts:
@@ -224,24 +196,22 @@ def _count(counts: Mapping[Key, int] | None, key: Key) -> int | None:
 
 
 def wanted_counts(form: Mapping[str, Any], recorded: Mapping[str, Any]) -> set[Key]:
-    """The tables and columns of *recorded* a plan to *form* counts the quotes of: those the
-    form removed or kept already, and those whose type, rows or role it changed, a kept table
-    the form brings back included."""
+    """The tables and columns of *recorded* dev's plan to *form* counts the quotes of: those
+    the form removed, and those whose type, rows or role it changed."""
     new = _by_id(form["tables"])
     wanted: set[Key] = set()
     for table in recorded["tables"]:
         after = new.get(table["id"])
-        if after is None or table["kept"]:
-            # A table removed, or kept already, is counted whole.
+        if after is None:
+            # A table removed is counted whole.
             wanted.add((table["id"], None))
-            if after is None:
-                continue
+            continue
         if (table["rows"], table["role"]) != (after["rows"], after["role"]):
             wanted.add((table["id"], None))
         columns = _by_id(after["columns"])
         for column in table["columns"]:
             changed = columns.get(column["id"])
-            if changed is None or column["kept"] or changed["type"] != column["type"]:
+            if changed is None or changed["type"] != column["type"]:
                 wanted.add((table["id"], column["id"]))
     return wanted
 
@@ -254,10 +224,11 @@ def plan(
     *,
     provider: Provider | None = None,
 ) -> Plan:
-    """The plan bringing a database whose ``haute_store`` *recorded* (None for an empty one)
-    to the structure of *form*, by stable id, given the *counts* of quotes holding values in
-    each table and column :func:`wanted_counts` names (None offline), on *provider*'s engine,
-    which refuses a name longer than it keeps whole. Reads nothing else."""
+    """The plan bringing a database whose ``haute_store`` *recorded*, or, in a script, an
+    earlier form's structure (None for an empty one), to the structure of *form*, by stable
+    id, given the *counts* of quotes holding values in each table and column
+    :func:`wanted_counts` names (None in a script), on *provider*'s engine, which refuses a
+    name longer than it keeps whole. Reads nothing else."""
     made = _plan(form, recorded, counts, mode)
     names = [
         name
@@ -279,126 +250,76 @@ def _plan(
         created = tuple(
             Step("create table", table["name"], table["id"]) for table in form["tables"]
         )
-        return Plan(created, (), after, provisional=counts is None)
-    if (recorded.get("format"), recorded.get("store_columns")) != (
+        return Plan(created, (), after, mode=mode)
+    if mode == "dev" and (recorded.get("format"), recorded.get("store_columns")) != (
         form["format"],
         form["store_columns"],
     ):
-        if mode == "dev":
-            names = ", ".join(table["name"] for table in recorded.get("tables", []))
-            return Plan(
-                (Step("rebuild store", names, "", rollback="nothing"),),
-                (),
-                after,
-                counts is None,
-                dict(recorded),
-            )
-        return Plan(
-            (),
-            (
-                "the database was made by a Haute whose quote store keeps other columns of its "
-                "own, which a migrate does not change: make its store afresh",
-            ),
-            dict(recorded),
-            counts is None,
-            dict(recorded),
-        )
+        names = ", ".join(table["name"] for table in recorded.get("tables", []))
+        rebuild = (Step("rebuild store", names, ""),)
+        return Plan(rebuild, (), after, mode=mode, before=dict(recorded))
     steps: list[Step] = []
     refusals: list[str] = []
-    hosted = mode == "hosted"
-    offline = counts is None
+    script = mode == "script"
     old = _by_id(recorded["tables"])
     new = _by_id(form["tables"])
     recorded_after: list[dict[str, Any]] = []
-    # The names a hosted store's kept tables hold after the plan: those kept already and those
-    # the form removes now. No table of the form may take one, made or renamed.
-    kept_names = {
+    # The names a script's removed tables still hold, since its SQL drops none: no table of the
+    # form may take one, made or renamed.
+    removed_names = {
         table["name"].casefold() for table in recorded["tables"] if table["id"] not in new
     }
 
     for table in form["tables"]:
         before = old.get(table["id"])
         if before is None:
-            if hosted and table["name"].casefold() in kept_names:
+            if script and table["name"].casefold() in removed_names:
                 refusals.append(
-                    f"the new table {table['name']} takes the name of a table the store keeps: "
-                    "rename one, or drop the kept table on the SQL side first"
+                    f"the new table {table['name']} takes the name of a table the form removes, "
+                    "which the SQL keeps: rename one, or drop the removed table first"
                 )
                 continue
             steps.append(Step("create table", table["name"], table["id"]))
             recorded_after.append(table)
             continue
         if (before["rows"], before["role"]) != (table["rows"], table["role"]):
-            # A table of other rows or another role is made afresh under its name, when it holds
-            # nothing or in dev; a hosted one holding rows keeps them as they are.
+            # A table of other rows or another role: in dev made afresh under its name, built
+            # again while it holds rows; in a script a step its SQL notes, whatever it holds.
             quotes = _count(counts, (table["id"], None))
             if table["id"] == QUOTE_DETAILS_ID:
                 refusals.append("quote_details takes no change of its rows or role")
                 recorded_after.append(before)
-            elif quotes == 0 or (offline and hosted):
-                steps.append(
-                    Step(
-                        "reshape table",
-                        table["name"],
-                        table["id"],
-                        was=before["name"],
-                        quotes=quotes,
-                        rollback="a restore",
-                        conditional=offline,
-                    )
-                )
-                recorded_after.append(table)
-            elif hosted:
-                refusals.append(
-                    f"{table['name']} holds rows of {_quotes(quotes)}, so its rows or role do not "
-                    "change: make a new table for them, or empty it first"
-                )
-                recorded_after.append(before)
             else:
+                kind: StepKind = "reshape table" if script or quotes == 0 else "rebuild table"
                 steps.append(
-                    Step(
-                        "rebuild table",
-                        table["name"],
-                        table["id"],
-                        was=before["name"],
-                        quotes=quotes,
-                        rollback="nothing",
-                    )
+                    Step(kind, table["name"], table["id"], was=before["name"], quotes=quotes)
                 )
                 recorded_after.append(table)
             continue
-        if hosted and before["name"] != table["name"] and table["name"].casefold() in kept_names:
+        if script and before["name"] != table["name"] and table["name"].casefold() in removed_names:
             refusals.append(
                 f"the table {before['name']}, renamed {table['name']}, takes the name of a table "
-                "the store keeps: rename one, or drop the kept table on the SQL side first"
+                "the form removes, which the SQL keeps: rename one, or drop the removed table "
+                "first"
             )
             recorded_after.append(before)
             continue
-        if before["kept"]:
-            steps.append(Step("bring back table", table["name"], table["id"], was=before["name"]))
-        elif before["name"] != table["name"]:
+        if before["name"] != table["name"]:
             steps.append(Step("rename table", table["name"], table["id"], was=before["name"]))
-        columns_after = _plan_columns(table, before, counts, hosted, offline, steps, refusals)
+        columns_after = _plan_columns(table, before, counts, script, steps, refusals)
         recorded_after.append({**table, "columns": columns_after})
 
     for table in recorded["tables"]:
         if table["id"] in new:
             continue
         quotes = _count(counts, (table["id"], None))
-        if hosted:
-            steps.append(
-                Step("keep table", table["name"], table["id"], quotes=quotes, rollback="nothing")
-            )
-            recorded_after.append(_kept(table))
-        else:
-            steps.append(
-                Step("drop table", table["name"], table["id"], quotes=quotes, rollback="nothing")
-            )
+        removed: StepKind = "keep table" if script else "drop table"
+        steps.append(Step(removed, table["name"], table["id"], quotes=quotes))
     return Plan(
         tuple(steps),
         tuple(refusals),
         {**after, "tables": recorded_after},
-        provisional=offline,
+        mode=mode,
         before=dict(recorded),
     )
 
@@ -407,8 +328,7 @@ def _plan_columns(
     table: dict[str, Any],
     before: dict[str, Any],
     counts: Mapping[Key, int] | None,
-    hosted: bool,
-    offline: bool,
+    script: bool,
     steps: list[Step],
     refusals: list[str],
 ) -> list[dict[str, Any]]:
@@ -416,9 +336,9 @@ def _plan_columns(
     holds after them."""
     old = _by_id(before["columns"])
     new = _by_id(table["columns"])
-    # The names this table's kept columns hold after the plan, hosted: those kept already and
-    # those the form removes now. No column of the form may take one, added or renamed.
-    kept_names = {
+    # The names this table's removed columns still hold in a script, whose SQL drops none: no
+    # column of the form may take one, added or renamed.
+    removed_names = {
         column["name"].casefold() for column in before["columns"] if column["id"] not in new
     }
     after: list[dict[str, Any]] = []
@@ -427,34 +347,24 @@ def _plan_columns(
         was = old.get(column["id"])
         key: Key = (table["id"], column["id"])
         if was is None:
-            if column["name"].casefold() in kept_names and hosted:
+            if script and column["name"].casefold() in removed_names:
                 refusals.append(
-                    f"the new column {name}.{column['name']} takes the name of a column the store "
-                    "keeps: rename one, or drop the kept column on the SQL side first"
+                    f"the new column {name}.{column['name']} takes the name of a column the form "
+                    "removes, which the SQL keeps: rename one, or drop the removed column first"
                 )
                 continue
             steps.append(Step("add column", name, table["id"], column["name"], column["id"]))
             after.append(column)
             continue
-        if hosted and was["name"] != column["name"] and column["name"].casefold() in kept_names:
+        if script and was["name"] != column["name"] and column["name"].casefold() in removed_names:
             refusals.append(
                 f"the column {name}.{was['name']}, renamed {column['name']}, takes the name of a "
-                "column the store keeps: rename one, or drop the kept column on the SQL side first"
+                "column the form removes, which the SQL keeps: rename one, or drop the removed "
+                "column first"
             )
             after.append(was)
             continue
-        if was["kept"]:
-            steps.append(
-                Step(
-                    "bring back column",
-                    name,
-                    table["id"],
-                    column["name"],
-                    column["id"],
-                    was=was["name"],
-                )
-            )
-        elif was["name"] != column["name"]:
+        if was["name"] != column["name"]:
             steps.append(
                 Step(
                     "rename column",
@@ -469,68 +379,18 @@ def _plan_columns(
             quotes = _count(counts, key)
             if table["id"] == QUOTE_DETAILS_ID:
                 refusals.append(f"quote_details.{column['name']} takes no change of its type")
-            elif quotes == 0 or (offline and hosted):
-                steps.append(
-                    Step(
-                        "retype column",
-                        name,
-                        table["id"],
-                        column["name"],
-                        column["id"],
-                        quotes=quotes,
-                        rollback="a restore",
-                        conditional=offline,
-                    )
-                )
-            elif hosted:
-                refusals.append(
-                    f"{name}.{column['name']} holds values in {_quotes(quotes)}, so its type does "
-                    "not change: add a column of the new type, or empty it first"
-                )
-                after.append(was)
-                continue
             else:
+                kind: StepKind = "retype column" if script or quotes == 0 else "rebuild column"
                 steps.append(
-                    Step(
-                        "rebuild column",
-                        name,
-                        table["id"],
-                        column["name"],
-                        column["id"],
-                        quotes=quotes,
-                        rollback="nothing",
-                    )
+                    Step(kind, name, table["id"], column["name"], column["id"], quotes=quotes)
                 )
         after.append(column)
     for column in before["columns"]:
         if column["id"] in new:
             continue
         quotes = _count(counts, (table["id"], column["id"]))
-        if hosted:
-            steps.append(
-                Step(
-                    "keep column",
-                    name,
-                    table["id"],
-                    column["name"],
-                    column["id"],
-                    quotes=quotes,
-                    rollback="nothing",
-                )
-            )
-            after.append(_kept(column))
-        else:
-            steps.append(
-                Step(
-                    "drop column",
-                    name,
-                    table["id"],
-                    column["name"],
-                    column["id"],
-                    quotes=quotes,
-                    rollback="nothing",
-                )
-            )
+        removed: StepKind = "keep column" if script else "drop column"
+        steps.append(Step(removed, name, table["id"], column["name"], column["id"], quotes=quotes))
     return after
 
 
@@ -544,9 +404,8 @@ def reconcile(
     sql_schema: str | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """*recorded* as the database's catalogue (a SQLAlchemy ``Inspector``) holds it in the SQL
-    schema *sql_schema*: a kept table or column the SQL side dropped forgotten, so its name is
-    free; one the form still has that the catalogue lacks refused, naming it; what neither
-    records left alone."""
+    schema *sql_schema*: a table or column the catalogue lacks forgotten, and refused, naming
+    it, while the form still has it; what neither records left alone."""
     present = set(catalogue.get_table_names(schema=sql_schema))
     new = _by_id(form["tables"])
     refusals: list[str] = []
@@ -607,13 +466,15 @@ def counts(
 
 
 def _emit(operations: Operations, plan: Plan, schema: StoreSchema) -> None:
-    """The DDL of *plan* through *operations*, live or as offline SQL: drops first, then every
-    rename in two phases through temporary names (tables, then columns), then what is made,
-    each in the store's SQL schema."""
+    """The DDL of *plan* through *operations*, live or as offline SQL: what dev drops first,
+    then every rename in two phases through temporary names (tables, then columns), then what
+    is made, each in the store's SQL schema; a script's notes and the DROPs it keeps commented
+    out, written where their steps fall."""
     before = plan.before
     old = {} if before is None else _by_id(before["tables"])
     steps = plan.steps
     owner = schema.metadata.schema
+    script = plan.mode == "script"
     if any(step.kind == "rebuild store" for step in steps):
         # Every table the store made, Haute's own two with them: children before quote_details,
         # which every other table refers to.
@@ -624,21 +485,18 @@ def _emit(operations: Operations, plan: Plan, schema: StoreSchema) -> None:
             operations.drop_table(name, schema=owner, if_exists=True)
         for stored in schema.tables:
             operations.impl.create_table(stored.table)
-        operations.impl.create_table(schema.store)
-        operations.impl.create_table(schema.activity)
+        _create_haute_tables(operations, schema)
         return
-    # What is dropped goes first, under the names the database holds before any rename, so a
+    # What dev drops goes first, under the names the database holds before any rename, so a
     # name it frees is free for what follows.
     for step in steps:
-        if step.kind == "drop table" or step.kind in ("rebuild table", "reshape table"):
+        if step.kind in ("drop table", "rebuild table") or (
+            step.kind == "reshape table" and not script
+        ):
             operations.drop_table(old[step.table_id]["name"], schema=owner)
         elif step.kind in ("drop column", "rebuild column"):
             operations.drop_column(old[step.table_id]["name"], _was_name(old, step), schema=owner)
-    renames = [
-        step
-        for step in steps
-        if step.kind in ("rename table", "bring back table") and step.was != step.table
-    ]
+    renames = [step for step in steps if step.kind == "rename table" and step.was != step.table]
     for step in renames:
         operations.rename_table(str(step.was), _named(step.table_id), schema=owner)
     for step in renames:
@@ -649,7 +507,7 @@ def _emit(operations: Operations, plan: Plan, schema: StoreSchema) -> None:
     columns = [
         step
         for step in steps
-        if step.kind in ("rename column", "bring back column")
+        if step.kind == "rename column"
         and step.was != step.column
         and (step.table_id, step.column_id) not in rebuilt
     ]
@@ -669,32 +527,60 @@ def _emit(operations: Operations, plan: Plan, schema: StoreSchema) -> None:
         )
     provider = dialect_provider(operations.impl.dialect.name)
     for step in steps:
-        if step.kind in ("create table", "rebuild table", "reshape table"):
+        if step.kind in ("create table", "rebuild table") or (
+            step.kind == "reshape table" and not script
+        ):
             operations.impl.create_table(schema.by_id(step.table_id).table)
         elif step.kind in ("add column", "rebuild column"):
             operations.add_column(step.table, _column(schema, step), schema=owner)
+        elif step.kind == "retype column" and script:
+            _retype_in_place(operations, plan, schema, step)
         elif step.kind == "retype column":
             _retype(operations, provider, plan, schema, step)
+        elif step.kind == "reshape table":
+            _reshape_note(operations, plan, step)
+        elif step.kind in ("keep table", "keep column"):
+            _removed_note(operations, old, step, owner)
     if before is None:
-        # A database holding none of the store takes Haute's two tables with the form's.
+        # A database holding none of the store takes Haute's tables with the form's.
+        _create_haute_tables(operations, schema)
+
+
+def _create_haute_tables(operations: Operations, schema: StoreSchema) -> None:
+    """Haute's own tables: dev's record, where the schema keeps one, and the activity."""
+    if schema.store is not None:
         operations.impl.create_table(schema.store)
-        operations.impl.create_table(schema.activity)
+    operations.impl.create_table(schema.activity)
+
+
+def _note(operations: Operations, text: str) -> None:
+    """*text* as a comment in a script's SQL, where the step it concerns falls."""
+    impl = operations.impl
+    if not isinstance(impl, DefaultImpl):
+        raise TypeError("A script's notes are written by an offline migration context alone.")
+    impl.static_output("\n".join(f"-- {line}" for line in text.splitlines()))
+
+
+def _structure_table(structure: Mapping[str, Any] | None, table_id: str) -> dict[str, Any]:
+    """The table *structure* holds by the id *table_id*."""
+    for table in (structure or {}).get("tables", []):
+        if table["id"] == table_id:
+            return dict(table)
+    raise KeyError(table_id)
 
 
 def _type_of(structure: Mapping[str, Any] | None, step: Step) -> str:
     """The type *structure* gives the column *step* concerns, by its ids."""
-    for table in (structure or {}).get("tables", []):
-        if table["id"] == step.table_id:
-            for column in table["columns"]:
-                if column["id"] == step.column_id:
-                    return str(column["type"])
+    for column in _structure_table(structure, step.table_id)["columns"]:
+        if column["id"] == step.column_id:
+            return str(column["type"])
     raise KeyError((step.table_id, step.column_id))
 
 
 def _retype(
     operations: Operations, provider: Provider, plan: Plan, schema: StoreSchema, step: Step
 ) -> None:
-    """Change the empty column *step* names to the store's type for it: in place where
+    """Change dev's empty column *step* names to the store's type for it: in place where
     *provider* can, PostgreSQL taking every value as null, else by replacing it with a column
     of the new type, which loses nothing."""
     owner = schema.metadata.schema
@@ -722,6 +608,77 @@ def _retype(
     operations.alter_column(step.table, temporary, new_column_name=step.column, schema=owner)
 
 
+def _retype_in_place(operations: Operations, plan: Plan, schema: StoreSchema, step: Step) -> None:
+    """A script's change of *step*'s column to the store's type for it, in place, the engine
+    converting each value the column holds, PostgreSQL through a USING cast, after a note that
+    a value which does not convert stops the script; on SQLite, which cannot change a column's
+    type, the note alone says what to do."""
+    dialect = operations.impl.dialect
+    fresh = _column(schema, step)
+    was = column_type(_type_of(plan.before, step))
+    old, new = was.compile(dialect=dialect), fresh.type.compile(dialect=dialect)
+    where = f"{step.table}.{step.column}"
+    if dialect.name == "sqlite":
+        _note(
+            operations,
+            f"{where} changes from {old} to {new}, which SQLite cannot do in place: add a column\n"
+            "of the new type, copy the values into it, drop the old column and rename the new one.",
+        )
+        return
+    _note(
+        operations,
+        f"{where} changes from {old} to {new}, each value converted as it stands: one that\n"
+        "does not convert stops the script, changing nothing.",
+    )
+    using: dict[str, Any] = {}
+    if dialect.name == "postgresql":
+        using["postgresql_using"] = f"{dialect.identifier_preparer.quote(str(step.column))}::{new}"
+    operations.alter_column(
+        step.table,
+        str(step.column),
+        type_=fresh.type,
+        existing_type=was,
+        existing_nullable=True,
+        schema=schema.metadata.schema,
+        **using,
+    )
+
+
+def _reshape_note(operations: Operations, plan: Plan, step: Step) -> None:
+    """A script's note on a table whose rows or role the form changed, which no statement
+    changes: what the table was and is, and what it needs."""
+    was = _structure_table(plan.before, step.table_id)
+    now = _structure_table(plan.recorded, step.table_id)
+    _note(
+        operations,
+        f"{step.table} changes from an {was['role']} table of {_ROWS[was['rows']]} to an "
+        f"{now['role']} table of {_ROWS[now['rows']]},\n"
+        "which no statement here makes: make the table again as the form has it and move its\n"
+        "rows into it.",
+    )
+
+
+def _removed_note(
+    operations: Operations, old: Mapping[str, dict[str, Any]], step: Step, owner: str | None
+) -> None:
+    """A script's note on a table or column the form removed, with its DROP commented out: the
+    app's check passes a column or table it no longer uses, so dropping it is the owners' call."""
+    preparer = operations.impl.dialect.identifier_preparer
+    table = preparer.format_table(Table(old[step.table_id]["name"], MetaData(schema=owner)))
+    if step.kind == "keep table":
+        _note(
+            operations,
+            f"The form no longer has {step.table}; drop it once nothing reads it:\n"
+            f"DROP TABLE {table};",
+        )
+        return
+    _note(
+        operations,
+        f"The form no longer has {step.table}.{step.column}; drop it once nothing reads it:\n"
+        f"ALTER TABLE {table} DROP COLUMN {preparer.quote(str(step.column))};",
+    )
+
+
 def _was_name(old: Mapping[str, dict[str, Any]], step: Step) -> str:
     """The name of the column *step* drops, as the database holds it before the plan."""
     for column in old[step.table_id]["columns"]:
@@ -743,113 +700,44 @@ def _record(
     *,
     fresh: bool,
     project: str,
-    environment: str,
     release: str | None,
     haute_version: str | None,
-    restore_point: str | None,
     at: Any,
 ) -> None:
+    store = schema.store
+    if store is None:
+        raise ValueError("Only dev's store keeps a record of its tables.")
     values = {
         "release": release,
         "haute_version": haute_version,
         "migrated_at": at,
         "schema": json.dumps(plan.recorded, sort_keys=True, ensure_ascii=False),
-        "restore_point": restore_point,
     }
     if fresh:
-        operations.execute(
-            insert(schema.store).values(id=1, project=project, environment=environment, **values)
-        )
+        operations.execute(insert(store).values(id=1, project=project, environment=DEV, **values))
     else:
-        operations.execute(update(schema.store).where(schema.store.c.id == 1).values(**values))
+        operations.execute(update(store).where(store.c.id == 1).values(**values))
 
 
-def _refuse(plan: Plan, restore_point: str | None, mode: Mode) -> None:
+def _refuse(plan: Plan) -> None:
     if plan.refusals:
         raise MigrationRefusedError(
-            "The migrate was refused, with nothing changed: " + "; ".join(plan.refusals) + ".",
+            "The plan was refused, with nothing changed: " + "; ".join(plan.refusals) + ".",
             refusals=plan.refusals,
         )
-    if mode == "hosted" and plan.restoring and not restore_point:
-        steps = [
-            f"{step.kind} {step.table}{'.' + step.column if step.column else ''}"
-            for step in plan.restoring
-        ]
-        raise MigrationRefusedError(
-            "The plan holds steps only a restore reverses ("
-            + "; ".join(steps)
-            + "): give the backup or point in time the database can be returned to as "
-            "--restore-point NAME.",
-            refusals=steps,
-        )
 
 
-def plan_store(
-    url: str,
-    form: FormSpec,
-    *,
-    project: str,
-    environment: str = DEV,
-    sql_schema: str | None = None,
-    sign_in: SignIn | None = None,
-) -> Plan:
-    """The plan bringing the database at *url*, signed in as *sign_in* says, to *form* for
-    *project* in *environment*, its tables in the SQL schema *sql_schema*, with nothing
-    applied."""
-    schema = store_schema(form, sql_schema=sql_schema)
-    engine = make_engine(url, sign_in=sign_in)
-    try:
-        with reaching(url, environment):
-            with engine.connect() as connection:
-                return _planned(connection, schema, form, project, environment)
-    finally:
-        engine.dispose()
-
-
-def _hold(connection: Connection, owner: str | None, names: Sequence[str]) -> None:
-    """Hold the store's tables *names*, in the SQL schema *owner*, against every other writer
-    until the transaction on *connection* ends, in the order given: on PostgreSQL in ACCESS
-    EXCLUSIVE mode, on SQL Server under an exclusive table lock. SQLite's write transaction
-    holds its whole file already."""
-    dialect = connection.dialect.name
-    if dialect == "sqlite" or not names:
-        return
-    preparer = connection.dialect.identifier_preparer
-    tables = [preparer.format_table(Table(name, MetaData(schema=owner))) for name in names]
-    if dialect == "postgresql":
-        connection.exec_driver_sql(f"LOCK TABLE {', '.join(tables)} IN ACCESS EXCLUSIVE MODE")
-        return
-    for table in tables:
-        # Reading a row takes the table's exclusive lock, held to the transaction's end.
-        connection.exec_driver_sql(f"SELECT TOP 1 1 FROM {table} WITH (TABLOCKX, HOLDLOCK)")
-
-
-def _planned(
-    connection: Connection,
-    schema: StoreSchema,
-    form: FormSpec,
-    project: str,
-    environment: str,
-    *,
-    hold: bool = False,
-) -> Plan:
-    """The plan for the database on *connection*; with *hold*, a migrate's, every table of the
-    store held against other writers from before its record is read to the transaction's end,
-    so nothing written between the counts and the DDL is lost."""
+def _planned(connection: Connection, schema: StoreSchema, form: FormSpec, project: str) -> Plan:
+    """Dev's plan for the store on *connection*: an earlier Haute's store, another project's or
+    environment's, and tables of the form's names the store did not make refused, nothing
+    adopted; then its record reconciled with the catalogue, its quotes counted, and planned."""
     owner = schema.metadata.schema
     provider = dialect_provider(connection.dialect.name)
     catalogue = inspect(connection)
     names = set(catalogue.get_table_names(schema=owner))
     _refuse_old_store(names)
     wanted = structure(form)
-    if hold and STORE_TABLE in names:
-        # Two migrates take turns here, so the record read next is the one this one changes,
-        # and the tables are read again: another migrate may have changed them meanwhile.
-        _hold(connection, owner, [STORE_TABLE])
-        catalogue = inspect(connection)
-        names = set(catalogue.get_table_names(schema=owner))
     held = _recorded(connection, schema) if STORE_TABLE in names else None
-    mode: Mode = "dev" if environment == DEV else "hosted"
     if held is None:
         taken = sorted(
             names & {stored.table.name for stored in schema.tables} | names & {ACTIVITY_TABLE}
@@ -861,25 +749,19 @@ def _planned(
                 "or schema.",
                 differences=taken,
             )
-        return plan(wanted, None, {}, mode, provider=provider)
-    _refuse_other(held, project, environment)
+        return plan(wanted, None, {}, "dev", provider=provider)
+    _refuse_other(held, project, DEV)
     recorded = json.loads(held.structure)
     if (recorded.get("format"), recorded.get("store_columns")) != (
         wanted["format"],
         wanted["store_columns"],
     ):
-        return plan(wanted, recorded, {}, mode, provider=provider)
-    if hold:
-        # quote_details first, as a save takes its locks, then the form's other tables and the
-        # activity, so a save under way finishes before the counts and none starts after.
-        stored = [table["name"] for table in recorded["tables"] if table["name"] in names]
-        stored.sort(key=lambda name: name != QUOTE_DETAILS_ID)
-        _hold(connection, owner, [*stored, *sorted({ACTIVITY_TABLE} & names)])
+        return plan(wanted, recorded, {}, "dev", provider=provider)
     reconciled, refusals = reconcile(recorded, wanted, catalogue, owner)
     found = counts(connection, reconciled, wanted_counts(wanted, reconciled), owner)
-    made = plan(wanted, reconciled, found, mode, provider=provider)
+    made = plan(wanted, reconciled, found, "dev", provider=provider)
     if refusals:
-        made = Plan(made.steps, (*refusals, *made.refusals), made.recorded, before=made.before)
+        made = replace(made, refusals=(*refusals, *made.refusals))
     return made
 
 
@@ -888,161 +770,85 @@ def prepare_store(
     form: FormSpec,
     *,
     project: str,
-    environment: str = DEV,
     haute_version: str | None = None,
     release: str | None = None,
-    restore_point: str | None = None,
     clock: Callable[[], datetime] | None = None,
-    sql_schema: str | None = None,
-    sign_in: SignIn | None = None,
 ) -> Plan:
-    """Make the database at *url*, signed in as *sign_in* says, hold *form*'s tables for
-    *project* in *environment* in the SQL schema *sql_schema*, and answer the plan applied:
-    dev's mode on the analyst's laptop, a hosted environment's elsewhere, in one transaction.
-    Refused (:class:`MigrationRefusedError`), with nothing changed, when the plan refuses a
-    step or, hosted, holds one only a restore reverses and is given no *restore_point*. A
-    database of an earlier Haute's store, of another project's or environment's, or holding
-    tables of the form's names the store did not make, is refused, nothing adopted."""
-    schema = store_schema(form, sql_schema=sql_schema)
+    """Make dev's store at *url* hold *form*'s tables for *project*, and answer the plan
+    applied, in one transaction. Refused (:class:`MigrationRefusedError`), with nothing
+    changed, when the plan refuses a step. A database of an earlier Haute's store, of another
+    project's or environment's, or holding tables of the form's names the store did not make,
+    is refused, nothing adopted."""
+    schema = store_schema(form)
     now = (clock or (lambda: datetime.now(UTC)))()
-    mode: Mode = "dev" if environment == DEV else "hosted"
-    engine = make_engine(url, sign_in=sign_in)
+    engine = make_engine(url)
     try:
-        with reaching(url, environment):
-            with writing(engine) as connection:
-                made = _planned(connection, schema, form, project, environment, hold=True)
-                _refuse(made, restore_point, mode)
-                operations = Operations(MigrationContext.configure(connection))
-                _emit(operations, made, schema)
-                rebuilt = any(step.kind == "rebuild store" for step in made.steps)
-                _record(
-                    operations,
-                    schema,
-                    made,
-                    fresh=made.before is None or rebuilt,
-                    project=project,
-                    environment=environment,
-                    release=release,
-                    haute_version=haute_version,
-                    restore_point=restore_point if mode == "hosted" else None,
-                    at=now,
-                )
-                return made
+        with writing(engine) as connection:
+            made = _planned(connection, schema, form, project)
+            _refuse(made)
+            operations = Operations(MigrationContext.configure(connection))
+            _emit(operations, made, schema)
+            rebuilt = any(step.kind == "rebuild store" for step in made.steps)
+            _record(
+                operations,
+                schema,
+                made,
+                fresh=made.before is None or rebuilt,
+                project=project,
+                release=release,
+                haute_version=haute_version,
+                at=now,
+            )
+            return made
     finally:
         engine.dispose()
 
 
-def offline_plan(base: FormSpec, form: FormSpec, *, provider: Provider | None = None) -> Plan:
-    """The plan from *base*'s tables to *form*'s with no database, as a hosted migrate makes
-    it on *provider*'s engine: provisional, each step that depends on the data conditional."""
-    return plan(structure(form), structure(base), None, "hosted", provider=provider)
+def offline_plan(
+    base: FormSpec | None, form: FormSpec, *, provider: Provider | None = None
+) -> Plan:
+    """The script from *base*'s tables, or from none, to *form*'s, with no database, on
+    *provider*'s engine."""
+    return plan(
+        structure(form),
+        None if base is None else structure(base),
+        None,
+        "script",
+        provider=provider,
+    )
 
 
-# ── Saying a plan ───────────────────────────────────────────────────────
+# ── Writing a script ────────────────────────────────────────────────────
 
 
-def _what(step: Step) -> str:
-    where = step.table if step.column is None else f"{step.table}.{step.column}"
-    if step.kind in (
-        "rename table",
-        "rename column",
-        "bring back table",
-        "bring back column",
-    ) and step.was not in (None, step.column, step.table):
-        where = f"{where} (was {step.was})"
-    held = "" if step.quotes is None else f", {_quotes(step.quotes)} holding values"
-    made = " if it holds no value, else refused" if step.conditional else ""
-    return f"{step.kind} {where}{held}{made}; reversed by {step.rollback}"
-
-
-def render_text(plan: Plan) -> str:
-    """*plan* as ``haute app migrate --plan`` prints it: each step with what reverses it, each
-    kept object with its DROP for the DBA, and each refusal."""
-    lines: list[str] = []
-    if plan.provisional:
-        lines.append(
-            "Provisional plan, made with no database: each step marked so is made only if what it "
-            "changes holds no value."
-        )
-    for step in plan.steps:
-        lines.append(f"  - {_what(step)}")
-        if step.kind == "keep table":
-            lines.append(f"      to drop it on the SQL side: DROP TABLE {step.table};")
-        if step.kind == "keep column":
-            lines.append(
-                f"      to drop it on the SQL side: ALTER TABLE {step.table} DROP COLUMN "
-                f"{step.column};"
-            )
-    if not plan.steps:
-        lines.append("  Nothing to change.")
-    for refusal in plan.refusals:
-        lines.append(f"  ! refused: {refusal}")
-    if plan.restoring:
-        lines.append(
-            "  A restore is the only way back from the steps reversed by a restore: the migrate "
-            "needs --restore-point NAME."
-        )
-    return "\n".join(lines)
-
-
-def render_sql(
-    plan: Plan,
-    form: FormSpec,
-    dialect: str,
-    *,
-    project: str,
-    environment: str,
-    release: str | None,
-    haute_version: str | None,
-    restore_point: str | None,
-    sql_schema: str | None = None,
-) -> str:
-    """*plan* as the SQL a DBA runs in its place: Alembic's offline rendering for *dialect*,
-    every value written in, each name in the SQL schema *sql_schema* when one is named,
-    ``haute_store``'s row last, the whole of it one transaction, so a statement that fails
-    leaves nothing changed. Refused (:class:`MigrationRefusedError`) for a plan refusing a
-    step, and for one holding a step made only while what it changes holds no value, which
-    ``haute app migrate`` checks as it applies it and a script run later cannot."""
-    if plan.refusals:
-        raise MigrationRefusedError(
-            "The plan refuses steps, so it has no SQL: " + "; ".join(plan.refusals) + ".",
-            refusals=plan.refusals,
-        )
-    bound = [
-        f"{step.kind} {step.table}{'.' + step.column if step.column else ''}"
-        for step in plan.steps
-        if step.kind in _DATA_BOUND
-    ]
-    if bound:
-        raise MigrationRefusedError(
-            "These steps are made only while what they change holds no value, which haute app "
-            "migrate checks as it applies them and a script run later cannot: "
-            + "; ".join(bound)
-            + ". Apply them with haute app migrate --environment.",
-            refusals=bound,
-        )
+def render_sql(plan: Plan, form: FormSpec, dialect: str, *, sql_schema: str | None = None) -> str:
+    """*plan*, a script to *form*'s tables, as the SQL the people who own a hosted database
+    read, change and run: Alembic's offline rendering for *dialect*, every value written in,
+    each name in the SQL schema *sql_schema* when one is named, the whole of it one
+    transaction, so a statement that fails leaves nothing changed. Each refusal heads it as a
+    note, and each change of a type, rows or role and each table or column the form removed
+    is noted where it falls, a removed one's DROP commented out. Nothing of Haute's is in it
+    beyond the tables, and nothing reads it back."""
+    if plan.mode != "script":
+        raise ValueError("Only a script is written as SQL: dev's plan is applied by the planner.")
     buffer = io.StringIO()
+    for refusal in plan.refusals:
+        buffer.write(f"-- Not written: {refusal}.\n")
+    if not plan.steps:
+        if not plan.refusals:
+            buffer.write("-- The tables already fit the form: nothing to change.\n")
+        return buffer.getvalue()
+    if plan.refusals:
+        buffer.write("\n")
     options: dict[str, Any] = {"as_sql": True, "output_buffer": buffer, "literal_binds": True}
     if dialect == "mssql":
         # One batch: a GO between statements would end the transaction's hold on them.
         options["mssql_batch_separator"] = None
     context = MigrationContext.configure(dialect_name=dialect, opts=options)
     operations = Operations(context)
-    schema = store_schema(form, sql_schema=sql_schema)
+    schema = store_schema(form, sql_schema=sql_schema, record=False)
     begin, commit = _SCRIPT_TRANSACTIONS[dialect]
     buffer.write(begin)
     _emit(operations, plan, schema)
-    _record(
-        operations,
-        schema,
-        plan,
-        fresh=plan.before is None,
-        project=project,
-        environment=environment,
-        release=release,
-        haute_version=haute_version,
-        restore_point=restore_point,
-        at=literal(datetime.now(UTC).replace(tzinfo=None).isoformat(sep=" ")),
-    )
     buffer.write(commit)
     return buffer.getvalue()

@@ -12,15 +12,16 @@ import pytest
 from sqlalchemy import inspect, text
 
 from haute._quote_store import (
-    MigrationRefusedError,
     QuoteStoreEnvironmentError,
     QuoteStoreMismatchError,
     open_book,
     prepare_store,
     store_url,
 )
+from haute._quote_store._schema import STORE_TABLE
 from haute._quote_store._store import make_engine, writing
 from haute._workbench_form import FormSpec, with_quote_details
+from tests._store_servers import Target
 
 PROJECT = "motor"
 
@@ -149,18 +150,23 @@ def test_dev_drops_a_table_the_form_no_longer_has(url: str) -> None:
     assert "vehicles" not in tables(url)
 
 
-def test_outside_dev_a_change_to_a_table_holding_rows_is_refused_naming_it(url: str) -> None:
-    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT, environment="test")
-    add_quote(url, vehicles=1)
+def _hosted(url: str, spec: FormSpec) -> None:
+    """*spec*'s tables made in the file at *url* from the SQL Haute writes, as the people who
+    own a hosted database make them."""
+    target = Target("sqlite", url)
+    target.script(target.sql(spec))
 
-    with pytest.raises(MigrationRefusedError, match="vehicles holds rows of 1 quote") as refused:
-        prepare_store(
-            url, form(POLICY, {**VEHICLES, "rows": "one"}), project=PROJECT, environment="test"
-        )
 
-    assert refused.value.error_code == "migration_refused"
-    # Nothing was dropped or built again.
-    assert len(rows(url, "vehicles")) == 1
+def test_a_hosted_database_opens_from_its_catalogue_alone(url: str) -> None:
+    _hosted(url, form(POLICY, VEHICLES))
+
+    # Nothing records the shape, the project or the environment: a copy of one environment's
+    # tables serves another as it stands.
+    assert STORE_TABLE not in tables(url)
+    for environment in ("test", "prod"):
+        open_book(
+            url, form(POLICY, VEHICLES), project=PROJECT, environment=environment, haute_version="1"
+        ).close()
 
 
 def test_a_database_that_does_not_hold_the_forms_tables_is_not_opened(url: str) -> None:
@@ -172,21 +178,15 @@ def test_a_database_that_does_not_hold_the_forms_tables_is_not_opened(url: str) 
         open_book(url, form(VEHICLES), project=PROJECT, haute_version="1.0")
 
 
-@pytest.mark.parametrize(
-    ("project", "environment"), [("home", "dev"), (PROJECT, "prod")], ids=["project", "environment"]
-)
-def test_a_database_recorded_for_another_project_or_environment_is_refused_naming_both(
-    url: str, project: str, environment: str
-) -> None:
+def test_a_dev_store_recorded_for_another_project_is_refused_naming_both(url: str) -> None:
     prepare_store(url, form(POLICY), project=PROJECT)
 
     with pytest.raises(
-        QuoteStoreEnvironmentError,
-        match=f"of 'motor' in 'dev', not of '{project}' in '{environment}'",
+        QuoteStoreEnvironmentError, match="of 'motor' in 'dev', not of 'home' in 'dev'"
     ):
-        open_book(url, form(POLICY), project=project, environment=environment, haute_version="1")
+        open_book(url, form(POLICY), project="home", haute_version="1")
     with pytest.raises(QuoteStoreEnvironmentError):
-        prepare_store(url, form(POLICY), project=project, environment=environment)
+        prepare_store(url, form(POLICY), project="home")
 
 
 def test_tables_of_the_forms_names_the_store_did_not_make_are_never_adopted(url: str) -> None:
@@ -229,8 +229,8 @@ def _refusal(url: str, environment: str = "test") -> QuoteStoreMismatchError:
     return refused.value
 
 
-def test_a_started_app_refuses_a_database_its_catalogue_says_is_not_the_stores(url: str) -> None:
-    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT, environment="test")
+def test_the_check_refuses_a_hosted_database_whose_catalogue_does_not_fit(url: str) -> None:
+    _hosted(url, form(POLICY, VEHICLES))
     _raw(
         url,
         "ALTER TABLE vehicles DROP COLUMN value",
@@ -244,11 +244,11 @@ def test_a_started_app_refuses_a_database_its_catalogue_says_is_not_the_stores(u
         "be saved",
         "vehicles.value is missing",
     ]
-    assert "Run haute app migrate --environment test" in str(refused)
+    assert "Change the test database's tables in SQL to fit this release's form" in str(refused)
 
 
 def test_a_table_gone_retyped_or_keyed_otherwise_is_named(url: str) -> None:
-    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT, environment="test")
+    _hosted(url, form(POLICY, VEHICLES))
     _raw(
         url,
         "DROP TABLE policy",
@@ -268,7 +268,7 @@ def test_a_table_gone_retyped_or_keyed_otherwise_is_named(url: str) -> None:
 
 
 def test_a_column_the_sql_side_added_that_takes_a_null_is_no_difference(url: str) -> None:
-    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT, environment="test")
+    _hosted(url, form(POLICY, VEHICLES))
     _raw(url, "ALTER TABLE policy ADD COLUMN notes TEXT")
 
     open_book(

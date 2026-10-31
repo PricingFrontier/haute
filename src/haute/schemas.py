@@ -231,6 +231,31 @@ class WorkbenchTablesResponse(BaseModel):
     store_columns: dict[str, list[WorkbenchStoreColumn]] = Field(default_factory=dict)
 
 
+class WorkbenchStoreSqlRequest(BaseModel):
+    """A form the Workbench view holds, saved or not, and where the SQL that brings a hosted
+    environment's tables to it starts: the form as the project's default branch holds it, or
+    none, for a database that holds no store yet."""
+
+    form: FormSpec
+    start: Literal["branch", "none"]
+
+
+class WorkbenchStoreSqlEnvironment(BaseModel):
+    """One hosted environment the project declares, its engine and the SQL for it."""
+
+    name: str
+    provider: str
+    sql: str
+
+
+class WorkbenchStoreSqlResponse(BaseModel):
+    """The SQL for each hosted environment the project declares, and the default branch
+    whose form it starts from: null when it starts from none."""
+
+    branch: str | None
+    environments: list[WorkbenchStoreSqlEnvironment]
+
+
 class WorkbenchFormFile(BaseModel):
     """The workbench's form as its folder holds it, with the folder's revision.
 
@@ -301,6 +326,16 @@ RequestWorkbenchPricedTables = dict[
 ]
 
 
+class WorkbenchAppQuoteStore(BaseModel):
+    """The app's quote store as its gate last checked it: open, or closed with the
+    refusal's error code, message and differences, each null or empty while open."""
+
+    open: bool
+    error_code: str | None
+    message: str | None
+    differences: list[str]
+
+
 class WorkbenchAppReleaseResponse(BaseModel):
     """The underwriter app's release, and who the host signed in."""
 
@@ -311,8 +346,10 @@ class WorkbenchAppReleaseResponse(BaseModel):
     created_at: str
     host: str | None = None
     principal: str
-    #: The app keeps quotes: it has a quote store. Without one it prices and saves nothing.
-    quotes: bool = False
+    #: The app's quotes: open while its store's tables fit the release's form; closed, with
+    #: why, while they do not, while the store cannot be reached and without one, when the
+    #: app opens, prices and saves no quote.
+    quotes: WorkbenchAppQuoteStore
     #: The role that may change quotes, when the release names one.
     edit_role: str | None = None
     #: Whoever is signed in may change quotes; one who may not reads them.

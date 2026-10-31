@@ -139,6 +139,7 @@ from haute.schemas import (
     WorkbenchFormSaveResponse,
     WorkbenchParamFileResponse,
     WorkbenchStatusResponse,
+    WorkbenchStoreSqlResponse,
     WorkbenchTablesResponse,
     WriteOutputResponse,
 )
@@ -279,6 +280,7 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         WorkbenchFormResponse,
         WorkbenchFormSaveResponse,
         WorkbenchParamFileResponse,
+        WorkbenchStoreSqlResponse,
     ),
     # The underwriter app's own page reads these; the builder never does, so its chunks
     # carry none of them.

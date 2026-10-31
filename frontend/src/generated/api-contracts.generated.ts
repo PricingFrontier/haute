@@ -3264,6 +3264,22 @@ export interface WorkbenchParamFileResponse {
   values: string[];
 }
 /**
+ * The SQL for each hosted environment the project declares, and the default branch
+ * whose form it starts from: null when it starts from none.
+ */
+export interface WorkbenchStoreSqlResponse {
+  branch: string | null;
+  environments: WorkbenchStoreSqlEnvironment[];
+}
+/**
+ * One hosted environment the project declares, its engine and the SQL for it.
+ */
+export interface WorkbenchStoreSqlEnvironment {
+  name: string;
+  provider: string;
+  sql: string;
+}
+/**
  * The underwriter app's release, and who the host signed in.
  */
 export interface WorkbenchAppReleaseResponse {
@@ -3276,7 +3292,17 @@ export interface WorkbenchAppReleaseResponse {
   id: string;
   pipeline_name: string;
   principal: string;
-  quotes: boolean;
+  quotes: WorkbenchAppQuoteStore;
+}
+/**
+ * The app's quote store as its gate last checked it: open, or closed with the
+ * refusal's error code, message and differences, each null or empty while open.
+ */
+export interface WorkbenchAppQuoteStore {
+  differences: string[];
+  error_code: string | null;
+  message: string | null;
+  open: boolean;
 }
 /**
  * The release's form, without its sample, with the revision a price quotes.

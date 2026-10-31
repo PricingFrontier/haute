@@ -7,13 +7,16 @@ which a pyodbc URL needs or it takes the server for a DSN, or PostgreSQL's ``pos
 signed in to as the login ``HAUTE_TEST_<NAME>_USER`` and
 ``HAUTE_TEST_<NAME>_PASSWORD`` name, which may make and drop databases. Each test is given a
 database of its own on it, dropped after the test, so its tables are its own and a plain SQL
-read names them as a report would. A server's runs are marked ``store_servers``; with none
-named, a store test runs on SQLite alone and nothing is skipped.
+read names them as a report would. A store on SQLite is dev's, which the planner keeps; one
+on a server is a hosted environment's, its tables made from the SQL Haute writes, as the
+people who own a hosted database make them. A server's runs are marked ``store_servers``;
+with none named, a store test runs on SQLite alone and nothing is skipped.
 """
 
 from __future__ import annotations
 
 import os
+import sqlite3
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -26,11 +29,16 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
-from haute._quote_store import SignIn, store_url
+from haute._quote_store import DEV, SignIn, offline_plan, prepare_store, render_sql, store_url
+from haute._quote_store._migrate import PROVIDER_DIALECTS
+from haute._quote_store._providers import PROVIDERS
 from haute._quote_store._store import make_engine
+from haute._workbench_form import FormSpec
 
 #: The servers a store test may run on besides SQLite.
 SERVERS = ("sqlserver", "postgresql")
+#: The hosted environment a store on a server is opened in.
+HOSTED = "test"
 
 
 def _variable(server: str, what: str) -> str:
@@ -58,6 +66,53 @@ class Target:
     backend: str
     url: str
     sign_in: SignIn | None = None
+
+    @property
+    def environment(self) -> str:
+        """The environment a store on this database is opened in: dev's on SQLite, a hosted
+        one's on a server."""
+        return DEV if self.backend == "sqlite" else HOSTED
+
+    def make(self, form: FormSpec, *, project: str, base: FormSpec | None = None) -> None:
+        """The store's tables brought to *form*: by dev's planner on SQLite, and on a server
+        by running the SQL Haute writes from *base*'s tables, or from none, as the people who
+        own a hosted database run it."""
+        if self.backend == "sqlite":
+            prepare_store(self.url, form, project=project)
+            return
+        self.script(self.sql(form, base))
+
+    def sql(self, form: FormSpec, base: FormSpec | None = None, **where: Any) -> str:
+        """The SQL Haute writes for this backend from *base*'s tables, or from none, to
+        *form*'s, *where* naming its SQL schema."""
+        plan = offline_plan(base, form, provider=PROVIDERS[self.backend])
+        return render_sql(plan, form, PROVIDER_DIALECTS[self.backend], **where)
+
+    def script(self, script: str) -> None:
+        """Run *script*, SQL as the people who own a database run it, on a connection of its
+        own in autocommit, the driver's error raised when a statement fails."""
+        if self.backend == "sqlite":
+            database = make_url(self.url).database
+            assert database is not None
+            connection = sqlite3.connect(database)
+            try:
+                connection.executescript(script)
+            finally:
+                connection.close()
+            return
+        engine = make_engine(self.url, sign_in=self.sign_in)
+        raw = engine.raw_connection()
+        try:
+            raw.driver_connection.autocommit = True  # type: ignore[union-attr]
+            cursor = raw.cursor()
+            cursor.execute(script)
+            if self.backend == "sqlserver":
+                # pyodbc raises a statement's error once its result is reached.
+                while cursor.nextset():
+                    pass
+        finally:
+            raw.close()
+            engine.dispose()
 
     def read(self, query: str, **params: Any) -> list[tuple[Any, ...]]:
         """The rows *query* reads, plain SQL, each value as SQLite would answer it: a day as

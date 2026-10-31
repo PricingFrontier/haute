@@ -469,8 +469,7 @@ check), `::_recorded`, `::_refuse_other` and `::_differences` (`haute_store`'s r
 environment in it, and the form compared with it) and `::_catalogue_differences` (the
 catalogue compared with the tables); `src/haute/_quote_store/_providers.py::missing_privileges`
 (the privileges); `src/haute/_workbench_app_quotes.py::_call` (`quote_store_unreachable`);
-`src/haute/_quote_store/_migrate.py::plan_store`, `::prepare_store`, `::offline_plan` and
-`::render_sql` (the planner, its two modes and its SQL);
-`src/haute/cli/_app.py::handle_app_migrate` (the hosted migrate) and `::_local_store`
-(`haute app serve`'s own file); `src/haute/_quote_store/_schema.py::structure` (the record,
+`src/haute/_quote_store/_migrate.py::prepare_store`, `::offline_plan` and `::render_sql`
+(the planner and its SQL); `src/haute/cli/_app.py::_local_store` (`haute app serve`'s own
+file); `src/haute/_quote_store/_schema.py::structure` (the record,
 with the store's own columns).

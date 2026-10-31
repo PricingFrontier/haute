@@ -1015,6 +1015,29 @@ def read_form_document(config: WorkbenchConfig) -> FormDocument:
     return FormDocument(spec, snapshot.revision, repairs)
 
 
+def form_at_ref(config: WorkbenchConfig, ref: str) -> FormSpec | None:
+    """The form the project's folder holds at the git *ref*, read from git with nothing
+    checked out, or None when *ref* holds no form folder; a folder there that cannot be read
+    as a form is a :class:`WorkbenchFormError`, as it is on disk."""
+    from haute._git_core import _run_git_ok, _run_git_process
+
+    root = config.project_root
+    folder = f"{config.form}/"
+    # Paths are named from the working directory, the project root, as ``./`` reads them.
+    ok, listing = _run_git_ok("ls-tree", "-r", "-z", "--name-only", ref, "--", folder, cwd=root)
+    names = [name for name in listing.split("\0") if name] if ok else []
+    if not names:
+        return None
+    files: dict[str, bytes] = {}
+    for name in names:
+        shown = _run_git_process("show", f"{ref}:./{name}", binary=True, cwd=root)
+        if shown.returncode != 0:
+            raise WorkbenchFormError(f"{name} could not be read at {ref}", path=name)
+        files[name.removeprefix(folder)] = shown.stdout
+    spec, _ = form_from_files(config, files)
+    return spec
+
+
 # -- What deploy and the release refuse --------------------------------------------------
 
 

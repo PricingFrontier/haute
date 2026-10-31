@@ -5,7 +5,8 @@ A release directory holds the pipeline's bundle as a deploy builds it (``deploy_
 and its ``artifacts``), the form without its sample (``form.json``), what the release is
 (``release.json``) and an entry point (``app.py``) that serves it through :func:`create_app`.
 The app serves the sheets' page from Haute's built frontend, the release, the form and the
-pricing, and, given a quote store, the quotes it keeps (``haute._workbench_app_quotes``). Every
+pricing, and the quotes it keeps in its quote store (``haute._workbench_app_quotes``), open
+while the store's gate finds its tables fit (``haute._workbench_app_store``). Every
 route but the health check needs the principal the host signed in: the identity follows the
 release's host, and a release with no host refuses everything else. Served on an analyst's
 machine, it takes only a request for a loopback host that was not forwarded. A write from a
@@ -24,7 +25,7 @@ import json
 import os
 import threading
 import uuid
-from collections.abc import AsyncIterator, Iterable, Mapping
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -35,6 +36,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import RequestResponseEndpoint
 
 from haute._env import int_env
@@ -47,17 +49,10 @@ from haute._logging import get_logger
 from haute._output_assembler import render_output_document
 from haute._sandbox import set_project_root
 from haute._types import PipelineGraph
+from haute._workbench_app_store import QuoteStoreClosedError, StoreGate, no_environment
 from haute._workbench_config import ENVIRONMENT_ENV, StoreEnvironment, store_environments
-from haute._workbench_form import (
-    QUOTE_DETAILS_COLUMNS,
-    QUOTE_DETAILS_ID,
-    QUOTE_DETAILS_MANAGED,
-    FormSpec,
-    form_revision,
-    render_form,
-)
-from haute._workbench_input import with_stand_in
-from haute._workbench_tables import finite_document, input_tables, priced_tables, quote_request
+from haute._workbench_form import FormSpec, form_revision, render_form
+from haute._workbench_tables import finite_document, priced_tables, quote_request
 from haute.deploy._request_limits import (
     RequestBodyHeaderError,
     RequestBodyLimitError,
@@ -78,6 +73,7 @@ from haute.schemas import (
 )
 
 if TYPE_CHECKING:
+    from haute._quote_store import QuoteBook
     from haute._quote_store._environment import StoreLocation
 
 RELEASE_FILE = "release.json"
@@ -112,11 +108,13 @@ _SAME_SITE = frozenset({"same-origin", "none"})
 
 APP_ENTRY = '''"""The underwriter app, serving this release (specs/workbench)."""
 
+from functools import partial
 from pathlib import Path
 
 from haute._workbench_app import create_app, hosted_store
 
-app = create_app(Path(__file__).parent, store=hosted_store(Path(__file__).parent))
+release = Path(__file__).parent
+app = create_app(release, store=partial(hosted_store, release))
 '''
 
 #: The app's built page and its assets (``frontend/vite.app.config.ts``).
@@ -573,8 +571,9 @@ def store_dependencies(environments: Iterable[StoreEnvironment]) -> tuple[str, .
 def hosted_store(release_dir: Path) -> StoreLocation | None:
     """The quote store the host points the release in *release_dir* at: the environment
     :data:`ENVIRONMENT_ENV` names, which the release must declare, at the database the host's
-    variables say it is at; None while no environment is named, so the app keeps no quotes and
-    loads nothing of the store's."""
+    variables say it is at; None while no environment is named, which closes the app's
+    quotes, nothing of the store's loaded. The store's gate calls it as it checks, so an
+    environment or a location that cannot be resolved closes the quotes too."""
     name = os.environ.get(ENVIRONMENT_ENV, "").strip()
     if not name:
         return None
@@ -582,21 +581,6 @@ def hosted_store(release_dir: Path) -> StoreLocation | None:
 
     release, _, _ = read_release(release_dir)
     return resolve_store(release.store_environments(), name, os.environ)
-
-
-#: The names of the quote_details columns the app sets (``QUOTE_DETAILS_MANAGED``).
-_APP_DETAILS = frozenset(
-    name for column_id, name, _ in QUOTE_DETAILS_COLUMNS if column_id in QUOTE_DETAILS_MANAGED
-)
-
-
-def _without_app_details(request: dict[str, Any]) -> dict[str, Any]:
-    """*request* with none of the quote_details the app sets for a quote it keeps."""
-    held = request.get(QUOTE_DETAILS_ID)
-    if not isinstance(held, dict):
-        return request
-    row = {name: value for name, value in held.items() if name not in _APP_DETAILS}
-    return {**request, QUOTE_DETAILS_ID: row}
 
 
 def _cross_site(request: Request) -> bool:
@@ -620,7 +604,7 @@ def create_app(
     *,
     local_principal: str | None = None,
     static_dir: Path | None = None,
-    store: StoreLocation | None = None,
+    store: StoreLocation | Callable[[], StoreLocation | None] | None = None,
     local_reader: bool = False,
 ) -> FastAPI:
     """The app serving the release in *release_dir*.
@@ -631,10 +615,11 @@ def create_app(
     release's host says who is signed in and, for a release with an ``edit_role``, whether
     they hold it. The page and
     its assets come from *static_dir*, Haute's built frontend unless given. *store* is the
-    quote store the app keeps quotes in, dev's on the analyst's machine and a hosted
-    environment's otherwise (:func:`hosted_store`), whose database must hold the release's
-    form's tables for its pipeline in that environment: the app does not start on one that
-    does not, and keeps no quotes without one.
+    quote store the app keeps quotes in, dev's on the analyst's machine, or what resolves a
+    hosted environment's (:func:`hosted_store`), or None. The app starts whatever the store
+    holds: its quotes are open while the store's gate finds its database holding the
+    release's form's tables, and closed, every quote route and the pricing answering 503
+    with the refusal, while it does not, while it cannot be reached and without a store.
     """
     release, form, manifest = read_release(release_dir)
     # The pipeline reads what it ships from the release, wherever the host starts the app.
@@ -687,19 +672,27 @@ def create_app(
             "signed-in principal."
         )
 
-    book = None
-    if store is not None:
+    def open_store() -> QuoteBook:
+        location = store() if callable(store) else store
+        if location is None:
+            return no_environment()
         from haute._quote_store import open_book
 
-        book = open_book(
-            store.url,
+        return open_book(
+            location.url,
             form,
             project=release.pipeline_name,
-            environment=store.environment,
+            environment=location.environment,
             haute_version=release.haute_version,
-            sql_schema=store.sql_schema,
-            sign_in=store.sign_in,
+            sql_schema=location.sql_schema,
+            sign_in=location.sign_in,
         )
+
+    gate = StoreGate(open_store)
+    # Tried once as the app is made, so a store that fits is open for the first request; a
+    # closed one is logged by the gate and never stops the app.
+    with contextlib.suppress(QuoteStoreClosedError):
+        gate.book()
 
     # A pricing past its timeout cannot be stopped, so it keeps its place until it ends: the
     # places are given back by the pricings, never by the requests that stopped waiting.
@@ -713,8 +706,7 @@ def create_app(
             yield
         finally:
             pricing_pool.shutdown(wait=False, cancel_futures=True)
-            if book is not None:
-                book.close()
+            gate.close()
 
     app = FastAPI(title=f"{release.pipeline_name or 'Haute'} underwriter app", lifespan=lifespan)
     app.add_exception_handler(RequestValidationError, request_validation_error_handler)
@@ -760,7 +752,7 @@ def create_app(
         return WorkbenchAppReleaseResponse(
             **{key: value for key, value in asdict(release).items() if key != "environments"},
             principal=request.state.principal,
-            quotes=book is not None,
+            quotes=await run_in_threadpool(gate.state),
             can_edit=request.state.can_edit,
         )
 
@@ -777,11 +769,6 @@ def create_app(
         request = quote_request(form, values)
         if not request:
             raise HTTPException(422, "Type the quote first")
-        if book is None:
-            # An app without a quote store has no quote to name: its one quote is priced
-            # under the stand-in, as Preview prices the sample, holding none of the details
-            # the app sets for a quote it keeps, whatever the page sent.
-            request = with_stand_in(input_tables(form), _without_app_details(request))
 
         def score() -> Mapping[str, Any]:
             # The admission is held until the answer is the document sent back: rendering
@@ -865,37 +852,27 @@ def create_app(
                 "This page was drawn for another release of the app: reload it to price on "
                 "this one.",
             )
+        # Nothing is priced that could not be saved: a closed store prices no quote.
+        try:
+            await run_in_threadpool(gate.book)
+        except QuoteStoreClosedError as refusal:
+            raise HTTPException(503, detail=refusal.detail) from None
         pricing = await price_values(body.values)
         return WorkbenchAppPriceResponse(tables=pricing.tables, request=pricing.request)
 
-    if book is not None:
-        from haute._workbench_app_quotes import QuoteApp, quote_router
+    from haute._workbench_app_quotes import QuoteApp, quote_router
 
-        app.include_router(
-            quote_router(
-                QuoteApp(
-                    release_id=release.id,
-                    form_revision=release.form_revision,
-                    form=form,
-                    book=book,
-                    price=price_values,
-                )
+    app.include_router(
+        quote_router(
+            QuoteApp(
+                release_id=release.id,
+                form_revision=release.form_revision,
+                form=form,
+                gate=gate,
+                price=price_values,
             )
         )
-    else:
-
-        @app.api_route(
-            "/api/app/quotes{rest:path}", methods=["GET", "POST"], include_in_schema=False
-        )
-        @app.get("/api/app/people", include_in_schema=False)
-        async def no_quotes(rest: str = "") -> JSONResponse:
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "detail": "This app keeps no quotes: it was started without a quote store "
-                    f"({ENVIRONMENT_ENV})."
-                },
-            )
+    )
 
     @app.get("/", include_in_schema=False)
     @app.get(APP_PAGES[0], include_in_schema=False)
