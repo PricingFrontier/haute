@@ -1,48 +1,54 @@
 import { useEffect, useState } from "react"
-import { fetchAppForm, fetchAppRelease } from "../api/app"
+import { fetchAppForm, fetchAppRelease, watchQuotesClosed } from "../api/app"
 import { apiErrorMessage } from "../api/errors"
 import QuestionDialog from "../components/QuestionDialog"
 import ToastContainer from "../components/Toast"
-import { ZoomInOut } from "../haute-ui"
-import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
+import { waitForJob } from "../hooks/jobPollingController"
 import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
-import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
-import PageTabs from "../workbench/PageTabs"
-import SheetCanvas from "../workbench/SheetCanvas"
 import AppHeader from "./AppHeader"
 import NewQuoteWindow from "./NewQuoteWindow"
 import { openRelease } from "./openRelease"
 import QuotesPage from "./QuotesPage"
 import QuoteView from "./QuoteView"
+import type { WorkbenchAppQuoteStore } from "../api/types"
 import { followLink, quotesQueryOf, useAppRoute, type AppRoute } from "./route"
-import { BUTTON, Notice, ReleaseNotice } from "./ui"
+import { BUTTON, Notice } from "./ui"
 import useAppStore from "./useAppStore"
 import useNewQuoteStore from "./useNewQuoteStore"
 
-type Loaded = { quotes: boolean } | { error: string }
+type Loaded = { ready: true } | { error: string }
+
+/** While the quotes are closed, the release is asked for again this often. */
+export const QUOTES_RECHECK_MS = 10_000
 
 /**
  * The underwriter app (specs/workbench): the release's sheets drawn as Preview draws them,
- * with nothing of the builder. With a quote store it opens on the Quotes page and opens each
- * quote at its own address; without one it is one quote, priced as it is typed, keeping
- * nothing.
+ * with nothing of the builder. While its quotes are open it opens on the Quotes page and
+ * opens each quote at its own address; while they are closed it opens no quote, new or
+ * saved, saying they are unavailable, until the release says they are open again.
  */
 export default function UnderwriterApp() {
   const [loaded, setLoaded] = useState<Loaded | null>(null)
+  const open = useAppStore((s) => s.quotes?.open === true)
   useEffect(() => {
     let live = true
+    // Whichever of the app's calls meets a closed store, the quotes close.
+    watchQuotesClosed((error) => {
+      useAppStore.getState().noteQuotesClosed(error)
+    })
     Promise.all([fetchAppRelease(), fetchAppForm()])
       .then(([release, { form, revision }]) => {
         if (!live) return
         openRelease(form, revision, release.id)
         useAppStore.getState().setRelease(release, form, revision)
-        setLoaded({ quotes: release.quotes })
+        setLoaded({ ready: true })
       })
       .catch((error: unknown) => {
         if (live) setLoaded({ error: apiErrorMessage(error) })
       })
     return () => {
       live = false
+      watchQuotesClosed(null)
       useWorkbenchPricingStore.getState().setQuotePricer(null)
     }
   }, [])
@@ -57,10 +63,10 @@ export default function UnderwriterApp() {
         <div role="alert" className="flex flex-1 items-center justify-center p-8 text-[13px]" style={{ color: "var(--danger)" }}>
           Could not open the sheets: {loaded.error}
         </div>
-      ) : loaded.quotes ? (
+      ) : open ? (
         <Routed />
       ) : (
-        <OneQuote />
+        <QuotesClosed />
       )}
       <QuestionDialog />
       <ToastContainer />
@@ -137,31 +143,38 @@ function RoutedPage({ route }: { route: AppRoute }) {
   return <QuoteView route={route} />
 }
 
-/** An app with no quote store: one quote, priced as it is typed, kept nowhere. */
-function OneQuote() {
-  const error = useWorkbenchPreviewStore((s) => s.error)
-  const releaseChanged = useAppStore((s) => s.releaseChanged)
-  const zoomBy = useWorkbenchViewStore((s) => s.zoomBy)
-
+/**
+ * The quotes closed: no quote opens, new or saved, while the store's tables do not fit, it
+ * cannot be reached or no environment is named, the release asked for again every
+ * `QUOTES_RECHECK_MS` until it says they are open, when the page it is on shows.
+ */
+function QuotesClosed() {
+  const message = useAppStore((s) => s.quotes?.message ?? null)
+  useEffect(() => {
+    const ended = new AbortController()
+    const note = (quotes: WorkbenchAppQuoteStore | null) => {
+      if (quotes !== null) useAppStore.getState().setQuotes(quotes)
+    }
+    waitForJob({
+      // A release that cannot be read now is asked for again on the next tick.
+      poll: () => fetchAppRelease().then((release) => release.quotes, () => null),
+      isTerminal: (quotes) => quotes?.open === true,
+      intervalMs: QUOTES_RECHECK_MS,
+      signal: ended.signal,
+      onStatus: note,
+    })
+      .then(note)
+      // Ended as the view goes, or past the polling's lifetime: the page stays as it is.
+      .catch(() => undefined)
+    return () => ended.abort()
+  }, [])
   return (
     <>
-      <AppHeader label="Quote toolbar">
-        <ZoomInOut onZoomIn={() => zoomBy(ZOOM_STEP)} onZoomOut={() => zoomBy(-ZOOM_STEP)} />
-        {error !== null && (
-          <span data-testid="app-pricing-error" className="max-w-96 truncate text-xs" style={{ color: "var(--warning)" }} title={error}>
-            {error}
-          </span>
-        )}
-      </AppHeader>
-      <main className="relative flex min-h-0 min-w-0 flex-1 flex-col" aria-label="Sheets">
-        {releaseChanged && <ReleaseNotice kept={false} />}
-        <Notice tone="info" testId="notice-no-store">
-          This app keeps no quotes: it was started without a quote store. A quote priced here is not saved.
+      <AppHeader label="Quotes toolbar" />
+      <main className="flex flex-1 items-start justify-center p-8" aria-label="Quotes">
+        <Notice tone="warning" testId="notice-quotes-closed">
+          Quotes are unavailable{message === null ? "." : `: ${message}`}
         </Notice>
-        <div className="px-4 pt-2">
-          <PageTabs />
-        </div>
-        <SheetCanvas />
       </main>
     </>
   )

@@ -598,6 +598,7 @@ export type {
   WorkbenchAppQuoteResponse,
   WorkbenchAppQuoteSaveRequest,
   WorkbenchAppQuoteSource,
+  WorkbenchAppQuoteStore,
   WorkbenchAppQuotesResponse,
   WorkbenchAppRelatedQuote,
   WorkbenchAppReleaseResponse,
@@ -607,6 +608,8 @@ export type {
   WorkbenchParamFileResponse,
   WorkbenchStatusResponse,
   WorkbenchStoreColumn,
+  WorkbenchStoreSqlEnvironment,
+  WorkbenchStoreSqlResponse,
   WorkbenchTable,
   WorkbenchTablesResponse,
 } from "../generated/api-contracts.generated"

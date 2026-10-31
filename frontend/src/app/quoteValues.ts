@@ -7,7 +7,7 @@
  */
 import type { QuoteSave, QuoteSource } from "../api/app"
 import { apiErrorCode, apiErrorRawDetail, apiErrorStatus } from "../api/errors"
-import type { FormSpec, SchemaColumn, WorkbenchAppQuote, WorkbenchAppQuoteActivityEntry, WorkbenchAppRelatedQuote } from "../api/types"
+import type { FormSpec, SchemaColumn, WorkbenchAppQuote, WorkbenchAppQuoteActivityEntry, WorkbenchAppQuoteStore, WorkbenchAppRelatedQuote } from "../api/types"
 import type { SamplePrice } from "../stores/useWorkbenchPricingStore"
 import { canonicalJson } from "../utils/canonicalJson"
 import { formatValue } from "../utils/formatValue"
@@ -120,6 +120,27 @@ export function savedPrice(
 }
 
 // ── The quote store's refusals ───────────────────────────────────────────
+
+/** The codes the app's routes close its quotes with: tables that do not fit, a store not reached, no store. */
+export const QUOTE_STORE_CLOSED: ReadonlySet<string> = new Set([
+  "quote_store_mismatch",
+  "quote_store_unreachable",
+  "quote_store_environment",
+])
+
+/**
+ * The refusal a 503 carries when the app's quotes are closed, its code one of the store's;
+ * null for any other failure, a busy pricing's 503 among them.
+ */
+export function quotesClosedBy(error: unknown): WorkbenchAppQuoteStore | null {
+  const code = apiErrorCode(error)
+  if (apiErrorStatus(error) !== 503 || code === null || !QUOTE_STORE_CLOSED.has(code)) return null
+  const detail = apiErrorRawDetail(error)
+  const message = typeof detail?.message === "string" ? detail.message : null
+  const listed = Array.isArray(detail?.differences) ? detail.differences : []
+  const differences = listed.filter((each): each is string => typeof each === "string")
+  return { open: false, error_code: code, message, differences }
+}
 
 /** A page drawn for another release than the one serving it: 409 without a code of the store's. */
 export const releaseMoved = (error: unknown): boolean => apiErrorStatus(error) === 409 && apiErrorCode(error) === null

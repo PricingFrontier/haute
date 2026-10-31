@@ -1,5 +1,21 @@
 /** Quotes as the underwriter app's routes answer them, for its tests. */
-import type { WorkbenchAppQuote, WorkbenchAppQuoteChangeResponse, WorkbenchAppQuoteResponse, WorkbenchAppReleaseResponse } from "../../api/types"
+import type {
+  WorkbenchAppQuote,
+  WorkbenchAppQuoteChangeResponse,
+  WorkbenchAppQuoteResponse,
+  WorkbenchAppQuoteStore,
+  WorkbenchAppReleaseResponse,
+} from "../../api/types"
+
+/** The app's quotes open, as its release answers while the store's tables fit. */
+export const OPEN: WorkbenchAppQuoteStore = { open: true, error_code: null, message: null, differences: [] }
+/** The app's quotes closed, as an app started with no environment named answers. */
+export const CLOSED: WorkbenchAppQuoteStore = {
+  open: false,
+  error_code: "quote_store_environment",
+  message: "This app keeps no quotes: it was started with no quote store environment named (HAUTE_ENVIRONMENT).",
+  differences: [],
+}
 
 export const release: WorkbenchAppReleaseResponse = {
   id: "rel-1",
@@ -9,7 +25,7 @@ export const release: WorkbenchAppReleaseResponse = {
   created_at: "2026-10-12T09:00:00+00:00",
   host: null,
   principal: "ana@example.com",
-  quotes: true,
+  quotes: OPEN,
   edit_role: null,
   can_edit: true,
 }
