@@ -34,7 +34,7 @@ Allowed field.
 | WB-13 | Planned | P3 | An underwriter records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
-| WB-44 | Planned | P2 | The people who own a hosted quote store's tables change them in SQL, starting from SQL Haute writes from the form's change; the app starts whatever its tables hold and refuses its quote routes, naming each difference, until they fit its release's form. |
+| WB-44 | Planned | P2 | The people who own a hosted quote store's tables change them in SQL, starting from SQL Haute writes from the form's change; the app starts whatever its tables hold but opens and prices no quote, new or saved, naming each difference, until they fit its release's form. |
 
 ## Planned improvements
 
@@ -419,15 +419,19 @@ reads or writes there, of its kind, taking a null as the store's does, keyed and
 to its quote as the store keys them, every other column of those tables taking a null, a
 text the store compares exactly under its binary collation on SQL Server, and the privileges
 the app needs. The app starts whatever the database holds, reachable or not. Until the check
-finds nothing, every quote route refuses (503, `quote_store_mismatch`, or
-`quote_store_unreachable` for a database it cannot reach), naming each difference or missing
-privilege; `GET /api/app/release` says the quotes are closed and why; the page says quotes
-cannot be opened or saved, as it says when nothing is kept; and the sheets still price. A
-refused quote request checks again at most once every 10 seconds, the requests in between
-answered with the last check's refusal, so tables put right in SQL open the quotes with no
-restart and no new image. A statement the database refuses because a table or column is not
-as the check found it sends the running app back to checking: the request is refused as
-above when the check finds a difference, and fails as it does now when it finds none.
+finds nothing, the quotes are closed: every quote route and the pricing route refuse (503,
+`quote_store_mismatch`, or `quote_store_unreachable` for a database it cannot reach), naming
+each difference or missing privilege; `GET /api/app/release` says the quotes are closed and
+why; and the page opens no quote, new or saved, saying the quotes are unavailable, so nothing
+is keyed or priced that could not be saved. A quote open as they close stops pricing and
+saving, its values kept in the browser as unsaved values are now and offered back once they
+open. An app started with no environment named keeps nothing and prices its one quote as it
+does now. A refused request checks again at most once every 10 seconds, the requests in
+between answered with the last check's refusal, and the page asks again on the same bound,
+so tables put right in SQL open the quotes with no restart, no new image and no reload. A
+statement the database refuses because a table or column is not as the check found it sends
+the running app back to checking: the request is refused as above when the check finds a
+difference, and fails as it does now when it finds none.
 `/health` answers throughout.
 
 Build mode's schema pane offers the SQL that brings an environment's tables from the form as
@@ -449,7 +453,9 @@ writes, on SQL Server and on PostgreSQL, the app opens and saves quotes. A colum
 renamed or retyped in SQL to fit a new release's form opens that release's quotes within the
 recheck bound, with no restart. The app started on a database missing a table or a column,
 holding a column of another kind, unreachable, or whose sign-in lacks a privilege serves the
-page and prices, and refuses every quote route naming each difference. A copy of prod's
+page with no quote open, new or saved, and refuses every quote route and the pricing route
+naming each difference; a quote open as its tables stop fitting stops pricing and saving, its
+unsaved values offered back once they fit again. A copy of prod's
 tables serves test with nothing changed in it. No command, route or workflow of Haute's
 changes a hosted database's tables. The SQL for a rename renames rather than dropping and
 adding. `haute app serve` builds its own file as now.
