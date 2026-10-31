@@ -106,8 +106,12 @@ Out of scope, owned elsewhere:
   ignores): the pipeline resolved,
   validated and bundled as `haute deploy` does it, test quotes included, with the
   sheets, what the release is and its entry point, and, with `[deploy.container]
-  base_image` set, the Dockerfile that makes it the image's build context; `--image`
-  builds that image with Docker. A directory that is or holds the project or the working
+  base_image` set, the Dockerfile that makes it the image's build context, installing the
+  driver of each provider the release's environments declare, pinned as installed where it
+  builds (pyodbc and Microsoft's ODBC Driver 18 for `sqlserver`, psycopg for `postgresql`,
+  azure-identity for a Microsoft Entra ID sign-in), a driver not installed there refused
+  naming it; `--image` builds that image with Docker. A directory that is or holds the
+  project or the working
   directory, a file, and a directory holding anything but an earlier release are refused,
   as are a project without a workbench and sheets never saved; an earlier release is
   replaced only once the new one has built beside it, so a build that fails leaves it as
@@ -116,11 +120,25 @@ Out of scope, owned elsewhere:
   under `.haute/app/release` and serves the underwriter app on `127.0.0.1` alone (port
   8001 by default), every request signed in as the analyst's git identity, able to
   change quotes unless `--reader` signs it in as one who reads them; without an identity
-  it refuses to start. It keeps the quotes saved in it in `.haute/app/quotes.sqlite`,
-  migrated as it starts, which a rebuild leaves as it is.
-- `haute app migrate [--url URL]` brings the underwriter app's quote store, at `URL` or
-  else at `HAUTE_QUOTE_STORE_URL`, to the schema this Haute writes, before a release that
-  needs it starts; without either it names both and exits non-zero.
+  it refuses to start. It keeps the quotes saved in it in dev's quote store,
+  `.haute/app/store.sqlite`, which a rebuild leaves as it is: the form's own tables, brought
+  to the release's form as it starts by the store's planner in dev's mode, which drops what
+  the form removed and builds again what changed while holding values, naming each table
+  whose quotes' rows went and each column whose values went.
+- `haute app migrate --environment NAME [--release DIR] [--plan [--base DIR]] [--sql]
+  [--restore-point NAME]` brings the quote store of the hosted environment `NAME`, one the
+  release built in `DIR` (`.haute/app/release` by default) declares, at the database the
+  host's own variables say it is at, to that release's form before the release starts,
+  through the store's planner in a hosted environment's mode, printing each step. `--plan`
+  prints the plan and changes nothing, made offline with `--base DIR` from the form of the
+  release built there, with no database; `--sql` prints it as the SQL a DBA runs, one
+  transaction, refused for a plan refusing a step or holding a retype or a change of a
+  table's rows or role, which only the migrate applies; and a plan holding a step only a
+  restore reverses is applied only given `--restore-point NAME`. A step
+  it cannot take, an environment the release does not declare, a location not given or given
+  twice, `--base` without `--plan` or `--sql`, and no release built in `DIR` are each refused
+  naming what, exiting non-zero before any DDL; nothing it prints names where the database
+  is.
 - `haute status [model_name] [--version-only]` looks up a model's latest version/stage in the MLflow
   Model Registry.
 - `haute impact [--sample] [--batch-size] [--endpoint-suffix]` scores a configured safety dataset,
@@ -138,6 +156,10 @@ Invariants that hold across every command:
 - `run`, `lint`, and `deploy` delegate CLI/default pipeline discovery to
   `haute._project.resolve_pipeline_file`; a TOML-configured deploy pipeline is passed through
   that same resolver before `DeployConfig` and `resolve_config` consume it.
+- A command piped or redirected to a file writes every mark it prints (`✓`, `✗`), whatever
+  the locale: a stream that is not UTF-8 is written in UTF-8, or, when `PYTHONIOENCODING`
+  chose its encoding or it is a terminal of another encoding, keeps that encoding and shows
+  a mark it cannot hold as `?`. None of it raises.
 - Command handlers use exit code 1 for their handled operational failures; Click uses exit
   code 2 for argument/choice/range parsing errors. Two informational outcomes intentionally
   succeed: ordinary `status` reports a missing registered model and exits 0, and `impact`

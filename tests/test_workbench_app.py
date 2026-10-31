@@ -891,8 +891,9 @@ def test_the_app_commands_say_a_fault_and_print_no_traceback(project: Path) -> N
 
     from haute.cli import cli
 
-    # A store URL SQLAlchemy cannot read.
-    unread = CliRunner().invoke(cli, ["app", "migrate", "--url", "nosuchdialect://quotes"])
+    # An environment the release built does not declare.
+    assert CliRunner().invoke(cli, ["app", "build"]).exit_code == 0
+    unread = CliRunner().invoke(cli, ["app", "migrate", "--environment", "test"])
     # A project whose haute.toml is not TOML.
     (project / "haute.toml").write_text("[project\n", encoding="utf-8")
     unbuilt = CliRunner().invoke(cli, ["app", "build", "out"])
@@ -925,8 +926,8 @@ def test_haute_app_serve_serves_the_release_on_loopback_as_the_analyst(
     assert "Signed in as ana@example.com" in result.output
     assert (served["host"], served["port"]) == ("127.0.0.1", 8123)
     assert (project / ".haute" / "app" / "release" / "release.json").is_file()
-    assert (project / ".haute" / "app" / "quotes.sqlite").is_file()
-    assert "Quotes kept in .haute/app/quotes.sqlite" in result.output
+    assert (project / ".haute" / "app" / "store.sqlite").is_file()
+    assert "Quotes kept in .haute/app/store.sqlite" in result.output
     with TestClient(served["app"], base_url=LOOPBACK) as client:
         signed_in = client.get("/api/app/release").json()
     assert (signed_in["principal"], signed_in["quotes"]) == ("ana@example.com", True)
@@ -978,22 +979,21 @@ made = client.post(
         "form_revision": revision,
         "release": release_id,
         "values": json.loads(sys.argv[2]),
-        "shown": None,
         "reference": "Q-000001",
     },
     headers=signed_in,
 ).json()
-values = made["revision"]["values"]
+values = made["values"]
 response = client.post(
     "/api/app/price",
     json={"form_revision": revision, "release": release_id, "values": values},
     headers=signed_in,
 )
 saved = client.post(
-    f"/api/app/quotes/{made['quote']['id']}/revisions",
+    "/api/app/quotes/Q-000001/1/save",
     json={
         "operation": "operation-0002",
-        "version": made["quote"]["latest"],
+        "version": made["quote"]["version"],
         "form_revision": revision,
         "release": release_id,
         "values": values,
@@ -1090,10 +1090,17 @@ def test_the_release_prices_and_keeps_quotes_with_only_the_images_runtime_instal
     import subprocess
     import sys
 
-    from haute._quote_store import migrate_store, store_url
+    from haute._quote_store import prepare_store, store_url
+    from haute._workbench_config import ENVIRONMENT_ENV, STORE_URL_ENV
     from tests.test_container_smoke_script import _modules_outside_the_image
 
     _pin_base_image(project)
+    # The project declares the hosted environment the host names, its database the host's.
+    toml = project / "haute.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8") + '\n[workbench.store.test]\nprovider = "sqlite"\n',
+        encoding="utf-8",
+    )
     release_dir = project / "image"
     build_release(project, release_dir)
     manifest = json.loads((release_dir / "deploy_manifest.json").read_text(encoding="utf-8"))
@@ -1102,8 +1109,9 @@ def test_the_release_prices_and_keeps_quotes_with_only_the_images_runtime_instal
     blocked = _modules_outside_the_image(installed)
     assert "mlflow" in blocked
     assert not {"sqlalchemy", "alembic"} & set(blocked)
-    url = store_url(project / "quotes.sqlite")
-    migrate_store(url)
+    url = store_url(project / "store.sqlite")
+    built, form, _ = read_release(release_dir)
+    prepare_store(url, form, project=built.pipeline_name, environment="test")
     child = project / "price_one_quote.py"
     child.write_text(_SLIM_RELEASE_CHILD, encoding="utf-8")
 
@@ -1114,7 +1122,7 @@ def test_the_release_prices_and_keeps_quotes_with_only_the_images_runtime_instal
         text=True,
         encoding="utf-8",
         check=False,
-        env={**os.environ, workbench_app.STORE_URL_ENV: url},
+        env={**os.environ, ENVIRONMENT_ENV: "test", STORE_URL_ENV: url},
     )
 
     assert completed.returncode == 0, completed.stderr[-4000:]

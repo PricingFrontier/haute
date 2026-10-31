@@ -498,14 +498,6 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
         "DATABRICKS_APP_NAME",
         "os.environ.get",
     ),
-    # The underwriter app's quote store, a SQLAlchemy URL the host supplies at runtime,
-    # read as the app starts.
-    (
-        "src/haute/_workbench_app.py",
-        "<module>.quote_store_url",
-        "HAUTE_QUOTE_STORE_URL",
-        "os.environ.get",
-    ),
     (
         "src/haute/_project_storage.py",
         "<module>.resolve_project_dir",
@@ -613,6 +605,9 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
     ),
     # GitHub's supplied output-file path is an external integration string.
     ("src/haute/cli/_impact.py", "<module>.handle_impact", "GITHUB_STEP_SUMMARY", "os.environ.get"),
+    # Python's own stream-encoding variable: an encoding the user chose for the CLI's
+    # output is kept, a mark it cannot hold shown as ``?``, rather than replaced by UTF-8.
+    ("src/haute/cli/_output.py", "<module>.utf8_output", "PYTHONIOENCODING", "os.environ.get"),
 }
 
 

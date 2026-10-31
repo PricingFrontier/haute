@@ -11,7 +11,7 @@ import type { SchemaColumn, SchemaTable } from "../api/types"
 /**
  * The id and name of Haute's own input table of a quote's details, first in every form
  * (`haute._workbench_form.QUOTE_DETAILS_ID`): the underwriter app keeps its row with each
- * revision, and its Quotes page lists them.
+ * quote, and its Quotes page lists them.
  */
 export const QUOTE_DETAILS_ID = "quote_details"
 
@@ -60,6 +60,20 @@ export const QUOTE_DETAILS_MANAGED: ReadonlySet<string> = new Set([
   QUOTE_DETAILS.archived,
   QUOTE_DETAILS.created_date,
   QUOTE_DETAILS.created_by,
+  QUOTE_DETAILS.modified_date,
+  QUOTE_DETAILS.modified_by,
+  QUOTE_DETAILS.haute_version,
+])
+
+/**
+ * The columns of quote_details the app changes over a quote's life, which the quote store
+ * keeps but no request holds (`QUOTE_DETAILS_STORE_ONLY`): changing one never leaves a stored
+ * price that its stored inputs no longer give.
+ */
+export const QUOTE_DETAILS_STORE_ONLY: ReadonlySet<string> = new Set([
+  QUOTE_DETAILS.stage,
+  QUOTE_DETAILS.assignee,
+  QUOTE_DETAILS.archived,
   QUOTE_DETAILS.modified_date,
   QUOTE_DETAILS.modified_by,
   QUOTE_DETAILS.haute_version,

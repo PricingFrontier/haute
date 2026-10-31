@@ -16,7 +16,7 @@ from haute.schemas import (
     WorkbenchAppQuoteChange,
     WorkbenchAppQuoteCreateRequest,
     WorkbenchAppQuoteNote,
-    WorkbenchAppQuoteReviseRequest,
+    WorkbenchAppQuoteSaveRequest,
 )
 
 #: The documents a request carries whole: a pipeline graph with its constants, and a
@@ -83,7 +83,7 @@ def test_every_request_body_bounds_its_strings_lists_and_mappings() -> None:
     app_models: list[type[BaseModel]] = [
         WorkbenchAppPriceRequest,
         WorkbenchAppQuoteCreateRequest,
-        WorkbenchAppQuoteReviseRequest,
+        WorkbenchAppQuoteSaveRequest,
         WorkbenchAppQuoteNote,
         *_subclasses(WorkbenchAppQuoteChange),
     ]

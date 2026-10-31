@@ -1,8 +1,7 @@
 /**
  * The underwriter app's own state (specs/workbench): the release it serves and its sheets,
- * which the quote list's columns are read from even while a quote saved on earlier sheets
- * has those installed; and the people quotes are with. Its questions are the page's
- * (`useQuestionStore`).
+ * which every quote opens on and the quote list's columns are read from; and the people
+ * quotes are with. Its questions are the page's (`useQuestionStore`).
  */
 import { create } from "zustand"
 import { fetchAppPeople } from "../api/app"

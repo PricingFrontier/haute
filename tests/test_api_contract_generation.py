@@ -236,14 +236,14 @@ def test_request_contracts_read_a_body_as_its_route_does() -> None:
 
     # A defaulted field may be left out of a body the route reads, unlike a response's.
     assert set(create["required"]) == {"operation", "form_revision", "release", "values"}
-    assert {"shown", "source"} <= set(create["properties"])
+    assert {"source", "reference"} <= set(create["properties"])
     assert create["properties"]["operation"] == {
         "maxLength": 64,
         "minLength": 8,
         "title": "Operation",
         "type": "string",
     }
-    assert set(definitions["WorkbenchAppQuoteReopen"]["required"]) == {"version", "reason"}
+    assert set(definitions["WorkbenchAppQuoteAmend"]["required"]) == {"version", "reason"}
 
 
 def test_a_field_omitted_when_none_admits_no_null() -> None:

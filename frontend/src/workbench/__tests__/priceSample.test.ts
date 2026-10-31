@@ -27,6 +27,7 @@ const workbench = (responseTables: WorkbenchTable[]): WorkbenchTablesResponse =>
   tables: [policy],
   sample: typed,
   response_tables: responseTables,
+  store_columns: {},
 })
 /** The form the view holds; its content is the server's business. */
 const form = { name: "Commercial property" } as unknown as FormSpec

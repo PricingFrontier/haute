@@ -938,6 +938,13 @@ def output_document_schema(
     return pl.Schema({key: _document_dtype(value) for key, value in level(()).items()})
 
 
+def prune_document(value: Any) -> Any:
+    """*value* with absent structure dropped, null fields and empty collections, as
+    :func:`render_output_document` prunes each document: a quote store's rows rendered as the
+    pricing rendered them."""
+    return _prune(value)
+
+
 def render_output_document(df: pl.DataFrame) -> list[Any]:
     """Render an OUTPUT node's collected frame as the response JSON document.
 

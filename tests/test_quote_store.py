@@ -1,621 +1,310 @@
-"""The workbench's quote store (specs/workbench): one schema on a SQLite file, brought to it by
-Haute's migrations; quotes and their numbered revisions, each with the form it was keyed into;
-and a saved quote's values carried onto the current form."""
+"""The quote store's database (specs/workbench): made to hold the form's tables, built again
+in dev when the form changes, refused when it holds another form's, another project's or an
+earlier Haute's store, and opened only when it holds exactly the form's tables."""
 
 from __future__ import annotations
 
-import json
-import shutil
 import sqlite3
-from collections.abc import Iterator
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
-from alembic import command
-from alembic.autogenerate import compare_metadata
-from alembic.runtime.migration import MigrationContext
-from sqlalchemy import create_engine, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import inspect, text
 
 from haute._quote_store import (
-    QuoteBook,
-    QuoteNotFoundError,
-    QuoteStore,
-    QuoteStoreError,
-    QuoteStoreNotMigratedError,
-    ReferenceTakenError,
-    Source,
-    StaleQuoteError,
-    carry_values,
-    migrate_store,
-    open_store,
+    MigrationRefusedError,
+    QuoteStoreEnvironmentError,
+    QuoteStoreMismatchError,
+    open_book,
+    prepare_store,
     store_url,
 )
-from haute._quote_store._store import _MIGRATIONS, _alembic_config
-from haute._quote_store._tables import METADATA, VERSION_TABLE
-from haute._workbench_form import FormSpec
+from haute._quote_store._store import make_engine, writing
+from haute._workbench_form import FormSpec, with_quote_details
+
+PROJECT = "motor"
 
 
-def _form(*tables: dict[str, Any]) -> FormSpec:
-    return FormSpec.model_validate(
-        {
-            "name": "motor",
-            "schema": {"tables": list(tables)},
-            "pages": [
-                {
-                    "id": "p",
-                    "title": "Sheet 1",
-                    "width": 1280,
-                    "sections": [{"id": "s", "title": "s", "height": 120, "widgets": []}],
-                }
-            ],
-        }
+def form(*tables: dict[str, Any]) -> FormSpec:
+    return with_quote_details(
+        FormSpec.model_validate(
+            {
+                "name": PROJECT,
+                "schema": {"tables": list(tables)},
+                "pages": [
+                    {
+                        "id": "p",
+                        "title": "Sheet 1",
+                        "width": 1280,
+                        "sections": [{"id": "s", "title": "s", "height": 120, "widgets": []}],
+                    }
+                ],
+            }
+        )
     )
 
 
-def _table(id_: str, name: str, *columns: tuple[str, str], role: str = "input") -> dict[str, Any]:
-    return {
-        "id": id_,
-        "name": name,
-        "role": role,
-        "rows": "one",
-        "columns": [{"id": cid, "name": cname, "type": "str"} for cid, cname in columns],
-    }
+def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
+    return {"id": f"c_{name}", "name": name, "type": type_, **rest}
 
 
-FORM = _form(_table("t_policy", "policy", ("c_region", "region"), ("c_cover", "cover")))
-VALUES = {"t_policy": [{"c_region": "north", "c_cover": "full"}]}
-REQUEST = {"policy": {"region": "north", "cover": "full"}}
-RESPONSE = {"pricing": {"premium": 512.4}}
-
-
-class Clock:
-    """A clock moving a second on each reading, so saves are ordered."""
-
-    def __init__(self) -> None:
-        self.now = datetime(2026, 10, 12, 9, 0, tzinfo=UTC)
-
-    def __call__(self) -> datetime:
-        self.now += timedelta(seconds=1)
-        return self.now
+POLICY = {"id": "t_policy", "name": "policy", "rows": "one", "columns": [column("region")]}
+VEHICLES = {
+    "id": "t_vehicles",
+    "name": "vehicles",
+    "rows": "many",
+    "columns": [column("reg", key=True), column("value", "float")],
+}
 
 
 @pytest.fixture
 def url(tmp_path: Path) -> str:
-    return store_url(tmp_path / "quotes.sqlite")
+    return store_url(tmp_path / "store.sqlite")
 
 
-@pytest.fixture
-def store(url: str) -> Iterator[QuoteStore]:
-    migrate_store(url)
-    with open_store(url, clock=Clock()) as opened:
-        yield opened
-
-
-def _create(store: QuoteStore, **overrides: Any) -> Any:
-    fields: dict[str, Any] = {
-        "name": "Northern fleet",
-        "owner": "ana@example.com",
-        "saved_by": "ana@example.com",
-        "form": FORM,
-        "inputs": VALUES,
-        "request": REQUEST,
-        "response": RESPONSE,
-        "release": None,
-    }
-    return store.create(**{**fields, **overrides})
-
-
-# ── The schema and its migrations ─────────────────────────────────────────
-
-
-def test_a_new_file_is_migrated_to_the_schema_and_a_second_migration_changes_nothing(
-    url: str,
-) -> None:
-    migrate_store(url)
-    migrate_store(url)
-
-    engine = create_engine(url)
+def tables(url: str) -> set[str]:
+    engine = make_engine(url)
     try:
         with engine.connect() as connection:
-            context = MigrationContext.configure(connection, opts={"version_table": VERSION_TABLE})
-            assert compare_metadata(context, METADATA) == []
-            assert context.get_current_revision() == "0004"
+            return set(inspect(connection).get_table_names())
     finally:
         engine.dispose()
 
 
-def test_a_file_at_the_second_schema_takes_is_renewal_null_its_rows_kept_and_its_oldest_reader(
-    url: str,
-) -> None:
-    # A database the second schema's Haute wrote, holding one app quote's details.
-    engine = create_engine(url)
-    try:
-        with engine.begin() as connection:
-            command.upgrade(_alembic_config(connection), "0002")
-            now = datetime(2026, 10, 12, 9, 0)
-            connection.execute(
-                text("INSERT INTO haute_quote_forms VALUES ('f1', '{}')"),
-            )
-            connection.execute(
-                text("INSERT INTO haute_quotes VALUES ('q1', 'Q-000001', 'ana', :now, 1)"),
-                {"now": now},
-            )
-            connection.execute(
-                text(
-                    "INSERT INTO haute_quote_revisions VALUES "
-                    "('q1', 1, 'f1', '{}', '{}', NULL, NULL, 'ana', :now)"
-                ),
-                {"now": now},
-            )
-            connection.execute(
-                text(
-                    "INSERT INTO haute_quote_details (quote_id, revision, reference, insured, "
-                    "stage, assignee, archived) VALUES ('q1', 1, 'Q-000001', 'Acme', 'draft', "
-                    "'ana', 0)"
-                )
-            )
-    finally:
-        engine.dispose()
-
-    migrate_store(url)
-
-    engine = create_engine(url)
+def rows(url: str, table: str) -> list[tuple[Any, ...]]:
+    engine = make_engine(url)
     try:
         with engine.connect() as connection:
-            context = MigrationContext.configure(connection, opts={"version_table": VERSION_TABLE})
-            assert context.get_current_revision() == "0004"
-            assert compare_metadata(context, METADATA) == []
-            row = connection.execute(
-                text("SELECT quote_reference, insured, is_renewal FROM haute_quote_details")
-            ).one()
-            assert tuple(row) == ("Q-000001", "Acme", None)
-            # The fourth is now the oldest that can use it, as the third named itself before.
-            oldest = connection.execute(
-                text("SELECT oldest_reader FROM haute_quote_store_compat")
-            ).scalar_one()
-            assert oldest == "0004"
+            return [tuple(row) for row in connection.execute(text(f'SELECT * FROM "{table}"'))]
     finally:
         engine.dispose()
 
 
-def test_a_file_at_the_third_schema_gives_each_app_quote_its_reference_and_option_1(
-    url: str,
-) -> None:
-    # A database the third schema's Haute wrote: an app quote of two revisions, whose
-    # reference its details hold, the second saved by Jo a day later and priced with a
-    # validity date, and a quote the store saved alone, with none.
-    priced = json.dumps({"quote_details": {"reference": "Q-000004", "valid_until": "2026-11-30"}})
-    engine = create_engine(url)
+def add_quote(url: str, *, vehicles: int = 0) -> None:
+    """A quote's rows written straight into the tables, as a report would see them."""
+    engine = make_engine(url)
     try:
-        with engine.begin() as connection:
-            command.upgrade(_alembic_config(connection), "0003")
-            now = datetime(2026, 10, 20, 9, 0)
-            later = datetime(2026, 10, 21, 23, 59)
-            connection.execute(text("INSERT INTO haute_quote_forms VALUES ('f1', '{}')"))
-            for quote_id, name, latest in (("q1", "Fleet", 2), ("q2", "smoke", 1)):
-                connection.execute(
-                    text("INSERT INTO haute_quotes VALUES (:id, :name, 'ana', :now, :latest)"),
-                    {"id": quote_id, "name": name, "now": now, "latest": latest},
+        with writing(engine) as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO quote_details (quote_reference, quote_option, stage, assignee, "
+                    "archived, created_date, created_by, modified_date, modified_by, "
+                    "quote_version, saved_at, saved_by) VALUES ('A-1', 1, 'draft', 'ana', 0, "
+                    "'2026-10-30', 'ana', '2026-10-30', 'ana', 1, '2026-10-30 09:00:00', 'ana')"
                 )
-                for number in range(1, latest + 1):
-                    second = quote_id == "q1" and number == 2
-                    connection.execute(
-                        text(
-                            "INSERT INTO haute_quote_revisions VALUES "
-                            "(:id, :number, 'f1', '{}', :request, '{}', NULL, :by, :at)"
-                        ),
-                        {
-                            "id": quote_id,
-                            "number": number,
-                            "request": priced if second else "{}",
-                            "by": "jo" if second else "ana",
-                            "at": later if second else now,
-                        },
-                    )
-            for number in (1, 2):
+            )
+            for number in range(1, vehicles + 1):
                 connection.execute(
                     text(
-                        "INSERT INTO haute_quote_details (quote_id, revision, reference, stage, "
-                        "assignee, archived, valid_until, currency) VALUES ('q1', :number, "
-                        "'Q-000004', 'draft', 'ana', 0, '2026-11-30', 'GBP')"
-                    ),
-                    {"number": number},
+                        "INSERT INTO vehicles (quote_reference, quote_option, quote_row, reg) "
+                        f"VALUES ('A-1', 1, {number}, 'R{number}')"
+                    )
                 )
     finally:
         engine.dispose()
 
-    migrate_store(url)
 
-    engine = create_engine(url)
+def test_an_empty_database_takes_the_forms_tables_and_haute_s_two(url: str) -> None:
+    assert prepare_store(url, form(POLICY, VEHICLES), project=PROJECT).dropped == []
+
+    assert tables(url) == {"quote_details", "policy", "vehicles", "haute_store", "haute_activity"}
+    [record] = rows(url, "haute_store")
+    assert record[1:3] == (PROJECT, "dev")
+    # Opened for the same form, project and environment, it is the book's.
+    open_book(url, form(POLICY, VEHICLES), project=PROJECT, haute_version="1.0").close()
+
+
+def test_preparing_again_for_the_same_form_changes_nothing(url: str) -> None:
+    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT)
+    add_quote(url, vehicles=2)
+
+    assert prepare_store(url, form(POLICY, VEHICLES), project=PROJECT).steps == ()
+    assert len(rows(url, "vehicles")) == 2
+
+
+def test_dev_takes_a_column_the_form_added_keeping_every_row(url: str) -> None:
+    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT)
+    add_quote(url, vehicles=2)
+    seats = {**VEHICLES, "columns": [*VEHICLES["columns"], column("seats", "int")]}
+
+    made = prepare_store(url, form(POLICY, seats), project=PROJECT)
+
+    assert [(step.kind, step.column) for step in made.steps] == [("add column", "seats")]
+    assert made.dropped == []
+    assert len(rows(url, "vehicles")) == 2
+    columns = make_engine(url)
     try:
-        with engine.connect() as connection:
-            context = MigrationContext.configure(connection, opts={"version_table": VERSION_TABLE})
-            assert context.get_current_revision() == "0004"
-            assert compare_metadata(context, METADATA) == []
-            quotes = connection.execute(
-                text("SELECT id, reference, option FROM haute_quotes ORDER BY id")
-            ).all()
-            assert [tuple(row) for row in quotes] == [("q1", "Q-000004", 1), ("q2", None, None)]
-            details = connection.execute(
-                text(
-                    "SELECT revision, quote_option, created_date, created_by, modified_date, "
-                    "modified_by, haute_version FROM haute_quote_details ORDER BY revision"
-                )
-            ).all()
-            # Made by Ana on the 20th; each revision written when and by whom it was; no
-            # version recorded.
-            assert [tuple(row) for row in details] == [
-                (1, 1, "2026-10-20", "ana", "2026-10-20", "ana", None),
-                (2, 1, "2026-10-20", "ana", "2026-10-21", "jo", None),
-            ]
-            columns = {
-                row[1] for row in connection.execute(text("PRAGMA table_info(haute_quote_details)"))
-            }
-            assert not {"valid_until", "currency"} & columns
-            # Each app quote holds its reference's canonical form, by which its options are
-            # counted: an alternative of Q-000004 would take option 2.
-            keys = connection.execute(
-                text("SELECT id, reference_key FROM haute_quotes ORDER BY id")
-            ).all()
-            assert [tuple(row) for row in keys] == [("q1", "q-000004"), ("q2", None)]
-            counted = connection.execute(
-                text("SELECT reference_key, last_option FROM haute_quote_options")
-            ).all()
-            assert [tuple(row) for row in counted] == [("q-000004", 1)]
-            oldest = connection.execute(
-                text("SELECT oldest_reader FROM haute_quote_store_compat")
-            ).scalar_one()
-            assert oldest == "0004"
+        with columns.connect() as connection:
+            names = [c["name"] for c in inspect(connection).get_columns("vehicles")]
     finally:
-        engine.dispose()
-    # The revision priced with a validity date keeps it in its request, and a change after
-    # the migration copies it.
-    with QuoteBook(open_store(url), haute_version="9.9.9") as book:
-        assigned = book.assign("q1", version=2, actor="jo", assignee="jo")
-        copied = book.revision("q1", 3).request
-        assert copied["quote_details"] == json.loads(priced)["quote_details"]
-        assert (assigned.details["modified_by"], assigned.details["haute_version"]) == (
-            "jo",
-            "9.9.9",
-        )
-        assert "valid_until" not in assigned.details
-        # An alternative of the quote numbered before takes the next option under it, and a
-        # new quote keying its reference in another case is refused.
-        alternative = book.create(
-            operation="operation-alternative",
-            actor="jo",
-            form=FORM,
-            inputs=VALUES,
-            request=REQUEST,
-            response=None,
-            release=None,
-            at=book.now(),
-            reference=None,
-            source=Source("q1", 3, "alternative"),
-        )
-        assert alternative.label == "Q-000004/2"
-        with pytest.raises(ReferenceTakenError, match="Q-000004/1 already holds"):
-            book.create(
-                operation="operation-same-reference",
-                actor="jo",
-                form=FORM,
-                inputs=VALUES,
-                request=REQUEST,
-                response=None,
-                release=None,
-                at=book.now(),
-                reference="q-000004",
-            )
+        columns.dispose()
+    assert "seats" in names
 
 
-def test_a_haute_at_the_third_schema_refuses_a_database_migrated_to_the_fourth(
-    url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_dev_drops_a_table_the_form_no_longer_has(url: str) -> None:
+    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT)
+    add_quote(url, vehicles=1)
+
+    assert prepare_store(url, form(POLICY), project=PROJECT).dropped == ["vehicles"]
+    assert "vehicles" not in tables(url)
+
+
+def test_outside_dev_a_change_to_a_table_holding_rows_is_refused_naming_it(url: str) -> None:
+    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT, environment="test")
+    add_quote(url, vehicles=1)
+
+    with pytest.raises(MigrationRefusedError, match="vehicles holds rows of 1 quote") as refused:
+        prepare_store(
+            url, form(POLICY, {**VEHICLES, "rows": "one"}), project=PROJECT, environment="test"
+        )
+
+    assert refused.value.error_code == "migration_refused"
+    # Nothing was dropped or built again.
+    assert len(rows(url, "vehicles")) == 1
+
+
+def test_a_database_that_does_not_hold_the_forms_tables_is_not_opened(url: str) -> None:
+    with pytest.raises(QuoteStoreMismatchError, match="holds no quote store yet"):
+        open_book(url, form(POLICY), project=PROJECT, haute_version="1.0")
+
+    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT)
+    with pytest.raises(QuoteStoreMismatchError, match="policy is no longer the form's"):
+        open_book(url, form(VEHICLES), project=PROJECT, haute_version="1.0")
+
+
+@pytest.mark.parametrize(
+    ("project", "environment"), [("home", "dev"), (PROJECT, "prod")], ids=["project", "environment"]
+)
+def test_a_database_recorded_for_another_project_or_environment_is_refused_naming_both(
+    url: str, project: str, environment: str
 ) -> None:
-    migrate_store(url)
-    # The previous release, rolled back onto it: the first three migrations alone.
-    previous = tmp_path / "previous_migrations"
-    shutil.copytree(_MIGRATIONS, previous, ignore=shutil.ignore_patterns("0004_*", "__pycache__"))
-    monkeypatch.setattr("haute._quote_store._store._MIGRATIONS", previous)
+    prepare_store(url, form(POLICY), project=PROJECT)
 
     with pytest.raises(
-        QuoteStoreNotMigratedError,
-        match="newer than this Haute's newest, 0003, and names 0004 as the oldest",
+        QuoteStoreEnvironmentError,
+        match=f"of 'motor' in 'dev', not of '{project}' in '{environment}'",
     ):
-        open_store(url)
-    with pytest.raises(QuoteStoreNotMigratedError, match="upgrade Haute"):
-        migrate_store(url)
+        open_book(url, form(POLICY), project=project, environment=environment, haute_version="1")
+    with pytest.raises(QuoteStoreEnvironmentError):
+        prepare_store(url, form(POLICY), project=project, environment=environment)
 
 
-def test_a_file_not_at_the_newest_schema_is_refused_naming_what_to_run(url: str) -> None:
-    with pytest.raises(QuoteStoreNotMigratedError, match="migrate_store") as refused:
-        open_store(url)
-    assert refused.value.error_code == "quote_store_not_migrated"
+def test_tables_of_the_forms_names_the_store_did_not_make_are_never_adopted(url: str) -> None:
+    with sqlite3.connect(url.removeprefix("sqlite:///")) as raw:
+        raw.execute("CREATE TABLE policy (region TEXT)")
+
+    with pytest.raises(QuoteStoreMismatchError, match=r"did not make \(policy\)"):
+        prepare_store(url, form(POLICY), project=PROJECT)
+    assert tables(url) == {"policy"}
 
 
-def _ahead(url: str, oldest_reader: str) -> None:
-    """Put the migrated database at a schema past this Haute's, naming *oldest_reader*."""
-    migrate_store(url)
-    engine = create_engine(url)
+def test_an_earlier_haute_s_store_is_refused_naming_its_tables(url: str) -> None:
+    with sqlite3.connect(url.removeprefix("sqlite:///")) as raw:
+        raw.execute("CREATE TABLE haute_quote_store_version (version_num TEXT)")
+        raw.execute("CREATE TABLE haute_quotes (id TEXT)")
+
+    for attempt in (
+        lambda: prepare_store(url, form(POLICY), project=PROJECT),
+        lambda: open_book(url, form(POLICY), project=PROJECT, haute_version="1"),
+    ):
+        with pytest.raises(
+            QuoteStoreMismatchError, match=r"\(haute_quote_store_version, haute_quotes\)"
+        ):
+            attempt()
+
+
+def _raw(url: str, *statements: str) -> None:
+    """*statements* run on the file as someone working on the SQL side would run them."""
+    with sqlite3.connect(url.removeprefix("sqlite:///")) as raw:
+        raw.execute("PRAGMA foreign_keys=OFF")
+        for statement in statements:
+            raw.execute(statement)
+
+
+def _refusal(url: str, environment: str = "test") -> QuoteStoreMismatchError:
+    with pytest.raises(QuoteStoreMismatchError) as refused:
+        open_book(
+            url, form(POLICY, VEHICLES), project=PROJECT, environment=environment, haute_version="1"
+        )
+    return refused.value
+
+
+def test_a_started_app_refuses_a_database_its_catalogue_says_is_not_the_stores(url: str) -> None:
+    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT, environment="test")
+    _raw(
+        url,
+        "ALTER TABLE vehicles DROP COLUMN value",
+        "ALTER TABLE policy ADD COLUMN reviewed TEXT NOT NULL DEFAULT 'no'",
+    )
+
+    refused = _refusal(url)
+
+    assert refused.differences == [
+        "policy.reviewed is no column of the release's and takes no null, so no row of it could "
+        "be saved",
+        "vehicles.value is missing",
+    ]
+    assert "Run haute app migrate --environment test" in str(refused)
+
+
+def test_a_table_gone_retyped_or_keyed_otherwise_is_named(url: str) -> None:
+    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT, environment="test")
+    _raw(
+        url,
+        "DROP TABLE policy",
+        "DROP TABLE vehicles",
+        "CREATE TABLE vehicles (quote_reference VARCHAR(40) NOT NULL, quote_option BIGINT "
+        "NOT NULL, quote_row BIGINT NOT NULL, reg TEXT, value TEXT, "
+        "PRIMARY KEY (quote_reference, quote_option))",
+    )
+
+    assert _refusal(url).differences == [
+        "the table policy is missing",
+        "vehicles.value holds string, not float",
+        "vehicles is keyed by quote_reference, quote_option, not quote_reference, quote_option, "
+        "quote_row",
+        "vehicles does not refer to its quote's quote_details row",
+    ]
+
+
+def test_a_column_the_sql_side_added_that_takes_a_null_is_no_difference(url: str) -> None:
+    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT, environment="test")
+    _raw(url, "ALTER TABLE policy ADD COLUMN notes TEXT")
+
+    open_book(
+        url, form(POLICY, VEHICLES), project=PROJECT, environment="test", haute_version="1"
+    ).close()
+
+
+def test_dev_s_refusal_says_to_start_haute_app_serve_again(url: str) -> None:
+    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT)
+    _raw(url, "ALTER TABLE vehicles DROP COLUMN value")
+
+    assert "Start haute app serve again" in str(_refusal(url, environment="dev"))
+
+
+def test_ddl_in_a_write_that_fails_is_rolled_back_whole(url: str) -> None:
+    engine = make_engine(url)
     try:
-        with engine.begin() as connection:
-            connection.execute(text(f"UPDATE {VERSION_TABLE} SET version_num = '0005'"))
-            connection.execute(
-                text("UPDATE haute_quote_store_compat SET oldest_reader = :oldest"),
-                {"oldest": oldest_reader},
-            )
+        with pytest.raises(RuntimeError), writing(engine) as connection:
+            connection.execute(text("CREATE TABLE half_made (x INTEGER)"))
+            raise RuntimeError("the write fails part way")
     finally:
         engine.dispose()
 
-
-def test_a_database_past_this_hautes_schema_that_names_it_able_opens_as_it_is(url: str) -> None:
-    _ahead(url, oldest_reader="0002")
-
-    migrate_store(url)
-    with open_store(url, clock=Clock()) as store:
-        _create(store)
-        assert len(store.quotes()) == 1
+    assert "half_made" not in tables(url)
 
 
-def test_a_database_past_this_hautes_schema_that_needs_a_newer_one_is_refused(url: str) -> None:
-    _ahead(url, oldest_reader="0005")
-
-    with pytest.raises(QuoteStoreNotMigratedError, match="newer than this Haute's newest, 0004"):
-        open_store(url)
-    with pytest.raises(QuoteStoreNotMigratedError, match="upgrade Haute"):
-        migrate_store(url)
-
-
-def test_a_sqlite_store_keeps_foreign_keys_on_and_no_write_ahead_log(
-    store: QuoteStore, tmp_path: Path
-) -> None:
-    _create(store)
-
-    with store._engine.connect() as connection:
-        assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
-        with pytest.raises(IntegrityError, match="FOREIGN KEY"):
-            connection.exec_driver_sql(
-                "INSERT INTO haute_quote_revisions (quote_id, number, form_revision, inputs, "
-                "request, saved_by, saved_at) VALUES ('none', 1, 'none', '{}', '{}', 'a', "
-                "'2026-10-12 09:00:00')"
+def test_foreign_keys_are_held_on_every_connection(url: str) -> None:
+    prepare_store(url, form(VEHICLES), project=PROJECT)
+    engine = make_engine(url)
+    try:
+        with pytest.raises(Exception, match="FOREIGN KEY"), writing(engine) as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO vehicles (quote_reference, quote_option, quote_row) "
+                    "VALUES ('NONE', 1, 1)"
+                )
             )
-    assert sorted(path.name for path in tmp_path.iterdir()) == ["quotes.sqlite"]
-    with sqlite3.connect(tmp_path / "quotes.sqlite") as raw:
-        assert raw.execute("PRAGMA journal_mode").fetchone() == ("delete",)
-
-
-def _write_ahead(path: Path) -> None:
-    """A store's file put in write-ahead logging, as another tool might leave it."""
-    raw = sqlite3.connect(path)
-    try:
-        assert raw.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
     finally:
-        raw.close()
-
-
-def test_a_file_left_in_write_ahead_logging_is_put_back_to_a_rollback_journal(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "quotes.sqlite"
-    migrate_store(store_url(path))
-    _write_ahead(path)
-
-    with open_store(store_url(path), clock=Clock()) as store:
-        _create(store)
-
-    with sqlite3.connect(path) as raw:
-        assert raw.execute("PRAGMA journal_mode").fetchone() == ("delete",)
-    assert sorted(entry.name for entry in tmp_path.iterdir()) == ["quotes.sqlite"]
-
-
-def test_a_file_held_in_write_ahead_logging_is_refused_and_nothing_is_written(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "quotes.sqlite"
-    migrate_store(store_url(path))
-    _write_ahead(path)
-    # Another connection holds the file in write-ahead logging, so it cannot be switched.
-    holder = sqlite3.connect(path)
-    try:
-        holder.execute("SELECT COUNT(*) FROM haute_quotes").fetchone()
-        with pytest.raises(QuoteStoreError, match="could not be put back to a rollback journal"):
-            with open_store(store_url(path), clock=Clock()) as store:
-                _create(store)
-        assert holder.execute("SELECT COUNT(*) FROM haute_quotes").fetchone() == (0,)
-    finally:
-        holder.close()
-
-
-# ── Quotes and revisions ──────────────────────────────────────────────────
-
-
-def test_a_quote_is_created_and_read_back_whole(store: QuoteStore) -> None:
-    created = _create(store, release="motor-2026.10.12+abc1234")
-
-    read = store.revision(created.quote_id)
-
-    assert read == created
-    assert read.number == 1
-    assert read.inputs == VALUES
-    assert read.request == REQUEST
-    assert read.response == RESPONSE
-    assert read.release == "motor-2026.10.12+abc1234"
-    assert read.saved_by == "ana@example.com"
-    assert read.saved_at.tzinfo is UTC
-    assert store.form(read.form_revision) == FORM
-
-
-def test_a_revision_follows_the_one_it_names_and_leaves_it_as_it_was(store: QuoteStore) -> None:
-    first = _create(store)
-    repriced = {"pricing": {"premium": 530.0}}
-
-    second = store.save_revision(
-        first.quote_id,
-        after=1,
-        saved_by="ben@example.com",
-        form=FORM,
-        inputs=VALUES,
-        request=REQUEST,
-        response=repriced,
-        release=None,
-    )
-
-    assert second.number == 2
-    assert store.revision(first.quote_id) == second
-    assert store.revision(first.quote_id, 1) == first
-
-
-def test_a_revision_after_one_the_quote_has_moved_past_is_refused_with_nothing_written(
-    store: QuoteStore, url: str
-) -> None:
-    first = _create(store)
-    fields = {
-        "saved_by": "ben@example.com",
-        "form": FORM,
-        "inputs": VALUES,
-        "request": REQUEST,
-        "response": None,
-        "release": None,
-    }
-    store.save_revision(first.quote_id, after=1, **fields)
-
-    other_form = _form(_table("t_policy", "policy", ("c_region", "region")))
-    with pytest.raises(StaleQuoteError, match="revision 1.*newest is 2") as refused:
-        store.save_revision(first.quote_id, after=1, **{**fields, "form": other_form})
-
-    assert refused.value.error_code == "stale_quote_revision"
-    assert store.revision(first.quote_id).number == 2
-    [summary] = store.quotes()
-    assert summary.latest == 2
-    # The refused save's form was not kept either: the one transaction wrote nothing.
-    with sqlite3.connect(url.removeprefix("sqlite:///")) as raw:
-        assert raw.execute("SELECT COUNT(*) FROM haute_quote_forms").fetchone() == (1,)
-
-
-def test_an_unknown_quote_or_revision_is_refused_naming_it(store: QuoteStore) -> None:
-    created = _create(store)
-
-    with pytest.raises(QuoteNotFoundError, match="'nope'") as unknown:
-        store.revision("nope")
-    with pytest.raises(QuoteNotFoundError, match="revision 3"):
-        store.revision(created.quote_id, 3)
-    with pytest.raises(QuoteNotFoundError, match="form 'nope'"):
-        store.form("nope")
-    assert unknown.value.error_code == "quote_not_found"
-
-
-def test_a_quote_saved_unpriced_has_no_response(store: QuoteStore) -> None:
-    created = _create(store, response=None)
-
-    assert store.revision(created.quote_id).response is None
-    [summary] = store.quotes()
-    assert summary.priced is False
-
-
-def test_values_not_as_the_sheets_keep_them_are_refused(store: QuoteStore) -> None:
-    with pytest.raises(QuoteStoreError, match="not as the sheets keep them"):
-        _create(store, inputs={"t_policy": [{"c_region": 5}]})
-
-
-def test_two_quotes_on_one_form_keep_it_once(store: QuoteStore, url: str) -> None:
-    first = _create(store)
-    second = _create(store, name="Southern fleet")
-
-    assert first.form_revision == second.form_revision
-    with sqlite3.connect(url.removeprefix("sqlite:///")) as raw:
-        assert raw.execute("SELECT COUNT(*) FROM haute_quote_forms").fetchone() == (1,)
-
-
-def test_the_list_of_quotes_is_newest_first_for_one_owner_or_all(store: QuoteStore) -> None:
-    ana = _create(store, name="Northern fleet")
-    ben = _create(store, name="Southern fleet", owner="ben@example.com")
-    store.save_revision(
-        ana.quote_id,
-        after=1,
-        saved_by="ana@example.com",
-        form=FORM,
-        inputs=VALUES,
-        request=REQUEST,
-        response=RESPONSE,
-        release=None,
-    )
-
-    assert [quote.name for quote in store.quotes()] == ["Northern fleet", "Southern fleet"]
-    [only_ben] = store.quotes(owner="ben@example.com")
-    assert (only_ben.id, only_ben.latest, only_ben.priced) == (ben.quote_id, 1, True)
-
-
-def test_one_quote_is_read_as_the_list_shows_it(store: QuoteStore) -> None:
-    ana = _create(store, name="Northern fleet")
-    _create(store, name="Southern fleet", owner="ben@example.com")
-    store.save_revision(
-        ana.quote_id,
-        after=1,
-        saved_by="cy@example.com",
-        form=FORM,
-        inputs=VALUES,
-        request=REQUEST,
-        response=None,
-        release=None,
-    )
-
-    summary = store.summary(ana.quote_id)
-
-    assert summary == next(quote for quote in store.quotes() if quote.id == ana.quote_id)
-    assert (summary.name, summary.latest, summary.saved_by, summary.priced) == (
-        "Northern fleet",
-        2,
-        "cy@example.com",
-        False,
-    )
-    with pytest.raises(QuoteNotFoundError, match="holds no quote 'nope'"):
-        store.summary("nope")
-
-
-# ── A saved quote's values on the current form ────────────────────────────
-
-
-def test_values_are_carried_onto_the_current_form_through_the_stable_ids() -> None:
-    saved = _form(
-        _table("t_policy", "policy", ("c_region", "region"), ("c_cover", "cover")),
-        _table("t_driver", "driver", ("c_age", "age")),
-        _table("t_extra", "extras", ("c_note", "note")),
-    )
-    current = _form(
-        # Renamed, with one column removed and a new one added.
-        _table("t_policy", "policy_details", ("c_region", "area"), ("c_new", "excess")),
-        # A table that is now an output.
-        _table("t_driver", "driver", ("c_age", "age"), role="output"),
-    )
-    values = {
-        "t_policy": [{"c_region": "north", "c_cover": "full"}],
-        "t_driver": [{"c_age": "42"}],
-        "t_extra": [{"c_note": " "}],
-    }
-
-    carried = carry_values(values, saved, current)
-
-    assert carried.values == {"t_policy": [{"c_region": "north"}]}
-    # By the saved form's names, in its order; the blank note is no loss.
-    assert carried.dropped == ["policy.cover", "driver.age"]
-
-
-def test_a_table_now_of_one_row_keeps_the_first_and_names_the_values_of_the_rest() -> None:
-    saved = _form(
-        {**_table("t_layer", "layers", ("c_limit", "limit"), ("c_note", "note")), "rows": "many"}
-    )
-    current = _form(_table("t_layer", "layer", ("c_limit", "limit")))
-    values = {
-        "t_layer": [
-            {"c_limit": "500", "c_note": "first"},
-            {"c_limit": "1000", "c_note": ""},
-            {"c_limit": "", "c_note": "third"},
-        ]
-    }
-
-    carried = carry_values(values, saved, current)
-
-    assert carried.values == {"t_layer": [{"c_limit": "500"}]}
-    assert carried.dropped == ["layers.note", "layers.limit row 2"]
+        engine.dispose()

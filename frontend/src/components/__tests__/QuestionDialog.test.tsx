@@ -59,8 +59,8 @@ describe("QuestionDialog", () => {
   })
 
   it("asks for the reason, focused, before it can be answered yes", async () => {
-    const answer = asking({ title: "Reopen Q-1?", confirm: "Reopen", reason: { label: "Why it is being reopened" } })
-    const reason = screen.getByLabelText("Why it is being reopened")
+    const answer = asking({ title: "Amend Q-1/1?", confirm: "Amend", reason: { label: "Why it is being amended" } })
+    const reason = screen.getByLabelText("Why it is being amended")
     expect(document.activeElement).toBe(reason)
     expect(screen.getByTestId("question-confirm")).toBeDisabled()
 

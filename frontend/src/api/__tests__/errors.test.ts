@@ -21,8 +21,9 @@ describe("apiErrorCode", () => {
 describe("isStaleRevision", () => {
   it("knows a save refused for a stale document or quote, from a flat detail or a structured one", () => {
     expect(isStaleRevision(new ApiError("HTTP 409", 409, "stale_document_revision: changed", undefined, "stale_document_revision: changed"))).toBe(true)
-    expect(isStaleRevision(new ApiError("HTTP 409", 409, "stale_quote_revision: saved since", undefined, "stale_quote_revision: saved since"))).toBe(true)
-    expect(isStaleRevision(new ApiError("HTTP 409", 409, undefined, undefined, { error_code: "stale_quote_revision", message: "saved since" }))).toBe(true)
+    expect(isStaleRevision(new ApiError("HTTP 409", 409, undefined, undefined, { error_code: "stale_quote", message: "saved since", quote: null }))).toBe(true)
+    // A repeated write that landed and was changed since is done, not stale.
+    expect(isStaleRevision(new ApiError("HTTP 409", 409, undefined, undefined, { error_code: "write_superseded", message: "landed" }))).toBe(false)
     expect(isStaleRevision(new ApiError("HTTP 409", 409, "git_unavailable: no git", undefined, "git_unavailable: no git"))).toBe(false)
     expect(isStaleRevision(new ApiError("HTTP 409", 409, "The release changed", undefined, "The release changed"))).toBe(false)
     expect(isStaleRevision(new Error("stale_document_revision"))).toBe(false)

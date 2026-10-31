@@ -5,10 +5,11 @@
  * form store, a lazy chunk, for the editor's navigation guards), and the Workbench
  * Input's tables and sample quote and the Workbench Output's tables from the newest fetch
  * of GET /api/workbench/tables, which are the nodes' ports and which the project's save
- * waits for.
+ * waits for, with the columns the quote store keeps in each table that the form does not.
  */
 import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
+import type { WorkbenchStoreColumn } from "../api/types"
 import { fetchWorkbenchStatus, fetchWorkbenchTables } from "../api/workbench"
 import { canonicalJson } from "../utils/canonicalJson"
 import type { WorkbenchTables } from "../utils/workbenchTables"
@@ -47,6 +48,12 @@ interface WorkbenchState {
   formChanges: number
   /** The workbench's tables from the newest fetch that succeeded; null until one has. */
   tables: WorkbenchTables | null
+  /**
+   * The columns the quote store keeps in each of the form's tables that the form does not,
+   * by table id, from the same fetch: quote_details' own, and a many-row table's `quote_row`.
+   * They are no node's ports.
+   */
+  storeColumns: Readonly<Record<string, readonly WorkbenchStoreColumn[]>>
   /**
    * Fetch the workbench's tables and return the fetch's number, or null, fetching nothing,
    * while the workbench is not enabled. Only the newest fetch publishes: its tables, or one
@@ -95,6 +102,7 @@ const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
   formDirty: false,
   formChanges: 0,
   tables: null,
+  storeColumns: {},
   refreshTables: () => {
     if (!get().enabled) return null
     const fetch = fetches.take()
@@ -109,7 +117,7 @@ const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
           responseTables: response.response_tables,
           fetch,
         }
-        set({ tables })
+        set({ tables, storeColumns: response.store_columns })
         if (previous !== null && given(previous) !== given(tables)) {
           // The graph's structure as every reader keys it: a preview, a recorded column, a
           // job's staleness.

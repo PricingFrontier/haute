@@ -1,67 +1,130 @@
-"""The workbench's quote store (specs/workbench): saved quotes and their revisions, and the
-underwriter app's book of the quotes it keeps.
+"""The workbench's quote store (specs/workbench): the form's own tables in the user's
+database, each quote's current state in them, and Haute's two tables beside them.
 
-One schema, Haute's, on a SQLite file for an analyst's machine and CI, and on the server
-database the project's IT team provides for the underwriter app. Imported where a store is
-used, never on the scorer's import path, so a deployed pipeline loads no database client.
+Imported where a store is used, never on the scorer's import path, so a deployed pipeline
+loads no database client.
 """
 
+from __future__ import annotations
+
+from collections.abc import Callable
+from datetime import datetime
+
 from haute._quote_store._book import (
+    ActivityEntry,
     AppQuote,
+    OpenQuote,
+    PricedOutputs,
+    QuoteActivity,
     QuoteBook,
-    QuoteEvent,
-    QuoteLockedError,
     QuotePage,
-    QuoteTimeline,
-    ReferenceTakenError,
     RelatedQuote,
-    RevisionSummary,
     Source,
-    canonical_reference,
+    as_written,
     check_reference,
     details_of,
+    identity_label,
     with_details,
+    without_app_details,
 )
+from haute._quote_store._environment import StoreLocation, resolve_store
+from haute._quote_store._migrate import (
+    MigrationRefusedError,
+    Plan,
+    Step,
+    offline_plan,
+    plan_store,
+    prepare_store,
+    render_sql,
+    render_text,
+)
+from haute._quote_store._providers import SignIn
+from haute._quote_store._rows import input_rows
 from haute._quote_store._store import (
-    CarriedValues,
+    DEV,
+    MisfitCell,
+    QuoteLockedError,
     QuoteNotFoundError,
-    QuoteRevision,
-    QuoteStore,
+    QuoteNotReadyError,
+    QuoteStoreEnvironmentError,
     QuoteStoreError,
-    QuoteStoreNotMigratedError,
-    QuoteSummary,
+    QuoteStoreMismatchError,
+    QuoteValuesError,
+    ReferenceTakenError,
     StaleQuoteError,
-    carry_values,
-    migrate_store,
-    open_store,
+    WriteSupersededError,
+    open_engine,
     store_url,
 )
+from haute._workbench_form import FormSpec
+
+
+def open_book(
+    url: str,
+    form: FormSpec,
+    *,
+    project: str,
+    environment: str = DEV,
+    haute_version: str | None,
+    clock: Callable[[], datetime] | None = None,
+    sql_schema: str | None = None,
+    sign_in: SignIn | None = None,
+) -> QuoteBook:
+    """The book of quotes on the database at *url*, signed in as *sign_in* says, which must
+    hold *form*'s tables for *project* in *environment* in the SQL schema *sql_schema*
+    (:func:`open_engine`), written by an app running Haute *haute_version*."""
+    engine, schema = open_engine(
+        url,
+        form,
+        project=project,
+        environment=environment,
+        sql_schema=sql_schema,
+        sign_in=sign_in,
+    )
+    return QuoteBook(engine, schema, form, haute_version=haute_version, clock=clock)
+
 
 __all__ = [
+    "DEV",
+    "ActivityEntry",
     "AppQuote",
-    "CarriedValues",
+    "MigrationRefusedError",
+    "MisfitCell",
+    "OpenQuote",
+    "Plan",
+    "PricedOutputs",
+    "QuoteActivity",
     "QuoteBook",
-    "QuoteEvent",
     "QuoteLockedError",
+    "QuoteNotFoundError",
+    "QuoteNotReadyError",
     "QuotePage",
-    "QuoteTimeline",
+    "QuoteStoreEnvironmentError",
+    "QuoteStoreError",
+    "QuoteStoreMismatchError",
+    "QuoteValuesError",
     "ReferenceTakenError",
     "RelatedQuote",
-    "RevisionSummary",
+    "SignIn",
     "Source",
-    "QuoteNotFoundError",
-    "QuoteRevision",
-    "QuoteStore",
-    "QuoteStoreError",
-    "QuoteStoreNotMigratedError",
-    "QuoteSummary",
+    "Step",
+    "StoreLocation",
     "StaleQuoteError",
-    "canonical_reference",
-    "carry_values",
+    "WriteSupersededError",
+    "as_written",
     "check_reference",
     "details_of",
-    "migrate_store",
-    "open_store",
+    "identity_label",
+    "input_rows",
+    "open_book",
+    "offline_plan",
+    "open_engine",
+    "plan_store",
+    "prepare_store",
+    "render_sql",
+    "render_text",
+    "resolve_store",
     "store_url",
     "with_details",
+    "without_app_details",
 ]

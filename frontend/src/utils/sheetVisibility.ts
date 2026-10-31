@@ -7,7 +7,7 @@
  * are held to the cases in __tests__/fixtures/sheetVisibility.json.
  */
 import type { Condition, ConditionGroup, FieldRef, FormSchema, FormSpec, Page, RowCount, RowsCondition, RowTest, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
-import { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, sheetColumns } from "./quoteIdentity"
+import { QUOTE_DETAILS_ID, QUOTE_DETAILS_STORE_ONLY, sheetColumns } from "./quoteIdentity"
 import { filled, isDay, parseTypedNumber, parseTypedWhole, presetRows, quoteTyped, rowFilled, valuesBasis, withPresetRows, type RowsByTable } from "./sheetValues"
 
 export type ConditionTest = Condition["op"]
@@ -749,29 +749,32 @@ export function withPrice(spec: FormSpec, rows: RowsByTable, visibility: SheetVi
   return same ? visibility : { pages, sections, widgets, fields, hidden: visibility.hidden }
 }
 
-/** The schema without `columns` (by `columnKey`). */
+/** The schema without `columns` (by `columnKey`): the schema itself when it holds none of them. */
 function withoutColumns(schema: FormSchema, columns: ReadonlySet<string>): FormSchema {
   if (columns.size === 0) return schema
-  return {
-    ...schema,
-    tables: schema.tables.map((table) => {
-      const kept = table.columns.filter((column) => !columns.has(columnKey(table.id, column.id)))
-      return kept.length === table.columns.length ? table : { ...table, columns: kept }
-    }),
-  }
+  let removed = false
+  const tables = schema.tables.map((table) => {
+    const kept = table.columns.filter((column) => !columns.has(columnKey(table.id, column.id)))
+    if (kept.length === table.columns.length) return table
+    removed = true
+    return { ...table, columns: kept }
+  })
+  return removed ? { ...schema, tables } : schema
 }
 
-/** Whether a column, by `columnKey`, is one of quote_details the app sets (`QUOTE_DETAILS_MANAGED`). */
-const appSet = (key: string): boolean => key.startsWith(`${QUOTE_DETAILS_ID}:`) && QUOTE_DETAILS_MANAGED.has(key.slice(QUOTE_DETAILS_ID.length + 1))
+/** Whether a column, by `columnKey`, is one of quote_details, which a request holds whatever the sheets hide. */
+const ofDetails = (key: string): boolean => key.startsWith(`${QUOTE_DETAILS_ID}:`)
+
+/** The columns of quote_details no request holds (`QUOTE_DETAILS_STORE_ONLY`), by `columnKey`. */
+const STORE_ONLY_KEYS: ReadonlySet<string> = new Set([...QUOTE_DETAILS_STORE_ONLY].map((id) => columnKey(QUOTE_DETAILS_ID, id)))
 
 /**
- * The schema without the hidden columns, the quote's tables as the server reads them: the
- * columns of quote_details the app sets stay whatever the sheets hide, as every request holds
- * them.
+ * The schema without the columns no request holds, the quote's tables as the server reads
+ * them: the hidden columns of every table but quote_details, which a request holds whole
+ * whatever the sheets hide, and the columns of quote_details the quote store keeps alone.
  */
 export function quotedSchema(schema: FormSchema, hidden: ReadonlySet<string>): FormSchema {
-  const left = [...hidden].filter((key) => !appSet(key))
-  return withoutColumns(schema, left.length === hidden.size ? hidden : new Set(left))
+  return withoutColumns(schema, new Set([...[...hidden].filter((key) => !ofDetails(key)), ...STORE_ONLY_KEYS]))
 }
 
 const NO_COLUMNS: ReadonlySet<string> = new Set()

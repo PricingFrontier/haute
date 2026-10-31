@@ -488,7 +488,7 @@ approving it.
   `haute._builders._dispatch_apply` for both file-based and MLflow-sourced ratebook
   artefacts.
 - **[io-layer](../io-layer/high-level.md)** — `_bundler.py` validates retained Data
-  Inputs through the canonical provider registry and snapshot cache. `_schema.py` uses
+  Inputs through the canonical provider registry and snapshot cache. `deploy/_schema.py` uses
   that path for `dataInput`; it reads a non-JSON `apiInput` source through
   `read_data_source`. Both respect `ExecutionProfile.DEPLOY_BATCH` /
   `DEPLOY_LIVE` bounded-execution semantics.

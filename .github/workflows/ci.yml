@@ -536,6 +536,69 @@ jobs:
       - name: Optional dependency smoke (extras installed)
         run: uv run pytest tests/test_optional_dependency_extras.py -q
 
+  # The underwriter app's quote store on SQL Server and PostgreSQL (specs/workbench): the
+  # store tests marked store_servers, each in a database of its own on these containers
+  # (tests/_store_servers.py). SQL Server keeps its default collation, which ignores case, so
+  # the store's binary collation is what tells ABC-1 from abc-1, and each test database
+  # reads with read-committed snapshot on, as Azure SQL Database does. The password is the
+  # throwaway containers' own; nothing outside this job reaches them.
+  store-servers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: Haute-store-ci-1!
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'Haute-store-ci-1!' -Q 'SELECT 1'"
+          --health-interval 10s --health-timeout 5s --health-retries 30
+      postgresql:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: Haute-store-ci-1!
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.8.22"
+          python-version: "3.12"
+
+      # The driver the sqlserver provider connects through, as a release's image installs it.
+      - name: Microsoft ODBC Driver 18 for SQL Server
+        run: |
+          if ! odbcinst -q -d 2>/dev/null | grep -q "ODBC Driver 18 for SQL Server"; then
+            . /etc/os-release
+            curl -fsSL -o /tmp/packages-microsoft-prod.deb \
+              "https://packages.microsoft.com/config/${ID}/${VERSION_ID}/packages-microsoft-prod.deb"
+            sudo dpkg -i /tmp/packages-microsoft-prod.deb
+            sudo apt-get update
+            sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc
+          fi
+
+      - run: uv sync --group dev --locked
+      - name: Store tests on SQL Server and PostgreSQL
+        env:
+          HAUTE_TEST_SQLSERVER_URL: mssql+pyodbc://localhost:1433/master?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+          HAUTE_TEST_SQLSERVER_USER: sa
+          HAUTE_TEST_SQLSERVER_PASSWORD: Haute-store-ci-1!
+          HAUTE_TEST_POSTGRESQL_URL: postgresql+psycopg://localhost:5432/postgres
+          HAUTE_TEST_POSTGRESQL_USER: postgres
+          HAUTE_TEST_POSTGRESQL_PASSWORD: Haute-store-ci-1!
+        run: >
+          uv run pytest -m store_servers
+          tests/test_quote_book.py tests/test_quote_store_providers.py
+          -q --timeout=300
+
   package-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 25

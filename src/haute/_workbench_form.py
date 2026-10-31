@@ -746,7 +746,8 @@ class SchemaColumn(_Strict):
     group: str = ""
     #: In a many-row table, part of what says which row is which.
     key: bool = False
-    # The rules an input column's value must meet. Output tables ignore them.
+    # The rules an input column's value must meet; an output column takes `required` alone,
+    # which marking a quote final checks, and ignores the rest.
     required: bool = False
     min: float | None = None
     max: float | None = None
@@ -988,6 +989,19 @@ QUOTE_DETAILS_MANAGED: frozenset[str] = frozenset(
         "qd_archived",
         "qd_created_date",
         "qd_created_by",
+        "qd_modified_date",
+        "qd_modified_by",
+        "qd_haute_version",
+    }
+)
+#: The columns of quote_details the app changes over a quote's life: the quote store keeps
+#: them, but no request holds them and no frame has a column for them, so changing them never
+#: leaves a stored price that its stored inputs no longer give.
+QUOTE_DETAILS_STORE_ONLY: frozenset[str] = frozenset(
+    {
+        "qd_stage",
+        "qd_assignee",
+        "qd_archived",
         "qd_modified_date",
         "qd_modified_by",
         "qd_haute_version",

@@ -210,6 +210,48 @@ _REFUSED = {
         ],
         "The Workbench Input's table 'a' names a column 'x' twice.",
     ),
+    # The quote store keeps each table under its name, so its names are the store's rules too.
+    "columns differing in case": (
+        [
+            {
+                "name": "a",
+                "rows": "one",
+                "columns": [{"name": "x", "type": "int"}, {"name": "X", "type": "str"}],
+            }
+        ],
+        "The Workbench Input's table 'a' has columns 'x' and 'X', which differ only in case, "
+        "so a database cannot hold both.",
+    ),
+    "a table name too long": (
+        [{"name": "t" * 64, "rows": "one"}],
+        f"The Workbench Input's table {'t' * 64!r} has a name of 64 characters: a name is at "
+        "most 63, the longest every database keeps whole.",
+    ),
+    "a column name too long": (
+        [{"name": "a", "rows": "one", "columns": [{"name": "c" * 64, "type": "int"}]}],
+        f"The Workbench Input's table 'a' has a column {'c' * 64!r} of 64 characters: a name "
+        "is at most 63, the longest every database keeps whole.",
+    ),
+    "a table the store keeps": (
+        [{"name": "haute_x", "rows": "one"}],
+        "The Workbench Input's table 'haute_x' starts haute_, which the quote store keeps for "
+        "its own names.",
+    ),
+    "a column the store keeps": (
+        [{"name": "a", "rows": "one", "columns": [{"name": "haute_x", "type": "int"}]}],
+        "The Workbench Input's table 'a' has a column 'haute_x', and a name starting haute_ is "
+        "the quote store's own.",
+    ),
+    "the store's row number in a many-row table": (
+        [{"name": "a", "rows": "many", "columns": [{"name": "quote_row", "type": "int"}]}],
+        "The Workbench Input's table 'a' has a column 'quote_row', the quote store's number "
+        "for each row of a many-row table.",
+    ),
+    "a table SQLite keeps": (
+        [{"name": "sqlite_x", "rows": "one"}],
+        "The Workbench Input's table 'sqlite_x' starts sqlite_, which SQLite keeps for its own "
+        "tables.",
+    ),
 }
 
 
@@ -613,7 +655,34 @@ def test_a_value_in_a_column_the_sheets_hide_is_left_out_of_the_sample() -> None
     }
 
 
-def test_the_columns_the_app_sets_are_priced_whatever_the_sheets_hide() -> None:
+def test_a_one_row_table_may_name_a_column_quote_row() -> None:
+    # quote_row is the store's number for a many-row table's rows alone.
+    [table] = parse_workbench_tables(
+        [{"name": "a", "rows": "one", "columns": [{"name": "quote_row", "type": "int"}]}],
+        owner="Workbench Input",
+    )
+    assert [column.name for column in table.columns] == ["quote_row"]
+
+
+def test_quote_details_reaches_the_pipeline_without_the_details_the_app_changes() -> None:
+    # The details the app changes over a quote's life are the store's alone: no request
+    # holds them and no frame has a column for them.
+    [details] = input_tables(with_quote_details(form()))
+    assert [column.name for column in details.columns] == [
+        "quote_reference",
+        "quote_option",
+        "quote_name",
+        "insured",
+        "broker",
+        "inception_date",
+        "expiry_date",
+        "is_renewal",
+        "created_date",
+        "created_by",
+    ]
+
+
+def test_quote_details_is_priced_whatever_the_sheets_hide_but_never_its_store_columns() -> None:
     spec = with_quote_details(
         form(
             {
@@ -675,17 +744,16 @@ def test_the_columns_the_app_sets_are_priced_whatever_the_sheets_hide() -> None:
         "t1": [{"c_bi_cover": False, "c_assured": "Acme"}],
     }
 
-    # The second sheet hides: the quote's name goes with it; the columns the app sets stay,
-    # its reference and option, its stage and its administration.
+    # The second sheet hides, and quote_details is priced whole all the same: the quote's
+    # name stays with its reference, option and creation; its stage and the rest of its
+    # administration are the store's and never priced.
     assert quote_request(spec, values) == {
         "quote_details": {
             "quote_reference": "Q-000007",
             "quote_option": 2,
+            "quote_name": "Fleet",
             "is_renewal": False,
-            "stage": "priced",
-            "archived": False,
             "created_by": "ana@example.com",
-            "modified_date": "2026-10-12",
         },
         "policy": {"bi_cover": False, "assured": "Acme"},
     }
@@ -737,7 +805,16 @@ def test_a_request_names_the_quote_in_quote_details_and_every_table_takes_it() -
 @pytest.mark.parametrize(
     ("change", "refusal"),
     [
-        (lambda r: r.pop("quote_details"), "quote_details.quote_reference is None"),
+        # A quote written before the pipeline read a workbench's is told what to add.
+        (
+            lambda r: r.pop("quote_details"),
+            "the request holds no quote_details: a quote names its quote_reference and "
+            "quote_option there",
+        ),
+        (
+            lambda r: r["quote_details"].pop("quote_reference"),
+            "quote_details.quote_reference is None",
+        ),
         (
             lambda r: r["quote_details"].update(quote_reference=" "),
             "quote_details.quote_reference is ' '",

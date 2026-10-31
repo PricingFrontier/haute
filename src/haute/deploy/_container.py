@@ -147,6 +147,7 @@ def prepare_build_directory(
     haute_requirement: str | None = None,
     extra_files: Sequence[str] = (),
     extra_dependencies: Sequence[str] = (),
+    sqlserver_odbc: bool = False,
 ) -> Path:
     """Prepare the container build directory with manifest, artifacts, app.py, and Dockerfile.
 
@@ -168,6 +169,8 @@ def prepare_build_directory(
         extra_dependencies: Distributions the caller's app needs past the scoring runtime,
             installed in the image pinned to the versions installed here: the underwriter
             app's quote store.
+        sqlserver_odbc: Install Microsoft ODBC Driver 18 for SQL Server in the image, which
+            the quote store's ``sqlserver`` provider connects through.
 
     Returns:
         Path to the written ``deploy_manifest.json``.
@@ -221,6 +224,7 @@ def prepare_build_directory(
         wheel_name=wheel_name,
         extra_files=extra_files,
         extra_pins=extra_pins,
+        sqlserver_odbc=sqlserver_odbc,
     )
     (build_dir / "Dockerfile").write_text(dockerfile, encoding="utf-8")
 
@@ -947,6 +951,27 @@ async def quote(request: Request) -> JSONResponse:
 # ── Dockerfile generation ───────────────────────────────────────────
 
 
+#: The image's steps installing Microsoft ODBC Driver 18 for SQL Server from Microsoft's
+#: repository for the base image's own distribution and release, which the quote store's
+#: ``sqlserver`` provider connects through. ``ACCEPT_EULA`` accepts Microsoft's licence for
+#: the driver, as its installation asks.
+SQLSERVER_ODBC_STEPS = r"""# Microsoft ODBC Driver 18 for SQL Server, which the
+# quote store's sqlserver provider connects through; installing it accepts
+# Microsoft's licence terms (ACCEPT_EULA).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && . /etc/os-release \
+ && curl -fsSL -o /tmp/packages-microsoft-prod.deb \
+    "https://packages.microsoft.com/config/${ID}/${VERSION_ID}/packages-microsoft-prod.deb" \
+ && dpkg -i /tmp/packages-microsoft-prod.deb \
+ && rm /tmp/packages-microsoft-prod.deb \
+ && apt-get update \
+ && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 unixodbc \
+ && rm -rf /var/lib/apt/lists/*
+
+"""
+
+
 def _generate_dockerfile(
     base_image: str,
     port: int,
@@ -956,9 +981,11 @@ def _generate_dockerfile(
     wheel_name: str | None = None,
     extra_files: Sequence[str] = (),
     extra_pins: Sequence[str] = (),
+    sqlserver_odbc: bool = False,
 ) -> str:
     """Generate a Dockerfile for the scoring container, copying *extra_files* beside app.py and
-    installing *extra_pins*, pinned requirements, with the runtime."""
+    installing *extra_pins*, pinned requirements, with the runtime, and Microsoft's ODBC
+    driver first when *sqlserver_odbc* (:data:`SQLSERVER_ODBC_STEPS`)."""
     haute_dep, *runtime_deps = _pinned_dockerfile_deps(resolved, haute_requirement=haute_pip_dep)
     runtime_line = " ".join([*runtime_deps, *extra_pins])
     copy_wheel = f"COPY {wheel_name} .\n" if wheel_name else ""
@@ -972,6 +999,7 @@ def _generate_dockerfile(
     copy_extra = "".join(f"COPY {name} .\n" for name in extra_files)
     polars_settings = polars_process_environment(polars_spill_root(PurePosixPath("/app")))
     polars_env = "".join(f"ENV {name}={value}\n" for name, value in sorted(polars_settings.items()))
+    odbc_steps = SQLSERVER_ODBC_STEPS if sqlserver_odbc else ""
 
     return f"""\
 FROM {base_image}
@@ -985,7 +1013,7 @@ ENV HAUTE_EXECUTION_MEMORY_POLICY=strict_server
 # Keep Polars' out-of-core spilling off and inside the container's storage,
 # and load an unknown Arrow extension column as its storage type.
 {polars_env}
-# Install the pinned scoring runtime, then haute itself without its
+{odbc_steps}# Install the pinned scoring runtime, then haute itself without its
 # dependencies: they include the editor, assistant, training and tuning
 # stacks, which a scoring container never runs.
 RUN pip install --no-cache-dir {runtime_line}

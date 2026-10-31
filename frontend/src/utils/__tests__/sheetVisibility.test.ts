@@ -332,6 +332,18 @@ describe("quotedSchema", () => {
     expect(schema.tables[0]).toBe(policy)
     expect(quotedSchema(schema, new Set())).toBe(schema)
   })
+
+  it("keeps quote_details whole whatever the sheets hide, but for the columns the store keeps alone", () => {
+    const details: SchemaTable = {
+      id: "quote_details",
+      name: "quote_details",
+      role: "input",
+      rows: "one",
+      columns: [column("qd_quote_name", "quote_name"), column("qd_stage", "stage"), column("qd_insured", "insured")],
+    }
+    const quoted = quotedSchema({ tables: [details] }, new Set([columnKey("quote_details", "qd_quote_name")]))
+    expect(quoted.tables[0].columns.map((each) => each.id)).toEqual(["qd_quote_name", "qd_insured"])
+  })
 })
 
 describe("the tests each type takes", () => {

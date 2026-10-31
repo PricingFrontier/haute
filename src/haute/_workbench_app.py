@@ -24,11 +24,11 @@ import json
 import os
 import threading
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -47,6 +47,7 @@ from haute._logging import get_logger
 from haute._output_assembler import render_output_document
 from haute._sandbox import set_project_root
 from haute._types import PipelineGraph
+from haute._workbench_config import ENVIRONMENT_ENV, StoreEnvironment, store_environments
 from haute._workbench_form import (
     QUOTE_DETAILS_COLUMNS,
     QUOTE_DETAILS_ID,
@@ -56,7 +57,7 @@ from haute._workbench_form import (
     render_form,
 )
 from haute._workbench_input import with_stand_in
-from haute._workbench_tables import input_tables, quote_request
+from haute._workbench_tables import finite_document, input_tables, priced_tables, quote_request
 from haute.deploy._request_limits import (
     RequestBodyHeaderError,
     RequestBodyLimitError,
@@ -75,6 +76,9 @@ from haute.schemas import (
     WorkbenchPricedTables,
     WorkbenchValues,
 )
+
+if TYPE_CHECKING:
+    from haute._quote_store._environment import StoreLocation
 
 RELEASE_FILE = "release.json"
 FORM_FILE = "form.json"
@@ -98,14 +102,11 @@ EASY_AUTH_ID = "x-ms-client-principal-id"
 EASY_AUTH_PRINCIPAL = "x-ms-client-principal"
 #: The claim types an app role is under when the principal names none.
 _ROLE_CLAIMS = frozenset({"roles", "http://schemas.microsoft.com/ws/2008/06/identity/claims/role"})
-#: The environment variable a hosted app reads its quote store's SQLAlchemy URL from, which
-#: the host supplies at runtime; without it the app keeps no quotes.
-STORE_URL_ENV = "HAUTE_QUOTE_STORE_URL"
-#: What the app's quote store needs in the image past the scoring runtime; a server
-#: engine's driver joins them with that engine's backend.
+#: What the app's quote store needs in the image past the scoring runtime, whatever its
+#: environments; each declared environment's driver joins them (:func:`store_dependencies`).
 STORE_DEPENDENCIES = ("sqlalchemy", "alembic")
 #: The app's pages past its home, each the same page, which routes in the browser.
-APP_PAGES = ("/quotes/new", "/quotes/{quote_id}", "/quotes/{quote_id}/revisions/{number}")
+APP_PAGES = ("/quotes/new", "/quotes/{reference}/{option}")
 #: What a browser says of a request's origin that a write is taken from: the page's own.
 _SAME_SITE = frozenset({"same-origin", "none"})
 
@@ -113,9 +114,9 @@ APP_ENTRY = '''"""The underwriter app, serving this release (specs/workbench).""
 
 from pathlib import Path
 
-from haute._workbench_app import create_app, quote_store_url
+from haute._workbench_app import create_app, hosted_store
 
-app = create_app(Path(__file__).parent, store_url=quote_store_url())
+app = create_app(Path(__file__).parent, store=hosted_store(Path(__file__).parent))
 '''
 
 #: The app's built page and its assets (``frontend/vite.app.config.ts``).
@@ -144,6 +145,25 @@ class Release:
     host: str | None
     #: The role that may change quotes; None lets everyone signed in change them.
     edit_role: str | None = None
+    #: The hosted environments of the quote store the project declares, by name, each as
+    #: :meth:`StoreEnvironment.declared` records it: its provider and sign-in, never where its
+    #: database is or a secret.
+    environments: dict[str, dict[str, str]] = field(default_factory=dict)
+
+    def store_environments(self) -> tuple[StoreEnvironment, ...]:
+        """The environments the release declares."""
+        return store_environments(self.environments, f"{RELEASE_FILE} environments")
+
+
+@dataclass(frozen=True)
+class Pricing:
+    """A quote's values priced through the release's pipeline: the output tables as the page
+    shows them, the request priced, and the response's document, every value that is not
+    finite null, which the quote store keeps."""
+
+    tables: WorkbenchPricedTables
+    request: dict[str, Any]
+    document: Mapping[str, Any]
 
 
 #: What of a bundle's manifest prices a quote, and so names the release; when, by whom, from
@@ -263,9 +283,11 @@ def write_release(
     edit_role: str | None = None,
     *,
     runtime: list[str],
+    environments: tuple[StoreEnvironment, ...] = (),
 ) -> Release:
     """Beside the bundle already in *release_dir*: the form without its sample, what the
-    release is, named for the *runtime* it prices on too, and the entry point."""
+    release is, named for the *runtime* it prices on too, with the quote store's
+    *environments*, and the entry point."""
     shipped = render_form(form.model_copy(update={"sample": {}})).encode("utf-8")
     # Written as rendered, so the file's revision is the one the release records.
     (release_dir / FORM_FILE).write_bytes(shipped)
@@ -278,6 +300,7 @@ def write_release(
         created_at=str(manifest.get("created_at") or ""),
         host=host,
         edit_role=edit_role,
+        environments={each.name: each.declared() for each in environments},
     )
     described = json.dumps(asdict(release), indent=2) + "\n"
     (release_dir / RELEASE_FILE).write_bytes(described.encode("utf-8"))
@@ -381,14 +404,20 @@ def build_release(
                     building,
                     haute_requirement=haute_requirement,
                     extra_files=(FORM_FILE, RELEASE_FILE),
-                    extra_dependencies=STORE_DEPENDENCIES,
+                    extra_dependencies=store_dependencies(config.store),
+                    sqlserver_odbc=any(each.provider == "sqlserver" for each in config.store),
                 )
             else:
                 write_bundle(resolved, building)
         finally:
             resolved.close()
         release = write_release(
-            building, form, config.app_host, config.app_edit_role, runtime=runtime
+            building,
+            form,
+            config.app_host,
+            config.app_edit_role,
+            runtime=runtime,
+            environments=config.store,
         )
         _swap_in(building, release_dir)
     except BaseException:
@@ -432,29 +461,27 @@ def _check_output(project_dir: Path, release_dir: Path) -> None:
 
 def _swap_in(built: Path, release_dir: Path) -> None:
     """Put the release in *built* at *release_dir*: an earlier release there is moved aside
-    first, put back if the new one cannot take its place, and removed once it has."""
-    import shutil
+    first, put back if the new one cannot take its place, and removed once it has. Each move
+    waits out a Windows scanner holding a file just written (``rename_directory``)."""
+    from haute._file_ops import remove_tree, rename_directory
 
     earlier: Path | None = None
     if release_dir.is_dir() and any(release_dir.iterdir()):
         earlier = release_dir.with_name(f".{release_dir.name}.earlier-{uuid.uuid4().hex[:8]}")
-        release_dir.rename(earlier)
+        rename_directory(release_dir, earlier)
     elif release_dir.is_dir():
         release_dir.rmdir()
     try:
-        built.rename(release_dir)
+        rename_directory(built, release_dir)
     except OSError:
         if earlier is not None:
-            earlier.rename(release_dir)
+            rename_directory(earlier, release_dir)
         raise
-    if earlier is not None:
-        try:
-            shutil.rmtree(earlier)
-        except OSError as exc:
-            raise WorkbenchAppError(
-                f"The release was built into {release_dir}, but the earlier one, moved to "
-                f"{earlier}, could not be removed: {exc}"
-            ) from exc
+    if earlier is not None and not remove_tree(earlier):
+        raise WorkbenchAppError(
+            f"The release was built into {release_dir}, but the earlier one, moved to "
+            f"{earlier}, could not be removed."
+        )
 
 
 def build_image(release_dir: Path, tag: str) -> None:
@@ -529,10 +556,32 @@ _MANIFEST_KEYS = (
 )
 
 
-def quote_store_url() -> str | None:
-    """The quote store's URL a hosted app is given in :data:`STORE_URL_ENV`; None unset."""
-    url = os.environ.get(STORE_URL_ENV, "").strip()
-    return url or None
+def store_dependencies(environments: Iterable[StoreEnvironment]) -> tuple[str, ...]:
+    """What the app's quote store needs in a release's image past the scoring runtime, pinned
+    as installed here: SQLAlchemy and Alembic, the driver of each provider *environments*
+    declare, and azure-identity where one signs in through Microsoft Entra ID."""
+    from haute._quote_store._providers import ENTRA_PACKAGE, ENTRA_SIGN_INS, PROVIDERS
+
+    needed = list(STORE_DEPENDENCIES)
+    for environment in environments:
+        needed.extend(PROVIDERS[environment.provider].packages)
+        if environment.auth in ENTRA_SIGN_INS:
+            needed.append(ENTRA_PACKAGE)
+    return tuple(dict.fromkeys(needed))
+
+
+def hosted_store(release_dir: Path) -> StoreLocation | None:
+    """The quote store the host points the release in *release_dir* at: the environment
+    :data:`ENVIRONMENT_ENV` names, which the release must declare, at the database the host's
+    variables say it is at; None while no environment is named, so the app keeps no quotes and
+    loads nothing of the store's."""
+    name = os.environ.get(ENVIRONMENT_ENV, "").strip()
+    if not name:
+        return None
+    from haute._quote_store._environment import resolve_store
+
+    release, _, _ = read_release(release_dir)
+    return resolve_store(release.store_environments(), name, os.environ)
 
 
 #: The names of the quote_details columns the app sets (``QUOTE_DETAILS_MANAGED``).
@@ -571,7 +620,7 @@ def create_app(
     *,
     local_principal: str | None = None,
     static_dir: Path | None = None,
-    store_url: str | None = None,
+    store: StoreLocation | None = None,
     local_reader: bool = False,
 ) -> FastAPI:
     """The app serving the release in *release_dir*.
@@ -581,9 +630,11 @@ def create_app(
     unless *local_reader*, and refuses any other request; otherwise the
     release's host says who is signed in and, for a release with an ``edit_role``, whether
     they hold it. The page and
-    its assets come from *static_dir*, Haute's built frontend unless given. *store_url* names
-    the quote store the app keeps quotes in, which must be migrated: the app does not start on
-    one that is not, and keeps no quotes without one.
+    its assets come from *static_dir*, Haute's built frontend unless given. *store* is the
+    quote store the app keeps quotes in, dev's on the analyst's machine and a hosted
+    environment's otherwise (:func:`hosted_store`), whose database must hold the release's
+    form's tables for its pipeline in that environment: the app does not start on one that
+    does not, and keeps no quotes without one.
     """
     release, form, manifest = read_release(release_dir)
     # The pipeline reads what it ships from the release, wherever the host starts the app.
@@ -637,10 +688,18 @@ def create_app(
         )
 
     book = None
-    if store_url is not None:
-        from haute._workbench_app_quotes import open_book
+    if store is not None:
+        from haute._quote_store import open_book
 
-        book = open_book(store_url, haute_version=release.haute_version)
+        book = open_book(
+            store.url,
+            form,
+            project=release.pipeline_name,
+            environment=store.environment,
+            haute_version=release.haute_version,
+            sql_schema=store.sql_schema,
+            sign_in=store.sign_in,
+        )
 
     # A pricing past its timeout cannot be stopped, so it keeps its place until it ends: the
     # places are given back by the pricings, never by the requests that stopped waiting.
@@ -699,7 +758,7 @@ def create_app(
     @app.get("/api/app/release", response_model=WorkbenchAppReleaseResponse)
     async def get_release(request: Request) -> WorkbenchAppReleaseResponse:
         return WorkbenchAppReleaseResponse(
-            **asdict(release),
+            **{key: value for key, value in asdict(release).items() if key != "environments"},
             principal=request.state.principal,
             quotes=book is not None,
             can_edit=request.state.can_edit,
@@ -713,11 +772,8 @@ def create_app(
     # parsed: an oversized body is refused before it is held in memory whole.
     body_limit = deploy_quote_request_body_limit_bytes()
 
-    async def price_values(
-        values: WorkbenchValues,
-    ) -> tuple[WorkbenchPricedTables, dict[str, Any]]:
-        """*values* priced through the release's pipeline: its output tables and the request
-        priced, or an HTTP error saying why not."""
+    async def price_values(values: WorkbenchValues) -> Pricing:
+        """*values* priced through the release's pipeline, or an HTTP error saying why not."""
         request = quote_request(form, values)
         if not request:
             raise HTTPException(422, "Type the quote first")
@@ -727,10 +783,10 @@ def create_app(
             # the app sets for a quote it keeps, whatever the page sent.
             request = with_stand_in(input_tables(form), _without_app_details(request))
 
-        def score() -> WorkbenchPricedTables:
-            # The admission is held until the answer is the tables sent back: rendering and
-            # converting it are the pricing's too, as the MLflow model keeps its admission
-            # through its conversion.
+        def score() -> Mapping[str, Any]:
+            # The admission is held until the answer is the document sent back: rendering
+            # it is the pricing's too, as the MLflow model keeps its admission through its
+            # conversion.
             context = admit_deploy_execution(operation="workbench_app_price", row_count=1)
             failed = False
             try:
@@ -745,11 +801,8 @@ def create_app(
                     retain_admission_on_success=True,
                 )
                 [document] = render_output_document(result)
-                answered = to_json_safe(document)
-                return {
-                    name: rows if isinstance(rows, list) else [rows]
-                    for name, rows in answered.items()
-                }
+                finite: Mapping[str, Any] = finite_document(document)
+                return finite
             except BaseException:
                 failed = True
                 raise
@@ -767,7 +820,7 @@ def create_app(
         running = pricing_pool.submit(contextvars.copy_context().run, score)
         running.add_done_callback(lambda _: places.release())
         try:
-            tables = await asyncio.wait_for(asyncio.wrap_future(running), PRICE_TIMEOUT_SECONDS)
+            document = await asyncio.wait_for(asyncio.wrap_future(running), PRICE_TIMEOUT_SECONDS)
         except TimeoutError:
             raise HTTPException(504, "Pricing the quote took too long; try again.") from None
         except ExecutionAdmissionError as exc:
@@ -786,7 +839,9 @@ def create_app(
             # API says it, so the underwriter can tell the analyst what broke.
             logger.exception("workbench_app_price_failed")
             raise HTTPException(500, f"The pipeline failed on this quote: {exc}") from None
-        return tables, to_json_safe(request)
+        return Pricing(
+            tables=priced_tables(document), request=to_json_safe(request), document=document
+        )
 
     @app.post("/api/app/price", response_model=WorkbenchAppPriceResponse)
     async def price(http: Request) -> Any:
@@ -810,8 +865,8 @@ def create_app(
                 "This page was drawn for another release of the app: reload it to price on "
                 "this one.",
             )
-        tables, request = await price_values(body.values)
-        return WorkbenchAppPriceResponse(tables=tables, request=request)
+        pricing = await price_values(body.values)
+        return WorkbenchAppPriceResponse(tables=pricing.tables, request=pricing.request)
 
     if book is not None:
         from haute._workbench_app_quotes import QuoteApp, quote_router
@@ -838,14 +893,13 @@ def create_app(
                 status_code=503,
                 content={
                     "detail": "This app keeps no quotes: it was started without a quote store "
-                    f"({STORE_URL_ENV})."
+                    f"({ENVIRONMENT_ENV})."
                 },
             )
 
     @app.get("/", include_in_schema=False)
     @app.get(APP_PAGES[0], include_in_schema=False)
     @app.get(APP_PAGES[1], include_in_schema=False)
-    @app.get(APP_PAGES[2], include_in_schema=False)
     async def page() -> Response:
         built = static / APP_PAGE
         if not built.is_file():

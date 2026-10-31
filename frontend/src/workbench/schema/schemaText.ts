@@ -76,10 +76,11 @@ function rulesParts(table: SchemaTable, column: SchemaColumn): string[] {
 
 /**
  * A column in a few words, shown under its name, "" when there is nothing to say: an input
- * column's rules, then, in any table, a number column's format.
+ * column's rules, or whether an output column is required, then, in any table, a number
+ * column's format.
  */
 export function columnSummary(table: SchemaTable, column: SchemaColumn): string {
-  const parts = table.role === "input" ? rulesParts(table, column) : []
+  const parts = table.role === "input" ? rulesParts(table, column) : column.required ? ["required"] : []
   const format = formatSummary(column)
   if (format !== "") parts.push(format)
   return parts.join(" · ")

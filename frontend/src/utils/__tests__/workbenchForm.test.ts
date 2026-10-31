@@ -261,6 +261,26 @@ describe("problems", () => {
     ])
   })
 
+  it("holds every name to the quote store's rules, each table being a table of its name there", () => {
+    let spec = withTable(column("a", "limit"), column("b", "Limit"), column("c", `c${"x".repeat(63)}`), column("d", "haute_note"))
+    spec = addSchemaTable(spec, table("h", "haute_extras"))
+    spec = addSchemaTable(spec, table("s", "sqlite_cache"))
+    spec = addSchemaTable(spec, table("l", `l${"x".repeat(63)}`))
+    spec = addSchemaTable(spec, table("m", "items", { rows: "many", columns: [column("k", "item", { key: true }), column("r", "quote_row", { type: "int" })] }))
+
+    expect(messages(spec)).toEqual([
+      'Column "Limit" in Table "t" differs from "limit" only in case, so a database cannot hold both',
+      `Column "c${"x".repeat(63)}" in Table "t" has a name of 64 characters: a name is at most 63, the longest every database keeps whole`,
+      'Column "haute_note" in Table "t" starts haute_, which the quote store keeps for its own names',
+      'Table "haute_extras" starts haute_, which the quote store keeps for its own names',
+      'Table "sqlite_cache" starts sqlite_, which SQLite keeps for its own tables',
+      `Table "l${"x".repeat(63)}" has a name of 64 characters: a name is at most 63, the longest every database keeps whole`,
+      'Column "quote_row" in Table "items" is the quote store\'s number for each row of a many-row table',
+    ])
+    // Haute's own quote_details.haute_version, and quote_row in a one-row table, are no problem.
+    expect(messages(addSchemaTable(blank(), table("o", "policy", { columns: [column("r", "quote_row", { type: "int" })] })))).toEqual([])
+  })
+
   it("names a table's own column taking the quote's quote_reference or quote_option as the server does, never a missing identity", () => {
     // A column of its own named reference or option is no clash.
     const spec = withTable(column("a", "quote_reference"), column("b", "quote_option", { type: "int" }), column("c", "limit"), column("e", "option"))
@@ -321,6 +341,14 @@ describe("problems", () => {
     expect(output.sample).toEqual({ u: [{ b: "y" }] })
     // An edit as any other: the form before it, which undo goes back to, keeps them.
     expect(spec.sample).toEqual({ t: [{ a: "x" }], u: [{ b: "y" }] })
+  })
+
+  it("keeps whether a column is required when its table is made an output, which marking a quote final checks there too", () => {
+    const spec = withTable(column("a", "value", { type: "float", required: true, min: 1, default_value: "2" }))
+
+    const output = updateSchemaTable(spec, "t", { role: "output" })
+
+    expect(output.schema.tables[0].columns[0]).toMatchObject({ required: true, min: null, default_value: "" })
   })
 
   it("changes a column's type, dropping the rules the new type cannot have", () => {

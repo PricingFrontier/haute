@@ -11,7 +11,6 @@ import {
   Archive,
   ArchiveRestore,
   BadgeCheck,
-  Calculator,
   CircleDashed,
   Copy,
   FileText,
@@ -44,7 +43,6 @@ const VIEWS: ReadonlyArray<{ view: QuotesQuery["view"]; label: string; icon: Luc
 ]
 const STAGES: ReadonlyArray<{ stage: NonNullable<QuotesQuery["stage"]>; label: string; icon: LucideIcon }> = [
   { stage: "draft", label: "Draft", icon: CircleDashed },
-  { stage: "priced", label: "Priced", icon: Calculator },
   { stage: "final", label: "Final", icon: BadgeCheck },
 ]
 const SORTS: ReadonlyArray<{ sort: QuotesQuery["sort"]; label: string }> = [
@@ -150,14 +148,14 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
 
   const archive = async (quote: WorkbenchAppQuote) => {
     try {
-      const { quote: archived } = await changeAppQuote(quote.id, "archive", quote.latest, {})
+      const { quote: archived } = await changeAppQuote(quote.reference, quote.option, "archive", quote.version, {})
       // The list shown once it is answered, which may be another than the one archived from.
       void useQuoteListStore.getState().reload()
       addToast("success", `Archived ${quote.label}`, {
         label: "Undo",
         run: () => {
           // The list shown when Undo is pressed, which may be another than the one archived from.
-          void changeAppQuote(archived.id, "restore", archived.latest, {})
+          void changeAppQuote(archived.reference, archived.option, "restore", archived.version, {})
             .then(() => useQuoteListStore.getState().reload())
             .catch((reason: unknown) => addToast("error", `Could not restore ${quote.label}: ${apiErrorMessage(reason)}`))
         },
@@ -169,7 +167,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
 
   const restore = async (quote: WorkbenchAppQuote) => {
     try {
-      await changeAppQuote(quote.id, "restore", quote.latest, {})
+      await changeAppQuote(quote.reference, quote.option, "restore", quote.version, {})
       void useQuoteListStore.getState().reload()
       addToast("success", `Restored ${quote.label}`)
     } catch (reason: unknown) {
@@ -183,7 +181,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
   const span = 6 + columns.length
 
   const onRowKey = (event: ReactKeyboardEvent, quote: WorkbenchAppQuote) => {
-    if (event.key === "Enter" && event.target === event.currentTarget) void navigate(quotePath(quote.id))
+    if (event.key === "Enter" && event.target === event.currentTarget) void navigate(quotePath(quote.reference, quote.option))
   }
 
   return (
@@ -332,16 +330,16 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
               {status !== "loading" &&
                 quotes.map((quote) => (
                   <tr
-                    key={quote.id}
+                    key={quote.label}
                     tabIndex={0}
                     data-testid={`quote-row-${quote.label}`}
-                    onClick={() => void navigate(quotePath(quote.id))}
+                    onClick={() => void navigate(quotePath(quote.reference, quote.option))}
                     onKeyDown={(event) => onRowKey(event, quote)}
                     className="group/row h-7 cursor-pointer transition-colors outline-none hover:bg-[var(--bg-hover)] focus-visible:bg-[var(--bg-hover)]"
                     style={{ borderBottom: "1px solid var(--border-subtle)" }}
                   >
                     <td className="px-3 font-mono text-[11px]">
-                      <a href={quotePath(quote.id)} onClick={(event) => { event.stopPropagation(); followLink(event, quotePath(quote.id)) }} style={{ color: "var(--text-accent)" }}>
+                      <a href={quotePath(quote.reference, quote.option)} onClick={(event) => { event.stopPropagation(); followLink(event, quotePath(quote.reference, quote.option)) }} style={{ color: "var(--text-accent)" }}>
                         {quote.label}
                       </a>
                     </td>
@@ -362,19 +360,19 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                     <td className="max-w-[180px] truncate px-2" style={{ color: "var(--text-secondary)" }} title={quote.assignee}>
                       {quote.assignee === principal ? "You" : quote.assignee}
                     </td>
-                    <td className="px-2 whitespace-nowrap" style={{ color: "var(--text-secondary)" }} title={`${fullTime(quote.last_saved_at)} by ${quote.last_saved_by}`}>
-                      {relativeTime(new Date(quote.last_saved_at))}
+                    <td className="px-2 whitespace-nowrap" style={{ color: "var(--text-secondary)" }} title={`${fullTime(quote.saved_at)} by ${quote.saved_by}`}>
+                      {relativeTime(new Date(quote.saved_at))}
                     </td>
                     <td className="px-2" onClick={(event) => event.stopPropagation()}>
                       <span className="flex justify-end gap-0.5 opacity-0 group-focus-within/row:opacity-100 group-hover/row:opacity-100">
-                        <button type="button" className={ICON_BUTTON} onClick={() => void navigate(quotePath(quote.id))} title={`Open ${quote.label}`} aria-label={`Open ${quote.label}`}>
+                        <button type="button" className={ICON_BUTTON} onClick={() => void navigate(quotePath(quote.reference, quote.option))} title={`Open ${quote.label}`} aria-label={`Open ${quote.label}`}>
                           <FolderOpen size={12} />
                         </button>
                         {editor && (
                         <button
                           type="button"
                           className={ICON_BUTTON}
-                          onClick={() => void useNewQuoteStore.getState().openDerived({ quoteId: quote.id, revision: quote.latest, relation: "duplicate" }, { label: quote.label })}
+                          onClick={() => void useNewQuoteStore.getState().openDerived({ reference: quote.reference, option: quote.option, relation: "duplicate" }, { label: quote.label })}
                           title={`Duplicate ${quote.label} as a new quote`}
                           aria-label={`Duplicate ${quote.label}`}
                         >

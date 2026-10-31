@@ -1,7 +1,7 @@
 /**
  * The schema editor (specs/workbench): tables and columns defined in the view, each
  * field an edit of the form store once it commits, with what a sheet shows protected
- * by a confirmation.
+ * by a confirmation, and the columns the quote store keeps in each table shown locked.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
@@ -11,6 +11,7 @@ import type { FormSpec, ProjectFolderResponse, SchemaColumn, SchemaTable } from 
 import { fetchParamFile } from "../../api/workbench"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { answerQuestion, asked } from "../../test-utils/question"
 import { BLANK_THEME, COLLECTION_OPTIONS, createWidget, TABLE_OPTIONS, updateSchemaColumn } from "../../utils/workbenchForm"
@@ -151,6 +152,7 @@ describe("SchemaEditor", () => {
     cleanup()
     useWorkbenchFormStore.setState({ form: null, status: "idle", undoStack: [], redoStack: [] })
     useWorkbenchViewStore.setState({ schemaCollapsed: new Set(), schemaDetails: null, schemaScroll: 0, schemaSearch: "" })
+    useWorkbenchStore.setState({ storeColumns: {} })
     useDocumentStatusStore.setState({ capabilities: null })
     vi.mocked(fetchParamFile).mockReset()
   })
@@ -569,6 +571,67 @@ describe("SchemaEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Label and rules of on" }))
     expect(screen.getByRole("textbox", { name: "Help of on" })).toBeInTheDocument()
     expect(screen.queryByRole("textbox", { name: "Placeholder of on" })).not.toBeInTheDocument()
+  })
+
+  it("offers Required on an output column as on an input one, and keeps it as a table is made an output", () => {
+    load(form(POLICY, table("t_out", "pricing", { role: "output", columns: [column("c_premium", "premium", { type: "float" })] })))
+    render(<SchemaEditor />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of premium" }))
+    fireEvent.click(screen.getByRole("checkbox", { name: "premium is required" }))
+    expect(current().schema.tables[1].columns[0].required).toBe(true)
+    expect(screen.getByTestId("schema-column-c_premium-summary")).toHaveTextContent(/^required$/)
+    // The rules only typing takes, an output takes none of.
+    expect(screen.queryByTestId("schema-column-c_premium-min")).toBeNull()
+    expect(screen.queryByRole("textbox", { name: "Placeholder of premium" })).toBeNull()
+
+    // An input column made an output keeps whether it is required, and loses the rest.
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of exposure" }))
+    fireEvent.click(screen.getByRole("checkbox", { name: "exposure is required" }))
+    commit(screen.getByTestId("schema-column-c_exposure-min"), "0")
+    fireEvent.change(screen.getByRole("combobox", { name: "Role of policy_details" }), { target: { value: "output" } })
+    expect(current().schema.tables[0].columns[1]).toMatchObject({ required: true, min: null })
+    expect(screen.getByRole("checkbox", { name: "exposure is required" })).toBeChecked()
+  })
+
+  it("shows the columns the quote store keeps in each table under the table's own, locked, with nothing to change", () => {
+    load(form(detailsTable(), POLICY, LAYERS))
+    useWorkbenchStore.setState({
+      storeColumns: {
+        quote_details: [
+          { name: "quote_version", kind: "int" },
+          { name: "saved_at", kind: "datetime" },
+          { name: "priced_release", kind: "str" },
+        ],
+        t_layers: [{ name: "quote_row", kind: "int" }],
+      },
+    })
+    render(<SchemaEditor />)
+
+    const details = tableNamed("quote_details")
+    const version = within(details).getByTestId("schema-store-column-quote_version")
+    expect(version).toHaveTextContent("quote_version")
+    expect(within(version).getByLabelText("Kept by the quote store")).toBeInTheDocument()
+    expect(within(version).getByTitle("Integer")).toBeInTheDocument()
+    expect(within(within(details).getByTestId("schema-store-column-saved_at")).getByTitle("Date and time")).toBeInTheDocument()
+    // After the table's own columns, and none of them.
+    expect(version.previousElementSibling).toHaveAttribute("data-testid", "schema-column-qd_haute_version")
+    expect(columnNames("quote_details")).not.toContain("quote_version")
+    // Read only: no field, button or menu of their own.
+    for (const name of ["quote_version", "saved_at", "priced_release"]) {
+      const row = within(details).getByTestId(`schema-store-column-${name}`)
+      expect(within(row).queryByRole("textbox")).toBeNull()
+      expect(within(row).queryByRole("button")).toBeNull()
+      expect(within(row).queryByRole("combobox")).toBeNull()
+    }
+    const layers = tableNamed("layers")
+    expect(within(layers).getByTestId("schema-store-column-quote_row")).toHaveTextContent("quote_row")
+    expect(within(layers).getByText("2 cols")).toBeInTheDocument()
+    expect(within(tableNamed("policy_details")).queryByTestId(/^schema-store-column-/)).toBeNull()
+
+    // A search shows the form's columns alone.
+    fireEvent.change(screen.getByRole("textbox", { name: "Search fields" }), { target: { value: "quote" } })
+    expect(screen.queryByTestId(/^schema-store-column-/)).toBeNull()
   })
 
   it("asks before removing a column or a table a sheet shows, and takes it off the sheet", async () => {

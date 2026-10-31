@@ -86,15 +86,15 @@ function Routed() {
 }
 
 /**
- * `/quotes/new`, plain or naming a revision to duplicate or renew: the New quote window
- * opened over the Quotes page, at its default list.
+ * `/quotes/new`, plain or naming a quote to duplicate or renew: the New quote window opened
+ * over the Quotes page, at its default list.
  */
-function AskedNewQuote({ quoteId, revision, relation }: { quoteId: string | null; revision: number; relation: "duplicate" | "renewal" }) {
+function AskedNewQuote({ reference, option, relation }: { reference: string | null; option: number; relation: "duplicate" | "renewal" }) {
   useEffect(() => {
     const store = useNewQuoteStore.getState()
-    if (quoteId === null) store.openNew({ addressed: true })
-    else void store.openDerived({ quoteId, revision, relation }, { addressed: true })
-  }, [quoteId, revision, relation])
+    if (reference === null) store.openNew({ addressed: true })
+    else void store.openDerived({ reference, option, relation }, { addressed: true })
+  }, [reference, option, relation])
   return null
 }
 
@@ -106,8 +106,8 @@ function RoutedPage({ route }: { route: AppRoute }) {
         <AppHeader label="Quotes toolbar" />
         <QuotesPage query={quotesQueryOf("")} />
         <AskedNewQuote
-          quoteId={from?.quoteId ?? null}
-          revision={from?.revision ?? 1}
+          reference={from?.reference ?? null}
+          option={from?.option ?? 1}
           relation={from?.relation === "renewal" ? "renewal" : "duplicate"}
         />
       </>

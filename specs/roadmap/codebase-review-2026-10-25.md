@@ -143,7 +143,7 @@ target dependency resolution. The component roadmaps now carry the resulting pla
 | `FSH-R07`, `FSH-R05` | Recover a save only from complete canonical saved-content equality, retain newer dirty edits, and distinguish intended other-tab broadcasts from watcher duplicates and self-echoes. |
 | `DEP-R11` | Check every response batch before positional pairing; require explicit first-deploy intent or authoritative absence, never infer absence from an outage. |
 | `DEP-R09` | Resolve and verify dependency locks for each target Python/platform and extras. |
-| `WB-10` | Shipped SQLite already has atomic insert-if-absent. Require a real selected-engine concurrency test and correct transaction recovery. |
+| `WB-43` | Shipped SQLite already has atomic insert-if-absent. Require a real selected-engine concurrency test and correct transaction recovery. |
 
 The build-directory work is split into `DEP-R12A` (P2, isolated owned bundles
 and cleanup) and `DEP-R12B` (P3, project-scoped schema caching). Unnamed stale artifacts
@@ -154,7 +154,7 @@ priority if shared-checkout concurrency is an advertised deployment workflow.
 The roadmap chooses complete canonical content comparison for save recovery, uses
 explicit CLI intent for an HTTP first deployment, and excludes the saving socket while
 retaining fingerprint guards. These are planned rules to specify and test in the
-component specifications before code changes. WB-10's server-engine choice remains
+component specifications before code changes. WB-43's server-engine choice remains
 with the project's IT team; the audit does not choose one or present its generic
 branch as a current SQLite release defect.
 
@@ -318,7 +318,7 @@ production:
 | Frontend optimiser | FOX-4, FOX-5, FOX-6, FOX-8, FOX-10 (optimiser part) | `FMOU-R05` |
 | Frontend Explore | FOX-7, FOX-9, FOX-10 (Explore part), FOX-11, FOX-12 | `EDA-R03` |
 | Assistant UI | FTG-5, FTG-18, FTG-20 | `ASSIST-60` |
-| Workbench | PM-45 | `WB-10` (selected server engine's atomic form insertion) |
+| Workbench | PM-45 | `WB-43` (selected server engine's atomic form insertion) |
 | Engineering quality | PM-50 | `ENGQ-R01` (evidence added) |
 | Engineering quality | the campaign-named test modules recounted | `ENGQ-R05` (evidence added) |
 | Workbench UI | FWB-7 | `WB-38` (Decision) |

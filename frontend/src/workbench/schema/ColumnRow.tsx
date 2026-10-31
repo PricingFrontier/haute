@@ -1,7 +1,10 @@
-/** A schema column's row: its type and name, its summary under them, dragged or moved, removed and opened for its details (specs/workbench). */
-import { KeyRound, Lock, SlidersHorizontal, X } from "lucide-react"
+/**
+ * A schema column's row: its type and name, its summary under them, dragged or moved, removed
+ * and opened for its details; and the row of a column the quote store keeps (specs/workbench).
+ */
+import { KeyRound, Lock, SlidersHorizontal, X, type LucideIcon } from "lucide-react"
 import { useRef, type KeyboardEvent } from "react"
-import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
+import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchStoreColumn } from "../../api/types"
 import { COMPACT_FIELD_CLASS, CommittedTextField, IconSelect, INPUT_STYLE } from "../../components/form"
 import type { RowDrag } from "../../hooks/useListReorder"
 import { altArrowMove, type RefocusAfterMove } from "../../hooks/useRefocusAfterMove"
@@ -14,6 +17,16 @@ import { ColumnDetails } from "./ColumnDetails"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
 import { columnSummary, type Fresh, HOVER_ONLY, usedBy } from "./schemaText"
+
+/** The box a column's type marker sits in. */
+const MARKER_STYLE = { background: "var(--chrome-hover)", border: "1px solid var(--border)" }
+
+/** What a column the quote store keeps holds, drawn as the marker of the column type nearest it. */
+const KEPT_KINDS: Record<WorkbenchStoreColumn["kind"], { label: string; icon: LucideIcon; color: string }> = {
+  int: COLUMN_TYPES.int,
+  str: COLUMN_TYPES.str,
+  datetime: { ...COLUMN_TYPES.date, label: "Date and time" },
+}
 
 interface ColumnRowProps {
   form: FormSpec
@@ -75,7 +88,6 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
     change((f) => moveSchemaColumn(f, table.id, column.id, to))
   }
 
-  const markerStyle = { background: "var(--chrome-hover)", border: "1px solid var(--border)" }
   return (
     <div
       ref={row}
@@ -92,7 +104,7 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
           // The index is always an Integer; Haute's columns keep their types.
           <span
             className={`relative flex w-6 shrink-0 items-center justify-center rounded-md ${color}`}
-            style={markerStyle}
+            style={MARKER_STYLE}
             title={column.index ? "Integer: each row's number, from 1" : label}
           >
             <Icon size={12} aria-hidden="true" />
@@ -106,7 +118,7 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
             ariaLabel={`Type of ${column.name}`}
             title={`${label} (change the type)`}
             className={`w-6 rounded-md ${color}`}
-            style={markerStyle}
+            style={MARKER_STYLE}
           />
         )}
         <CommittedTextField
@@ -165,6 +177,24 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
         </p>
       )}
       {open && !identity && <ColumnDetails table={table} column={column} managed={managed} readOnly={readOnly} set={set} />}
+    </div>
+  )
+}
+
+/** A column the quote store keeps in a table that the form does not: what it holds and its name, locked, with nothing to change. */
+export function StoreColumnRow({ column }: { column: WorkbenchStoreColumn }) {
+  const { label, icon: Icon, color } = KEPT_KINDS[column.kind]
+  return (
+    <div className="flex items-stretch gap-1 rounded" data-testid={`schema-store-column-${column.name}`}>
+      <span className="w-3 shrink-0" aria-hidden="true" />
+      <span className={`relative flex w-6 shrink-0 items-center justify-center rounded-md ${color}`} style={MARKER_STYLE} title={label}>
+        <Icon size={12} aria-hidden="true" />
+      </span>
+      <span className="min-w-0 flex-1 truncate rounded-md px-1.5 py-0.5 font-mono text-xs" style={{ border: "1px solid transparent", color: "var(--text-muted)" }}>
+        {column.name}
+      </span>
+      <Lock size={11} aria-label="Kept by the quote store" className="shrink-0 self-center" style={{ color: "var(--text-muted)" }} />
+      <span className="size-5 shrink-0" aria-hidden="true" />
     </div>
   )
 }

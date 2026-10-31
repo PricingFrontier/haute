@@ -16,7 +16,6 @@ export const FILL_STYLE = { flex: "none" } as const
 
 const STAGE_STYLE: Record<WorkbenchAppQuote["stage"] | "archived", { color: string; background: string; border: string }> = {
   draft: { color: "var(--text-secondary)", background: "transparent", border: "var(--border-bright)" },
-  priced: { color: "var(--text-accent)", background: "var(--accent-soft)", border: "var(--accent-ring)" },
   final: { color: "var(--quote-final-text)", background: "var(--quote-final-bg)", border: "var(--quote-final-border)" },
   archived: { color: "var(--warning)", background: "var(--warning-soft)", border: "var(--warning-border-strong)" },
 }
