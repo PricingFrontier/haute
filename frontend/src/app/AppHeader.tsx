@@ -6,11 +6,12 @@ const BRAND_STYLE = { width: "auto", minWidth: 165, maxWidth: 360, paddingRight:
 
 /**
  * The underwriter app's bar (specs/workbench): the pipeline's name over the release, a link
- * to the Quotes page when the app keeps quotes, what the page showing puts there, and who
+ * to the Quotes page while the quotes are open, what the page showing puts there, and who
  * is signed in.
  */
 export default function AppHeader({ children, label }: { children?: ReactNode; label: string }) {
   const release = useAppStore((s) => s.release)
+  const open = useAppStore((s) => s.quotes?.open === true)
   if (release === null) return null
   return (
     <header role="toolbar" aria-label={label} className="toolbar flex-wrap gap-y-2 [&>div]:shrink-0">
@@ -18,7 +19,7 @@ export default function AppHeader({ children, label }: { children?: ReactNode; l
       <div className="toolbar-brand" style={BRAND_STYLE} data-testid="app-release">
         <div className="toolbar-brand-mark min-w-0">
           <h1 className="toolbar-brand-name max-w-full truncate" style={{ lineHeight: 1.2 }} title={release.pipeline_name}>
-            {release.quotes ? (
+            {open ? (
               <a href="/" onClick={(event) => followLink(event, "/")} style={{ color: "inherit" }}>
                 {release.pipeline_name || "Quotes"}
               </a>

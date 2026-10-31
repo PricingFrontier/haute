@@ -1,6 +1,7 @@
 """The workbench routes (specs/workbench): its status, its tables as the saved form defines
-them now or as an unsaved form the view holds would, the form itself, read and saved, and
-the params files a column's allowed values are read from.
+them now or as an unsaved form the view holds would, the form itself, read and saved, the
+params files a column's allowed values are read from, and the SQL that brings a hosted quote
+store's tables to a form, which the people who own its database start from.
 
 Every route reads ``haute.toml``, and those that serve the saved form read its folder too,
 from the working directory on every request, off the event loop, so an edit to either
@@ -31,6 +32,7 @@ from haute._workbench_folder import (
     folder_files,
     folder_index,
     folder_revision,
+    form_at_ref,
     form_folder_lock,
     form_from_files,
     read_folder_unlocked,
@@ -38,7 +40,12 @@ from haute._workbench_folder import (
 )
 from haute._workbench_form import FormDocument, FormSpec, WorkbenchFormError, with_quote_details
 from haute._workbench_params import read_param_file
-from haute._workbench_tables import WorkbenchTablesError, workbench_tables
+from haute._workbench_tables import (
+    WorkbenchTablesError,
+    input_tables,
+    output_tables,
+    workbench_tables,
+)
 from haute.routes._contract_errors import contract_error_http_exception
 from haute.routes._helpers import project_write
 from haute.routes._save_pipeline import (
@@ -57,6 +64,9 @@ from haute.schemas import (
     WorkbenchParamFileResponse,
     WorkbenchStatusResponse,
     WorkbenchStoreColumn,
+    WorkbenchStoreSqlEnvironment,
+    WorkbenchStoreSqlRequest,
+    WorkbenchStoreSqlResponse,
     WorkbenchTablesResponse,
 )
 
@@ -218,6 +228,71 @@ async def post_workbench_tables(body: WorkbenchFormTablesRequest) -> WorkbenchTa
     """The tables, sample and response tables of a form as the view holds it, saved or not."""
     await _enabled_config()
     return await run_in_threadpool(_tables_response, body.form)
+
+
+def _default_branch_form(config: WorkbenchConfig) -> tuple[str, FormSpec] | None:
+    """The project's default branch and the form it holds, as the remote holds it where the
+    clone has one; None outside a repository and while that branch holds no form."""
+    from haute._git_core import (
+        _canonical_remote,
+        _get_default_branch,
+        _is_git_repo,
+        _run_git_ok,
+        git_binary_available,
+    )
+
+    root = config.project_root
+    if not git_binary_available() or not _is_git_repo(root):
+        return None
+    branch = _get_default_branch(root)
+    remote = _canonical_remote(root)
+    refs = [f"refs/remotes/{remote}/{branch}"] if remote is not None else []
+    for ref in [*refs, f"refs/heads/{branch}"]:
+        found, _ = _run_git_ok("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", cwd=root)
+        if found:
+            spec = form_at_ref(config, ref)
+            return None if spec is None else (branch, spec)
+    return None
+
+
+def _store_sql(
+    config: WorkbenchConfig, body: WorkbenchStoreSqlRequest
+) -> WorkbenchStoreSqlResponse:
+    from haute._quote_store import offline_plan, render_sql
+    from haute._quote_store._migrate import PROVIDER_DIALECTS
+    from haute._quote_store._providers import PROVIDERS
+
+    # quote_details as every form holds it once read, whatever the view sent of it.
+    spec = with_quote_details(body.form)
+    try:
+        # Each name checked as the tables' are: the SQL holds none a database cannot.
+        input_tables(spec)
+        output_tables(spec)
+    except WorkbenchTablesError as exc:
+        raise contract_error_http_exception(exc) from exc
+    found = _default_branch_form(config) if body.start == "branch" else None
+    branch, base = found if found is not None else (None, None)
+    environments = [
+        WorkbenchStoreSqlEnvironment(
+            name=environment.name,
+            provider=environment.provider,
+            sql=render_sql(
+                offline_plan(base, spec, provider=PROVIDERS[environment.provider]),
+                spec,
+                PROVIDER_DIALECTS[environment.provider],
+            ),
+        )
+        for environment in config.store
+    ]
+    return WorkbenchStoreSqlResponse(branch=branch, environments=environments)
+
+
+@router.post("/store-sql", response_model=WorkbenchStoreSqlResponse)
+async def store_sql(body: WorkbenchStoreSqlRequest) -> WorkbenchStoreSqlResponse:
+    """The SQL that brings each hosted environment the project declares to a form the view
+    holds, saved or not, from the form the default branch holds, or from none."""
+    config = await _enabled_config()
+    return await run_in_threadpool(_store_sql, config, body)
 
 
 @router.get("/form", response_model=WorkbenchFormResponse)

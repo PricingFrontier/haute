@@ -1037,6 +1037,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/WorkbenchParamFileResponse"},
         },
     },
+    "/api/workbench/store-sql": {
+        "POST": {
+            "request_ref": "#/components/schemas/WorkbenchStoreSqlRequest",
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchStoreSqlResponse"},
+        },
+    },
     "/api/workbench/tables": {
         "GET": {
             "request_ref": None,

@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 import haute._workbench_app as workbench_app
 from haute._execution_admission import ExecutionAdmissionError
+from haute._quote_store import DEV, StoreLocation, prepare_store, store_url
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute._workbench_app import (
@@ -26,19 +27,29 @@ from haute._workbench_app import (
     read_release,
     write_release,
 )
+from haute._workbench_app_store import NO_ENVIRONMENT
 from haute._workbench_form import (
     FormSpec,
     OptionsSource,
     WorkbenchFormError,
     form_revision,
+    with_quote_details,
 )
 from haute.deploy._utils import shipped_graph
 from haute.execution import ExecutionProfile
 from tests._workbench_helpers import form_files, write_files
 from tests.test_workbench_routes import POLICY, PRICING, form
 
-FORM = form(POLICY, PRICING, sample={"t1": [{"c_state": "NY", "c_exposure": "1000"}]})
-VALUES = {"t1": [{"c_state": "NY", "c_exposure": "$1,000"}]}
+FORM = with_quote_details(
+    FormSpec.model_validate(
+        form(POLICY, PRICING, sample={"t1": [{"c_state": "NY", "c_exposure": "1000"}]})
+    )
+).model_dump(by_alias=True, mode="json")
+#: A quote of the store's, as the app's page sends it: its identity in quote_details.
+VALUES = {
+    "t1": [{"c_state": "NY", "c_exposure": "$1,000"}],
+    "quote_details": [{"qd_reference": "A-1", "qd_option": "1"}],
+}
 SIGNED_IN = {EASY_AUTH_NAME: "uw@example.com"}
 #: Where ``haute app serve`` is reached: served so, the app takes a loopback host alone.
 LOOPBACK = "http://127.0.0.1:8001"
@@ -110,8 +121,20 @@ def release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     set_project_root(original)
 
 
+def _store(directory: Path) -> StoreLocation:
+    """Dev's store for the release in *directory*, its tables the release's form's as
+    ``haute app serve`` keeps it, so the app's quotes are open."""
+    built, spec, _ = read_release(directory)
+    url = store_url(directory.parent / "store.sqlite")
+    prepare_store(url, spec, project=built.pipeline_name)
+    return StoreLocation(DEV, url)
+
+
 def _client(directory: Path, **options: Any) -> TestClient:
+    """The app serving the release in *directory*, its quotes open on dev's store unless
+    *options* name another store, or none."""
     base_url = LOOPBACK if "local_principal" in options else "http://testserver"
+    options.setdefault("store", _store(directory))
     return TestClient(create_app(directory, **options), base_url=base_url)
 
 
@@ -136,7 +159,7 @@ def test_a_release_holds_the_form_without_its_sample_what_it_is_and_its_entry(re
     shipped, spec, manifest = read_release(directory)
 
     assert spec.sample == {}
-    assert spec.data_schema.tables[0].name == "policy_details"
+    assert [table.name for table in spec.data_schema.tables][1] == "policy_details"
     assert shipped.form_revision == form_revision((directory / "form.json").read_bytes())
     assert (shipped.pipeline_name, shipped.haute_version) == ("motor", "9.9.9")
     assert shipped.created_at == "2026-10-12T09:00:00+00:00"
@@ -335,6 +358,7 @@ def test_the_form_is_served_without_its_sample(release: Any) -> None:
     assert answered["revision"] == read_release(directory)[0].form_revision
     assert answered["form"]["sample"] == {}
     assert [table["name"] for table in answered["form"]["schema"]["tables"]] == [
+        "quote_details",
         "policy_details",
         "pricing_output",
     ]
@@ -347,7 +371,10 @@ def test_a_quote_is_priced_through_the_releases_pipeline(release: Any) -> None:
     # The number typed with a currency sign and a separator is read as Price reads it.
     assert priced.json() == {
         "tables": {"pricing_output": [{"premium": 500.0}]},
-        "request": {"policy_details": {"state": "NY", "exposure": 1000.0}},
+        "request": {
+            "policy_details": {"state": "NY", "exposure": 1000.0},
+            "quote_details": {"quote_reference": "A-1", "quote_option": 1, "is_renewal": False},
+        },
     }
 
 
@@ -590,6 +617,8 @@ PROJECT_VALUES = {
     "t_policy": [{"c_state": "NY", "c_limit": "1,000"}],
     "t_items": [{"c_item_id": "A", "c_value": "10"}, {"c_item_id": "B", "c_value": "30"}],
 }
+#: A quote of the store's: its identity in quote_details, as the app's page sends it.
+IDENTITY = {"quote_details": [{"qd_reference": "A-1", "qd_option": "1"}]}
 
 
 @pytest.fixture()
@@ -630,23 +659,17 @@ def test_a_project_builds_a_release_that_prices_as_its_pipeline(project: Path) -
     assert built.host == "azure-container-apps"
     assert built.pipeline_name == "main"
     client = _client(project / "build" / "app", local_principal="analyst@example.com")
-    priced = _price(client, PROJECT_VALUES)
+    priced = _price(client, {**PROJECT_VALUES, **IDENTITY})
     assert priced.status_code == 200, priced.text
-    # Without a quote store, the one quote is priced under the stand-in identity.
-    stand_in = {"quote_reference": "PREVIEW", "quote_option": 1}
+    # Priced under the quote's own identity, which every output row holds.
+    identity = {"quote_reference": "A-1", "quote_option": 1}
     assert priced.json()["tables"] == {
-        "pricing": [{**stand_in, "premium": 100.0, "limit": 1000.0, "referral": "none"}],
+        "pricing": [{**identity, "premium": 100.0, "limit": 1000.0, "referral": "none"}],
         "item_prices": [
-            {**stand_in, "item_id": "A", "premium": 20.0},
-            {**stand_in, "item_id": "B", "premium": 60.0},
+            {**identity, "item_id": "A", "premium": 20.0},
+            {**identity, "item_id": "B", "premium": 60.0},
         ],
     }
-
-    # Nor does it hold the details the app sets for a quote it keeps, whatever the page sends.
-    claimed = {"qd_stage": "final", "qd_created_by": "mallory", "qd_haute_version": "0.0.1"}
-    sent = _price(client, {**PROJECT_VALUES, "quote_details": [claimed]})
-    # The row filled, its typed tick reads unticked.
-    assert sent.json()["request"]["quote_details"] == {**stand_in, "is_renewal": False}
 
     # Built again, into the same directory or another, it is the same release.
     assert build_release(project, project / "build" / "app").id == built.id
@@ -694,10 +717,15 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from haute._workbench_app import create_app
+from haute._quote_store import DEV, StoreLocation, prepare_store, store_url
+from haute._workbench_app import create_app, read_release
 
+release = Path(sys.argv[1])
+built, form, _ = read_release(release)
+url = store_url(release.parent / "store.sqlite")
+prepare_store(url, form, project=built.pipeline_name)
 client = TestClient(
-    create_app(Path(sys.argv[1]), local_principal="analyst@example.com"),
+    create_app(release, local_principal="analyst@example.com", store=StoreLocation(DEV, url)),
     base_url="http://127.0.0.1:8001",
 )
 revision = client.get("/api/app/form").json()["revision"]
@@ -736,7 +764,7 @@ def test_the_app_prices_on_the_utility_code_the_release_carries(project: Path) -
     child.write_text(_PRICE_FROM_THE_PROJECT, encoding="utf-8")
 
     completed = subprocess.run(
-        [sys.executable, str(child), str(release_dir), json.dumps(PROJECT_VALUES)],
+        [sys.executable, str(child), str(release_dir), json.dumps({**PROJECT_VALUES, **IDENTITY})],
         cwd=project,
         capture_output=True,
         text=True,
@@ -748,7 +776,7 @@ def test_the_app_prices_on_the_utility_code_the_release_carries(project: Path) -
     priced = json.loads(completed.stdout.strip().splitlines()[-1])
     assert priced["tables"]["pricing"] == [
         {
-            "quote_reference": "PREVIEW",
+            "quote_reference": "A-1",
             "quote_option": 1,
             "premium": 100.0,
             "limit": 1000.0,
@@ -891,14 +919,11 @@ def test_the_app_commands_say_a_fault_and_print_no_traceback(project: Path) -> N
 
     from haute.cli import cli
 
-    # An environment the release built does not declare.
-    assert CliRunner().invoke(cli, ["app", "build"]).exit_code == 0
-    unread = CliRunner().invoke(cli, ["app", "migrate", "--environment", "test"])
     # A project whose haute.toml is not TOML.
     (project / "haute.toml").write_text("[project\n", encoding="utf-8")
     unbuilt = CliRunner().invoke(cli, ["app", "build", "out"])
 
-    for result in (unread, unbuilt):
+    for result in (unbuilt,):
         assert result.exit_code == 1, result.output
         assert "\nError: " in f"\n{result.output}", result.output
         assert "Traceback" not in result.output
@@ -930,7 +955,7 @@ def test_haute_app_serve_serves_the_release_on_loopback_as_the_analyst(
     assert "Quotes kept in .haute/app/store.sqlite" in result.output
     with TestClient(served["app"], base_url=LOOPBACK) as client:
         signed_in = client.get("/api/app/release").json()
-    assert (signed_in["principal"], signed_in["quotes"]) == ("ana@example.com", True)
+    assert (signed_in["principal"], signed_in["quotes"]["open"]) == ("ana@example.com", True)
 
     reading = CliRunner().invoke(cli, ["app", "serve", "--reader"])
     assert reading.exit_code == 0, reading.output
@@ -1090,8 +1115,9 @@ def test_the_release_prices_and_keeps_quotes_with_only_the_images_runtime_instal
     import subprocess
     import sys
 
-    from haute._quote_store import prepare_store, store_url
+    from haute._quote_store import store_url
     from haute._workbench_config import ENVIRONMENT_ENV, STORE_URL_ENV
+    from tests._store_servers import Target
     from tests.test_container_smoke_script import _modules_outside_the_image
 
     _pin_base_image(project)
@@ -1111,7 +1137,9 @@ def test_the_release_prices_and_keeps_quotes_with_only_the_images_runtime_instal
     assert not {"sqlalchemy", "alembic"} & set(blocked)
     url = store_url(project / "store.sqlite")
     built, form, _ = read_release(release_dir)
-    prepare_store(url, form, project=built.pipeline_name, environment="test")
+    # The hosted tables made from the SQL Haute writes, as their owners make them.
+    hosted = Target("sqlite", url)
+    hosted.script(hosted.sql(form))
     child = project / "price_one_quote.py"
     child.write_text(_SLIM_RELEASE_CHILD, encoding="utf-8")
 
@@ -1141,39 +1169,18 @@ def test_the_release_prices_and_keeps_quotes_with_only_the_images_runtime_instal
     assert result["quote"]["quote"]["label"] == "Q-000001/1"
 
 
-def test_a_release_without_a_quote_store_prices_without_its_packages(release: Any) -> None:
-    """Without a store the app imports nothing of the store's: a scoring image without its
-    packages serves the sheets and prices a quote."""
-    import subprocess
-    import sys
+def test_an_app_without_a_quote_store_prices_nothing_its_quotes_closed(release: Any) -> None:
+    client = _client(release(), store=None)
 
-    script = (
-        "import importlib.abc, json, sys\n"
-        "class Block(importlib.abc.MetaPathFinder):\n"
-        "    def find_spec(self, name, path=None, target=None):\n"
-        "        if name.split('.')[0] in ('sqlalchemy', 'alembic'):\n"
-        "            raise ModuleNotFoundError(name)\n"
-        "sys.meta_path.insert(0, Block())\n"
-        "from pathlib import Path\n"
-        "from fastapi.testclient import TestClient\n"
-        "from haute._workbench_app import create_app\n"
-        "client = TestClient(create_app(Path(sys.argv[1]), local_principal='uw@example.com'),\n"
-        "    base_url='http://127.0.0.1:8001')\n"
-        "revision = client.get('/api/app/form').json()['revision']\n"
-        "release = client.get('/api/app/release').json()['id']\n"
-        "priced = client.post('/api/app/price', json={'form_revision': revision,\n"
-        "    'release': release, 'values': json.loads(sys.argv[2])})\n"
-        "print(json.dumps({'status': priced.status_code, 'body': priced.json()}))\n"
-    )
-    completed = subprocess.run(
-        [sys.executable, "-c", script, str(release()), json.dumps(VALUES)],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
+    answered = client.get("/api/app/release", headers=SIGNED_IN).json()["quotes"]
+    priced = _price(client)
 
-    assert completed.returncode == 0, completed.stderr[-4000:]
-    answer = json.loads(completed.stdout.strip().splitlines()[-1])
-    assert answer["status"] == 200, answer
-    assert answer["body"]["tables"]
+    assert answered == {
+        "open": False,
+        "error_code": "quote_store_environment",
+        "message": NO_ENVIRONMENT,
+        "differences": [],
+    }
+    assert priced.status_code == 503, priced.text
+    assert priced.json()["detail"]["error_code"] == "quote_store_environment"
+    assert client.get("/api/app/quotes", headers=SIGNED_IN).status_code == 503

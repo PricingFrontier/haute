@@ -124,21 +124,9 @@ Out of scope, owned elsewhere:
   `.haute/app/store.sqlite`, which a rebuild leaves as it is: the form's own tables, brought
   to the release's form as it starts by the store's planner in dev's mode, which drops what
   the form removed and builds again what changed while holding values, naming each table
-  whose quotes' rows went and each column whose values went.
-- `haute app migrate --environment NAME [--release DIR] [--plan [--base DIR]] [--sql]
-  [--restore-point NAME]` brings the quote store of the hosted environment `NAME`, one the
-  release built in `DIR` (`.haute/app/release` by default) declares, at the database the
-  host's own variables say it is at, to that release's form before the release starts,
-  through the store's planner in a hosted environment's mode, printing each step. `--plan`
-  prints the plan and changes nothing, made offline with `--base DIR` from the form of the
-  release built there, with no database; `--sql` prints it as the SQL a DBA runs, one
-  transaction, refused for a plan refusing a step or holding a retype or a change of a
-  table's rows or role, which only the migrate applies; and a plan holding a step only a
-  restore reverses is applied only given `--restore-point NAME`. A step
-  it cannot take, an environment the release does not declare, a location not given or given
-  twice, `--base` without `--plan` or `--sql`, and no release built in `DIR` are each refused
-  naming what, exiting non-zero before any DDL; nothing it prints names where the database
-  is.
+  whose quotes' rows went and each column whose values went. No command changes a hosted
+  environment's tables: the people who own its database change them in SQL, starting from
+  the SQL the Workbench view's Build mode writes ([workbench](../workbench/high-level.md)).
 - `haute status [model_name] [--version-only]` looks up a model's latest version/stage in the MLflow
   Model Registry.
 - `haute impact [--sample] [--batch-size] [--endpoint-suffix]` scores a configured safety dataset,

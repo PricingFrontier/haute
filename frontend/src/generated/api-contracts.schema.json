@@ -18716,6 +18716,52 @@
       "title": "WorkbenchAppQuoteSource",
       "type": "object"
     },
+    "WorkbenchAppQuoteStore": {
+      "description": "The app's quote store as its gate last checked it: open, or closed with the\nrefusal's error code, message and differences, each null or empty while open.",
+      "properties": {
+        "differences": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Differences",
+          "type": "array"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error Code"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Message"
+        },
+        "open": {
+          "title": "Open",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "open",
+        "error_code",
+        "message",
+        "differences"
+      ],
+      "title": "WorkbenchAppQuoteStore",
+      "type": "object"
+    },
     "WorkbenchAppQuotesResponse": {
       "description": "A page of a list of quotes, the cursor of the next, and each list's and stage's\ncount.",
       "properties": {
@@ -18845,9 +18891,7 @@
           "type": "string"
         },
         "quotes": {
-          "default": false,
-          "title": "Quotes",
-          "type": "boolean"
+          "$ref": "#/$defs/WorkbenchAppQuoteStore"
         }
       },
       "required": [
@@ -19046,6 +19090,59 @@
         "kind"
       ],
       "title": "WorkbenchStoreColumn",
+      "type": "object"
+    },
+    "WorkbenchStoreSqlEnvironment": {
+      "description": "One hosted environment the project declares, its engine and the SQL for it.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "sql": {
+          "title": "Sql",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "provider",
+        "sql"
+      ],
+      "title": "WorkbenchStoreSqlEnvironment",
+      "type": "object"
+    },
+    "WorkbenchStoreSqlResponse": {
+      "description": "The SQL for each hosted environment the project declares, and the default branch\nwhose form it starts from: null when it starts from none.",
+      "properties": {
+        "branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Branch"
+        },
+        "environments": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchStoreSqlEnvironment"
+          },
+          "title": "Environments",
+          "type": "array"
+        }
+      },
+      "required": [
+        "branch",
+        "environments"
+      ],
+      "title": "WorkbenchStoreSqlResponse",
       "type": "object"
     },
     "WorkbenchTable": {
@@ -19518,6 +19615,9 @@
     "WorkbenchStatusResponse": {
       "$ref": "#/$defs/WorkbenchStatusResponse"
     },
+    "WorkbenchStoreSqlResponse": {
+      "$ref": "#/$defs/WorkbenchStoreSqlResponse"
+    },
     "WorkbenchTablesResponse": {
       "$ref": "#/$defs/WorkbenchTablesResponse"
     },
@@ -19620,6 +19720,7 @@
     "WorkbenchFormResponse",
     "WorkbenchFormSaveResponse",
     "WorkbenchParamFileResponse",
+    "WorkbenchStoreSqlResponse",
     "WorkbenchAppReleaseResponse",
     "WorkbenchAppFormResponse",
     "WorkbenchAppPriceResponse",
@@ -19798,7 +19899,8 @@
       "WorkbenchTablesResponse",
       "WorkbenchFormResponse",
       "WorkbenchFormSaveResponse",
-      "WorkbenchParamFileResponse"
+      "WorkbenchParamFileResponse",
+      "WorkbenchStoreSqlResponse"
     ],
     "workbench-app": [
       "WorkbenchAppReleaseResponse",

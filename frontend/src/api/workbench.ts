@@ -5,8 +5,9 @@
  * (GET /api/workbench/tables) or as an unsaved form would (POST /api/workbench/tables), and
  * the form itself with the file's revision
  * (GET /api/workbench/form), saved against that revision and captured on the save ledger
- * (PUT /api/workbench/form); and a params file's header and a column's values, what
- * allowed values are read from (GET /api/workbench/params).
+ * (PUT /api/workbench/form); a params file's header and a column's values, what allowed
+ * values are read from (GET /api/workbench/params); and the SQL that brings each hosted
+ * environment's tables to a form (POST /api/workbench/store-sql).
  */
 
 import { expectGeneratedContract } from "../types/generatedContractValidation"
@@ -17,6 +18,7 @@ import type {
   WorkbenchFormSaveResponse,
   WorkbenchParamFileResponse,
   WorkbenchStatusResponse,
+  WorkbenchStoreSqlResponse,
   WorkbenchTablesResponse,
 } from "./types"
 
@@ -37,6 +39,23 @@ export async function fetchWorkbenchTables(): Promise<WorkbenchTablesResponse> {
   return expectGeneratedContract(
     "WorkbenchTablesResponse",
     (await workbenchValidators()).validateWorkbenchTablesResponse,
+    data,
+  )
+}
+
+/**
+ * The SQL that brings each hosted environment the project declares to `form`, as the view
+ * holds it, from the form the default branch holds (`branch`) or from none.
+ */
+export async function fetchStoreSql(form: FormSpec, start: "branch" | "none"): Promise<WorkbenchStoreSqlResponse> {
+  const data = await request<unknown>("/api/workbench/store-sql", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ form, start }),
+  })
+  return expectGeneratedContract(
+    "WorkbenchStoreSqlResponse",
+    (await workbenchValidators()).validateWorkbenchStoreSqlResponse,
     data,
   )
 }

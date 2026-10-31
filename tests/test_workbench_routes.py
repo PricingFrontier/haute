@@ -1033,3 +1033,115 @@ async def test_two_saves_against_one_revision_take_turns_and_the_second_is_refus
     winner = one if one.status_code == 200 else other
     on_disk = json.loads((project / FORM / "form.json").read_bytes())
     assert on_disk["name"] == winner.json()["form"]["name"]
+
+
+# ── The tables' SQL ───────────────────────────────────────────────────────
+
+#: Two hosted environments, each on its own engine.
+STORES = (
+    '\n[workbench.store.test]\nprovider = "postgresql"\nauth = "password"\n'
+    'username_env = "STORE_USER"\npassword_env = "STORE_PASSWORD"\n'
+    '\n[workbench.store.prod]\nprovider = "sqlserver"\nauth = "managed-identity"\n'
+)
+
+
+def _committed_on_main(project: Path) -> None:
+    """The project as the default branch holds it, committed with nothing else in git."""
+    git(project, "init", "-b", "main")
+    git(project, "config", "user.name", "Test Actuary")
+    git(project, "config", "user.email", "test@example.com")
+    git(project, "add", "-A")
+    git(project, "commit", "-m", "the form as it was merged")
+
+
+def _store_sql(spec: dict[str, Any], start: str = "branch") -> Any:
+    return client().post("/api/workbench/store-sql", json={"form": spec, "start": start})
+
+
+def _exposure_named(name: str) -> dict[str, Any]:
+    """POLICY with its exposure column, the same by id, under *name*."""
+    return {**POLICY, "columns": [POLICY["columns"][0], column(name, "float", id="c_exposure")]}
+
+
+def test_the_tables_sql_starts_from_the_form_the_default_branch_holds(project: Path) -> None:
+    enable(project, "[workbench]\nenabled = true\n" + STORES)
+    write_form(project, form(POLICY))
+    _committed_on_main(project)
+    # A feature branch checked out, its own form committed, and another unsaved on disk: the
+    # SQL starts from neither, only from the default branch's.
+    git(project, "checkout", "-b", "feature")
+    write_form(project, form(_exposure_named("exposure_feature")))
+    git(project, "commit", "-am", "the feature's form")
+    write_form(project, form(_exposure_named("exposure_disk")))
+    on_disk = files_of(project)
+    status = git(project, "status", "--porcelain")
+
+    answered = _store_sql(form(_exposure_named("value")))
+
+    assert answered.status_code == 200, answered.text
+    body = answered.json()
+    assert body["branch"] == "main"
+    assert [(each["name"], each["provider"]) for each in body["environments"]] == [
+        ("test", "postgresql"),
+        ("prod", "sqlserver"),
+    ]
+    test, prod = (each["sql"] for each in body["environments"])
+    # The column renamed by its id, in each engine's own SQL; nothing made afresh.
+    assert "ALTER TABLE policy_details RENAME exposure TO haute_tmp_" in test
+    assert "EXEC sp_rename 'policy_details.exposure', haute_tmp_" in prod
+    assert "CREATE TABLE" not in test + prod
+    assert "exposure_feature" not in test + prod
+    assert "exposure_disk" not in test + prod
+    # Read from git with nothing checked out: the branch and the folder on disk are as they were.
+    assert git(project, "branch", "--show-current") == "feature"
+    assert files_of(project) == on_disk
+    assert git(project, "status", "--porcelain") == status
+
+
+def test_the_tables_sql_starts_from_none_when_asked_or_when_the_branch_holds_no_form(
+    project: Path,
+) -> None:
+    enable(project, "[workbench]\nenabled = true\n" + STORES)
+    write_form(project, form(POLICY))
+
+    # No repository at all: the SQL makes every table.
+    outside = _store_sql(form(POLICY)).json()
+    assert outside["branch"] is None
+    for each in outside["environments"]:
+        assert "CREATE TABLE quote_details" in each["sql"]
+        assert "CREATE TABLE haute_activity" in each["sql"]
+        assert "haute_store" not in each["sql"]
+
+    _committed_on_main(project)
+    fresh = _store_sql(form(POLICY), start="none").json()
+    assert fresh["branch"] is None
+    assert "CREATE TABLE policy_details" in fresh["environments"][0]["sql"]
+    # From the branch, a form it already holds has nothing to change.
+    same = _store_sql(form(POLICY)).json()
+    assert same["branch"] == "main"
+    assert same["environments"][0]["sql"] == (
+        "-- The tables already fit the form: nothing to change.\n"
+    )
+
+
+def test_the_tables_sql_with_no_environment_declared_is_none(project: Path) -> None:
+    enable(project)
+    write_form(project, form(POLICY))
+
+    assert _store_sql(form(POLICY)).json() == {"branch": None, "environments": []}
+
+
+def test_the_tables_sql_refuses_a_body_that_is_not_a_form_and_a_disabled_workbench(
+    project: Path,
+) -> None:
+    enable(project)
+    assert _store_sql({"schema": "no"}).status_code == 422
+    assert client().post("/api/workbench/store-sql", json={"form": form(POLICY)}).status_code == 422
+    # A name no table may hold is refused as the tables refuse it, never written into SQL.
+    hostile = {**POLICY, "columns": [column("a\nDELETE FROM policy_details;\n--", "float")]}
+    refused = _store_sql(form(hostile))
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["detail"]["error_code"] == "workbench_tables_invalid"
+
+    enable(project, "")
+    assert _store_sql(form(POLICY)).status_code == 404

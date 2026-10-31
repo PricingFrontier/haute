@@ -2,20 +2,19 @@
 database is and how the app signs in to it, read from the host's variables with nothing of
 either shown; each connection signed in as the release declares, an Entra ID token asked for
 as it is made; the store's types pinned on each engine; names past an engine's limit refused
-in the plan; an empty column's type changed in place where the engine can; the image's
-drivers; and, on each server the environment names (tests/_store_servers.py), the planner in a
-SQL schema of the store's own, the startup check of collations and privileges, and a release
-started apart from its project signing in as it declares."""
+in the plan; dev's empty column's type changed in place where the engine can; the image's
+drivers; and, on each server the environment names (tests/_store_servers.py), tables in a SQL
+schema of their own made and changed by the SQL Haute writes, the app's check of collations
+and privileges, and a release started apart from its project signing in as it declares."""
 
 from __future__ import annotations
 
 import io
-import sqlite3
 import struct
-import threading
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -23,27 +22,23 @@ from typing import Any
 import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from click.testing import CliRunner
 from fastapi.testclient import TestClient
 from sqlalchemy.dialects import mssql, postgresql
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.schema import CreateTable
 
 from haute._credential_security import validate_credential_free_uri
 from haute._quote_store import (
     QuoteStoreEnvironmentError,
     QuoteStoreMismatchError,
+    QuoteStoreUnreachableError,
     SignIn,
     _migrate,
-    offline_plan,
     open_book,
-    plan_store,
-    prepare_store,
-    render_sql,
     resolve_store,
 )
-from haute._quote_store._migrate import MigrationRefusedError, _emit, plan
+from haute._quote_store._migrate import _emit, plan
 from haute._quote_store._providers import (
     PROVIDERS,
     SQL_COPT_SS_ACCESS_TOKEN,
@@ -55,11 +50,11 @@ from haute._quote_store._providers import (
 from haute._quote_store._schema import store_schema, structure
 from haute._quote_store._store import make_engine, reaching
 from haute._sandbox import _get_project_root, set_project_root
-from haute._workbench_app import create_app, hosted_store, store_dependencies
+from haute._workbench_app import create_app, hosted_store, read_release, store_dependencies
+from haute._workbench_app_store import StoreGate
 from haute._workbench_config import StoreEnvironment
 from haute._workbench_form import FormSpec, with_quote_details
-from haute.cli import cli
-from tests._store_servers import Target, backends, configured, database
+from tests._store_servers import Target, configured, database
 from tests.test_workbench_app_quotes import Page, _write_release
 
 PROJECT = "motor"
@@ -360,12 +355,12 @@ def test_a_name_too_long_for_postgresql_is_refused_in_the_plan() -> None:
     # Past the form's own 63-character rule, as a structure made elsewhere could be.
     wanted["tables"][-1]["columns"][0]["name"] = long
 
-    refused = plan(wanted, None, None, "hosted", provider=PROVIDERS["postgresql"])
+    refused = plan(wanted, None, None, "script", provider=PROVIDERS["postgresql"])
 
     assert refused.refusals == (
         f"the name {long} is 64 bytes long, past the 63 postgresql keeps whole: shorten it",
     )
-    assert plan(wanted, None, None, "hosted", provider=PROVIDERS["sqlserver"]).refusals == ()
+    assert plan(wanted, None, None, "script", provider=PROVIDERS["sqlserver"]).refusals == ()
 
 
 def test_an_empty_column_changes_type_in_place_where_the_engine_converts_the_pair() -> None:
@@ -388,7 +383,10 @@ def test_an_empty_column_changes_type_in_place_where_the_engine_converts_the_pai
             column("drivers", "int"),
         )
     )
-    made = offline_plan(base, retyped, provider=sqlserver)
+    before, after = structure(base), structure(retyped)
+    # Dev's plan for columns holding no value.
+    zero = dict.fromkeys(_migrate.wanted_counts(after, before), 0)
+    made = plan(after, before, zero, "dev", provider=sqlserver)
     buffer = io.StringIO()
     context = MigrationContext.configure(
         dialect_name="mssql", opts={"as_sql": True, "output_buffer": buffer}
@@ -400,18 +398,6 @@ def test_an_empty_column_changes_type_in_place_where_the_engine_converts_the_pai
     assert "ALTER TABLE pricing.policy ALTER COLUMN value BIGINT NULL" in ddl
     assert "ALTER TABLE pricing.policy DROP COLUMN start" in ddl
     assert "EXEC sp_rename 'pricing.policy.haute_tmp_" in ddl
-    # A migrate applies these, checking each column empty; no script prints them.
-    with pytest.raises(MigrationRefusedError, match="haute app migrate checks"):
-        render_sql(
-            made,
-            retyped,
-            "mssql",
-            project=PROJECT,
-            environment=TEST,
-            release="r1",
-            haute_version="1",
-            restore_point="backup-1",
-        )
 
 
 def test_a_release_image_takes_each_declared_providers_driver() -> None:
@@ -431,7 +417,7 @@ def test_a_release_image_takes_each_declared_providers_driver() -> None:
 
 
 def test_a_started_app_names_each_privilege_its_sign_in_lacks() -> None:
-    schema = store_schema(form(POLICY), sql_schema="pri]cing")
+    schema = store_schema(form(POLICY), sql_schema="pri]cing", record=False)
     asked: list[dict[str, str]] = []
 
     def execute(_statement: Any, params: dict[str, str]) -> Any:
@@ -444,7 +430,7 @@ def test_a_started_app_names_each_privilege_its_sign_in_lacks() -> None:
     kinds = {(each["name"], each["kind"]) for each in asked}
     assert ("[pri]]cing].[quote_details]", "UPDATE") in kinds
     assert ("[pri]]cing].[haute_activity]", "INSERT") in kinds
-    assert ("[pri]]cing].[haute_store]", "SELECT") in kinds
+    assert not any(name.endswith("[haute_store]") for name, _ in kinds)
     sqlite = SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
     assert missing_privileges(sqlite, schema) == []  # type: ignore[arg-type]
 
@@ -478,97 +464,82 @@ def _schema_named(target: Target, name: str) -> None:
     target.run(f"CREATE SCHEMA {name}")
 
 
-def test_the_planner_brings_a_server_store_in_its_own_schema_to_each_release(
+def test_tables_made_from_the_sql_take_each_later_form_keeping_every_value(
     server: Target,
 ) -> None:
     _schema_named(server, "pricing")
     where = {"sql_schema": "pricing", "sign_in": server.sign_in}
-    prepare_store(server.url, form(POLICY), project=PROJECT, environment=TEST, **where)
+    base = form(
+        table(
+            "policy",
+            column("region"),
+            column("left"),
+            column("right"),
+            column("code"),
+            column("drivers", "int"),
+            column("telematics", "bool"),
+        )
+    )
+    server.script(server.sql(base, sql_schema="pricing"))
     with open_book(
-        server.url, form(POLICY), project=PROJECT, environment=TEST, haute_version="1", **where
+        server.url, base, project=PROJECT, environment=TEST, haute_version="1", **where
     ) as book:
         book.create(
             operation="operation-0001",
             actor="ana",
-            values={"t_policy": [{"c_region": "north", "c_value": "1.5"}]},
+            values={
+                "t_policy": [
+                    {
+                        "c_region": "north",
+                        "c_left": "L",
+                        "c_right": "R",
+                        "c_code": "42",
+                        "c_drivers": "2",
+                    }
+                ]
+            },
             at=book.now(),
             reference="A-1",
         )
 
-    # A rename of case only, a column added, one removed kept, and an empty one retyped.
+    # A change of case, a swap of two names, a Text column made an Integer and an Integer a
+    # Decimal in place, a column added and one removed, which the SQL keeps.
     changed = form(
         table(
             "policy",
             column("Region", id_="c_region"),
-            column("value", "float"),
-            column("start", "int"),
+            column("right", id_="c_left"),
+            column("left", id_="c_right"),
+            column("code", "int"),
+            column("drivers", "float"),
             column("seats", "int"),
         )
     )
-    made = prepare_store(
-        server.url,
-        changed,
-        project=PROJECT,
-        environment=TEST,
-        restore_point="backup-1",
-        **where,
-    )
+    written = server.sql(changed, base, sql_schema="pricing")
+    assert "-- ALTER TABLE pricing.policy DROP COLUMN telematics;" in written
+    server.script(written)
 
-    assert {(step.kind, step.column) for step in made.steps} >= {
-        ("rename column", "Region"),
-        ("add column", "seats"),
-        ("keep column", "telematics"),
-        ("retype column", "start"),
-    }
-    # Every value kept, read with plain SQL under the names the release gives them.
+    # Every value kept, read with plain SQL under the names the form gives them.
     assert server.read(
-        'SELECT quote_reference, "Region", value, start, seats, telematics FROM pricing.policy'
-    ) == [("A-1", "north", 1.5, None, None, 0)]
-    # The started app opens it as it is, in its schema, with every privilege it needs.
+        'SELECT quote_reference, "Region", "left", "right", code, drivers, seats, telematics '
+        "FROM pricing.policy"
+    ) == [("A-1", "north", "R", "L", 42, 2.0, None, 0)]
+    types = dict(
+        server.read(
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = "
+            "'pricing' AND table_name = 'policy' AND column_name IN ('code', 'drivers')"
+        )
+    )
+    assert types == (
+        {"code": "bigint", "drivers": "double precision"}
+        if server.backend == "postgresql"
+        else {"code": "bigint", "drivers": "float"}
+    )
+    # The started app opens the tables as they are, in their schema.
     with open_book(
         server.url, changed, project=PROJECT, environment=TEST, haute_version="1", **where
     ) as book:
-        assert book.read("A-1", 1).values["t_policy"][0]["c_region"] == "north"
-
-
-def test_an_empty_column_is_retyped_on_a_server_in_place_or_by_replacement(
-    server: Target,
-) -> None:
-    _schema_named(server, "pricing")
-    where = {"sql_schema": "pricing", "sign_in": server.sign_in}
-    base = form(table("policy", column("note"), column("start", "date")))
-    prepare_store(server.url, base, project=PROJECT, environment=TEST, **where)
-    # PostgreSQL changes the empty text column in place; SQL Server replaces the empty date.
-    moved = "note" if server.backend == "postgresql" else "start"
-    retyped = form(
-        table(
-            "policy",
-            column("note", "int" if moved == "note" else "str"),
-            column("start", "int" if moved == "start" else "date"),
-        )
-    )
-
-    made = prepare_store(
-        server.url, retyped, project=PROJECT, environment=TEST, restore_point="backup-2", **where
-    )
-
-    assert [(step.kind, step.column) for step in made.steps] == [("retype column", moved)]
-    # The column is the new type in the server's own catalogue, under its name.
-    assert server.read(
-        "SELECT data_type FROM information_schema.columns WHERE table_schema = 'pricing' "
-        f"AND table_name = 'policy' AND column_name = '{moved}'"
-    ) == [("bigint",)]
-    with open_book(
-        server.url, retyped, project=PROJECT, environment=TEST, haute_version="1", **where
-    ) as book:
-        made_quote = book.create(
-            operation="operation-0001",
-            actor="ana",
-            values={"t_policy": [{f"c_{moved}": "7"}]},
-            at=book.now(),
-            reference="A-1",
-        )
-        assert made_quote.values["t_policy"][0][f"c_{moved}"] == "7"
+        assert book.read("A-1", 1).values["t_policy"][0]["c_code"] == "42"
 
 
 def _columns_in_order(server: Target, owner: str, table_name: str) -> str:
@@ -627,187 +598,70 @@ def _left_open(server: Target, raw: Any) -> bool:
     return bool(open_transactions)
 
 
-def test_a_plan_exported_as_sql_runs_on_the_server_whole_or_not_at_all(server: Target) -> None:
+def test_a_script_runs_on_the_server_whole_or_not_at_all(server: Target) -> None:
     _schema_named(server, "pricing")
     where = {"sql_schema": "pricing", "sign_in": server.sign_in}
-    base = form(table("policy", column("region")))
-    prepare_store(server.url, base, project=PROJECT, environment=TEST, **where)
-    renamed = form(table("policy", column("area", id_="c_region"), column("seats", "int")))
-    planned = plan_store(server.url, renamed, project=PROJECT, environment=TEST, **where)
-    script = render_sql(
-        planned,
-        renamed,
-        "postgresql" if server.backend == "postgresql" else "mssql",
-        project=PROJECT,
-        environment=TEST,
-        release="r2",
-        haute_version="1",
-        restore_point=None,
-        sql_schema="pricing",
-    )
-    recorded = "SELECT release FROM pricing.haute_store"
-
-    # A column the SQL side added since takes the rename's name: the rename fails part way,
-    # after its first phase, and the script leaves nothing changed and nothing open.
-    server.run("ALTER TABLE pricing.policy ADD area BIGINT")
-    with _script_run(server, script) as (raw, raised):
-        assert raised is not None
-        assert not _left_open(server, raw)
-        assert [
-            name for (name,) in server.read(_columns_in_order(server, "pricing", "policy"))
-        ] == ["quote_reference", "quote_option", "region", "area"]
-        assert server.read(recorded) == [(None,)]
-    server.run("ALTER TABLE pricing.policy DROP COLUMN area")
-
-    # Run whole, it brings the store to the release: the app opens it.
-    with _script_run(server, script) as (raw, raised):
-        assert raised is None and not _left_open(server, raw)
-    assert server.read(recorded) == [("r2",)]
+    base = form(table("policy", column("region"), column("code")))
+    server.script(server.sql(base, sql_schema="pricing"))
     with open_book(
-        server.url, renamed, project=PROJECT, environment=TEST, haute_version="1", **where
-    ) as book:
-        assert book.page(actor="ana", view="team").quotes == []
-
-
-@pytest.fixture(params=backends())
-def any_store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Target]:
-    """A database of the test's own on each backend the run has, SQLite's included."""
-    with database(request.param, tmp_path) as target:
-        yield target
-
-
-def _write_waits(target: Target, statement: str) -> bool:
-    """Whether *statement*, run on a connection of its own, waited out its lock timeout
-    rather than landing."""
-    if target.backend == "sqlite":
-        raw = sqlite3.connect(target.url.removeprefix("sqlite:///"), timeout=1)
-        try:
-            raw.execute(statement)
-            raw.commit()
-        except sqlite3.OperationalError:
-            return True
-        finally:
-            raw.close()
-        return False
-    engine = make_engine(target.url, sign_in=target.sign_in)
-    try:
-        with engine.connect() as connection:
-            try:
-                with connection.begin():
-                    connection.exec_driver_sql(
-                        "SET lock_timeout = '2s'"
-                        if target.backend == "postgresql"
-                        else "SET LOCK_TIMEOUT 2000"
-                    )
-                    connection.exec_driver_sql(statement)
-            except DBAPIError:
-                return True
-        return False
-    finally:
-        engine.dispose()
-
-
-def test_a_migrate_holds_writers_off_from_its_counts_to_its_ddl(
-    any_store: Target, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    store = any_store
-    base = form(table("policy", column("region"), column("note")))
-    prepare_store(store.url, base, project=PROJECT, environment=TEST, sign_in=store.sign_in)
-    with open_book(
-        store.url, base, project=PROJECT, environment=TEST, haute_version="1", sign_in=store.sign_in
+        server.url, base, project=PROJECT, environment=TEST, haute_version="1", **where
     ) as book:
         book.create(
             operation="operation-0001",
             actor="ana",
-            values={"t_policy": [{"c_region": "north"}]},
+            values={"t_policy": [{"c_region": "north", "c_code": "x1"}]},
             at=book.now(),
             reference="A-1",
         )
-    waited: list[bool] = []
-    counted = _migrate.counts
+    changed = form(table("policy", column("area", id_="c_region"), column("code", "int")))
+    script = server.sql(changed, base, sql_schema="pricing")
+    names = _columns_in_order(server, "pricing", "policy")
 
-    def counting(*args: Any, **kwargs: Any) -> Any:
-        found = counted(*args, **kwargs)
-        # A save between the counts, which found note empty, and the retype: it must wait.
-        waited.append(_write_waits(store, "UPDATE policy SET note = 'kept?'"))
-        return found
-
-    monkeypatch.setattr(_migrate, "counts", counting)
-    retyped = form(table("policy", column("region"), column("note", "int")))
-    made = prepare_store(
-        store.url,
-        retyped,
-        project=PROJECT,
-        environment=TEST,
-        restore_point="backup-1",
-        sign_in=store.sign_in,
-    )
-
-    assert waited == [True]
-    assert ("retype column", "note") in {(step.kind, step.column) for step in made.steps}
-    assert store.read("SELECT quote_reference, region, note FROM policy") == [
-        ("A-1", "north", None)
+    # A value that does not convert stops the retype after the rename: nothing is left changed
+    # and nothing left open.
+    with _script_run(server, script) as (raw, raised):
+        assert raised is not None
+        assert not _left_open(server, raw)
+    assert [name for (name,) in server.read(names)] == [
+        "quote_reference",
+        "quote_option",
+        "region",
+        "code",
     ]
 
+    # A column the SQL side added since takes the rename's name: the rename fails part way,
+    # after its first phase, and the script leaves nothing changed and nothing open.
+    server.run("UPDATE pricing.policy SET code = '7'", "ALTER TABLE pricing.policy ADD area BIGINT")
+    with _script_run(server, script) as (raw, raised):
+        assert raised is not None
+        assert not _left_open(server, raw)
+        assert [name for (name,) in server.read(names)] == [
+            "quote_reference",
+            "quote_option",
+            "region",
+            "code",
+            "area",
+        ]
+    server.run("ALTER TABLE pricing.policy DROP COLUMN area")
 
-def test_a_migrate_waiting_on_another_plans_against_the_tables_that_one_left(
-    any_store: Target, monkeypatch: pytest.MonkeyPatch
+    # Run whole, the tables fit the form: the app opens them, the value converted.
+    with _script_run(server, script) as (raw, raised):
+        assert raised is None and not _left_open(server, raw)
+    with open_book(
+        server.url, changed, project=PROJECT, environment=TEST, haute_version="1", **where
+    ) as book:
+        assert book.read("A-1", 1).values["t_policy"][0]["c_code"] == "7"
+
+
+def test_a_sign_in_the_server_refuses_closes_the_quotes_naming_no_server_or_user(
+    server: Target,
 ) -> None:
-    store = any_store
-    sign_in = store.sign_in
-    prepare_store(store.url, form(POLICY), project=PROJECT, environment=TEST, sign_in=sign_in)
-    renamed = form({**POLICY, "name": "policies"})
-    first_counted = threading.Event()
-    go_on = threading.Event()
-    counted = _migrate.counts
-
-    def counting(*args: Any, **kwargs: Any) -> Any:
-        found = counted(*args, **kwargs)
-        if threading.current_thread().name == "first":
-            # The first migrate holds the store while the second starts and waits for it.
-            first_counted.set()
-            assert go_on.wait(30)
-        return found
-
-    monkeypatch.setattr(_migrate, "counts", counting)
-    made: dict[str, Any] = {}
-
-    def migrate(name: str) -> None:
-        try:
-            made[name] = prepare_store(
-                store.url, renamed, project=PROJECT, environment=TEST, sign_in=sign_in
-            )
-        except Exception as exc:  # noqa: BLE001 - the test reads what each migrate met
-            made[name] = exc
-
-    first = threading.Thread(target=migrate, args=("first",), name="first")
-    first.start()
-    assert first_counted.wait(30)
-    second = threading.Thread(target=migrate, args=("second",), name="second")
-    second.start()
-    # The second waits on the first's hold of the store, whatever it read before.
-    second.join(timeout=1.0)
-    assert second.is_alive()
-    go_on.set()
-    first.join(timeout=60)
-    second.join(timeout=60)
-
-    assert [(step.kind, step.table) for step in made["first"].steps] == [
-        ("rename table", "policies")
-    ]
-    # The second plans against the tables the first left: nothing more to do.
-    assert not isinstance(made["second"], Exception), made["second"]
-    assert made["second"].steps == () and made["second"].refusals == ()
-
-
-def test_a_sign_in_the_server_refuses_is_said_naming_no_server_or_user(server: Target) -> None:
     wrong = SignIn("password", username="haute_nobody", secret="Wrong-p4ss-only!")
     host = str(make_url(server.url).host)
+    server.script(server.sql(form(POLICY)))
 
-    with pytest.raises(QuoteStoreEnvironmentError) as migrating:
-        prepare_store(server.url, form(POLICY), project=PROJECT, environment=TEST, sign_in=wrong)
-    with pytest.raises(QuoteStoreEnvironmentError) as starting:
-        open_book(
+    def opened() -> Any:
+        return open_book(
             server.url,
             form(POLICY),
             project=PROJECT,
@@ -816,16 +670,19 @@ def test_a_sign_in_the_server_refuses_is_said_naming_no_server_or_user(server: T
             sign_in=wrong,
         )
 
-    for refused in (migrating, starting):
-        said = str(refused.value)
-        assert "could not be reached, or it refused the app's sign-in" in said
-        assert host not in said and "haute_nobody" not in said
+    with pytest.raises(QuoteStoreUnreachableError) as starting:
+        opened()
+    said = str(starting.value)
+    assert "could not be reached, or it refused the app's sign-in" in said
+    assert host not in said and "haute_nobody" not in said
+    # A started app keeps its quotes closed as unreachable, saying the same.
+    state = StoreGate(opened).state()
+    assert (state.open, state.error_code) == (False, "quote_store_unreachable")
+    assert host not in str(state.message) and "haute_nobody" not in str(state.message)
 
 
-def test_a_started_app_refuses_a_sign_in_lacking_a_privilege_naming_it(server: Target) -> None:
-    prepare_store(
-        server.url, form(POLICY), project=PROJECT, environment=TEST, sign_in=server.sign_in
-    )
+def test_a_sign_in_lacking_a_privilege_closes_the_quotes_naming_it(server: Target) -> None:
+    server.script(server.sql(form(POLICY)))
     # A login of the test's own: a login outlives the test's database on SQL Server.
     reader = f"haute_reader_{uuid.uuid4().hex[:8]}"
     secret = "Reader-p4ss-only!"
@@ -839,17 +696,24 @@ def test_a_started_app_refuses_a_sign_in_lacking_a_privilege_naming_it(server: T
             f"CREATE ROLE {reader} LOGIN PASSWORD '{secret}'",
             f"GRANT SELECT ON ALL TABLES IN SCHEMA public TO {reader}",
         )
+
+    def opened() -> Any:
+        return open_book(
+            server.url,
+            form(POLICY),
+            project=PROJECT,
+            environment=TEST,
+            haute_version="1",
+            sign_in=SignIn("password", username=reader, secret=secret),
+        )
+
     try:
         with pytest.raises(QuoteStoreMismatchError, match="INSERT on policy") as refused:
-            open_book(
-                server.url,
-                form(POLICY),
-                project=PROJECT,
-                environment=TEST,
-                haute_version="1",
-                sign_in=SignIn("password", username=reader, secret=secret),
-            )
+            opened()
         assert "SELECT on" not in str(refused.value)
+        state = StoreGate(opened).state()
+        assert (state.open, state.error_code) == (False, "quote_store_mismatch")
+        assert "INSERT on policy" in state.differences
     finally:
         if server.backend == "sqlserver":
             server.run(f"DROP USER {reader}")
@@ -871,11 +735,9 @@ def test_a_started_app_refuses_a_sign_in_lacking_a_privilege_naming_it(server: T
             server.run(f"DROP OWNED BY {reader}", f"DROP ROLE {reader}")
 
 
-def test_a_started_app_refuses_an_exact_text_under_another_collation(sqlserver: Target) -> None:
+def test_an_exact_text_under_another_collation_closes_the_quotes(sqlserver: Target) -> None:
     server = sqlserver
-    prepare_store(
-        server.url, form(POLICY), project=PROJECT, environment=TEST, sign_in=server.sign_in
-    )
+    server.script(server.sql(form(POLICY)))
     server.run(
         "ALTER TABLE quote_details ALTER COLUMN saved_by NVARCHAR(640) "
         "COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL"
@@ -899,6 +761,9 @@ def test_a_release_started_apart_from_its_project_signs_in_as_it_declares(
     monkeypatch.chdir(tmp_path)
     declared = StoreEnvironment(TEST, server.backend, "password", PASSWORD)
     release_dir = _write_release(tmp_path / "release", environments=(declared,))
+    _, release_form, _ = read_release(release_dir)
+    # Its tables made from the SQL Haute writes, as the people who own the database make them.
+    server.script(server.sql(release_form))
     assert server.sign_in is not None
     for name, value in {
         "HAUTE_ENVIRONMENT": TEST,
@@ -908,14 +773,9 @@ def test_a_release_started_apart_from_its_project_signs_in_as_it_declares(
     }.items():
         monkeypatch.setenv(name, value)
     try:
-        migrated = CliRunner().invoke(
-            cli, ["app", "migrate", "--environment", TEST, "--release", str(release_dir)]
-        )
-        assert migrated.exit_code == 0, migrated.output
-        assert server.url not in migrated.output
-        assert str(server.sign_in.secret) not in migrated.output
-
-        with TestClient(create_app(release_dir, store=hosted_store(release_dir))) as client:
+        with TestClient(
+            create_app(release_dir, store=partial(hosted_store, release_dir))
+        ) as client:
             saved = Page(client).priced()
     finally:
         set_project_root(original)

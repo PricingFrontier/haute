@@ -3,8 +3,10 @@
  * signed in (GET /api/app/release), the release's form with its revision
  * (GET /api/app/form), a quote priced through the release's pipeline
  * (POST /api/app/price), which a page drawn for another revision of the form or another
- * release is refused, and, with a quote store, the quotes it keeps (/api/app/quotes), each
- * named by its reference, URL-encoded, and its option.
+ * release is refused, and the quotes it keeps (/api/app/quotes), each named by its
+ * reference, URL-encoded, and its option. While the app's quotes are closed every quote
+ * route and the pricing answer 503 with the store's refusal, which `watchQuotesClosed`'s
+ * listener hears of whichever call met it.
  */
 
 import type { SampleRow } from "../utils/workbenchForm"
@@ -30,6 +32,24 @@ import type {
 } from "./types"
 
 const workbenchValidators = () => import("../generated/api-contracts.workbench-app.validators.mjs")
+
+/** Who hears each failure of the app's routes (`watchQuotesClosed`). */
+let quotesClosedListener: ((error: unknown) => void) | null = null
+
+/** Have `listener` hear every failure of the app's routes, as a closed store refuses each of them. */
+export function watchQuotesClosed(listener: ((error: unknown) => void) | null): void {
+  quotesClosedListener = listener
+}
+
+/** `sent`, its failure heard by the listener before it is thrown on. */
+async function heard<T>(sent: Promise<T>): Promise<T> {
+  try {
+    return await sent
+  } catch (error: unknown) {
+    quotesClosedListener?.(error)
+    throw error
+  }
+}
 
 /** The app answers a pricing within its own time limit; the browser waits a little longer. */
 const PRICE_TIMEOUT_MS = 90_000
@@ -59,7 +79,7 @@ export async function priceAppQuote(
   values: Record<string, SampleRow[]>,
 ): Promise<WorkbenchAppPriceResponse> {
   const body: WorkbenchAppPriceRequest = { form_revision: revision, release, values }
-  const data = await post<unknown>("/api/app/price", body, { timeout: PRICE_TIMEOUT_MS })
+  const data = await heard(post<unknown>("/api/app/price", body, { timeout: PRICE_TIMEOUT_MS }))
   return expectGeneratedContract(
     "WorkbenchAppPriceResponse",
     (await workbenchValidators()).validateWorkbenchAppPriceResponse,
@@ -114,7 +134,7 @@ export async function fetchAppQuotes(query: QuotesQuery, cursor: string | null =
   if (query.search.trim() !== "") params.set("search", query.search.trim())
   if (query.assignee !== null) params.set("assignee", query.assignee)
   if (cursor !== null) params.set("cursor", cursor)
-  const data = await request<unknown>(`/api/app/quotes?${params.toString()}`)
+  const data = await heard(request<unknown>(`/api/app/quotes?${params.toString()}`))
   return expectGeneratedContract("WorkbenchAppQuotesResponse", (await workbenchValidators()).validateWorkbenchAppQuotesResponse, data)
 }
 
@@ -128,18 +148,18 @@ async function quoteResponse(data: unknown): Promise<WorkbenchAppQuoteResponse> 
  */
 export async function createAppQuote(creation: QuoteCreation, source: QuoteSource | null, reference: string | null): Promise<WorkbenchAppQuoteResponse> {
   const body: WorkbenchAppQuoteCreateRequest = { ...creation, source, reference }
-  return quoteResponse(await post<unknown>("/api/app/quotes", body, { timeout: PRICE_TIMEOUT_MS }))
+  return quoteResponse(await heard(post<unknown>("/api/app/quotes", body, { timeout: PRICE_TIMEOUT_MS })))
 }
 
 /** The quote `reference`/`option`, with what it holds. */
 export async function openAppQuote(reference: string, option: number): Promise<WorkbenchAppQuoteResponse> {
-  return quoteResponse(await request<unknown>(quoteRoute(reference, option)))
+  return quoteResponse(await heard(request<unknown>(quoteRoute(reference, option))))
 }
 
 /** The quote saved over `version` of it: unpriced while `save.shown` is null, else priced again by the server. */
 export async function saveAppQuote(reference: string, option: number, save: QuoteSave, version: number): Promise<WorkbenchAppQuoteResponse> {
   const body: WorkbenchAppQuoteSaveRequest = { ...save, version }
-  return quoteResponse(await post<unknown>(`${quoteRoute(reference, option)}/save`, body, { timeout: PRICE_TIMEOUT_MS }))
+  return quoteResponse(await heard(post<unknown>(`${quoteRoute(reference, option)}/save`, body, { timeout: PRICE_TIMEOUT_MS })))
 }
 
 /**
@@ -155,18 +175,18 @@ export async function changeAppQuote<C extends QuoteChange>(
 ): Promise<WorkbenchAppQuoteChangeResponse> {
   // A note names no version; every other change's fields are its body's but the version.
   const body = (change === "note" ? fields : { ...fields, version }) as QuoteChangeBodies[C]
-  const data = await post<unknown>(`${quoteRoute(reference, option)}/${change}`, body)
+  const data = await heard(post<unknown>(`${quoteRoute(reference, option)}/${change}`, body))
   return expectGeneratedContract("WorkbenchAppQuoteChangeResponse", (await workbenchValidators()).validateWorkbenchAppQuoteChangeResponse, data)
 }
 
 /** What was done to the quote, and the quotes it came from and that were made from it. */
 export async function fetchAppQuoteActivity(reference: string, option: number): Promise<WorkbenchAppQuoteActivityResponse> {
-  const data = await request<unknown>(`${quoteRoute(reference, option)}/activity`)
+  const data = await heard(request<unknown>(`${quoteRoute(reference, option)}/activity`))
   return expectGeneratedContract("WorkbenchAppQuoteActivityResponse", (await workbenchValidators()).validateWorkbenchAppQuoteActivityResponse, data)
 }
 
 /** The people quotes are with, or were made, saved or changed by. */
 export async function fetchAppPeople(): Promise<WorkbenchAppPeopleResponse> {
-  const data = await request<unknown>("/api/app/people")
+  const data = await heard(request<unknown>("/api/app/people"))
   return expectGeneratedContract("WorkbenchAppPeopleResponse", (await workbenchValidators()).validateWorkbenchAppPeopleResponse, data)
 }

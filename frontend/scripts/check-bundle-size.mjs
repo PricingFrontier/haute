@@ -203,7 +203,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // 3.4 KiB and 13.0 KiB (most of the latter another copy of the execution-metrics
 // contract), while their hand guards leave the initial bundle (298.1 -> 297.3 KiB).
 // The complete production bundle is 1,758.5 KiB; 1,760 KiB restores about 1.5 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1760
+// The quote store's tables changed in SQL (WB-44): the schema pane's SQL window and its
+// contract, and the underwriter app's closed quotes, bring it to 1,760.7 KiB; 1,762 KiB
+// restores about 1.3 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1762
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

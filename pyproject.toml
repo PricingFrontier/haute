@@ -76,8 +76,9 @@ dependencies = [
     # features. The extra below pins supported Databricks clients and adds SQL.
     "mlflow>=3.11.0,<4",
     # Direct dependencies (not just transitive via mlflow): the workbench's quote
-    # store (haute._quote_store) builds its schema with SQLAlchemy Core and migrates
-    # it with Alembic. Floors: the versions the lock has exercised.
+    # store (haute._quote_store) builds its schema with SQLAlchemy Core, and keeps dev's
+    # store and writes a hosted store's SQL through Alembic's operations. Floors: the
+    # versions the lock has exercised.
     "sqlalchemy>=2.0.46,<3",
     "alembic>=1.18.4,<2",
     # Direct dependency (not just transitive via catboost): the GLM

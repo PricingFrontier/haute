@@ -7,9 +7,10 @@ empty. Each row holds the quote's identity, ``quote_reference`` and ``quote_opti
 row of a many-row table holds ``quote_row`` too, the store's number for it. The identity,
 with ``quote_row`` in a many-row table, is each table's primary key, and each table's
 identity refers to its quote's ``quote_details`` row. Beside the form's tables the store
-keeps two of its own: ``haute_store``, one row recording what the database holds, and
-``haute_activity``, a row for each thing done to a quote. ``quote_details`` holds the store's
-own columns besides the form's (:data:`STORE_COLUMNS`), which no request holds.
+keeps ``haute_activity``, a row for each thing done to a quote, and dev's store
+``haute_store`` too, one row recording what the database holds; a hosted database records
+nothing of its shape. ``quote_details`` holds the store's own columns besides the form's
+(:data:`STORE_COLUMNS`), which no request holds.
 """
 
 from __future__ import annotations
@@ -51,7 +52,7 @@ from haute._workbench_form import (
 )
 from haute._workbench_tables import QUOTE_ROW
 
-#: Haute's own tables: what the database holds, and what was done to each quote.
+#: Haute's own tables: what dev's store holds, and what was done to each quote.
 STORE_TABLE = "haute_store"
 ACTIVITY_TABLE = "haute_activity"
 #: The structural schema's format, which ``haute_store`` records with it.
@@ -200,11 +201,12 @@ class StoredTable:
 @dataclass(frozen=True, slots=True)
 class StoreSchema:
     """The store's tables for one form: the form's tables in the schema's order, each keyed
-    by its stable id, and Haute's two."""
+    by its stable id, Haute's activity, and the record of what the database holds, dev's
+    store's alone, None for a hosted database."""
 
     metadata: MetaData
     tables: tuple[StoredTable, ...]
-    store: Table
+    store: Table | None
     activity: Table
 
     @property
@@ -223,8 +225,8 @@ class StoreSchema:
 
 def structure(form: FormSpec) -> dict[str, Any]:
     """What of *form* decides the store's tables, by stable id: each table's name, role and
-    rows, and each column's name, type and whether it is the index, as ``haute_store``
-    records it, none of them kept. Labels, rules and the sheets decide nothing there."""
+    rows, and each column's name, type and whether it is the index, as dev's ``haute_store``
+    records it. Labels, rules and the sheets decide nothing there."""
     return {
         "format": SCHEMA_FORMAT,
         # The store's own columns are Haute's: an upgrade that changes them changes this.
@@ -235,33 +237,17 @@ def structure(form: FormSpec) -> dict[str, Any]:
                 "name": table.name,
                 "role": table.role,
                 "rows": table.rows,
-                "kept": False,
                 "columns": [
                     {
                         "id": column.id,
                         "name": column.name,
                         "type": "int" if column.index else column.type,
                         "index": column.index,
-                        "kept": False,
                     }
                     for column in table.columns
                 ],
             }
             for table in form.data_schema.tables
-        ],
-    }
-
-
-def live(recorded: dict[str, Any]) -> dict[str, Any]:
-    """*recorded*, a structure ``haute_store`` holds, without what it keeps: the tables and
-    columns a hosted migrate kept after the form removed them, which the database still holds
-    and no release uses."""
-    return {
-        **recorded,
-        "tables": [
-            {**table, "columns": [column for column in table["columns"] if not column["kept"]]}
-            for table in recorded["tables"]
-            if not table["kept"]
         ],
     }
 
@@ -285,15 +271,18 @@ def store_columns(form: FormSpec) -> dict[str, list[tuple[str, StoreColumnKind]]
     return kept
 
 
-def store_schema(form: FormSpec, *, sql_schema: str | None = None) -> StoreSchema:
-    """The store's tables for *form*: its tables, then ``haute_store`` and ``haute_activity``,
-    each in the SQL schema *sql_schema*, or the connection's default when it names none."""
+def store_schema(
+    form: FormSpec, *, sql_schema: str | None = None, record: bool = True
+) -> StoreSchema:
+    """The store's tables for *form*: its tables, then ``haute_activity`` and, with *record*,
+    as dev's store keeps it, ``haute_store``, each in the SQL schema *sql_schema*, or the
+    connection's default when it names none."""
     metadata = MetaData(schema=sql_schema)
     tables = tuple(_stored(metadata, table) for table in form.data_schema.tables)
     return StoreSchema(
         metadata=metadata,
         tables=tables,
-        store=_store_table(metadata),
+        store=_store_table(metadata) if record else None,
         activity=_activity_table(metadata),
     )
 
@@ -339,7 +328,7 @@ def _stored(metadata: MetaData, table: SchemaTable) -> StoredTable:
 
 
 def _store_table(metadata: MetaData) -> Table:
-    """What the database holds: one row, its id 1."""
+    """What dev's store holds: one row, its id 1."""
     return Table(
         STORE_TABLE,
         metadata,
@@ -350,8 +339,6 @@ def _store_table(metadata: MetaData) -> Table:
         Column("haute_version", _text(), nullable=True),
         Column("migrated_at", UtcDateTime, nullable=False),
         Column("schema", _text(), nullable=False),
-        #: The backup or point in time the last migrate's plan could be rolled back to.
-        Column("restore_point", _text(), nullable=True),
     )
 
 
