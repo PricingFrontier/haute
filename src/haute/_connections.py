@@ -138,7 +138,8 @@ def _text(settings: Mapping[str, object], key: str, at: str, *, optional: bool) 
     if value is None and optional:
         return None
     if not isinstance(value, str):
-        raise ConnectionsError(f"{at}.{key} must be text; got {value!r}")
+        # Never the value: one put in the wrong key may be a secret.
+        raise ConnectionsError(f"{at}.{key} must be text")
     return value.strip()
 
 
@@ -190,7 +191,8 @@ def _connection(name: str, settings: dict[str, object]) -> Connection:
         variable = settings.get(key)
         if not isinstance(variable, str) or not VARIABLE_NAME.fullmatch(variable):
             raise ConnectionsError(
-                f"{at}.{key} must name the environment variable that holds it; got {variable!r}"
+                f"{at}.{key} must name the environment variable that holds it, letters, "
+                "digits and underscores"
             )
         variables[key] = variable
     schema = _text(settings, "schema", at, optional=True)

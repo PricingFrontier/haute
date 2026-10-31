@@ -8,7 +8,7 @@
 import { RefreshCw, X } from "lucide-react"
 import type { WorkbenchStoreDifference, WorkbenchStoreExtra } from "../api/types"
 import { INPUT_STYLE } from "../components/form"
-import useStoreCompareStore from "../stores/useStoreCompareStore"
+import useStoreCompareStore, { currentComparison } from "../stores/useStoreCompareStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { IconButton } from "./schema/IconButton"
@@ -29,12 +29,10 @@ const MARKS: Record<WorkbenchStoreDifference["kind"], string> = {
   store: "store columns",
 }
 
-/** The differences of the newest comparison, while it is of the form the view holds. */
+/** The differences of the newest comparison, while it is of the form and the pairings the view holds. */
 function useDifferences(): readonly WorkbenchStoreDifference[] {
   const form = useWorkbenchFormStore((s) => s.form)
-  return useStoreCompareStore((s) =>
-    s.compared.status === "compared" && s.compared.form === form ? s.compared.answer.differences : NONE,
-  )
+  return useStoreCompareStore((s) => currentComparison(s, form)?.differences ?? NONE)
 }
 const NONE: readonly WorkbenchStoreDifference[] = []
 
@@ -138,8 +136,8 @@ export function ComparePanel() {
   const renames = useStoreCompareStore((s) => s.renames)
   const unpair = useStoreCompareStore((s) => s.unpair)
   const form = useWorkbenchFormStore((s) => s.form)
+  const answer = useStoreCompareStore((s) => currentComparison(s, form))
   if (environment === null) return null
-  const answer = compared.status === "compared" ? compared.answer : null
   const own = answer?.differences.filter((each) => each.table === null) ?? []
   const columnName = (table: string, column: string) =>
     form?.schema.tables.find((each) => each.id === table)?.columns.find((each) => each.id === column)?.name ?? column

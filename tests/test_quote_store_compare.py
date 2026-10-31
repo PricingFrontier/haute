@@ -262,3 +262,82 @@ def test_the_catalogue_holds_no_value_read(tmp_path: Path) -> None:
         assert raw.execute("SELECT region FROM policy").fetchall() == [("a-secret-region",)]
     finally:
         raw.close()
+
+
+def test_a_sqlite_database_is_read_without_changing_it_or_making_one(tmp_path: Path) -> None:
+    target = Target("sqlite", f"sqlite:///{(tmp_path / 'store.sqlite').as_posix()}")
+    made_from_sql(target, RELEASED)
+    raw = sqlite3.connect(tmp_path / "store.sqlite")
+    try:
+        raw.execute("PRAGMA journal_mode=WAL").fetchone()
+    finally:
+        raw.close()
+
+    read_store_catalogue(StoreLocation(ENVIRONMENT, target.url, named_by="connections.toml [dev]"))
+
+    raw = sqlite3.connect(tmp_path / "store.sqlite")
+    try:
+        # The store's own engine would have put it back to a rollback journal.
+        assert raw.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+    finally:
+        raw.close()
+    missing = tmp_path / "missing.sqlite"
+    with pytest.raises(QuoteStoreEnvironmentError, match="could not be read"):
+        read_store_catalogue(
+            StoreLocation(
+                ENVIRONMENT, f"sqlite:///{missing.as_posix()}", named_by="connections.toml [dev]"
+            )
+        )
+    assert not missing.exists()
+
+
+def test_an_entra_sign_in_refused_is_a_database_not_reached_naming_no_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from azure.core.exceptions import ClientAuthenticationError
+
+    from haute._quote_store import SignIn, _providers
+
+    class Refused:
+        def get_token(self, *scopes: str) -> Any:
+            raise ClientAuthenticationError("AADSTS50126: hidden-user@hidden-tenant cancelled")
+
+    monkeypatch.setattr(_providers, "_analyst_credential", lambda: Refused())
+    location = StoreLocation(
+        ENVIRONMENT,
+        "postgresql+psycopg://hidden-host.invalid/quotes",
+        sign_in=SignIn("entra", username="pricing"),
+        named_by="connections.toml [dev]",
+    )
+
+    with pytest.raises(QuoteStoreEnvironmentError) as refused:
+        read_store_catalogue(location)
+
+    said = str(refused.value)
+    assert said.startswith(
+        "The dev quote store's database could not be reached, or it refused the sign-in: check "
+        "connections.toml [dev]."
+    )
+    assert "hidden" not in said
+
+
+def test_a_store_table_lacking_an_identity_column_is_compared_not_made_again(
+    tmp_path: Path,
+) -> None:
+    target = Target("sqlite", f"sqlite:///{(tmp_path / 'store.sqlite').as_posix()}")
+    made_from_sql(target, RELEASED)
+    target.run(
+        "DROP TABLE policy",
+        "CREATE TABLE policy (region TEXT, drivers TEXT, value FLOAT)",
+        "CREATE TABLE unrelated (quote_reference VARCHAR(80), x INTEGER)",
+    )
+
+    comparison = compared(target, RELEASED)
+
+    assert ("t_policy", None, "missing") not in kinds(comparison)
+    assert any(
+        each.table == "t_policy" and each.column is not None and each.kind == "missing"
+        for each in comparison.differences
+    )
+    assert comparison.extras == ()
+    assert "CREATE TABLE policy" not in sql(target, RELEASED, comparison)

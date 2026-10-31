@@ -105,6 +105,24 @@ def test_a_connection_that_is_not_as_the_file_takes_it_is_refused_naming_why(
     assert "hunter2" not in str(refused.value)
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        SQLSERVER_DEV.replace('"HAUTE_DEV_PASSWORD"', '"s3cret!pa55"'),
+        SQLSERVER_DEV.replace('database = "pricing_dev"', "database = 123456789"),
+    ],
+    ids=["a password where its variable's name goes", "a location of another kind"],
+)
+def test_a_value_refused_is_never_said(tmp_path: Path, text: str) -> None:
+    write(tmp_path, text)
+
+    with pytest.raises(ConnectionsError) as refused:
+        read_connections(tmp_path)
+
+    assert "s3cret!pa55" not in str(refused.value)
+    assert "123456789" not in str(refused.value)
+
+
 def test_an_entra_sign_in_on_postgresql_names_the_role_it_takes(tmp_path: Path) -> None:
     entra = '[dev]\nprovider = "postgresql"\nserver = "db:5432"\ndatabase = "q"\nauth = "entra"\n'
     write(tmp_path, entra)

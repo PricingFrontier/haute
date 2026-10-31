@@ -19,11 +19,11 @@ export type CatalogueRead =
   | { status: "failed"; message: string }
   | { status: "read"; tables: WorkbenchCatalogueTable[] }
 
-/** The form compared with what was read: the form it was asked of, and the answer. */
+/** The form compared with what was read: the form and the pairings it was asked of, and the answer. */
 export type Compared =
   | { status: "none" }
   | { status: "failed"; message: string }
-  | { status: "compared"; form: FormSpec; answer: WorkbenchStoreCompareResponse }
+  | { status: "compared"; form: FormSpec; renames: WorkbenchStoreRename[]; answer: WorkbenchStoreCompareResponse }
 
 interface StoreCompareState {
   /** The environment Compare chose; null for none. */
@@ -105,10 +105,10 @@ const useStoreCompareStore = create<StoreCompareState>()((set, get) => {
       fetchStoreCompare(form, environment, read.tables, renames).then(
         (answer) => {
           if (!compares.is(ticket)) return
-          set({ compared: { status: "compared", form, answer } })
           // A pairing the form or the database no longer allows is dropped as the comparison
           // drops it; an unchanged list is left as it is, so nothing compares again.
-          if (!sameRenames(answer.renames, get().renames)) set({ renames: answer.renames })
+          const taken = sameRenames(answer.renames, renames) ? renames : answer.renames
+          set({ compared: { status: "compared", form, renames: taken, answer }, renames: taken })
         },
         (error: unknown) => {
           if (compares.is(ticket)) set({ compared: { status: "failed", message: apiErrorMessage(error) } })
@@ -122,5 +122,15 @@ const useStoreCompareStore = create<StoreCompareState>()((set, get) => {
     },
   }
 })
+
+/**
+ * The newest comparison's answer while it is of `form` and of the pairings the store holds
+ * now: a comparison asked before a pairing changed, or of an earlier form, is none, so
+ * nothing shows its marks or its SQL while a newer one is on its way.
+ */
+export function currentComparison(state: StoreCompareState, form: FormSpec | null): WorkbenchStoreCompareResponse | null {
+  const { compared } = state
+  return compared.status === "compared" && compared.form === form && compared.renames === state.renames ? compared.answer : null
+}
 
 export default useStoreCompareStore

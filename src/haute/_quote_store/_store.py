@@ -222,11 +222,23 @@ def writing(engine: Engine) -> Iterator[Connection]:
         yield connection
 
 
+def _entra_refused(exc: BaseException) -> bool:
+    """Whether *exc* is Microsoft Entra ID refusing a sign-in's token, as a connection asks for
+    it: a credential that cannot sign in or a browser sign-in left or cancelled, whose text can
+    name the tenant and the account. azure-identity is loaded only where a sign-in uses it."""
+    try:
+        from azure.core.exceptions import ClientAuthenticationError
+    except ImportError:  # pragma: no cover - the server extras install it
+        return False
+    return isinstance(exc, ClientAuthenticationError)
+
+
 def unreached(exc: BaseException) -> bool:
     """Whether *exc* is a server database's refusal of a connection, or one that never came:
     an error the driver raised before any statement, whose text names where the database is
-    and who signs in to it."""
-    return isinstance(exc, DBAPIError) and exc.statement is None
+    and who signs in to it, or Entra ID refusing the sign-in's token as the connection is
+    made."""
+    return (isinstance(exc, DBAPIError) and exc.statement is None) or _entra_refused(exc)
 
 
 @contextmanager
@@ -236,7 +248,7 @@ def reaching(url: str, environment: str, named_by: str = HOST_VARIABLES) -> Iter
     database and signs in to it, never what the driver said of where it is or who signs in."""
     try:
         yield
-    except DBAPIError as exc:
+    except Exception as exc:
         if not unreached(exc) or make_url(url).get_backend_name() == "sqlite":
             raise
         raise QuoteStoreUnreachableError(

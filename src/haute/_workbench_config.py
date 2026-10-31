@@ -301,7 +301,8 @@ def _environment(name: str, settings: dict[str, object], at: str) -> StoreEnviro
             continue
         if not isinstance(variable, str) or not VARIABLE_NAME.fullmatch(variable):
             raise ValueError(
-                f"{at}.{key} must name the environment variable that holds it; got {variable!r}"
+                f"{at}.{key} must name the environment variable that holds it, letters, "
+                "digits and underscores"
             )
         variables[key] = variable
     return StoreEnvironment(

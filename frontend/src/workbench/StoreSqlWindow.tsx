@@ -4,7 +4,7 @@ import type { FormSpec, WorkbenchStoreSqlResponse } from "../api/types"
 import { fetchStoreSql } from "../api/workbench"
 import ModalShell from "../components/ModalShell"
 import { ModalFormHeader } from "../components/ModalForm"
-import useStoreCompareStore from "../stores/useStoreCompareStore"
+import useStoreCompareStore, { currentComparison } from "../stores/useStoreCompareStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 
 type Start = "branch" | "none"
@@ -27,10 +27,9 @@ const QUIET_STYLE = { color: "var(--text-muted)" } as const
  */
 export default function StoreSqlWindow({ onClose }: { onClose: () => void }) {
   const form = useWorkbenchFormStore((s) => s.form)
-  // The comparison of the form the view holds, by its environment; null while there is none.
-  const comparedSql = useStoreCompareStore((s) =>
-    s.compared.status === "compared" && s.compared.form === form ? s.compared.answer.sql : null,
-  )
+  // The comparison of the form and the pairings the view holds, by its environment; null
+  // while there is none, or while a newer one is on its way.
+  const comparedSql = useStoreCompareStore((s) => currentComparison(s, form)?.sql ?? null)
   const comparedEnvironment = useStoreCompareStore((s) => s.environment)
   const compared =
     comparedSql !== null && comparedEnvironment !== null ? { environment: comparedEnvironment, sql: comparedSql } : null

@@ -1070,6 +1070,32 @@ class TestInitWorkbench:
         assert [path.name for path in project_dir.iterdir()] == ["rating"]
         assert list(outside.iterdir()) == []
 
+    def test_workbench_in_an_existing_project_refuses_a_connections_toml_link_writing_nothing(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import os
+
+        project_dir = self._existing(runner, tmp_path / "p", monkeypatch)
+        toml_before = (project_dir / "haute.toml").read_bytes()
+        # connections.toml a link to somewhere outside the project that is not there.
+        outside = tmp_path / "outside"
+        if os.name == "nt":
+            import _winapi
+
+            outside.mkdir()
+            _winapi.CreateJunction(str(outside), str(project_dir / "connections.toml"))
+            outside.rmdir()
+        else:
+            os.symlink(outside, project_dir / "connections.toml")
+
+        refused = runner.invoke(cli, ["init", "--workbench"])
+
+        assert refused.exit_code == 1
+        assert "connections.toml is reached through a link or junction" in refused.output
+        assert not outside.exists()
+        assert (project_dir / "haute.toml").read_bytes() == toml_before
+        assert not (project_dir / "rating" / "workbench").exists()
+
     @pytest.mark.parametrize("failing", [".env.example", "haute.toml"])
     def test_workbench_in_an_existing_project_undoes_what_it_made_when_it_fails(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: str

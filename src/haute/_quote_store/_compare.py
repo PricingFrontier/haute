@@ -17,11 +17,13 @@ Nothing here connects to a database: the catalogue holds names, kinds and counts
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Literal, cast
 
-from sqlalchemy import Column, Dialect, Table
+from sqlalchemy import Column, Dialect, Engine, Table, create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 
@@ -214,13 +216,24 @@ class _Matcher:
                 )
 
 
+def _reading_engine(location: StoreLocation) -> Engine:
+    """An engine that reads the database at *location* and writes nothing: a SQLite file
+    opened read only, never made where it is missing nor its journal changed, as the store's
+    own engine would; a server's signed in as the location says."""
+    url = make_url(location.url)
+    if url.get_backend_name() != "sqlite":
+        return make_engine(location.url, sign_in=location.sign_in)
+    reading = Path(str(url.database)).resolve().as_uri() + "?mode=ro"
+    return create_engine("sqlite://", creator=lambda: sqlite3.connect(reading, uri=True))
+
+
 def read_store_catalogue(location: StoreLocation) -> Catalogue:
     """The store's tables the database at *location* holds, with the quotes counted in each,
     read under its sign-in and nothing written. A server not reached is said naming what places
     it (:func:`._store.reaching`), and any other refusal of the database's, a file that is no
     database or tables its sign-in may not read, naming the same, never what the driver
     said, a database not reached saying it may be waking from a pause (_WAKING)."""
-    engine = make_engine(location.url, sign_in=location.sign_in)
+    engine = _reading_engine(location)
     try:
         with reaching(location.url, location.environment, location.named_by):
             with engine.connect() as connection:
@@ -286,7 +299,11 @@ def compare(
             matcher.differ(table["id"], None, "renamed", f"the database names it {was}")
         taken.extend(_match_table(matcher, table, found, earlier.get(table["id"]), renames))
     for found in catalogue.tables:
-        if found.name in claimed or found.name == ACTIVITY_TABLE:
+        if (
+            found.name in claimed
+            or found.name == ACTIVITY_TABLE
+            or not set(IDENTITY) <= {column.name for column in found.columns}
+        ):
             continue
         key = f"{_THE_DATABASE_S}{found.name}"
         matcher.extras.append(Extra(found.name, None, None, found.quotes))

@@ -111,9 +111,10 @@ def read_catalogue(
     count: bool = False,
 ) -> Catalogue:
     """The tables of the SQL schema *sql_schema* (the connection's default when None) on
-    *connection*: those named in *names* that it holds, or, without *names*, every table
-    holding both of the quote's identity columns, the store's; with *count*, the quotes
-    holding a row in each and a value in each of its columns."""
+    *connection*: those named in *names* that it holds, or, without *names*, all it holds, so
+    an incomplete table of the form's is compared rather than taken for missing; with *count*,
+    the quotes holding a row in each table holding both of the quote's identity columns, 0
+    where a table lacks either, and a value in each of its columns."""
     inspector = inspect(connection)
     present = inspector.get_table_names(schema=sql_schema)
     wanted = None if names is None else set(names)
@@ -123,17 +124,18 @@ def read_catalogue(
             continue
         reflected = inspector.get_columns(name, schema=sql_schema)
         held = {column["name"] for column in reflected}
-        if wanted is None and not set(IDENTITY) <= held:
-            continue
         keyed = inspector.get_pk_constraint(name, schema=sql_schema)
         refers = any(
             foreign.get("referred_table") == QUOTE_DETAILS_ID
             and list(foreign.get("constrained_columns") or []) == list(IDENTITY)
             for foreign in inspector.get_foreign_keys(name, schema=sql_schema)
         )
+        column_names = [column["name"] for column in reflected]
         quotes, counted = (
-            _counted(connection, name, [column["name"] for column in reflected], sql_schema)
+            _counted(connection, name, column_names, sql_schema)
             if count and set(IDENTITY) <= held
+            else (0, dict.fromkeys(column_names, 0))
+            if count
             else (None, {})
         )
         tables.append(

@@ -1293,3 +1293,16 @@ def test_an_environment_the_editor_cannot_read_is_said_naming_what_to_set(
     ) in unreached.text
     assert "A database that pauses when idle refuses the first connection" in unreached.text
     assert "hidden" not in unreached.text
+    # A secret put where its variable's name goes is neither answered nor logged.
+    import structlog.testing
+
+    (project / "connections.toml").write_bytes(
+        b'[dev]\nprovider = "postgresql"\nserver = "hidden-host.invalid:5432"\n'
+        b'database = "quotes"\n'
+        b'auth = "password"\nusername_env = "DEV_USER"\npassword_env = "s3cret!pa55"\n'
+    )
+    with structlog.testing.capture_logs() as logs:
+        refused = _catalogue()
+    assert refused.status_code == 409
+    assert "s3cret!pa55" not in refused.text
+    assert "s3cret!pa55" not in repr(logs)

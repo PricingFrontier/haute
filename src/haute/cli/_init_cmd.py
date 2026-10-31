@@ -500,6 +500,19 @@ def _form_folder_problem(project_dir: Path, relative: str, files: Mapping[str, s
     return None
 
 
+def _root_file_problem(project_dir: Path, *names: str) -> str | None:
+    """Why a file at the project root, of *names*, cannot be written: the first one that is
+    no ordinary file of the project's (a link or junction, dangling or not, or a reserved
+    name), said as the refusal; None when each is."""
+    from haute._artifact_paths import PATH_PROBLEMS, ordinary_path_problem
+
+    for name in names:
+        _, problem = ordinary_path_problem(project_dir, name)
+        if problem is not None:
+            return f"{name} {PATH_PROBLEMS[problem]}."
+    return None
+
+
 def _write_form_folder(folder: Path, files: dict[str, str]) -> None:
     """The form folder's *files*, each its text by its path from *folder*, written as LF bytes,
     as the folder's own saves write them, so its first save rewrites none of them."""
@@ -548,6 +561,10 @@ def _add_workbench(project_dir: Path) -> None:
     connections_path = project_dir / CONNECTIONS_FILE
     if connections_path.exists():
         refuse(f"{CONNECTIONS_FILE} is already there; the project has its connections.")
+    # A link there, dangling or not, would take the write outside the project.
+    problem = _root_file_problem(project_dir, CONNECTIONS_FILE, ".env.example")
+    if problem is not None:
+        refuse(problem)
     deploy = data.get("deploy")
     target = deploy.get("target") if isinstance(deploy, dict) else None
     if not isinstance(target, str):
@@ -683,6 +700,10 @@ def handle_init(config: InitConfig) -> None:
     # never a blank one in its place, and it must read, since .env.example names its variables.
     connections_path = project_dir / CONNECTIONS_FILE
     write_connections = config.workbench and not connections_path.exists()
+    problem = _root_file_problem(project_dir, CONNECTIONS_FILE) if write_connections else None
+    if problem is not None:
+        click.echo(f"Error: {problem}", err=True)
+        raise SystemExit(1)
     try:
         connection_variables(project_dir)
     except ConnectionsError as exc:
