@@ -34,7 +34,6 @@ Allowed field.
 | WB-13 | Planned | P3 | An underwriter records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
-| WB-44 | Planned | P2 | The people who own a hosted quote store's tables change them in SQL, starting from SQL Haute writes from the form's change; the app starts whatever its tables hold but opens and prices no quote, new or saved, naming each difference, until they fit its release's form. |
 
 ## Planned improvements
 
@@ -110,7 +109,7 @@ the app's entry point and the export templates; the store's tables follow the fo
 already starts the deploy. The app's delivery builds each release once. On every
 pull request, Validate and the packaged app tested in the CI runner before any host sees it,
 against SQLite and once against the server engine IT's instance runs (a service container),
-each a throwaway database made from the SQL WB-44 writes for `main`'s form and then for the
+each a throwaway database made from the SQL Build mode writes for `main`'s form and then for the
 branch's change, since SQLite proves neither that engine's types nor that the SQL runs there:
 the test quotes of WB-12 re-priced one request each against their accepted outputs, a quote
 saved, reopened and, once WB-11's formats exist, exported through the app, and the sheets
@@ -118,7 +117,7 @@ driven in a browser. On the
 merge to `main` alone, never on a push of the save branch: the merge commit built once, the
 packaged app's tests run again on that build, the image published to the registry and its
 digest recorded; the staging app rolled to that digest, never to a tag, with no step changing
-a database's tables, which the people who own them change in SQL (WB-44); a hosted check
+a database's tables, which the people who own them change in SQL; a hosted check
 that the expected release runs, that a request without sign-in is refused and that its quotes
 are open, the run failing naming what its tables lack when they do not fit its form; impact
 re-pricing a bounded sample of saved quotes from the store, through a read-only identity, on
@@ -144,7 +143,7 @@ production, with the digest CI tested deployed to both, a re-run of the workflow
 maintenance window around each rollout and the release that runs recorded; a change confined
 to an export template starts the workflow; the packaged app passes the same tests against
 SQLite and the server engine before any host sees it, each test database made from the SQL
-WB-44 writes; a push of the save branch releases nothing; no step of the workflow changes a
+Build mode writes; a push of the save branch releases nothing; no step of the workflow changes a
 hosted database's tables; a request to the hosted app without sign-in is refused; impact
 reports a change to a premium inside a response table; the first release, with no
 production app, reports that there is no baseline and still waits for approval; a release
@@ -153,8 +152,7 @@ they lack, and opens its quotes once the tables fit, with no new run; a candidat
 otherwise leaves the previous release running and the run failed.
 
 **Dependencies:** WB-11 (the export the app's tests make, once its formats are
-decided), WB-12 (the test quotes) and WB-44 (the app open whatever its tables hold, and the
-SQL its test databases are made from). The Azure
+decided) and WB-12 (the test quotes). The Azure
 resources and identities, provided by the project's IT team. The generated deploy jobs
 already log in to the registry before a push; impact's input is the `[safety]` portfolio
 sample, or the test quotes without one.
@@ -380,96 +378,3 @@ specification and the field stop calling the shape older.
 
 **Evidence:** `frontend/src/workbench/schema/AllowedField.tsx::TYPED_IN`,
 `src/haute/_workbench_form.py::FormSpec`, `frontend/src/utils/workbenchForm.ts`.
-
-### WB-44 — Quote store tables changed in SQL
-**Why:** A hosted quote store's tables are Haute's to change
-([workbench](../workbench/high-level.md)). `haute app migrate --environment` brings a
-database to a release's form through the planner, comparing it by stable id with the
-structure `haute_store` records: it adds and renames, keeps what the form removed and prints
-its DROP for the DBA, refuses a type, rows or role change on a column or table that holds
-values, and applies a step only a restore undoes only given `--restore-point`; `--plan` and
-`--sql` print the plan or its SQL. The app opens the store as it is built and does not start
-on a database whose tables, as `haute_store` records them and as its catalogue holds them,
-are not exactly its release's form's, nor on one it cannot reach or whose sign-in lacks a
-privilege: a container on such a database exits, its host restarts it, and underwriters have
-no app until the tables are put right. The owner's ruling (31 October 2026) is that, once the
-app is live, the people who own a project's databases change these tables in SQL, as they
-change every other table they own, and that nothing in CI changes them. Against that: a
-change made in SQL leaves `haute_store`'s record behind, so the app refuses a database the
-change brought to the right shape; the planner converts no values, so a column holding
-values cannot change type and keep them; a Haute release that changes the store's own
-columns is refused by a hosted migrate outright; `haute_store` records the environment, so a
-copy of prod's tables is refused as test's; and the analysts, who work in the editor rather
-than at the command line, would be left to write each form change's SQL themselves.
-
-**Plan:** The people who own a hosted store's tables make every change to them in SQL;
-neither Haute nor CI changes a hosted database's tables, only the rows the app saves.
-`haute_store` goes from hosted databases, so Haute records nothing of a database's shape or
-environment there, and `haute app migrate` goes with its `--plan`, `--sql`, `--base` and
-`--restore-point`, the tables and columns it keeps and its hold on writers; each
-environment's own sign-in is what keeps an app off another environment's database. The
-form's tables, the store's own columns of `quote_details` and `haute_activity` stay as they
-are, since they hold the quotes and their history. `haute app serve`'s SQLite file stays
-Haute's, as nobody else changes it: the planner keeps building it from the release's form in
-dev's mode as the app starts, its record kept in that file alone.
-
-The app checks its release's form against the database's catalogue, as
-`_catalogue_differences` does today without `haute_store`: each table and column the store
-reads or writes there, of its kind, taking a null as the store's does, keyed and referring
-to its quote as the store keys them, every other column of those tables taking a null, a
-text the store compares exactly under its binary collation on SQL Server, and the privileges
-the app needs. The app starts whatever the database holds, reachable or not. Until the check
-finds nothing, the quotes are closed: every quote route and the pricing route refuse (503,
-`quote_store_mismatch`, or `quote_store_unreachable` for a database it cannot reach), naming
-each difference or missing privilege; `GET /api/app/release` says the quotes are closed and
-why; and the page opens no quote, new or saved, saying the quotes are unavailable, so nothing
-is keyed or priced that could not be saved. A quote open as they close stops pricing and
-saving, its values kept in the browser as unsaved values are now and offered back once they
-open. An app started with no environment named is closed the same way, naming
-`HAUTE_ENVIRONMENT`, and prices no quote. A refused request checks again at most once every 10 seconds, the requests in
-between answered with the last check's refusal, and the page asks again on the same bound,
-so tables put right in SQL open the quotes with no restart, no new image and no reload. A
-statement the database refuses because a table or column is not as the check found it sends
-the running app back to checking: the request is refused as above when the check finds a
-difference, and fails as it does now when it finds none.
-`/health` answers throughout.
-
-Build mode's schema pane offers the SQL that brings an environment's tables from the form as
-`main` holds it, or from none for a database that holds no store yet, to the form being
-built, written for each declared environment's engine: a table the form gains made with the
-store's own columns, its keys and its reference to its quote; a column it gains added taking
-a null; a table or column it renamed, known by stable id, renamed through the engine's own
-rename; a type change as the engine's ALTER, with a note that values which do not convert
-stop it; a change of a table's rows or role as a note of what the table needs; and a removal
-as a DROP left commented out, since the check passes a column that takes a null. It is one
-transaction, so a statement that fails leaves the tables as they were. It is the planner's
-`offline_plan` and `render_sql` without `haute_store`'s row, their refusals turned into
-those notes. Nothing reads the SQL back or records that it ran; the check is the only judge
-of the tables. A Haute release that changes the store's own columns gives their SQL in its
-upgrade notes, and the check names each column until it is there.
-
-**Acceptance:** On a hosted database whose tables a person made from the SQL Build mode
-writes, on SQL Server and on PostgreSQL, the app opens and saves quotes. A column added,
-renamed or retyped in SQL to fit a new release's form opens that release's quotes within the
-recheck bound, with no restart. The app started on a database missing a table or a column,
-holding a column of another kind, unreachable, or whose sign-in lacks a privilege serves the
-page with no quote open, new or saved, and refuses every quote route and the pricing route
-naming each difference; a quote open as its tables stop fitting stops pricing and saving, its
-unsaved values offered back once they fit again; an app started with no environment named
-opens and prices no quote either. A copy of prod's
-tables serves test with nothing changed in it. No command, route or workflow of Haute's
-changes a hosted database's tables. The SQL for a rename renames rather than dropping and
-adding. `haute app serve` builds its own file as now.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_workbench_app.py::create_app` (the store opened as the app is
-built, so a mismatch stops the start); `src/haute/_quote_store/_store.py::open_engine` (the
-check), `::_recorded`, `::_refuse_other` and `::_differences` (`haute_store`'s record, the
-environment in it, and the form compared with it) and `::_catalogue_differences` (the
-catalogue compared with the tables); `src/haute/_quote_store/_providers.py::missing_privileges`
-(the privileges); `src/haute/_workbench_app_quotes.py::_call` (`quote_store_unreachable`);
-`src/haute/_quote_store/_migrate.py::prepare_store`, `::offline_plan` and `::render_sql`
-(the planner and its SQL); `src/haute/cli/_app.py::_local_store` (`haute app serve`'s own
-file); `src/haute/_quote_store/_schema.py::structure` (the record,
-with the store's own columns).

@@ -222,9 +222,8 @@ a quote store leaves them blank. Assigning, archiving, restoring, marking final 
 amending a quote change those details alone, its values and price kept, and its activity
 shows when a quote moved. A quote takes
 its reference and option when it is made (see [The Quotes page](#the-quotes-page)), so its
-every price has them. Preview prices the sample as `PREVIEW`, option 1, as the app prices
-the one quote it holds without a quote store: a quote's reference and option are never
-blank.
+every price has them. Preview prices the sample as `PREVIEW`, option 1: a quote's
+reference and option are never blank.
 
 A table or a column you add reaches the pipeline when you save: the Workbench Input and
 the Workbench Output read their tables from the workbench's files wherever the pipeline
@@ -721,29 +720,33 @@ builder on screen. With a quote store it is where they manage their quotes too.
   it), and, optionally, `HAUTE_STORE_SCHEMA`, the SQL schema the tables are in, so test and
   prod can share a database; for `sqlite`, `HAUTE_STORE_DATABASE` (the file's path) or
   `HAUTE_STORE_URL`. Install `haute[sqlserver]` or `haute[postgresql]` wherever you build
-  the release or run `haute app migrate`, as the image installs the versions installed there.
-  Without an environment named the app keeps nothing, says so, and prices its one quote as
-  `PREVIEW`, option 1. The app does not start on a database that does not hold its release's
-  tables: `haute app migrate --environment test` brings the database to the release built in
-  `.haute/app/release` (or the folder `--release` names) before that release starts. It adds
-  and renames without losing a value, keeps a table or column you removed, listing it with
-  the DROP statement for your IT team, and refuses, before it changes anything, a change to a
-  column or table that holds values. `--plan` prints what it would do, and `--sql` the SQL
-  your IT team can run instead, as one transaction. A change of a column's type or a table's
-  rows is made only while it holds no value, which only `haute app migrate` can check as it
-  runs, so `--sql` refuses a plan holding one: apply that change with the migrate, which
-  needs `--restore-point`, naming the backup, as any change only a restore can undo does. The migrate's identity needs to create and alter tables in the schema. The
-  app's needs to read, insert, update and delete in the form's tables, to read and insert in
-  haute_activity and to read haute_store; the app does not start without them, naming each
-  permission it lacks.
+  the release, as the image installs the versions installed there.
+- Haute never changes a hosted database's tables: the people who own the database make and
+  change them in SQL, as they do any other table. To start them off, open **Schema** while
+  building and press **SQL**. For each environment you declare it shows the SQL that brings
+  that environment's tables to the schema you are building, in its database's own SQL,
+  starting from the schema your default branch holds, which is what test and prod run, or
+  from nothing, for a new database. It adds tables and columns, renames a table or column by
+  its id rather than dropping it and adding another, changes a column's type in place (a
+  value that does not convert stops it), and leaves a table or column you removed with its
+  DROP commented out, since the app does not need it gone. What it cannot write, such as a
+  table changing between one row and many rows per quote, it says in a comment. The SQL is
+  one transaction, so a statement that fails changes nothing, and Haute keeps no record of
+  it: copy it, have it reviewed and adapted, and run it in each environment in turn.
+- The app starts whatever its database holds. Until the tables fit its release it opens no
+  quote, new or saved, and prices none, and the page says quotes are unavailable and why: a
+  table or column missing or of another type, a permission the app's identity lacks, a
+  database it cannot reach, or no environment named. It checks again at most every 10
+  seconds, so once the tables are put right the quotes open with no restart. The app's
+  identity needs to read, insert, update and delete in the form's tables and to read and
+  insert in haute_activity.
 - The app prices four quotes at once; set `HAUTE_APP_PRICING_WORKERS` to change that. A
   pricing that runs past 60 seconds is answered as timed out but keeps its place until it
   ends, and while every place is taken a quote is refused as busy, to be priced again in a
   few seconds, rather than waiting.
 
 A page opened before a new release is refused when it prices or saves, and offers
-**Reload**, which picks up the release; its unsaved values stay in the browser, though an app
-that keeps no quotes keeps nothing typed.
+**Reload**, which picks up the release; its unsaved values stay in the browser.
 
 ### Reading quotes with SQL
 The app keeps each quote in your schema's own tables, so a report reads them with plain SQL.
@@ -771,8 +774,9 @@ saved empty. `quote_details` also holds what the app keeps about each quote:
 save; **priced_release**, the release that priced it; **source_reference**,
 **source_option** and **source_relation**, the quote it was made from and how; and the
 handover note with who wrote it and when. The schema shows them under each table, locked.
-Two tables of the app's own sit beside yours: `haute_store`, which says what the database
-holds, and `haute_activity`, a row for each thing done to a quote, who did it and when.
+Beside yours sits `haute_activity`, a row for each thing done to a quote, who did it and
+when. The SQLite file `haute app serve` keeps also holds `haute_store`, Haute's record of
+that file's tables; a hosted database holds no such table.
 
 Names reach the database as the schema writes them, so the schema refuses a name the
 database could not keep: two columns of a table whose names differ only in case, a name
