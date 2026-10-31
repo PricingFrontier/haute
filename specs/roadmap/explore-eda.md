@@ -18,6 +18,7 @@ specified in [Explore / EDA](../explore-eda/high-level.md),
 | EDA-R01 | Planned | P2 | A pivot request is answered right: an invalid card is a 400, a filter on a time-zone-aware column matches, a formula failure names its cause, and a relationships question scans each feature once. Internal relationship aliases cannot collide with user columns, and shared cached results name the requesting consumer. |
 | EDA-R02 | Planned | P3 | Card fields are required or documented as defaulted, the specification's stale statements are corrected, and the duplicate-count scratch never partitions down to single rows. |
 | EDA-R03 | Planned | P3 | An empty pivot result charts as empty rather than as a configuration error, the chart environment observer exists once, nulls use the glyph the specification names, a pivot start failure is recorded without a fabricated job id, and the Explore panels' dead exports are gone. |
+| EDA-R04 | Planned | P2 | `PivotTableGrid` resolves header formats by `result.column_fields` / `result.row_fields`, async confirmation callbacks in `ExplorePivotsConfig` and `ExploreChartsConfig` read the latest node config, and `ExplorePreview` renders `AskAssistantButton` on execution errors. |
 
 `EDA-R01` to `EDA-R03` come from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md).
@@ -200,3 +201,41 @@ knip reports none of the exports.
 `frontend/src/panels/explore/useExplorePivotActions.ts`;
 `frontend/src/panels/explore/pivotConfig.ts`;
 `frontend/src/panels/explore/chartConfig.ts`.
+
+### EDA-R04 — Pivot header format lookup by field name, fresh config reads after confirmation dialogs, and Explore error assistant action
+**Why:** Three defects affect the Explore pivot grid, card editors, and preview panel:
+1. `PivotTableGrid` looks up header number formats by positional index
+   (`pivot.columns[level]?.format` and `pivot.rows[level]?.format`) instead of
+   matching `result.column_fields[level]` and `result.row_fields[level]` against
+   `pivot.columns` / `pivot.rows` by `field`. When row or column fields are
+   reordered or removed in the draft while a retained `ExplorePivotResult` is still
+   displayed, headers are formatted with the wrong field's `PivotNumberFormat`.
+2. In `ExplorePivotsConfig` (`deleteSelectedPivot`) and `ExploreChartsConfig`
+   (`deleteSelectedChart`, `handleSourcePivotSelect`), the `confirmed(...).then(...)`
+   callbacks write closure-captured `pivots` / `charts` / `chart` arrays from before
+   the confirmation dialog opened, overwriting any edits that arrived while the
+   dialog was open.
+3. `ActiveNodePreviewBody` in `App.tsx` passes `errorAction` (`AskAssistantButton`)
+   to `DataPreview` for standard nodes, but omits it when rendering `ExplorePreview`
+   for an `EXPLORE` node.
+
+**Plan:** Resolve each level's format in `PivotTableGrid` by matching
+`result.column_fields[level]` and `result.row_fields[level]` by `field` name against
+`pivot.columns` and `pivot.rows`; read the latest `pivots` / `charts` from the
+current node config inside the `confirmed(...).then(...)` callbacks (fenced by
+document identity); and pass `errorAction` through `ActiveNodePreviewBody` to
+`ExplorePreview`.
+
+**Acceptance:** Reordering two column fields with different number formats in the
+draft while a retained result is shown keeps each header formatted according to its
+own `result.column_fields[level]`; an edit landing while a delete or source-switch
+confirmation is open is not clobbered when the dialog resolves; and an execution
+error on an Explore node renders the `AskAssistantButton` in `ExplorePreview`.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/panels/explore/PivotTableGrid.tsx::PivotTableGrid`;
+`frontend/src/panels/editors/ExplorePivotsConfig.tsx::ExplorePivotsConfig`;
+`frontend/src/panels/editors/ExploreChartsConfig.tsx::ExploreChartsConfig`;
+`frontend/src/App.tsx`;
+`frontend/src/panels/ExplorePreview.tsx::ExplorePreview`.

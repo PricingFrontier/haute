@@ -18,7 +18,7 @@ MLflow target and the impact analysis. Current behaviour is specified in
 | DEP-R11 | Planned | P2 | Impact analysis fails on a row-count mismatch instead of pairing the wrong quotes, and a mistyped production URL is not a first deploy. |
 | DEP-R12A | Planned | P2 | Each build owns a fresh directory under the project and ships only its own artefacts. |
 | DEP-R12B | Planned | P3 | The output-schema cache lives under the project root with one entry per fingerprint. |
-| DEP-R13 | Planned | P3 | Resolution does not rewrite the graph it ships, and the deploy module's duplicated predicates, loops and defaults are written once. |
+| DEP-R13 | Planned | P2 | Resolution does not rewrite the graph it ships, `_live_only_edges` walks backward from `output_node_id` following only `"live"` branches at reachable `liveSwitch` nodes and raises `ValueError` on a missing `"live"` scenario mapping, and the deploy module's duplicated predicates, loops and defaults are written once. |
 | DEP-R14 | Planned | P3 | Validation parses each test-quote file once and reports every row with missing columns. |
 | DEP-R15 | Planned | P3 | The served error envelopes carry a correlation id rather than the exception text. |
 | DEP-R16 | Decision | P3 | A quote whose production value is zero and whose staging value is not is reported, not a failure of the whole impact analysis. |
@@ -180,20 +180,24 @@ reassess as P1 if shared-checkout concurrent deployment is an advertised workflo
 `src/haute/deploy/_scorer.py`.
 
 ### DEP-R12B — A project-scoped output-schema cache
-**Why:** `.haute_cache/output_schema.json` is relative to the process cwd and stores
-one entry overwritten by whichever pipeline deployed last, causing avoidable cache
-misses and placing generated files outside the resolved project.
+**Why:** `.haute_cache/output_schema.json` is relative to the process cwd, stores
+one entry overwritten by whichever pipeline deployed last (causing avoidable cache
+misses and placing generated files outside the resolved project), and is written
+directly via `cache_path.write_text(...)` rather than `atomic_write_text(...)`, so
+concurrent or interrupted builds can leave a partial JSON cache file.
 
-**Plan:** Root the cache at the resolved project and keep one entry per validated
-fingerprint, preserving the existing freshness checks.
+**Plan:** Root the cache at the resolved project, keep one entry per validated
+fingerprint while preserving the existing freshness checks, and write the cache file
+via `atomic_write_text`.
 
 **Acceptance:** Alternating between two unchanged pipelines reuses both entries;
 changing a pipeline invalidates its entry. A dry run from another cwd writes the
-schema cache only under the resolved project.
+schema cache atomically only under the resolved project.
 
 **Dependencies:** None; coordinate the project-root resolution with `DEP-R12A`.
 
-**Evidence:** `src/haute/deploy/_schema.py::infer_output_schema`.
+**Evidence:** `src/haute/deploy/_schema.py::infer_output_schema`;
+`src/haute/_file_ops.py::atomic_write_text`.
 
 ### DEP-R13 — One copy of each deploy mechanism
 **Why:** Artefact collection rewrites a Model Score's `artifact_path` in the node's
@@ -204,21 +208,30 @@ hand-rolls Kahn's algorithm beside `_topo.topo_sort_ids`; the deploy intercepts 
 the builders' config defaults (`fileType`, `version_column`, `task`, `output_column`)
 and bodies for External File and Optimiser Apply; a bundled CatBoost model is loaded up
 to three times per resolution; a snapshot lease failure of any kind is reported as
-"invalid Data Input configuration"; a Live Switch without a `live` entry raises
-`StopIteration`; a loop over request-input edges computes names only for the error it
-raises; `_next_version` always returns 1 and `_detect_extra_deps` has no caller;
+"invalid Data Input configuration"; `_live_only_edges` inspects every `liveSwitch` in
+`graph.nodes` (even one disconnected from `output_node_id`) and raises a raw
+`StopIteration` when `input_scenario_map` has no `"live"` entry; a loop over
+request-input edges computes names only for the error it raises; `_next_version` always
+returns 1 and `_detect_extra_deps` has no caller;
 `resolve_config` assigns the canonical pipeline path into the caller's `DeployConfig`,
 which `DeployConfig.override` deep-copies precisely to avoid elsewhere.
 
 **Plan:** Build the remapped graph with `GraphNode.with_config`; keep one
 `output_fields` predicate; use `topo_sort_ids`; expose each node default once and have
 the intercepts call the builders' bodies; load the model once; narrow the lease
-`except`; raise `ValueError` for the switch; name the edge check; report the image tag
-as the version and delete the stub and the unused wrapper.
+`except`; walk backward from `output_node_id` in `_live_only_edges`, following only the
+`"live"` input edge at each encountered `liveSwitch` (and raising a descriptive
+`ValueError` when an encountered reachable `liveSwitch` has no `"live"` entry in
+`input_scenario_map`), so `liveSwitch` nodes that are disconnected from `output_node_id`
+or reachable only through an excluded non-live branch are never inspected; name the edge
+check; report the image tag as the version and delete the stub and the unused wrapper.
 
 **Acceptance:** `resolve_config` leaves the parsed graph's node configs equal to the
-parsed file's; a default changed in `_builders.py` reaches deployed scoring; the deploy
-module has no second topological sort and no `_next_version`.
+parsed file's; a default changed in `_builders.py` reaches deployed scoring;
+`prune_for_deploy` ignores a disconnected `liveSwitch` node or one excluded by an
+upstream live-branch selection and raises a descriptive `ValueError` when a reachable
+`liveSwitch` is missing a `"live"` scenario mapping; the deploy module has no second
+topological sort and no `_next_version`.
 
 **Dependencies:** None.
 

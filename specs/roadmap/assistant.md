@@ -47,6 +47,7 @@ hygiene; `ASSIST-60` from its pass over the chat panel.
 | ASSIST-59 | Planned | P3 | A re-validated plan keeps a full TTL, the assistant imports the one canonical JSON encoder and one freeze helper, and its limits are declared once. |
 | ASSIST-60 | Planned | P3 | The chat panel recognises the server's "still finishing" answer by a code, shows the server's detail for every other failure, never throws from a click, and keeps a draft the store refused to send. |
 | ASSIST-61 | Planned | P1 | Applying a verified plan never adopts a newer source revision as permission to overwrite an intervening external edit. |
+| ASSIST-62 | Planned | P2 | Assistant dry-run flattening, data checks, visibility checks and column profiling resolve workbench form tables from the configured project root, session/knowledge caches write atomically without fixed `.json.tmp` collisions, and `_graph_fact` handles unparseable pipelines cleanly. |
 
 ## Planned improvements
 
@@ -389,3 +390,52 @@ temporary project files and the real save service with a deterministic barrier.
 
 **Evidence:** `src/haute/assistant/_application.py::PipelineApplicationService`;
 `src/haute/routes/_save_pipeline.py`; `tests/test_assistant_application.py`.
+
+### ASSIST-62 — Project-root workbench form resolution, atomic cache/session writes, and resilient `_graph_fact` parsing
+**Why:** Three assistant persistence and project-context defects affect workbench form
+resolution, session/knowledge cache writes, and project-knowledge indexing:
+1. `_PreparedGraph.build`, `_bound`, `data_check_visibility` and
+   `_prepare_column_profile` pass `project_root=Path.cwd()` to
+   `flatten_with_form_tables` even when the caller or `PipelineApplicationService`
+   was constructed with an explicit `project_root`. When the process working
+   directory differs from `project_root` (in hosted runners, tests, or CLI invocations
+   outside the repository root), workbench form tables are resolved against the wrong
+   directory or fail with `FileNotFoundError`.
+2. `_write_cache` in `_project_knowledge.py` and `SessionStore._persist` in
+   `_session.py` write to a fixed sibling temporary file (`path.with_suffix(".json.tmp")`)
+   and call `os.replace(temp_path, path)` instead of using `atomic_write_text`
+   (`src/haute/_file_ops.py`). Concurrent writes to the same session or project-knowledge
+   index race on the shared `.json.tmp` path (raising `FileNotFoundError` or
+   `PermissionError` on Windows during `os.replace`) and leave orphaned `.json.tmp`
+   files on failure.
+3. `_graph_fact` in `_project_knowledge.py` calls `parse_pipeline_to_graph(source)`
+   without catching `HauteError` or `SyntaxError` (unlike `_read_text_file` and
+   `_read_cached_index`, which wrap errors in `ProjectKnowledgeError`), so a syntax or
+   parse error in a pipeline file crashes `build_project_knowledge` with an unhandled
+   parse exception instead of raising a typed `ProjectKnowledgeError`.
+
+**Plan:** Thread the service's or caller's resolved `project_root` through
+`_PreparedGraph.build`, `run_data_checks` / `_bound`, `data_check_visibility` and
+`_prepare_column_profile` into `flatten_with_form_tables(graph, project_root=...)`
+and `runtime_project_root(project_root)`; replace the manual `.json.tmp` writes in
+`_write_cache` and `SessionStore._persist` with `atomic_write_text`; and catch
+parse failures in `_graph_fact` to raise `ProjectKnowledgeError` with the pipeline
+path and cause.
+
+**Acceptance:** On a workbench pipeline whose `haute.toml` and form file live in a
+project directory distinct from `Path.cwd()`, assistant dry-run verification,
+data checks, visibility checks and `inspect_node` column profiling resolve the
+project's form tables without reading `Path.cwd()`; concurrent `_write_cache` and
+`SessionStore._persist` calls use unique temporary files via `atomic_write_text` and
+leave no `.json.tmp` files behind; and `build_project_knowledge` on an unparseable
+pipeline file raises `ProjectKnowledgeError`.
+
+**Dependencies:** Coordinates with `PCFG-R04` (one project context).
+
+**Evidence:** `src/haute/assistant/_application.py::_PreparedGraph.build`;
+`src/haute/assistant/_data_check.py::_bound`;
+`src/haute/assistant/_data_check.py::data_check_visibility`;
+`src/haute/assistant/_tools.py::_prepare_column_profile`;
+`src/haute/assistant/_project_knowledge.py::_write_cache`;
+`src/haute/assistant/_project_knowledge.py::_graph_fact`;
+`src/haute/assistant/_session.py::SessionStore._persist`.
