@@ -1,13 +1,11 @@
 """The quote store's database (specs/workbench): its engine, its errors, and its tables
 checked against a form.
 
-A database is the form's own tables and Haute's activity (:mod:`._schema`). Dev's store, the
-analyst's SQLite file, also keeps ``haute_store``, its record of them, and the planner
-(:mod:`._migrate`) makes and changes it; a hosted database's tables are made and changed in
-SQL by the people who own it. :func:`open_engine` opens a database whose own catalogue holds
-the form's tables as the store reads and writes them, and, in dev, whose record is this
-project's and the form's, and refuses any other, naming why. Nothing it does adopts a table
-it did not make or touches a table not its own.
+A database is the form's own tables and Haute's activity (:mod:`._schema`), made and changed
+in SQL by the people who own it, starting from the SQL Haute writes (:mod:`._migrate`), in
+every environment alike. :func:`open_engine` opens a database whose own catalogue holds the
+form's tables as the store reads and writes them, and refuses any other, naming why. Nothing
+it does makes, adopts or changes a table.
 
 On SQLite the store takes SQLAlchemy's recipe for the pysqlite driver: the driver leaves
 transactions to SQLAlchemy, which begins each with ``BEGIN``, and a write with ``BEGIN
@@ -18,7 +16,6 @@ cannot rename or drop a column, is refused.
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -27,29 +24,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import (
-    Boolean,
-    Connection,
-    Date,
-    DateTime,
-    Engine,
-    Float,
-    Integer,
-    String,
-    create_engine,
-    event,
-    inspect,
-    select,
-)
+from sqlalchemy import Connection, Dialect, Engine, create_engine, event
 from sqlalchemy.engine import make_url
-from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.types import TypeDecorator, TypeEngine
 
+from haute._quote_store._catalogue import (
+    Catalogue,
+    column_problems,
+    read_catalogue,
+    table_problems,
+)
 from haute._quote_store._providers import SignIn, make_server_engine, missing_privileges
-from haute._quote_store._schema import STORE_TABLE, StoreSchema, store_schema, structure
+from haute._quote_store._schema import StoreSchema, store_schema
 from haute._workbench_config import (
-    DEV_ENVIRONMENT,
     STORE_DATABASE_ENV,
     STORE_SERVER_ENV,
     STORE_URL_ENV,
@@ -57,11 +44,11 @@ from haute._workbench_config import (
 )
 from haute._workbench_form import QUOTE_DETAILS_ID, FormSpec
 
-#: The table an earlier Haute's quote store kept its migrations' version in, which a database
-#: of that store holds: it is refused, never read.
-OLD_STORE_TABLE = "haute_quote_store_version"
-#: The environment ``haute app serve`` keeps its quotes in, on the analyst's laptop.
-DEV = DEV_ENVIRONMENT
+#: What places a hosted app's database and signs it in, as a refusal names it.
+HOST_VARIABLES = (
+    f"where {STORE_SERVER_ENV} and {STORE_DATABASE_ENV}, or {STORE_URL_ENV}, say it is and the "
+    "variables its sign-in reads"
+)
 #: The oldest SQLite that can rename and drop a column.
 SQLITE_MINIMUM = (3, 35, 0)
 #: The execution option that begins a transaction as a write: ``BEGIN IMMEDIATE`` on SQLite.
@@ -157,16 +144,16 @@ class QuoteValuesError(QuoteStoreError):
 
 
 class QuoteStoreEnvironmentError(QuoteStoreError):
-    """The store is not the environment's: the environment named or where its database is
-    cannot be resolved, or the database holds another project's or environment's quotes. The
-    message says which variable to set, and names no server, database or URL."""
+    """The environment named, or where its database is or how to sign in to it, cannot be
+    resolved. The message says which variable, file or key to set, and names no server,
+    database or URL."""
 
     error_code = "quote_store_environment"
 
 
 class QuoteStoreUnreachableError(QuoteStoreEnvironmentError):
     """A server database the store cannot reach, or one that refuses its sign-in: the message
-    names the variables that place it and sign in to it, never what the driver said."""
+    names what places it and signs in to it, never what the driver said."""
 
     error_code = "quote_store_unreachable"
 
@@ -243,10 +230,10 @@ def unreached(exc: BaseException) -> bool:
 
 
 @contextmanager
-def reaching(url: str, environment: str) -> Iterator[None]:
+def reaching(url: str, environment: str, named_by: str = HOST_VARIABLES) -> Iterator[None]:
     """A block that connects to the server database at *url*: a connection refused or never
-    made said as a :class:`QuoteStoreUnreachableError` naming the variables that place the
-    database and sign in to it, never what the driver said of where it is or who signs in."""
+    made said as a :class:`QuoteStoreUnreachableError` naming *named_by*, what places the
+    database and signs in to it, never what the driver said of where it is or who signs in."""
     try:
         yield
     except DBAPIError as exc:
@@ -254,222 +241,83 @@ def reaching(url: str, environment: str) -> Iterator[None]:
             raise
         raise QuoteStoreUnreachableError(
             f"The {environment} quote store's database could not be reached, or it refused the "
-            f"app's sign-in: check where {STORE_SERVER_ENV} and {STORE_DATABASE_ENV}, or "
-            f"{STORE_URL_ENV}, say it is and the variables its sign-in reads."
+            f"sign-in: check {named_by}."
         ) from None
-
-
-@dataclass(frozen=True, slots=True)
-class Recorded:
-    """What a database's ``haute_store`` row says it holds."""
-
-    project: str
-    environment: str
-    structure: str
-
-
-def _recorded(connection: Connection, schema: StoreSchema) -> Recorded | None:
-    """What dev's store's ``haute_store`` row says, None while it holds no row."""
-    store = schema.store
-    if store is None:
-        raise ValueError("Only dev's store keeps a record of its tables.")
-    row = connection.execute(select(store).where(store.c.id == 1)).one_or_none()
-    if row is None:
-        return None
-    return Recorded(project=row.project, environment=row.environment, structure=row.schema)
-
-
-def _refuse_old_store(names: set[str]) -> None:
-    if OLD_STORE_TABLE in names:
-        held = sorted(name for name in names if name.startswith("haute_quote"))
-        raise QuoteStoreMismatchError(
-            "This database holds the quote store an earlier Haute kept ("
-            + ", ".join(held)
-            + "), which this Haute does not read: delete those tables, or the file, and the "
-            "store is made afresh."
-        )
-
-
-def _refuse_other(recorded: Recorded, project: str, environment: str) -> None:
-    if recorded.project != project or recorded.environment != environment:
-        raise QuoteStoreEnvironmentError(
-            f"This database holds the quotes of {recorded.project!r} in "
-            f"{recorded.environment!r}, not of {project!r} in {environment!r}: point the app "
-            "at its own database."
-        )
-
-
-def _differences(recorded: dict[str, Any], wanted: dict[str, Any]) -> list[str]:
-    """Each table whose structure differs between the *recorded* schema, what it keeps aside,
-    and the *wanted* one, by name, or the store's own columns when Haute's changed."""
-    old = recorded
-    new = wanted
-    if old.get("format") != new.get("format") or old.get("store_columns") != new.get(
-        "store_columns"
-    ):
-        return ["the quote store's own columns"]
-    before = {table["id"]: table for table in old["tables"]}
-    after = {table["id"]: table for table in new["tables"]}
-    differences = [
-        f"{table['name']} is no longer the form's"
-        for key, table in before.items()
-        if key not in after
-    ]
-    differences.extend(
-        f"{table['name']} is new" if key not in before else f"{table['name']} has changed"
-        for key, table in after.items()
-        if before.get(key) != table
-    )
-    return differences
-
-
-#: The kinds a column's SQL type is told apart by, the first one it is wins: what the store
-#: reads and writes it as, whatever each engine names it.
-_KINDS: tuple[type[TypeEngine[Any]], ...] = (Boolean, Integer, Float, DateTime, Date, String)
-
-
-def _kind(sql_type: TypeEngine[Any]) -> str:
-    """The kind of *sql_type*, a type decorator's its implementation's."""
-    if isinstance(sql_type, TypeDecorator):
-        sql_type = sql_type.impl_instance
-    for kind in _KINDS:
-        if isinstance(sql_type, kind):
-            return kind.__name__.lower()
-    return type(sql_type).__name__.lower()
 
 
 def _resolve(environment: str) -> str:
     """What brings the database to the release's tables in *environment*."""
-    if environment == DEV:
-        return "Start haute app serve again, which builds dev's tables for the form."
     return (
         f"Change the {environment} database's tables in SQL to fit this release's form: the "
-        "Workbench view's Build mode writes the SQL to start from."
+        "Workbench view's schema pane writes the SQL to start from."
     )
 
 
-def _catalogue_differences(catalogue: Inspector, schema: StoreSchema) -> list[str]:
-    """Each way the database's own catalogue differs from the tables *schema* derives, which
+def _catalogue_differences(
+    catalogue: Catalogue, schema: StoreSchema, dialect: Dialect
+) -> list[str]:
+    """Each way the database's own *catalogue* differs from the tables *schema* derives, which
     every write and read of the store takes as they are: a table or a column missing, of
     another kind, taking a null where the store needs a value or none where it writes one,
     keyed otherwise or not referring to its quote; a text the store compares exactly under
-    another collation, on SQL Server; and a column of those tables the store does not write
-    that takes no null, so no row could be inserted."""
-    owner = schema.metadata.schema
-    present = set(catalogue.get_table_names(schema=owner))
-    details = schema.details.table.name
+    another collation, on SQL Server (:func:`._catalogue.column_problems` and
+    :func:`._catalogue.table_problems`); and a column of those tables the store does not
+    write that takes no null, so no row could be inserted."""
     differences: list[str] = []
     tables = [(stored.table, stored.form.id != QUOTE_DETAILS_ID) for stored in schema.tables]
     tables.append((schema.activity, False))
-    if schema.store is not None:
-        tables.append((schema.store, False))
     for table, refers in tables:
-        if table.name not in present:
+        found = catalogue.table(table.name)
+        if found is None:
             differences.append(f"the table {table.name} is missing")
             continue
-        reflected = {
-            column["name"]: column for column in catalogue.get_columns(table.name, schema=owner)
-        }
         for column in table.columns:
-            found = reflected.pop(column.name, None)
-            if found is None:
+            held = found.column(column.name)
+            if held is None:
                 differences.append(f"{table.name}.{column.name} is missing")
                 continue
-            if _kind(found["type"]) != _kind(column.type):
-                differences.append(
-                    f"{table.name}.{column.name} holds {_kind(found['type'])}, not "
-                    f"{_kind(column.type)}"
-                )
-            collation = getattr(column.type.dialect_impl(catalogue.dialect), "collation", None)
-            if collation and getattr(found["type"], "collation", None) != collation:
-                differences.append(
-                    f"{table.name}.{column.name} compares under "
-                    f"{getattr(found['type'], 'collation', None) or 'another collation'}, not "
-                    f"{collation}, so two quotes could be taken for one"
-                )
-            if bool(found["nullable"]) != bool(column.nullable):
-                takes = "takes a null" if found["nullable"] else "takes no null"
-                differences.append(f"{table.name}.{column.name} {takes}, unlike the store's")
-        for name, extra in reflected.items():
-            if not extra["nullable"]:
-                differences.append(
-                    f"{table.name}.{name} is no column of the release's and takes no null, so "
-                    "no row of it could be saved"
-                )
-        primary = catalogue.get_pk_constraint(table.name, schema=owner)
-        keyed = list(primary.get("constrained_columns") or [])
-        wanted = [column.name for column in table.primary_key.columns]
-        if keyed != wanted:
-            differences.append(
-                f"{table.name} is keyed by {', '.join(keyed) or 'nothing'}, not {', '.join(wanted)}"
+            differences.extend(
+                f"{table.name}.{column.name} {said}"
+                for _, said in column_problems(column, held, dialect)
             )
-        if refers and not any(
-            foreign.get("referred_table") == details
-            and list(foreign.get("constrained_columns") or [])
-            == ["quote_reference", "quote_option"]
-            for foreign in catalogue.get_foreign_keys(table.name, schema=owner)
-        ):
-            differences.append(f"{table.name} does not refer to its quote's {details} row")
-    return differences
-
-
-def _check_record(
-    connection: Connection,
-    catalogue: Inspector,
-    schema: StoreSchema,
-    form: FormSpec,
-    project: str,
-) -> None:
-    """Refuse dev's store unless its ``haute_store`` records *project*'s store in dev holding
-    *form*'s tables: an earlier Haute's store, one holding no store yet, another project's
-    and another form's tables each named, with what resolves it."""
-    names = set(catalogue.get_table_names(schema=schema.metadata.schema))
-    _refuse_old_store(names)
-    recorded = _recorded(connection, schema) if STORE_TABLE in names else None
-    if recorded is None:
-        raise QuoteStoreMismatchError(f"This database holds no quote store yet. {_resolve(DEV)}")
-    _refuse_other(recorded, project, DEV)
-    wanted = structure(form)
-    held = json.loads(recorded.structure)
-    if held != wanted:
-        differences = _differences(held, wanted)
-        raise QuoteStoreMismatchError(
-            "This database holds another form's tables: "
-            + "; ".join(differences)
-            + f". {_resolve(DEV)}",
-            differences=differences,
+        for extra in found.columns:
+            if extra.name not in table.columns and not extra.nullable:
+                differences.append(
+                    f"{table.name}.{extra.name} is no column of the release's and takes no "
+                    "null, so no row of it could be saved"
+                )
+        differences.extend(
+            f"{table.name} {said}" for _, said in table_problems(table, found, refers)
         )
+    return differences
 
 
 def open_engine(
     url: str,
     form: FormSpec,
     *,
-    project: str,
-    environment: str = DEV,
+    environment: str,
     sql_schema: str | None = None,
     sign_in: SignIn | None = None,
+    named_by: str = HOST_VARIABLES,
 ) -> tuple[Engine, StoreSchema]:
     """An engine on the database at *url*, signed in as *sign_in* says, with *form*'s store
     schema in the SQL schema *sql_schema*, once the database's own catalogue holds the form's
-    tables as the store reads and writes them, the sign-in holds every privilege the app needs
-    on them and, for dev's store, its record is *project*'s and the form's; refused
-    otherwise, naming each difference and what resolves it. A hosted database is judged by its
-    catalogue alone: nothing in it says which environment it is or what made its tables."""
-    dev = environment == DEV
-    schema = store_schema(form, sql_schema=sql_schema, record=dev)
+    tables as the store reads and writes them and the sign-in holds every privilege the app
+    needs on them; refused otherwise, naming each difference and what resolves it, and a
+    database not reached naming *named_by*. A database is judged by its catalogue alone:
+    nothing in it says which environment it is or what made its tables."""
+    schema = store_schema(form, sql_schema=sql_schema)
     engine = make_engine(url, sign_in=sign_in)
     try:
-        with reaching(url, environment):
+        with reaching(url, environment, named_by):
             with engine.connect() as connection:
-                catalogue = inspect(connection)
-                if dev:
-                    _check_record(connection, catalogue, schema, form, project)
-                differences = _catalogue_differences(catalogue, schema)
+                names = [stored.table.name for stored in schema.tables]
+                catalogue = read_catalogue(connection, sql_schema, [*names, schema.activity.name])
+                differences = _catalogue_differences(catalogue, schema, connection.dialect)
                 if differences:
-                    made = "are not as the store made them" if dev else "do not fit the form"
                     raise QuoteStoreMismatchError(
-                        f"This database's tables {made}: "
+                        "This database's tables do not fit the form: "
                         + "; ".join(differences)
                         + f". {_resolve(environment)}",
                         differences=differences,

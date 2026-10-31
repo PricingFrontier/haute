@@ -1,6 +1,5 @@
 """The workbench's quote store (specs/workbench): the form's own tables in the user's
-database, each quote's current state in them, and Haute's activity beside them, with dev's
-record of its tables in the analyst's SQLite file.
+database, each quote's current state in them, and Haute's activity beside them.
 
 Imported where a store is used, never on the scorer's import path, so a deployed pipeline
 loads no database client.
@@ -28,19 +27,12 @@ from haute._quote_store._book import (
     with_details,
     without_app_details,
 )
-from haute._quote_store._environment import StoreLocation, resolve_store
-from haute._quote_store._migrate import (
-    MigrationRefusedError,
-    Plan,
-    Step,
-    offline_plan,
-    prepare_store,
-    render_sql,
-)
+from haute._quote_store._environment import StoreLocation, connected_store, resolve_store
+from haute._quote_store._migrate import Plan, Step, offline_plan, render_sql
 from haute._quote_store._providers import SignIn
 from haute._quote_store._rows import input_rows
 from haute._quote_store._store import (
-    DEV,
+    HOST_VARIABLES,
     MisfitCell,
     QuoteLockedError,
     QuoteNotFoundError,
@@ -63,33 +55,32 @@ def open_book(
     url: str,
     form: FormSpec,
     *,
-    project: str,
-    environment: str = DEV,
+    environment: str,
     haute_version: str | None,
     clock: Callable[[], datetime] | None = None,
     sql_schema: str | None = None,
     sign_in: SignIn | None = None,
+    named_by: str = HOST_VARIABLES,
 ) -> QuoteBook:
-    """The book of quotes on the database at *url*, signed in as *sign_in* says, whose
-    catalogue must hold *form*'s tables in the SQL schema *sql_schema*, and, in dev, whose
-    record must be *project*'s (:func:`open_engine`), written by an app running Haute
-    *haute_version*."""
+    """The book of quotes on *environment*'s database at *url*, signed in as *sign_in* says,
+    whose catalogue must hold *form*'s tables in the SQL schema *sql_schema*
+    (:func:`open_engine`, a database not reached naming *named_by*), written by an app
+    running Haute *haute_version*."""
     engine, schema = open_engine(
         url,
         form,
-        project=project,
         environment=environment,
         sql_schema=sql_schema,
         sign_in=sign_in,
+        named_by=named_by,
     )
     return QuoteBook(engine, schema, form, haute_version=haute_version, clock=clock)
 
 
 __all__ = [
-    "DEV",
+    "HOST_VARIABLES",
     "ActivityEntry",
     "AppQuote",
-    "MigrationRefusedError",
     "MisfitCell",
     "OpenQuote",
     "Plan",
@@ -115,13 +106,13 @@ __all__ = [
     "WriteSupersededError",
     "as_written",
     "check_reference",
+    "connected_store",
     "details_of",
     "identity_label",
     "input_rows",
     "open_book",
     "offline_plan",
     "open_engine",
-    "prepare_store",
     "render_sql",
     "resolve_store",
     "store_url",

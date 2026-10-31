@@ -615,9 +615,10 @@ def create_app(
     release's host says who is signed in and, for a release with an ``edit_role``, whether
     they hold it. The page and
     its assets come from *static_dir*, Haute's built frontend unless given. *store* is the
-    quote store the app keeps quotes in, dev's on the analyst's machine, or what resolves a
-    hosted environment's (:func:`hosted_store`), or None. The app starts whatever the store
-    holds: its quotes are open while the store's gate finds its database holding the
+    quote store the app keeps quotes in, dev's on the analyst's machine through its
+    connection, or what resolves a hosted environment's (:func:`hosted_store`), or None. The
+    app starts whatever the store holds: its quotes are open while the store's gate finds its
+    database holding the
     release's form's tables, and closed, every quote route and the pricing answering 503
     with the refusal, while it does not, while it cannot be reached and without a store.
     """
@@ -681,11 +682,11 @@ def create_app(
         return open_book(
             location.url,
             form,
-            project=release.pipeline_name,
             environment=location.environment,
             haute_version=release.haute_version,
             sql_schema=location.sql_schema,
             sign_in=location.sign_in,
+            named_by=location.named_by,
         )
 
     gate = StoreGate(open_store)

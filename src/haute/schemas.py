@@ -206,6 +206,8 @@ class WorkbenchStatusResponse(BaseModel):
     # The form folder's path from the project root (``rating/workbench`` in a new project);
     # null while the workbench is not enabled.
     form: str | None = None
+    # The quote store's environments haute.toml declares, by name, in its order.
+    environments: list[str] = []
 
 
 class WorkbenchStoreColumn(BaseModel):
@@ -232,7 +234,7 @@ class WorkbenchTablesResponse(BaseModel):
 
 
 class WorkbenchStoreSqlRequest(BaseModel):
-    """A form the Workbench view holds, saved or not, and where the SQL that brings a hosted
+    """A form the Workbench view holds, saved or not, and where the SQL that brings an
     environment's tables to it starts: the form as the project's default branch holds it, or
     none, for a database that holds no store yet."""
 
@@ -241,7 +243,7 @@ class WorkbenchStoreSqlRequest(BaseModel):
 
 
 class WorkbenchStoreSqlEnvironment(BaseModel):
-    """One hosted environment the project declares, its engine and the SQL for it."""
+    """One environment the project declares, its engine and the SQL for it."""
 
     name: str
     provider: str
@@ -249,11 +251,109 @@ class WorkbenchStoreSqlEnvironment(BaseModel):
 
 
 class WorkbenchStoreSqlResponse(BaseModel):
-    """The SQL for each hosted environment the project declares, and the default branch
-    whose form it starts from: null when it starts from none."""
+    """The SQL for each environment the project declares, and the default branch whose form
+    it starts from: null when it starts from none."""
 
     branch: str | None
     environments: list[WorkbenchStoreSqlEnvironment]
+
+
+class WorkbenchCatalogueColumn(BaseModel):
+    """A column as an environment's database holds it: its name, its kind (``boolean``,
+    ``integer``, ``float``, ``datetime``, ``date``, ``string`` or another type's), its type as
+    the database names it, whether it takes a null, its collation where it has one, and the
+    quotes holding a value in it."""
+
+    name: str
+    kind: str
+    type: str
+    nullable: bool
+    collation: str | None = None
+    quotes: int
+
+
+class WorkbenchCatalogueTable(BaseModel):
+    """A table of the store's as an environment's database holds it: its columns, its primary
+    key's columns, whether it refers by the identity to its quote's quote_details row, and
+    the quotes holding a row in it."""
+
+    name: str
+    columns: list[WorkbenchCatalogueColumn]
+    primary_key: list[str]
+    refers: bool
+    quotes: int
+
+
+class WorkbenchStoreCatalogueRequest(BaseModel):
+    """The environment whose database's tables to read, one ``haute.toml`` declares."""
+
+    environment: str
+
+
+class WorkbenchStoreCatalogueResponse(BaseModel):
+    """The tables an environment's database holds, read through its connection: each table
+    holding the quote's identity, ``haute_activity`` among them. Names, kinds and counts
+    alone, never a value, a location or a sign-in."""
+
+    environment: str
+    tables: list[WorkbenchCatalogueTable]
+
+
+class WorkbenchStoreRename(BaseModel):
+    """A column of the form's table ``table`` (by id), ``column`` (by id), that the database
+    holds as ``was``: the analyst's pairing of the two as a rename."""
+
+    table: str
+    column: str
+    was: str
+
+
+class WorkbenchStoreCompareRequest(BaseModel):
+    """A form the Workbench view holds, saved or not, compared with the tables an
+    environment's database holds, as ``POST /api/workbench/store-catalogue`` read them, with
+    the columns the analyst paired as renames."""
+
+    form: FormSpec
+    environment: str
+    tables: list[WorkbenchCatalogueTable]
+    renames: list[WorkbenchStoreRename] = []
+
+
+class WorkbenchStoreDifference(BaseModel):
+    """A way the database differs from the form: the form's table and column by id (no table
+    for Haute's own haute_activity), its kind and what it is."""
+
+    table: str | None
+    column: str | None
+    kind: Literal[
+        "missing", "renamed", "type", "rows", "null", "key", "refers", "collation", "store"
+    ]
+    message: str
+
+
+class WorkbenchStoreExtra(BaseModel):
+    """A table of the store's, or a column of one of the form's tables, that the database
+    holds and the form does not: its table's and its name there, the form's table's id when
+    the table is the form's, and the quotes holding values in it."""
+
+    table: str
+    column: str | None
+    table_id: str | None
+    quotes: int
+
+
+class WorkbenchStoreCompareResponse(BaseModel):
+    """The form compared with an environment's tables: each difference, each extra, the
+    pairings taken, whether the database matches the form, the SQL that brings its tables to
+    the form, from what they hold, and the default branch whose form named renames, null
+    when none did."""
+
+    differences: list[WorkbenchStoreDifference]
+    extras: list[WorkbenchStoreExtra]
+    renames: list[WorkbenchStoreRename]
+    matches: bool
+    sql: str
+    branch: str | None
 
 
 class WorkbenchFormFile(BaseModel):

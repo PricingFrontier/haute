@@ -1,7 +1,9 @@
 """The workbench routes (specs/workbench): its status, its tables as the saved form defines
 them now or as an unsaved form the view holds would, the form itself, read and saved, the
-params files a column's allowed values are read from, and the SQL that brings a hosted quote
-store's tables to a form, which the people who own its database start from.
+params files a column's allowed values are read from, the SQL that brings a quote store's
+tables to a form, which the people who own its database start from, and a form compared with
+the tables an environment's database holds, read through its connection in
+``connections.toml`` under the analyst's own sign-in, nothing written there.
 
 Every route reads ``haute.toml``, and those that serve the saved form read its folder too,
 from the working directory on every request, off the event loop, so an edit to either
@@ -57,13 +59,22 @@ from haute.routes._save_pipeline import (
     capture_save_in_ledger,
 )
 from haute.schemas import (
+    WorkbenchCatalogueColumn,
+    WorkbenchCatalogueTable,
     WorkbenchFormResponse,
     WorkbenchFormSaveRequest,
     WorkbenchFormSaveResponse,
     WorkbenchFormTablesRequest,
     WorkbenchParamFileResponse,
     WorkbenchStatusResponse,
+    WorkbenchStoreCatalogueRequest,
+    WorkbenchStoreCatalogueResponse,
     WorkbenchStoreColumn,
+    WorkbenchStoreCompareRequest,
+    WorkbenchStoreCompareResponse,
+    WorkbenchStoreDifference,
+    WorkbenchStoreExtra,
+    WorkbenchStoreRename,
     WorkbenchStoreSqlEnvironment,
     WorkbenchStoreSqlRequest,
     WorkbenchStoreSqlResponse,
@@ -212,7 +223,9 @@ async def workbench_status() -> WorkbenchStatusResponse:
     """Whether the project's workbench is enabled, and where its form folder is."""
     config = await run_in_threadpool(_config)
     return WorkbenchStatusResponse(
-        enabled=config.enabled, form=config.form if config.enabled else None
+        enabled=config.enabled,
+        form=config.form if config.enabled else None,
+        environments=[environment.name for environment in config.store] if config.enabled else [],
     )
 
 
@@ -255,6 +268,19 @@ def _default_branch_form(config: WorkbenchConfig) -> tuple[str, FormSpec] | None
     return None
 
 
+def _checked_form(form: FormSpec) -> FormSpec:
+    """*form* as the SQL is written for it: holding quote_details as every form holds it once
+    read, whatever the view sent of it, and each name checked as the tables' are, so the SQL
+    holds none a database cannot."""
+    spec = with_quote_details(form)
+    try:
+        input_tables(spec)
+        output_tables(spec)
+    except WorkbenchTablesError as exc:
+        raise contract_error_http_exception(exc) from exc
+    return spec
+
+
 def _store_sql(
     config: WorkbenchConfig, body: WorkbenchStoreSqlRequest
 ) -> WorkbenchStoreSqlResponse:
@@ -262,14 +288,7 @@ def _store_sql(
     from haute._quote_store._migrate import PROVIDER_DIALECTS
     from haute._quote_store._providers import PROVIDERS
 
-    # quote_details as every form holds it once read, whatever the view sent of it.
-    spec = with_quote_details(body.form)
-    try:
-        # Each name checked as the tables' are: the SQL holds none a database cannot.
-        input_tables(spec)
-        output_tables(spec)
-    except WorkbenchTablesError as exc:
-        raise contract_error_http_exception(exc) from exc
+    spec = _checked_form(body.form)
     found = _default_branch_form(config) if body.start == "branch" else None
     branch, base = found if found is not None else (None, None)
     environments = [
@@ -289,10 +308,140 @@ def _store_sql(
 
 @router.post("/store-sql", response_model=WorkbenchStoreSqlResponse)
 async def store_sql(body: WorkbenchStoreSqlRequest) -> WorkbenchStoreSqlResponse:
-    """The SQL that brings each hosted environment the project declares to a form the view
-    holds, saved or not, from the form the default branch holds, or from none."""
+    """The SQL that brings each environment the project declares to a form the view holds,
+    saved or not, from the form the default branch holds, or from none."""
     config = await _enabled_config()
     return await run_in_threadpool(_store_sql, config, body)
+
+
+def _store_catalogue(
+    config: WorkbenchConfig, body: WorkbenchStoreCatalogueRequest
+) -> WorkbenchStoreCatalogueResponse:
+    from haute._connections import project_environ
+    from haute._quote_store import connected_store
+    from haute._quote_store._compare import read_store_catalogue
+
+    location = connected_store(config, body.environment, project_environ(config.project_root))
+    catalogue = read_store_catalogue(location)
+    return WorkbenchStoreCatalogueResponse(
+        environment=body.environment,
+        tables=[
+            WorkbenchCatalogueTable(
+                name=table.name,
+                columns=[
+                    WorkbenchCatalogueColumn(
+                        name=column.name,
+                        kind=column.kind,
+                        type=column.type,
+                        nullable=column.nullable,
+                        collation=column.collation,
+                        quotes=column.quotes or 0,
+                    )
+                    for column in table.columns
+                ],
+                primary_key=list(table.primary_key),
+                refers=table.refers,
+                quotes=table.quotes or 0,
+            )
+            for table in catalogue.tables
+        ],
+    )
+
+
+@router.post("/store-catalogue", response_model=WorkbenchStoreCatalogueResponse)
+async def store_catalogue(body: WorkbenchStoreCatalogueRequest) -> WorkbenchStoreCatalogueResponse:
+    """The tables an environment's database holds, read through its connection in
+    ``connections.toml`` under the analyst's sign-in, with the quotes holding values in each
+    table and column; nothing written. An environment with no connection, or a database that
+    cannot be reached or read, answers 409 naming what to set."""
+    config = await _enabled_config()
+    return await run_in_threadpool(_store_catalogue, config, body)
+
+
+def _store_compare(
+    config: WorkbenchConfig, body: WorkbenchStoreCompareRequest
+) -> WorkbenchStoreCompareResponse:
+    from haute._quote_store import render_sql
+    from haute._quote_store._catalogue import Catalogue, CatalogueColumn, CatalogueTable
+    from haute._quote_store._compare import Rename, compare
+    from haute._quote_store._environment import connection_of
+    from haute._quote_store._migrate import PROVIDER_DIALECTS
+    from haute._quote_store._providers import PROVIDERS
+
+    spec = _checked_form(body.form)
+    connection = connection_of(config, body.environment)
+    found = _default_branch_form(config)
+    branch, base = found if found is not None else (None, None)
+    catalogue = Catalogue(
+        tables=tuple(
+            CatalogueTable(
+                name=table.name,
+                columns=tuple(
+                    CatalogueColumn(
+                        name=column.name,
+                        kind=column.kind,
+                        type=column.type,
+                        nullable=column.nullable,
+                        collation=column.collation,
+                        quotes=column.quotes,
+                    )
+                    for column in table.columns
+                ),
+                primary_key=tuple(table.primary_key),
+                refers=table.refers,
+                quotes=table.quotes,
+            )
+            for table in body.tables
+        )
+    )
+    provider = PROVIDERS[connection.provider]
+    comparison = compare(
+        spec,
+        catalogue,
+        provider=provider,
+        base=base,
+        renames=[Rename(each.table, each.column, each.was) for each in body.renames],
+    )
+    return WorkbenchStoreCompareResponse(
+        differences=[
+            WorkbenchStoreDifference(
+                table=each.table, column=each.column, kind=each.kind, message=each.message
+            )
+            for each in comparison.differences
+        ],
+        extras=[
+            WorkbenchStoreExtra(
+                table=each.table,
+                column=each.column,
+                table_id=each.table_id,
+                quotes=each.quotes or 0,
+            )
+            for each in comparison.extras
+        ],
+        renames=[
+            WorkbenchStoreRename(table=each.table, column=each.column, was=each.was)
+            for each in comparison.renames
+        ],
+        matches=comparison.matches,
+        sql=render_sql(
+            comparison.plan,
+            spec,
+            PROVIDER_DIALECTS[provider.name],
+            sql_schema=connection.schema,
+        ),
+        branch=branch,
+    )
+
+
+@router.post("/store-compare", response_model=WorkbenchStoreCompareResponse)
+async def store_compare(body: WorkbenchStoreCompareRequest) -> WorkbenchStoreCompareResponse:
+    """A form the view holds, saved or not, compared with the tables an environment's
+    database holds, as the store's catalogue read them: each difference by the form's ids,
+    each table or column the database holds beyond it, and the SQL that brings the tables to
+    the form from what they hold, renaming what the analyst paired or the default branch's
+    form names by one id. Reads no database."""
+    config = await _enabled_config()
+    return await run_in_threadpool(_store_compare, config, body)
 
 
 @router.get("/form", response_model=WorkbenchFormResponse)

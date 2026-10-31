@@ -127,14 +127,17 @@ def handle_ci_update() -> None:
     """Rewrite the generated CI files and ``.env.example`` for the installed haute.
 
     The files are generated as ``haute init`` would for the project's ``[ci]
-    provider``, ``[deploy] target``, workbench and Python, with the staging steps on its
+    provider``, ``[deploy] target``, workbench, ``connections.toml`` and Python, with the
+    staging steps on its
     ``[ci.staging] endpoint_suffix`` and the production job under its ``[ci.production]
     environment``; another provider's generated files are removed, and every other file is
     left alone. Reports each file as updated or unchanged.
     """
+    from haute._connections import ConnectionsError
     from haute._project_python import ProjectPythonError, project_python_version
     from haute._scaffold import (
         ci_files,
+        connection_variables,
         env_example,
         production_environment_problem,
         staging_suffix_problem,
@@ -166,7 +169,11 @@ def handle_ci_update() -> None:
         )
     except ValueError as exc:
         raise click.ClickException(f"{exc} in [ci] provider of haute.toml.") from exc
-    files = {**generated, ".env.example": env_example(target)}
+    try:
+        variables = connection_variables(project_dir)
+    except ConnectionsError as exc:
+        raise click.ClickException(str(exc)) from exc
+    files = {**generated, ".env.example": env_example(target, variables)}
     _prune_stale_ci_files(project_dir, keep=provider)
     changed = write_generated_files(project_dir, files)
     for rel in files:

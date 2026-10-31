@@ -511,16 +511,25 @@ def _write_form_folder(folder: Path, files: dict[str, str]) -> None:
 
 def _add_workbench(project_dir: Path) -> None:
     """``haute init --workbench`` in a project that has a ``haute.toml``: the
-    ``[workbench]`` table appended to it and the blank form folder written in its pipeline
-    folder, nothing else. Refused, writing nothing, while either is there or a path it would
-    write is no ordinary file of the project's; a failure removes the folder it made and
-    leaves ``haute.toml`` as it was, so a second run starts from where the first did."""
+    ``[workbench]`` table appended to it, the blank form folder written in its pipeline
+    folder, ``connections.toml`` written and ``.env.example`` written again with the
+    variables it names, nothing else. Refused, writing nothing, while the table, the folder
+    or ``connections.toml`` is there or a path it would write is no ordinary file of the
+    project's; a failure removes what it made and puts ``haute.toml`` and ``.env.example``
+    back as they were, so a second run starts from where the first did."""
     import shutil
     import tomllib
 
+    from haute._connections import CONNECTIONS_FILE
     from haute._file_ops import atomic_write_bytes
     from haute._project import resolve_pipeline_file
-    from haute._scaffold import starter_form
+    from haute._scaffold import (
+        connection_variables,
+        connections_toml,
+        env_example,
+        starter_form,
+        workbench_table,
+    )
     from haute._workbench_config import FORM_FOLDER
     from haute.errors import ConfigError
 
@@ -536,6 +545,13 @@ def _add_workbench(project_dir: Path) -> None:
         refuse(f"haute.toml could not be read: {exc}")
     if "workbench" in data:
         refuse("haute.toml already has a [workbench] table; the project has its workbench.")
+    connections_path = project_dir / CONNECTIONS_FILE
+    if connections_path.exists():
+        refuse(f"{CONNECTIONS_FILE} is already there; the project has its connections.")
+    deploy = data.get("deploy")
+    target = deploy.get("target") if isinstance(deploy, dict) else None
+    if not isinstance(target, str):
+        refuse("haute.toml names no [deploy] target, whose .env.example the workbench adds to.")
     try:
         pipeline_file = resolve_pipeline_file(project_dir)
     except FileNotFoundError as exc:
@@ -560,16 +576,29 @@ def _add_workbench(project_dir: Path) -> None:
     problem = _form_folder_problem(project_dir, relative, files)
     if problem is not None:
         refuse(problem)
+    env_path = project_dir / ".env.example"
+    env_original = env_path.read_bytes() if env_path.is_file() else None
     try:
         _write_form_folder(folder, files)
-        atomic_write_bytes(toml_path, original.rstrip() + b"\n\n[workbench]\nenabled = true\n")
-    except OSError as exc:
-        # The folder did not exist before this run, so all of it is this run's.
+        connections_path.write_bytes(connections_toml().encode("utf-8"))
+        env_text = env_example(target, connection_variables(project_dir))
+        atomic_write_bytes(env_path, env_text.encode("utf-8"))
+        table = workbench_table().encode("utf-8")
+        atomic_write_bytes(toml_path, original.rstrip() + b"\n\n" + table)
+    except (OSError, ValueError) as exc:
+        # The folder and connections.toml did not exist before this run, so they are its own.
         shutil.rmtree(folder, ignore_errors=True)
+        connections_path.unlink(missing_ok=True)
+        if env_original is None:
+            env_path.unlink(missing_ok=True)
+        else:
+            atomic_write_bytes(env_path, env_original)
         refuse(f"the workbench could not be added: {exc}")
     click.echo(f"Added the workbench to '{name}'\n")
-    click.echo("  haute.toml            - [workbench] enabled = true")
+    click.echo("  haute.toml            - [workbench] with the quote store's dev, staging and prod")
     click.echo(f"  {relative + '/':<21} - the workbench's blank form")
+    click.echo(f"  {CONNECTIONS_FILE:<21} - where each environment's database is")
+    click.echo("  .env.example          - the variables their sign-ins read")
 
 
 def handle_init(config: InitConfig) -> None:
@@ -580,11 +609,14 @@ def handle_init(config: InitConfig) -> None:
     ``SystemExit(1)`` when ``haute.toml`` already exists (the scaffold
     never overwrites an existing project).
     """
+    from haute._connections import CONNECTIONS_FILE, ConnectionsError
     from haute._project_layout import PIPELINE_FILES_FOLDER, PIPELINE_FILES_SUBFOLDERS
     from haute._project_python import ProjectPythonError, project_python_version
     from haute._scaffold import (
         ci_files,
         ci_secret_names,
+        connection_variables,
+        connections_toml,
         env_example,
         haute_toml,
         pre_commit_hook,
@@ -643,6 +675,14 @@ def handle_init(config: InitConfig) -> None:
     if problem is not None:
         click.echo(f"Error: {problem}", err=True)
         raise SystemExit(1)
+    # connections.toml already there, on a --force re-init, holds the team's connections:
+    # never a blank one in its place, and it must read, since .env.example names its variables.
+    connections_path = project_dir / CONNECTIONS_FILE
+    write_connections = config.workbench and not connections_path.exists()
+    try:
+        connection_variables(project_dir)
+    except ConnectionsError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     # -- pyproject.toml - ensure haute is a dependency -------------------------
     _ensure_haute_dependency(pyproject_path, name)
@@ -690,8 +730,14 @@ def handle_init(config: InitConfig) -> None:
     if form_files:
         _write_form_folder(form_folder, form_files)
 
-    # -- .env.example - target-specific credentials ----------------------------
-    (project_dir / ".env.example").write_text(env_example(target), encoding="utf-8")
+    # -- connections.toml - each environment's database, for this machine -------
+    if write_connections:
+        connections_path.write_text(connections_toml(), encoding="utf-8")
+
+    # -- .env.example - target-specific credentials and connections' sign-ins --
+    (project_dir / ".env.example").write_text(
+        env_example(target, connection_variables(project_dir)), encoding="utf-8"
+    )
 
     # -- Starter test file + test quotes ---------------------------------------
     tests_dir = project_dir / "tests"
@@ -753,6 +799,7 @@ def handle_init(config: InitConfig) -> None:
     if config.workbench:
         click.echo("  haute.toml            - project, deploy, safety, CI & workbench config")
         click.echo("  rating/workbench/     - the workbench's blank form")
+        click.echo(f"  {CONNECTIONS_FILE:<21} - where each environment's database is")
     else:
         click.echo("  haute.toml            - project, deploy, safety & CI config")
     click.echo(f"  .env.example         - {target} credentials template")
