@@ -42,7 +42,10 @@ const COMPARED: WorkbenchStoreCompareResponse = {
     { table: "equipment", column: null, kind: "missing", message: "the database has no equipment" },
     { table: null, column: null, kind: "missing", message: "the database has no haute_activity" },
   ],
-  extras: [{ table: "policy", column: "region", table_id: "policy", quotes: 3 }],
+  extras: [
+    { table: "policy", column: "region", table_id: "policy", quotes: 3 },
+    { table: "policy", column: "legacy", table_id: "policy", quotes: null },
+  ],
   renames: [],
   matches: false,
   sql: "BEGIN;\nALTER TABLE policy ADD COLUMN state TEXT;\nCOMMIT;\n",
@@ -88,6 +91,7 @@ describe("Compare", () => {
     const extras = screen.getByRole("region", { name: "Not in the form" })
     expect(extras).toHaveTextContent("policy.region")
     expect(extras).toHaveTextContent("3 quotes")
+    expect(extras).toHaveTextContent("quotes not counted (table lacks quote identity)")
   })
 
   it("says when the database matches the form", async () => {

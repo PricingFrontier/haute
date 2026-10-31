@@ -37,7 +37,7 @@ from haute._quote_store._catalogue import (
     table_problems,
 )
 from haute._quote_store._environment import StoreLocation
-from haute._quote_store._migrate import Key, Plan, held, plan
+from haute._quote_store._migrate import UNCOUNTED, Key, Plan, held, plan
 from haute._quote_store._providers import Provider
 from haute._quote_store._schema import ACTIVITY_TABLE, StoreSchema, store_schema, structure
 from haute._quote_store._store import (
@@ -180,12 +180,15 @@ class _Matcher:
         expected: Column[Any],
         found: CatalogueColumn,
         where: str,
+        *,
+        quotes: int | None = None,
     ) -> None:
         """The ways *found* differs from *expected* beyond its type, which a plan's retype
         changes: each a note."""
+        counted = found.quotes if quotes is None else quotes
         for kind, said in column_problems(expected, found, self.dialect):
             if kind != "type":
-                self.note(table_id, column_id, kind, f"{where}{held(found.quotes)} {said}")
+                self.note(table_id, column_id, kind, f"{where}{held(counted)} {said}")
 
     def own_columns(
         self, table_id: str | None, expected: Table, found: CatalogueTable, skip: set[str]
@@ -390,6 +393,7 @@ def _match_table(
             break
     # The store's own columns, quote_row among them whatever the table's rows, are no extras.
     own = ({column.name for column in expected.columns} - form_columns) | {QUOTE_ROW}
+    uncounted = not set(IDENTITY) <= {column.name for column in found.columns}
     live: list[dict[str, Any]] = []
     for column in table["columns"]:
         if column["id"] not in matched:
@@ -398,8 +402,9 @@ def _match_table(
             )
             continue
         found_column, was = matched[column["id"]]
+        quotes = UNCOUNTED if uncounted else found_column.quotes
         live.append(_live_column(found_column, column["id"]))
-        matcher.count((table["id"], column["id"]), found_column.quotes)
+        matcher.count((table["id"], column["id"]), quotes)
         if was is not None:
             matcher.differ(table["id"], column["id"], "renamed", f"the database names it {was}")
         wanted_column = expected.c[column["name"]]
@@ -409,8 +414,7 @@ def _match_table(
                 table["id"],
                 column["id"],
                 "type",
-                f"the database holds it as {found_column.type}, not {new}"
-                + held(found_column.quotes),
+                f"the database holds it as {found_column.type}, not {new}" + held(quotes),
             )
         matcher.column_checks(
             table["id"],
@@ -418,6 +422,7 @@ def _match_table(
             wanted_column,
             found_column,
             f"{found.name}.{found_column.name}",
+            quotes=quotes,
         )
     many = found.column(QUOTE_ROW) is not None
     rows_differ = many != (table["rows"] == "many")
@@ -429,7 +434,7 @@ def _match_table(
             Extra(found.name, found_column.name, table["id"], found_column.quotes)
         )
         live.append(_live_column(found_column, key))
-        matcher.count((table["id"], key), found_column.quotes)
+        matcher.count((table["id"], key), UNCOUNTED if uncounted else found_column.quotes)
     matcher.own_columns(
         table["id"], expected, found, form_columns | ({QUOTE_ROW} if rows_differ else set())
     )
@@ -446,5 +451,5 @@ def _match_table(
             "columns": live,
         }
     )
-    matcher.count((table["id"], None), found.quotes)
+    matcher.count((table["id"], None), UNCOUNTED if uncounted else found.quotes)
     return taken

@@ -324,20 +324,30 @@ def test_an_entra_sign_in_refused_is_a_database_not_reached_naming_no_account(
 def test_a_store_table_lacking_an_identity_column_is_compared_not_made_again(
     tmp_path: Path,
 ) -> None:
+    from haute._quote_store._compare import Extra
+
     target = Target("sqlite", f"sqlite:///{(tmp_path / 'store.sqlite').as_posix()}")
     made_from_sql(target, RELEASED)
     target.run(
         "DROP TABLE policy",
-        "CREATE TABLE policy (region TEXT, drivers TEXT, value FLOAT)",
+        "CREATE TABLE policy (quote_reference VARCHAR(80), region TEXT, drivers TEXT, value TEXT, "
+        "legacy TEXT)",
+        "INSERT INTO policy VALUES ('A-1', 'north', '2', '1.5', 'kept')",
         "CREATE TABLE unrelated (quote_reference VARCHAR(80), x INTEGER)",
     )
 
+    read = catalogue(target).table("policy")
+    assert read is not None and read.quotes is None
     comparison = compared(target, RELEASED)
 
     assert ("t_policy", None, "missing") not in kinds(comparison)
-    assert any(
-        each.table == "t_policy" and each.column is not None and each.kind == "missing"
-        for each in comparison.differences
+    assert ("t_policy", "quote_option", "missing") in kinds(comparison)
+    assert comparison.extras == (Extra("policy", "legacy", "t_policy", None),)
+    typed = next(each for each in comparison.differences if each.kind == "type")
+    assert "quotes holding values not counted: table lacks quote identity" in typed.message
+    written = sql(target, RELEASED, comparison)
+    assert "CREATE TABLE policy" not in written
+    assert (
+        "The form does not have policy.legacy (quotes holding values not counted: table lacks "
+        "quote identity)" in written
     )
-    assert comparison.extras == ()
-    assert "CREATE TABLE policy" not in sql(target, RELEASED, comparison)

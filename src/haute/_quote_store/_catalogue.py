@@ -113,8 +113,9 @@ def read_catalogue(
     """The tables of the SQL schema *sql_schema* (the connection's default when None) on
     *connection*: those named in *names* that it holds, or, without *names*, all it holds, so
     an incomplete table of the form's is compared rather than taken for missing; with *count*,
-    the quotes holding a row in each table holding both of the quote's identity columns, 0
-    where a table lacks either, and a value in each of its columns."""
+    the quotes holding a row in each table holding both of the quote's identity columns and a
+    value in each of its columns, None where a table lacks either identity column and cannot
+    be counted by quote."""
     inspector = inspect(connection)
     present = inspector.get_table_names(schema=sql_schema)
     wanted = None if names is None else set(names)
@@ -130,12 +131,9 @@ def read_catalogue(
             and list(foreign.get("constrained_columns") or []) == list(IDENTITY)
             for foreign in inspector.get_foreign_keys(name, schema=sql_schema)
         )
-        column_names = [column["name"] for column in reflected]
         quotes, counted = (
-            _counted(connection, name, column_names, sql_schema)
+            _counted(connection, name, [column["name"] for column in reflected], sql_schema)
             if count and set(IDENTITY) <= held
-            else (0, dict.fromkeys(column_names, 0))
-            if count
             else (None, {})
         )
         tables.append(

@@ -3292,27 +3292,27 @@ export interface WorkbenchStoreCatalogueResponse {
 /**
  * A table of the store's as an environment's database holds it: its columns, its primary
  * key's columns, whether it refers by the identity to its quote's quote_details row, and
- * the quotes holding a row in it.
+ * the quotes holding a row in it, None when the table lacks a quote identity column.
  */
 export interface WorkbenchCatalogueTable {
   columns: WorkbenchCatalogueColumn[];
   name: string;
   primary_key: string[];
-  quotes: number;
+  quotes: number | null;
   refers: boolean;
 }
 /**
  * A column as an environment's database holds it: its name, its kind (``boolean``,
  * ``integer``, ``float``, ``datetime``, ``date``, ``string`` or another type's), its type as
  * the database names it, whether it takes a null, its collation where it has one, and the
- * quotes holding a value in it.
+ * quotes holding a value in it, None when the table lacks a quote identity column.
  */
 export interface WorkbenchCatalogueColumn {
   collation: string | null;
   kind: string;
   name: string;
   nullable: boolean;
-  quotes: number;
+  quotes: number | null;
   type: string;
 }
 /**
@@ -3342,11 +3342,12 @@ export interface WorkbenchStoreDifference {
 /**
  * A table of the store's, or a column of one of the form's tables, that the database
  * holds and the form does not: its table's and its name there, the form's table's id when
- * the table is the form's, and the quotes holding values in it.
+ * the table is the form's, and the quotes holding values in it, None when the table lacks a
+ * quote identity column.
  */
 export interface WorkbenchStoreExtra {
   column: string | null;
-  quotes: number;
+  quotes: number | null;
   table: string;
   table_id: string | null;
 }

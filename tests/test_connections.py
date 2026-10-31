@@ -110,8 +110,15 @@ def test_a_connection_that_is_not_as_the_file_takes_it_is_refused_naming_why(
     [
         SQLSERVER_DEV.replace('"HAUTE_DEV_PASSWORD"', '"s3cret!pa55"'),
         SQLSERVER_DEV.replace('database = "pricing_dev"', "database = 123456789"),
+        SQLSERVER_DEV.replace('auth = "password"', 'auth = { password = "s3cret!pa55" }'),
+        SQLSERVER_DEV.replace('provider = "sqlserver"', 'provider = "s3cret!pa55"'),
     ],
-    ids=["a password where its variable's name goes", "a location of another kind"],
+    ids=[
+        "a password where its variable's name goes",
+        "a location of another kind",
+        "a secret in auth",
+        "a secret in provider",
+    ],
 )
 def test_a_value_refused_is_never_said(tmp_path: Path, text: str) -> None:
     write(tmp_path, text)

@@ -335,13 +335,13 @@ def _store_catalogue(
                         type=column.type,
                         nullable=column.nullable,
                         collation=column.collation,
-                        quotes=column.quotes or 0,
+                        quotes=column.quotes,
                     )
                     for column in table.columns
                 ],
                 primary_key=list(table.primary_key),
                 refers=table.refers,
-                quotes=table.quotes or 0,
+                quotes=table.quotes,
             )
             for table in catalogue.tables
         ],
@@ -414,7 +414,7 @@ def _store_compare(
                 table=each.table,
                 column=each.column,
                 table_id=each.table_id,
-                quotes=each.quotes or 0,
+                quotes=each.quotes,
             )
             for each in comparison.extras
         ],

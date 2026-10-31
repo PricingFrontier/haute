@@ -153,9 +153,7 @@ def _connection(name: str, settings: dict[str, object]) -> Connection:
             )
     provider = settings.get("provider")
     if not isinstance(provider, str) or provider not in STORE_PROVIDERS:
-        raise ConnectionsError(
-            f"{at}.provider must be one of {', '.join(sorted(STORE_PROVIDERS))}; got {provider!r}"
-        )
+        raise ConnectionsError(f"{at}.provider must be one of {', '.join(sorted(STORE_PROVIDERS))}")
     if provider in FILE_PROVIDERS:
         unknown = sorted(set(settings) - {"provider", "database"})
         if unknown:
@@ -172,9 +170,7 @@ def _connection(name: str, settings: dict[str, object]) -> Connection:
             f"with {', '.join(CONNECTION_SIGN_INS)}"
         )
     if not isinstance(auth, str) or auth not in CONNECTION_SIGN_INS:
-        raise ConnectionsError(
-            f"{at}.auth must be one of {', '.join(CONNECTION_SIGN_INS)}; got {auth!r}"
-        )
+        raise ConnectionsError(f"{at}.auth must be one of {', '.join(CONNECTION_SIGN_INS)}")
     keys = CONNECTION_SIGN_INS[auth]
     if provider in ROLE_NAMED and auth in _ENTRA:
         # The role a PostgreSQL server maps the Entra identity to, by name.

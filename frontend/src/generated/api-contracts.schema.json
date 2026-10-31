@@ -18910,7 +18910,7 @@
       "type": "object"
     },
     "WorkbenchCatalogueColumn": {
-      "description": "A column as an environment's database holds it: its name, its kind (``boolean``,\n``integer``, ``float``, ``datetime``, ``date``, ``string`` or another type's), its type as\nthe database names it, whether it takes a null, its collation where it has one, and the\nquotes holding a value in it.",
+      "description": "A column as an environment's database holds it: its name, its kind (``boolean``,\n``integer``, ``float``, ``datetime``, ``date``, ``string`` or another type's), its type as\nthe database names it, whether it takes a null, its collation where it has one, and the\nquotes holding a value in it, None when the table lacks a quote identity column.",
       "properties": {
         "collation": {
           "anyOf": [
@@ -18937,8 +18937,16 @@
           "type": "boolean"
         },
         "quotes": {
-          "title": "Quotes",
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quotes"
         },
         "type": {
           "title": "Type",
@@ -18957,7 +18965,7 @@
       "type": "object"
     },
     "WorkbenchCatalogueTable": {
-      "description": "A table of the store's as an environment's database holds it: its columns, its primary\nkey's columns, whether it refers by the identity to its quote's quote_details row, and\nthe quotes holding a row in it.",
+      "description": "A table of the store's as an environment's database holds it: its columns, its primary\nkey's columns, whether it refers by the identity to its quote's quote_details row, and\nthe quotes holding a row in it, None when the table lacks a quote identity column.",
       "properties": {
         "columns": {
           "items": {
@@ -18978,8 +18986,16 @@
           "type": "array"
         },
         "quotes": {
-          "title": "Quotes",
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quotes"
         },
         "refers": {
           "title": "Refers",
@@ -19320,7 +19336,7 @@
       "type": "object"
     },
     "WorkbenchStoreExtra": {
-      "description": "A table of the store's, or a column of one of the form's tables, that the database\nholds and the form does not: its table's and its name there, the form's table's id when\nthe table is the form's, and the quotes holding values in it.",
+      "description": "A table of the store's, or a column of one of the form's tables, that the database\nholds and the form does not: its table's and its name there, the form's table's id when\nthe table is the form's, and the quotes holding values in it, None when the table lacks a\nquote identity column.",
       "properties": {
         "column": {
           "anyOf": [
@@ -19334,8 +19350,16 @@
           "title": "Column"
         },
         "quotes": {
-          "title": "Quotes",
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quotes"
         },
         "table": {
           "title": "Table",

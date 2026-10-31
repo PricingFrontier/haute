@@ -126,7 +126,14 @@ function PairSelect({ extra }: { extra: WorkbenchStoreExtra & { table_id: string
   )
 }
 
-const quotes = (count: number) => (count === 0 ? "" : count === 1 ? "1 quote" : `${count} quotes`)
+const quotes = (count: number | null) =>
+  count === null
+    ? "quotes not counted (table lacks quote identity)"
+    : count === 0
+      ? ""
+      : count === 1
+        ? "1 quote"
+        : `${count} quotes`
 
 /** What Compare found, above the schema's tables: reading, a failure, a match, Haute's own differences, extras and pairings. */
 export function ComparePanel() {

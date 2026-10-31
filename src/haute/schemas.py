@@ -262,26 +262,26 @@ class WorkbenchCatalogueColumn(BaseModel):
     """A column as an environment's database holds it: its name, its kind (``boolean``,
     ``integer``, ``float``, ``datetime``, ``date``, ``string`` or another type's), its type as
     the database names it, whether it takes a null, its collation where it has one, and the
-    quotes holding a value in it."""
+    quotes holding a value in it, None when the table lacks a quote identity column."""
 
     name: str
     kind: str
     type: str
     nullable: bool
     collation: str | None = None
-    quotes: int
+    quotes: int | None = None
 
 
 class WorkbenchCatalogueTable(BaseModel):
     """A table of the store's as an environment's database holds it: its columns, its primary
     key's columns, whether it refers by the identity to its quote's quote_details row, and
-    the quotes holding a row in it."""
+    the quotes holding a row in it, None when the table lacks a quote identity column."""
 
     name: str
     columns: list[WorkbenchCatalogueColumn]
     primary_key: list[str]
     refers: bool
-    quotes: int
+    quotes: int | None = None
 
 
 class WorkbenchStoreCatalogueRequest(BaseModel):
@@ -334,12 +334,13 @@ class WorkbenchStoreDifference(BaseModel):
 class WorkbenchStoreExtra(BaseModel):
     """A table of the store's, or a column of one of the form's tables, that the database
     holds and the form does not: its table's and its name there, the form's table's id when
-    the table is the form's, and the quotes holding values in it."""
+    the table is the form's, and the quotes holding values in it, None when the table lacks a
+    quote identity column."""
 
     table: str
     column: str | None
     table_id: str | None
-    quotes: int
+    quotes: int | None = None
 
 
 class WorkbenchStoreCompareResponse(BaseModel):

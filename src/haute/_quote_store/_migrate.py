@@ -360,6 +360,11 @@ def _emit(operations: Operations, plan: Plan, schema: StoreSchema) -> None:
         operations.impl.create_table(schema.activity)
 
 
+#: What a step's or note's ``quotes`` holds when a table was read for a counted comparison
+#: but lacked a quote identity column, so its quotes could not be counted.
+UNCOUNTED = -1
+
+
 def _commented(text: str) -> str:
     """*text* as SQL comments, each of its lines one, so no name in it ends a comment."""
     return "\n".join(f"-- {line}" for line in text.splitlines())
@@ -367,7 +372,11 @@ def _commented(text: str) -> str:
 
 def held(quotes: int | None, what: str = "values") -> str:
     """How many quotes hold *what* in a table or column, as a note or a mark puts it after
-    the table's or column's name; nothing when none were counted or none hold any."""
+    the table's or column's name (:data:`UNCOUNTED` when the table lacks a quote identity
+    column so its quotes could not be counted); nothing when none were counted or none hold
+    any."""
+    if quotes == UNCOUNTED:
+        return f" (quotes holding {what} not counted: table lacks quote identity)"
     if not quotes:
         return ""
     holding = "1 quote holds" if quotes == 1 else f"{quotes} quotes hold"
