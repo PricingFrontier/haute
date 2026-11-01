@@ -257,7 +257,11 @@ Out of scope:
   host sending the request to its sign-in), 409 (the app now runs
   another release than the one the run read) or 503 after its three tries (still busy, or its
   quotes closed), from production or from staging, while listing, opening or pricing; so does
-  a quotes page production does not answer with 200. Any other answer is the quote's. A quote
+  a quotes page production does not answer with 200, and a 200 that is not the route's
+  answer (a release without its id, a page of quotes without its list, a quote opened
+  without its values, a pricing without its tables), which never reads as values left
+  empty. The quotes listed before a run stops are reported, not compared. Any other
+  answer is the quote's. A quote
   production cannot open (other than gone, 404, which is not compared) or price is left out
   of the comparison, counted. A quote production prices and staging answers 422 is named as
   refused by the release (its Workbench Input refuses the values: a text in a column the
@@ -282,7 +286,8 @@ Out of scope:
   the head of the report, never against each quote. A field an answer leaves out is empty. A
   one-row table's row is compared column by column. A many-row table's rows are matched by
   the columns both releases mark as its keys, each row by its key values, a row only one side
-  holds named as added or removed; when the two releases mark no key in common, rows are
+  holds named as added or removed, a number in a key matched by its value (`1` is `1.0`,
+  and true is no number); when the two releases mark no key in common, rows are
   matched by position when the two answers hold as many rows. A number (an integer or a
   decimal, not true or false) has moved when it differs from production's by more than a
   millionth of a percent of it, or, from zero, by anything; any other value, an empty one

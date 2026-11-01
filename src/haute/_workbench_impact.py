@@ -21,7 +21,7 @@ import math
 import urllib.parse
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, TypeGuard
 
 from haute import _workbench_rollout as rollouts
 from haute._workbench_config import WorkbenchError
@@ -313,11 +313,20 @@ def _keyed(
         empty = [column for column, value in zip(keys, key, strict=True) if value is None]
         if empty:
             return f"a row of {table} on {side} leaves its key {', '.join(empty)} empty"
-        hashable = tuple(json.dumps(value, sort_keys=True) for value in key)
+        hashable = tuple(_key_value(value) for value in key)
         if hashable in keyed:
             return f"{table} on {side} holds the key {_key_label(keys, key)} twice"
         keyed[hashable] = row
     return keyed
+
+
+def _key_value(value: Any) -> tuple[str, Any]:
+    """A key value as rows are matched by it: a number by its value, so a key column that
+    becomes a decimal still matches ``1`` with ``1.0``; any other value, true and false
+    included, by its JSON."""
+    if _number(value):
+        return ("number", value)
+    return ("value", json.dumps(value, sort_keys=True))
 
 
 def _key_label(keys: tuple[str, ...], values: Iterable[Any]) -> str:
@@ -419,6 +428,12 @@ class _Budget:
     clock: Clock
     deadline: float
 
+    def check(self) -> None:
+        """:class:`_OutOfTimeError` once the deadline has passed: asked before each of
+        Azure's reads and tokens, which are bounded on their own."""
+        if self.clock.now() >= self.deadline:
+            raise _OutOfTimeError
+
     def ask(self, call: Callable[[], HttpAnswer]) -> HttpAnswer:
         """*call*'s answer, asked again after a busy app's wait (503), :data:`BUSY_TRIES`
         tries in all; :class:`_OutOfTimeError` when the deadline passes before a try or would
@@ -456,6 +471,7 @@ def _side(environment: str, host: AppReader, state: AppState, get: Fetch, budget
             f"{environment}'s app takes no requests at a public address signed in through "
             "Microsoft Entra ID: the impact prices quotes through it."
         )
+    budget.check()
     signed = {"Authorization": f"Bearer {host.token(state.client_id)}"}
     base = f"https://{state.address}"
     release = budget.ask(lambda: get(f"{base}/api/app/release", signed))
@@ -465,6 +481,10 @@ def _side(environment: str, host: AppReader, state: AppState, get: Fetch, budget
             f"{_reason(release)}."
         )
     body = _body(release)
+    if not _named(body.get("id")) or not _named(body.get("form_revision")):
+        raise ImpactError(
+            f"{environment}'s app answered its release without an id and a form revision."
+        )
     quotes = body.get("quotes")
     if not isinstance(quotes, Mapping) or quotes.get("open") is not True:
         message = quotes.get("message") if isinstance(quotes, Mapping) else None
@@ -480,17 +500,23 @@ def _side(environment: str, host: AppReader, state: AppState, get: Fetch, budget
         environment=environment,
         address=state.address,
         token=signed["Authorization"].removeprefix("Bearer "),
-        release=str(body.get("id") or ""),
-        form_revision=str(body.get("form_revision") or ""),
+        release=body["id"],
+        form_revision=body["form_revision"],
         form=document,
         commit=recorded.commit if recorded is not None else None,
     )
 
 
-def _listed(side: Side, sample: int, get: Fetch, budget: _Budget) -> list[tuple[str, int]]:
+def _named(value: Any) -> TypeGuard[str]:
+    return isinstance(value, str) and bool(value)
+
+
+def _listed(
+    side: Side, sample: int, get: Fetch, budget: _Budget, listed: list[tuple[str, int]]
+) -> None:
     """Production's final quotes, archived ones left out, newest saved first, *sample* at
-    most, by reference and option."""
-    listed: list[tuple[str, int]] = []
+    most, by reference and option, added to *listed* page by page, so a run that stops keeps
+    those listed before it stopped."""
     cursor: str | None = None
     while len(listed) < sample:
         query = {
@@ -506,15 +532,19 @@ def _listed(side: Side, sample: int, get: Fetch, budget: _Budget) -> list[tuple[
         if answer.status != 200:
             raise ImpactError(f"prod's app listed its quotes with {_reason(answer)}.")
         body = _body(answer)
-        for quote in body.get("quotes") or []:
+        page = body.get("quotes")
+        cursor = body.get("next_cursor")
+        if not isinstance(page, list) or not (cursor is None or isinstance(cursor, str)):
+            raise ImpactError("prod's app answered a page of its quotes without its list.")
+        for quote in page:
             reference = quote.get("reference") if isinstance(quote, Mapping) else None
             option = quote.get("option") if isinstance(quote, Mapping) else None
-            if isinstance(reference, str) and isinstance(option, int):
+            if not _named(reference) or not isinstance(option, int) or isinstance(option, bool):
+                raise ImpactError("prod's app listed a quote without its reference and option.")
+            if len(listed) < sample:
                 listed.append((reference, option))
-        cursor = body.get("next_cursor")
-        if not isinstance(cursor, str) or not cursor:
+        if not cursor:
             break
-    return listed[:sample]
 
 
 def _checked(side: Side, answer: HttpAnswer) -> HttpAnswer:
@@ -532,9 +562,18 @@ def _priced(side: Side, values: Any, send: Post, budget: _Budget) -> HttpAnswer:
     return _checked(side, budget.ask(lambda: send(side.url("/api/app/price"), side.signed(), body)))
 
 
-def _tables(answer: HttpAnswer) -> Mapping[str, Any]:
+def _tables(side: Side, answer: HttpAnswer) -> Mapping[str, Any]:
+    """A pricing's tables as the price route answers them, each a row or a list of rows; a
+    200 that holds none stops the run, rather than reading as every value left empty."""
     tables = _body(answer).get("tables")
-    return tables if isinstance(tables, Mapping) else {}
+    if isinstance(tables, Mapping) and all(
+        rows is None
+        or isinstance(rows, Mapping)
+        or (isinstance(rows, list) and all(isinstance(row, Mapping) for row in rows))
+        for rows in tables.values()
+    ):
+        return tables
+    raise _StoppedError(f"{side.environment}'s app answered a pricing without its tables.")
 
 
 def _quote(
@@ -555,6 +594,8 @@ def _quote(
     if opened.status != 200:
         return QuoteImpact(reference, option, "baseline_failed", reason=_quote_reason(opened))
     values = _body(opened).get("values")
+    if not isinstance(values, Mapping):
+        raise _StoppedError("prod's app answered a quote it opened without its values.")
     before = _priced(baseline, values, send, budget)
     if before.status != 200:
         return QuoteImpact(reference, option, "baseline_failed", reason=_quote_reason(before))
@@ -563,7 +604,7 @@ def _quote(
         return QuoteImpact(reference, option, "refused", reason=_quote_reason(after))
     if after.status != 200:
         return QuoteImpact(reference, option, "failed", reason=_quote_reason(after))
-    compared = compare_quote(fields, _tables(before), _tables(after))
+    compared = compare_quote(fields, _tables(baseline, before), _tables(candidate, after))
     if compared.why is not None:
         return QuoteImpact(reference, option, "no_longer_compares", reason=compared.why)
     outcome: Outcome = "moved" if compared.moves else "unchanged"
@@ -587,6 +628,8 @@ class _Run:
     why: str | None = None
     listed: list[tuple[str, int]] = field(default_factory=list)
     fields: SharedFields | None = None
+    #: Whether the sample is listed whole: time running out before is a stop.
+    listed_all: bool = False
     quotes: list[QuoteImpact] = field(default_factory=list)
     timed_out: bool = False
 
@@ -635,7 +678,7 @@ def impact(
     try:
         _measure(run, baseline, candidate, say, get, send, budget)
     except _OutOfTimeError:
-        if run.verdict == "compared" and run.listed:
+        if run.verdict == "compared" and run.listed_all:
             run.timed_out = True
         else:
             run.verdict, run.why = "stopped", "the impact ran out of time before it priced a quote"
@@ -653,7 +696,9 @@ def _measure(
     send: Post,
     budget: _Budget,
 ) -> None:
+    budget.check()
     production_state = baseline.state()
+    budget.check()
     staging = _side("staging", candidate, candidate.state(), get, budget)
     run.candidate = Released("staging", staging.release, staging.commit)
     say(f"  ✓ staging runs release {staging.release}")
@@ -674,7 +719,8 @@ def _measure(
         run.verdict = "same_release"
         return
     run.fields = fields = shared_fields(production.form, staging.form)
-    run.listed = _listed(production, run.sample, get, budget)
+    _listed(production, run.sample, get, budget, run.listed)
+    run.listed_all = True
     if not run.listed:
         run.verdict, run.why = "no_baseline", "production holds no final quote"
         return

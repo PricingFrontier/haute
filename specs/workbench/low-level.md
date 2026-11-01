@@ -1338,7 +1338,8 @@ no longer has; and `InputSource` in
     `WorkbenchError` (an `ImpactError`, or the `RolloutError` Azure's read or token raises)
     is the verdict `stopped` with its message, and the quotes listed but not reached are
     `not_compared`. Its deadline is `IMPACT_TIMEOUT_SECONDS` from its start, checked before
-    each request and before each wait; a request runs to its own bound,
+    each request, each wait and each of Azure's reads and tokens; a request runs to its
+    own bound,
     `REQUEST_TIMEOUT_SECONDS` (30), or `PRICE_REQUEST_SECONDS` (75) for `POST
     /api/app/price`, and Azure's calls to `AzureContainerApps`' own (60 a call), its
     `ClientSecretCredential` built with the client's bounds, so a token request's
@@ -1351,9 +1352,9 @@ no longer has; and `InputSource` in
 
     `impact` reads production's `state()`, then staging's, and reaches staging (`_side`): an
     app with no address or no Entra ID client ID refused, `token(client_id)`, then `GET
-    /api/app/release` signed in (200, its `quotes.open` true, else refused naming the
-    environment and the app's status and reason) and `GET /api/app/form` (200 with a
-    `form`). A production app without `RELEASE_TAG` among its tag names is `no_baseline`,
+    /api/app/release` signed in (200 naming its `id` and `form_revision`, its
+    `quotes.open` true, else refused naming the environment and the app's status and
+    reason) and `GET /api/app/form` (200 with a `form`). A production app without `RELEASE_TAG` among its tag names is `no_baseline`,
     production not reached; one with the tag and no whole `Recorded` is refused (incomplete
     record). Production is reached the same way. The same release id on both is
     `same_release`, nothing priced. Otherwise `shared_fields(prod's form, staging's form)`,
@@ -1361,7 +1362,10 @@ no longer has; and `InputSource` in
     left out, so a form another Haute version wrote reads alike), then `GET
     /api/app/quotes?view=team&stage=final&sort=saved&limit=N` on production, `N` the sample
     left and 200 at most, following `next_cursor` until the sample is listed or none is
-    left (a page answered other than 200 stops the run); none listed is `no_baseline`.
+    left, each page's quotes added to the run as it is listed, so a run that stops reports
+    them `not_compared` (a page answered other than 200, or whose `quotes` is not a list
+    of quotes each with a reference and an integer option, or whose `next_cursor` is
+    neither text nor null, stops the run); none listed is `no_baseline`.
 
     Each listed quote in order: `GET /api/app/quotes/{reference}/{option}` on production
     (the reference percent-encoded) for its `values`, then `POST /api/app/price` with
@@ -1372,14 +1376,17 @@ no longer has; and `InputSource` in
     `baseline_failed`. Production's pricing other than 200 is `baseline_failed`; staging's
     422 is `refused` and any other but 200 `failed`, each with a reason that is the status
     and what it means (413 too large, 422 values refused, 500 the pipeline failed, 504 too
-    long, 507 too much memory; otherwise the app's own error), never the answer's body. Both
-    200 is `compare_quote(fields, prod's tables, staging's tables)`: `moved`, `unchanged` or
-    `no_longer_compares`.
+    long, 507 too much memory; otherwise the app's own error), never the answer's body. An
+    open answered 200 without a `values` object, or a pricing answered 200 whose `tables`
+    is not an object of tables, each a row, a list of rows or null, stops the run naming
+    the app. Both 200 is `compare_quote(fields, prod's tables, staging's tables)`:
+    `moved`, `unchanged` or `no_longer_compares`.
 
     `compare_quote` takes each shared table's rows from an answer's `tables` by name (a
     table left out holds no rows; a row a column is left out of holds it empty). A one-row
     table compares its first rows, an absent one as empty. A many-row table with shared keys
-    keys each side's rows by the tuple of their key values, a key value null (`a row ...
+    keys each side's rows by the tuple of their key values, a number by its value (`1` and
+    `1.0` one key; true and false never numbers), a key value null (`a row ...
     leaves its key ... empty`) or held twice (`... holds the key ... twice`) answering why
     the quote no longer compares; matched rows compare column by column, a key only one side
     holds is a `Move` with no column (`before`, `after`: whether production and staging hold
@@ -2410,12 +2417,16 @@ no longer has; and `InputSource` in
   form revision and the values unchanged; busy answers retried after a capped wait,
   stopping the run after `BUSY_TRIES`; production answering 0, 401, 409, 503 or a redirect
   to its sign-in mid-run (its release changed after the run read it) stopping the run with the report written and
-  the quotes left not compared; `shared_fields` over tables and columns added, removed and
+  the quotes left not compared; a later page of quotes failing, the quotes listed before
+  it kept not compared; a page of quotes, a release, an opened quote or a pricing
+  answered 200 in another shape stopping the run; time running out before production's
+  token, which is never asked for; `shared_fields` over tables and columns added, removed and
   kept, a table one release has one row per quote and the other many reshaped in both
   directions (a many-row answer of one row included), keys marked on one side alone
   ignored; `compare_quote` on a one-row table, a many-row table matched by key with rows
   added and removed, rows matched by position, counts that differ, a key held twice and a
-  key empty, numbers within and beyond the tolerance, from zero, a bool never a number and
+  key empty, a numeric key written whole on one side and decimal on the other matched,
+  true never the key 1, numbers within and beyond the tolerance, from zero, a bool never a number and
   an empty value against a value; production failing a quote left out, staging refusing
   one named, staging failing one exiting 1 with the report written beside the quotes that
   compared; the deadline passing during a request and during a wait, leaving quotes not

@@ -426,6 +426,87 @@ def test_production_failing_mid_run_stops_the_run_and_the_report_is_written(
     assert "`Q-000003/1`: the run stopped" in text
 
 
+def test_quotes_listed_before_a_later_page_fails_are_kept_not_compared() -> None:
+    apps = _apps(count=300)
+    query = "/api/app/quotes?view=team&stage=final&sort=saved&limit=200"
+    first = apps.prod.answer("GET", query, None)
+    apps.prod.asked.clear()
+    apps.prod.queued["/api/app/quotes"] = [first, _refused(500, "boom")]
+
+    report = _run(apps, sample=250)
+
+    assert (report.verdict, report.listed) == ("stopped", 200)
+    assert {quote.outcome for quote in report.quotes} == {"not_compared"}
+    assert len(report.quotes) == 200
+    assert apps.prod.priced() == []
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        {"quotes": "Q-000001"},
+        {"quotes": [{"reference": "Q-000001"}]},
+        {"quotes": [{"reference": "Q-000001", "option": True}]},
+        {"quotes": [], "next_cursor": 200},
+    ],
+    ids=["no-list", "no-option", "option-not-a-number", "cursor-not-text"],
+)
+def test_a_page_of_quotes_in_an_unknown_shape_stops_the_run(page: dict[str, Any]) -> None:
+    apps = _apps()
+    apps.prod.queued["/api/app/quotes"] = [_ok(page)]
+
+    report = _run(apps)
+
+    assert report.verdict == "stopped"
+    assert "prod's app" in str(report.why)
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        HttpAnswer(200, b"<html>signed out</html>"),
+        _ok({"request": {}}),
+        _ok({"tables": []}),
+        _ok({"tables": {"pricing_output": "500"}}),
+        _ok({"tables": {"pricing_output": [500.0]}}),
+    ],
+    ids=["not-json", "no-tables", "tables-a-list", "rows-text", "row-not-a-row"],
+)
+@pytest.mark.parametrize("which", ["prod", "staging"])
+def test_a_pricing_answered_without_its_tables_stops_the_run(
+    answer: HttpAnswer, which: str
+) -> None:
+    apps = _apps(count=2)
+    getattr(apps, which).queued["/api/app/price"] = [answer]
+
+    report = _run(apps)
+
+    assert (report.verdict, report.passed) == ("stopped", False)
+    assert report.why == f"{which}'s app answered a pricing without its tables."
+    assert [quote.outcome for quote in report.quotes] == ["not_compared"] * 2
+
+
+def test_a_quote_opened_without_its_values_stops_the_run() -> None:
+    apps = _apps(count=1)
+    apps.prod.queued["/api/app/quotes/Q-000001/1"] = [_ok({"quote": {}})]
+
+    report = _run(apps)
+
+    assert report.verdict == "stopped"
+    assert report.why == "prod's app answered a quote it opened without its values."
+    assert apps.prod.priced() == []
+
+
+def test_a_release_answered_without_its_id_stops_the_run() -> None:
+    apps = _apps()
+    apps.staging.queued["/api/app/release"] = [_ok({"quotes": {"open": True}})]
+
+    report = _run(apps)
+
+    assert report.verdict == "stopped"
+    assert report.why == "staging's app answered its release without an id and a form revision."
+
+
 def test_a_quotes_page_production_does_not_answer_stops_the_run() -> None:
     apps = _apps()
     apps.prod.queued["/api/app/quotes"] = [_refused(500, "boom")]
@@ -551,6 +632,26 @@ def test_time_running_out_before_the_quotes_are_listed_stops_the_run() -> None:
 # ── The fields compared ───────────────────────────────────────────────────
 
 
+def test_time_running_out_before_productions_token_asks_azure_for_none() -> None:
+    apps = _apps()
+    clock = FakeClock()
+    real = apps.staging.answer
+
+    def slow(method: str, path: str, body: Any) -> HttpAnswer:
+        if path.startswith("/api/app/form"):
+            clock.t = IMPACT_TIMEOUT_SECONDS
+        return real(method, path, body)
+
+    apps.staging.answer = slow  # type: ignore[method-assign]
+    production = FakeHost(PROD)
+
+    report = _run(apps, prod=production, clock=clock)
+
+    assert report.verdict == "stopped"
+    assert production.tokens == 0
+    assert apps.prod.asked == []
+
+
 def test_shared_fields_are_those_both_releases_name_with_the_same_rows() -> None:
     production = _form(
         _table("pricing_output", ["premium", "commission"]),
@@ -625,6 +726,21 @@ def test_a_many_row_table_matches_rows_by_key_and_names_rows_added_and_removed()
         Move("schedule", "item=a", "rate", 1.0, 1.5),
         Move("schedule", "item=b", None, True, False),
         Move("schedule", "item=c", None, False, True),
+    )
+
+
+def test_a_numeric_key_matches_whether_it_is_written_whole_or_decimal() -> None:
+    compared = compare_quote(
+        KEYED,
+        {"schedule": [{"item": 1, "rate": 100.0}, {"item": True, "rate": 1.0}]},
+        {"schedule": [{"item": 1.0, "rate": 125.0}, {"item": 2, "rate": 1.0}]},
+    )
+
+    assert compared.moves == (
+        Move("schedule", "item=1", "rate", 100.0, 125.0),
+        # True is no number: its row is not the row keyed 1.
+        Move("schedule", "item=True", None, True, False),
+        Move("schedule", "item=2", None, False, True),
     )
 
 
