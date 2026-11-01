@@ -681,7 +681,7 @@ def apply_scoped_node_save(
         config = validate_node_config(
             target.node_type, deepcopy(request.config), require_complete=False
         )
-    except ValueError as exc:
+    except (ValueError, ConfigError) as exc:
         raise _unsupported(f"The proposed settings are not loadable: {exc}") from exc
     edits = _reset_node(
         root,

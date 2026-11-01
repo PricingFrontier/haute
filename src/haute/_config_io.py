@@ -377,7 +377,7 @@ def find_config_by_func_name(
         if candidate.is_file():
             try:
                 config = _normalise_loaded_config(_load_json_object(candidate), node_type)
-            except (json.JSONDecodeError, OSError, ValueError) as exc:
+            except (json.JSONDecodeError, OSError, ValueError, ConfigError) as exc:
                 logger.warning(
                     "config_recovery_failed",
                     func=func_name,

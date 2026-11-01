@@ -282,7 +282,9 @@ form stays saveable, because refusing to save unfinished work is worse than the 
 error; one without is refused with a 400 naming the node and the setting, before anything is
 written. The node-scoped save runs the same validator on the proposed config and keeps its own
 refusal: a 409 `repair_action_unsupported` saying the proposed settings are not loadable, with
-nothing written.
+nothing written, whether the validator raises a `ValueError` or a `ConfigError` (a Model Score
+naming both a version and an alias, Optimiser analysis columns that include the quote id or
+use the reserved prefix).
 
 | Node type | Required setting | Incomplete form | At save |
 |---|---|---|---|

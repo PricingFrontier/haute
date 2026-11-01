@@ -14,6 +14,7 @@ import pytest
 
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._pipeline_repair import PipelineRepairError
+from haute._types import NodeType
 
 BROKEN_INPUT = {
     "inputType": "file",
@@ -473,4 +474,76 @@ def test_scoped_save_refuses_an_undeclared_key_without_writing(
     assert detail["code"] == "node_config_undeclared_keys"
     assert detail["unrecognized_config_keys"] == ["legacyFlag"]
     assert authored_id in detail["message"]
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+
+
+@pytest.mark.parametrize(
+    ("node_type", "change", "message"),
+    [
+        pytest.param(
+            NodeType.MODEL_SCORE,
+            {"version": "3", "alias": "champion"},
+            "both a version and an alias",
+            id="model-score-version-and-alias",
+        ),
+        pytest.param(
+            NodeType.OPTIMISER,
+            {"analysis_columns": ["quote_id"]},
+            "quote_id",
+            id="optimiser-analysis-quote-id",
+        ),
+        pytest.param(
+            NodeType.OPTIMISER,
+            {"analysis_columns": ["__haute_rank"]},
+            "reserved '__haute_' prefix",
+            id="optimiser-analysis-reserved-prefix",
+        ),
+    ],
+)
+def test_scoped_save_refuses_a_config_error_as_not_loadable(
+    client, monkeypatch, tmp_path, node_type, change, message
+):
+    """A setting the validator refuses with a ``ConfigError`` (not a ``ValueError``)
+    gets the same structured not-loadable refusal, never an unhandled 500."""
+    from haute._config_io import config_path_for_node, node_config_json, palette_default_config
+    from haute._types import NODE_TYPE_TO_DECORATOR
+
+    config = palette_default_config(node_type)
+    if node_type is NodeType.MODEL_SCORE:
+        config["registered_model"] = "motor"
+    sidecar = config_path_for_node(node_type, "target").as_posix()
+    decorator = NODE_TYPE_TO_DECORATOR[node_type]
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    # A broken sibling makes the document degraded, where the scoped save applies.
+    (tmp_path / "main.py").write_text(
+        "import haute\n"
+        'pipeline = haute.Pipeline("demo")\n'
+        f'@pipeline.{decorator}(config="{sidecar}")\ndef target(): ...\n'
+        '@pipeline.data_input(config="a.json")\ndef source_a(): ...\n'
+    )
+    (tmp_path / "a.json").write_text(json.dumps(BROKEN_INPUT))
+    (tmp_path / sidecar).parent.mkdir(parents=True)
+    (tmp_path / sidecar).write_text(node_config_json(node_type, config, node_label="target"))
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    target = next(node for node in document.nodes if node.authored_id == "target")
+    assert target.scoped_editable is True
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+
+    response = client.post(
+        "/api/pipeline/node/save",
+        json={
+            "source_file": document.source_file,
+            "source_revision": document.source_revision,
+            "target_source_file": target.source_file,
+            "target_recovery_id": target.recovery_id,
+            "config": {**(target.config or {}), **change},
+        },
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "repair_action_unsupported"
+    assert "not loadable" in detail["message"]
+    assert message in detail["message"]
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before

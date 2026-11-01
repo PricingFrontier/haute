@@ -764,6 +764,27 @@ class TestFindConfigByFuncName:
         p.write_text("{not valid json", encoding="utf-8")
         assert find_config_by_func_name("bad", tmp_path) is None
 
+    @pytest.mark.parametrize(
+        ("folder", "content"),
+        [
+            pytest.param("banding", b'{"factors": "\xff"}', id="invalid-utf8"),
+            pytest.param("optimisation", b'{"scored_input": "scored"}', id="removed-key"),
+            pytest.param("workbench_input", b'{"tables": []}', id="form-given-key"),
+        ],
+    )
+    def test_returns_none_for_a_config_error(self, tmp_path, folder, content):
+        """A sidecar the loader refuses with a ``ConfigError`` (not a ``ValueError``)
+        is logged as a failed recovery, like invalid JSON, instead of raising."""
+        import structlog
+
+        p = tmp_path / "config" / folder / "bad.json"
+        p.parent.mkdir(parents=True)
+        p.write_bytes(content)
+        with structlog.testing.capture_logs() as logs:
+            assert find_config_by_func_name("bad", tmp_path) is None
+        assert [entry["event"] for entry in logs] == ["config_recovery_failed"]
+        assert logs[0]["path"] == str(p)
+
 
 # ---------------------------------------------------------------------------
 # config_path_for_node edge cases
