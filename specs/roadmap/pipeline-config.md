@@ -20,7 +20,6 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 | PCFG-R19 | Planned | P3 | The file-to-recovery-graph pass is written once, for a pipeline file and a submodel file alike. |
 | PCFG-R21 | Planned | P1 | A parse/save round trip preserves supported keyword-only bindings or refuses an unsupported signature before losing it. |
 | PCFG-R23 | Planned | P3 | Resetting (`_reset_node`) or code-mode saving (`apply_scoped_node_save`) a stepped Polars node appends a `RepairArtifactEdit(after=None)` deletion for an exclusively owned `config/polars/<name>.json` sidecar resolved via `_resolve_config_reference`. |
-| PCFG-R24 | Planned | P2 | `create_submodel` passes `_parent_path.parent` instead of `pipeline_dir()` to `_refuse_new_name_violations` and `SavePipelineService.validate_new_module_files`. |
 
 `PCFG-R04` to `PCFG-R09` come from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md);
@@ -313,25 +312,3 @@ resolved path, and restores the file if the repair transaction rolls back.
 `src/haute/_pipeline_repair_actions.py::apply_scoped_node_save`;
 `src/haute/_pipeline_repair.py::_resolve_config_reference`;
 `src/haute/_pipeline_repair.py::_commit_repair_plan`.
-
-### PCFG-R24 — Anchor `create_submodel` validation to `_parent_path.parent` instead of `pipeline_dir()`
-**Why:** `routes/submodel.py::create_submodel` is an in-memory graph transformation
-route that validates `body.source_file` into `_parent_path`, yet lines 210–220 pass
-`pipeline_root=pipeline_dir()` instead of `_parent_path.parent` to both
-`_refuse_new_name_violations` and
-`SavePipelineService(project_root=project_root, pipeline_root=pipeline_dir()).validate_new_module_files([result.sm_file])`.
-When `body.source_file` is in a directory other than `pipeline_dir()`, name-violation
-checks and the no-clobber check for `modules/<name>.py` run against `pipeline_dir()`
-instead of `_parent_path.parent`.
-
-**Plan:** Pass `pipeline_root=_parent_path.parent` to `_refuse_new_name_violations`
-and `SavePipelineService(..., pipeline_root=_parent_path.parent)` in `create_submodel`.
-
-**Acceptance:** Calling `POST /api/submodel/create` when `body.source_file` is outside
-`pipeline_dir()` validates name violations and `modules/<name>.py` collisions against
-`_parent_path.parent` rather than `pipeline_dir()`.
-
-**Dependencies:** Coordinates with `PCFG-R04` (one project context).
-
-**Evidence:** `src/haute/routes/submodel.py::create_submodel`;
-`src/haute/routes/_save_pipeline.py::SavePipelineService.validate_new_module_files`.
