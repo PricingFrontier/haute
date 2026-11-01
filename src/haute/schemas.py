@@ -3043,6 +3043,30 @@ class TableListResponse(BaseModel):
     tables: list[TableItem]
 
 
+class DatabricksConnectionResponse(BaseModel):
+    """How the server signs in to Databricks, from its environment alone.
+
+    Never the host and never a secret: ``profile`` is a name the user chose, and
+    ``sdk_auth_type`` the SDK's name for the sign-in (``databricks-cli``,
+    ``external-browser``). ``detail`` says what is missing when not configured.
+    """
+
+    configured: bool
+    auth_mode: Literal["pat", "service_principal", "cli_login", "browser_login", "profile", ""] = ""
+    profile: str = ""
+    sdk_auth_type: str = ""
+    detail: str = ""
+
+
+class DatabricksTestConnectionResponse(BaseModel):
+    """The outcome of signing in and asking the workspace who haute is."""
+
+    ok: bool
+    identity: str = ""
+    sdk_auth_type: str = ""
+    detail: str = ""
+
+
 # ---------------------------------------------------------------------------
 # /api/json-cache/infer
 # ---------------------------------------------------------------------------

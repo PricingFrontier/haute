@@ -294,6 +294,29 @@ export interface TableItem {
   name: string;
   table_type: string;
 }
+/**
+ * How the server signs in to Databricks, from its environment alone.
+ *
+ * Never the host and never a secret: ``profile`` is a name the user chose, and
+ * ``sdk_auth_type`` the SDK's name for the sign-in (``databricks-cli``,
+ * ``external-browser``). ``detail`` says what is missing when not configured.
+ */
+export interface DatabricksConnectionResponse {
+  auth_mode: 'pat' | 'service_principal' | 'cli_login' | 'browser_login' | 'profile' | '';
+  configured: boolean;
+  detail: string;
+  profile: string;
+  sdk_auth_type: string;
+}
+/**
+ * The outcome of signing in and asking the workspace who haute is.
+ */
+export interface DatabricksTestConnectionResponse {
+  detail: string;
+  identity: string;
+  ok: boolean;
+  sdk_auth_type: string;
+}
 export interface EditorIdentitiesResponse {
   identities: EditorIdentityResponseNode[];
   violations: PipelineNameViolation[] | null;

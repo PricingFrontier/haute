@@ -1816,6 +1816,84 @@
       "title": "CsvImport",
       "type": "object"
     },
+    "DatabricksConnectionResponse": {
+      "description": "How the server signs in to Databricks, from its environment alone.\n\nNever the host and never a secret: ``profile`` is a name the user chose, and\n``sdk_auth_type`` the SDK's name for the sign-in (``databricks-cli``,\n``external-browser``). ``detail`` says what is missing when not configured.",
+      "properties": {
+        "auth_mode": {
+          "default": "",
+          "enum": [
+            "pat",
+            "service_principal",
+            "cli_login",
+            "browser_login",
+            "profile",
+            ""
+          ],
+          "title": "Auth Mode",
+          "type": "string"
+        },
+        "configured": {
+          "title": "Configured",
+          "type": "boolean"
+        },
+        "detail": {
+          "default": "",
+          "title": "Detail",
+          "type": "string"
+        },
+        "profile": {
+          "default": "",
+          "title": "Profile",
+          "type": "string"
+        },
+        "sdk_auth_type": {
+          "default": "",
+          "title": "Sdk Auth Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "configured",
+        "auth_mode",
+        "profile",
+        "sdk_auth_type",
+        "detail"
+      ],
+      "title": "DatabricksConnectionResponse",
+      "type": "object"
+    },
+    "DatabricksTestConnectionResponse": {
+      "description": "The outcome of signing in and asking the workspace who haute is.",
+      "properties": {
+        "detail": {
+          "default": "",
+          "title": "Detail",
+          "type": "string"
+        },
+        "identity": {
+          "default": "",
+          "title": "Identity",
+          "type": "string"
+        },
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "sdk_auth_type": {
+          "default": "",
+          "title": "Sdk Auth Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ok",
+        "identity",
+        "sdk_auth_type",
+        "detail"
+      ],
+      "title": "DatabricksTestConnectionResponse",
+      "type": "object"
+    },
     "DispersionEstimateResponse": {
       "properties": {
         "job_id": {
@@ -19291,6 +19369,12 @@
     "CatalogListResponse": {
       "$ref": "#/$defs/CatalogListResponse"
     },
+    "DatabricksConnectionResponse": {
+      "$ref": "#/$defs/DatabricksConnectionResponse"
+    },
+    "DatabricksTestConnectionResponse": {
+      "$ref": "#/$defs/DatabricksTestConnectionResponse"
+    },
     "DispersionEstimateResponse": {
       "$ref": "#/$defs/DispersionEstimateResponse"
     },
@@ -19649,6 +19733,8 @@
     "CatalogListResponse",
     "SchemaListResponse",
     "TableListResponse",
+    "DatabricksConnectionResponse",
+    "DatabricksTestConnectionResponse",
     "MlflowDestinationsResponse",
     "MlflowSettingsResponse",
     "MlflowTestConnectionResponse",
@@ -19775,7 +19861,9 @@
       "WarehouseListResponse",
       "CatalogListResponse",
       "SchemaListResponse",
-      "TableListResponse"
+      "TableListResponse",
+      "DatabricksConnectionResponse",
+      "DatabricksTestConnectionResponse"
     ],
     "editor": [
       "EditorIdentitiesResponse",

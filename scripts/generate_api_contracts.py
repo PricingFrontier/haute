@@ -31,6 +31,8 @@ from haute.schemas import (
     CacheNodesResponse,
     CacheUsageResponse,
     CatalogListResponse,
+    DatabricksConnectionResponse,
+    DatabricksTestConnectionResponse,
     DispersionEstimateResponse,
     DispersionEstimateStatusResponse,
     EditorIdentitiesResponse,
@@ -185,6 +187,8 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         CatalogListResponse,
         SchemaListResponse,
         TableListResponse,
+        DatabricksConnectionResponse,
+        DatabricksTestConnectionResponse,
     ),
     "mlflow": (
         MlflowDestinationsResponse,
