@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from haute._column_lineage import _literal_column_name, _referenced_columns
+from haute._column_lineage import SELECT_METHODS, column_free_select_argument
 from haute._polars_call_shapes import (
     is_literal_collection,
     is_literal_scalar,
@@ -28,65 +28,14 @@ from haute._polars_operations import (
     OperationReceiver,
     chunk_admitted_names,
 )
-from haute._polars_selectors import literal_selector, selector_root
+from haute._polars_selectors import literal_selector
 
 __all__ = [
-    "SELECT_METHODS",
     "ChunkLocalDecision",
     "classify_chunk_local_polars_code",
     "classify_row_local_expression",
-    "column_free_select_argument",
     "is_chunk_local_polars_code",
 ]
-
-SELECT_METHODS = frozenset({"select", "select_seq"})
-
-
-def _reads_a_named_column(argument: ast.expr, *, positional: bool) -> bool:
-    """Whether a selection argument reads one column by its literal name.
-
-    A bare string is a column name in a selection, positionally or as a named
-    expression, and so is each string of a positional list. Inside an expression,
-    the column-lineage walk names the columns ``pl.col`` and the helpers that read
-    strings as columns refer to. ``*`` and ``^...$`` are selector syntax, not names.
-    """
-    if _literal_column_name(argument) is not None:
-        return True
-    if positional and isinstance(argument, ast.List | ast.Tuple):
-        return any(_literal_column_name(element) is not None for element in argument.elts)
-    return bool(_referenced_columns(argument))
-
-
-def column_free_select_argument(
-    call: ast.Call, *, selector_aliases: frozenset[str] = frozenset()
-) -> ast.expr | None:
-    """The first argument that stops a selection keeping its input's rows, or None.
-
-    The caller has already proven every argument row-local. A selection then emits
-    one row per input row when one argument reads a column by name: that column has
-    the frame's height (or the read fails) and every other argument broadcasts to it.
-    Without one, a selection keeps the rows only when every argument starts from a
-    selector, which expands to columns of the frame's height or to no column at all.
-    A literal emits one row whatever the input height, so beside nothing but
-    selectors (which may match nothing) or alone it is the blocker: written a slice at
-    a time it would give one row per slice, and a deployed batch one row in all.
-    """
-    arguments = [
-        *((argument, True) for argument in call.args),
-        *((keyword.value, False) for keyword in call.keywords),
-    ]
-    if any(
-        _reads_a_named_column(argument, positional=positional) for argument, positional in arguments
-    ):
-        return None
-    for argument, _positional in arguments:
-        if (
-            literal_selector(argument, aliases=selector_aliases) is None
-            and selector_root(argument, aliases=selector_aliases) is None
-        ):
-            return argument
-    return None
-
 
 # ---------------------------------------------------------------------------
 # Chunk-local user-code whitelist (PATH_TO_HIGHEST_STANDARD §A3).

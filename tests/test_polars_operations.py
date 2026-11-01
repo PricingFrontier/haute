@@ -367,6 +367,25 @@ def test_windows_neighbouring_rows_and_whole_column_bins_are_the_boundary_expres
     }
 
 
+def test_the_deprecated_binning_spellings_are_registered_as_what_they_compute() -> None:
+    """``cut`` labels each value from fixed breaks; ``qcut`` needs the whole column's
+    quantiles. Neither is chunk-proven or memory-measured, and only ``cut`` is row-local."""
+    cut = operation(OperationReceiver.EXPR, "cut")
+    qcut = operation(OperationReceiver.EXPR, "qcut")
+    assert cut is not None and qcut is not None
+    assert cut.operation_class is OperationClass.ROW_LOCAL and not cut.chunk_admitted
+    assert qcut.operation_class is OperationClass.FAN_IN_STATEFUL
+    assert qcut.policy is OperationPolicy.STREAMING
+    assert (cut.memory_evidence, qcut.memory_evidence) == ("none", "none")
+
+    assert classify_row_local_expression("pl.col('a').cut([1.0, 2.0])").eligible
+    banded = classify_row_local_expression("pl.col('a').qcut(4)")
+    assert not banded.eligible and banded.blocking_operator == "qcut"
+    assert not classify_chunk_local_polars_code(
+        "df = df.with_columns(b=pl.col('a').cut([1.0]))", frame_names=("df",)
+    ).eligible
+
+
 def test_expression_namespace_names_are_polars_expression_namespaces() -> None:
     import polars as pl
 

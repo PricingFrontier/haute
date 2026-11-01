@@ -218,7 +218,12 @@
   `pl.int_range(pl.len() + 100)` (a hundred rows more than the input from a
   `select`), `pl.int_range(pl.len(), 100)`, `pl.int_range(0, pl.len() - 1)`, a
   literal-only range, any keyword argument (`step`, `dtype`), and any other bound
-  expression keep the constructor's `row_expansion_unbounded` verdict. Cardinality analysis
+  expression keep the constructor's `row_expansion_unbounded` verdict. `pl.lit` is
+  allow-listed, but `pl.lit` of anything but a literal scalar or list (a preamble Series,
+  say) is `row_expansion_unbounded` in a `select` that may not keep its rows by the chunk
+  classifier's rule (`column_free_select_argument`): there it takes the Series' length,
+  while beside a column read by name, or in `with_columns`, it must match the frame's
+  height or be one row. Cardinality analysis
   shares the lineage parser but never an input schema,
   so it cannot resolve an omitted `on` list from upstream columns.
 - **Available RAM** (`_host_memory.available_ram_bytes`) — reads
@@ -1981,7 +1986,16 @@ present a structural or schema result as execution evidence.
   `join`, `join_asof`, `top_k`, `bottom_k`, `reverse`, `shift`, `explode`) — plus
   `materialising_expression_methods()` (`over`, `shift`, `diff`, `pct_change`,
   `bin_quantiles`, `bin_ranks`, `approx_quantile`),
-  matched receiver-aware in evaluation order. Every entry also carries
+  matched receiver-aware in evaluation order, in Polars nodes' code only. A canvas Edge Join
+  is not a planner boundary: its join is bounded by capture (a seed plan captures it into a
+  shared snapshot through its `JoinRecipe`) and by the chunked writer, which writes it in
+  keyed parts; an execution that captures nothing (caching off, deploy scoring) runs it as
+  Polars' streaming join under the run's admission. Making it a boundary would put every
+  deployed lookup join through an estimate, and refuse one whose estimate is unavailable on a
+  host without a hard cap (a Constant's cross join reports `target_schema_unavailable`).
+  Polars 2's deprecated binning spellings are registered as what they compute and run on
+  its in-memory engine only: `cut` (`bin_intervals`' alias) as row-local without a chunk
+  proof, `qcut` (`bin_quantiles`') as fan-in with an inherited, unmeasured streaming policy. Every entry also carries
   `costly_to_recompute: bool` and `slice_transparent: bool`. Class defaults are that
   `row_local` and `row_expanding` default cheap, while `order_dependent`, `fan_in_stateful`,
   and `opaque` entries must declare their cost explicitly, and construction raises for any
@@ -2245,7 +2259,8 @@ present a structural or schema result as execution evidence.
   inventory requires a chunked-equals-full proof per declared shape, comparing raised
   exception classes as well as frames. A frame-level `select` (or `select_seq`) whose
   arguments are all row-local is admitted only when it keeps its input's rows
-  (`column_free_select_argument`): one argument reads a column by its literal name (a bare
+  (`_column_lineage.column_free_select_argument`, the one rule the deploy request-row proof
+  and the cardinality analysis share): one argument reads a column by its literal name (a bare
   string, positionally or as a named expression, a positional list of them, or a
   `pl.col`/horizontal-helper name inside an expression, never `*` or `^...$`), or every
   argument starts from a selector (which expands to columns of the frame's height or to
@@ -3037,6 +3052,10 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   **`test_training_memory_safety.py`** — exercise `_execution_admission` indirectly
   through the route/service layers that construct admitted contexts for real
   operations (training, optimiser setup, deploy).
+- **`test_column_lineage.py`** — also that a column-free `select` of `pl.lit` holding a
+  non-literal is `row_expansion_unbounded` while a literal, a lit beside a named column and a
+  `with_columns` lit keep the bound; `test_polars_operations.py` that `cut` is registered
+  row-local and `qcut` fan-in, neither chunk-proven nor measured.
 - **`test_chunk_local_classifier.py`** — the retained classifiers' decision contract:
   comments and string literals cannot change eligibility, every rejection names its
   operator, closed reason, and source location (the textually first blocking construct),

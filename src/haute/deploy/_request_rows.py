@@ -27,11 +27,13 @@ import polars as pl
 from haute._api_input_schema import quote_input_reads_tables
 from haute._cardinality import normalise_join_validation
 from haute._column_lineage import (
+    SELECT_METHODS,
     LineageOperation,
     LineageOperationKind,
     _frame_chain_calls,
     _parse_program,
     _ParseFailure,
+    column_free_select_argument,
 )
 from haute._edge_join import build_edge_join_kwargs, resolve_edge_join_role_indices
 from haute._graph_utils import code_input_bindings, edge_input_name
@@ -42,11 +44,7 @@ from haute._node_builder import node_fn_name
 from haute._polars_operations import POLARS_OPERATIONS, OperationClass
 from haute._polars_selectors import preamble_selector_aliases
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
-from haute.chunking import (
-    SELECT_METHODS,
-    classify_row_local_expression,
-    column_free_select_argument,
-)
+from haute.chunking import classify_row_local_expression
 from haute.errors import DeployError, QuoteAnswerRowsError, RequestRowCountError
 
 logger = get_logger(component="deploy.request_rows")
