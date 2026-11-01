@@ -599,12 +599,15 @@ def _quote(
     before = _priced(baseline, values, send, budget)
     if before.status != 200:
         return QuoteImpact(reference, option, "baseline_failed", reason=_quote_reason(before))
+    # Production's answer is held to its shape before staging is asked: whatever staging
+    # answers, a malformed baseline stops the run.
+    baseline_tables = _tables(baseline, before)
     after = _priced(candidate, values, send, budget)
     if after.status == 422:
         return QuoteImpact(reference, option, "refused", reason=_quote_reason(after))
     if after.status != 200:
         return QuoteImpact(reference, option, "failed", reason=_quote_reason(after))
-    compared = compare_quote(fields, _tables(baseline, before), _tables(candidate, after))
+    compared = compare_quote(fields, baseline_tables, _tables(candidate, after))
     if compared.why is not None:
         return QuoteImpact(reference, option, "no_longer_compares", reason=compared.why)
     outcome: Outcome = "moved" if compared.moves else "unchanged"

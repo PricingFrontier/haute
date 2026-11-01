@@ -1378,7 +1378,8 @@ no longer has; and `InputSource` in
     and what it means (413 too large, 422 values refused, 500 the pipeline failed, 504 too
     long, 507 too much memory; otherwise the app's own error), never the answer's body. An
     open answered 200 without a `values` object, or a pricing answered 200 whose `tables`
-    is not an object of tables, each a row, a list of rows or null, stops the run naming
+    is not an object of tables, each a row, a list of rows or null (production's held so
+    before staging is asked), stops the run naming
     the app. Both 200 is `compare_quote(fields, prod's tables, staging's tables)`:
     `moved`, `unchanged` or `no_longer_compares`.
 

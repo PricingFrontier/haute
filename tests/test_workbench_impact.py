@@ -486,6 +486,23 @@ def test_a_pricing_answered_without_its_tables_stops_the_run(
     assert [quote.outcome for quote in report.quotes] == ["not_compared"] * 2
 
 
+@pytest.mark.parametrize(
+    "staged", [_refused(422, "values refused"), _refused(500, "boom")], ids=["refused", "failed"]
+)
+def test_a_malformed_production_pricing_stops_the_run_before_staging_is_asked(
+    staged: HttpAnswer,
+) -> None:
+    apps = _apps(count=1)
+    apps.prod.queued["/api/app/price"] = [_ok({})]
+    apps.staging.queued["/api/app/price"] = [staged]
+
+    report = _run(apps)
+
+    assert (report.verdict, report.passed) == ("stopped", False)
+    assert report.why == "prod's app answered a pricing without its tables."
+    assert apps.staging.priced() == []
+
+
 def test_a_quote_opened_without_its_values_stops_the_run() -> None:
     apps = _apps(count=1)
     apps.prod.queued["/api/app/quotes/Q-000001/1"] = [_ok({"quote": {}})]
