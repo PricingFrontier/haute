@@ -168,6 +168,16 @@ class WorkbenchConfig:
         return self.project_root / self.form
 
 
+def store_sign_in_keys(provider: str, auth: str) -> tuple[str, ...]:
+    """The keys a server environment on *provider* signed in to with *auth*, one of
+    ``STORE_SIGN_INS``, names, each the variable that holds what the sign-in needs."""
+    keys = STORE_SIGN_INS[auth]
+    if provider in ROLE_NAMED and "username_env" not in keys:
+        # The role a PostgreSQL server maps the Entra identity to, by name.
+        keys = (*keys, "username_env")
+    return keys
+
+
 def read_workbench_config(project_root: Path) -> WorkbenchConfig:
     """The ``[workbench]`` table of *project_root*'s ``haute.toml``; disabled without one.
 
@@ -282,10 +292,7 @@ def _environment(name: str, settings: dict[str, object], at: str) -> StoreEnviro
     else:
         if not isinstance(auth, str) or auth not in STORE_SIGN_INS:
             raise ValueError(f"{at}.auth must be one of {', '.join(STORE_SIGN_INS)}; got {auth!r}")
-        keys = STORE_SIGN_INS[auth]
-        if provider in ROLE_NAMED and "username_env" not in keys:
-            # The role a PostgreSQL server maps the Entra identity to, by name.
-            keys = (*keys, "username_env")
+        keys = store_sign_in_keys(provider, auth)
         optional = _OPTIONAL_SIGN_IN_KEYS.get(auth, ())
     known = {"provider", "auth", *keys, *optional}
     unknown = sorted(set(settings) - known)

@@ -103,26 +103,53 @@ Out of scope:
   file, is refused saying that the form is the pipeline folder's `workbench/` now. The
   form is the folder `workbench/` in the pipeline folder, the folder of the pipeline file
   `[project]` names (`rating/workbench/` in a new project), never configured. `haute
-  deploy`'s whole-file check of `haute.toml` accepts the table, and deploy reads the form a
+  deploy`'s whole-file check of `haute.toml` accepts the table, and deploy's resolution, which
+  `haute app build` runs, reads the form a
   pipeline's Workbench nodes take their tables from strictly, refusing one it cannot read or
-  that does not fit the pipeline ([deploy](../deploy/high-level.md)).
-  `haute init --workbench` writes the table (with `[workbench.store]` declaring `dev`,
-  `staging` and `prod`, each `sqlserver` signed in to by the hosted app's managed identity),
-  a blank form folder and `connections.toml` (a `[dev]`, `[staging]` and `[prod]` connection,
-  each `sqlserver` with its server and database left empty for the analyst to fill in and a
-  password sign-in whose variables `.env.example` names, as `haute ci update` writes it again)
-  in a new project, and in a project that already has a `haute.toml` it adds them and writes
-  `.env.example` again, refusing when the table, the folder or `connections.toml` is there;
-  either way a path reached through a link or a junction refuses it, nothing written.
-  Nothing else makes the folder. The deploy workflow `haute init` generates for GitHub or Azure
-  DevOps starts when a file in the pipeline folder changes, the form's files among them;
-  `haute init --force` rewrites `haute.toml`, so the table stays only when `--workbench` is
-  given again, while the form folder and `connections.toml` are left as they are, either
-  written only when absent. A nested `[workbench.app]` table says where the
-  underwriter app runs: `host` is `azure-container-apps`, and `edit_role`, when given, is
-  the role the host signs underwriters in with that may change quotes, every other
+  that does not fit the pipeline ([deploy](../deploy/high-level.md)). A workbench project
+  hosts no scoring API, so `haute deploy` itself refuses in one, naming `haute app build`.
+  `haute init` answered for workbench pricing (`--workbench`, or picked at a terminal) makes a
+  workbench project, which hosts no scoring API, with the database the saved quotes are on
+  (SQL Server or PostgreSQL) and how the analyst signs in to it (a password, their Microsoft
+  Entra ID sign-in or a service principal) asked with it, or given as `--store` and
+  `--sign-in` ([cli](../cli/high-level.md)). It writes the table (with `[workbench.app] host`,
+  the host answered, and `[workbench.store]` declaring `dev`, `staging` and `prod`, all three
+  on the one database answered, each signed in to by the hosted app's managed identity, which
+  on `postgresql` also names `username_env`, `HAUTE_STORE_USERNAME`, the role the identity is
+  mapped to), `[deploy.container]` (the app image's base image, on the project's Python, its
+  registry and port) and no endpoint settings, a blank form folder and `connections.toml` (a
+  `[dev]`, `[staging]` and `[prod]` connection on that database with its server and database
+  left empty for the analyst to fill in and the analyst's sign-in, each naming its own
+  variables, `HAUTE_<ENVIRONMENT>_USERNAME` and the like, which `.env.example` names beside
+  the host's credentials, as `haute ci update` writes it again), `haute[sqlserver]` or
+  `haute[postgresql]` as the project's dependency when it lists no `haute` (the release
+  installs the database's driver, which `haute app build` refuses to build without), and
+  the workbench's workflows. A path reached through a link or a junction refuses it,
+  nothing written. A
+  project that already has a `haute.toml` is refused unless `--force` is given: an automated
+  project is never given a workbench but started again. Nothing else makes the folder. The
+  workflows `haute init` generates for GitHub or Azure DevOps start when a file in the
+  pipeline folder changes, the form's files among them; `haute init --force` rewrites
+  `haute.toml` from its answers, while the form folder and `connections.toml` are left as
+  they are, either written only when absent. A nested `[workbench.app]` table says where
+  the underwriter app runs: `host` is `azure-container-apps`, and `edit_role`, when given,
+  is the role the host signs underwriters in with that may change quotes, every other
   underwriter reading them; any other key, host or role that is not a name is refused by
   name.
+- **The workbench's CI/CD.** A workbench project's workflows (`.github/workflows/ci.yml` and
+  `release.yml`, or the one `.gitlab-ci.yml` or `azure-pipelines.yml`) validate and publish
+  the underwriter app; none deploys a scoring endpoint. On a pull request, and again on a
+  push to the default branch that changes a release input, the validate job lints,
+  type-checks and tests the project, lints the pipeline and runs `haute app build`, which
+  resolves, validates and bundles the pipeline as a deploy does, its test quotes scored, with
+  the form. On that push, and on a manual run of the default branch alone, the publish job,
+  given the host's credentials, logs in to the
+  registry `[deploy.container] registry` names (the host `haute ci registry-host` prints)
+  and runs `haute app build --push`, which builds the release's image once, pushes it and
+  prints the reference by digest it pushed. Nothing rolls a hosted app to the image yet: the
+  generated files say so, and the host is pointed at that digest by hand until the rollout,
+  the hosted check and impact on saved quotes are delivered
+  ([WB-08](../roadmap/workbench.md#wb-08--the-workbench-projects-cicd)).
 - **The form.** The form is one document as the editor, the routes, a release and the
   quote store hold it: `version` (1), `name`, `schema` (its tables), `pages` (its sheets,
   at least one) and `sample` (the quote typed while building, `{}` for none). The form
@@ -1223,7 +1250,14 @@ Out of scope:
   what a scoring container installs and the quote store's packages, SQLAlchemy and
   Alembic, with the driver of each provider the release's environments declare (pyodbc and
   Microsoft ODBC Driver 18 for `sqlserver`, psycopg for `postgresql`, and azure-identity
-  for a Microsoft Entra ID sign-in), pinned as the scoring runtime is, nothing more. The app
+  for a Microsoft Entra ID sign-in), pinned as the scoring runtime is, nothing more.
+  `haute app build --push` builds that image as `<registry>/<name>:<short commit>`, the
+  registry `[deploy.container] registry` names, which it refuses to run without, as it does
+  a project whose commit git cannot name, never tagging an image with no commit, and the
+  project's name in lower case, as Docker takes a repository's, pushes it there and prints,
+  as its last line, the reference by digest the registry holds for it,
+  `<registry>/<name>@sha256:...`: what the workbench's CI publishes once per release
+  and what a host is pointed at. The app
   serves the sheets on a page of their own, drawn as Preview draws them, with the same
   components filled from the app's routes rather than the builder's and nothing of the
   builder mounted: the sheets' tabs, the sheet showing, the release and who is signed in,

@@ -15,7 +15,9 @@ from haute._scaffold import (
     BUILD_AND_PUSH_ONLY_TARGETS,
     TARGETS,
     _release_tag_script,
+    app_env_example,
     azure_devops_yml,
+    ci_credentials,
     ci_files,
     ci_secret_names,
     connection_variables,
@@ -32,6 +34,8 @@ from haute._scaffold import (
     starter_pipeline,
     starter_test,
     starter_test_quote,
+    workbench_ci_files,
+    workbench_haute_toml,
 )
 from tests._posix_shell import posix_shell
 
@@ -115,36 +119,72 @@ class TestHauteToml:
         with pytest.raises(ValueError, match="Unknown target"):
             haute_toml("motor", "unknown", "github")
 
-    def test_workbench_table_only_when_asked(self) -> None:
-        """The [workbench] table switches the project's workbench on and declares the quote
-        store's environments, each on SQL Server signed in to by the hosted app's managed
-        identity (specs/workbench)."""
+    def test_an_automated_project_has_no_workbench(self) -> None:
+        for target in TARGETS:
+            assert "[workbench" not in haute_toml("motor", target, "github")
+
+    @pytest.mark.parametrize(
+        ("store", "hosted"),
+        [
+            ("sqlserver", {"provider": "sqlserver", "auth": "managed-identity"}),
+            (
+                "postgresql",
+                {
+                    "provider": "postgresql",
+                    "auth": "managed-identity",
+                    "username_env": "HAUTE_STORE_USERNAME",
+                },
+            ),
+        ],
+    )
+    def test_a_workbench_project_holds_the_app_image_the_host_and_one_store(
+        self, store: str, hosted: dict[str, str]
+    ) -> None:
+        """A workbench project hosts no scoring API: [deploy] holds the app's image alone,
+        beside the workbench, its host and the quote store's environments, all three on the
+        one database (specs/workbench)."""
         from haute._workbench_config import store_environments
 
-        assert "[workbench]" not in haute_toml("motor", "databricks", "github")
+        doc = tomllib.loads(
+            workbench_haute_toml(
+                "motor", "gitlab", host="azure-container-apps", store=store, python_version="3.12"
+            )
+        )
+        assert doc["project"] == {"name": "motor", "pipeline": "rating/main.py"}
+        from haute._project_python import container_base_image
 
-        doc = tomllib.loads(haute_toml("motor", "databricks", "github", workbench=True))
-        hosted = {"provider": "sqlserver", "auth": "managed-identity"}
+        assert doc["deploy"] == {
+            "container": {
+                "registry": "",
+                "port": 8080,
+                "base_image": container_base_image("3.12"),
+            }
+        }
+        assert doc["test_quotes"] == {"dir": "tests/quotes"}
+        assert doc["ci"] == {"provider": "gitlab"}
         assert doc["workbench"] == {
             "enabled": True,
+            "app": {"host": "azure-container-apps"},
             "store": {"dev": hosted, "staging": hosted, "prod": hosted},
         }
-        assert list(doc["workbench"]["store"]) == ["dev", "staging", "prod"]
-        assert doc["project"]["name"] == "motor"
         # Declared as the project's workbench config reads them.
         declared = store_environments(doc["workbench"]["store"], "[workbench.store]")
-        assert [(each.name, each.provider, each.auth) for each in declared] == [
-            ("dev", "sqlserver", "managed-identity"),
-            ("staging", "sqlserver", "managed-identity"),
-            ("prod", "sqlserver", "managed-identity"),
+        assert [(each.name, each.provider) for each in declared] == [
+            (name, store) for name in ("dev", "staging", "prod")
         ]
+
+    def test_a_workbench_project_refuses_an_unknown_host_or_store(self) -> None:
+        with pytest.raises(ValueError, match="Unknown app host: aws-ecs"):
+            workbench_haute_toml("motor", "github", host="aws-ecs", store="sqlserver")
+        with pytest.raises(ValueError, match="Unknown quote store: sqlite"):
+            workbench_haute_toml("motor", "github", host="azure-container-apps", store="sqlite")
 
 
 class TestConnectionsToml:
     """connections_toml() and the variables its sign-ins read, which .env.example names."""
 
     def test_a_connection_for_each_environment_left_for_the_analyst_to_fill_in(self) -> None:
-        connections = tomllib.loads(connections_toml())
+        connections = tomllib.loads(connections_toml("sqlserver", "password"))
 
         assert list(connections) == ["dev", "staging", "prod"]
         for name, connection in connections.items():
@@ -157,11 +197,39 @@ class TestConnectionsToml:
                 "password_env": f"HAUTE_{name.upper()}_PASSWORD",
             }
 
+    @pytest.mark.parametrize("store", ["sqlserver", "postgresql"])
+    @pytest.mark.parametrize("sign_in", ["password", "entra", "service-principal"])
+    def test_each_database_and_sign_in_reads_as_the_connections_reader_reads_it(
+        self, tmp_path: Path, store: str, sign_in: str
+    ) -> None:
+        from haute._connections import connection_sign_in_keys, read_connections
+
+        (tmp_path / "connections.toml").write_text(
+            connections_toml(store, sign_in), encoding="utf-8"
+        )
+
+        connections = read_connections(tmp_path)
+
+        keys = connection_sign_in_keys(store, sign_in)
+        for name, connection in connections.items():
+            assert (connection.provider, connection.auth) == (store, sign_in)
+            assert dict(connection.variables) == {
+                key: f"HAUTE_{name.upper()}_{key.removesuffix('_env').upper()}" for key in keys
+            }
+
+    def test_an_unknown_store_or_sign_in_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="Unknown quote store: sqlite"):
+            connections_toml("sqlite", "password")
+        with pytest.raises(ValueError, match="Unknown sign-in: managed-identity"):
+            connections_toml("sqlserver", "managed-identity")
+
     def test_env_example_names_the_variables_the_connections_sign_ins_read(
         self, tmp_path: Path
     ) -> None:
         assert connection_variables(tmp_path) == []
-        (tmp_path / "connections.toml").write_text(connections_toml(), encoding="utf-8")
+        (tmp_path / "connections.toml").write_text(
+            connections_toml("sqlserver", "password"), encoding="utf-8"
+        )
 
         variables = connection_variables(tmp_path)
 
@@ -179,6 +247,10 @@ class TestConnectionsToml:
         )
         # Without connections, .env.example is the target's alone.
         assert env_example("databricks", []) == env_example("databricks")
+        # A workbench project's names its app host's credentials, with no scoring notice.
+        app = app_env_example("azure-container-apps", variables)
+        assert "AZURE_CLIENT_SECRET=" in app and "HAUTE_PROD_PASSWORD=" in app
+        assert "Build and push only" not in app and "haute deploy" not in app
 
 
 class TestEnvExample:
@@ -1640,23 +1712,141 @@ class TestDatabricksReleaseAndDeployJobs:
         assert jobs["DeployProduction"]["timeoutInMinutes"] == minutes
 
 
+class TestWorkbenchCiFiles:
+    """A workbench project's workflows validate the project and the app's release and, on the
+    default branch, publish the app's image: none deploys an endpoint (specs/workbench)."""
+
+    @staticmethod
+    def _parsed(ci: str) -> dict[str, Any]:
+        return {
+            path: yaml.safe_load(text)
+            for path, text in workbench_ci_files("azure-container-apps", ci).items()
+        }
+
+    def test_github_validates_each_pull_request_and_publishes_on_main(self) -> None:
+        files = self._parsed("github")
+        assert list(files) == [".github/workflows/ci.yml", ".github/workflows/release.yml"]
+
+        checks = files[".github/workflows/ci.yml"]
+        validate = [step.get("run") for step in checks["jobs"]["pipeline-validate"]["steps"]]
+        assert validate[-2:] == ["uv run haute lint", "uv run haute app build"]
+
+        release = files[".github/workflows/release.yml"]
+        # PyYAML reads the bare key "on" as True.
+        assert release[True]["push"]["branches"] == ["main"]
+        assert (
+            '"rating/**"'
+            in workbench_ci_files("azure-container-apps", "github")[".github/workflows/release.yml"]
+        )
+        assert release["jobs"]["publish"]["needs"] == "validate"
+        # A manual run may pick any branch: only main's commits are published.
+        assert release["jobs"]["publish"]["if"] == "github.ref == 'refs/heads/main'"
+        steps = release["jobs"]["publish"]["steps"]
+        login = next(step for step in steps if step.get("name") == "Log in to the registry")
+        assert set(login["env"]) == set(ci_secret_names("azure-container-apps"))
+        assert "haute ci registry-host" in login["run"]
+        assert steps[-1]["run"] == "uv run haute app build --push"
+        # The secrets reach the login alone: the push uses the login's credentials.
+        assert "env" not in steps[-1]
+
+    def test_gitlab_publishes_on_the_default_branch_through_docker(self) -> None:
+        pipeline = self._parsed("gitlab")[".gitlab-ci.yml"]
+        assert pipeline["stages"] == ["validate", "publish"]
+        assert pipeline["lint"]["script"][-1] == "uv run haute app build"
+        # Validation names no registry credential: only the publish job does.
+        assert "variables" not in pipeline["lint"]
+        publish = pipeline["publish"]
+        assert publish["extends"] == ".docker"
+        assert publish["rules"] == [{"if": "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"}]
+        assert set(publish["variables"]) == set(ci_secret_names("azure-container-apps"))
+        assert "haute ci registry-host" in publish["script"][0]
+        assert publish["script"][-1] == "uv run haute app build --push"
+
+    def test_azure_devops_publishes_on_main_after_validate(self) -> None:
+        pipeline = self._parsed("azure-devops")["azure-pipelines.yml"]
+        stages = {stage["stage"]: stage for stage in pipeline["stages"]}
+        assert list(stages) == ["Validate", "Publish"]
+        validate = stages["Validate"]["jobs"][-1]["steps"]
+        assert validate[-1]["script"] == "uv run haute app build"
+        publish = stages["Publish"]
+        assert publish["dependsOn"] == "Validate"
+        assert "refs/heads/main" in publish["condition"]
+        steps = publish["jobs"][0]["steps"]
+        assert set(steps[-2]["env"]) == set(ci_secret_names("azure-container-apps"))
+        assert steps[-1] == {
+            "script": "uv run haute app build --push",
+            "displayName": "Build and push the app's image",
+        }
+
+    @pytest.mark.parametrize("ci", ["github", "gitlab", "azure-devops"])
+    def test_no_step_deploys_an_endpoint(self, ci: str) -> None:
+        text = "".join(workbench_ci_files("azure-container-apps", ci).values())
+        for endpoint in ("haute deploy", "haute smoke", "haute impact", "--endpoint-suffix"):
+            assert endpoint not in text
+
+    @pytest.mark.parametrize("ci", ["github", "gitlab", "azure-devops"])
+    def test_the_automated_set_validates_with_the_dry_run_deploy(self, ci: str) -> None:
+        text = "".join(ci_files("databricks", ci).values())
+        assert "uv run haute deploy --dry-run" in text
+        assert "haute app build" not in text
+
+
+class TestCiCredentials:
+    """Whose credentials a project's CI reads: the deploy target's, or a workbench project's
+    app host's (specs/cli)."""
+
+    def test_an_automated_project_reads_its_target(self, tmp_path: Path) -> None:
+        (tmp_path / "haute.toml").write_text(haute_toml("motor", "aws-ecs", "github"))
+        assert ci_credentials(tmp_path, "aws-ecs") == "aws-ecs"
+
+    def test_a_workbench_project_reads_its_host(self, tmp_path: Path) -> None:
+        (tmp_path / "rating").mkdir()
+        (tmp_path / "rating" / "main.py").write_text(starter_pipeline("motor"))
+        (tmp_path / "haute.toml").write_text(
+            workbench_haute_toml("motor", "github", host="azure-container-apps", store="sqlserver")
+        )
+        # Its [deploy] names no target, which reads as Databricks: never its CI's credentials.
+        assert ci_credentials(tmp_path, "databricks") == "azure-container-apps"
+
+    def test_a_workbench_project_naming_no_host_is_refused(self, tmp_path: Path) -> None:
+        from haute._workbench_config import WorkbenchConfigError
+
+        (tmp_path / "rating").mkdir()
+        (tmp_path / "rating" / "main.py").write_text(starter_pipeline("motor"))
+        (tmp_path / "haute.toml").write_text(
+            '[project]\nname = "motor"\npipeline = "rating/main.py"\n\n'
+            "[workbench]\nenabled = true\n"
+        )
+        with pytest.raises(WorkbenchConfigError, match=r"\[workbench.app\] names no host"):
+            ci_credentials(tmp_path, "databricks")
+
+
 class TestCiFiles:
     """``ci_files`` is what ``haute init`` and ``haute ci update`` write."""
 
     @pytest.mark.parametrize("ci", ["github", "gitlab", "azure-devops"])
-    def test_each_provider_writes_the_files_it_prunes(self, ci: str) -> None:
-        from haute.cli._init_cmd import _CI_ARTIFACTS
+    def test_each_provider_writes_files_the_pruning_knows(self, ci: str) -> None:
+        from haute.cli._init_cmd import GENERATED_CI_FILES
 
-        files = ci_files("databricks", ci, python_version="3.13")
-
-        assert list(files) == _CI_ARTIFACTS[ci]
-        for content in files.values():
-            assert 'python-version: "3.11"' not in content
+        for files in (
+            ci_files("databricks", ci, python_version="3.13"),
+            workbench_ci_files("azure-container-apps", ci, python_version="3.13"),
+        ):
+            assert files and set(files) <= set(GENERATED_CI_FILES)
+            for content in files.values():
+                assert 'python-version: "3.11"' not in content
+                assert 'versionSpec: "3.11"' not in content
+                assert "image: python:3.11\n" not in content
 
     def test_none_has_no_files_and_an_unknown_provider_is_refused(self) -> None:
         assert ci_files("databricks", "none") == {}
+        assert workbench_ci_files("azure-container-apps", "none") == {}
         with pytest.raises(ValueError, match="Unknown CI provider: jenkins"):
             ci_files("databricks", "jenkins")
+        with pytest.raises(ValueError, match="Unknown CI provider: jenkins"):
+            workbench_ci_files("azure-container-apps", "jenkins")
+        with pytest.raises(ValueError, match="Unknown app host: databricks"):
+            workbench_ci_files("databricks", "github")
 
     @pytest.mark.parametrize("ci", ["github", "gitlab", "azure-devops"])
     def test_the_staging_steps_pass_the_projects_staging_suffix(self, ci: str) -> None:

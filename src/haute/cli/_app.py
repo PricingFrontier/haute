@@ -42,6 +42,9 @@ class AppBuildConfig:
     output: Path
     #: The tag to build the release's image as, with Docker; None builds no image.
     image: str | None = None
+    #: Build the release's image as ``image_reference`` names it, push it to the project's
+    #: registry and print the reference by digest it pushed.
+    push: bool = False
 
 
 @dataclass
@@ -88,11 +91,28 @@ def _built(project_dir: Path, release_dir: Path) -> None:
 
 def handle_app_build(config: AppBuildConfig) -> None:
     """Build the project in the working directory into ``config.output``, and its image when
-    ``config.image`` names a tag."""
-    from haute._workbench_app import build_image
+    ``config.image`` names a tag; with ``config.push``, build the image as ``image_reference``
+    names it, push it and print the reference by digest it pushed as the last line."""
+    from haute._workbench_app import build_image, image_reference, push_image
 
+    project_dir = Path.cwd()
+    reference: str | None = None
+    if config.push:
+        # A push needs a registry: a project naming none is refused before anything is built.
+        try:
+            with _said():
+                reference = image_reference(project_dir)
+        except (FileNotFoundError, ValueError) as exc:
+            raise click.ClickException(str(exc)) from exc
     release_dir = config.output.resolve()
-    _built(Path.cwd(), release_dir)
+    _built(project_dir, release_dir)
+    if reference is not None:
+        with _said():
+            pushed = push_image(release_dir, reference)
+        click.echo(f"  ✓ Image pushed: {reference}")
+        # The last line: what CI records and points a host at.
+        click.echo(pushed)
+        return
     if config.image is None:
         return
     with _said():
@@ -156,10 +176,17 @@ def app() -> None:
 @click.option(
     "--image", default=None, help="Also build the release's image with Docker, tagged so."
 )
-def build(output: Path, image: str | None) -> None:
+@click.option(
+    "--push",
+    is_flag=True,
+    help="Also build the release's image and push it to [deploy.container] registry.",
+)
+def build(output: Path, image: str | None, push: bool) -> None:
     """Build the release the underwriter app serves into OUTPUT (default .haute/app/release): the
     image's build context, Dockerfile included."""
-    handle_app_build(AppBuildConfig(output=output, image=image))
+    if image is not None and push:
+        raise click.UsageError("--image and --push each build the image: pass one.")
+    handle_app_build(AppBuildConfig(output=output, image=image, push=push))
 
 
 @app.command()

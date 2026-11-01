@@ -12,10 +12,9 @@ from __future__ import annotations
 import re
 import sys
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NoReturn
 
 import click
 from packaging.requirements import Requirement
@@ -27,13 +26,21 @@ from haute._io import read_user_text
 
 @dataclass
 class InitConfig:
-    """Parsed inputs for the ``haute init`` command."""
+    """Parsed inputs for the ``haute init`` command: each answer its flag gave, None for one
+    to ask at a terminal (*interactive*) or to take the default of without one."""
 
-    target: str
-    ci: str
+    #: An automated project's deploy target.
+    target: str | None
+    ci: str | None
     force: bool = False
-    # Enable the project's workbench: the [workbench] table and a blank form folder.
-    workbench: bool = False
+    #: Whether the project prices in the workbench, which hosts no scoring API.
+    workbench: bool | None = False
+    #: A workbench project's app host, its quote store's database and the analyst's sign-in.
+    host: str | None = None
+    store: str | None = None
+    sign_in: str | None = None
+    #: Whether ``haute init`` runs at a terminal, where it asks what its flags leave out.
+    interactive: bool = False
 
 
 _DEV_DEPS_BLOCK = """
@@ -289,8 +296,10 @@ def _find_matching_bracket(text: str, open_idx: int) -> int:
     raise ValueError("unbalanced '[' in TOML")
 
 
-def _rewrite_dependencies_array_at(text: str, open_bracket_abs: int) -> str:
-    """Rewrite the TOML array beginning at *open_bracket_abs* with haute first."""
+def _rewrite_dependencies_array_at(
+    text: str, open_bracket_abs: int, requirement: str = "haute"
+) -> str:
+    """Rewrite the TOML array beginning at *open_bracket_abs* with *requirement* first."""
     close_bracket_abs = _find_matching_bracket(text, open_bracket_abs)
 
     # Replace the array content. Normalise to one item per line with a
@@ -300,7 +309,7 @@ def _rewrite_dependencies_array_at(text: str, open_bracket_abs: int) -> str:
     # (tomllib on the full file already succeeded, so this slice is valid).
     current_deps: list[str] = tomllib.loads("dependencies = [" + array_text + "]")["dependencies"]
 
-    new_deps = ["haute", *current_deps]
+    new_deps = [requirement, *current_deps]
     # Preserve trailing newline conventions by formatting the replacement
     # body as ``\n    "a",\n    "b",\n`` (one dep per line, trailing comma).
     # Each dependency is escaped as a TOML basic string so values containing
@@ -310,20 +319,22 @@ def _rewrite_dependencies_array_at(text: str, open_bracket_abs: int) -> str:
     return text[: open_bracket_abs + 1] + new_array_body + text[close_bracket_abs:]
 
 
-def _insert_root_dotted_project_dependencies(text: str) -> str:
-    """Insert a top-level ``project.dependencies`` key before any table header."""
+def _insert_root_dotted_project_dependencies(text: str, requirement: str = "haute") -> str:
+    """Insert a top-level ``project.dependencies`` key, listing *requirement*, before any
+    table header."""
     headers = _scan_table_headers(text)
     insert_at = headers[0][0] if headers else len(text)
     prefix = text[:insert_at]
     suffix = text[insert_at:]
     before = "" if not prefix or prefix.endswith("\n") else "\n"
     after = "" if not suffix or suffix.startswith("\n") else "\n"
-    insertion = 'project.dependencies = [\n    "haute",\n]\n'
+    insertion = f"project.dependencies = [\n    {_toml_basic_string(requirement)},\n]\n"
     return prefix + before + insertion + after + suffix
 
 
-def _rewrite_project_dependencies(text: str) -> str:
-    """Return *text* with ``"haute"`` injected into ``[project].dependencies``.
+def _rewrite_project_dependencies(text: str, requirement: str = "haute") -> str:
+    """Return *text* with *requirement*, ``"haute"`` or ``haute`` with an extra, injected
+    into ``[project].dependencies``.
 
     This is a structural edit: it uses :mod:`tomllib` to validate the file and
     locate the ``[project]`` table and its ``dependencies`` array, then rewrites
@@ -352,12 +363,13 @@ def _rewrite_project_dependencies(text: str) -> str:
             dotted = _DOTTED_PROJECT_DEPENDENCIES_KEY_RE.search(text[:root_end])
             if dotted is not None:
                 open_bracket_abs = dotted.end() - 1
-                return _rewrite_dependencies_array_at(text, open_bracket_abs)
-            return _insert_root_dotted_project_dependencies(text)
+                return _rewrite_dependencies_array_at(text, open_bracket_abs, requirement)
+            return _insert_root_dotted_project_dependencies(text, requirement)
 
         # No [project] table — append a fresh one.
         sep = "" if text.endswith("\n") or not text else "\n"
-        return text + sep + '[project]\ndependencies = [\n    "haute",\n]\n'
+        listed = _toml_basic_string(requirement)
+        return text + sep + f"[project]\ndependencies = [\n    {listed},\n]\n"
 
     body_start, body_end = bounds
     body = text[body_start:body_end]
@@ -365,20 +377,22 @@ def _rewrite_project_dependencies(text: str) -> str:
     if m is None:
         # [project] exists but no dependencies key — insert one right after
         # the header.
-        insertion = 'dependencies = [\n    "haute",\n]\n'
+        insertion = f"dependencies = [\n    {_toml_basic_string(requirement)},\n]\n"
         return text[:body_start] + insertion + text[body_start:]
 
     # Absolute offset of the opening ``[`` of the dependencies array.
     open_bracket_abs = body_start + m.end() - 1
-    return _rewrite_dependencies_array_at(text, open_bracket_abs)
+    return _rewrite_dependencies_array_at(text, open_bracket_abs, requirement)
 
 
-def _ensure_haute_dependency(pyproject_path: Path, name: str) -> None:
-    """Add ``haute`` to pyproject.toml dependencies.
+def _ensure_haute_dependency(pyproject_path: Path, name: str, requirement: str = "haute") -> None:
+    """Add *requirement*, ``haute`` or ``haute`` with an extra, to pyproject.toml
+    dependencies.
 
-    If pyproject.toml exists, insert ``"haute"`` into the
-    ``[project].dependencies`` list using a TOML-aware edit (if not already
-    present). If it doesn't exist, create a minimal pyproject.toml.
+    If pyproject.toml exists, insert *requirement* into the
+    ``[project].dependencies`` list using a TOML-aware edit (if no ``haute``
+    requirement is already present, which is left as it is). If it doesn't
+    exist, create a minimal pyproject.toml.
 
     Also ensures a ``[dependency-groups]`` dev section exists with
     ruff, mypy, and pytest so that the generated CI workflows work.
@@ -392,7 +406,9 @@ def _ensure_haute_dependency(pyproject_path: Path, name: str) -> None:
         pyproject_path.write_text(
             f'[project]\nname = "{name}"\nversion = "0.1.0"\n'
             f'requires-python = ">=3.11"\n'
-            f'dependencies = [\n    "haute",\n]\n' + _DEV_DEPS_BLOCK + _MYPY_BLOCK,
+            f"dependencies = [\n    {_toml_basic_string(requirement)},\n]\n"
+            + _DEV_DEPS_BLOCK
+            + _MYPY_BLOCK,
             encoding="utf-8",
         )
         return
@@ -415,7 +431,7 @@ def _ensure_haute_dependency(pyproject_path: Path, name: str) -> None:
         project_deps = []
 
     if not _dependencies_contain_haute(project_deps):
-        text = _rewrite_project_dependencies(text)
+        text = _rewrite_project_dependencies(text, requirement)
 
     # Re-parse after mutation to validate and to check whether the remaining
     # scaffold blocks are already present — we use structural checks (not raw
@@ -432,37 +448,36 @@ def _ensure_haute_dependency(pyproject_path: Path, name: str) -> None:
     pyproject_path.write_text(text, encoding="utf-8")
 
 
-# CI artifacts written per provider, relative to the project root. Used to
-# prune a previously chosen provider's files on a ``--force`` re-init so a
-# switch (e.g. github -> gitlab) doesn't leave orphaned workflows behind.
-_CI_ARTIFACTS: dict[str, list[str]] = {
-    "github": [
-        ".github/workflows/ci.yml",
-        ".github/workflows/deploy-staging.yml",
-        ".github/workflows/deploy-production.yml",
-    ],
-    "gitlab": [".gitlab-ci.yml"],
-    "azure-devops": ["azure-pipelines.yml"],
-}
+#: Every CI file Haute generates, relative to the project root: both kinds of project's, for
+#: every provider. ``haute init --force`` and ``haute ci update`` prune each one the set they
+#: write does not hold, so a switch of provider (github -> gitlab, say) or of the kind of
+#: project leaves no orphaned workflow behind.
+GENERATED_CI_FILES: tuple[str, ...] = (
+    ".github/workflows/ci.yml",
+    ".github/workflows/deploy-staging.yml",
+    ".github/workflows/deploy-production.yml",
+    ".github/workflows/release.yml",
+    ".gitlab-ci.yml",
+    "azure-pipelines.yml",
+)
 
 
-def _prune_stale_ci_files(project_dir: Path, keep: str) -> None:
-    """Remove CI artifacts of every provider except *keep*.
+def _prune_stale_ci_files(project_dir: Path, keep: Collection[str]) -> None:
+    """Remove each of :data:`GENERATED_CI_FILES` that *keep*, the set about to be written,
+    does not hold.
 
-    Only touches the specific files Haute generates. After removing GitHub
-    workflows, the now-empty ``.github/workflows`` and ``.github`` directories
-    are cleaned up (but only if empty, so a user's other GitHub config is left
-    untouched).
+    Only touches the specific files Haute generates. When no GitHub workflow is kept, the
+    now-empty ``.github/workflows`` and ``.github`` directories are cleaned up (but only if
+    empty, so a user's other GitHub config is left untouched).
     """
-    for provider, rel_paths in _CI_ARTIFACTS.items():
-        if provider == keep:
+    for rel in GENERATED_CI_FILES:
+        if rel in keep:
             continue
-        for rel in rel_paths:
-            path = project_dir / rel
-            if path.exists():
-                path.unlink()
+        path = project_dir / rel
+        if path.exists():
+            path.unlink()
 
-    if keep != "github":
+    if not any(rel.startswith(".github/") for rel in keep):
         workflows = project_dir / ".github" / "workflows"
         if workflows.is_dir() and not any(workflows.iterdir()):
             workflows.rmdir()
@@ -522,118 +537,199 @@ def _write_form_folder(folder: Path, files: dict[str, str]) -> None:
         target.write_bytes(text.encode("utf-8"))
 
 
-def _add_workbench(project_dir: Path) -> None:
-    """``haute init --workbench`` in a project that has a ``haute.toml``: the
-    ``[workbench]`` table appended to it, the blank form folder written in its pipeline
-    folder, ``connections.toml`` written and ``.env.example`` written again with the
-    variables it names, nothing else. Refused, writing nothing, while the table, the folder
-    or ``connections.toml`` is there or a path it would write is no ordinary file of the
-    project's; a failure removes what it made and puts ``haute.toml`` and ``.env.example``
-    back as they were, so a second run starts from where the first did."""
-    import shutil
-    import tomllib
+# ── The questions ──────────────────────────────────────────────────────
 
-    from haute._connections import CONNECTIONS_FILE
-    from haute._file_ops import atomic_write_bytes
-    from haute._project import resolve_pipeline_file
-    from haute._scaffold import (
-        connection_variables,
-        connections_toml,
-        env_example,
-        starter_form,
-        workbench_table,
+#: The deploy targets an automated project is offered, in the order ``--target`` lists them.
+TARGET_CHOICES = ("databricks", "container", "azure-container-apps", "aws-ecs", "gcp-run")
+#: The CI providers, in the order ``--ci`` lists them.
+CI_CHOICES = ("github", "gitlab", "azure-devops", "none")
+#: Where a workbench project's underwriter app runs: ``haute._workbench_config.APP_HOSTS``,
+#: sorted (a test keeps them equal; the CLI imports neither module to list them).
+HOST_CHOICES = ("azure-container-apps",)
+#: The databases a workbench project's saved quotes can be on:
+#: ``haute._scaffold.WORKBENCH_STORES`` (a test keeps them equal).
+STORE_CHOICES = ("sqlserver", "postgresql")
+#: How the analyst signs in to a workbench project's database, in the order the question
+#: lists them: ``haute._connections.CONNECTION_SIGN_INS`` (a test keeps them equal).
+SIGN_IN_CHOICES = ("password", "entra", "service-principal")
+
+# Each question's options: the answer, as its flag takes it, and the label the list shows.
+_PRICING_OPTIONS = (
+    ("automated", "Automated: an API other systems call"),
+    ("workbench", "Workbench: an app underwriters price quotes in"),
+)
+_CI_LABELS = {
+    "github": "GitHub",
+    "gitlab": "GitLab",
+    "azure-devops": "Azure DevOps",
+    "none": "None",
+}
+_TARGET_LABELS = {
+    "databricks": "Databricks",
+    "container": "A Docker container",
+    "azure-container-apps": "Azure Container Apps (build and push only)",
+    "aws-ecs": "AWS ECS (build and push only)",
+    "gcp-run": "GCP Cloud Run (build and push only)",
+}
+_HOST_LABELS = {"azure-container-apps": "Azure Container Apps"}
+_STORE_LABELS = {"sqlserver": "SQL Server", "postgresql": "PostgreSQL"}
+_SIGN_IN_LABELS = {
+    "password": "Password",
+    "entra": "Microsoft Entra ID",
+    "service-principal": "Service principal",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _Answers:
+    """``haute init``'s answers, every question answered: an automated project's *target*,
+    or a workbench project's *host*, *store* and *sign_in*."""
+
+    workbench: bool
+    ci: str
+    target: str | None = None
+    host: str | None = None
+    store: str | None = None
+    sign_in: str | None = None
+
+
+def _at_terminal() -> bool:
+    """Whether ``haute init`` runs at a terminal, where it may ask what its flags leave out."""
+    return (
+        sys.stdin is not None
+        and sys.stdin.isatty()
+        and sys.stdout is not None
+        and sys.stdout.isatty()
     )
-    from haute._workbench_config import FORM_FOLDER
-    from haute.errors import ConfigError
 
-    def refuse(message: str) -> NoReturn:
-        click.echo(f"Error: {message}", err=True)
-        raise SystemExit(1)
 
-    toml_path = project_dir / "haute.toml"
-    original = toml_path.read_bytes()
-    try:
-        data = tomllib.loads(original.decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-        refuse(f"haute.toml could not be read: {exc}")
-    if "workbench" in data:
-        refuse("haute.toml already has a [workbench] table; the project has its workbench.")
-    connections_path = project_dir / CONNECTIONS_FILE
-    if connections_path.exists():
-        refuse(f"{CONNECTIONS_FILE} is already there; the project has its connections.")
-    # A link there, dangling or not, would take the write outside the project.
-    problem = _root_file_problem(project_dir, CONNECTIONS_FILE, ".env.example")
-    if problem is not None:
-        refuse(problem)
-    deploy = data.get("deploy")
-    target = deploy.get("target") if isinstance(deploy, dict) else None
-    if not isinstance(target, str):
-        refuse("haute.toml names no [deploy] target, whose .env.example the workbench adds to.")
-    try:
-        pipeline_file = resolve_pipeline_file(project_dir)
-    except FileNotFoundError as exc:
-        refuse(f"the workbench's form goes beside the pipeline: {exc}")
-    except ConfigError as exc:
-        # haute.toml names a pipeline outside the project (through a link, say).
-        refuse(f"the workbench's form goes beside the pipeline: {exc.message}")
-    folder = pipeline_file.parent / FORM_FOLDER
-    try:
-        relative = folder.resolve().relative_to(project_dir.resolve()).as_posix()
-    except ValueError:
-        refuse(f"the pipeline folder is outside the project, so its form folder would be: {folder}")
-    if folder.exists():
-        refuse(f"{relative} is already there; the project has its workbench's form.")
-    project = data.get("project")
-    name = (
-        str(project["name"])
-        if isinstance(project, dict) and isinstance(project.get("name"), str)
-        else project_dir.name
+def _pick(question: str, options: Sequence[tuple[str, str]], default: str | None) -> str:
+    """Ask *question* as a numbered list of *options*, each an answer and its label, and take
+    the number picked; Enter takes *default*, and a question without one waits for a pick."""
+    click.echo(question)
+    for position, (_, label) in enumerate(options, start=1):
+        click.echo(f"  {position}. {label}")
+    answers = [answer for answer, _ in options]
+    default_number = None if default is None else answers.index(default) + 1
+    picked: int = click.prompt(
+        "Choose", type=click.IntRange(1, len(options)), default=default_number
     )
-    files = starter_form(name, folder)
-    problem = _form_folder_problem(project_dir, relative, files)
-    if problem is not None:
-        refuse(problem)
-    env_path = project_dir / ".env.example"
-    env_original = env_path.read_bytes() if env_path.is_file() else None
-    env_written = False
-    try:
-        _write_form_folder(folder, files)
-        connections_path.write_bytes(connections_toml().encode("utf-8"))
-        env_text = env_example(target, connection_variables(project_dir))
-        atomic_write_bytes(env_path, env_text.encode("utf-8"))
-        env_written = True
-        table = workbench_table().encode("utf-8")
-        atomic_write_bytes(toml_path, original.rstrip() + b"\n\n" + table)
-    except (OSError, ValueError) as exc:
-        # The folder and connections.toml did not exist before this run, so they are its own;
-        # .env.example is put back only once this run replaced it, a failed atomic write
-        # having left it as it was.
-        shutil.rmtree(folder, ignore_errors=True)
-        connections_path.unlink(missing_ok=True)
-        if env_written and env_original is None:
-            env_path.unlink(missing_ok=True)
-        elif env_written and env_original is not None:
-            atomic_write_bytes(env_path, env_original)
-        refuse(f"the workbench could not be added: {exc}")
-    click.echo(f"Added the workbench to '{name}'\n")
-    click.echo("  haute.toml            - [workbench] with the quote store's dev, staging and prod")
-    click.echo(f"  {relative + '/':<21} - the workbench's blank form")
-    click.echo(f"  {CONNECTIONS_FILE:<21} - where each environment's database is")
-    click.echo("  .env.example          - the variables their sign-ins read")
+    return answers[picked - 1]
+
+
+def _labelled(choices: Sequence[str], labels: Mapping[str, str]) -> list[tuple[str, str]]:
+    return [(choice, labels[choice]) for choice in choices]
+
+
+def _answers(config: InitConfig) -> _Answers:
+    """Every one of ``haute init``'s answers: each flag's, then each question the flags leave
+    out asked in turn at a terminal (``config.interactive``). Without one, a question with a
+    default takes it, and a workbench project's database and sign-in, which have none, are a
+    usage error naming their flags, as is a flag of the other kind of project."""
+    ask = config.interactive
+    workbench = config.workbench
+    if workbench is None:
+        workbench = (
+            _pick("How will this project price quotes?", _PRICING_OPTIONS, "automated")
+            == "workbench"
+            if ask
+            else False
+        )
+    if workbench and config.target is not None:
+        raise click.UsageError(
+            "--target is an automated project's deploy target; a workbench project hosts no "
+            "scoring API, and its app's host is --host."
+        )
+    if not workbench:
+        given = [
+            flag
+            for flag, value in (
+                ("--host", config.host),
+                ("--store", config.store),
+                ("--sign-in", config.sign_in),
+            )
+            if value is not None
+        ]
+        if given:
+            raise click.UsageError(
+                f"{', '.join(given)} answer a workbench project's questions; pass --workbench "
+                "with them."
+            )
+    ci = config.ci
+    if ci is None:
+        ci = (
+            _pick("Where is the repository?", _labelled(CI_CHOICES, _CI_LABELS), "github")
+            if ask
+            else "github"
+        )
+    if not workbench:
+        target = config.target
+        if target is None:
+            target = (
+                _pick(
+                    "Where will the API run?",
+                    _labelled(TARGET_CHOICES, _TARGET_LABELS),
+                    "databricks",
+                )
+                if ask
+                else "databricks"
+            )
+        return _Answers(workbench=False, ci=ci, target=target)
+
+    hosts = HOST_CHOICES
+    host = config.host
+    if host is None:
+        # With one host there is one answer: Enter takes it, as does a run without a terminal.
+        only = hosts[0] if len(hosts) == 1 else None
+        if ask:
+            host = _pick("Where will the app run?", _labelled(hosts, _HOST_LABELS), only)
+        elif only is not None:
+            host = only
+        else:
+            raise click.UsageError(f"Name where the app runs: --host ({', '.join(hosts)}).")
+    store = config.store
+    if store is None:
+        if not ask:
+            raise click.UsageError(
+                "Name the database the saved quotes are on: --store "
+                f"({' or '.join(STORE_CHOICES)})."
+            )
+        store = _pick(
+            "Which database holds the saved quotes?",
+            _labelled(STORE_CHOICES, _STORE_LABELS),
+            None,
+        )
+    sign_in = config.sign_in
+    if sign_in is None:
+        if not ask:
+            raise click.UsageError(
+                f"Name how you sign in to that database: --sign-in ({', '.join(SIGN_IN_CHOICES)})."
+            )
+        sign_in = _pick(
+            "How do you sign in to it?", _labelled(SIGN_IN_CHOICES, _SIGN_IN_LABELS), None
+        )
+    return _Answers(workbench=True, ci=ci, host=host, store=store, sign_in=sign_in)
+
+
+# ── The scaffold ───────────────────────────────────────────────────────
 
 
 def handle_init(config: InitConfig) -> None:
     """Scaffold a Haute project at :func:`pathlib.Path.cwd`.
 
     Pure function version of the ``haute init`` command — takes a typed
-    :class:`InitConfig` and writes all scaffold files.  Exits with
-    ``SystemExit(1)`` when ``haute.toml`` already exists (the scaffold
-    never overwrites an existing project).
+    :class:`InitConfig`, takes the answers its flags leave out (:func:`_answers`) and writes
+    all scaffold files: an automated project's for its deploy target, or a workbench
+    project's, which hosts no scoring API, for its app's host and the quote store's database.
+    Exits with ``SystemExit(1)`` when ``haute.toml`` already exists, before any question (the
+    scaffold never overwrites an existing project, and never converts one into a workbench
+    project).
     """
     from haute._connections import CONNECTIONS_FILE, ConnectionsError
     from haute._project_layout import PIPELINE_FILES_FOLDER, PIPELINE_FILES_SUBFOLDERS
     from haute._project_python import ProjectPythonError, project_python_version
     from haute._scaffold import (
+        app_env_example,
         ci_files,
         ci_secret_names,
         connection_variables,
@@ -647,11 +743,10 @@ def handle_init(config: InitConfig) -> None:
         starter_test_quote,
         starter_utility_features,
         starter_utility_init,
+        workbench_ci_files,
+        workbench_haute_toml,
     )
     from haute._workbench_config import FORM_FOLDER
-
-    target = config.target
-    ci = config.ci
 
     # Solo mode is configured in haute.toml, not via a CLI flag.
     # Default is team mode; user sets min_approvers = 0 for solo.
@@ -659,15 +754,16 @@ def handle_init(config: InitConfig) -> None:
     project_dir = Path.cwd()
 
     if (project_dir / "haute.toml").exists() and not config.force:
-        if config.workbench:
-            _add_workbench(project_dir)
-            return
         click.echo(
             "Error: haute.toml already exists - project already initialised. "
             "Re-run with --force to overwrite the existing scaffold.",
             err=True,
         )
         raise SystemExit(1)
+
+    answers = _answers(config)
+    ci = answers.ci
+    workbench = answers.workbench
 
     # -- The project's Python, read before anything is written -----------------
     try:
@@ -689,9 +785,7 @@ def handle_init(config: InitConfig) -> None:
     # A form folder already there, on a --force re-init, is the analyst's form: never a blank
     # one in its place.
     form_folder = project_dir / "rating" / FORM_FOLDER
-    form_files = (
-        starter_form(name, form_folder) if config.workbench and not form_folder.exists() else {}
-    )
+    form_files = starter_form(name, form_folder) if workbench and not form_folder.exists() else {}
     problem = _form_folder_problem(project_dir, f"rating/{FORM_FOLDER}", form_files)
     if problem is not None:
         click.echo(f"Error: {problem}", err=True)
@@ -699,7 +793,7 @@ def handle_init(config: InitConfig) -> None:
     # connections.toml already there, on a --force re-init, holds the team's connections:
     # never a blank one in its place, and it must read, since .env.example names its variables.
     connections_path = project_dir / CONNECTIONS_FILE
-    write_connections = config.workbench and not connections_path.exists()
+    write_connections = workbench and not connections_path.exists()
     problem = _root_file_problem(project_dir, CONNECTIONS_FILE) if write_connections else None
     if problem is not None:
         click.echo(f"Error: {problem}", err=True)
@@ -710,7 +804,10 @@ def handle_init(config: InitConfig) -> None:
         raise click.ClickException(str(exc)) from exc
 
     # -- pyproject.toml - ensure haute is a dependency -------------------------
-    _ensure_haute_dependency(pyproject_path, name)
+    # A workbench project's release installs its quote store's driver, so haute comes with
+    # the extra that brings it.
+    requirement = f"haute[{answers.store}]" if workbench else "haute"
+    _ensure_haute_dependency(pyproject_path, name, requirement)
 
     # -- .python-version - one Python for local, CI and the deployed model -----
     python_version_file = project_dir / ".python-version"
@@ -745,11 +842,16 @@ def handle_init(config: InitConfig) -> None:
     for sub in PIPELINE_FILES_SUBFOLDERS:
         (rating_dir / PIPELINE_FILES_FOLDER / sub).mkdir(parents=True, exist_ok=True)
 
-    # -- haute.toml - project + deploy + safety + CI (+ workbench) config -------
-    (project_dir / "haute.toml").write_text(
-        haute_toml(name, target, ci, workbench=config.workbench, python_version=python_version),
-        encoding="utf-8",
-    )
+    # -- haute.toml - project, deploy or app image, safety, CI and workbench config --
+    if workbench:
+        assert answers.host is not None and answers.store is not None
+        toml_text = workbench_haute_toml(
+            name, ci, host=answers.host, store=answers.store, python_version=python_version
+        )
+    else:
+        assert answers.target is not None
+        toml_text = haute_toml(name, answers.target, ci, python_version=python_version)
+    (project_dir / "haute.toml").write_text(toml_text, encoding="utf-8")
 
     # -- rating/workbench/ - the workbench's blank form folder ------------------
     if form_files:
@@ -757,12 +859,21 @@ def handle_init(config: InitConfig) -> None:
 
     # -- connections.toml - each environment's database, for this machine -------
     if write_connections:
-        connections_path.write_text(connections_toml(), encoding="utf-8")
+        assert answers.store is not None and answers.sign_in is not None
+        connections_path.write_text(
+            connections_toml(answers.store, answers.sign_in), encoding="utf-8"
+        )
 
-    # -- .env.example - target-specific credentials and connections' sign-ins --
-    (project_dir / ".env.example").write_text(
-        env_example(target, connection_variables(project_dir)), encoding="utf-8"
+    # -- .env.example - the credentials CI reads and connections' sign-ins -----
+    variables = connection_variables(project_dir)
+    credentials = answers.host if workbench else answers.target
+    assert credentials is not None
+    env_text = (
+        app_env_example(credentials, variables)
+        if workbench
+        else env_example(credentials, variables)
     )
+    (project_dir / ".env.example").write_text(env_text, encoding="utf-8")
 
     # -- Starter test file + test quotes ---------------------------------------
     tests_dir = project_dir / "tests"
@@ -779,12 +890,16 @@ def handle_init(config: InitConfig) -> None:
     )
 
     # -- CI/CD workflow files --------------------------------------------------
-    # On a --force re-init the provider may have changed since the last run;
-    # remove the previous provider's artifacts before writing the new set so
+    generated_ci = (
+        workbench_ci_files(credentials, ci, python_version=python_version)
+        if workbench
+        else ci_files(credentials, ci, python_version=python_version)
+    )
+    # On a --force re-init the provider, or the kind of project, may have changed since the
+    # last run; remove every generated file the new set does not hold before writing it, so
     # stale workflows don't linger.
     if config.force:
-        _prune_stale_ci_files(project_dir, keep=ci)
-    generated_ci = ci_files(target, ci, python_version=python_version)
+        _prune_stale_ci_files(project_dir, keep=generated_ci.keys())
     write_generated_files(project_dir, generated_ci)
 
     # -- Pre-commit hook -------------------------------------------------------
@@ -819,15 +934,17 @@ def handle_init(config: InitConfig) -> None:
     ensure_gitignore_guards(project_dir)
 
     # -- Summary ---------------------------------------------------------------
-    click.echo(f"Initialised Haute project '{name}' ({target} + {ci})\n")
-    click.echo("  pyproject.toml        - haute added as dependency")
-    if config.workbench:
-        click.echo("  haute.toml            - project, deploy, safety, CI & workbench config")
+    kind = f"workbench on {credentials}" if workbench else credentials
+    click.echo(f"Initialised Haute project '{name}' ({kind} + {ci})\n")
+    click.echo(f"  pyproject.toml        - {requirement} added as dependency")
+    if workbench:
+        click.echo("  haute.toml            - project, app image, CI & workbench config")
         click.echo("  rating/workbench/     - the workbench's blank form")
         click.echo(f"  {CONNECTIONS_FILE:<21} - where each environment's database is")
+        click.echo(f"  .env.example         - {credentials} credentials and sign-ins template")
     else:
         click.echo("  haute.toml            - project, deploy, safety & CI config")
-    click.echo(f"  .env.example         - {target} credentials template")
+        click.echo(f"  .env.example         - {credentials} credentials template")
     click.echo("  rating/main.py       - starter pipeline")
     click.echo("  rating/utility/      - project-level utility functions")
     click.echo("  data/                - put your data files here")
@@ -841,9 +958,10 @@ def handle_init(config: InitConfig) -> None:
     click.echo("  uv sync                # install dependencies")
     click.echo("  cp .env.example .env   # fill in credentials")
     click.echo("  haute serve")
-    secret_names = ci_secret_names(target)
+    secret_names = ci_secret_names(credentials)
     if ci != "none" and secret_names:
-        click.echo(f"\nBefore the first deploy, {ci} needs these CI secrets:")
+        first = "release" if workbench else "deploy"
+        click.echo(f"\nBefore the first {first}, {ci} needs these CI secrets:")
         for secret_name in secret_names:
             click.echo(f"  {secret_name}")
         if ci == "github":
@@ -852,36 +970,48 @@ def handle_init(config: InitConfig) -> None:
 
 @click.command()
 @click.option(
-    "--target",
-    type=click.Choice(
-        [
-            "databricks",
-            "container",
-            "azure-container-apps",
-            "aws-ecs",
-            "gcp-run",
-        ]
-    ),
-    default="databricks",
+    "--workbench/--automated",
+    "workbench",
+    default=None,
     help=(
-        "Deploy target (default: databricks). azure-container-apps, aws-ecs and gcp-run "
-        "are build and push only: deploy builds the image and pushes it when a registry "
-        "is configured, but does not update the service yet."
+        "How the project prices quotes: in the workbench, an app underwriters price quotes "
+        "in, or automated, an API other systems call (default: automated)."
     ),
 )
 @click.option(
     "--ci",
-    type=click.Choice(["github", "gitlab", "azure-devops", "none"]),
-    default="github",
+    type=click.Choice(CI_CHOICES),
+    default=None,
     help="CI/CD provider (default: github).",
 )
 @click.option(
-    "--workbench",
-    is_flag=True,
+    "--target",
+    type=click.Choice(TARGET_CHOICES),
+    default=None,
     help=(
-        "Enable the project's workbench: add the [workbench] table to haute.toml and a "
-        "blank form folder beside the pipeline, in a new project or in one that has none."
+        "An automated project's deploy target (default: databricks). azure-container-apps, "
+        "aws-ecs and gcp-run are build and push only: deploy builds the image and pushes it "
+        "when a registry is configured, but does not update the service yet."
     ),
+)
+@click.option(
+    "--host",
+    type=click.Choice(HOST_CHOICES),
+    default=None,
+    help="Where a workbench project's underwriter app runs (default: azure-container-apps).",
+)
+@click.option(
+    "--store",
+    type=click.Choice(STORE_CHOICES),
+    default=None,
+    help="The database a workbench project's saved quotes are on.",
+)
+@click.option(
+    "--sign-in",
+    "sign_in",
+    type=click.Choice(SIGN_IN_CHOICES),
+    default=None,
+    help="How you sign in to that database.",
 )
 @click.option(
     "--force",
@@ -889,22 +1019,40 @@ def handle_init(config: InitConfig) -> None:
     is_flag=True,
     help="Overwrite existing scaffold files (haute.toml, starter pipeline, etc.).",
 )
-def init(target: str, ci: str, workbench: bool, force: bool) -> None:
+def init(
+    workbench: bool | None,
+    ci: str | None,
+    target: str | None,
+    host: str | None,
+    store: str | None,
+    sign_in: str | None,
+    force: bool,
+) -> None:
     """Scaffold a Haute pricing project in the current directory.
 
-    Generates haute.toml, CI/CD workflows, credentials template, and a
-    starter pipeline - all configured for the chosen deploy target and
-    CI provider. With --workbench, the project's workbench is enabled in
-    haute.toml and its blank form folder written to rating/workbench/; in a project
-    that already has a haute.toml, --workbench adds the table and the folder alone.
+    At a terminal it asks what its flags leave out: how the project prices
+    quotes, where the repository is, where it is hosted and, for a workbench
+    project, the database its saved quotes are on and how you sign in to it.
+    It then generates haute.toml, CI/CD workflows, a credentials template and a
+    starter pipeline. A workbench project hosts no scoring API: its workflows
+    build and publish the underwriter app.
 
     \b
     Examples:
-      haute init                                  # databricks + github
-      haute init --target container --ci none      # container, no CI
+      haute init                                  # asks, at a terminal
+      haute init --target container --ci none     # container, no CI
       haute init --target aws-ecs --ci github     # AWS ECS (build and push only)
-      haute init --workbench                      # with the workbench enabled
+      haute init --workbench --store sqlserver --sign-in entra
       haute init --force                          # overwrite existing scaffold
     """
-    config = InitConfig(target=target, ci=ci, force=force, workbench=workbench)
+    config = InitConfig(
+        target=target,
+        ci=ci,
+        force=force,
+        workbench=workbench,
+        host=host,
+        store=store,
+        sign_in=sign_in,
+        interactive=_at_terminal(),
+    )
     handle_init(config)

@@ -143,6 +143,16 @@ def _text(settings: Mapping[str, object], key: str, at: str, *, optional: bool) 
     return value.strip()
 
 
+def connection_sign_in_keys(provider: str, auth: str) -> tuple[str, ...]:
+    """The keys a server's connection on *provider* signed in to with *auth*, one of
+    ``CONNECTION_SIGN_INS``, names, each the variable that holds what the sign-in needs."""
+    keys = CONNECTION_SIGN_INS[auth]
+    if provider in ROLE_NAMED and auth in _ENTRA:
+        # The role a PostgreSQL server maps the Entra identity to, by name.
+        keys = (*keys, "username_env")
+    return keys
+
+
 def _connection(name: str, settings: dict[str, object]) -> Connection:
     at = f"{CONNECTIONS_FILE} [{name}]"
     for key in settings:
@@ -171,10 +181,7 @@ def _connection(name: str, settings: dict[str, object]) -> Connection:
         )
     if not isinstance(auth, str) or auth not in CONNECTION_SIGN_INS:
         raise ConnectionsError(f"{at}.auth must be one of {', '.join(CONNECTION_SIGN_INS)}")
-    keys = CONNECTION_SIGN_INS[auth]
-    if provider in ROLE_NAMED and auth in _ENTRA:
-        # The role a PostgreSQL server maps the Entra identity to, by name.
-        keys = (*keys, "username_env")
+    keys = connection_sign_in_keys(provider, auth)
     known = {"provider", "auth", *_LOCATION_KEYS, *keys}
     unknown = sorted(set(settings) - known)
     if unknown:

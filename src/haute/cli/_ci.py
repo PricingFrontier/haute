@@ -54,7 +54,8 @@ def _project() -> tuple[Path, DeployConfig]:
 
 
 def handle_ci_secrets(config: CiSecretsConfig) -> None:
-    """Set the deploy target's CI secrets from ``.env``, or report which are set.
+    """Set the CI secrets of the project's CI credentials from ``.env``, or report which are
+    set: the deploy target's, or a workbench project's app host's (``ci_credentials``).
 
     Values are read from the project's ``.env``, or from the environment for a name
     ``.env`` does not set, never printed, and passed to ``gh secret set`` on its standard
@@ -65,10 +66,14 @@ def handle_ci_secrets(config: CiSecretsConfig) -> None:
     missing.
     """
     from haute import _ci_secrets
-    from haute._scaffold import ci_secret_names
+    from haute._scaffold import ci_credentials, ci_secret_names
+    from haute._workbench_config import WorkbenchConfigError
 
     project_dir, deploy_config = _project()
-    target = deploy_config.target
+    try:
+        target = ci_credentials(project_dir, deploy_config.target)
+    except WorkbenchConfigError as exc:
+        raise click.ClickException(str(exc)) from exc
     provider = deploy_config.ci.provider
     names = ci_secret_names(target)
     if not names:
@@ -127,32 +132,49 @@ def handle_ci_update() -> None:
     """Rewrite the generated CI files and ``.env.example`` for the installed haute.
 
     The files are generated as ``haute init`` would for the project's ``[ci]
-    provider``, ``[deploy] target``, workbench, ``connections.toml`` and Python, with the
+    provider``, ``connections.toml`` and Python: a workbench project's for its
+    ``[workbench.app] host``, an automated project's for its ``[deploy] target``, with the
     staging steps on its
     ``[ci.staging] endpoint_suffix`` and the production job under its ``[ci.production]
-    environment``; another provider's generated files are removed, and every other file is
-    left alone. Reports each file as updated or unchanged.
+    environment``; every other generated file (another provider's, or the other kind of
+    project's) is removed, and every other file is left alone. Reports each file as updated
+    or unchanged.
     """
     from haute._connections import ConnectionsError
     from haute._project_python import ProjectPythonError, project_python_version
     from haute._scaffold import (
+        app_env_example,
+        ci_credentials,
         ci_files,
         connection_variables,
         env_example,
         production_environment_problem,
         staging_suffix_problem,
+        workbench_ci_files,
     )
+    from haute._workbench_config import WorkbenchConfigError, read_workbench_config
     from haute.cli._init_cmd import _prune_stale_ci_files, write_generated_files
 
     project_dir, deploy_config = _project()
     provider = deploy_config.ci.provider
-    target = deploy_config.target
+    try:
+        workbench = read_workbench_config(project_dir).enabled
+        # A workbench project's CI reads its app host's credentials, a host it must name.
+        credentials = ci_credentials(project_dir, deploy_config.target)
+    except WorkbenchConfigError as exc:
+        raise click.ClickException(str(exc)) from exc
     staging_suffix = deploy_config.ci.staging_endpoint_suffix
     production_environment = deploy_config.ci.production_environment
-    for key, problem in (
-        ("[ci.staging] endpoint_suffix", staging_suffix_problem(staging_suffix)),
-        ("[ci.production] environment", production_environment_problem(production_environment)),
-    ):
+    # A workbench project's workflows deploy no endpoint, so neither key reaches them.
+    checked = (
+        ()
+        if workbench
+        else (
+            ("[ci.staging] endpoint_suffix", staging_suffix_problem(staging_suffix)),
+            ("[ci.production] environment", production_environment_problem(production_environment)),
+        )
+    )
+    for key, problem in checked:
         if problem is not None:
             raise click.ClickException(f"{key} in haute.toml {problem}.")
     try:
@@ -160,12 +182,16 @@ def handle_ci_update() -> None:
     except ProjectPythonError as exc:
         raise click.ClickException(str(exc)) from exc
     try:
-        generated = ci_files(
-            target,
-            provider,
-            python_version=python_version,
-            staging_suffix=staging_suffix,
-            production_environment=production_environment,
+        generated = (
+            workbench_ci_files(credentials, provider, python_version=python_version)
+            if workbench
+            else ci_files(
+                credentials,
+                provider,
+                python_version=python_version,
+                staging_suffix=staging_suffix,
+                production_environment=production_environment,
+            )
         )
     except ValueError as exc:
         raise click.ClickException(f"{exc} in [ci] provider of haute.toml.") from exc
@@ -173,8 +199,13 @@ def handle_ci_update() -> None:
         variables = connection_variables(project_dir)
     except ConnectionsError as exc:
         raise click.ClickException(str(exc)) from exc
-    files = {**generated, ".env.example": env_example(target, variables)}
-    _prune_stale_ci_files(project_dir, keep=provider)
+    env_text = (
+        app_env_example(credentials, variables)
+        if workbench
+        else env_example(credentials, variables)
+    )
+    files = {**generated, ".env.example": env_text}
+    _prune_stale_ci_files(project_dir, keep=generated.keys())
     changed = write_generated_files(project_dir, files)
     for rel in files:
         click.echo(f"  {'updated  ' if rel in changed else 'unchanged'} {rel}")

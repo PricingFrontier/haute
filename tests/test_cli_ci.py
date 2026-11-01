@@ -16,7 +16,15 @@ from unittest.mock import patch
 
 import pytest
 
-from haute._scaffold import ci_files, connection_variables, connections_toml, env_example
+from haute._scaffold import (
+    app_env_example,
+    ci_files,
+    ci_secret_names,
+    connection_variables,
+    connections_toml,
+    env_example,
+    workbench_ci_files,
+)
 from haute.cli import cli
 
 _VALUES = {
@@ -250,7 +258,9 @@ def test_update_rewrites_the_generated_files(runner, project: Path) -> None:
 def test_update_names_the_sign_ins_connections_toml_reads_in_env_example(
     runner, project: Path
 ) -> None:
-    (project / "connections.toml").write_text(connections_toml(), encoding="utf-8")
+    (project / "connections.toml").write_text(
+        connections_toml("sqlserver", "password"), encoding="utf-8"
+    )
 
     result = runner.invoke(cli, ["ci", "update"])
 
@@ -281,6 +291,72 @@ def test_update_follows_a_change_of_provider(runner, project: Path) -> None:
     assert result.exit_code == 0, result.output
     assert (project / ".gitlab-ci.yml").is_file()
     assert not (project / ".github").exists()
+
+
+@pytest.fixture
+def workbench_project(runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A workbench project on GitHub, as ``haute init`` makes it."""
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        cli, ["init", "--workbench", "--store", "sqlserver", "--sign-in", "password"]
+    )
+    assert result.exit_code == 0, result.output
+    return tmp_path
+
+
+def test_update_rewrites_a_workbench_projects_own_set(runner, workbench_project: Path) -> None:
+    workflows = workbench_project / ".github" / "workflows"
+    release = workflows / "release.yml"
+    release.write_text("name: edited\n", encoding="utf-8")
+    # An endpoint's workflow left from before: a workbench project deploys none.
+    (workflows / "deploy-staging.yml").write_text("name: stale\n", encoding="utf-8")
+    # The endpoint's staging suffix reaches none of its workflows, so it is never checked.
+    toml = workbench_project / "haute.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8") + '\n[ci.staging]\nendpoint_suffix = ""\n',
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
+    expected = workbench_ci_files("azure-container-apps", "github", python_version="3.11")
+    assert release.read_text(encoding="utf-8") == expected[".github/workflows/release.yml"]
+    assert sorted(path.name for path in workflows.iterdir()) == ["ci.yml", "release.yml"]
+    assert (workbench_project / ".env.example").read_text(encoding="utf-8") == app_env_example(
+        "azure-container-apps", connection_variables(workbench_project)
+    )
+    assert "updated   .github/workflows/release.yml" in result.output
+    assert "unchanged .github/workflows/ci.yml" in result.output
+
+
+def test_update_refuses_a_workbench_project_naming_no_host(runner, workbench_project: Path) -> None:
+    toml = workbench_project / "haute.toml"
+    text = toml.read_text(encoding="utf-8")
+    assert '[workbench.app]\nhost = "azure-container-apps"\n' in text
+    toml.write_text(
+        text.replace('[workbench.app]\nhost = "azure-container-apps"\n', ""), encoding="utf-8"
+    )
+    release = workbench_project / ".github" / "workflows" / "release.yml"
+    release.write_text("name: edited\n", encoding="utf-8")
+
+    refused = runner.invoke(cli, ["ci", "update"])
+
+    assert refused.exit_code == 1
+    assert "[workbench.app] names no host" in refused.output
+    assert "Traceback" not in refused.output
+    assert release.read_text(encoding="utf-8") == "name: edited\n"
+
+
+def test_a_workbench_projects_secrets_are_its_app_hosts(runner, workbench_project: Path) -> None:
+    names = ci_secret_names("azure-container-apps")
+
+    result, _ = _invoke(runner, ["secrets", "--check"], _Gh(existing=tuple(names)))
+
+    assert result.exit_code == 0, result.output
+    for name in names:
+        assert f"✓ {name}" in result.output
+    assert "DATABRICKS" not in result.output
 
 
 def _set_staging_suffix(project: Path, toml_value: str) -> None:

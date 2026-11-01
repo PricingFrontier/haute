@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -37,6 +38,7 @@ from haute._workbench_form import (
 )
 from haute.deploy._utils import shipped_graph
 from haute.execution import ExecutionProfile
+from tests._git_helpers import git_run, init_repo
 from tests._store_servers import Target
 from tests._workbench_helpers import form_files, write_files
 from tests.test_workbench_routes import POLICY, PRICING, form
@@ -1190,6 +1192,134 @@ def test_haute_app_build_builds_the_image_with_docker(
     refused = CliRunner().invoke(cli, ["app", "build", "out", "--image", "motor-app:1"])
     assert refused.exit_code != 0
     assert "Docker is not available here" in refused.output
+
+
+class _Docker:
+    """``docker`` as ``subprocess.run`` runs it in the container module: each command, the
+    images it pushed, and the digests ``docker image inspect`` reports for them."""
+
+    def __init__(self, *, digests: list[str] | None = None, push_fails: bool = False) -> None:
+        self.commands: list[list[str]] = []
+        self.digests = digests
+        self.push_fails = push_fails
+        # Every other program, git naming the commit among them, runs for real.
+        self.real = subprocess.run
+
+    def __call__(self, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if args[0] != "docker":
+            return self.real(args, **kwargs)
+        self.commands.append(list(args))
+        verb = args[1:3]
+        if verb[0] == "push" and self.push_fails:
+            return subprocess.CompletedProcess(args, 1, "", "denied: requested access")
+        if verb == ["image", "inspect"]:
+            tag = args[-1]
+            repository = tag[: tag.rindex(":")]
+            digests = (
+                self.digests if self.digests is not None else [f"{repository}@sha256:" + "a" * 64]
+            )
+            return subprocess.CompletedProcess(args, 0, json.dumps(digests), "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+
+_REGISTRY = (
+    '\n[deploy.container]\nregistry = "acr.example.io/pricing/"\n'
+    'base_image = "python:3.11.9-slim"\n'
+)
+
+
+def test_haute_app_build_push_publishes_the_image_and_prints_its_digest_last(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from click.testing import CliRunner
+
+    import haute.deploy._container as container
+    from haute.cli import cli
+
+    init_repo(project)
+    commit = git_run(project, "rev-parse", "--short", "HEAD")
+    docker = _Docker()
+    monkeypatch.setattr(container.subprocess, "run", docker)
+
+    # No registry: refused before anything is built.
+    _pin_base_image(project)
+    refused = CliRunner().invoke(cli, ["app", "build", "out", "--push"])
+    assert refused.exit_code != 0
+    assert "[deploy.container] registry is empty" in refused.output
+    assert docker.commands == []
+    assert not (project / "out").exists()
+
+    toml = project / "haute.toml"
+    toml.write_text(toml.read_text(encoding="utf-8").replace(PINNED, _REGISTRY), encoding="utf-8")
+    result = CliRunner().invoke(cli, ["app", "build", "out", "--push"])
+
+    assert result.exit_code == 0, result.output
+    # Tagged with the commit published.
+    tag = f"acr.example.io/pricing/motor:{commit}"
+    assert [command[1:3] for command in docker.commands] == [
+        ["info"],
+        ["build", "-t"],
+        ["push", tag],
+        ["image", "inspect"],
+    ]
+    assert docker.commands[1][3] == tag and docker.commands[3][-1] == tag
+    assert f"Image pushed: {tag}" in result.output
+    # The last line is what was published, by digest: what CI records and a host runs.
+    assert result.output.rstrip().splitlines()[-1] == (
+        "acr.example.io/pricing/motor@sha256:" + "a" * 64
+    )
+
+    both = CliRunner().invoke(cli, ["app", "build", "out", "--push", "--image", "x:1"])
+    assert both.exit_code == 2
+    assert "--image and --push each build the image" in both.output
+
+
+def test_the_published_image_is_named_after_its_commit_in_lower_case(tmp_path: Path) -> None:
+    (tmp_path / "main.py").write_text('import haute\n\npipeline = haute.Pipeline("p")\n')
+    toml = tmp_path / "haute.toml"
+    toml.write_text('[project]\nname = "Motor_Pricing"\npipeline = "main.py"\n')
+    with pytest.raises(WorkbenchAppError, match=r"\[deploy.container\] registry is empty"):
+        workbench_app.image_reference(tmp_path)
+
+    toml.write_text(toml.read_text() + '\n[deploy.container]\nregistry = "acr.example.io/"\n')
+    # Outside a repository git names no commit: never a tag that names none.
+    with pytest.raises(WorkbenchAppError, match="tagged with the commit it is built from"):
+        workbench_app.image_reference(tmp_path)
+
+    init_repo(tmp_path)
+    commit = git_run(tmp_path, "rev-parse", "--short", "HEAD")
+
+    # Docker takes no capital in a repository's name.
+    assert workbench_app.image_reference(tmp_path) == f"acr.example.io/motor_pricing:{commit}"
+
+
+@pytest.mark.parametrize(
+    ("docker", "said"),
+    [
+        (_Docker(push_fails=True), "Docker push failed"),
+        (_Docker(digests=["other.example.io/motor@sha256:" + "b" * 64]), "holds no digest"),
+        (_Docker(digests=[]), "holds no digest"),
+    ],
+    ids=["push-refused", "another-repository", "no-digest"],
+)
+def test_haute_app_build_push_fails_when_the_push_records_no_digest(
+    project: Path, monkeypatch: pytest.MonkeyPatch, docker: _Docker, said: str
+) -> None:
+    from click.testing import CliRunner
+
+    import haute.deploy._container as container
+    from haute.cli import cli
+
+    toml = project / "haute.toml"
+    toml.write_text(toml.read_text(encoding="utf-8") + _REGISTRY, encoding="utf-8")
+    init_repo(project)
+    monkeypatch.setattr(container.subprocess, "run", docker)
+
+    result = CliRunner().invoke(cli, ["app", "build", "out", "--push"])
+
+    assert result.exit_code == 1
+    assert said in result.output
+    assert "Traceback" not in result.output
 
 
 def test_the_release_prices_and_keeps_quotes_with_only_the_images_runtime_installed(

@@ -505,6 +505,58 @@ def build_image(release_dir: Path, tag: str) -> None:
         raise WorkbenchAppError(str(exc)) from exc
 
 
+def image_reference(project_dir: Path) -> str:
+    """The image ``haute app build --push`` publishes for the project at *project_dir*:
+    ``<registry>/<name>:<short commit>``, the registry ``[deploy.container] registry`` names
+    and the project's name (``[deploy] model_name``'s default, which a workbench project never
+    sets) in lower case, since Docker takes no capital in a repository's name. Raises
+    :class:`WorkbenchAppError` for a project naming no registry, since a published image needs
+    one, a name an image cannot take, or a project whose commit git cannot name, since the
+    tag says which commit was published."""
+    from haute._git_core import _run_git_ok, git_binary_available
+    from haute.deploy._config import DeployConfig
+    from haute.deploy._container import _validate_model_name
+
+    config = DeployConfig.from_toml(project_dir / "haute.toml")
+    registry = config.container.registry.rstrip("/")
+    if not registry:
+        raise WorkbenchAppError(
+            "[deploy.container] registry is empty: name the registry the app's image is "
+            "pushed to in haute.toml."
+        )
+    try:
+        _validate_model_name(config.model_name)
+    except ValueError as exc:
+        raise WorkbenchAppError(f"The project's name cannot name an image: {exc}") from exc
+    named, commit = (
+        _run_git_ok("rev-parse", "--short", "HEAD", cwd=project_dir)
+        if git_binary_available()
+        else (False, "")
+    )
+    if not named or not commit:
+        raise WorkbenchAppError(
+            "The app's image is tagged with the commit it is built from, and git names none "
+            "here: publish from a clone of the project with git installed and a commit made."
+        )
+    return f"{registry}/{config.model_name.lower()}:{commit}"
+
+
+def push_image(release_dir: Path, reference: str) -> str:
+    """Build the image of the release in *release_dir* as *reference*
+    (:func:`image_reference`), push it, and answer the reference by digest the registry holds
+    for it, ``<registry>/<name>@sha256:...``: what was published, whatever the tag points at
+    later."""
+    from haute.deploy._container import _docker_push, _docker_repo_digest
+    from haute.errors import DeployError
+
+    build_image(release_dir, reference)
+    try:
+        _docker_push(reference)
+        return _docker_repo_digest(reference)
+    except DeployError as exc:
+        raise WorkbenchAppError(str(exc)) from exc
+
+
 def _read_json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))

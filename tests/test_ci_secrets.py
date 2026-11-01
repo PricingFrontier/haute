@@ -570,6 +570,28 @@ def test_a_gh_call_past_its_timeout_fails_as_ci_secrets_error(tmp_path: Path) ->
         run_gh(_GH, tmp_path, "secret", "list")
 
 
+def test_remote_secrets_of_a_workbench_project_are_its_app_hosts(
+    runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A workbench project deploys no endpoint: Push sets the secrets its CI publishes the
+    app's image with, its host's, never the Databricks target its [deploy] reads as."""
+    from haute._scaffold import ci_secret_names
+
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        cli, ["init", "--workbench", "--store", "sqlserver", "--sign-in", "password"]
+    )
+    assert result.exit_code == 0, result.output
+    init_repo(tmp_path)
+    _git(tmp_path, "remote", "add", "origin", "https://github.com/acme/motor.git")
+
+    secrets = _ci_secrets.remote_secrets("origin", tmp_path)
+
+    assert secrets is not None
+    assert secrets.target == "azure-container-apps"
+    assert list(secrets.names) == ci_secret_names("azure-container-apps")
+
+
 def test_remote_secrets_need_haute_toml(tmp_path: Path) -> None:
     init_repo(tmp_path)
     _git(tmp_path, "remote", "add", "origin", "https://github.com/acme/motor.git")
