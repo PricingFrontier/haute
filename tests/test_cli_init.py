@@ -888,6 +888,13 @@ class TestInitWorkbench:
         # one database, each signed in to by the app's managed identity.
         config = read_workbench_config(project_dir)
         assert config.enabled and config.app_host == "azure-container-apps"
+        # Each hosted environment's Container App, left for IT to name.
+        assert [
+            (each.name, each.resource_group, each.container_app) for each in config.app_environments
+        ] == [
+            ("staging", "", ""),
+            ("prod", "", ""),
+        ]
         assert [(env.name, env.provider, env.auth) for env in config.store] == [
             (name, store, "managed-identity") for name in ("dev", "staging", "prod")
         ]
@@ -908,10 +915,14 @@ class TestInitWorkbench:
         assert "AZURE_CLIENT_SECRET=" in env and "DATABRICKS" not in env
         # The release installs the store's driver: haute comes with its extra.
         with open(project_dir / "pyproject.toml", "rb") as fh:
-            assert tomllib.load(fh)["project"]["dependencies"] == [f"haute[{store}]"]
+            assert tomllib.load(fh)["project"]["dependencies"] == [f"haute[{store},azure]"]
         # The workbench's workflows, and no endpoint's.
         workflows = project_dir / ".github" / "workflows"
-        assert sorted(path.name for path in workflows.iterdir()) == ["ci.yml", "release.yml"]
+        assert sorted(path.name for path in workflows.iterdir()) == [
+            "ci.yml",
+            "release-production.yml",
+            "release.yml",
+        ]
         folder = project_dir / "rating" / "workbench"
         assert sorted(
             path.relative_to(folder).as_posix() for path in folder.rglob("*") if path.is_file()
@@ -956,7 +967,8 @@ class TestInitWorkbench:
         assert "haute ci registry-host" in text and "$AZURE_CLIENT_SECRET" in text
         for endpoint in ("haute deploy", "haute smoke", "haute impact"):
             assert endpoint not in text
-        assert "Nothing rolls a hosted app to it yet" in text
+        assert "uv run haute app rollout staging --image" in text
+        assert "uv run haute app rollout prod --from staging" in text
 
     @pytest.mark.parametrize(
         ("ci", "workflow", "entry"),
@@ -1035,7 +1047,11 @@ class TestInitWorkbench:
         runner.invoke(cli, ["init", "--force", *WORKBENCH], catch_exceptions=False)
         with open(tmp_path / "haute.toml", "rb") as fh:
             assert tomllib.load(fh)["workbench"]["enabled"] is True
-        assert sorted(path.name for path in workflows.iterdir()) == ["ci.yml", "release.yml"]
+        assert sorted(path.name for path in workflows.iterdir()) == [
+            "ci.yml",
+            "release-production.yml",
+            "release.yml",
+        ]
         assert "haute app build" in (workflows / "ci.yml").read_text(encoding="utf-8")
         assert index.read_bytes() == edited
         assert connections.read_bytes() == filled

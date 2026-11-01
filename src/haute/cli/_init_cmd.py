@@ -457,6 +457,7 @@ GENERATED_CI_FILES: tuple[str, ...] = (
     ".github/workflows/deploy-staging.yml",
     ".github/workflows/deploy-production.yml",
     ".github/workflows/release.yml",
+    ".github/workflows/release-production.yml",
     ".gitlab-ci.yml",
     "azure-pipelines.yml",
 )
@@ -804,9 +805,9 @@ def handle_init(config: InitConfig) -> None:
         raise click.ClickException(str(exc)) from exc
 
     # -- pyproject.toml - ensure haute is a dependency -------------------------
-    # A workbench project's release installs its quote store's driver, so haute comes with
-    # the extra that brings it.
-    requirement = f"haute[{answers.store}]" if workbench else "haute"
+    # A workbench project's release installs its quote store's driver, and its CI rolls the
+    # hosted app out through the Azure management packages, so haute comes with both extras.
+    requirement = f"haute[{answers.store},azure]" if workbench else "haute"
     _ensure_haute_dependency(pyproject_path, name, requirement)
 
     # -- .python-version - one Python for local, CI and the deployed model -----

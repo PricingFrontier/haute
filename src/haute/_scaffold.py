@@ -511,6 +511,8 @@ provider = "{ci}"
 #: The quote store's environments a new workbench declares: ``dev`` for ``haute app serve``,
 #: ``staging`` and ``prod`` for the hosted app.
 WORKBENCH_ENVIRONMENTS = ("dev", "staging", "prod")
+#: The environments whose app the host runs, which the workbench's CI rolls out.
+HOSTED_ENVIRONMENTS = ("staging", "prod")
 #: The databases a new workbench's quote store can be on, the servers of
 #: ``haute._workbench_config.STORE_PROVIDERS``: all three environments are on one.
 WORKBENCH_STORES = ("sqlserver", "postgresql")
@@ -528,9 +530,9 @@ def _sign_in_variables(prefix: str, keys: Sequence[str]) -> str:
 
 def workbench_table(host: str, store: str) -> str:
     """``haute.toml``'s ``[workbench]`` table as a workbench ``haute init`` writes it: the
-    workbench enabled, the underwriter app run on *host* and the quote store's environments
-    declared, each on *store* and signed in to by the hosted app's managed identity
-    (specs/workbench)."""
+    workbench enabled, the underwriter app run on *host*, each hosted environment's Container
+    App left for IT to name, and the quote store's environments declared, each on *store* and
+    signed in to by the hosted app's managed identity (specs/workbench)."""
     from haute._workbench_config import APP_HOSTS, store_sign_in_keys
 
     if host not in APP_HOSTS:
@@ -544,6 +546,10 @@ def workbench_table(host: str, store: str) -> str:
         f'[workbench.store.{name}]\nprovider = "{store}"\nauth = "managed-identity"\n{sign_in}'
         for name in WORKBENCH_ENVIRONMENTS
     )
+    apps = "\n".join(
+        f'[workbench.app.{name}]\nresource_group = ""\ncontainer_app = ""\n'
+        for name in HOSTED_ENVIRONMENTS
+    )
     return f"""\
 [workbench]
 enabled = true
@@ -551,6 +557,9 @@ enabled = true
 [workbench.app]
 host = "{host}"
 
+# The Container App each hosted environment's app runs as, which haute app rollout rolls out:
+# your IT team fills them in.
+{apps}
 # The quote store's environments. A hosted app finds its database through the host's
 # HAUTE_STORE_* variables; the editor and haute app serve through connections.toml.
 {environments}"""
@@ -792,8 +801,17 @@ _DRY_RUN_CHECK = ("Dry-run deploy (score test quotes)", "uv run haute deploy --d
 _APP_BUILD_CHECK = ("Build the app's release (score test quotes)", "uv run haute app build")
 #: What a workbench project's publish job runs once logged in to the registry.
 _APP_PUBLISH = "uv run haute app build --push"
-# Minutes a workbench project's publish job may run: it builds and pushes one image.
-_PUBLISH_TIMEOUT_MINUTES = 15
+#: What rolls a hosted environment out (specs/workbench, Control flow 35).
+_APP_ROLLOUT = "uv run haute app rollout"
+#: What a workbench project's production job runs: the release staging runs, promoted.
+_APP_PROMOTE = "uv run haute app rollout prod --from staging"
+# Minutes a workbench project's publish job may run: it builds and pushes one image and rolls
+# staging out, a recovery included; and the production job, a rollout and a recovery.
+_PUBLISH_TIMEOUT_MINUTES = 60
+_PRODUCTION_TIMEOUT_MINUTES = 45
+# The groups each environment's rollouts are serialised in, one at a time.
+_STAGING_GROUP = "haute-app-staging"
+_PRODUCTION_GROUP = "haute-app-prod"
 
 
 def github_ci_yml(*, python_version: str = DEFAULT_CI_PYTHON) -> str:
@@ -1297,11 +1315,18 @@ _AZURE_DRY_RUN_CHECK = ("uv run haute deploy --dry-run", "Dry-run deploy")
 _AZURE_APP_BUILD_CHECK = ("uv run haute app build", "Build the app's release")
 
 
-def _azure_devops_head(check: tuple[str, str]) -> str:
+def _azure_devops_head(check: tuple[str, str], *, sequential: bool = False) -> str:
     """The head every Azure DevOps pipeline Haute generates opens with: its triggers and the
     Validate stage, run on a pull request and on a push to main, its pipeline validation
-    ending in *check*."""
+    ending in *check*; *sequential* runs one deployment of an environment at a time, under the
+    exclusive lock IT sets on it."""
     check_script, check_name = check
+    lock = (
+        "\n# One rollout of an environment at a time, with an exclusive lock on it.\n"
+        "lockBehavior: sequential\n"
+        if sequential
+        else ""
+    )
     return f"""\
 trigger:
   branches:
@@ -1316,7 +1341,7 @@ pr:
 
 variables:
   CI: "true"
-
+{lock}
 stages:
   # ── Validate (runs on PR and push to main) ───────────────────
   - stage: Validate
@@ -1628,14 +1653,27 @@ def ci_files(
 
 
 def _app_publish_notice(host: str) -> str:
-    """The comment that heads a workbench project's publish workflow: it publishes the app's
-    image and rolls no hosted app to it yet."""
+    """The comment that heads a workbench project's release workflow: it publishes the app's
+    image, rolls staging out to it, and production follows by hand."""
     return (
-        "# Publish only: on a push to main this builds the underwriter app's image once,\n"
-        "# pushes it to the registry [deploy.container] names (required) and prints the\n"
-        "# image by digest. Nothing rolls a hosted app to it yet: point the app on\n"
-        f"# {_get_target(host)['label']} at that digest yourself.\n"
+        "# On a push to main this builds the underwriter app's image once, pushes it to the\n"
+        "# registry [deploy.container] names and rolls the staging app on\n"
+        f"# {_get_target(host)['label']} out to it (haute app rollout). Production is rolled\n"
+        "# out by hand to the release staging runs. [workbench.app.staging] and\n"
+        "# [workbench.app.prod] in haute.toml name the Container Apps.\n"
     )
+
+
+def _publish_and_stage_script(indent: str) -> str:
+    """Shell lines, indented, that publish the app's image and roll staging out to the image by
+    digest the publish prints last, its output shown as it runs and kept in ``publish.log``."""
+    lines = [
+        "set -eo pipefail",
+        f"{_APP_PUBLISH} | tee publish.log",
+        'image="$(tail -n 1 publish.log)"',
+        f'{_APP_ROLLOUT} staging --image "$image"',
+    ]
+    return "\n".join(indent + line for line in lines)
 
 
 def github_release_yml(host: str, *, python_version: str = DEFAULT_CI_PYTHON) -> str:
@@ -1644,9 +1682,9 @@ def github_release_yml(host: str, *, python_version: str = DEFAULT_CI_PYTHON) ->
 
 
 def _github_release_yml(host: str) -> str:
-    """A workbench project's merge-to-main workflow for GitHub Actions: validate, then
-    publish the underwriter app's image once, logged in to the registry with *host*'s
-    credentials."""
+    """A workbench project's merge-to-main workflow for GitHub Actions: validate, then publish
+    the underwriter app's image once and roll staging out to it, logged in with *host*'s
+    credentials, one staging rollout at a time."""
     secrets_env = _github_secrets_env(host)
     check_name, check_run = _APP_BUILD_CHECK
     return (
@@ -1689,12 +1727,16 @@ jobs:
         run: {check_run}
 
   publish:
-    name: Publish the app's image
+    name: Publish → Staging
     needs: validate
     # A manual run may pick any branch: only main's commits are published.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: {_PUBLISH_TIMEOUT_MINUTES}
+    # One staging rollout at a time.
+    concurrency:
+      group: {_STAGING_GROUP}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
@@ -1702,10 +1744,64 @@ jobs:
           enable-cache: true
           python-version: "3.11"
       - run: uv sync --frozen
-{_github_login_step(host, secrets_env)}      - name: Build and push the app's image
-        run: {_APP_PUBLISH}
+{_github_login_step(host, secrets_env)}      - name: Publish the app's image and roll staging out
+        env:
+{secrets_env}
+        run: |
+{_publish_and_stage_script(" " * 10)}
 """
     )
+
+
+def github_release_production_yml(host: str, *, python_version: str = DEFAULT_CI_PYTHON) -> str:
+    """:func:`_github_release_production_yml` on *python_version*."""
+    return _pin_ci_python(_github_release_production_yml(host), python_version)
+
+
+def _github_release_production_yml(host: str) -> str:
+    """A workbench project's production rollout for GitHub Actions, run by hand from the
+    Actions tab: production rolled out to the release staging runs for the commit chosen,
+    main's head unless another is given, one production rollout at a time."""
+    secrets_env = _github_secrets_env(host)
+    return f"""\
+# Run by hand from the Actions tab: rolls production out to the release staging runs,
+# refusing when staging runs another commit than the one given (main's head when blank).
+name: Release → Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: >
+          The commit staging runs, which production is rolled out to.
+          Leave blank for the head of main.
+        required: false
+        type: string
+
+concurrency:
+  group: {_PRODUCTION_GROUP}
+  cancel-in-progress: false
+
+jobs:
+  production:
+    name: Staging → Production
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: {_PRODUCTION_TIMEOUT_MINUTES}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{{{ inputs.commit || github.sha }}}}
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - run: uv sync --frozen
+      - name: Roll production out to the release staging runs
+        env:
+{secrets_env}
+        run: {_APP_PROMOTE}
+"""
 
 
 def gitlab_app_ci_yml(host: str, *, python_version: str = DEFAULT_CI_PYTHON) -> str:
@@ -1715,24 +1811,41 @@ def gitlab_app_ci_yml(host: str, *, python_version: str = DEFAULT_CI_PYTHON) -> 
 
 def _gitlab_app_ci_yml(host: str) -> str:
     """A workbench project's pipeline for GitLab CI/CD: validate on a merge request and on the
-    default branch, then, on the default branch, publish the underwriter app's image once,
-    logged in to the registry with *host*'s credentials."""
+    default branch; on the default branch publish the underwriter app's image once and roll
+    staging out to it, and roll production out by hand, logged in with *host*'s credentials,
+    each environment's rollouts one at a time."""
+    secrets_env = _gitlab_secrets_env(host)
     return (
         _app_publish_notice(host)
-        + _gitlab_head(["validate", "publish"], _APP_BUILD_CHECK[1])
+        + _gitlab_head(["validate", "publish", "production"], _APP_BUILD_CHECK[1])
         + f"""\
-{_gitlab_docker_job(host)}# ── Publish ───────────────────────────────────────────────────
+{_gitlab_docker_job(host)}# ── Publish → Staging ─────────────────────────────────────────
 publish:
   extends: .docker
   stage: publish
   timeout: {_PUBLISH_TIMEOUT_MINUTES} minutes
-  resource_group: release
+  resource_group: {_STAGING_GROUP}
   variables:
-{_gitlab_secrets_env(host)}
+{secrets_env}
   script:
     - |
 {_registry_login_script(host, " " * 6)}
-    - {_APP_PUBLISH}
+    - |
+{_publish_and_stage_script(" " * 6)}
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ── Staging → Production (by hand) ────────────────────────────
+deploy-production:
+  stage: production
+  timeout: {_PRODUCTION_TIMEOUT_MINUTES} minutes
+  resource_group: {_PRODUCTION_GROUP}
+  variables:
+{secrets_env}
+  script:
+    - {_APP_PROMOTE}
+  when: manual
+  allow_failure: false
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 """
@@ -1746,40 +1859,79 @@ def azure_devops_app_yml(host: str, *, python_version: str = DEFAULT_CI_PYTHON) 
 
 def _azure_devops_app_yml(host: str) -> str:
     """A workbench project's pipeline for Azure DevOps: validate on a pull request and on a push
-    to main, then, on main, publish the underwriter app's image once, logged in to the
-    registry with *host*'s credentials from the ``haute-credentials`` variable group."""
-    secrets_env = _azure_devops_secrets_env(host)
+    to main; on main publish the underwriter app's image once and roll staging out to it, and
+    roll production out by hand (``trigger: manual``), logged in with *host*'s credentials from
+    the ``haute-credentials`` variable group, each a deployment under its environment, whose
+    exclusive lock keeps its rollouts one at a time."""
+    secrets_env = _azure_devops_secrets_env(host, indent=" " * 20)
+    head = _azure_devops_head(_AZURE_APP_BUILD_CHECK, sequential=True)
     return (
         _app_publish_notice(host)
-        + _azure_devops_head(_AZURE_APP_BUILD_CHECK)
+        + head
         + f"""\
-  # ── Publish the app's image (only on push to main) ───────────
+  # ── Publish → Staging (only on push to main) ─────────────────
   - stage: Publish
-    displayName: Publish the app's image
+    displayName: Publish → Staging
     dependsOn: Validate
     condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
     variables:
       - group: haute-credentials
     jobs:
-      - job: publish
-        displayName: Build and push the app's image
+      - deployment: publish
+        displayName: Publish the app's image and roll staging out
         timeoutInMinutes: {_PUBLISH_TIMEOUT_MINUTES}
         pool:
           vmImage: ubuntu-latest
-        steps:
-          - checkout: self
-          - task: UsePythonVersion@0
-            inputs:
-              versionSpec: "3.11"
-          - script: pip install "uv>=0.5,<1" && uv sync --frozen
-            displayName: Install dependencies
-          - script: |
-{_registry_login_script(host, " " * 14)}
-            displayName: Log in to the registry
-            env:
+        environment: "staging"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: UsePythonVersion@0
+                  inputs:
+                    versionSpec: "3.11"
+                - script: pip install "uv>=0.5,<1" && uv sync --frozen
+                  displayName: Install dependencies
+                - script: |
+{_registry_login_script(host, " " * 20)}
+                  displayName: Log in to the registry
+                  env:
 {secrets_env}
-          - script: {_APP_PUBLISH}
-            displayName: Build and push the app's image
+                - script: |
+{_publish_and_stage_script(" " * 20)}
+                  displayName: Publish the app's image and roll staging out
+                  env:
+{secrets_env}
+
+  # ── Staging → Production (by hand) ───────────────────────────
+  - stage: DeployProduction
+    displayName: Staging → Production
+    dependsOn: Publish
+    trigger: manual
+    variables:
+      - group: haute-credentials
+    jobs:
+      - deployment: production
+        displayName: Roll production out to the release staging runs
+        timeoutInMinutes: {_PRODUCTION_TIMEOUT_MINUTES}
+        pool:
+          vmImage: ubuntu-latest
+        environment: "{_AZURE_PRODUCTION_ENVIRONMENT}"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: UsePythonVersion@0
+                  inputs:
+                    versionSpec: "3.11"
+                - script: pip install "uv>=0.5,<1" && uv sync --frozen
+                  displayName: Install dependencies
+                - script: {_APP_PROMOTE}
+                  displayName: Roll production out
+                  env:
+{secrets_env}
 """
     )
 
@@ -1792,9 +1944,10 @@ def workbench_ci_files(
 ) -> dict[str, str]:
     """The CI files a workbench ``haute init`` and ``haute ci update`` write for *ci*: path ->
     content, in the order they are reported; ``"none"`` has none. They validate the project and
-    the app's release on every change and, on the default branch, publish the underwriter app's
-    image, logged in to the registry with *host*'s credentials; none deploys an endpoint. Every
-    job runs *python_version*, the project's Python."""
+    the app's release on every change; on the default branch they publish the underwriter
+    app's image and roll staging out to it, and roll production out by hand, logged in with
+    *host*'s credentials; none deploys an endpoint. Every job runs *python_version*, the
+    project's Python."""
     from haute._workbench_config import APP_HOSTS
 
     if host not in APP_HOSTS:
@@ -1803,6 +1956,9 @@ def workbench_ci_files(
         return {
             ".github/workflows/ci.yml": github_app_ci_yml(python_version=python_version),
             ".github/workflows/release.yml": github_release_yml(
+                host, python_version=python_version
+            ),
+            ".github/workflows/release-production.yml": github_release_production_yml(
                 host, python_version=python_version
             ),
         }

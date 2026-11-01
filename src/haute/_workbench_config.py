@@ -72,6 +72,8 @@ STORE_SERVER_ENV = "HAUTE_STORE_SERVER"
 STORE_DATABASE_ENV = "HAUTE_STORE_DATABASE"
 STORE_SCHEMA_ENV = "HAUTE_STORE_SCHEMA"
 STORE_URL_ENV = "HAUTE_STORE_URL"
+#: The keys of a hosted environment's ``[workbench.app.<name>]``: where the host runs its app.
+APP_ENVIRONMENT_KEYS: tuple[str, ...] = ("resource_group", "container_app")
 #: The form folder's name in the pipeline folder.
 FORM_FOLDER = "workbench"
 
@@ -142,6 +144,17 @@ class StoreEnvironment:
 
 
 @dataclass(frozen=True, slots=True)
+class AppEnvironment:
+    """A hosted environment's app as ``[workbench.app.<name>]`` names it: the resource group
+    and the Container App the host runs it as, each empty while the project leaves it so,
+    which ``haute app rollout`` refuses."""
+
+    name: str
+    resource_group: str = ""
+    container_app: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class WorkbenchConfig:
     """The table as read: whether the workbench is enabled, and where its form folder is."""
 
@@ -159,6 +172,8 @@ class WorkbenchConfig:
     #: The environments of the app's quote store (``[workbench.store.<name>]``), in the file's
     #: order.
     store: tuple[StoreEnvironment, ...] = ()
+    #: Each hosted environment's app (``[workbench.app.<name>]``), in the file's order.
+    app_environments: tuple[AppEnvironment, ...] = ()
 
     @property
     def form_folder(self) -> Path:
@@ -222,11 +237,13 @@ def read_workbench_config(project_root: Path) -> WorkbenchConfig:
     enabled = table.get("enabled")
     if not isinstance(enabled, bool):
         raise WorkbenchConfigError("[workbench].enabled must be true or false", path=str(toml_path))
-    app_host, app_edit_role = _app_settings(table.get("app"), toml_path)
     try:
         store = store_environments(table.get("store", {}), "[workbench.store]")
     except ValueError as exc:
         raise WorkbenchConfigError(str(exc), path=str(toml_path)) from exc
+    app_host, app_edit_role, app_environments = _app_settings(
+        table.get("app"), toml_path, {environment.name for environment in store}
+    )
     if not enabled:
         return WorkbenchConfig(
             enabled=False,
@@ -234,6 +251,7 @@ def read_workbench_config(project_root: Path) -> WorkbenchConfig:
             app_host=app_host,
             app_edit_role=app_edit_role,
             store=store,
+            app_environments=app_environments,
         )
     return WorkbenchConfig(
         enabled=True,
@@ -242,6 +260,7 @@ def read_workbench_config(project_root: Path) -> WorkbenchConfig:
         app_host=app_host,
         app_edit_role=app_edit_role,
         store=store,
+        app_environments=app_environments,
     )
 
 
@@ -317,18 +336,31 @@ def _environment(name: str, settings: dict[str, object], at: str) -> StoreEnviro
     )
 
 
-def _app_settings(raw: object, toml_path: Path) -> tuple[str | None, str | None]:
-    """``[workbench.app]``'s ``host``, one of ``APP_HOSTS``, and ``edit_role``, a role's
-    name; each None when unsaid, both without the table."""
+def _app_settings(
+    raw: object, toml_path: Path, declared: set[str]
+) -> tuple[str | None, str | None, tuple[AppEnvironment, ...]]:
+    """``[workbench.app]``'s ``host``, one of ``APP_HOSTS``, its ``edit_role``, a role's name,
+    each None when unsaid, and a hosted environment's app for each table under it, named as
+    one of the store's environments, *declared*; none of them without the table."""
     if raw is None:
-        return None, None
+        return None, None, ()
     if not isinstance(raw, dict):
         raise WorkbenchConfigError("[workbench.app] must be a TOML table", path=str(toml_path))
-    unknown = sorted(set(raw) - {"host", "edit_role"})
+    settings_keys = {"host", "edit_role"}
+    environments = tuple(
+        _app_environment(name, settings, toml_path, declared)
+        for name, settings in raw.items()
+        if name not in settings_keys and isinstance(settings, dict)
+    )
+    unknown = sorted(
+        key
+        for key, value in raw.items()
+        if key not in settings_keys and not isinstance(value, dict)
+    )
     if unknown:
         raise WorkbenchConfigError(
             f"[workbench.app] has unknown key(s): {', '.join(unknown)}; the keys are host and "
-            "edit_role",
+            "edit_role, beside a table for each hosted environment",
             path=str(toml_path),
         )
     host = raw.get("host")
@@ -344,7 +376,35 @@ def _app_settings(raw: object, toml_path: Path) -> tuple[str | None, str | None]
             f"in with; got {edit_role!r}",
             path=str(toml_path),
         )
-    return str(host), None if edit_role is None else edit_role.strip()
+    return str(host), None if edit_role is None else edit_role.strip(), environments
+
+
+def _app_environment(
+    name: str, settings: dict[str, object], toml_path: Path, declared: set[str]
+) -> AppEnvironment:
+    """``[workbench.app.<name>]``: the Container App the host runs environment *name*'s app
+    as, *name* one of the store's environments, *declared*."""
+    at = f"[workbench.app.{name}]"
+    if name not in declared:
+        raise WorkbenchConfigError(
+            f"{at} names no environment [workbench.store] declares; declare "
+            f"[workbench.store.{name}], whose database its app keeps its quotes in",
+            path=str(toml_path),
+        )
+    unknown = sorted(set(settings) - set(APP_ENVIRONMENT_KEYS))
+    if unknown:
+        raise WorkbenchConfigError(
+            f"{at} has unknown key(s): {', '.join(unknown)}; the keys are "
+            + " and ".join(APP_ENVIRONMENT_KEYS),
+            path=str(toml_path),
+        )
+    values: dict[str, str] = {}
+    for key in APP_ENVIRONMENT_KEYS:
+        value = settings.get(key, "")
+        if not isinstance(value, str):
+            raise WorkbenchConfigError(f"{at}.{key} must be text", path=str(toml_path))
+        values[key] = value.strip()
+    return AppEnvironment(name=name, **values)
 
 
 def _form_folder(project_root: Path, toml_path: Path) -> str:

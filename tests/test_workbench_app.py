@@ -310,6 +310,32 @@ def test_the_health_check_answers_without_sign_in(release: Any) -> None:
     assert answered.json() == {"status": "ok", "release": read_release(directory)[0].id}
 
 
+def test_the_rollouts_forged_principal_is_one_the_app_accepts(release: Any) -> None:
+    """``haute app rollout``'s check sends a whole principal, unsigned, which a host's sign-in
+    must refuse: the app itself accepts it when it reaches it unchanged, its roles read under
+    an edit role, so a host letting it through is caught (specs/workbench, Control flow 35)."""
+    from haute._workbench_rollout import forged_principal
+
+    directory = release()
+    write_release(
+        directory,
+        FormSpec.model_validate(FORM),
+        "azure-container-apps",
+        "Quotes.Edit",
+        runtime=RUNTIME,
+    )
+    client = _client(directory)
+
+    answered = client.get("/api/app/release", headers=forged_principal())
+
+    assert answered.status_code == 200, answered.text
+    assert answered.json()["principal"] == "haute-rollout-check"
+    assert answered.json()["can_edit"] is False
+    # A name alone would not do: under an edit role the app wants the principal's roles.
+    partial = {EASY_AUTH_NAME: forged_principal()["X-MS-CLIENT-PRINCIPAL-NAME"]}
+    assert client.get("/api/app/release", headers=partial).status_code == 401
+
+
 def test_azure_signs_in_the_principal_its_authentication_sets(release: Any) -> None:
     client = _client(release())
 

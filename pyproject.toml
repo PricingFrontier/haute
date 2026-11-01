@@ -133,6 +133,13 @@ postgresql = [
     "psycopg[binary]>=3.2.0,<4",
     "azure-identity>=1.19.0,<2",
 ]
+# A workbench project's CI rolling its underwriter app out on Azure Container Apps
+# (haute app rollout): the management SDK it updates the Container App through, and
+# azure-identity for the CI service principal.
+azure = [
+    "azure-mgmt-appcontainers>=5.1.0,<6",
+    "azure-identity>=1.19.0,<2",
+]
 [dependency-groups]
 # What the shared test setup (tests/conftest.py) and the pytest configuration
 # need to collect and run a module, and nothing more: the core-only CI lane
@@ -157,7 +164,7 @@ dev = [
     "mkdocs==1.6.1",
     "mkdocs-material==9.7.7",
     "haute[databricks]",
-    "haute[sqlserver,postgresql]",
+    "haute[sqlserver,postgresql,azure]",
     "types-psutil==7.2.2.20260906",
 ]
 

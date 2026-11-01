@@ -162,9 +162,11 @@ class TestHauteToml:
         }
         assert doc["test_quotes"] == {"dir": "tests/quotes"}
         assert doc["ci"] == {"provider": "gitlab"}
+        unnamed = {"resource_group": "", "container_app": ""}
         assert doc["workbench"] == {
             "enabled": True,
-            "app": {"host": "azure-container-apps"},
+            # Each hosted environment's Container App, left for IT to name.
+            "app": {"host": "azure-container-apps", "staging": unnamed, "prod": unnamed},
             "store": {"dev": hosted, "staging": hosted, "prod": hosted},
         }
         # Declared as the project's workbench config reads them.
@@ -1713,8 +1715,9 @@ class TestDatabricksReleaseAndDeployJobs:
 
 
 class TestWorkbenchCiFiles:
-    """A workbench project's workflows validate the project and the app's release and, on the
-    default branch, publish the app's image: none deploys an endpoint (specs/workbench)."""
+    """A workbench project's workflows validate the project and the app's release; on the
+    default branch they publish the app's image and roll staging out to it, and roll
+    production out by hand: none deploys an endpoint (specs/workbench)."""
 
     @staticmethod
     def _parsed(ci: str) -> dict[str, Any]:
@@ -1723,10 +1726,15 @@ class TestWorkbenchCiFiles:
             for path, text in workbench_ci_files("azure-container-apps", ci).items()
         }
 
-    def test_github_validates_each_pull_request_and_publishes_on_main(self) -> None:
-        files = self._parsed("github")
-        assert list(files) == [".github/workflows/ci.yml", ".github/workflows/release.yml"]
+    _SECRETS = frozenset(ci_secret_names("azure-container-apps"))
 
+    def test_github_publishes_and_stages_on_main_and_promotes_by_hand(self) -> None:
+        files = self._parsed("github")
+        assert list(files) == [
+            ".github/workflows/ci.yml",
+            ".github/workflows/release.yml",
+            ".github/workflows/release-production.yml",
+        ]
         checks = files[".github/workflows/ci.yml"]
         validate = [step.get("run") for step in checks["jobs"]["pipeline-validate"]["steps"]]
         assert validate[-2:] == ["uv run haute lint", "uv run haute app build"]
@@ -1734,49 +1742,114 @@ class TestWorkbenchCiFiles:
         release = files[".github/workflows/release.yml"]
         # PyYAML reads the bare key "on" as True.
         assert release[True]["push"]["branches"] == ["main"]
-        assert (
-            '"rating/**"'
-            in workbench_ci_files("azure-container-apps", "github")[".github/workflows/release.yml"]
-        )
-        assert release["jobs"]["publish"]["needs"] == "validate"
+        publish = release["jobs"]["publish"]
+        assert publish["needs"] == "validate"
         # A manual run may pick any branch: only main's commits are published.
-        assert release["jobs"]["publish"]["if"] == "github.ref == 'refs/heads/main'"
-        steps = release["jobs"]["publish"]["steps"]
+        assert publish["if"] == "github.ref == 'refs/heads/main'"
+        # One staging rollout at a time, with time for a build, a rollout and a recovery.
+        assert publish["concurrency"] == {
+            "group": "haute-app-staging",
+            "cancel-in-progress": False,
+        }
+        assert publish["timeout-minutes"] == 60
+        steps = publish["steps"]
         login = next(step for step in steps if step.get("name") == "Log in to the registry")
-        assert set(login["env"]) == set(ci_secret_names("azure-container-apps"))
-        assert "haute ci registry-host" in login["run"]
-        assert steps[-1]["run"] == "uv run haute app build --push"
-        # The secrets reach the login alone: the push uses the login's credentials.
-        assert "env" not in steps[-1]
+        assert set(login["env"]) == self._SECRETS
+        assert set(steps[-1]["env"]) == self._SECRETS
+        assert "uv run haute app build --push" in steps[-1]["run"]
+        assert 'uv run haute app rollout staging --image "$image"' in steps[-1]["run"]
 
-    def test_gitlab_publishes_on_the_default_branch_through_docker(self) -> None:
+        production = files[".github/workflows/release-production.yml"]
+        assert set(production[True]) == {"workflow_dispatch"}
+        assert production["concurrency"] == {"group": "haute-app-prod", "cancel-in-progress": False}
+        job = production["jobs"]["production"]
+        assert job["if"] == "github.ref == 'refs/heads/main'"
+        assert job["timeout-minutes"] == 45
+        assert job["steps"][0]["with"]["ref"] == "${{ inputs.commit || github.sha }}"
+        assert job["steps"][-1]["run"] == "uv run haute app rollout prod --from staging"
+        assert set(job["steps"][-1]["env"]) == self._SECRETS
+
+    def test_gitlab_publishes_and_stages_on_main_and_promotes_by_hand(self) -> None:
         pipeline = self._parsed("gitlab")[".gitlab-ci.yml"]
-        assert pipeline["stages"] == ["validate", "publish"]
+        assert pipeline["stages"] == ["validate", "publish", "production"]
         assert pipeline["lint"]["script"][-1] == "uv run haute app build"
-        # Validation names no registry credential: only the publish job does.
+        # Validation names no registry credential: only the rollout jobs do.
         assert "variables" not in pipeline["lint"]
         publish = pipeline["publish"]
         assert publish["extends"] == ".docker"
+        assert publish["resource_group"] == "haute-app-staging"
+        assert publish["timeout"] == "60 minutes"
         assert publish["rules"] == [{"if": "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"}]
-        assert set(publish["variables"]) == set(ci_secret_names("azure-container-apps"))
+        assert set(publish["variables"]) == self._SECRETS
         assert "haute ci registry-host" in publish["script"][0]
-        assert publish["script"][-1] == "uv run haute app build --push"
+        assert 'uv run haute app rollout staging --image "$image"' in publish["script"][-1]
+        production = pipeline["deploy-production"]
+        assert production["when"] == "manual"
+        assert production["allow_failure"] is False
+        assert production["resource_group"] == "haute-app-prod"
+        assert production["script"] == ["uv run haute app rollout prod --from staging"]
+        assert set(production["variables"]) == self._SECRETS
 
-    def test_azure_devops_publishes_on_main_after_validate(self) -> None:
+    def test_azure_devops_publishes_and_stages_on_main_and_promotes_by_hand(self) -> None:
         pipeline = self._parsed("azure-devops")["azure-pipelines.yml"]
+        # One deployment of an environment at a time, under its exclusive lock.
+        assert pipeline["lockBehavior"] == "sequential"
         stages = {stage["stage"]: stage for stage in pipeline["stages"]}
-        assert list(stages) == ["Validate", "Publish"]
-        validate = stages["Validate"]["jobs"][-1]["steps"]
-        assert validate[-1]["script"] == "uv run haute app build"
+        assert list(stages) == ["Validate", "Publish", "DeployProduction"]
+        assert stages["Validate"]["jobs"][-1]["steps"][-1]["script"] == "uv run haute app build"
         publish = stages["Publish"]
-        assert publish["dependsOn"] == "Validate"
         assert "refs/heads/main" in publish["condition"]
-        steps = publish["jobs"][0]["steps"]
-        assert set(steps[-2]["env"]) == set(ci_secret_names("azure-container-apps"))
-        assert steps[-1] == {
-            "script": "uv run haute app build --push",
-            "displayName": "Build and push the app's image",
-        }
+        job = publish["jobs"][0]
+        assert job["environment"] == "staging"
+        steps = job["strategy"]["runOnce"]["deploy"]["steps"]
+        assert set(steps[-1]["env"]) == self._SECRETS
+        assert 'uv run haute app rollout staging --image "$image"' in steps[-1]["script"]
+        production = stages["DeployProduction"]
+        # Manual whatever approvals the environment has.
+        assert production["trigger"] == "manual"
+        assert production["dependsOn"] == "Publish"
+        job = production["jobs"][0]
+        assert job["environment"] == "production"
+        steps = job["strategy"]["runOnce"]["deploy"]["steps"]
+        assert steps[-1]["script"] == "uv run haute app rollout prod --from staging"
+        assert set(steps[-1]["env"]) == self._SECRETS
+
+    @pytest.mark.parametrize("fails", [False, True], ids=["published", "publish-fails"])
+    def test_the_staging_step_rolls_out_the_digest_the_publish_prints_last(
+        self, tmp_path: Path, fails: bool
+    ) -> None:
+        """Run the generated step's shell with a stand-in ``uv``: the rollout gets the last
+        line the publish printed, and a publish that fails rolls nothing out."""
+        from haute._scaffold import _publish_and_stage_script
+
+        digest = "acr.example.io/motor@sha256:" + "a" * 64
+        fake_uv = (
+            "uv() {\n"
+            '  if [ "$*" = "run haute app build --push" ]; then\n'
+            "    printf '%s\\n' '  ✓ Image pushed: acr.example.io/motor:abc1234'\n"
+            f"    printf '%s\\n' '{digest}'\n"
+            f"    return {1 if fails else 0}\n"
+            "  fi\n"
+            "  printf '%s\\n' \"$*\" > rollout.log\n"
+            "}\n"
+        )
+        result = subprocess.run(
+            [posix_shell(), "-c", fake_uv + _publish_and_stage_script("")],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if fails:
+            assert result.returncode != 0
+            assert not (tmp_path / "rollout.log").exists()
+            return
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / "rollout.log").read_text().strip() == (
+            f"run haute app rollout staging --image {digest}"
+        )
+        # The publish's own lines are shown as it runs.
+        assert "Image pushed" in result.stdout
 
     @pytest.mark.parametrize("ci", ["github", "gitlab", "azure-devops"])
     def test_no_step_deploys_an_endpoint(self, ci: str) -> None:
@@ -1789,6 +1862,7 @@ class TestWorkbenchCiFiles:
         text = "".join(ci_files("databricks", ci).values())
         assert "uv run haute deploy --dry-run" in text
         assert "haute app build" not in text
+        assert "lockBehavior" not in text
 
 
 class TestCiCredentials:
