@@ -292,7 +292,9 @@ backend API modules own validation and persistence.
   not presented as a choice, and the editor has no cache action: file-backed
   Parquet scans directly, and every other input's snapshot is prepared before
   a run.
-  Its optional Polars editor transforms the resolved frame.
+  Its optional Polars editor transforms the resolved frame. Its Databricks
+  fields open with the server's sign-in in words (never a host) and a Test
+  that signs in and shows who Haute signs in as, or the failure's own words.
   Data Output presents only writable groups/modes, never Databricks or a Polars
   editor, resolves the actual destination, and keeps per-node write,
   collision-confirmation, and terminal state across panel remounts. Inactive
