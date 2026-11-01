@@ -864,10 +864,12 @@ no longer has; and `InputSource` in
     `sheets/sheet_1.layout.json`) to the pipeline folder's `workbench/`, reporting both in its
     summary, having held every path of the folder to `ordinary_path_problem`
     (`_form_folder_problem`) before writing anything, so a pipeline folder reached
-    through a junction refuses the init with exit 1 and nothing written. A project that
-    already has a `haute.toml` is refused without `--force`, `--workbench` included;
-    `--force --workbench` rewrites the scaffold but keeps a form folder and a
-    `connections.toml` that are already there. `_SEED_PATHSPECS` carries `workbench/` and `*/workbench/*`, so
+    through a junction refuses the init with exit 1 and nothing written. In a project that
+    already has a `haute.toml`, `haute init --workbench` sets it up again as a workbench
+    (specs/cli): `haute.toml` afresh, the pipeline folder's files and the tests left as they
+    are, a form folder already there kept, and a `connections.toml` already there kept
+    unless one of its connections is on the other database than `--store`, when it is
+    written afresh. `_SEED_PATHSPECS` carries `workbench/` and `*/workbench/*`, so
     `set_working_branch`'s unborn-repository seed stages the form with the pipeline's
     files, and the generated deploy workflows need no trigger of the form's own: the
     pipeline folder they watch holds it.
@@ -1622,9 +1624,11 @@ no longer has; and `InputSource` in
   running it fails.
 - The one-row tables' rows are put side by side only once each has been shown to hold exactly
   one row, so no row is paired by position with another quote's.
-- `haute init --force` answered for automated pricing writes a `haute.toml` without the table
-  and leaves the form folder and `connections.toml` in place; `haute init` in a project that
-  has a `haute.toml`, without `--force`, writes nothing, `--workbench` included.
+- `haute init` re-run in a workbench project and answered for automated pricing writes a
+  `haute.toml` without the table and leaves the form folder and `connections.toml` in place;
+  re-run in an automated project with `--workbench` it writes the table, the blank form
+  folder and `connections.toml`, leaves `rating/main.py` as it was and names the nodes to
+  replace.
 - The form's revision is the hash of its folder's files, each path and its bytes: a hand
   edit that changes only whitespace is a change, since the view read other bytes, as is a
   file added to the folder or taken out of it, and a save that writes the same files has
@@ -2603,10 +2607,10 @@ no longer has; and `InputSource` in
   folder and the workbench's workflows, and reporting them, refused with nothing written
   when the pipeline folder is a junction to a folder outside the project, a plain
   `haute init` writing
-  none of them, `--force --workbench`, `--force` answered for automated pricing leaving the
-  folder and `connections.toml` and pruning the workbench's workflows, `--workbench` in a
-  project that has a `haute.toml` refused with nothing written, and the questions asked at a
-  terminal; `tests/test_scaffold.py` covers
+  none of them, a re-run answered for automated pricing leaving the folder and
+  `connections.toml` and pruning the workbench's workflows, `--workbench` re-run in an
+  automated project giving it a workbench and leaving its pipeline, a re-run on the other
+  database writing `connections.toml` afresh, and the questions asked at a terminal; `tests/test_scaffold.py` covers
   `workbench_haute_toml` and `workbench_table` parsed and read as the workbench config reads
   them, with no `form` key, `connections_toml` for each provider and sign-in read as the
   connections reader reads it, the blank folder's files reading as the blank form, the
