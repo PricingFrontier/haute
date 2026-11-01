@@ -543,6 +543,7 @@ def validate_node_config(
     are legal. Banding's discriminant controls its rule schema. A Scenario
     Expander's grid size is required with no incomplete form. A Modelling
     node's configured values must be trainable, though it may be unfinished.
+    A transform's keyword-only parameters must be ones its signature can carry.
     Invalid configured branches must not be silently persisted and ignored.
     ``require_complete=False`` tolerates absent/empty required Data
     Input/Output locators (declared-incomplete forms); structural rules and
@@ -580,4 +581,8 @@ def validate_node_config(
         # The grid size has no incomplete form: a new node carries an
         # explicit count, so its absence is a defect the builder would reject.
         scenario_step_count(config)
+    if nt == NodeType.POLARS:
+        from haute._keyword_parameters import validate_keyword_parameters
+
+        validate_keyword_parameters(config)
     return dict(config)

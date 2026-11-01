@@ -53,6 +53,11 @@ from haute._execution_context import (
 )
 from haute._graph_utils import _sanitize_func_name, edge_input_name
 from haute._io import _select_columns
+from haute._keyword_parameters import (
+    keyword_parameter_values,
+    reject_input_named_keyword_parameters,
+    validate_keyword_parameters,
+)
 from haute._logging import get_logger
 from haute._node_apply import (
     apply_optimiser_apply_from_config,
@@ -1320,6 +1325,15 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
     _in_map = dict(config.get("inputMapping", {})) or None
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
+    keyword_parameters = validate_keyword_parameters(config, node_label=ctx.node.data.label)
+    # The signature's inputs are the logical names; a parameter shadows the
+    # physical alias the code is also given, as it does in the generated function.
+    reject_input_named_keyword_parameters(
+        keyword_parameters,
+        _orig_src if _orig_src is not None else _src_names,
+        node_id=ctx.node.id,
+        node_label=ctx.node.data.label,
+    )
 
     steps = config.get("steps")
     if isinstance(steps, list):
@@ -1348,6 +1362,7 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
                 dfs,
                 extra_ns=_preamble,
                 orig_source_names=_orig_src,
+                parameters=keyword_parameter_values(keyword_parameters),
             )
 
         def transform_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:

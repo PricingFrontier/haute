@@ -1140,6 +1140,7 @@ class SavePipelineService:
             NodeType.BANDING,
             NodeType.SCENARIO_EXPANDER,
             NodeType.MODELLING,
+            NodeType.POLARS,
         }
         for scoped_graph in graphs:
             for node in scoped_graph.nodes:

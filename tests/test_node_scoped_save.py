@@ -674,3 +674,63 @@ def test_a_failed_code_mode_save_restores_the_deleted_sidecar(tmp_path, monkeypa
 
     assert deleted == [sidecar]
     assert {path: path.read_bytes() for path in before} == before
+
+
+@pytest.mark.parametrize(
+    ("parameters", "message"),
+    [
+        pytest.param([{"name": "df", "default": 1}], "reserved for node code", id="reserved"),
+        pytest.param([{"name": "source_b", "default": 1}], "the name of an input", id="input"),
+    ],
+)
+def test_scoped_save_refuses_a_binding_the_file_cannot_carry(
+    client, monkeypatch, tmp_path, parameters, message
+):
+    _inputs_and_transform(tmp_path)
+    _recover(tmp_path, "source_b")
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    target = next(node for node in document.nodes if node.authored_id == "priced")
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+
+    response = client.post(
+        "/api/pipeline/node/save",
+        json={
+            "source_file": document.source_file,
+            "source_revision": document.source_revision,
+            "target_source_file": target.source_file,
+            "target_recovery_id": target.recovery_id,
+            "config": {**target.config, "keyword_parameters": parameters},
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "repair_action_unsupported"
+    assert message in response.json()["detail"]["message"]
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+
+
+def test_scoped_save_keeps_a_transforms_keyword_only_parameters(tmp_path):
+    """The editor sends a transform's bindings back with its code; the rewrite keeps them."""
+    from haute._pipeline_repair_actions import apply_scoped_node_save
+
+    _inputs_and_transform(tmp_path)
+    main = tmp_path / "main.py"
+    main.write_text(
+        main.read_text(encoding="utf-8").replace(
+            "def priced(source_b):", "def priced(source_b, *, factor=1.2):"
+        ),
+        encoding="utf-8",
+    )
+    request = _save_request(tmp_path, "priced", {"code": "df = source_b.head(1)"})
+    assert request.config == {"code": "df = source_b.head(1)"}
+    document = load_pipeline_editor_document(main, project_root=tmp_path)
+    target = next(node for node in document.nodes if node.authored_id == "priced")
+    assert target.config["keyword_parameters"] == [{"name": "factor", "default": 1.2}]
+    request.config = {**target.config, "code": "df = source_b.head(1)"}
+
+    apply_scoped_node_save(project_root=tmp_path, request=request)
+
+    assert "def priced(source_b: pl.LazyFrame, *, factor=1.2) -> pl.LazyFrame:" in (
+        main.read_text(encoding="utf-8")
+    )

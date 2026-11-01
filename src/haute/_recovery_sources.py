@@ -19,12 +19,13 @@ from haute._config_io import (
     _normalise_loaded_config,
     reject_duplicate_keys_hook,
 )
+from haute._keyword_parameters import KEYWORD_PARAMETERS_KEY, keyword_parameters_from_signature
 from haute._polars_steps import STEPPED_NODE_TYPES
 from haute._recovery_schemas import RecoveryFieldChange
 from haute._source_layout import python_lines
 from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import NodeType
-from haute.errors import ConfigError
+from haute.errors import ConfigError, ParseError
 from haute.schemas import PipelineEditorDocument, RecoveryPipelineNode
 
 
@@ -120,6 +121,22 @@ def read_raw_node_settings(
         )
         body = ""
     raw = _attach_code_from_body(raw, node_type, body, params)
+    try:
+        keyword_parameters = keyword_parameters_from_signature(
+            function.args, node_type=node_type, stepped=bool(reference), node_id=function.name
+        )
+    except ParseError as exc:
+        # The regenerated function cannot carry the form: say so, as for a body.
+        changes.append(
+            RecoveryFieldChange(
+                path=f"/{KEYWORD_PARAMETERS_KEY}",
+                outcome="removed",
+                reason=f"{exc.message} Recover writes the function without it.",
+            )
+        )
+    else:
+        if keyword_parameters:
+            raw[KEYWORD_PARAMETERS_KEY] = keyword_parameters
     if node_type in STEPPED_NODE_TYPES and "steps" in raw:
         # The ``.py`` body is the runtime truth here as it is in ordinary
         # parsing: without this, a hand-edited body would be silently

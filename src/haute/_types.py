@@ -300,16 +300,25 @@ COLUMN_CONFIG_KEYS: tuple[str, ...] = (
 )
 
 
+class KeywordParameter(TypedDict):
+    """One keyword-only parameter of a transform written as code, and its literal default."""
+
+    name: str
+    default: Any
+
+
 class TransformConfig(TypedDict, total=False):
     """Config for transform nodes.
 
     ``steps`` is the low-code step list persisted in the node's optional
     ``config/polars/<name>.json`` sidecar; ``code`` is always its rendering
-    when it is present (see ``NodeData``).
+    when it is present (see ``NodeData``). ``keyword_parameters`` are a code
+    transform's keyword-only parameters (``haute._keyword_parameters``).
     """
 
     code: str
     steps: list[dict[str, Any]]
+    keyword_parameters: list[KeywordParameter]
     inputMapping: dict[str, str]
     selected_columns: list[str]
     column_renames: dict[str, str]

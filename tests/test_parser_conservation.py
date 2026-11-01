@@ -141,7 +141,7 @@ class TestParameterBucketConservation:
                 return pl.LazyFrame()
 
             @pipeline.polars
-            def target(a, /, b, *, c):
+            def target(a, /, b, *, c=None):
                 return a
             """
         )
@@ -151,14 +151,16 @@ class TestParameterBucketConservation:
         assert ("b", "target") in pairs  # positional-or-keyword
         assert ("c", "target") not in pairs  # keyword-only configuration
 
-    def test_live_switch_inputs_exclude_keyword_only_config(
+    def test_live_switch_keyword_only_config_is_refused_at_its_line(
         self,
         tmp_path: Path,
     ) -> None:
+        """A Live Switch is a declaration: codegen writes no keyword-only parameter
+        for it, so the parse refuses one, at its line, rather than a save dropping it."""
         config_dir = tmp_path / "config" / "source_switch"
         config_dir.mkdir(parents=True)
         (config_dir / "switch.json").write_text(
-            '{"input_scenario_map":{"a":"live"},"inputs":["a","c"]}',
+            '{"input_scenario_map":{"a":"live"},"inputs":["a"]}',
             encoding="utf-8",
         )
         pipeline_file = _write(
@@ -174,22 +176,213 @@ class TestParameterBucketConservation:
                 def a():
                     return None
 
-                @pipeline.polars
-                def c():
-                    return None
-
                 @pipeline.live_switch(config="config/source_switch/switch.json")
                 def switch(a, *, c=None): ...
                 """
             ),
         )
 
-        graph = parse_pipeline_file(pipeline_file)
-        switch = next(node for node in graph.nodes if node.id == "switch")
-        assert switch.data.config["inputs"] == ["a"]
-        assert {(edge.source, edge.target) for edge in graph.edges} == {
-            ("a", "switch"),
-        }
+        with pytest.raises(ParseError, match="keyword-only parameter 'c'") as refused:
+            parse_pipeline_file(pipeline_file)
+        assert refused.value.context["node_id"] == "switch"
+        assert refused.value.context["line"] == 10
+
+
+_SCALED = """\
+import polars as pl
+import haute
+
+factor = 0.9
+
+pipeline = haute.Pipeline("m")
+
+
+@pipeline.polars
+def source() -> pl.LazyFrame:
+    df = pl.LazyFrame({"x": [100.0]})
+    return df
+
+
+@pipeline.polars
+def scaled(source: pl.LazyFrame, *, factor: float = 1.20, label="rated") -> pl.LazyFrame:
+    df = source.with_columns(y=pl.col("x") * factor, label=pl.lit(label))
+    return df
+
+
+pipeline.connect("source", "scaled")
+"""
+
+
+def _canvas_row(graph) -> dict:
+    from haute._execution_admission import create_admitted_execution_context
+    from haute._execution_context import ExecutionProfile
+    from haute.executor import execute_graph
+
+    context = create_admitted_execution_context(
+        operation="keyword-parameters-test", profile=ExecutionProfile.PREVIEW_EAGER
+    )
+    result = execute_graph(graph, target_node_id="scaled", execution_context=context)["scaled"]
+    assert result.status == "ok", result.error
+    (row,) = result.preview
+    return row
+
+
+def _live_row(source: str, tmp_path: Path) -> dict:
+    module = tmp_path / "live.py"
+    module.write_text(source, encoding="utf-8")
+    namespace: dict[str, object] = {"__file__": str(module), "__name__": "live"}
+    exec(compile(source, str(module), "exec"), namespace)  # noqa: S102 - the pipeline file under test
+    frame = namespace["source"]()
+    (row,) = namespace["scaled"](frame).collect().to_dicts()
+    return row
+
+
+class TestKeywordOnlyParameterConservation:
+    """PCFG-R21: a transform's keyword-only defaults survive parse, save and every run."""
+
+    def test_the_parameter_shadows_the_preamble_before_and_after_a_save(
+        self, tmp_path: Path
+    ) -> None:
+        from haute.codegen import graph_to_code
+
+        original = parse_pipeline_source(_SCALED, source_file="main.py")
+        scaled = next(node for node in original.nodes if node.id == "scaled")
+        assert scaled.data.config["keyword_parameters"] == [
+            {"name": "factor", "default": 1.2},
+            {"name": "label", "default": "rated"},
+        ]
+        regenerated = graph_to_code(original, pipeline_name="m", preamble=original.preamble)
+        assert '*, factor=1.2, label="rated") -> pl.LazyFrame:' in regenerated
+        reparsed = parse_pipeline_source(regenerated, source_file="main.py")
+        assert (
+            next(node for node in reparsed.nodes if node.id == "scaled").data.config
+            == scaled.data.config
+        )
+        assert graph_to_code(reparsed, pipeline_name="m", preamble=reparsed.preamble) == (
+            regenerated
+        )
+
+        expected = {"x": 100.0, "y": 120.0, "label": "rated"}
+        assert _live_row(_SCALED, tmp_path) == expected
+        assert _canvas_row(original) == expected
+        assert _canvas_row(reparsed) == expected
+        assert _live_row(regenerated, tmp_path) == expected
+
+    def test_a_parameter_shadows_the_physical_name_its_input_was_renamed_from(self) -> None:
+        """With inputMapping the signature's input is the logical name, so a parameter may
+        share the upstream node's name; the canvas binds the parameter there, as the
+        generated function does."""
+        source = (
+            _SCALED.replace("def source() -> pl.LazyFrame:", "def factor() -> pl.LazyFrame:")
+            .replace(
+                "@pipeline.polars\ndef scaled(",
+                '@pipeline.polars(inputMapping={"source": "factor"})\ndef scaled(',
+            )
+            .replace('pipeline.connect("source", "scaled")', 'pipeline.connect("factor", "scaled")')
+        )
+        graph = parse_pipeline_source(source, source_file="main.py")
+
+        assert _canvas_row(graph) == {"x": 100.0, "y": 120.0, "label": "rated"}
+
+    @pytest.mark.parametrize(
+        ("signature", "line", "message"),
+        [
+            pytest.param("source, *, factor", 16, "has no default", id="required"),
+            pytest.param("source, *, factor=FACTOR", 16, "must be a literal", id="name"),
+            pytest.param("source, *, factor=1 + 1", 16, "must be a literal", id="expression"),
+            pytest.param("source, *, factor=(1, 2)", 16, "must be a literal", id="tuple"),
+            pytest.param("source, *, factor={1}", 16, "must be a literal", id="set"),
+            pytest.param("source, *, factor=b'x'", 16, "must be a literal", id="bytes"),
+            pytest.param("source, *, factor=1e999", 16, "must be a literal", id="non-finite"),
+            pytest.param("source, *, factor={1: 2}", 16, "must be a literal", id="int-key"),
+            # One object every call shares, which a canvas run could not reproduce.
+            pytest.param("source, *, factor=[1, 2]", 16, "must be a literal", id="list"),
+            pytest.param('source, *, factor={"a": 1}', 16, "must be a literal", id="dict"),
+            pytest.param("source, *, df=1", 16, "reserved for node code", id="df"),
+            pytest.param("source, *, pl=1", 16, "reserved for node code", id="pl"),
+            pytest.param("source, **settings", 16, "**settings", id="var-keyword"),
+        ],
+    )
+    def test_a_form_the_file_cannot_carry_is_refused_at_its_line(
+        self, signature: str, line: int, message: str
+    ) -> None:
+        source = _SCALED.replace(
+            'source: pl.LazyFrame, *, factor: float = 1.20, label="rated"', signature
+        )
+        with pytest.raises(ParseError, match=message.replace("*", r"\*")) as refused:
+            parse_pipeline_source(source, source_file="main.py")
+        assert refused.value.context["node_id"] == "scaled"
+        assert refused.value.context["line"] == line
+
+    def test_a_refused_node_opens_unavailable_and_the_file_cannot_be_saved(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "haute.toml").write_text('[project]\nname = "m"\n', encoding="utf-8")
+        main = _write(tmp_path, "main.py", _SCALED.replace("factor: float = 1.20", "factor"))
+        before = main.read_bytes()
+
+        document = load_pipeline_editor_document(main, project_root=tmp_path)
+
+        scaled = next(node for node in document.nodes if node.authored_id == "scaled")
+        assert scaled.availability == "unavailable"
+        (diagnostic,) = [d for d in document.diagnostics if d.element_id == scaled.recovery_id]
+        assert "'factor' has no default" in diagnostic.message
+        assert document.capabilities.can_save is False
+        assert main.read_bytes() == before
+
+    def test_a_stepped_transform_refuses_a_keyword_only_parameter(self, tmp_path: Path) -> None:
+        sidecar = tmp_path / "config" / "polars" / "scaled.json"
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_text(
+            '{"steps": [{"id": "s", "kind": "source", "input": "source"}]}', encoding="utf-8"
+        )
+        main = _write(
+            tmp_path,
+            "main.py",
+            _SCALED.replace(
+                "@pipeline.polars\ndef scaled(",
+                '@pipeline.polars(config="config/polars/scaled.json")\ndef scaled(',
+            ),
+        )
+        with pytest.raises(ParseError, match="Transform built from steps") as refused:
+            parse_pipeline_file(main)
+        assert refused.value.context["line"] == 16
+
+    @pytest.mark.parametrize(
+        ("signature", "refused"),
+        [
+            pytest.param("df: pl.LazyFrame, *, obj", None, id="obj-hook"),
+            pytest.param("df: pl.LazyFrame, *, obj=None", "'obj'", id="obj-default"),
+            pytest.param("df: pl.LazyFrame, *, obj, extra=1", "'extra'", id="extra"),
+        ],
+    )
+    def test_a_load_file_hook_takes_only_obj(
+        self, tmp_path: Path, signature: str, refused: str | None
+    ) -> None:
+        sidecar = tmp_path / "config" / "load_file" / "loaded.json"
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_text('{"path": "model.pkl", "fileType": "pickle"}', encoding="utf-8")
+        main = _write(
+            tmp_path,
+            "main.py",
+            _SCALED.replace(
+                "@pipeline.polars\ndef scaled(",
+                '@pipeline.external_file(config="config/load_file/loaded.json")\ndef loaded(',
+            )
+            .replace('source: pl.LazyFrame, *, factor: float = 1.20, label="rated"', signature)
+            .replace('pipeline.connect("source", "scaled")', 'pipeline.connect("source", "loaded")')
+            .replace(
+                'df = source.with_columns(y=pl.col("x") * factor, label=pl.lit(label))',
+                "df = df.head(1)",
+            ),
+        )
+        if refused is None:
+            loaded = next(node for node in parse_pipeline_file(main).nodes if node.id == "loaded")
+            assert "keyword_parameters" not in loaded.data.config
+            return
+        with pytest.raises(ParseError, match=f"declares {refused}") as error:
+            parse_pipeline_file(main)
+        assert error.value.context["line"] == 16
 
 
 # ---------------------------------------------------------------------------
@@ -1651,3 +1844,84 @@ class TestPolarsParameterBinding:
             == "Name each parameter after the node or frame connected to it, "
             "or declare inputMapping={logical: connected} on the decorator."
         )
+
+
+def _transform_graph(config: dict) -> dict:
+    """A frame source feeding a transform named ``scaled`` with *config*."""
+    return {
+        "nodes": [
+            {
+                "id": "source",
+                "data": {
+                    "label": "source",
+                    "nodeType": "polars",
+                    "config": {"code": 'df = pl.LazyFrame({"x": [100.0]})'},
+                },
+            },
+            {"id": "scaled", "data": {"label": "scaled", "nodeType": "polars", "config": config}},
+        ],
+        "edges": [{"id": "e1", "source": "source", "target": "scaled"}],
+    }
+
+
+class TestKeywordOnlyParametersAtSave:
+    """Both saves hold a submitted binding to the contract the parser records."""
+
+    @pytest.mark.parametrize(
+        ("parameters", "extra", "message"),
+        [
+            pytest.param(
+                [{"name": "source", "default": 1}], {}, "the name of an input", id="input"
+            ),
+            pytest.param(
+                [{"name": "factor", "default": 1}], {"steps": []}, "beside steps", id="steps"
+            ),
+            pytest.param([{"name": "factor"}], {}, "{name, default} records", id="shape"),
+            pytest.param([{"name": "df", "default": 1}], {}, "reserved", id="reserved"),
+            pytest.param([], {}, "non-empty list", id="empty"),
+        ],
+    )
+    def test_the_full_save_refuses_a_binding_the_file_cannot_carry(
+        self, client, monkeypatch, tmp_path, parameters, extra, message
+    ) -> None:
+        from tests.conftest import current_source_revision
+
+        monkeypatch.chdir(tmp_path)
+        config = {"code": "df = source", "keyword_parameters": parameters, **extra}
+        response = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "main",
+                "description": "",
+                "graph": _transform_graph(config),
+                "source_file": "main.py",
+                "base_revision": current_source_revision(tmp_path / "main.py", tmp_path),
+            },
+        )
+        assert response.status_code == 400, response.text
+        assert message in response.json()["detail"]
+        assert "scaled" in response.json()["detail"]
+        assert not (tmp_path / "main.py").exists()
+
+    def test_the_full_save_writes_a_binding_back(self, client, monkeypatch, tmp_path) -> None:
+        from tests.conftest import current_source_revision
+
+        monkeypatch.chdir(tmp_path)
+        config = {
+            "code": "df = source.with_columns(y=pl.col('x') * factor)",
+            "keyword_parameters": [{"name": "factor", "default": 1.2}],
+        }
+        response = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "main",
+                "description": "",
+                "graph": _transform_graph(config),
+                "source_file": "main.py",
+                "base_revision": current_source_revision(tmp_path / "main.py", tmp_path),
+            },
+        )
+        assert response.status_code == 200, response.text
+        saved = parse_pipeline_file(tmp_path / "main.py")
+        scaled = next(node for node in saved.nodes if node.id == "scaled")
+        assert scaled.data.config["keyword_parameters"] == [{"name": "factor", "default": 1.2}]

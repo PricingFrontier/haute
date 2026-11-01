@@ -691,10 +691,14 @@ handling.
 
 ## Failure model
 
-> NOTE: The full review found keyword-only configuration defaults dropped during
-> round-trip, including a 120-to-90 result change.
-> [PCFG-R21](../roadmap/pipeline-config.md#pcfg-r21--node-signatures-retain-their-configuration-bindings)
-> tracks conservation of configuration bindings.
+A transform written as code keeps its keyword-only parameters with literal defaults
+(`def scaled(source, *, factor=1.2)`) through parse, the editor, save and every run, so the
+parameter, not a same-named preamble value, is what its body reads. A keyword-only form the
+pipeline file cannot carry back (a parameter without a default, a default that is not a
+scalar literal, a list or dict default included, a keyword-only parameter on any other node or on a stepped transform, apart
+from an External File hook's `obj`, or a `**kwargs` parameter) is a parse error naming the
+node, the parameter and its line, so the editor shows it and Save is refused rather than
+the next save dropping it.
 
 A `connect()` call that the live signature would refuse (an unknown keyword, a third
 positional argument, a value bound twice, a missing or non-string endpoint, a port that is

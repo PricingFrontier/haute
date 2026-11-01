@@ -21,6 +21,7 @@ from haute._ast_helpers import (
 )
 from haute._config_builder import _resolve_node_config
 from haute._graph_utils import _edge_id, resolve_input_mapping_names
+from haute._keyword_parameters import KEYWORD_PARAMETERS_KEY, keyword_parameters_from_signature
 from haute._polars_steps import stepped_surface_allows_input_references
 from haute._source_layout import python_lines
 from haute._standalone_nodes import CODE_NODE_TYPES
@@ -55,6 +56,7 @@ class PipelineNodeSkeleton:
     end_line: int
     end_column: int
     is_async: bool
+    arguments: ast.arguments
 
 
 def _decorator_method(decorator: ast.expr) -> str:
@@ -118,6 +120,7 @@ def _extract_decorated_node_skeletons(
                 end_line=stmt.end_lineno or stmt.lineno,
                 end_column=stmt.end_col_offset or stmt.col_offset,
                 is_async=isinstance(stmt, ast.AsyncFunctionDef),
+                arguments=stmt.args,
             )
         )
     return skeletons
@@ -161,6 +164,14 @@ def _resolve_node_skeleton(
         # Code extraction reports lines within the node's code; name the node.
         exc.context.setdefault("node_id", skeleton.authored_id)
         raise
+    keyword_parameters = keyword_parameters_from_signature(
+        skeleton.arguments,
+        node_type=node_type,
+        stepped="config" in decorator_kwargs,
+        node_id=skeleton.authored_id,
+    )
+    if keyword_parameters:
+        config = {**config, KEYWORD_PARAMETERS_KEY: keyword_parameters}
     return {
         "func_name": skeleton.authored_id,
         "node_type": node_type,

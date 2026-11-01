@@ -793,7 +793,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
                 "write_mode",
             ),
         ),
-        NodeType.POLARS: _classify_config_fields(user_code=("code", "steps")),
+        NodeType.POLARS: _classify_config_fields(user_code=("code", "steps", "keyword_parameters")),
         NodeType.EDGE_JOIN: _classify_config_fields(
             node_config=(
                 "coalesce",

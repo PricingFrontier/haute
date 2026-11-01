@@ -18,7 +18,6 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 | PCFG-R12 | Planned | P2 | A save keeps every authored comment, or reports the ones it would drop before it proceeds. |
 | PCFG-R16 | Decision | P3 | The `earlier` step spelling is either dropped or named as the one allowed recogniser of old generated code. |
 | PCFG-R19 | Planned | P3 | The file-to-recovery-graph pass is written once, for a pipeline file and a submodel file alike. |
-| PCFG-R21 | Planned | P1 | A parse/save round trip preserves supported keyword-only bindings or refuses an unsupported signature before losing it. |
 
 `PCFG-R04` to `PCFG-R09` come from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md);
@@ -252,25 +251,3 @@ unchanged apart from a stated diagnostic order.
 
 **Evidence:** `src/haute/_pipeline_recovery.py::_recover_submodel_snapshot`;
 `src/haute/_pipeline_recovery.py::_load_readable_pipeline_editor_document`.
-
-### PCFG-R21 — Node signatures retain their configuration bindings
-
-**Why:** The parser retains keyword-only names temporarily but drops defaults and the canonical
-graph loses the signature. Codegen rebuilds parameters from edges. A valid node with
-`factor=1.2` and a same-named preamble value `factor=0.9` computes 120 before Save and 90 after
-real parse/codegen. Without the preamble binding it fails at execution. The specification calls
-these parameters configuration, yet existing tests check only that no implicit edge is added.
-
-**Plan:** Define supported configuration parameter bindings in the pipeline-config
-representation and preserve them through parser, recovery, codegen and standalone execution.
-Any signature the representation cannot faithfully preserve must receive a located refusal
-before healthy load/Save; never silently drop a default or redirect the name to the preamble.
-
-**Acceptance:** Execute the original and regenerated node with a shadowing preamble constant
-and assert equal results. Cover literal defaults, required keyword-only parameters and
-unsupported expressions according to the defined contract. Refused forms leave the Python bytes
-unchanged. An edge-count assertion alone is insufficient.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_graph_builders.py::_extract_decorated_node_skeletons`; `src/haute/_graph_builders.py::_resolve_node_skeleton`; `src/haute/codegen.py`; `tests/test_parser_conservation.py::TestParameterBucketConservation`.

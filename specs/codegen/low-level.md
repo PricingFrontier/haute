@@ -318,6 +318,13 @@ makes it local, so the declaration would add nothing. User code must start from 
 name (`df = quotes.join(regions, ...)`), and reading `df` before assigning it is
 a `NameError` at run time, in the generated module and canvas execution alike.
 
+A transform's `keyword_parameters` (the pipeline-config specification's keyword-only
+parameters) follow its inputs after a bare `*`, in their recorded order, each as
+`name=<literal>` with no annotation, the default printed by `_source_layout.literal` as a
+decorator keyword's value is (`Param.default`). `_gen_transform` validates them with
+`validate_keyword_parameters` and refuses, with a `ConfigError` naming the node, a binding
+named like one of the logical input names it emits, and a stepped transform carrying them.
+
 A stepped transform (`config["steps"]` is a list) has its body rendered by
 `_polars_steps.render_polars_steps` against the logical parameter names, one
 statement per step (over several lines when it does not fit in 88 columns at the body's indentation) with a
@@ -484,6 +491,7 @@ empty code.
 | stepped `polars` transform whose steps cannot be rendered | No error — incomplete placeholder body, warned at save time with the step index | `_codegen_builders._gen_transform`, `_save_pipeline._validate_transforms_are_runnable` |
 | stepped `dataInput`, `externalFile`, `ratingStep`, `modelScore`, `scenarioExpander` or `explore` whose steps cannot be rendered | No error — the hook's body is the `INCOMPLETE_STEPS_MESSAGE` placeholder, warned at save time with the step index | `_codegen_builders._stepped_body_code` and `_configured_node`, `_save_pipeline._validate_transforms_are_runnable` |
 | stepped `polars` node carrying `inputMapping` | `ConfigError` (node id/label) | `_codegen_builders._gen_transform` |
+| `polars` transform with a malformed `keyword_parameters`, one named like an input, or one beside `steps` | `ConfigError` (node id/label) | `_codegen_builders._gen_transform` |
 | `edgeJoin` codegen called with `!= 2` sources | `ConfigError` | `_codegen_builders._gen_edge_join` |
 | `Explore` node with `!= 1` incoming edge | `ParseError` | `_codegen_builders._gen_explore` |
 | Codegen dispatched on a `SUBMODEL`/`SUBMODEL_PORT` occurrence | `RuntimeError` | `_codegen_builders._gen_submodel_placeholder_unreachable` |
