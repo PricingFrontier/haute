@@ -159,6 +159,15 @@ Out of scope, owned elsewhere:
   checked out. It is what
   the workbench's generated jobs run, signed in as their service principal, and exits 1 naming
   what failed ([workbench](../workbench/high-level.md)).
+- `haute app impact [--sample N]` compares the release a workbench project's staging app
+  runs with production's on up to N of the final quotes production keeps (100 by
+  default), each priced on both apps through their own routes, on the output fields
+  the two releases share, and writes `impact_report.md`: the fields only one release
+  has, each quote whose prices moved and how, the quotes that no longer compare or
+  that the new release refuses. It changes nothing. It is what the workbench's
+  publish job runs after the staging rollout, signed in as its service principal, and
+  exits 1, the report written, when staging fails on a quote production prices or an app
+  cannot be reached or used ([workbench](../workbench/high-level.md)).
 - `haute app serve [--port PORT] [--static-dir DIR] [--reader]` builds the release
   under `.haute/app/release` and serves the underwriter app on `127.0.0.1` alone (port
   8001 by default), every request signed in as the analyst's git identity, able to

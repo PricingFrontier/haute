@@ -1746,7 +1746,8 @@ class TestWorkbenchCiFiles:
         assert publish["needs"] == "validate"
         # A manual run may pick any branch: only main's commits are published.
         assert publish["if"] == "github.ref == 'refs/heads/main'"
-        # One staging rollout at a time, with time for a build, a rollout and a recovery.
+        # One staging rollout at a time, with time for a build, a rollout, a recovery and
+        # the impact.
         assert publish["concurrency"] == {
             "group": "haute-app-staging",
             "cancel-in-progress": False,
@@ -1755,9 +1756,16 @@ class TestWorkbenchCiFiles:
         steps = publish["steps"]
         login = next(step for step in steps if step.get("name") == "Log in to the registry")
         assert set(login["env"]) == self._SECRETS
-        assert set(steps[-1]["env"]) == self._SECRETS
-        assert "uv run haute app build --push" in steps[-1]["run"]
-        assert 'uv run haute app rollout staging --image "$image"' in steps[-1]["run"]
+        staged, measured, kept = steps[-3:]
+        assert set(staged["env"]) == self._SECRETS
+        assert "uv run haute app build --push" in staged["run"]
+        assert 'uv run haute app rollout staging --image "$image"' in staged["run"]
+        # The impact runs once staging is rolled out, and its report is kept whatever happens.
+        assert measured["run"] == "uv run haute app impact"
+        assert set(measured["env"]) == self._SECRETS
+        assert kept["if"] == "always()"
+        assert kept["uses"] == "actions/upload-artifact@v4"
+        assert kept["with"] == {"name": "impact-report", "path": "impact_report.md"}
 
         production = files[".github/workflows/release-production.yml"]
         assert set(production[True]) == {"workflow_dispatch"}
@@ -1782,7 +1790,9 @@ class TestWorkbenchCiFiles:
         assert publish["rules"] == [{"if": "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"}]
         assert set(publish["variables"]) == self._SECRETS
         assert "haute ci registry-host" in publish["script"][0]
-        assert 'uv run haute app rollout staging --image "$image"' in publish["script"][-1]
+        assert 'uv run haute app rollout staging --image "$image"' in publish["script"][1]
+        assert publish["script"][2:] == ["uv run haute app impact"]
+        assert publish["artifacts"] == {"when": "always", "paths": ["impact_report.md"]}
         production = pipeline["deploy-production"]
         assert production["when"] == "manual"
         assert production["allow_failure"] is False
@@ -1802,8 +1812,16 @@ class TestWorkbenchCiFiles:
         job = publish["jobs"][0]
         assert job["environment"] == "staging"
         steps = job["strategy"]["runOnce"]["deploy"]["steps"]
-        assert set(steps[-1]["env"]) == self._SECRETS
-        assert 'uv run haute app rollout staging --image "$image"' in steps[-1]["script"]
+        staged, measured, kept = steps[-3:]
+        assert set(staged["env"]) == self._SECRETS
+        assert 'uv run haute app rollout staging --image "$image"' in staged["script"]
+        assert measured["script"] == "uv run haute app impact"
+        assert set(measured["env"]) == self._SECRETS
+        assert kept == {
+            "publish": "impact_report.md",
+            "artifact": "impact-report",
+            "condition": "succeededOrFailed()",
+        }
         production = stages["DeployProduction"]
         # Manual whatever approvals the environment has.
         assert production["trigger"] == "manual"

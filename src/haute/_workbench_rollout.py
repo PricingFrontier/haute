@@ -176,15 +176,18 @@ class ContainerAppHost(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class HttpAnswer:
-    """One answer of the hosted app: its status (0 when no server answered), its body and
-    where a redirect points."""
+    """One answer of the hosted app: its status (0 when no server answered), its body, where
+    a redirect points and how long a busy app asks to be left (``Retry-After``)."""
 
     status: int
     body: bytes = b""
     location: str | None = None
+    retry_after: str | None = None
 
 
 Fetch = Callable[[str, Mapping[str, str]], HttpAnswer]
+#: One POST of a JSON body: the URL, the headers and the body.
+Post = Callable[[str, Mapping[str, str], bytes], HttpAnswer]
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -196,18 +199,38 @@ def fetch(url: str, headers: Mapping[str, str]) -> HttpAnswer:
     """One GET of *url* with *headers* within :data:`REQUEST_TIMEOUT_SECONDS`, redirects not
     followed: a sign-in's redirect is an answer of its own. A request no server answers, or
     one that stalls, answers status 0 with the reason as its body."""
-    request = urllib.request.Request(url, headers=dict(headers), method="GET")
+    return _send(urllib.request.Request(url, headers=dict(headers), method="GET"))
+
+
+def post(
+    url: str, headers: Mapping[str, str], body: bytes, *, timeout: float | None = None
+) -> HttpAnswer:
+    """One POST of the JSON *body* to *url* with *headers*, answered as :func:`fetch` answers,
+    within *timeout* seconds (:data:`REQUEST_TIMEOUT_SECONDS` unless given)."""
+    sent = {**headers, "Content-Type": "application/json"}
+    return _send(urllib.request.Request(url, data=body, headers=sent, method="POST"), timeout)
+
+
+def _send(request: urllib.request.Request, timeout: float | None = None) -> HttpAnswer:
     opener = urllib.request.build_opener(_NoRedirect)
+    bound = REQUEST_TIMEOUT_SECONDS if timeout is None else timeout
     try:
-        with opener.open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-            return HttpAnswer(response.status, response.read(), response.headers.get("Location"))
+        with opener.open(request, timeout=bound) as response:
+            return HttpAnswer(
+                response.status,
+                response.read(),
+                response.headers.get("Location"),
+                response.headers.get("Retry-After"),
+            )
     except urllib.error.HTTPError as error:
         # An error's status is its answer; a body that stalls or ends early is none.
         try:
             body = error.read()
         except (http.client.HTTPException, OSError):
             body = b""
-        return HttpAnswer(error.code, body, error.headers.get("Location"))
+        return HttpAnswer(
+            error.code, body, error.headers.get("Location"), error.headers.get("Retry-After")
+        )
     except (urllib.error.URLError, http.client.HTTPException, OSError) as error:
         # No server, a stall (a timeout is an OSError) or a body that ends early.
         return HttpAnswer(0, (str(error) or type(error).__name__).encode("utf-8"))
@@ -240,9 +263,8 @@ def credentials() -> dict[str, str]:
     missing = [name for name, value in values.items() if not value]
     if missing:
         raise RolloutError(
-            "The rollout signs in to Azure as the CI service principal: set "
-            + ", ".join(missing)
-            + "."
+            "haute app rollout and haute app impact sign in to Azure as the CI service "
+            "principal: set " + ", ".join(missing) + "."
         )
     return values
 
@@ -252,11 +274,12 @@ def app_environment(config: WorkbenchConfig, name: str) -> AppEnvironment:
     a project without a workbench, with an app host the rollout does not reach, or naming no
     such environment or leaving its resource group or Container App empty."""
     if not config.enabled:
-        raise RolloutError("This project has no workbench: there is no app to roll out.")
+        raise RolloutError("This project has no workbench: it hosts no app.")
     if config.app_host != "azure-container-apps":
         raise RolloutError(
-            "haute app rollout rolls out an app on Azure Container Apps: set [workbench.app] "
-            f'host = "azure-container-apps" in haute.toml (it is {config.app_host!r}).'
+            "haute app rollout and haute app impact reach an app on Azure Container Apps: set "
+            f'[workbench.app] host = "azure-container-apps" in haute.toml (it is '
+            f"{config.app_host!r})."
         )
     found = next((each for each in config.app_environments if each.name == name), None)
     if found is None:
@@ -685,8 +708,17 @@ class AzureContainerApps:
         if credential is None:
             from azure.identity import ClientSecretCredential
 
+            # Its token requests bounded as the client's are: each attempt's connection and
+            # read, the retries and their waits.
             credential = ClientSecretCredential(
-                values["AZURE_TENANT_ID"], values["AZURE_CLIENT_ID"], values["AZURE_CLIENT_SECRET"]
+                values["AZURE_TENANT_ID"],
+                values["AZURE_CLIENT_ID"],
+                values["AZURE_CLIENT_SECRET"],
+                connection_timeout=REQUEST_TIMEOUT_SECONDS,
+                read_timeout=REQUEST_TIMEOUT_SECONDS,
+                retry_policy_class=_bounded_retry(),
+                retry_total=_SDK_RETRIES,
+                retry_backoff_max=_MAX_RETRY_WAIT_SECONDS,
             )
         if client is None:
             client = _client(credential, values["AZURE_SUBSCRIPTION_ID"])
@@ -890,6 +922,12 @@ def _retry_policy() -> Any:
     """azure-core's retry policy, :data:`_SDK_RETRIES` retries, its ``Retry-After`` waits capped
     at :data:`_MAX_RETRY_WAIT_SECONDS`: the policy checks a request's budget only between
     attempts, so an uncapped wait could hold a stopped app past its deadline."""
+    return _bounded_retry()(retry_total=_SDK_RETRIES, retry_backoff_max=_MAX_RETRY_WAIT_SECONDS)
+
+
+def _bounded_retry() -> type[Any]:
+    """azure-core's retry policy class with its ``Retry-After`` waits capped at
+    :data:`_MAX_RETRY_WAIT_SECONDS`, which the CI service principal's credential takes too."""
     from azure.core.pipeline.policies import RetryPolicy
 
     class _BoundedRetry(RetryPolicy):
@@ -900,7 +938,7 @@ def _retry_policy() -> Any:
                 return True
             return False
 
-    return _BoundedRetry(retry_total=_SDK_RETRIES, retry_backoff_max=_MAX_RETRY_WAIT_SECONDS)
+    return _BoundedRetry
 
 
 def _named(value: object) -> str:

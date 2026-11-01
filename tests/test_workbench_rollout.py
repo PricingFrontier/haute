@@ -882,7 +882,7 @@ def _config(**changes: Any) -> WorkbenchConfig:
     ("config", "message"),
     [
         (_config(enabled=False), "has no workbench"),
-        (_config(app_host=None), "rolls out an app on Azure Container Apps"),
+        (_config(app_host=None), "reach an app on Azure Container Apps"),
         (_config(app_environments=()), "names no [workbench.app.staging]"),
         (
             _config(app_environments=(AppEnvironment("staging", "", ""),)),

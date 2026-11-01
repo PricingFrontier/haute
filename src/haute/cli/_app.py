@@ -2,9 +2,12 @@
 
 Split into:
 
-* :class:`AppBuildConfig` and :class:`AppServeConfig` — the typed bags of CLI inputs.
-* :func:`handle_app_build` and :func:`handle_app_serve` — the functions that do the work.
-* :func:`app` and its ``build`` and ``serve`` — the thin ``@click`` entry points.
+* :class:`AppBuildConfig`, :class:`AppRolloutConfig`, :class:`AppImpactConfig` and
+  :class:`AppServeConfig` — the typed bags of CLI inputs.
+* :func:`handle_app_build`, :func:`handle_app_rollout`, :func:`handle_app_impact` and
+  :func:`handle_app_serve` — the functions that do the work.
+* :func:`app` and its ``build``, ``rollout``, ``impact`` and ``serve`` — the thin ``@click``
+  entry points.
 
 ``build`` writes the project's release into a directory, ``.haute/app/release`` unless
 another is named: the pipeline bundled as ``haute deploy`` bundles it, after the same
@@ -55,6 +58,14 @@ class AppRolloutConfig:
     environment: str
     image: str | None = None
     source: str | None = None
+
+
+@dataclass
+class AppImpactConfig:
+    """Parsed inputs for the ``haute app impact`` command: how many of production's final
+    quotes to price on both apps."""
+
+    sample: int
 
 
 @dataclass
@@ -168,6 +179,39 @@ def handle_app_rollout(config: AppRolloutConfig) -> None:
     click.echo(release)
 
 
+def handle_app_impact(config: AppImpactConfig) -> None:
+    """Compare the release staging runs with production's on production's saved quotes
+    (specs/workbench, Control flow 36), printing each step, and write the report on every run
+    past the refusals before a host is reached; a run that stopped or a quote staging failed
+    on is a Click error after the report."""
+    from haute import _workbench_impact as impacts
+    from haute import _workbench_rollout as rollouts
+    from haute._workbench_config import read_workbench_config
+
+    project_dir = Path.cwd()
+    with _said():
+        workbench = read_workbench_config(project_dir)
+        staging = rollouts.app_environment(workbench, "staging")
+        production = rollouts.app_environment(workbench, "prod")
+        values = rollouts.credentials()
+    report = impacts.impact(
+        rollouts.AzureContainerApps(production, values),
+        rollouts.AzureContainerApps(staging, values),
+        sample=config.sample,
+        say=click.echo,
+    )
+    written = project_dir / impacts.REPORT_FILE
+    written.write_bytes(impacts.render_report(report).encode("utf-8"))
+    click.echo(f"  ✓ Report written: {impacts.REPORT_FILE}")
+    if report.verdict == "stopped":
+        raise click.ClickException(f"The impact stopped: {report.why}")
+    if report.failed:
+        raise click.ClickException(
+            "Staging failed on quotes production prices:"
+            + "".join(f"\n  - {quote.label}: {quote.reason}" for quote in report.failed)
+        )
+
+
 def handle_app_serve(config: AppServeConfig) -> None:
     """Build the project's release under ``.haute/`` and serve it on loopback, signed in as the
     analyst's git identity."""
@@ -251,6 +295,19 @@ def rollout_command(environment: str, image: str | None, source: str | None) -> 
     if (image is None) == (source is None):
         raise click.UsageError("Pass --image or --from, one of them.")
     handle_app_rollout(AppRolloutConfig(environment=environment, image=image, source=source))
+
+
+@app.command(name="impact")
+@click.option(
+    "--sample",
+    default=100,
+    show_default=True,
+    type=click.IntRange(1, 1_000),
+    help="How many of production's final quotes to price on both apps.",
+)
+def impact_command(sample: int) -> None:
+    """Compare staging's release with production's on production's saved quotes."""
+    handle_app_impact(AppImpactConfig(sample=sample))
 
 
 @app.command()

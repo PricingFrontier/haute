@@ -156,19 +156,20 @@ Out of scope:
   registry `[deploy.container] registry` names (the host `haute ci registry-host` prints)
   and runs `haute app build --push`, which builds the release's image once, pushes it and
   prints the reference by digest it pushed, then `haute app rollout staging --image` with that
-  reference. Production follows only by hand, after whatever approval the provider is set to
+  reference and `haute app impact` (below), whose `impact_report.md` the job keeps as its
+  artifact whether it passes or fails. Production follows only by hand, after whatever approval the provider is set to
   ask for: GitHub's `release-production.yml`, run from the Actions tab for a commit of the
   default branch (its head unless another is given), GitLab's manual `deploy-production` job
   and Azure DevOps' `DeployProduction` stage, a deployment under its `production`
   environment, triggered by hand whatever approvals it has, each run `haute app rollout prod
   --from staging`, which rolls production to the release staging runs, refusing when staging
   runs another commit than the one being promoted. Each job that rolls out is given the
-  host's credentials and time for a build, a rollout and a recovery (an hour for the publish
-  job, forty-five minutes for production), and the jobs that roll one environment out never
+  host's credentials and time for a build, a rollout, a recovery and the impact (an hour for
+  the publish job, forty-five minutes for production), and the jobs that roll one environment out never
   run at once (GitHub's concurrency group, GitLab's resource group, Azure DevOps' one
   pipeline run at a time on the environment's exclusive lock, which IT sets on it).
-  Impact on saved quotes and the packaged app's
-  tests are still to come ([WB-08](../roadmap/workbench.md#wb-08--the-workbench-projects-cicd)).
+  The packaged app's tests are still to come
+  ([WB-08](../roadmap/workbench.md#wb-08--the-workbench-projects-cicd)).
 - **Rolling the hosted app out.** `haute app rollout ENVIRONMENT` rolls the Container App
   that `[workbench.app.<ENVIRONMENT>]` names to one image and checks the release there, for
   the workbench's CI. It creates nothing and changes no database's tables. Before it changes
@@ -221,6 +222,93 @@ Out of scope:
   release that stays is recorded on the Container App, as its Azure tags `haute-image` (the
   image by digest), `haute-release` (the release's id) and `haute-commit` (the commit), which
   `--from` reads. The command says each step as it takes it and prints the release's id last.
+- **Impact on saved quotes.** `haute app impact` compares the release the staging app runs
+  with the release production runs, on quotes production keeps, for whoever approves
+  production; the workbench's publish job runs it after the staging rollout. It changes
+  nothing: it lists and opens production's quotes and prices their values on each app through
+  the app's own routes (a pricing saves nothing), signed in as the service principal
+  `haute app rollout` signs in as. Before it reaches a host it makes the rollout's refusals: an
+  app host other than `azure-container-apps`, `[workbench.app.staging]` or
+  `[workbench.app.prod]` not naming its app, or any of the four variables unset. It then reads
+  each app's address and Entra ID registration from Azure as the rollout does, takes a token
+  for each, and reads each app's release and form revision from `/api/app/release` and its
+  form from `/api/app/form`; an app that cannot be reached or refuses the service principal,
+  or whose quotes are closed, stops the run, which fails. When production has no
+  `haute-release` tag it has never been rolled out: there is no baseline, production is not
+  reached, and the candidate answers only for the test quotes `haute app build` scored in the
+  validate job. A production app whose record is incomplete (one or two of `haute-image`,
+  `haute-release` and `haute-commit`, which the rollout sets together) stops the run. When
+  staging and production run the same release the report says so and nothing is priced; when
+  production lists no final quote there is no baseline either.
+
+  The sample is production's final quotes, archived ones left out, newest saved first: 100
+  by default, `--sample N` from 1 to 1,000. Drafts are left out, as a half-typed quote says
+  nothing of a release. Each quote is opened on production for its values, by table and
+  column id as production's form reads them, and those values are sent unchanged to
+  production's price route and then staging's, one request at a time, each with that app's
+  own release and form revision. Each app reads them through its own form as it reads any
+  quote's values: a value in a column it does not know is left out, and a column it adds
+  holds nothing typed, read as the form reads a blank (an unticked box in a filled row is
+  false, say). A 503 is sent again after its `Retry-After`, five seconds without
+  one and ten at most, three tries in all.
+
+  An answer that says an app, rather than a quote, is failing stops the run, which fails: no
+  answer within the request's bound, 401, 403 or a redirect (the sign-in refused, or the
+  host sending the request to its sign-in), 409 (the app now runs
+  another release than the one the run read) or 503 after its three tries (still busy, or its
+  quotes closed), from production or from staging, while listing, opening or pricing; so does
+  a quotes page production does not answer with 200. Any other answer is the quote's. A quote
+  production cannot open (other than gone, 404, which is not compared) or price is left out
+  of the comparison, counted. A quote production prices and staging answers 422 is named as
+  refused by the release (its Workbench Input refuses the values: a text in a column the
+  release makes a number, say); one staging answers any other way (500, its pipeline failing
+  on it; 504, too long; 507, too much memory; 413, too large) is named as failed, and fails
+  the run. A price's move never fails a run: it is the approver's to weigh.
+
+  The run has ten minutes from its start (`IMPACT_TIMEOUT_SECONDS`), checked before each
+  request and each wait, a wait that would pass it not taken: a request started runs to its
+  own bound, thirty seconds, or seventy-five for a pricing (longer than the app's own sixty,
+  so its 504 comes first), and Azure's reads and the service principal's tokens to the
+  rollout's bound on each call (thirty seconds to connect and to read each attempt, two
+  retries at most, a retry's wait ten seconds at most).
+  When time runs out once quotes are listed, the quote being priced and those after it are
+  not compared, the report says time ran out, and the run passes on what it compared; time
+  running out before the quotes are listed stops the run.
+
+  It compares each quote's output tables as the price route answers them, on the fields the
+  two releases share: each table both forms name as an output with the same `rows`, and in
+  it each column both forms name. The tables and columns only one release has, and a table
+  one release has one row per quote and the other many (not compared), are listed once, at
+  the head of the report, never against each quote. A field an answer leaves out is empty. A
+  one-row table's row is compared column by column. A many-row table's rows are matched by
+  the columns both releases mark as its keys, each row by its key values, a row only one side
+  holds named as added or removed; when the two releases mark no key in common, rows are
+  matched by position when the two answers hold as many rows. A number (an integer or a
+  decimal, not true or false) has moved when it differs from production's by more than a
+  millionth of a percent of it, or, from zero, by anything; any other value, an empty one
+  against a value included, has moved when it is not the same. A moved number is shown as
+  production's value, staging's and the difference, and, when production's is not zero, the
+  difference as a percentage of production's size (its absolute value); a move from zero,
+  from or to empty, or between a number and another kind of value has no percentage and is
+  counted in no rise or fall. A quote whose rows cannot be matched (a key value held twice on
+  one side, a key column empty, or rows matched by position whose counts differ) is named as
+  no longer comparing, with the table and why.
+
+  The report, `impact_report.md` in the working directory, is written on every run that
+  passes the refusals before a host is reached, the first release, one that stops and one
+  that fails included. It names each app's release and the commit its record names, whether
+  the run passes and why not, the sample and how much of it was priced, the fields only one
+  release has, then for each shared field the number of quotes it moved in and its largest
+  rise and fall in percent; then each quote that moved, with the fields that moved (output
+  values and the key values of the rows they are in); the quotes that no longer compare; and
+  those refused by the release, those staging failed on, those production could not price
+  and those not compared, each with its status and what the status means, never the app's
+  own words, which can quote the values typed. It names quotes by reference and option and
+  holds no input table, so nothing of `quote_details` (the insured, the broker). It is a CI
+  artifact, readable by whoever can read the repository's runs and kept as long as the
+  provider keeps artifacts; the output values it holds are as sensitive as the form's output
+  tables. The command says each step as it takes it and exits 1 when the run stops or
+  staging failed on a quote, after writing the report.
 - **The form.** The form is one document as the editor, the routes, a release and the
   quote store hold it: `version` (1), `name`, `schema` (its tables), `pages` (its sheets,
   at least one) and `sample` (the quote typed while building, `{}` for none). The form
