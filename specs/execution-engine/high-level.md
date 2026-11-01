@@ -218,7 +218,10 @@ running heavy work in a child process the parent can kill on timeout or memory l
   receiver-aware AST walk alone: comments and string literals cannot affect
   eligibility, a same-named method on another namespace does not inherit an
   admission, and every rejection is a structured decision naming the blocking
-  operator, a closed reason code, and the source line. A rejection never fails the
+  operator, a closed reason code, and the source line. A `select` is row-local only
+  when it reads an input column: a literal alone is one row whatever the input, so the
+  classifier refuses it, and deployed scoring's request-row proof uses the same rule.
+  A rejection never fails the
   pipeline; its consumer takes its whole-frame path (a write that is not input-sliced,
   an expression value not computed from one row, or a trace edge that is not
   row-aligned).

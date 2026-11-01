@@ -658,7 +658,7 @@ hands over its write's digests the same way:
   times the time (five and twenty million rows against 2.4 million), the trade this
   writer makes. The whole-join native path below applies to ordered joins too.
 - **Sliced**: a sliceable frame is written one `slice(offset, chunk_rows)` per part.
-- **Input-sliced** (`recipe=WriteRecipe(input, fn, finish, reason, blocking_operator)`): when the frame itself is not sliceable, but the node is proven chunk-local, the recipe applies its builder function and post-shaping to each `slice(offset, chunk_rows)` of `recipe.input`. Before writing, equivalence between `recipe.native()` and `frame` is verified by schema and `explain(optimized=False)` (two in-memory frames of equal schema being indistinguishable this way). If `recipe.input` is not sliceable, the write falls back to native with `input_not_sliceable`. A rejected recipe (no function) falls back to native carrying the decision's reason and blocking operator.
+- **Input-sliced** (`recipe=WriteRecipe(input, fn, finish, reason, blocking_operator)`): when the frame itself is not sliceable, but the node is proven chunk-local, the recipe applies its builder function and post-shaping to each `slice(offset, chunk_rows)` of `recipe.input`. Before writing, equivalence between `recipe.native()` and `frame` is verified by schema and `explain(optimized=False)` (two in-memory frames of equal schema being indistinguishable this way). If `recipe.input` is not sliceable, the write falls back to native with `input_not_sliceable`. A rejected recipe (no function) falls back to native carrying the decision's reason and blocking operator. A `select` that reads no input column (`df.select(pl.lit(1).alias('one'))`) is one row whatever its input, so the classifier refuses it with `column_free_select` and it is written natively, never one row per slice.
 - **Native**: anything else is one native sink into `part-00000.parquet`.
 
 Precedence is explicit: a join recipe first, then `sliced` when the frame is sliceable, then
@@ -2220,17 +2220,27 @@ present a structural or schema result as execution evidence.
   format from the data and two chunks can infer differently. Methods whose validator
   admits more than one materially distinct shape declare those shapes in
   `_ADMITTED_CALL_SHAPES` (for example `expr.replace`: `mapping`, `old_new`; the
-  temporal parsers: `explicit_format_lenient`, `explicit_format_strict`), and the proof
+  temporal parsers: `explicit_format_lenient`, `explicit_format_strict`; `df.select`:
+  `named_column`, `selector_rooted`), and the proof
   inventory requires a chunked-equals-full proof per declared shape, comparing raised
-  exception classes as well as frames. `classify_chunk_local_polars_code(code, frame_names=...)`
+  exception classes as well as frames. A frame-level `select` (or `select_seq`) whose
+  arguments are all row-local is admitted only when it keeps its input's rows
+  (`column_free_select_argument`): one argument reads a column by its literal name (a bare
+  string, positionally or as a named expression, a positional list of them, or a
+  `pl.col`/horizontal-helper name inside an expression, never `*` or `^...$`), or every
+  argument starts from a selector (which expands to columns of the frame's height or to
+  none). Otherwise the first argument that is neither, typically a literal, is the
+  blocker: it is one row whatever the input height, so written a slice at a time it would
+  give one row per slice. `classify_chunk_local_polars_code(code, frame_names=...)`
   returns `ChunkLocalDecision(eligible, reason, blocking_operator, line, column)` with
   the closed reasons `eligible`, `empty_code`, `no_frame_names`, `syntax_error`,
   `unsupported_statement`, `assignment_not_frame_derived`,
   `frame_embedded_in_expression`, `unsupported_frame_method`,
   `unsupported_expression_method`, `unsupported_namespace_method`,
-  `unsupported_polars_function`, `unsupported_call_shape`, and
+  `unsupported_polars_function`, `unsupported_call_shape`, `column_free_select`, and
   `unsupported_expression`; the operator is the method, function, frame, or AST node
-  name that blocked the walk and the location is its 1-based source line and column.
+  name that blocked the walk (for `column_free_select`, the blocking argument's source)
+  and the location is its 1-based source line and column.
   The first blocking construct in source order wins: sibling children are visited by
   source position, so a dictionary value or a conditional body reports before a
   textually later key or test. `with_row_index`, forward or
@@ -3001,9 +3011,13 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   comments and string literals cannot change eligibility, every rejection names its
   operator, closed reason, and source location (the textually first blocking construct),
   namespace admissions and group-by evidence are receiver-specific, every registered
-  materialisation-boundary operator is not chunk-local, and the row-semantics mode admits
+  materialisation-boundary operator is not chunk-local, a `select` that reads no input
+  column by name (a literal alone, or beside selectors that may match nothing) is refused
+  as `column_free_select` naming the literal while one reading a named column or only
+  selectors stays eligible, and the row-semantics mode admits
   registered row-local operations chunking has not proven while naming the operator of
-  anything that needs other rows.
+  anything that needs other rows. `test_chunked_writes.py` writes a corpus of selects a
+  slice at a time and gets each one's native height.
 - **`tests/test_output_schema_only.py`** — the schema-only OUTPUT contract: a
   tripwire over every document shape (flat, nested objects, one array level, two
   array levels, a multi-port parent with sibling child arrays) proving a

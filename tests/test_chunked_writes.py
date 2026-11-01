@@ -1606,6 +1606,57 @@ def test_unsupported_chunk_local_operations_stay_native_with_reason_and_operator
         )
 
 
+@pytest.mark.parametrize(
+    ("selection", "written_as"),
+    [
+        pytest.param("pl.lit(1).alias('one')", "native", id="literal-only"),
+        pytest.param("pl.col('^v.*$'), pl.lit(1).alias('one')", "native", id="regex-and-lit"),
+        pytest.param("pl.col('id')", "input_sliced", id="column"),
+        pytest.param("'id', one=pl.lit(1)", "input_sliced", id="name-and-lit"),
+        pytest.param("(pl.lit(2) * pl.col('val')).alias('x')", "input_sliced", id="lit-x-column"),
+        pytest.param("pl.all()", "input_sliced", id="selector"),
+    ],
+)
+def test_a_select_written_a_slice_at_a_time_keeps_its_native_height(
+    tmp_path: Path, selection: str, written_as: str
+) -> None:
+    """A select is written input-sliced only when it reads an input column: a literal
+    alone is one row, and one per slice if each slice were written on its own. The
+    filter in front leaves only the recipe able to slice the write."""
+    code = f"df = parent.filter(pl.col('id') % 2 == 0).select({selection})"
+    source = tmp_path / "source.parquet"
+    pl.DataFrame({"id": list(range(30)), "val": [float(i) for i in range(30)]}).write_parquet(
+        source
+    )
+    parent = pl.scan_parquet(source)
+
+    def node_fn(lf: pl.LazyFrame) -> pl.LazyFrame:
+        scope: dict[str, Any] = {"pl": pl, "parent": lf}
+        exec(code, scope)  # noqa: S102 - the test's own literal code
+        return scope["df"]
+
+    # The recipe as lazy execution builds it from the classifier's decision.
+    decision = classify_chunk_local_polars_code(code, frame_names=("parent",))
+    recipe = WriteRecipe(
+        input=parent,
+        fn=node_fn if decision.eligible else None,
+        reason=None if decision.eligible else decision.reason,
+        blocking_operator=None if decision.eligible else decision.blocking_operator,
+    )
+    native = node_fn(parent)
+    target = tmp_path / "out"
+    target.mkdir()
+
+    res = write_parts(target, native, recipe=recipe, chunk_rows=7)
+
+    assert res.strategy == written_as
+    if written_as == "native":
+        assert res.native_reason == "column_free_select"
+    else:
+        assert res.input_slices == 5
+    assert scan_parts(part_paths(target)).collect().equals(native.collect())
+
+
 def test_rejected_write_recipe_requires_reason_and_cannot_be_applied() -> None:
     frame = pl.DataFrame({"a": [1]}).lazy()
     with pytest.raises(ValueError, match="rejected write recipe must carry a reason"):

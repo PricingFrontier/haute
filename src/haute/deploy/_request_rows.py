@@ -42,7 +42,11 @@ from haute._node_builder import node_fn_name
 from haute._polars_operations import POLARS_OPERATIONS, OperationClass
 from haute._polars_selectors import preamble_selector_aliases
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
-from haute.chunking import classify_row_local_expression
+from haute.chunking import (
+    SELECT_METHODS,
+    classify_row_local_expression,
+    column_free_select_argument,
+)
 from haute.errors import DeployError, QuoteAnswerRowsError, RequestRowCountError
 
 logger = get_logger(component="deploy.request_rows")
@@ -273,7 +277,8 @@ _REQUEST_FACTS = _FrameFacts(_Rows.REQUEST, from_request=True, carried=False)
 _LOST = _FrameFacts(_Rows.OTHER, from_request=True, carried=False)
 
 # A code box's frame operations, by what they do to a request frame's rows. ``select``,
-# ``with_columns`` and ``fill_null`` keep the rows when every argument is row-local.
+# ``with_columns`` and ``fill_null`` keep the rows when every argument is row-local, and a
+# ``select`` only when it also reads a column (``column_free_select_argument``).
 _KEEPS_ROWS = frozenset({"rename", "drop", "cast"})
 _EXPRESSION_METHODS = frozenset({"select", "select_seq", "with_columns", "fill_null"})
 _EFFECT_BY_METHOD: Mapping[str, RowEffect] = {
@@ -800,6 +805,11 @@ class _Walk:
                 call, self.selector_aliases, skip={"strategy", "limit", "matches_supertype"}
             )
             if blocking is None:
+                if method in SELECT_METHODS:
+                    # A literal alone is one row however many quotes there are.
+                    free = column_free_select_argument(call, selector_aliases=self.selector_aliases)
+                    if free is not None:
+                        return f"{method}: {ast.unparse(free)} reads no column", "drops"
                 return None
             # An operation the registry knows reads other rows mixes quotes; anything
             # else the classifier cannot read (a helper's call, say) is not proven.
