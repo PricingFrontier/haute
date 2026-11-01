@@ -116,11 +116,16 @@ underwriters price quotes in); where the repository is, GitHub, GitLab, Azure De
 none; where it is hosted, an automated project among the deploy targets and a workbench
 project among `[workbench.app] host`'s hosts, a list of one, Azure Container Apps, until
 WB-07 adds others; and, for a workbench project, which database holds the saved quotes,
-SQL Server or PostgreSQL, and how the app signs in to it, a managed identity, a service
-principal or a password, which a server environment requires. Staging and production are
-assumed to run on one engine, so the answers are written once for each, as
-`[workbench.store.staging]` and `[workbench.store.production]`; where each database is, and
-every secret, still comes from the host's variables, never from the questions. Each
+SQL Server or PostgreSQL, and how the analyst signs in to it, a password, their Microsoft
+Entra ID sign-in or a service principal. Dev, staging and prod are assumed to run on one
+engine, so the engine is written once for each, as `[workbench.store.dev]`,
+`[workbench.store.staging]` and `[workbench.store.prod]` and as the provider of each of
+`connections.toml`'s connections (WB-45). The sign-in is the analyst's, so it is written in
+`connections.toml`, where the analyst defines how to sign in, each connection naming its
+own variables in `.env.example`; the hosted app's sign-in in `haute.toml` is not asked and
+stays a managed identity, as WB-45 writes it. Each database's server and name are left
+empty in `connections.toml` for the analyst to fill in; where a hosted app's database is,
+and every secret, still comes from the host's variables, never from the questions. Each
 question has a flag, and `haute init` asks only for what its flags leave out, and only at
 a terminal; without one an unanswered question takes today's default (automated, GitHub,
 Databricks), and a workbench project's database and sign-in, which have none, are refused
@@ -166,8 +171,9 @@ the release, waits until the release runs and reports it, and creates nothing. A
 Apps first; other hosts follow with the same commands.
 
 **Acceptance:** `haute init` at a terminal asks its questions in order, a workbench
-project's host from a list of one, and writes the one engine and sign-in for staging and
-production; its flags answer every question without a terminal, and a workbench project's
+project's host from a list of one, writes the one engine for dev, staging and prod in
+`haute.toml` and `connections.toml`, and writes the analyst's sign-in in `connections.toml`
+alone; its flags answer every question without a terminal, and a workbench project's
 database and sign-in, given by neither, are refused naming their flags. A project `haute
 init` initialised for workbench pricing on Azure Container Apps and merged to `main` runs
 its generated workflow, which holds no endpoint deploy and no smoke or impact against an
@@ -185,7 +191,9 @@ they lack, and opens its quotes once the tables fit, with no new run; a candidat
 otherwise leaves the previous release running and the run failed.
 
 **Dependencies:** WB-11 (the export the app's tests make, once its formats are
-decided) and WB-12 (the test quotes). The Azure
+decided) and WB-12 (the test quotes). WB-45 (PR #361): `connections.toml`, dev on a server
+database, and the environments dev, staging and prod that `haute init --workbench`
+declares. The Azure
 resources and identities, provided by the project's IT team. The generated deploy jobs
 already log in to the registry before a push; impact's input is the `[safety]` portfolio
 sample, or the test quotes without one.
