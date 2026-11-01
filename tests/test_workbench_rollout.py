@@ -66,8 +66,13 @@ class FakeHost:
         self.deactivation_lost: set[str] = set()
         #: Called after each change: a test's other writer.
         self.after: Any = None
+        #: Called on each read of the app's state; and each set_image's timeout.
+        self.on_state: Any = None
+        self.timeouts: list[float] = []
 
     def state(self) -> AppState:
+        if self.on_state is not None:
+            self.on_state(self)
         return AppState(
             single_revision=self.settings["single_revision"],
             images=(self.image,) * self.settings["containers"],
@@ -94,6 +99,7 @@ class FakeHost:
 
     def set_image(self, image: str, suffix: str, timeout: float) -> str:
         self.calls.append(("set_image", image, suffix))
+        self.timeouts.append(timeout)
         if image in self.refuses:
             raise RolloutError("Azure refused the update.")
         name = f"motor--{suffix}"
@@ -694,6 +700,56 @@ def test_only_a_redirect_to_the_hosts_sign_in_is_a_refusal(location: str, refuse
     else:
         with pytest.raises(RolloutError, match=r"forged a signed-in principal \(HTTP 302\)"):
             _roll(host, app)
+
+
+def test_the_recovery_keeps_one_deadline_through_its_ownership_read() -> None:
+    ticks = FakeClock()
+    host = FakeHost()
+    host.settles[NEW] = ("Failed", "Failed")
+    reads = []
+
+    def slow_read(read: FakeHost) -> None:
+        reads.append(ticks.t)
+        if len(reads) == 2:
+            # The recovery's ownership read takes 90 seconds.
+            ticks.t += 90
+
+    host.on_state = slow_read
+
+    with pytest.raises(RolloutError, match="runs again"):
+        _roll(host, FakeApp(), clock=ticks.clock())
+
+    # The rollback's update gets what is left of the one recovery deadline.
+    assert host.timeouts[-1] == rollouts.RECOVERY_TIMEOUT_SECONDS - 90
+
+
+def test_a_recovery_that_fails_names_both_failures_and_why_the_state_is_unknown() -> None:
+    host = FakeHost()
+    host.settles[NEW] = ("Failed", "Failed")
+    host.refuses.add(OLD)
+
+    def unreadable_after_the_rollback(read: FakeHost) -> None:
+        if any(call[:2] == ("set_image", OLD) for call in read.calls):
+            raise RolloutError("Azure could not read the app: throttled")
+
+    host.on_state = unreadable_after_the_rollback
+
+    with pytest.raises(RolloutError) as failed:
+        _roll(host, FakeApp())
+
+    message = str(failed.value)
+    assert "failed to provision" in message
+    assert "Putting the previous release" in message and "Azure refused the update" in message
+    assert "could not be read afterwards: Azure could not read the app: throttled" in message
+
+
+def test_azure_never_waits_on_an_update_past_the_bound_set(azure: Any) -> None:
+    host, sdk, _ = azure
+    host.limit(100.0)
+
+    host.set_image(NEW, "h261101120000abcdef", 412.0)
+
+    assert sdk.pollers[0].waited == 100.0
 
 
 # ── fetch, the real transport, against a server on loopback ───────────

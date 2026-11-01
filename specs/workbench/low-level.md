@@ -1304,13 +1304,16 @@ no longer has; and `InputSource` in
     answer 200 for the release `/health` named with `quotes.open`. A `QuotesClosedError`
     (`quotes.error_code` `quote_store_mismatch`, carrying the release and the differences)
     leaves the release running. Any other failure, the update's included (refused, failed or
-    past its deadline), reads `state()`: when the latest revision ends with this rollout's
-    suffix (the revision it made) or is still the one it started from (the update refused or
-    not yet applied, or a deactivation Azure applied and answered with a failure),
-    `_roll_back`, under `host.limit(RECOVERY_TIMEOUT_SECONDS)`, deactivates this rollout's
-    revision when there is one and sets the kept image again with a suffix of its own, or, with none kept, leaves the failed revision stopped,
-    waiting on it within
-    `RECOVERY_TIMEOUT_SECONDS`, a recovery that fails naming the app's state as last read; when
+    past its deadline), starts one recovery deadline, `RECOVERY_TIMEOUT_SECONDS`, and
+    `host.limit` with it, which the ownership read, the update (`AzureContainerApps` never
+    waiting past the bound) and the wait all share; `_roll_back` reads `state()`: when the
+    latest revision ends with this rollout's suffix (the revision it made) or is still the one
+    it started from (the update refused or not yet applied, or a deactivation Azure applied
+    and answered with a failure), it deactivates this rollout's revision when there is one and
+    sets the kept image again with a suffix of its own, or, with none kept, leaves the failed
+    revision stopped, waiting on it within the deadline, a recovery that fails (its ownership
+    read included) naming its failure beside the original and the app's state, read with the
+    bound lifted (`_last_state`), or why that read failed too; when
     a third revision is the latest, nothing is undone and the run fails saying another change
     replaced it. The release that stays, open or closed, is recorded
     (`record(Recorded(image, release, commit))`, the app's other tags kept) only while its

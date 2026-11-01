@@ -574,9 +574,11 @@ def rollout(
         run.record(made, Recorded(image, closed.release, commit))
         raise
     except RolloutError as failure:
+        # One recovery deadline, from here: the ownership read, the update and the wait.
+        recovery = clock.now() + RECOVERY_TIMEOUT_SECONDS
         host.limit(RECOVERY_TIMEOUT_SECONDS)
         try:
-            undone = _roll_back(host, suffix, previous, kept, clock, say)
+            undone = _roll_back(host, suffix, previous, kept, recovery, clock, say)
         finally:
             host.limit(None)
         raise RolloutError(f"{failure} {undone}") from failure
@@ -609,22 +611,23 @@ def _roll_back(
     suffix: str,
     previous: str | None,
     kept: str | None,
+    deadline: float,
     clock: Clock,
     say: Callable[[str], None],
 ) -> str:
-    """Put the image the app ran before back on a revision of its own (the image alone: the
-    template is the app's as it stands), unless another change has made a revision
-    other than this rollout's (suffixed *suffix*) or the one it started from (*previous*) the
-    app's latest; answers what was done, for the failure's message."""
-    latest = host.state().latest_revision
-    ours = latest if latest is not None and latest.endswith(f"--{suffix}") else None
-    if ours is None and latest != previous:
-        return (
-            f"Another change made {latest} the app's latest revision meanwhile, so nothing "
-            "was undone."
-        )
-    deadline = clock.now() + RECOVERY_TIMEOUT_SECONDS
+    """Put the image the app served back on a revision of its own (the image alone: the
+    template is the app's as it stands) by *deadline*, unless another change has made a
+    revision other than this rollout's (suffixed *suffix*) or the one it started from
+    (*previous*) the app's latest; answers what was done, for the failure's message, a
+    recovery that fails too named beside the app's state as last read."""
     try:
+        latest = host.state().latest_revision
+        ours = latest if latest is not None and latest.endswith(f"--{suffix}") else None
+        if ours is None and latest != previous:
+            return (
+                f"Another change made {latest} the app's latest revision meanwhile, so nothing "
+                "was undone."
+            )
         if ours is not None:
             host.deactivate(ours)
             say(f"  ✓ Stopped the failed revision {ours}")
@@ -633,14 +636,25 @@ def _roll_back(
         back = host.set_image(kept, _suffix(clock), max(0.0, deadline - clock.now()))
         _wait_provisioned(host, back, deadline, clock, RECOVERY_TIMEOUT_SECONDS)
     except RolloutError as failure:
-        last = host.state()
         return (
-            f"Putting the previous release ({kept}) back failed too: {failure} The app's "
-            f"latest revision is {last.latest_revision}; active: "
-            f"{', '.join(last.active_revisions) or 'none'}."
+            f"Putting the previous release ({kept}) back failed too: {failure} {_last_state(host)}"
         )
     say(f"  ✓ Put the previous release back on the revision {back}")
     return f"The previous release ({kept}) runs again, on the revision {back}."
+
+
+def _last_state(host: ContainerAppHost) -> str:
+    """The app's state after a failed recovery, read outside the spent deadline, or why it
+    could not be read."""
+    host.limit(None)
+    try:
+        last = host.state()
+    except RolloutError as unread:
+        return f"The app's state could not be read afterwards: {unread}"
+    return (
+        f"The app's latest revision is {last.latest_revision}; active: "
+        f"{', '.join(last.active_revisions) or 'none'}."
+    )
 
 
 @contextmanager
@@ -794,6 +808,9 @@ class AzureContainerApps:
 
         # The deadline holds from here: the read and the update's start spend it too.
         end = self._now() + timeout
+        if self._end is not None:
+            # Never past the bound the rollout or its recovery set.
+            end = min(end, self._end)
         app = self._app(end)
         template = app.properties.template
         template.containers[0].image = image
