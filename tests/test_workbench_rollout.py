@@ -767,6 +767,11 @@ def test_azure_sets_the_image_on_a_revision_of_its_own_within_the_deadline(azure
     assert template.containers[0].image == NEW
     assert template.revision_suffix == "h261101120000abcdef"
     assert sdk.pollers[0].waited == 412.0
+    # What Azure receives: the template alone, the new image and suffix in it.
+    sent = sdk.updates[0].as_dict()
+    assert set(sent["properties"]) == {"template"}
+    assert sent["properties"]["template"]["containers"][0]["image"] == NEW
+    assert sent["properties"]["template"]["revisionSuffix"] == "h261101120000abcdef"
 
 
 def test_azure_fails_an_update_past_its_deadline(azure: Any) -> None:
@@ -789,7 +794,7 @@ def test_azure_records_the_release_keeping_the_apps_other_tags(azure: Any) -> No
         "haute-commit": COMMIT,
     }
     # Tags alone: no template, so no revision is made.
-    assert sdk.updates[0].get("properties") is None
+    assert set(sdk.updates[0].as_dict()) == {"location", "tags"}
 
 
 def test_azure_asks_a_token_for_the_app_registrations_client_id(azure: Any) -> None:

@@ -565,7 +565,8 @@ def _roll_back(
     clock: Clock,
     say: Callable[[str], None],
 ) -> str:
-    """Put the release the app ran before back, unless another change has made a revision
+    """Put the image the app ran before back on a revision of its own (the image alone: the
+    template is the app's as it stands), unless another change has made a revision
     other than this rollout's (suffixed *suffix*) or the one it started from (*previous*) the
     app's latest; answers what was done, for the failure's message."""
     latest = host.state().latest_revision
