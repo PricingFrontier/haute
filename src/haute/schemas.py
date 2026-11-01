@@ -5796,7 +5796,6 @@ class GitLedgerSavesResponse(BaseModel):
 
 class GitBranchItem(BaseModel):
     name: str
-    is_yours: bool
     is_current: bool
     is_archived: bool
     last_commit_time: str = ""

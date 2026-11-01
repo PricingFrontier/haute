@@ -111,10 +111,9 @@ def _eligible_working_branches(
     listing: GitBranchListResponse, cwd: Path | None = None
 ) -> list[str]:
     """Names choosable as a working branch: not protected, ledger, archived, or
-    the repo's default branch (which is deploy-only, like the hardcoded
-    protected set — PROTECTED_BRANCHES being configurable is a later item).
+    the repo's default branch (which is deploy-only, like the protected set).
 
-    Only names, archived flags and the yours-first order are consumed — the
+    Only names, archived flags and the listing's order are consumed — the
     startup modal preselects the FIRST eligible branch, so the order must match
     the branch listing's."""
     default = _get_default_branch(cwd)

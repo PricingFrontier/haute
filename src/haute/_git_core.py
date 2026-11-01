@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import getpass
 import inspect
 import os
 import re
@@ -12,9 +11,9 @@ import signal
 import subprocess
 import sys
 import threading
-import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from functools import lru_cache, wraps
 from pathlib import Path
 from typing import Generic, Literal, ParamSpec, TypeVar, overload
@@ -34,10 +33,7 @@ from haute.schemas import (
 logger = get_logger(component="git")
 
 DEFAULT_PROTECTED_BRANCHES = frozenset({"main", "master", "develop", "production"})
-PROTECTED_BRANCHES = DEFAULT_PROTECTED_BRANCHES
 
-# Branch names created by haute follow: pricing/<user>/<slug>
-_BRANCH_PREFIX = "pricing"
 _ARCHIVE_PREFIX = "archive"
 
 # Reconstructable caches only. Not ``outputs``: the analyst's local results, which
@@ -53,8 +49,6 @@ _VOLATILE_ARTEFACTS = (
     ".webassets-cache",
 )
 
-# Minimum seconds between `git fetch` calls per (cwd, remote, kind).
-_FETCH_COOLDOWN_SECONDS: float = 30.0
 # Hard ceiling on a single background fetch so a slow / unreachable / auth-walled
 # remote can never wedge the request thread (F1).
 _FETCH_TIMEOUT_SECONDS: float = 10.0
@@ -66,16 +60,10 @@ _PUSH_TIMEOUT_SECONDS: float = 60.0
 # unreachable remote must surface as a gate, never as a container that never
 # finishes booting.
 _CLONE_TIMEOUT_SECONDS: float = 300.0
-# Per-(cwd, remote, kind) last-fetch timestamps. Keyed — not one global float —
-# so concurrent worktrees served by a single process don't share one cooldown
-# window, where one clone's fetch would starve another's (F7). ``kind`` keeps
-# fetch families independent (the deploy-branch peek vs. the working-pair fetch).
-_fetch_cooldowns: dict[tuple[str, str, str], float] = {}
-_fetch_time_lock = threading.Lock()
-# Serialises the actual ``git fetch`` subprocess — two concurrent callers that
-# both pass the cooldown window must not launch parallel fetches because git
-# races on the local .git/objects index. Stays process-global on purpose: git
-# worktrees share one object store, so the exec lock must span them all.
+# Serialises the actual ``git fetch`` subprocess: two concurrent callers must not launch
+# parallel fetches, because git races on the local .git/objects index. Stays
+# process-global on purpose: git worktrees share one object store, so the exec lock must
+# span them all.
 _fetch_exec_lock = threading.Lock()
 
 # Characters that have no business in a branch name or SHA — used by
@@ -556,22 +544,6 @@ def _remote_env(cwd: Path | None = None) -> dict[str, str]:
     return _git_env(overrides)
 
 
-def _should_fetch(remote: str, cwd: Path | None = None, kind: str = "deploy") -> bool:
-    """Whether a throttled background fetch may run now for this
-    ``(cwd, remote, kind)``, claiming the cooldown slot if so.
-
-    Keyed per-worktree (F7) so concurrent clones served by one process each get
-    their own window rather than starving each other through a shared global.
-    """
-    key = (str(cwd) if cwd is not None else "", remote, kind)
-    now = time.monotonic()
-    with _fetch_time_lock:
-        if now - _fetch_cooldowns.get(key, 0.0) >= _FETCH_COOLDOWN_SECONDS:
-            _fetch_cooldowns[key] = now
-            return True
-    return False
-
-
 def _fetch_refs(remote: str, *refs: str, cwd: Path | None = None) -> bool:
     """Run a prompt-proof, time-bounded ``git fetch``; return success.
 
@@ -668,23 +640,6 @@ def _get_default_branch(cwd: Path | None = None) -> str:
     return _get_current_branch(cwd)
 
 
-def _get_user_slug(cwd: Path | None = None) -> str:
-    """Get a slugified version of the git user name."""
-    ok, name = _run_git_ok("config", "user.name", cwd=cwd)
-    if ok and name:
-        return _slugify(name)
-    # Fallback to OS username
-    return _slugify(getpass.getuser())
-
-
-def _slugify(text: str) -> str:
-    """Convert text to a git-safe branch name component."""
-    slug = text.lower().strip()
-    slug = re.sub(r"[^a-z0-9]+", "-", slug)
-    slug = slug.strip("-")
-    return slug or "user"
-
-
 def _validate_ref_name(name: str) -> None:
     """Reject ref names that could be interpreted as git flags or contain
     suspicious characters.  This prevents argument injection when user-supplied
@@ -743,13 +698,6 @@ def _is_protected(branch: str) -> bool:
     return branch in _protected_branches()
 
 
-def _assert_not_protected(branch: str) -> None:
-    if _is_protected(branch):
-        raise GitGuardrailError(
-            f"Cannot modify protected branch '{branch}'. Create a new branch to make changes."
-        )
-
-
 def _assert_git_repo(cwd: Path | None = None) -> None:
     if not _is_git_repo(cwd):
         raise GitDomainError("Not a git repository. Run 'git init' first.")
@@ -780,9 +728,72 @@ def _refuse_too_large_for_history(paths: list[str], root: Path, retry: str) -> N
         )
 
 
-def _is_own_branch(branch: str, user_slug: str) -> bool:
-    """Check if a branch belongs to the given user."""
-    return branch.startswith(f"{_BRANCH_PREFIX}/{user_slug}/")
+#: One compensating action of a rolled-back mutation. It reports ``False`` when it did not
+#: take effect; ``True`` or ``None`` (an action that raises when it fails) when it did.
+CompensationStep = Callable[[], bool | None]
+
+
+def _compensate(failure: Exception, action: str, steps: Iterable[CompensationStep]) -> None:
+    """Undo a failed mutation: run every step in order, the later ones even after one fails,
+    and return so the caller re-raises *failure*. When a step reported ``False`` or raised a
+    git or file error, raise :class:`GitTransactionError` from *failure*, naming *action*."""
+    complete = True
+    for step in steps:
+        try:
+            if step() is False:
+                complete = False
+        except (GitError, OSError):
+            complete = False
+    if not complete:
+        raise GitTransactionError(
+            f"{action} failed and automatic rollback was incomplete. "
+            "Inspect the repository before retrying."
+        ) from failure
+
+
+def _head_position(cwd: Path | None = None) -> tuple[str, bool]:
+    """Where HEAD is, for :func:`_checkout_back`: the branch it is on, or the commit it is
+    detached at (a checkout outside Haute), and whether it is attached."""
+    attached, branch = _run_git_ok("symbolic-ref", "--short", "HEAD", cwd=cwd)
+    if attached:
+        return branch, True
+    return _run_git("rev-parse", "HEAD", cwd=cwd), False
+
+
+def _checkout_back(position: tuple[str, bool], cwd: Path | None = None) -> bool:
+    """Put HEAD back where :func:`_head_position` found it."""
+    target, attached = position
+    ok, _ = _run_git_ok("checkout", *(() if attached else ("--detach",)), target, cwd=cwd)
+    return ok
+
+
+def _delete_branch_if_present(branch: str, cwd: Path | None = None) -> bool:
+    if _rev_parse(branch, cwd=cwd) is None:
+        return True
+    ok, _ = _run_git_ok("branch", "-D", branch, cwd=cwd)
+    return ok
+
+
+def _free_pair_name(stem: str, *, bare_first: bool, cwd: Path | None = None) -> str:
+    """The first of ``<stem>`` (when *bare_first*), ``<stem>-<YYYYMMDD>``,
+    ``<stem>-<YYYYMMDD>-2``, … for which BOTH the name and its ledger are free, so the pair
+    collides with no existing branch on either ref."""
+
+    def taken(name: str) -> bool:
+        return (
+            _rev_parse(name, cwd=cwd) is not None
+            or _rev_parse(ledger_name(name), cwd=cwd) is not None
+        )
+
+    if bare_first and not taken(stem):
+        return stem
+    dated = f"{stem}-{datetime.now(UTC).strftime('%Y%m%d')}"
+    candidate = dated
+    counter = 2
+    while taken(candidate):
+        candidate = f"{dated}-{counter}"
+        counter += 1
+    return candidate
 
 
 def _canonical_remote(cwd: Path | None = None) -> str | None:
@@ -865,14 +876,12 @@ def _list_branches_with_tips(
     are resolved to SHAs exactly once per request, here.
 
     The format carries only names, tips and commit times: no per-branch
-    ahead-behind walk, because no caller consumes commit counts. The
-    current/user-slug reads stay — ``is_yours`` drives the yours-first sort,
-    which IS consumed (the branch-manager render order and the startup modal's
-    ``eligible[0]`` preselection follow it)."""
+    ahead-behind walk, because no caller consumes commit counts. Branches sort by
+    name with archived ones last (the branch-manager render order and the startup
+    modal's ``eligible[0]`` preselection follow it)."""
     _assert_git_repo(cwd)
 
     current = _get_current_branch(cwd)
-    user_slug = _get_user_slug(cwd)
 
     ref_format = "%(refname:short)\t%(objectname)\t%(committerdate:iso-strict)"
     ok, raw = _run_git_ok(
@@ -899,22 +908,13 @@ def _list_branches_with_tips(
             branches.append(
                 GitBranchItem(
                     name=name,
-                    is_yours=_is_own_branch(name, user_slug),
                     is_current=name == current,
                     is_archived=name.startswith(f"{_ARCHIVE_PREFIX}/"),
                     last_commit_time=commit_time,
                 )
             )
 
-    # Sort: yours first, then others, archived last
-    def sort_key(b: GitBranchItem) -> tuple[int, str]:
-        if b.is_archived:
-            return (2, b.name)
-        if b.is_yours:
-            return (0, b.name)
-        return (1, b.name)
-
-    branches.sort(key=sort_key)
+    branches.sort(key=lambda b: (b.is_archived, b.name))
 
     return GitBranchListResponse(current=current, branches=branches), tips
 
@@ -1432,8 +1432,8 @@ def _remote_names(cwd: Path | None = None) -> list[str]:
 
 def _leg_state(branch: str, remote: str, cwd: Path | None = None) -> GitRemoteLeg:
     """Divergence of one local *branch* vs ``<remote>/<branch>`` from the
-    locally-known remote-tracking ref only — no fetch (callers freshen via
-    :func:`fetch_pair`). Distinguishes (F2) "untracked" (never pushed to this
+    locally-known remote-tracking ref only — no fetch (a deliberate Push, Catch up or
+    Spin off freshens it). Distinguishes (F2) "untracked" (never pushed to this
     remote, or the branch doesn't exist locally yet — e.g. a ledger not spawned)
     from "unknown" (the count couldn't be read) from the measured states, so the
     UI never renders "can't tell" as "in sync"."""

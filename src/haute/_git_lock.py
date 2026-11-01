@@ -119,16 +119,6 @@ def _repository_keys(path: Path) -> tuple[str, ...]:
     return local_key, f"common:{common_identity}"
 
 
-def repository_identity(path: Path) -> str:
-    """Return a normalized key shared by every worktree of one repository."""
-    project_path = _normalized_absolute(path)
-    common_identity = _common_repository_identity(
-        project_path,
-        _marker_fingerprint(project_path),
-    )
-    return common_identity if common_identity is not None else project_path
-
-
 def _locks_for(path: Path) -> tuple[threading.RLock, ...]:
     keys = _repository_keys(path)
     locks: list[threading.RLock] = []

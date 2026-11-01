@@ -23,7 +23,6 @@ from haute._git import (
     GitGuardrailError,
     GitMilestoneForkError,
     GitPushRejectedError,
-    _slugify,
     archive_commit,
     archive_working_pair,
     branch_away,
@@ -37,7 +36,6 @@ from haute._git import (
     delete_working_pair,
     divergence_state,
     fast_forward_pair,
-    fetch_pair,
     get_identity,
     is_eligible_working_branch,
     ledger_name,
@@ -128,43 +126,6 @@ def repo(tmp_path: Path) -> Path:
     _git(root, "commit", "-m", "initial pipeline")
     _git(root, "checkout", "-b", WORKING)
     return root
-
-
-class TestSlugify:
-    """`_slugify` makes user-supplied text safe for use as a git ref component.
-
-    It still backs the user-slug derivation in production, so its guarantees are
-    pinned here as direct unit tests (these were the only `_slugify` tests; they
-    moved here when the v0 git surface and its test file were removed).
-    """
-
-    def test_basic(self) -> None:
-        assert _slugify("Update area factors") == "update-area-factors"
-
-    def test_special_chars(self) -> None:
-        assert _slugify("Fix postcode (v2)") == "fix-postcode-v2"
-
-    def test_leading_trailing_dashes(self) -> None:
-        assert _slugify("---hello---") == "hello"
-
-    def test_empty_returns_user(self) -> None:
-        assert _slugify("") == "user"
-
-    def test_numbers(self) -> None:
-        assert _slugify("Add NCD step 3") == "add-ncd-step-3"
-
-    def test_strips_emoji(self) -> None:
-        # The real protection against odd input: emoji and other non-ASCII are
-        # collapsed away, leaving only the git-safe ASCII slug.
-        slug = _slugify("Rocket launch \U0001f680")
-        assert "\U0001f680" not in slug
-        assert slug == "rocket-launch"
-
-    def test_handles_long_description(self) -> None:
-        # A long ASCII description slugifies to itself (lowercased, dash-joined)
-        # — `_slugify` imposes no length cap of its own.
-        long_desc = "a" * 250
-        assert _slugify(long_desc) == long_desc
 
 
 class TestNamingAndCategories:
@@ -2889,21 +2850,8 @@ def _fork_setup(repo: Path) -> dict[str, str]:
     return {"m1": m1, "s2": s2, "s3": s3}
 
 
-class TestFetchThrottleAndHardening:
-    """F7 (per-(cwd, remote, kind) fetch throttle) and F1 (prompt-proof,
-    time-bounded fetch that degrades to local refs)."""
-
-    def test_should_fetch_is_keyed_per_cwd(self) -> None:
-
-        git_core._fetch_cooldowns.clear()
-        a, b = Path("/tmp/haute-wt-a"), Path("/tmp/haute-wt-b")
-        assert git_core._should_fetch("origin", cwd=a) is True
-        # Second call for the same key is throttled within the window…
-        assert git_core._should_fetch("origin", cwd=a) is False
-        # …but a different worktree is NOT starved by the first (the F7 fix)…
-        assert git_core._should_fetch("origin", cwd=b) is True
-        # …nor is a different fetch family for the same worktree.
-        assert git_core._should_fetch("origin", cwd=a, kind="pair") is True
+class TestFetchHardening:
+    """F1: a prompt-proof, time-bounded fetch that degrades to local refs."""
 
     def test_fetch_refs_degrades_on_bad_remote(self, repo: Path) -> None:
 
@@ -3652,7 +3600,7 @@ class TestRemotesAndPush:
         _git(other, "commit", "-m", "remote save")
         _git(other, "push", "origin", LEDGER)
         # Refresh is an explicit action; listing remotes reads local refs only.
-        fetch_pair("origin", WORKING, cwd=repo)
+        _git(repo, "fetch", "origin")
         r = next(x for x in list_remotes(repo, cwd=repo).remotes if x.name == "origin")
         assert r.working is not None and r.working.status == "synced"  # working level
         assert r.ledger is not None and r.ledger.status == "behind"  # ledger VISIBLE
@@ -4794,7 +4742,6 @@ class TestRemotesAndPush:
         _git(other, "add", "rating.py")
         _git(other, "commit", "-m", "rewritten line")
         _git(other, "push", "--force", "origin", WORKING)
-        git_core._fetch_cooldowns.clear()
 
         with pytest.raises(GitPushRejectedError) as exc:
             push_working_pair("origin", repo, cwd=repo)
@@ -5090,8 +5037,7 @@ class TestMilestoneForkGate:
         commit_milestone("teammate milestone", other, cwd=other)
         _git(other, "push", "origin", WORKING)
 
-        git_core._fetch_cooldowns.clear()
-        fetch_pair("origin", WORKING, cwd=repo)  # refresh repo's tracking ref
+        _git(repo, "fetch", "origin")  # refresh repo's tracking ref
 
     def test_divergence_state_none_without_remote(self, repo: Path) -> None:
         self._setup_pair(repo)

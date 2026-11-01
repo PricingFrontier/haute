@@ -13,11 +13,14 @@ from haute._git_core import (
     GitDomainError,
     GitError,
     GitGuardrailError,
-    GitTransactionError,
     _assert_eligible_working,
     _assert_git_repo,
     _assert_new_branch_name,
+    _checkout_back,
+    _compensate,
+    _free_pair_name,
     _get_current_branch,
+    _head_position,
     _list_branches_with_tips,
     _rev_parse,
     _rewrite_tree,
@@ -92,29 +95,6 @@ def _switch_away_if_active(
     return False
 
 
-def _unique_archive_name(working: str, cwd: Path | None = None) -> str:
-    """An ``archive/<working>`` name for which BOTH it and its ledger
-    (``archive/<working>-save``) are free, so the pair can't collide with an
-    existing branch on either ref. Disambiguates with the date, then a counter."""
-
-    def taken(name: str) -> bool:
-        return (
-            _rev_parse(name, cwd=cwd) is not None
-            or _rev_parse(ledger_name(name), cwd=cwd) is not None
-        )
-
-    base = f"{_ARCHIVE_PREFIX}/{working}"
-    if not taken(base):
-        return base
-    date = datetime.now(UTC).strftime("%Y%m%d")
-    candidate = f"{base}-{date}"
-    counter = 2
-    while taken(candidate):
-        candidate = f"{base}-{date}-{counter}"
-        counter += 1
-    return candidate
-
-
 @_serialized_mutation
 def archive_working_pair(
     branch: str, project_root: Path, cwd: Path | None = None
@@ -135,38 +115,31 @@ def archive_working_pair(
     if working.startswith(f"{_ARCHIVE_PREFIX}/"):
         raise GitDomainError(f"'{working}' is already archived.")
 
-    from haute._git_state import clear_working_branch, read_working_branch, write_working_branch
+    from haute._git_state import (
+        clear_working_branch,
+        read_working_branch,
+        restore_working_branch,
+    )
 
     ledger = ledger_name(working)
     ledger_tip = _rev_parse(ledger, cwd=cwd)
     previous_working = read_working_branch(project_root)
-    archived = _unique_archive_name(working, cwd=cwd)
-    head_attached, previous_head = _run_git_ok("symbolic-ref", "--short", "HEAD", cwd=cwd)
-    if not head_attached:
-        previous_head = _run_git("rev-parse", "HEAD", cwd=cwd)
+    archived = _free_pair_name(f"{_ARCHIVE_PREFIX}/{working}", bare_first=True, cwd=cwd)
+    head = _head_position(cwd)
 
     try:
         if _switch_away_if_active(working, ledger, project_root, "archiving", cwd=cwd):
             clear_working_branch(project_root)
         _move_pair(working, archived, working_tip, ledger_tip, cwd=cwd)
-    except (GitError, OSError) as exc:
-        try:
-            if previous_working is None:
-                clear_working_branch(project_root)
-            else:
-                write_working_branch(project_root, previous_working)
-            state_restored = True
-        except OSError:
-            state_restored = False
-        if head_attached:
-            ok, _ = _run_git_ok("checkout", previous_head, cwd=cwd)
-        else:
-            ok, _ = _run_git_ok("checkout", "--detach", previous_head, cwd=cwd)
-        if not (ok and state_restored):
-            raise GitTransactionError(
-                "Archiving the branch failed and automatic rollback was incomplete. "
-                "Inspect the repository before retrying."
-            ) from exc
+    except Exception as exc:
+        _compensate(
+            exc,
+            "Archiving the branch",
+            [
+                lambda: restore_working_branch(project_root, previous_working),
+                lambda: _checkout_back(head, cwd=cwd),
+            ],
+        )
         raise
 
     logger.info("working_pair_archived", working=working, archived=archived)
@@ -245,15 +218,13 @@ def delete_working_pair(
         read_working_branch,
         record_trash,
         remove_trash,
+        restore_working_branch,
         trash_entry_pins,
         trim_trash,
-        write_working_branch,
     )
 
     previous_working = read_working_branch(project_root)
-    head_attached, previous_head = _run_git_ok("symbolic-ref", "--short", "HEAD", cwd=cwd)
-    if not head_attached:
-        previous_head = _run_git("rev-parse", "HEAD", cwd=cwd)
+    head = _head_position(cwd)
     entry_id = _new_trash_id(working, project_root, cwd)
     working_pin = f"refs/haute/trash/{entry_id}/working"
     ledger_pin = f"refs/haute/trash/{entry_id}/ledger"
@@ -287,30 +258,21 @@ def delete_working_pair(
         if ledger_tip is not None:
             lines.append(f"delete refs/heads/{ledger} {ledger_tip}")
         _run_git("update-ref", "--stdin", cwd=cwd, input_text="\n".join(lines) + "\n")
-    except (GitError, OSError) as exc:
+    except Exception as exc:
         # The refs' removal is one transaction, so either both are still there or
         # it never ran; only this entry's own recovery net is undone.
-        try:
-            if previous_working is None:
-                clear_working_branch(project_root)
-            else:
-                write_working_branch(project_root, previous_working)
-            remove_trash(project_root, entry_id)
-            state_restored = True
-        except OSError:
-            state_restored = False
-        ok_pin_w, _ = _run_git_ok("update-ref", "-d", working_pin, cwd=cwd)
-        ok_pin_l, _ = _run_git_ok("update-ref", "-d", ledger_pin, cwd=cwd)
-        if head_attached:
-            ok_head, _ = _run_git_ok("checkout", previous_head, cwd=cwd)
-        else:
-            ok_head, _ = _run_git_ok("checkout", "--detach", previous_head, cwd=cwd)
-        refs_kept = _rev_parse(working, cwd=cwd) == working_tip
-        if not (state_restored and ok_pin_w and ok_pin_l and ok_head and refs_kept):
-            raise GitTransactionError(
-                "Deleting the branch failed and automatic rollback was incomplete. "
-                "Inspect the repository before retrying."
-            ) from exc
+        _compensate(
+            exc,
+            "Deleting the branch",
+            [
+                lambda: restore_working_branch(project_root, previous_working),
+                lambda: remove_trash(project_root, entry_id),
+                lambda: _run_git_ok("update-ref", "-d", working_pin, cwd=cwd)[0],
+                lambda: _run_git_ok("update-ref", "-d", ledger_pin, cwd=cwd)[0],
+                lambda: _checkout_back(head, cwd=cwd),
+                lambda: _rev_parse(working, cwd=cwd) == working_tip,
+            ],
+        )
         raise
 
     for dropped_id, dropped in trim_trash(project_root):
@@ -384,14 +346,12 @@ def undelete_working_pair(
     remove_trash(project_root, entry_id)
     try:
         _run_git("update-ref", "--stdin", cwd=cwd, input_text="\n".join(lines) + "\n")
-    except GitError as exc:
-        try:
-            record_trash(project_root, entry_id, entry)
-        except OSError:
-            raise GitTransactionError(
-                "Restoring the deleted branch failed and automatic rollback was incomplete. "
-                "Inspect the repository before retrying."
-            ) from exc
+    except Exception as exc:
+        _compensate(
+            exc,
+            "Restoring the deleted branch",
+            [lambda: record_trash(project_root, entry_id, entry)],
+        )
         raise
     logger.info("working_pair_undeleted", working=working, entry=entry_id)
     return GitUndeleteResponse(status="restored", branch=working)

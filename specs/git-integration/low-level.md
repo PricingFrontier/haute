@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_git.py` | Stable import facade. Re-exports the route/public Git API and exception taxonomy from the cohesive domain modules below; owns no subprocess, mutable state, cache, or branch transaction. |
-| `src/haute/_git_core.py` | Sole Git command and repository-mutation boundary: exception taxonomy, prompt-proof subprocess adapters, fetch serialization/cooldowns, ref validation and branch-pair naming, guardrails, immutable object/ref queries, content-addressed primitive caches (including parsed graph-log rows), and the tree fence every working-tree-rewriting command runs through (`_rewrite_tree`, `_tracked_changes`, `GitFilesInUseError`). Domain modules depend on this layer; it depends on none of them. |
+| `src/haute/_git_core.py` | Sole Git command and repository-mutation boundary: exception taxonomy, prompt-proof subprocess adapters, fetch serialization, ref validation and branch-pair naming (`_free_pair_name`), guardrails, the compensation of a failed mutation (`_compensate`), immutable object/ref queries, content-addressed primitive caches (including parsed graph-log rows), and the tree fence every working-tree-rewriting command runs through (`_rewrite_tree`, `_tracked_changes`, `GitFilesInUseError`). Domain modules depend on this layer; it depends on none of them. |
 | `src/haute/_git_setup.py` | Repository and clone setup: repository readiness, identity, default/working-branch association, unborn-repository seeding, and Git preferences. |
 | `src/haute/_git_transactions.py` | Working/ledger branch-pair transactions: path-scoped saves, invariant checks, the sweep of unrecorded project files, milestone merge/ref transaction, version restore, and branch creation/fork replay with compensating rollback. |
 | `src/haute/_git_read_models.py` | Immutable panel read models for repository/working-branch readiness and managed working-branch listings, and the project-file reads behind the Pipeline files panel: `pipeline_file_states` (how each file in a folder stands against version history: `new`, `changed` or `ignored`) and `ignore_rule` (the `.gitignore` rule that ignores a path). It performs no mutation or fetch. |
@@ -28,7 +28,13 @@ conversion in the routes).
   - `GitDomainError(GitError)` — hand-written, safe-to-surface message.
     - `GitGuardrailError(GitDomainError)` — guardrail block → HTTP 403.
     - `GitTransactionError(GitDomainError)` — the primary mutation and at least one
-      compensating rollback step both failed.
+      compensating rollback step both failed. Every multi-step mutation (archive,
+      delete, undelete, working-branch creation and adoption, fork, catch-up, spin-off)
+      undoes itself through `_compensate`: on any exception it runs each undo step in
+      order, the later ones even after one fails, and re-raises the original error when
+      all took effect; a step that reports `False` or raises a `GitError` or `OSError`
+      makes it raise "<action> failed and automatic rollback was incomplete. Inspect the
+      repository before retrying." from the original error.
     - `GitHistoryReadError(GitDomainError)` — history git could not read (a milestone list
       or a range of saves), or historical archive/extraction/parsing could not produce a
       trustworthy pipeline graph.
@@ -345,8 +351,8 @@ equals the last-merged ledger commit's tree, not an ancestor relationship.
     operation in progress and tracked changes ("You have unsaved changes. Save or discard
     them before opening the new branch."), since the checkout replaces the files.
 
-  Either way, a failure after the first ref runs `_rollback_fork` and puts the recorded
-  working branch back. A complete rollback re-raises, and an incomplete one raises
+  Either way, a failure after the first ref runs `_rollback_fork`'s steps and puts the
+  recorded working branch back. A complete rollback re-raises, and an incomplete one raises
   `GitTransactionError`, so no lone ref leaks.
   - `move=True`: only legal at the latest milestone or a pending save (not an older
     milestone or a folded save), and not with `switch`, which it implies. Refuses if the spawning ledger's later commits are already published on
@@ -359,7 +365,7 @@ equals the last-merged ledger commit's tree, not an ancestor relationship.
     topology. The operation then creates both new branches and checks out the new ledger
     (its tree matches old HEAD's, so uncommitted edits carry across untouched), rewinds the
     spawning branch's ledger to the fork point, and records the new working branch. Any
-    exception in this multi-step sequence triggers `_rollback_fork`; a complete rollback
+    exception in this multi-step sequence runs `_rollback_fork`'s steps; a complete rollback
     re-raises the original error, while any failed compensation raises
     `GitTransactionError`.
 
@@ -598,8 +604,8 @@ ref never lands without the other. A bootstrap default-push rejection, including
 different-SHA default winning the create-only race, follows a safe non-409 push-failure path
 and is never misreported as working/ledger divergence. A
 working/ledger non-fast-forward failure (`non-fast-forward` / `fetch first` / `[rejected]`
-in stderr) is turned into `_push_rejection`, which force-fetches past the throttle (a
-rejection is authoritative, not a poll) in the namespace form, so a pair leg the remote
+in stderr) is turned into `_push_rejection`, which force-fetches (a rejection is
+authoritative) in the namespace form, so a pair leg the remote
 lacks reads as a missing tracking ref instead of failing the fetch, recomputes both legs,
 and checks `_is_rewrite` per leg using the last-pushed-SHA record. The same validated working/ledger SHA snapshots used
 as push sources are recorded on success via `_git_state.record_pushed_shas`, so a concurrent
@@ -664,14 +670,14 @@ choosing an aside name or mutating refs. This
 authoritative snapshot lets an absent optional ledger remain a successful fetch while
 removing a deleted tracking ref; an absent working branch is then a distinct domain
 refusal. It renames the current pair to a unique dated aside name
-(`_unique_aside_name`), creates fresh
+(`_free_pair_name`: `<W>-local-<YYYYMMDD>`, then `-2`, `-3`… until it and its ledger are
+both free), creates fresh
 `working`/`ledger` branches at the remote's tips, checks out the new ledger, and records the
 merge-base of the old and new working tips as the aside branch's fork point (for the branch
 manager's back-link). If the remote has no ledger (`X2`), the local ledger is respawned at
-the adopted tip rather than adopted. The whole sequence is wrapped with
-`_rollback_branch_away` (drops any freshly created canonical refs, renames the aside pair
-back, and restores HEAD) on any `GitError`/`OSError`; incomplete compensation raises
-`GitTransactionError`.
+the adopted tip rather than adopted. On any exception the sequence is compensated
+(drops any freshly created canonical refs, renames the aside pair back, and puts HEAD on
+the ledger again); incomplete compensation raises `GitTransactionError`.
 
 **Archive/delete active pair.** HEAD detaches at the working branch's tip, its last
 milestone, through the tree fence. A confirmed delete forces it over a dirty tree; an archive
@@ -680,7 +686,9 @@ or an unconfirmed delete refuses tracked changes first, with `_switch_away_if_ac
 "deleting it"), and the tree is left as it was. The
 ledger's later saves stay with the archived ledger or the trash pins. HEAD never moves to
 another branch, so the analyst is not left on a default branch's unrelated files. Archive
-moves the pair with one `update-ref --stdin` transaction: it creates `archive/<X>` and its
+moves the pair with one `update-ref --stdin` transaction: it creates `archive/<X>` (or,
+when that or its ledger is taken, `_free_pair_name`'s dated `archive/<X>-<YYYYMMDD>`, then
+`-2`, `-3`…) and its
 ledger at their tips and deletes `<X>` and its ledger with their tips as expected values.
 Un-archive (`restore_working_pair`) is the same transaction the other way.
 
@@ -955,7 +963,7 @@ process failures, and precise ref-movement races deterministic.
   archive state replacement, archive restore, undelete, and explicit incomplete-
   compensation failures.
 - **`tests/test_git_rollback_coverage.py`** — crash-safety-net tests specifically for the
-  partial-failure rollback paths: `_rollback_fork`, `_rollback_branch_away`, branch-away
+  partial-failure rollback paths: the fork's and the branch-away's compensation, branch-away
   guard conditions, and that unreachable-remote push preflight and fast-forward failures
   correctly raise rather than swallow.
 - **`tests/test_git_content_caches.py`** — the SHA-keyed cache layer specifically: milestone

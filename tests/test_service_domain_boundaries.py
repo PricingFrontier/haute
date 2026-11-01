@@ -47,7 +47,6 @@ GIT_SERIALIZED_MUTATORS = {
         "bundle_create",
         "fast_forward_pair",
         "fast_forward_pair_from_tracking",
-        "fetch_pair",
         "push_working_pair",
     },
     "haute._git_archive": {

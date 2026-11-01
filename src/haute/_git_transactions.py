@@ -9,18 +9,20 @@ from pathlib import Path, PurePosixPath
 # explicitly into this domain's namespace so extracted functions retain their
 # original signatures and semantics without a facade dependency.
 from haute._git_core import (
+    CompensationStep,
     GitDomainError,
     GitError,
     GitFilesInUseError,
     GitGuardrailError,
     GitMilestoneForkError,
-    GitTransactionError,
     _assert_eligible_working,
     _assert_git_repo,
     _assert_new_branch_name,
     _assert_no_git_op_in_progress,
     _canonical_remote,
     _commit_parents,
+    _compensate,
+    _delete_branch_if_present,
     _generate_commit_message,
     _get_current_branch,
     _held_files,
@@ -395,24 +397,24 @@ def _replay_onto(base: str, commits: list[str], cwd: Path | None = None) -> str:
     return tip
 
 
-def _rollback_fork(name: str, ledger: str, ledger_tip: str, cwd: Path | None = None) -> bool:
-    """Undo a partially-applied fork and report whether every step succeeded."""
-    succeeded = True
+def _rollback_fork(
+    name: str, ledger: str, ledger_tip: str, cwd: Path | None = None
+) -> list[CompensationStep]:
+    """The steps undoing a partially-applied fork of *name* from *ledger*."""
     new_ledger = ledger_name(name)
+    steps: list[CompensationStep] = []
     if _get_current_branch(cwd) == new_ledger:
         # The spawning ledger isn't checked out → safe to restore it, then move
         # HEAD back so the new ledger can be deleted.
-        ok, _ = _run_git_ok("branch", "-f", ledger, ledger_tip, cwd=cwd)
-        succeeded &= ok
-        ok, _ = _run_git_ok("checkout", ledger, cwd=cwd)
-        succeeded &= ok
-    if _rev_parse(new_ledger, cwd=cwd) is not None:
-        ok, _ = _run_git_ok("branch", "-D", new_ledger, cwd=cwd)
-        succeeded &= ok
-    if _rev_parse(name, cwd=cwd) is not None:
-        ok, _ = _run_git_ok("branch", "-D", name, cwd=cwd)
-        succeeded &= ok
-    return succeeded
+        steps += [
+            lambda: _run_git_ok("branch", "-f", ledger, ledger_tip, cwd=cwd)[0],
+            lambda: _run_git_ok("checkout", ledger, cwd=cwd)[0],
+        ]
+    return [
+        *steps,
+        lambda: _delete_branch_if_present(new_ledger, cwd=cwd),
+        lambda: _delete_branch_if_present(name, cwd=cwd),
+    ]
 
 
 @_serialized_mutation
@@ -514,17 +516,14 @@ def create_working_branch(
                 _rewrite_tree("checkout", ledger_name(name), cwd=cwd)
                 write_working_branch(project_root, name)
         except Exception as exc:
-            refs_restored = _rollback_fork(name, ledger, ledger_tip, cwd=cwd)
-            try:
-                write_working_branch(project_root, current)
-                state_restored = True
-            except OSError:
-                state_restored = False
-            if not refs_restored or not state_restored:
-                raise GitTransactionError(
-                    "Creating the branch failed and automatic rollback was incomplete. "
-                    "Inspect the repository before retrying."
-                ) from exc
+            _compensate(
+                exc,
+                "Creating the branch",
+                [
+                    *_rollback_fork(name, ledger, ledger_tip, cwd=cwd),
+                    lambda: write_working_branch(project_root, current),
+                ],
+            )
             raise
         logger.info("working_branch_forked", name=name, at=point[:8], moved=False, switched=switch)
         return GitCreateWorkingBranchResponse(
@@ -577,17 +576,14 @@ def create_working_branch(
         _run_git("branch", "-f", ledger, point, cwd=cwd)
         write_working_branch(project_root, name)
     except Exception as exc:
-        refs_restored = _rollback_fork(name, ledger, ledger_tip, cwd=cwd)
-        try:
-            write_working_branch(project_root, current)
-            state_restored = True
-        except OSError:
-            state_restored = False
-        if not refs_restored or not state_restored:
-            raise GitTransactionError(
-                "Creating and moving to the branch failed and automatic rollback was "
-                "incomplete. Inspect the repository before retrying."
-            ) from exc
+        _compensate(
+            exc,
+            "Creating and moving to the branch",
+            [
+                *_rollback_fork(name, ledger, ledger_tip, cwd=cwd),
+                lambda: write_working_branch(project_root, current),
+            ],
+        )
         raise
     logger.info("working_branch_forked", name=name, at=point[:8], moved=True)
     return GitCreateWorkingBranchResponse(

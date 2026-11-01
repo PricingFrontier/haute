@@ -235,7 +235,6 @@ adds a finding group or changes the 42-group count.
 | rating permissive numeric parsing / grids | Duplicate **FNED-R04**; grid/helper duplication belongs **FNED-R03/FNED-R05**. |
 | assistant undo/state fencing | Duplicate **ASSIST-60**. |
 | typed allowed-values onto older form | Duplicate **WB-38**. |
-| recurring Git failures/compensation | Duplicate compensation mechanisms are **GIT-R05**. These broad notes do not establish any additional specific exception path. |
 | non-SQLite form insertion | Duplicate **WB-43** for non-SQLite form insertion (the scratch spelling WB-R10 is not another package). The note gives no additional concrete database defect. |
 | sandbox project globals | Duplicate **PCFG-R04**. |
 | Assistant bounds, blocking tools, factual context, tool hygiene and provider handling | Duplicates **ASSIST-55**, **ASSIST-57**, **ASSIST-58**, **ASSIST-59**, **ASSIST-54** respectively. The recipe-consolidation note names no additional behavior. |

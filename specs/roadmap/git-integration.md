@@ -13,35 +13,9 @@ packages come from the [25 October 2026 codebase review](codebase-review-2026-10
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| GIT-R05 | Planned | P3 | The git modules carry no dead symbols, one free-name finder and one compensation helper. |
 | GIT-R06 | Planned | P3 | Every save runs the project's git hooks, in a clone too, and the specification says so. |
 
 ## Planned improvements
-
-### GIT-R05 — Dead symbols, one free-name finder, one compensation helper
-**Why:** `PROTECTED_BRANCHES` is only re-exported (`DEFAULT_PROTECTED_BRANCHES`
-is the real set), `fetch_pair` and `commit_parent` are called only by tests, and
-the `pricing/<user>/` ownership convention (`_BRANCH_PREFIX`, `_is_own_branch`,
-`_get_user_slug`, `_slugify`, the `is_yours` sort key) is produced by nothing in
-the product, so `is_yours` is false for every branch Haute creates. Two
-date-and-counter free-name finders exist (`_unique_archive_name`,
-`_unique_aside_name`), and nine hand-rolled compensation blocks repeat
-`restored &= ok` with two different exception filters.
-
-**Plan:** Delete the dead symbols and either generate names under the
-convention or drop `is_yours` and its helpers; one free-name helper taking the
-prefix pattern; one `compensate(steps)` helper with one exception filter raising
-`GitTransactionError` on an incomplete rollback.
-
-**Acceptance:** The named symbols are gone or called from production; jscpd
-reports no pair among the compensation blocks.
-
-**Dependencies:** `ENGQ-R01` owns `_assert_not_protected`.
-
-**Evidence:** `src/haute/_git_core.py`; `src/haute/_git_remote.py::fetch_pair`;
-`src/haute/_git_core.py::commit_parent`;
-`src/haute/_git_archive.py::_unique_archive_name`;
-`src/haute/_git_remote.py::_unique_aside_name`.
 
 ### GIT-R06 — Hooks on every save
 **Why:** Automatic ledger saves and the seed commit run the project's git hooks

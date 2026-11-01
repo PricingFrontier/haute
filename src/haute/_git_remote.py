@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
 from pathlib import Path
 
 # The command core is the sole process boundary.  Its helpers are imported
@@ -15,16 +14,18 @@ from haute._git_core import (
     _FETCH_TIMEOUT_SECONDS,
     _PUSH_TIMEOUT_SECONDS,
     LEDGER_SUFFIX,
+    CompensationStep,
     GitBootstrapIncompleteError,
     GitDomainError,
     GitError,
     GitPushRejectedError,
     GitRemoteUnavailableError,
-    GitTransactionError,
     _assert_git_repo,
     _assert_no_git_op_in_progress,
+    _compensate,
     _fetch_exec_lock,
     _fetch_refs,
+    _free_pair_name,
     _get_current_branch,
     _GitProcessResult,
     _GitProcessTimeoutError,
@@ -40,7 +41,6 @@ from haute._git_core import (
     _run_git_ok,
     _run_git_process,
     _serialized_mutation,
-    _should_fetch,
     _validate_managed_working_branch,
     _validate_ref_name,
     _wipe_volatile_artefacts,
@@ -73,7 +73,6 @@ __all__ = [
     "fetch_bundle_refs",
     "pair_divergence",
     "commit_exists",
-    "fetch_pair",
     "list_remotes",
     "push_working_pair",
     "fast_forward_pair",
@@ -336,21 +335,6 @@ def commit_exists(sha: str, cwd: Path | None = None) -> bool:
     """
     _validate_ref_name(sha)
     return _rev_parse(f"{sha}^{{commit}}", cwd=cwd) is not None
-
-
-@_serialized_mutation
-def fetch_pair(remote: str, working: str, cwd: Path | None = None) -> bool:
-    """Refresh the working pair's remote-tracking refs (oW + oL) so divergence
-    detection reads fresh data (F5). Demand-driven and throttled per
-    ``(cwd, remote, "pair")`` — independently of the deploy-branch peek (F7) —
-    and hardened so a slow / auth-walled remote can't hang the caller (F1).
-    Returns whether a fetch actually ran (``False`` when throttled). Any failure
-    degrades silently to the last-known tracking refs."""
-    if not _should_fetch(remote, cwd=cwd, kind="pair"):
-        return False
-    with _fetch_exec_lock:
-        _fetch_refs(remote, working, ledger_name(working), cwd=cwd)
-    return True
 
 
 def _redact_remote_url(url: str) -> str:
@@ -1083,24 +1067,17 @@ def fast_forward_pair_from_tracking(
             _run_git("update-ref", f"refs/heads/{working}", target, old_working, cwd=cwd)
             working_advanced = True
             fast_forwarded.append(working)
-    except GitError as exc:
-        restored = True
+    except Exception as exc:
+        steps: list[CompensationStep] = []
         if working_advanced and old_working is not None:
-            ok, _ = _run_git_ok(
-                "update-ref",
-                f"refs/heads/{working}",
-                old_working,
-                cwd=cwd,
+            working_back = old_working
+            steps.append(
+                lambda: _run_git_ok("update-ref", f"refs/heads/{working}", working_back, cwd=cwd)[0]
             )
-            restored &= ok
         if ledger_advanced and old_ledger is not None:
-            ok, _ = _run_git_ok("reset", "--hard", old_ledger, cwd=cwd)
-            restored &= ok
-        if not restored:
-            raise GitTransactionError(
-                "Catch-up failed and automatic rollback was incomplete. Inspect the "
-                "repository before retrying."
-            ) from exc
+            ledger_back = old_ledger
+            steps.append(lambda: _run_git_ok("reset", "--hard", ledger_back, cwd=cwd)[0])
+        _compensate(exc, "Catch-up", steps)
         raise
 
     # Volatile caches must not survive into the caught-up tree (S12); wiped only
@@ -1111,57 +1088,6 @@ def fast_forward_pair_from_tracking(
     return GitFastForwardResponse(
         remote=remote, working_branch=working, fast_forwarded=fast_forwarded
     )
-
-
-def _unique_aside_name(working: str, cwd: Path | None = None) -> str:
-    """A dated ``<working>-local-<date>`` name for which BOTH it and its ledger
-    are free, so a branch-away can't collide on either ref. Disambiguates with a
-    counter when several set-asides land on one day."""
-
-    def taken(name: str) -> bool:
-        return (
-            _rev_parse(name, cwd=cwd) is not None
-            or _rev_parse(ledger_name(name), cwd=cwd) is not None
-        )
-
-    date = datetime.now(UTC).strftime("%Y%m%d")
-    base = f"{working}-local-{date}"
-    if not taken(base):
-        return base
-    counter = 2
-    while taken(f"{base}-{counter}"):
-        counter += 1
-    return f"{base}-{counter}"
-
-
-def _rollback_branch_away(
-    working: str,
-    ledger: str,
-    aside: str,
-    aside_ledger: str,
-    *,
-    renamed_w: bool,
-    renamed_l: bool,
-    created_w: bool,
-    created_l: bool,
-    cwd: Path | None = None,
-) -> bool:
-    """Undo a partially-applied branch-away and report complete success."""
-    succeeded = True
-    if created_l:
-        ok, _ = _run_git_ok("branch", "-D", ledger, cwd=cwd)
-        succeeded &= ok
-    if created_w:
-        ok, _ = _run_git_ok("branch", "-D", working, cwd=cwd)
-        succeeded &= ok
-    if renamed_l:
-        ok, _ = _run_git_ok("branch", "-m", aside_ledger, ledger, cwd=cwd)
-        succeeded &= ok
-    if renamed_w:
-        ok, _ = _run_git_ok("branch", "-m", aside, working, cwd=cwd)
-        succeeded &= ok
-    ok, _ = _run_git_ok("checkout", ledger, cwd=cwd)
-    return succeeded and ok
 
 
 @_serialized_mutation
@@ -1218,7 +1144,7 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
     if old_w == remote_w and (remote_l is None or old_l == remote_l):
         raise GitDomainError(f"Already in sync with '{remote}' — nothing to set aside.")
 
-    aside = _unique_aside_name(working, cwd=cwd)
+    aside = _free_pair_name(f"{working}-local", bare_first=False, cwd=cwd)
     aside_ledger = ledger_name(aside)
 
     renamed_w = renamed_l = created_w = created_l = False
@@ -1240,23 +1166,22 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
             # X2: no remote ledger — respawn it at the adopted working tip + checkout.
             resolve_ledger(working, cwd=cwd)
         write_working_branch(project_root, working)  # canonical name unchanged
-    except (GitError, OSError) as exc:
-        restored = _rollback_branch_away(
-            working,
-            ledger,
-            aside,
-            aside_ledger,
-            renamed_w=renamed_w,
-            renamed_l=renamed_l,
-            created_w=created_w,
-            created_l=created_l,
-            cwd=cwd,
+    except Exception as exc:
+        # Undo in reverse: drop the canonical refs made, rename the aside pair back,
+        # and put HEAD on the ledger again.
+        _compensate(
+            exc,
+            "Spinning off the local branch",
+            [
+                lambda: not created_l or _run_git_ok("branch", "-D", ledger, cwd=cwd)[0],
+                lambda: not created_w or _run_git_ok("branch", "-D", working, cwd=cwd)[0],
+                lambda: (
+                    not renamed_l or _run_git_ok("branch", "-m", aside_ledger, ledger, cwd=cwd)[0]
+                ),
+                lambda: not renamed_w or _run_git_ok("branch", "-m", aside, working, cwd=cwd)[0],
+                lambda: _run_git_ok("checkout", ledger, cwd=cwd)[0],
+            ],
         )
-        if not restored:
-            raise GitTransactionError(
-                "Spinning off the local branch failed and automatic rollback was "
-                "incomplete. Inspect the repository before retrying."
-            ) from exc
         raise
 
     # Volatile caches must not bleed from the local tree into the adopted one (S12);
