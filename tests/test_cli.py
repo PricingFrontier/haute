@@ -355,14 +355,18 @@ class TestInit:
         # <pipeline>.haute.json is stable-layer (tracked) — must NOT be ignored.
         assert "*.haute.json" not in content
 
-    def test_already_initialised_fails(
+    def test_an_initialised_project_is_set_up_again_writing_no_starter_files(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "haute.toml").write_text('[project]\nname = "x"\n')
-        result = runner.invoke(cli, ["init"])
-        assert result.exit_code == 1
-        assert "already" in result.output.lower()
+        (tmp_path / "haute.toml").write_text(
+            '[project]\nname = "x"\n\n[deploy]\ntarget = "databricks"\n\n'
+            '[ci]\nprovider = "github"\n'
+        )
+        result = runner.invoke(cli, ["init"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        assert "Set up Haute project 'x' again (databricks + github)" in result.output
+        assert not (tmp_path / "rating").exists() and not (tmp_path / "tests").exists()
 
     def test_target_flag_docker(
         self,

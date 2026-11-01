@@ -43,7 +43,8 @@ Out of scope, owned elsewhere:
 - `haute --help` opens with the package's own description, `pyproject.toml`'s `description`,
   and so names no deploy target: Databricks is one of several.
 - `haute init [--automated | --workbench] [--ci ...] [--target ...] [--host ...] [--store ...]
-  [--sign-in ...] [--force]` scaffolds a new project in the current directory. At a terminal
+  [--sign-in ...]` scaffolds a new project in the current directory, or sets an existing one
+  up again (below). At a terminal
   it asks what its flags leave out, each question a numbered list to pick from, in turn: how
   the project prices, automated (an API other systems call) or workbench (an app
   underwriters price quotes in); where the repository is (GitHub, GitLab, Azure DevOps or
@@ -55,9 +56,12 @@ Out of scope, owned elsewhere:
   GitHub, Databricks, a workbench project's one host), and a workbench project's database
   and sign-in, which have none, are refused naming their flags; a flag of the other kind of
   project (`--target` with `--workbench`, or `--host`, `--store` or `--sign-in` without it)
-  is refused. Every project gets a blank `rating/` pipeline package, `.env.example`,
+  is refused. Every new project gets a blank `rating/` pipeline package, `.env.example`,
   test-quote fixtures, CI/CD workflow files for the chosen provider, a git pre-commit hook,
-  and `.gitignore` guard entries. An automated project's `haute.toml` holds its deploy
+  and `.gitignore` guard entries; a starter file of `rating/` or `tests/` is written only
+  where the folder has none, so a `rating/main.py` already there is kept and the summary
+  names what was kept, and no workflow already in the folder is pruned. The hook is installed in `.git/hooks/` too inside a git repository,
+  unless a `pre-commit` there is not Haute's, which is left as it is and named. An automated project's `haute.toml` holds its deploy
   target's settings and its workflows deploy the scoring endpoint. A workbench project hosts
   no scoring API: its `haute.toml` holds `[deploy.container]`, the app image's base image,
   registry and port, and no endpoint settings, and the `[workbench]` table with
@@ -68,9 +72,36 @@ Out of scope, owned elsewhere:
   three environments' connections for the editor and `haute app serve`, on that database
   with the analyst's sign-in, whose variables `.env.example` names beside the host's
   credentials; and its workflows validate and publish the underwriter app
-  ([workbench](../workbench/high-level.md)). Refuses to run if `haute.toml` already exists
-  unless `--force` is given, `--workbench` included: an automated project is never
-  converted into a workbench project, but started again. A path of
+  ([workbench](../workbench/high-level.md)). In a project that already has a `haute.toml`,
+  `haute init` sets the project up again. It asks the same questions, each defaulting to
+  the project's current answer: the kind of project from `[workbench] enabled`, the
+  repository from `[ci] provider`, the deploy target from `[deploy] target`, the app's
+  host from `[workbench.app] host`, the database from the quote store's environments'
+  `provider` and the sign-in from `connections.toml`'s connections. Enter, or a run
+  without a terminal, keeps what the project has; a question the project holds no answer
+  to (one it does not offer, or the other kind of project's) has no default there, save
+  the app's host, whose one choice is its default. A
+  `haute.toml` that does not read as TOML is refused, naming the error, before any
+  question. The re-run writes `haute.toml` afresh from the answers, keeping
+  `[project] name`; the previous file is left to git, and the summary says to copy back
+  from it what was set by hand, the `[mlflow]` settings saved from the app among them. It
+  writes the workflows (pruning every generated file the new set does not hold),
+  `.env.example` and the pre-commit hook again, reporting each as written, updated or
+  unchanged and each workflow it removed,
+  and writes nothing in `rating/` or `tests/`, which are the project's, beyond the
+  workbench's form folder when it has none. The kind of project may change: an automated
+  project set up as a workbench gets the blank form folder and `connections.toml` where
+  it has none, a workbench set up as an automated project keeps both, and either way the
+  pipeline keeps its input and output nodes, so the summary names the ones to replace (a
+  Quote Input and a Quote Response by a Workbench Input and a Workbench Output, or the
+  reverse). The `haute` requirement in `pyproject.toml` gains each extra the answers need
+  that it lacks, keeping its version, marker and other extras; none is taken away.
+  `connections.toml` is written, the sign-in asked, when there is none or when one of its
+  `dev`, `staging` or `prod` connections, those of the environments the new
+  `haute.toml` declares, is on another database than the one answered (SQLite
+  included), a changed quote store;
+  otherwise it is kept and the sign-in is not asked, a `--sign-in` given then answering
+  nothing. A path of
   the form folder reached through a link or junction refuses the init before anything is
   written. A root `main.py` is
   always deleted: `uv init` recreates that placeholder every time it runs, and a Haute project's

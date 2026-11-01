@@ -11,7 +11,7 @@ packages come from the [25 October 2026 codebase review](codebase-review-2026-10
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CLI-R01 | Planned | P1 | `haute init --force` regenerates only the files Haute wrote and never overwrites the pipeline, utility code, tests or form. |
+| CLI-R01 | Planned | P1 | A first `haute init` removes a root `main.py` only when it is the `uv init` placeholder. |
 | CLI-R02 | Planned | P2 | `haute run` walks the pipeline lazily to its output node under the batch profile, with a named source, instead of materialising every node in memory. |
 | CLI-R03 | Planned | P2 | `haute lint` applies the editor's save-time validation, so CI's lint step refuses what the editor would refuse. |
 | CLI-R04 | Planned | P3 | `haute init` edits `pyproject.toml` through `tomlkit` instead of a hand-written TOML scanner. |
@@ -21,22 +21,15 @@ packages come from the [25 October 2026 codebase review](codebase-review-2026-10
 
 ## Planned improvements
 
-### CLI-R01 — `init --force` keeps the analyst's work
-**Why:** After the `haute.toml` guard, `handle_init` writes every scaffold file
-unconditionally: with `--force`, `rating/main.py`, `rating/utility/__init__.py` and
-`features.py`, `tests/test_pipeline.py` and `tests/quotes/example.json` are replaced by
-the starters, so an analyst who re-runs init to change the CI provider or
-the target loses uncommitted pipeline work. The first `init` also deletes a root `main.py`
-it did not write. `haute ci update` already regenerates the CI files alone.
+### CLI-R01 — A root `main.py` kept unless it is the placeholder
+**Why:** `handle_init` deletes any root `main.py`, on the specification's reasoning that
+`uv init` recreates that placeholder whenever it runs, so a `main.py` the team wrote at the
+root of an existing repository is lost when `haute init` sets the project up.
 
-**Plan:** Make `--force` regenerate only Haute's own generated files (`haute.toml`, the CI
-files, `.env.example`, the pre-commit hook) and refuse to overwrite a pipeline, utility
-or test that differs from the starter, naming it; remove a root `main.py` only when
-it is the `uv init` placeholder byte for byte.
+**Plan:** Remove a root `main.py` only when it is the `uv init` placeholder byte for byte,
+and update the CLI specification's reasoning.
 
-**Acceptance:** `haute init --force` in a project with an edited `rating/main.py` leaves
-the file unchanged and says so; a first `init` next to a non-placeholder `main.py` keeps
-it.
+**Acceptance:** A first `init` next to a non-placeholder `main.py` keeps it and says so.
 
 **Dependencies:** None.
 
