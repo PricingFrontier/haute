@@ -1879,6 +1879,14 @@ class TestKeywordOnlyParametersAtSave:
             pytest.param([{"name": "factor"}], {}, "{name, default} records", id="shape"),
             pytest.param([{"name": "df", "default": 1}], {}, "reserved", id="reserved"),
             pytest.param([], {}, "non-empty list", id="empty"),
+            pytest.param([{"name": "class", "default": 1}], {}, "not a Python name", id="keyword"),
+            pytest.param(
+                [{"name": "f", "default": 1}, {"name": "f", "default": 2}],
+                {},
+                "appears twice",
+                id="duplicate",
+            ),
+            pytest.param([{"name": "f", "default": [1]}], {}, "must be None", id="list"),
         ],
     )
     def test_the_full_save_refuses_a_binding_the_file_cannot_carry(
