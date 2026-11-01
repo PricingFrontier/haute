@@ -27,7 +27,7 @@ Allowed field.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | WB-07 | Planned | P3 | The underwriter app runs on a Databricks App, on AWS or on an internal platform as it runs on Azure Container Apps, each signing underwriters in its own way. |
-| WB-08 | Planned | P2 | A merge to `main` takes a workbench project's form, pipeline and app, tested together in CI, to staging and, after approval, to production on the project's host, Azure Container Apps first. |
+| WB-08 | Planned | P2 | A workbench project's CI tests the packaged app before any host sees it and, before production is approved, compares the candidate's prices for saved quotes with production's inside their response tables. |
 | WB-09 | Decision | P2 | An Import on a sheet, or a lookup beside a key cell, runs against a file, a database or an API and fills input cells with what comes back, through the server with no credential in the browser, while pricing stays as pure as it is. |
 | WB-11 | Decision | P2 | An underwriter exports a final quote from the app in the formats the project needs, naming the release that priced it. |
 | WB-12 | Decision | P3 | Analysts keep test quotes and price them again as the pipeline changes, built again after the first version was taken out. |
@@ -79,91 +79,62 @@ host) and `::build_release` (the release and the image's build context);
 `src/haute/deploy/_container.py::prepare_build_directory` (the image's Dockerfile).
 
 ### WB-08 — The workbench project's CI/CD
-**Why:** A workbench project hosts no scoring API: `haute init` answered for workbench
-pricing writes its `[workbench]` table, with the app's host and the quote store on one
-database, `[deploy.container]` for the app's image, `connections.toml` and the workbench's
-own workflows ([workbench](../workbench/high-level.md)). They validate the project and the
-app's release on every pull request and on a push to `main` that changes a release input,
-and on that push publish the app's image once and print it by digest. Nothing rolls a
-hosted app to that image, nothing tests the packaged app before a host sees it, and nothing
-compares a candidate's prices with production's, so a merge ends with an image someone
-points the Container App at by hand. The endpoint's checks do not fit an app: impact sends
-batches of a flat portfolio sample, which a pipeline reading one quote per request refuses
-for the batch and could not read for the shape, and its report compares top-level numeric
-columns, so a price inside a response table is never compared. The image is tagged with the
-commit's short hash, which a rebuild can point at other bytes, so only the digest the publish
-prints says what was published, and nothing records it. Pricing analysts work on their own
-machines: Save writes the save branch, Commit makes a milestone, Push publishes it, a pull
-request to `main` is opened and merged on the provider, and the merge is the release. A
-milestone Commit sweeps tracked files only, so a file the workbench adds, such as the test
-quotes of WB-12, needs tracking from the start.
+**Why:** A workbench project hosts no scoring API: its workflows validate the project and the
+app's release on every pull request and on a push to `main` that changes a release input;
+on that push they publish the app's image once, by digest, and roll the staging app to it,
+and by hand, after approval, roll production to the image staging ran for that commit, each
+rollout checked on the host and recorded as a git tag
+([workbench](../workbench/high-level.md)). Two things the release flow promised are missing.
+Nothing tests the packaged app before a host sees it: `haute app build` validates the
+pipeline and scores the committed test quotes, but no step starts the app the image holds,
+saves a quote through it or reopens one, against SQLite or against the server engine IT's
+instance runs. And nothing compares the candidate's prices with production's before
+production is approved: the endpoint's impact sends batches of a flat portfolio sample,
+which a pipeline reading one quote per request refuses for the batch and could not read for
+the shape, and its report compares top-level numeric columns, so a price inside a response
+table is never compared. The export templates of WB-11, once they exist, start no release
+either. Pricing analysts work on their own machines: Save writes the save branch, Commit
+makes a milestone, Push publishes it, a pull request to `main` is opened and merged on the
+provider, and the merge is the release. A milestone Commit sweeps tracked files only, so a
+file the workbench adds, such as the test quotes of WB-12, needs tracking from the start.
 
-**Plan:** The behaviour lives in Haute's commands, which read the workbench settings, so the
-YAML stays thin and alike across providers, and `haute ci update` regenerates a project's
-set without rewriting its pipeline or form. The deploy triggers gain each release input as
-it arrives, where its specification puts it:
-the app's entry point and the export templates; the store's tables follow the form, which
-already starts the deploy. The app's delivery builds each release once. On every
-pull request, Validate and the packaged app tested in the CI runner before any host sees it,
-against SQLite and once against the server engine IT's instance runs (a service container),
-each a throwaway store of the branch's form made for the tests alone, since SQLite proves
-nothing of that engine's types; CI rehearses no migration, whose SQL the analysts write in
-the schema pane ([workbench](../workbench/high-level.md)) and run themselves:
-the test quotes of WB-12 re-priced one request each against their accepted outputs, a quote
-saved, reopened and, once WB-11's formats exist, exported through the app, and the sheets
-driven in a browser. On the
-merge to `main` alone, never on a push of the save branch: the merge commit built once, the
-packaged app's tests run again on that build, the image published to the registry and its
-digest recorded; the staging app rolled to that digest, never to a tag, with no step changing
-a database's tables, which the people who own them change in SQL; a hosted check
-that the expected release runs, that a request without sign-in is refused and that its quotes
-are open, the run failing naming what its tables lack when they do not fit its form; impact
-re-pricing a bounded sample of saved quotes from the store, through a read-only identity, on
-the candidate and the
-production app, comparing within each quote's response tables (a premium inside a table, a
-schedule's rows matched by key) and naming a quote whose shape no longer compares; for a
-first release, with no production app or no saved quotes, impact reports that there is no
-baseline and the candidate answers for the committed test quotes alone, while a production
-app that fails fails the check; approval; then production rolled to the same digest,
-checked the same way, and the release that runs recorded. Rollouts take a maintenance
-window: the old revision stops, the new revision starts, and no traffic is split; a new
-revision that fails to start or fails its check is replaced by the previous release and the
-run fails, except that one whose quotes are closed because its environment's tables do not
-fit it yet stays, the run failing naming what they lack, and opens its quotes once they are
-made to fit. The host step is small, and the project's IT team provides what it deploys
-onto (the Container App, the registry, the identities and the database): it publishes, rolls the environment to
-the release, waits until the release runs and reports it, and creates nothing. Azure Container
-Apps first; other hosts follow with the same commands.
+**Plan:** The behaviour lives in Haute's commands, as `haute app rollout` does, so the YAML
+stays thin and alike across providers. The release triggers gain each release input as it
+arrives, where its specification puts it: the export templates. On every pull request, and
+again on the merge's build before it is published, the packaged app is tested in the CI
+runner, against SQLite and once against the server engine IT's instance runs (a service
+container), each a throwaway store of the branch's form made for the tests alone, since
+SQLite proves nothing of that engine's types; CI rehearses no migration, whose SQL the
+analysts write in the schema pane ([workbench](../workbench/high-level.md)) and run
+themselves: the test quotes of WB-12 re-priced one request each against their accepted
+outputs, a quote saved, reopened and, once WB-11's formats exist, exported through the app,
+and the sheets driven in a browser. Before production is approved, impact re-prices a bounded
+sample of the quotes saved in production on the staging app and on production, through the
+apps' own routes signed in as the CI service principal that `haute app rollout` already signs
+in as (a reader, so it changes no quote), comparing within each quote's response tables (a
+premium inside a table, a schedule's rows matched by key) and naming a quote whose shape no
+longer compares; for a first release, with no production app or no saved quotes, it reports
+that there is no baseline and the candidate answers for the committed test quotes alone,
+while a production app that fails fails the check.
 
-**Acceptance:** A project `haute init` initialised for workbench pricing on Azure Container
-Apps and merged to `main` runs
-its generated workflow, which holds no endpoint deploy and no smoke or impact against an
-endpoint, to a staging app and, after approval, to production, with the digest CI tested
-deployed to both, a re-run of the workflow included, a maintenance window around each
-rollout and the release that runs recorded; a change confined
-to an export template starts the workflow; the packaged app passes the same tests against
-SQLite and the server engine before any host sees it, each test store made for the tests
-alone and no migration rehearsed; a push of the save branch releases nothing; no step of the workflow changes a
-hosted database's tables; a request to the hosted app without sign-in is refused; impact
-reports a change to a premium inside a response table; the first release, with no
-production app, reports that there is no baseline and still waits for approval; a release
-rolled out before its tables fit stays with its quotes closed, the run failed naming what
-they lack, and opens its quotes once the tables fit, with no new run; a candidate that fails
-otherwise leaves the previous release running and the run failed.
+**Acceptance:** A pull request whose packaged app cannot save and reopen a quote, against
+SQLite or the server engine, fails before any host sees it, each test store made for the
+tests alone and no migration rehearsed; a change confined to an export template starts the
+release; impact reports a change to a premium inside a response table, names a quote whose
+shape no longer compares, and, for the first release, reports that there is no baseline and
+still waits for approval; no step of the workflow changes a hosted database's tables or a
+saved quote.
 
-**Dependencies:** WB-11 (the export the app's tests make, once its formats are
-decided) and WB-12 (the test quotes). The Azure
-resources and identities, provided by the project's IT team. The publish job already logs in
-to the registry with the host's credentials and pushes the image once.
+**Dependencies:** WB-11 (the export templates and the export the app's tests make, once
+their formats are decided) and WB-12 (the test quotes). The CI service principal's sign-in
+to the hosted apps, which `haute app rollout`'s check already needs.
 
-**Evidence:** `src/haute/_scaffold.py::workbench_ci_files`, `::_github_release_yml`,
-`::_gitlab_app_ci_yml`, `::_azure_devops_app_yml` and `::_app_publish_notice` (validate and
-publish only, nothing rolled out); `src/haute/_workbench_app.py::image_reference` and
-`::push_image` (a short-commit tag, the digest printed and not recorded);
-`src/haute/deploy/_impact.py::score_endpoint_batched` and `::build_report` (batches, and
-top-level numeric columns compared); `src/haute/_workbench_input.py::workbench_request_frames`
-(one quote per request); `src/haute/_git_transactions.py::_residual_tracked_changes` (a
-milestone sweeps tracked files only).
+**Evidence:** `src/haute/_scaffold.py::workbench_ci_files` (validate, publish and roll out,
+no packaged-app test and no impact); `src/haute/deploy/_impact.py::score_endpoint_batched`
+and `::build_report` (batches, and top-level numeric columns compared);
+`src/haute/_workbench_input.py::workbench_request_frames` (one quote per request);
+`src/haute/_git_transactions.py::_residual_tracked_changes` (a milestone sweeps tracked
+files only).
 
 ### WB-09 — Actions that fill the sheets
 **Why:** Underwriters key in what other systems already hold: the broker and the assured

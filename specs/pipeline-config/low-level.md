@@ -423,8 +423,9 @@ deploy setting. The assistant key sets are owned by `haute.assistant._config` an
 workbench's by `haute._workbench_config`, so deployment parsing and each reader cannot drift.
 `env_example()`, `app_env_example()` and the CI-YAML generators (`github_ci_yml`/
 `github_deploy_yml`/`github_deploy_prod_yml`, `gitlab_ci_yml`, `azure_devops_yml`, and the
-workbench's `github_app_ci_yml`/`github_release_yml`, `gitlab_app_ci_yml`,
-`azure_devops_app_yml`, whose validate stage each provider's two sets share) all pull the same `secrets`
+workbench's `github_app_ci_yml`/`github_release_yml`/`github_release_production_yml`,
+`gitlab_app_ci_yml`, `azure_devops_app_yml`, whose validate stage each provider's two
+sets share) all pull the same `secrets`
 list out of `TARGETS` through provider-specific formatters (`_github_secrets_env`,
 `_gitlab_secrets_env`, `_azure_devops_secrets_env`) so a target's credential list is defined
 once and rendered three ways; `ci_secret_names` hands the same list to `haute ci secrets` and

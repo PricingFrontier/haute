@@ -113,7 +113,10 @@ Out of scope:
   (SQL Server or PostgreSQL) and how the analyst signs in to it (a password, their Microsoft
   Entra ID sign-in or a service principal) asked with it, or given as `--store` and
   `--sign-in` ([cli](../cli/high-level.md)). It writes the table (with `[workbench.app] host`,
-  the host answered, and `[workbench.store]` declaring `dev`, `staging` and `prod`, all three
+  the host answered, `[workbench.app.staging]` and `[workbench.app.prod]`, the Container App
+  each hosted environment's app runs as, their `resource_group` and `container_app` left empty
+  for the project's IT team to fill in, and `[workbench.store]` declaring `dev`, `staging` and
+  `prod`, all three
   on the one database answered, each signed in to by the hosted app's managed identity, which
   on `postgresql` also names `username_env`, `HAUTE_STORE_USERNAME`, the role the identity is
   mapped to), `[deploy.container]` (the app image's base image, on the project's Python, its
@@ -121,9 +124,10 @@ Out of scope:
   `[dev]`, `[staging]` and `[prod]` connection on that database with its server and database
   left empty for the analyst to fill in and the analyst's sign-in, each naming its own
   variables, `HAUTE_<ENVIRONMENT>_USERNAME` and the like, which `.env.example` names beside
-  the host's credentials, as `haute ci update` writes it again), `haute[sqlserver]` or
-  `haute[postgresql]` as the project's dependency when it lists no `haute` (the release
-  installs the database's driver, which `haute app build` refuses to build without), and
+  the host's credentials, as `haute ci update` writes it again), `haute[sqlserver,azure]` or
+  `haute[postgresql,azure]` as the project's dependency when it lists no `haute` (the release
+  installs the database's driver, which `haute app build` refuses to build without, and
+  `haute app rollout` reaches the host through the Azure management packages), and
   the workbench's workflows. A path reached through a link or a junction refuses it,
   nothing written. A
   project that already has a `haute.toml` is refused unless `--force` is given: an automated
@@ -135,10 +139,15 @@ Out of scope:
   the underwriter app runs: `host` is `azure-container-apps`, and `edit_role`, when given,
   is the role the host signs underwriters in with that may change quotes, every other
   underwriter reading them; any other key, host or role that is not a name is refused by
-  name.
-- **The workbench's CI/CD.** A workbench project's workflows (`.github/workflows/ci.yml` and
-  `release.yml`, or the one `.gitlab-ci.yml` or `azure-pipelines.yml`) validate and publish
-  the underwriter app; none deploys a scoring endpoint. On a pull request, and again on a
+  name. Each hosted environment's app is a table under it, named as the store environment it
+  keeps its quotes in (`[workbench.app.staging]`, say), holding the `resource_group` and the
+  `container_app` the host runs it as, either left empty until IT fills it in; a table naming
+  no environment `[workbench.store]` declares, a key other than those two, or a value that is
+  not text is refused by name.
+- **The workbench's CI/CD.** A workbench project's workflows (`.github/workflows/ci.yml`,
+  `release.yml` and `release-production.yml`, or the one `.gitlab-ci.yml` or
+  `azure-pipelines.yml`) validate, publish and roll out the underwriter app; none deploys a
+  scoring endpoint. On a pull request, and again on a
   push to the default branch that changes a release input, the validate job lints,
   type-checks and tests the project, lints the pipeline and runs `haute app build`, which
   resolves, validates and bundles the pipeline as a deploy does, its test quotes scored, with
@@ -146,10 +155,52 @@ Out of scope:
   given the host's credentials, logs in to the
   registry `[deploy.container] registry` names (the host `haute ci registry-host` prints)
   and runs `haute app build --push`, which builds the release's image once, pushes it and
-  prints the reference by digest it pushed. Nothing rolls a hosted app to the image yet: the
-  generated files say so, and the host is pointed at that digest by hand until the rollout,
-  the hosted check and impact on saved quotes are delivered
-  ([WB-08](../roadmap/workbench.md#wb-08--the-workbench-projects-cicd)).
+  prints the reference by digest it pushed, then `haute app rollout staging --image` with that
+  reference. Production follows only by hand, after whatever approval the provider is set to
+  ask for: GitHub's `release-production.yml`, run from the Actions tab for a commit of the
+  default branch (its head unless another is given), GitLab's manual `deploy-production` job
+  and Azure DevOps' `DeployProduction` stage, a deployment under its `production`
+  environment, each run `haute app rollout prod --from staging`, which rolls production to the
+  image staging was rolled to for that commit. Each job that rolls out is given the host's
+  credentials and may push the release's tag. Impact on saved quotes and the packaged app's
+  tests are still to come ([WB-08](../roadmap/workbench.md#wb-08--the-workbench-projects-cicd)).
+- **Rolling the hosted app out.** `haute app rollout ENVIRONMENT` rolls the Container App
+  that `[workbench.app.<ENVIRONMENT>]` names to one image and checks the release there, for
+  the workbench's CI. It creates nothing and changes no database's tables. It refuses a
+  project whose app host is not `azure-container-apps`, an environment the table does not
+  name or whose `resource_group` or `container_app` is empty, and an image named other than
+  by digest (`<repository>@sha256:<64 hex digits>`), since a tag can be pointed at other
+  bytes. `--image` names the image; `--from SOURCE` takes the image SOURCE's rollout recorded
+  for the commit checked out (below), refused when there is none. It signs in to Azure as the
+  service principal `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET` name, in the
+  subscription `AZURE_SUBSCRIPTION_ID` names, refusing before anything else, naming each of
+  the four that is unset. The project's IT team gives that service principal the Container
+  Apps Contributor role on the apps (beside AcrPush on the registry) and lets it sign in to
+  them through Azure's built-in authentication. The app must keep one revision active at a
+  time (single revision mode), run one container and take requests at a public address; one
+  that does not is refused naming what. A rollout takes a maintenance window: every active
+  revision is deactivated, so the old release stops, then the container's image is set to the
+  new one, so a new revision starts, and traffic is never split between two releases; the
+  rollout waits, at most ten minutes, until the new revision is provisioned and running, and
+  one that fails to provision or run fails. An app whose latest revision is active, running
+  and already on the image is not rolled again, so a re-run checks it and records it. The
+  hosted check then holds the app to the release: `/health` answers, within five minutes,
+  naming its release; a request for `/api/app/release` without sign-in, carrying a principal
+  header of its own, is refused (401, 403 or a redirect to sign in), which shows the host's
+  authentication stands in front of the app; and the same request signed in as the service
+  principal, with a token for the audience the app's Microsoft Entra ID authentication
+  accepts, read from the app's authentication settings, answers the release `/health` named
+  and finds its quotes open. A new revision that fails to start or fails a check is replaced
+  by the previous release: the image the app ran before is set again, and the run fails
+  naming what failed and that it rolled back; an app with no image before is left with the
+  failed revision deactivated. A release whose quotes are closed because the environment's
+  tables do not fit its form stays, its quotes closed, the run failing naming each
+  difference: the people who own the database change the tables in SQL, and the app opens its
+  quotes once they fit, with no new run. A release that stays is recorded as an annotated git
+  tag on the commit, `app/<ENVIRONMENT>/<first 12 characters of the commit>`, its message the
+  image by digest and then the release's id, pushed to `origin`, and moved, when a re-run rolls
+  the commit's environment to another image, to the image that environment runs; `--from`
+  reads it. The command says each step as it takes it and prints the release's id last.
 - **The form.** The form is one document as the editor, the routes, a release and the
   quote store hold it: `version` (1), `name`, `schema` (its tables), `pages` (its sheets,
   at least one) and `sample` (the quote typed while building, `{}` for none). The form
