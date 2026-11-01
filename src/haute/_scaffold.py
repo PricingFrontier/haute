@@ -1691,6 +1691,8 @@ jobs:
   publish:
     name: Publish the app's image
     needs: validate
+    # A manual run may pick any branch: only main's commits are published.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: {_PUBLISH_TIMEOUT_MINUTES}
     steps:

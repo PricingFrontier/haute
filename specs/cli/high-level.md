@@ -137,7 +137,8 @@ Out of scope, owned elsewhere:
   azure-identity for a Microsoft Entra ID sign-in), a driver not installed there refused
   naming it; `--image` builds that image with Docker. `--push` builds it as
   `<registry>/<name>:<short commit>`, the registry `[deploy.container] registry` names, which
-  it refuses to run without, and the project's name in lower case, as Docker takes a
+  it refuses to run without, as it does a project whose commit git cannot name, and the
+  project's name in lower case, as Docker takes a
   repository's, pushes it there and prints the reference by digest that was pushed,
   `<registry>/<name>@sha256:...`, as its last line, so the
   workbench's CI publishes each release's image once and knows exactly what it published.

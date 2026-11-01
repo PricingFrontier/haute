@@ -1739,6 +1739,8 @@ class TestWorkbenchCiFiles:
             in workbench_ci_files("azure-container-apps", "github")[".github/workflows/release.yml"]
         )
         assert release["jobs"]["publish"]["needs"] == "validate"
+        # A manual run may pick any branch: only main's commits are published.
+        assert release["jobs"]["publish"]["if"] == "github.ref == 'refs/heads/main'"
         steps = release["jobs"]["publish"]["steps"]
         login = next(step for step in steps if step.get("name") == "Log in to the registry")
         assert set(login["env"]) == set(ci_secret_names("azure-container-apps"))
@@ -1751,6 +1753,8 @@ class TestWorkbenchCiFiles:
         pipeline = self._parsed("gitlab")[".gitlab-ci.yml"]
         assert pipeline["stages"] == ["validate", "publish"]
         assert pipeline["lint"]["script"][-1] == "uv run haute app build"
+        # Validation names no registry credential: only the publish job does.
+        assert "variables" not in pipeline["lint"]
         publish = pipeline["publish"]
         assert publish["extends"] == ".docker"
         assert publish["rules"] == [{"if": "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"}]

@@ -46,7 +46,9 @@ to your registry and builds the app's image once, pushes it to the registry
 the new image yet: point the app on Azure Container Apps at that digest. The publish job
 reads your host's variables, `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`,
 `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`, and needs the privileged runner a
-container target does.
+container target does. Tick **Protect variable** on all four, not optionally: GitLab gives a
+project's variables to every job, so only protection keeps them from merge-request pipelines
+on unprotected branches.
 
 ---
 

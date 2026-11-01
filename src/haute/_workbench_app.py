@@ -511,9 +511,11 @@ def image_reference(project_dir: Path) -> str:
     and the project's name (``[deploy] model_name``'s default, which a workbench project never
     sets) in lower case, since Docker takes no capital in a repository's name. Raises
     :class:`WorkbenchAppError` for a project naming no registry, since a published image needs
-    one, or a name an image cannot take."""
+    one, a name an image cannot take, or a project whose commit git cannot name, since the
+    tag says which commit was published."""
+    from haute._git_core import _run_git_ok, git_binary_available
     from haute.deploy._config import DeployConfig
-    from haute.deploy._container import _git_sha_short, _validate_model_name
+    from haute.deploy._container import _validate_model_name
 
     config = DeployConfig.from_toml(project_dir / "haute.toml")
     registry = config.container.registry.rstrip("/")
@@ -526,7 +528,17 @@ def image_reference(project_dir: Path) -> str:
         _validate_model_name(config.model_name)
     except ValueError as exc:
         raise WorkbenchAppError(f"The project's name cannot name an image: {exc}") from exc
-    return f"{registry}/{config.model_name.lower()}:{_git_sha_short()}"
+    named, commit = (
+        _run_git_ok("rev-parse", "--short", "HEAD", cwd=project_dir)
+        if git_binary_available()
+        else (False, "")
+    )
+    if not named or not commit:
+        raise WorkbenchAppError(
+            "The app's image is tagged with the commit it is built from, and git names none "
+            "here: publish from a clone of the project with git installed and a commit made."
+        )
+    return f"{registry}/{config.model_name.lower()}:{commit}"
 
 
 def push_image(release_dir: Path, reference: str) -> str:

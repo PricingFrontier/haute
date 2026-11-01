@@ -49,7 +49,7 @@ the [underwriter app](../../building-models/workbench.md#the-underwriter-app). I
 | File | When it runs | What it does |
 |---|---|---|
 | `ci.yml` | On every pull request | Lints, type-checks and runs tests, then builds the app's release, which checks your pipeline and schema and scores your test quotes |
-| `release.yml` | On a push to main or manual dispatch | Runs the same checks, then logs in to your registry and builds the app's image once, pushes it to the registry `[deploy.container]` names and prints the image by digest |
+| `release.yml` | On a push to main or manual dispatch | Runs the same checks, then, on main only, logs in to your registry and builds the app's image once, pushes it to the registry `[deploy.container]` names and prints the image by digest |
 
 Nothing moves your hosted app to the new image yet: point the app on Azure Container Apps at
 the digest the **Publish the app's image** job prints. The job reads your host's secrets,

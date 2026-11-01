@@ -142,7 +142,8 @@ Out of scope:
   push to the default branch that changes a release input, the validate job lints,
   type-checks and tests the project, lints the pipeline and runs `haute app build`, which
   resolves, validates and bundles the pipeline as a deploy does, its test quotes scored, with
-  the form. On that push the publish job, given the host's credentials, logs in to the
+  the form. On that push, and on a manual run of the default branch alone, the publish job,
+  given the host's credentials, logs in to the
   registry `[deploy.container] registry` names (the host `haute ci registry-host` prints)
   and runs `haute app build --push`, which builds the release's image once, pushes it and
   prints the reference by digest it pushed. Nothing rolls a hosted app to the image yet: the
@@ -1251,7 +1252,8 @@ Out of scope:
   Microsoft ODBC Driver 18 for `sqlserver`, psycopg for `postgresql`, and azure-identity
   for a Microsoft Entra ID sign-in), pinned as the scoring runtime is, nothing more.
   `haute app build --push` builds that image as `<registry>/<name>:<short commit>`, the
-  registry `[deploy.container] registry` names, which it refuses to run without, and the
+  registry `[deploy.container] registry` names, which it refuses to run without, as it does
+  a project whose commit git cannot name, never tagging an image with no commit, and the
   project's name in lower case, as Docker takes a repository's, pushes it there and prints,
   as its last line, the reference by digest the registry holds for it,
   `<registry>/<name>@sha256:...`: what the workbench's CI publishes once per release

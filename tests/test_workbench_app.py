@@ -38,6 +38,7 @@ from haute._workbench_form import (
 )
 from haute.deploy._utils import shipped_graph
 from haute.execution import ExecutionProfile
+from tests._git_helpers import git_run, init_repo
 from tests._store_servers import Target
 from tests._workbench_helpers import form_files, write_files
 from tests.test_workbench_routes import POLICY, PRICING, form
@@ -1201,8 +1202,12 @@ class _Docker:
         self.commands: list[list[str]] = []
         self.digests = digests
         self.push_fails = push_fails
+        # Every other program, git naming the commit among them, runs for real.
+        self.real = subprocess.run
 
     def __call__(self, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if args[0] != "docker":
+            return self.real(args, **kwargs)
         self.commands.append(list(args))
         verb = args[1:3]
         if verb[0] == "push" and self.push_fails:
@@ -1231,9 +1236,10 @@ def test_haute_app_build_push_publishes_the_image_and_prints_its_digest_last(
     import haute.deploy._container as container
     from haute.cli import cli
 
+    init_repo(project)
+    commit = git_run(project, "rev-parse", "--short", "HEAD")
     docker = _Docker()
     monkeypatch.setattr(container.subprocess, "run", docker)
-    monkeypatch.setattr(container, "_git_sha_short", lambda: "abc1234")
 
     # No registry: refused before anything is built.
     _pin_base_image(project)
@@ -1248,7 +1254,8 @@ def test_haute_app_build_push_publishes_the_image_and_prints_its_digest_last(
     result = CliRunner().invoke(cli, ["app", "build", "out", "--push"])
 
     assert result.exit_code == 0, result.output
-    tag = "acr.example.io/pricing/motor:abc1234"
+    # Tagged with the commit published.
+    tag = f"acr.example.io/pricing/motor:{commit}"
     assert [command[1:3] for command in docker.commands] == [
         ["info"],
         ["build", "-t"],
@@ -1267,12 +1274,7 @@ def test_haute_app_build_push_publishes_the_image_and_prints_its_digest_last(
     assert "--image and --push each build the image" in both.output
 
 
-def test_the_published_image_is_named_in_lower_case(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import haute.deploy._container as container
-
-    monkeypatch.setattr(container, "_git_sha_short", lambda: "abc1234")
+def test_the_published_image_is_named_after_its_commit_in_lower_case(tmp_path: Path) -> None:
     (tmp_path / "main.py").write_text('import haute\n\npipeline = haute.Pipeline("p")\n')
     toml = tmp_path / "haute.toml"
     toml.write_text('[project]\nname = "Motor_Pricing"\npipeline = "main.py"\n')
@@ -1280,9 +1282,15 @@ def test_the_published_image_is_named_in_lower_case(
         workbench_app.image_reference(tmp_path)
 
     toml.write_text(toml.read_text() + '\n[deploy.container]\nregistry = "acr.example.io/"\n')
+    # Outside a repository git names no commit: never a tag that names none.
+    with pytest.raises(WorkbenchAppError, match="tagged with the commit it is built from"):
+        workbench_app.image_reference(tmp_path)
+
+    init_repo(tmp_path)
+    commit = git_run(tmp_path, "rev-parse", "--short", "HEAD")
 
     # Docker takes no capital in a repository's name.
-    assert workbench_app.image_reference(tmp_path) == "acr.example.io/motor_pricing:abc1234"
+    assert workbench_app.image_reference(tmp_path) == f"acr.example.io/motor_pricing:{commit}"
 
 
 @pytest.mark.parametrize(
@@ -1302,9 +1310,10 @@ def test_haute_app_build_push_fails_when_the_push_records_no_digest(
     import haute.deploy._container as container
     from haute.cli import cli
 
-    monkeypatch.setattr(container.subprocess, "run", docker)
     toml = project / "haute.toml"
     toml.write_text(toml.read_text(encoding="utf-8") + _REGISTRY, encoding="utf-8")
+    init_repo(project)
+    monkeypatch.setattr(container.subprocess, "run", docker)
 
     result = CliRunner().invoke(cli, ["app", "build", "out", "--push"])
 
