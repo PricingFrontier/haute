@@ -60,7 +60,7 @@ Out of scope, owned elsewhere:
   test-quote fixtures, CI/CD workflow files for the chosen provider, a git pre-commit hook,
   and `.gitignore` guard entries; a starter file of `rating/` or `tests/` is written only
   where the folder has none, so a `rating/main.py` already there is kept and the summary
-  names what was kept. The hook is installed in `.git/hooks/` too inside a git repository,
+  names what was kept, and no workflow already in the folder is pruned. The hook is installed in `.git/hooks/` too inside a git repository,
   unless a `pre-commit` there is not Haute's, which is left as it is and named. An automated project's `haute.toml` holds its deploy
   target's settings and its workflows deploy the scoring endpoint. A workbench project hosts
   no scoring API: its `haute.toml` holds `[deploy.container]`, the app image's base image,

@@ -132,8 +132,9 @@ writes `.env.example` (`env_example` for the target, `app_env_example` for the a
 each naming the variables `connections.toml` names), writes the starter tests on a new project, writes `.python-version` with the project's Python when it has none
 (`haute._project_python.project_python_version`), writes CI workflow files for the chosen
 provider on that Python, `ci_files` for the target or `workbench_ci_files` for the host
-(pruning first each file Haute generates that the new set does not hold: another
-provider's, or the other kind of project's), installs a pre-commit hook into
+(on a re-run pruning first each file Haute generates that the new set does not hold:
+another provider's, or the other kind of project's; a new project prunes none, since its
+folder's workflows are the team's own), installs a pre-commit hook into
 `.githooks/` and — if inside a git repo — `.git/hooks/`, unless a `pre-commit` there is not
 Haute's (`_is_haute_hook`: it does not hold the Haute hook's header comment), which is kept
 and reported, and appends `.gitignore` guard entries via

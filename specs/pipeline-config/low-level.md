@@ -509,9 +509,10 @@ YAML; a dot is refused because Azure DevOps reads `a.b` as resource `b` of envir
 `staging_suffix_problem` likewise refuses a suffix that is not a string.
 `ci_files(target, ci, workbench=..., python_version=..., staging_suffix=..., production_environment=...)` returns exactly the files of the
 chosen `ci` value, path to content (`"none"` has none, an unknown provider raises), which
-`handle_init` and `haute ci update` both write through `write_generated_files`, each first
-calling `_prune_stale_ci_files(project_dir, keep=...)` (defined in `src/haute/cli/_init_cmd.py`)
-with the set about to be written,
+`handle_init` and `haute ci update` both write through `write_generated_files`, `haute ci
+update` and a re-run of `handle_init` first calling `_prune_stale_ci_files(project_dir,
+keep=...)` (defined in `src/haute/cli/_init_cmd.py`) with the set about to be written (a new
+project's `handle_init` prunes nothing: its folder's workflows are the team's own),
 which deletes every other generated path (from that module's `GENERATED_CI_FILES`)
 and removes the resulting empty `.github/workflows/`/`.github` directories, before writing the new provider's files.
 Every generator result must parse as one complete YAML document for every
