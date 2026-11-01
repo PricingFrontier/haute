@@ -261,10 +261,9 @@ def resolve_databricks_credentials(
                 "DATABRICKS_CLIENT_SECRET": client_secret,
             },
         )
-        missing = ["DATABRICKS_HOST"] if not workspace_host else []
-        missing.extend(requirements)
-        if missing:
-            raise _missing(missing)
+        unmet = (["DATABRICKS_HOST"] if not workspace_host else []) + requirements
+        if unmet:
+            raise _missing(unmet)
         return _credentials(workspace_host, mode, sdk_auth_type=auth_type)
 
     missing: list[str] = []
@@ -334,12 +333,10 @@ def databricks_sdk_config(credentials: DatabricksCredentials) -> Any:
 
     if not credentials.signs_in_as_user:
         raise ValueError(f"{credentials.auth_mode} authenticates without an SDK config")
-    if credentials.auth_mode == "profile":
-        kwargs: dict[str, str | None] = {"profile": credentials.profile}
-    else:
-        kwargs = {"host": credentials.workspace_host, "auth_type": credentials.sdk_auth_type}
     try:
-        return Config(**kwargs)
+        if credentials.auth_mode == "profile":
+            return Config(profile=credentials.profile)
+        return Config(host=credentials.workspace_host, auth_type=credentials.sdk_auth_type)
     except ValueError as exc:
         problem, remedy = credentials.sign_in_failure()
         raise DatabricksSignInError(problem, remedy) from exc

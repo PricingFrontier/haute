@@ -46,6 +46,12 @@ _EXPECTED_DEBT_IDS = {
     # the git tree fence's real case lives; other platforms run the same fence
     # through a faked half-swap (tests/test_git_engine.py::TestTreeFence).
     "4fc6a9bab5654bdf",
+    # The Databricks SDK's CLI sign-in handoff is exercised through a fake
+    # `databricks` executable that is a POSIX shell script, so the class skips
+    # on Windows; the handoff itself is platform-neutral and the resolver's own
+    # tests run everywhere (tests/test_databricks_credentials.py::
+    # TestSdkHandoffThroughTheCli).
+    "a30d337eaac95c5c",
     # Offset-through-serving suite — every test trains a real model, so each
     # leg importorskips its optional modelling engine (rustystats for the GLM
     # legs, catboost for the boosted / numeric-only legs), matching the

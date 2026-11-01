@@ -397,100 +397,103 @@ def _fake_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, script: str) -> P
     return path
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the fake CLI is a shell script")
-def test_cli_sign_in_hands_the_sdk_the_token_the_cli_prints(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Observed under databricks-sdk 0.88 (pyproject caps it below 0.89): auth type
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the fake Databricks CLI is a POSIX shell script; the SDK's handoff is "
+    "platform-neutral and the resolver's own tests above run everywhere",
+)
+class TestSdkHandoffThroughTheCli:
+    """The real SDK, driven through a fake ``databricks`` executable.
+
+    Observed under databricks-sdk 0.88 (pyproject caps it below 0.89): auth type
     ``databricks-cli`` runs ``<cli> auth token --host <host>`` and reads the JSON's
-    ``access_token``, ``token_type`` and ``expiry``; the header is the token verbatim."""
-    pytest.importorskip("databricks.sdk")
-    _fake_cli(tmp_path, monkeypatch, f"printf '%s' '{_CLI_TOKEN_JSON}'\n")
-    monkeypatch.setenv("DATABRICKS_HOST", "https://workspace.example")
-    monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "databricks-cli")
-    credentials = resolve_databricks_credentials()
+    ``access_token``, ``token_type`` and ``expiry``; the header is the token verbatim.
+    """
 
-    config = databricks_sdk_config(credentials)
+    def test_cli_sign_in_hands_the_sdk_the_token_the_cli_prints(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _fake_cli(tmp_path, monkeypatch, f"printf '%s' '{_CLI_TOKEN_JSON}'\n")
+        monkeypatch.setenv("DATABRICKS_HOST", "https://workspace.example")
+        monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "databricks-cli")
+        credentials = resolve_databricks_credentials()
 
-    assert config.authenticate() == {"Authorization": "Bearer cli-token-123"}
-    assert config.auth_type == "databricks-cli"
-    assert databricks_workspace_client(credentials).config.auth_type == "databricks-cli"
+        config = databricks_sdk_config(credentials)
 
+        assert config.authenticate() == {"Authorization": "Bearer cli-token-123"}
+        assert config.auth_type == "databricks-cli"
+        assert databricks_workspace_client(credentials).config.auth_type == "databricks-cli"
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the fake CLI is a shell script")
-def test_a_profile_signs_in_through_the_cli_with_the_profile_s_host(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pytest.importorskip("databricks.sdk")
-    seen = tmp_path / "cli-args"
-    _fake_cli(tmp_path, monkeypatch, f"echo \"$@\" > \"{seen}\"\nprintf '%s' '{_CLI_TOKEN_JSON}'\n")
-    _profiles_file(
-        tmp_path,
-        monkeypatch,
-        "[work]\nhost = https://workspace.example\nauth_type = databricks-cli\n",
-    )
-    monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "work")
+    def test_a_profile_signs_in_through_the_cli_with_the_profile_s_host(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = tmp_path / "cli-args"
+        _fake_cli(
+            tmp_path, monkeypatch, f"echo \"$@\" > \"{seen}\"\nprintf '%s' '{_CLI_TOKEN_JSON}'\n"
+        )
+        _profiles_file(
+            tmp_path,
+            monkeypatch,
+            "[work]\nhost = https://workspace.example\nauth_type = databricks-cli\n",
+        )
+        monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "work")
 
-    config = databricks_sdk_config(resolve_databricks_credentials())
+        config = databricks_sdk_config(resolve_databricks_credentials())
 
-    assert config.authenticate() == {"Authorization": "Bearer cli-token-123"}
-    assert seen.read_text(encoding="utf-8").split() == [
-        "auth",
-        "token",
-        "--host",
-        "https://workspace.example",
-    ]
+        assert config.authenticate() == {"Authorization": "Bearer cli-token-123"}
+        assert seen.read_text(encoding="utf-8").split() == [
+            "auth",
+            "token",
+            "--host",
+            "https://workspace.example",
+        ]
 
+    def test_an_expired_cli_sign_in_becomes_a_sign_in_error_with_the_command(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _fake_cli(
+            tmp_path,
+            monkeypatch,
+            "echo 'Error: A new access token could not be retrieved because the refresh token"
+            " is invalid. To reauthenticate, run the following command:' >&2\n"
+            "echo '  $ databricks auth login --profile work' >&2\nexit 1\n",
+        )
+        _profiles_file(
+            tmp_path,
+            monkeypatch,
+            "[work]\nhost = https://workspace.example\nauth_type = databricks-cli\n",
+        )
+        monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "work")
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the fake CLI is a shell script")
-def test_an_expired_cli_sign_in_becomes_a_sign_in_error_with_the_command(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pytest.importorskip("databricks.sdk")
-    _fake_cli(
-        tmp_path,
-        monkeypatch,
-        "echo 'Error: A new access token could not be retrieved because the refresh token"
-        " is invalid. To reauthenticate, run the following command:' >&2\n"
-        "echo '  $ databricks auth login --profile work' >&2\nexit 1\n",
-    )
-    _profiles_file(
-        tmp_path,
-        monkeypatch,
-        "[work]\nhost = https://workspace.example\nauth_type = databricks-cli\n",
-    )
-    monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "work")
+        with pytest.raises(DatabricksSignInError) as exc_info:
+            databricks_sdk_config(resolve_databricks_credentials())
 
-    with pytest.raises(DatabricksSignInError) as exc_info:
-        databricks_sdk_config(resolve_databricks_credentials())
+        assert str(exc_info.value) == (
+            "Databricks sign-in for profile 'work' failed or has expired: "
+            "run `databricks auth login --profile work` and try again."
+        )
+        assert exc_info.value.problem == (
+            "Databricks sign-in for profile 'work' failed or has expired"
+        )
+        assert "refresh token is invalid" in str(exc_info.value.__cause__)
+        assert credentials_rejected(exc_info.value)
+        assert isinstance(exc_info.value, DatabricksConfigError)
 
-    assert str(exc_info.value) == (
-        "Databricks sign-in for profile 'work' failed or has expired: "
-        "run `databricks auth login --profile work` and try again."
-    )
-    assert exc_info.value.problem == "Databricks sign-in for profile 'work' failed or has expired"
-    assert "refresh token is invalid" in str(exc_info.value.__cause__)
-    assert credentials_rejected(exc_info.value)
-    assert isinstance(exc_info.value, DatabricksConfigError)
+    def test_a_failed_cli_sign_in_by_auth_type_names_the_host_variable_not_the_host(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _fake_cli(tmp_path, monkeypatch, "echo 'not logged in' >&2\nexit 1\n")
+        monkeypatch.setenv("DATABRICKS_HOST", "https://secret-corp.example")
+        monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "databricks-cli")
 
+        with pytest.raises(DatabricksSignInError) as exc_info:
+            databricks_sdk_config(resolve_databricks_credentials())
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the fake CLI is a shell script")
-def test_a_failed_cli_sign_in_by_auth_type_names_the_host_variable_not_the_host(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pytest.importorskip("databricks.sdk")
-    _fake_cli(tmp_path, monkeypatch, "echo 'not logged in' >&2\nexit 1\n")
-    monkeypatch.setenv("DATABRICKS_HOST", "https://secret-corp.example")
-    monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "databricks-cli")
-
-    with pytest.raises(DatabricksSignInError) as exc_info:
-        databricks_sdk_config(resolve_databricks_credentials())
-
-    assert str(exc_info.value) == (
-        "The Databricks CLI sign-in failed or has expired: "
-        "run `databricks auth login --host <your DATABRICKS_HOST>` and try again."
-    )
-    assert "secret-corp" not in str(exc_info.value)
+        assert str(exc_info.value) == (
+            "The Databricks CLI sign-in failed or has expired: "
+            "run `databricks auth login --host <your DATABRICKS_HOST>` and try again."
+        )
+        assert "secret-corp" not in str(exc_info.value)
 
 
 def test_a_token_or_service_principal_needs_no_sdk_config(monkeypatch: pytest.MonkeyPatch) -> None:
