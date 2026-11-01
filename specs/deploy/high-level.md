@@ -44,6 +44,12 @@ In scope:
 - Post-deploy impact analysis: comparing staging vs production predictions over a sample
   dataset.
 
+A workbench project hosts no scoring API: what it releases is the underwriter app, whose
+release `haute app build` bundles through this component's resolution and validation, so
+`haute deploy` refuses in one, a dry run included, naming `haute app build`
+([workbench](../workbench/high-level.md)). A Workbench Input's deployment, below, is the
+bundle the app prices with.
+
 Out of scope (owned elsewhere):
 - Parsing the pipeline `.py` file into a `PipelineGraph` — see
   [pipeline-config](../pipeline-config/high-level.md).

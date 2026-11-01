@@ -57,7 +57,9 @@ You pick your target once when you set up the project. The command is:
 haute init --target databricks
 ```
 
-`--ci` picks the CI/CD provider the workflow files are written for: `github` (the default), `gitlab`, `azure-devops`, or `none` for no workflow files.
+`--ci` picks the CI/CD provider the workflow files are written for: `github` (the default), `gitlab`, `azure-devops`, or `none` for no workflow files. Run it in a terminal without them and `haute init` asks, as numbered lists: how the project prices quotes, where your repository is, and where it is hosted.
+
+Answer **Automated** for a pipeline other systems call, which this page deploys. A **Workbench** project, where underwriters price quotes in an app, hosts no API: `haute deploy` refuses in one, and its workflows check and publish the [underwriter app](../building-models/workbench.md#the-underwriter-app) instead.
 
 This generates all the deployment files you need. You don't write them by hand - `haute init` creates them for you. Here's what your project folder looks like before and after:
 
@@ -241,7 +243,7 @@ A join keeps each quote's row when it starts from the quotes, is a left join (or
 
 Answered one at a time, each quote must still give one row, so that the answers line up with the quotes. A quote that gives no row or several (one a filter drops, say) fails the request with HTTP 422 (error code `quote_answer_rows`), naming its place in the request; sent on its own, it is answered with every row it gives. To decline a quote, keep its row and add a column saying so, for example `declined` set to true, instead of filtering the quote out.
 
-A deployment that answers the quotes one at a time scores its test quotes one request each. A [Workbench Input](../building-models/nodes/workbench-input.md) reads one quote per request, so its deployment refuses a request holding several.
+A deployment that answers the quotes one at a time scores its test quotes one request each. A [Workbench Input](../building-models/nodes/workbench-input.md) reads one quote per request; its project is not deployed but released as the [underwriter app](../building-models/workbench.md#the-underwriter-app), whose build scores each test quote as a request of its own.
 
 ---
 

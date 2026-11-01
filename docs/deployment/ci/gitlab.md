@@ -34,6 +34,20 @@ This gives you the same command sequence as GitHub Actions; a live release still
 Merge request → Validation → Merge → Staging → Smoke test → Impact analysis → [You review] → Production
 ```
 
+### Workbench projects
+
+A [workbench project](../../building-models/workbench.md) hosts no API: what it releases is
+the [underwriter app](../../building-models/workbench.md#the-underwriter-app). Its
+`.gitlab-ci.yml` has two stages instead: **validate**, which lints, type-checks and runs
+tests, then builds the app's release, which checks your pipeline and schema and scores your
+test quotes, on every merge request and on main; and **publish**, on main only, which logs in
+to your registry and builds the app's image once, pushes it to the registry
+`[deploy.container]` names and prints the image by digest. Nothing moves your hosted app to
+the new image yet: point the app on Azure Container Apps at that digest. The publish job
+reads your host's variables, `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`,
+`AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`, and needs the privileged runner a
+container target does.
+
 ---
 
 ## How it works, step by step

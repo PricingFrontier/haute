@@ -40,6 +40,23 @@ This gives you a complete release pipeline:
 Pull request → CI checks → Merge → target-dependent staging deploy → smoke/impact only if deploy succeeds → [your GitHub approval process] → manually triggered production deploy
 ```
 
+### Workbench projects
+
+A [workbench project](../../building-models/workbench.md) hosts no API: what it releases is
+the [underwriter app](../../building-models/workbench.md#the-underwriter-app). Its
+`haute init` writes two workflow files instead:
+
+| File | When it runs | What it does |
+|---|---|---|
+| `ci.yml` | On every pull request | Lints, type-checks and runs tests, then builds the app's release, which checks your pipeline and schema and scores your test quotes |
+| `release.yml` | On a push to main or manual dispatch | Runs the same checks, then logs in to your registry and builds the app's image once, pushes it to the registry `[deploy.container]` names and prints the image by digest |
+
+Nothing moves your hosted app to the new image yet: point the app on Azure Container Apps at
+the digest the **Publish the app's image** job prints. The job reads your host's secrets,
+`AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`,
+which `haute ci secrets` sets from `.env`; the service principal needs the AcrPush role on
+the registry.
+
 ---
 
 ## How it works, step by step

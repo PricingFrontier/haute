@@ -27,7 +27,7 @@ Allowed field.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | WB-07 | Planned | P3 | The underwriter app runs on a Databricks App, on AWS or on an internal platform as it runs on Azure Container Apps, each signing underwriters in its own way. |
-| WB-08 | Planned | P2 | `haute init` asks whether a project prices automatically or in the workbench, and a workbench project, which hosts no scoring API, has workflows of its own: a merge to `main` takes its form, pipeline and app, tested together in CI, to staging and, after approval, to production on the project's host, Azure Container Apps first. |
+| WB-08 | Planned | P2 | A merge to `main` takes a workbench project's form, pipeline and app, tested together in CI, to staging and, after approval, to production on the project's host, Azure Container Apps first. |
 | WB-09 | Decision | P2 | An Import on a sheet, or a lookup beside a key cell, runs against a file, a database or an API and fills input cells with what comes back, through the server with no credential in the browser, while pricing stays as pure as it is. |
 | WB-11 | Decision | P2 | An underwriter exports a final quote from the app in the formats the project needs, naming the release that priced it. |
 | WB-12 | Decision | P3 | Analysts keep test quotes and price them again as the pipeline changes, built again after the first version was taken out. |
@@ -79,70 +79,29 @@ host) and `::build_release` (the release and the image's build context);
 `src/haute/deploy/_container.py::prepare_build_directory` (the image's Dockerfile).
 
 ### WB-08 — The workbench project's CI/CD
-**Why:** `haute init --workbench` writes the `[workbench]` table and a blank form and
-generates the target's ordinary workflows: Validate (a dry-run deploy scoring the test
-quotes, which also holds the form the Workbench nodes take their tables from to the pipeline), Deploy →
-Staging, Smoke Test Staging (each test quote a request of its own, held to its expected
-output), Impact Analysis, approval, Deploy → Production, except that the workflows for Azure
-Container Apps, AWS ECS and GCP Cloud Run leave the smoke and impact out, since those
-targets build and push an image and update no service; the generic container target, which
-also only builds and pushes, keeps them. A push to `main` that changes the pipeline, its
-data, models or test quotes, `haute.toml`, the dependency files or, for a workbench project,
-the form starts the deploy. What a workbench project releases is not a scoring endpoint but
-the underwriter app, which `haute app build` writes and underwriters use by hand, and
-nothing in the workflows builds, tests or deploys it: `ci_files` takes no workbench
-argument, so a workbench project gets the scoring endpoint's workflows. It also keeps
-`haute init`'s default target, Databricks, so the project holds an endpoint's
-`[deploy.databricks]` settings and no `[deploy.container] base_image`, without which
-`haute app build --image` refuses for want of a Dockerfile, and no `[workbench.app] host`,
-without which a release refuses every request but the health check; and `haute init` names
-Databricks' CI secrets for it. Pricing analysts work on their own machines: Save writes the save branch,
-Commit makes a milestone, Push publishes it, a pull request to `main` is opened and merged
-on the provider, and the merge is the release. Against that flow: impact sends batches of a
-flat portfolio sample, which a pipeline reading one quote per request refuses for the batch
-and could not read for the shape, and its report compares top-level numeric columns, so a
-price inside a response table is never compared; production runs `haute deploy` again rather
-than promoting what staging tested, and the image is tagged with the commit's short hash,
-which a rebuild can point at other bytes; and the Azure Container Apps target pushes an
-image and rolls no service to it. A milestone Commit sweeps tracked files only, so a file
-the workbench adds, such as the test quotes of WB-12, needs tracking from the start.
+**Why:** A workbench project hosts no scoring API: `haute init` answered for workbench
+pricing writes its `[workbench]` table, with the app's host and the quote store on one
+database, `[deploy.container]` for the app's image, `connections.toml` and the workbench's
+own workflows ([workbench](../workbench/high-level.md)). They validate the project and the
+app's release on every pull request and on a push to `main` that changes a release input,
+and on that push publish the app's image once and print it by digest. Nothing rolls a
+hosted app to that image, nothing tests the packaged app before a host sees it, and nothing
+compares a candidate's prices with production's, so a merge ends with an image someone
+points the Container App at by hand. The endpoint's checks do not fit an app: impact sends
+batches of a flat portfolio sample, which a pipeline reading one quote per request refuses
+for the batch and could not read for the shape, and its report compares top-level numeric
+columns, so a price inside a response table is never compared. The image is tagged with the
+commit's short hash, which a rebuild can point at other bytes, so only the digest the publish
+prints says what was published, and nothing records it. Pricing analysts work on their own
+machines: Save writes the save branch, Commit makes a milestone, Push publishes it, a pull
+request to `main` is opened and merged on the provider, and the merge is the release. A
+milestone Commit sweeps tracked files only, so a file the workbench adds, such as the test
+quotes of WB-12, needs tracking from the start.
 
-**Plan:** Decided with the owner (1 November 2026): a workbench project releases the
-underwriter app alone and hosts no scoring API, for brokers or any other system, so its
-workflows are a set of their own, with no `haute deploy` to an endpoint and no smoke or
-impact against one. The fork is at `haute init`, which asks, each question a list to pick
-from: how the project prices, automated (an API other systems call) or workbench (an app
-underwriters price quotes in); where the repository is, GitHub, GitLab, Azure DevOps or
-none; where it is hosted, an automated project among the deploy targets and a workbench
-project among `[workbench.app] host`'s hosts, a list of one, Azure Container Apps, until
-WB-07 adds others; and, for a workbench project, which database holds the saved quotes,
-SQL Server or PostgreSQL, and how the analyst signs in to it, a password, their Microsoft
-Entra ID sign-in or a service principal. Dev, staging and prod are assumed to run on one
-engine, so the engine is written once for each, as `[workbench.store.dev]`,
-`[workbench.store.staging]` and `[workbench.store.prod]` and as the provider of each of
-`connections.toml`'s connections ([workbench](../workbench/high-level.md)). The sign-in is
-the analyst's, so it is written in `connections.toml`, where the analyst defines how to
-sign in, each connection naming its own variables in `.env.example`; the hosted app's
-sign-in in `haute.toml` is not asked and stays a managed identity, as `haute init
---workbench` writes it now. Each database's server and name are left
-empty in `connections.toml` for the analyst to fill in; where a hosted app's database is,
-and every secret, still comes from the host's variables, never from the questions. Each
-question has a flag, and `haute init` asks only for what its flags leave out, and only at
-a terminal; without one an unanswered question takes today's default (automated, GitHub,
-Databricks), and a workbench project's database and sign-in, which have none, are refused
-naming their flags. An automated project is never converted into a workbench project: no
-serious work is done in a project before that choice, so one that should have been a
-workbench project is started again, a new project or `haute init --force` answering
-workbench, and `haute init` no longer adds the workbench to a project that has a
-`haute.toml`. The app image's settings stay in `[deploy.container]`, its base image,
-registry and port, which `haute app build`, `haute ci registry-host` and the generated
-registry login already read, while `[workbench.app]` keeps where the app runs and who may
-change quotes; a workbench project's `haute.toml` holds no `target`, `model_name`,
-`endpoint_name` or `[deploy.databricks]`. The behaviour lives in Haute's
-commands, which read the workbench settings, so the YAML stays thin and alike across
-providers, and `haute ci update` reads how the project prices from `haute.toml` and
-regenerates that set without rewriting its pipeline or form, as `haute init --force` would.
-The deploy triggers gain each release input as it arrives, where its specification puts it:
+**Plan:** The behaviour lives in Haute's commands, which read the workbench settings, so the
+YAML stays thin and alike across providers, and `haute ci update` regenerates a project's
+set without rewriting its pipeline or form. The deploy triggers gain each release input as
+it arrives, where its specification puts it:
 the app's entry point and the export templates; the store's tables follow the form, which
 already starts the deploy. The app's delivery builds each release once. On every
 pull request, Validate and the packaged app tested in the CI runner before any host sees it,
@@ -176,15 +135,8 @@ onto (the Container App, the registry, the identities and the database): it publ
 the release, waits until the release runs and reports it, and creates nothing. Azure Container
 Apps first; other hosts follow with the same commands.
 
-**Acceptance:** `haute init` at a terminal asks its questions in order, a workbench
-project's host from a list of one, writes the one engine for dev, staging and prod in
-`haute.toml` and `connections.toml`, and writes the analyst's sign-in in `connections.toml`
-alone; its flags answer every question without a terminal, and a workbench project's
-database and sign-in, given by neither, are refused naming their flags; a workbench
-project's `haute.toml` holds `[deploy.container]`, its base image pinned to the project's
-Python, and no endpoint settings, so `haute app build --image` builds without an edit; and
-`haute init` in a project that has a `haute.toml` adds no workbench to it. A project `haute
-init` initialised for workbench pricing on Azure Container Apps and merged to `main` runs
+**Acceptance:** A project `haute init` initialised for workbench pricing on Azure Container
+Apps and merged to `main` runs
 its generated workflow, which holds no endpoint deploy and no smoke or impact against an
 endpoint, to a staging app and, after approval, to production, with the digest CI tested
 deployed to both, a re-run of the workflow included, a maintenance window around each
@@ -201,29 +153,17 @@ otherwise leaves the previous release running and the run failed.
 
 **Dependencies:** WB-11 (the export the app's tests make, once its formats are
 decided) and WB-12 (the test quotes). The Azure
-resources and identities, provided by the project's IT team. The generated deploy jobs
-already log in to the registry before a push; impact's input is the `[safety]` portfolio
-sample, or the test quotes without one.
+resources and identities, provided by the project's IT team. The publish job already logs in
+to the registry with the host's credentials and pushes the image once.
 
-**Evidence:** `src/haute/_scaffold.py::github_deploy_yml`, `::github_deploy_prod_yml`,
-`::gitlab_ci_yml`, `::azure_devops_yml` and `::_build_only_notice` (the generated workflows,
-their triggers, production's second deploy, and the smoke and impact left out for Azure
-Container Apps, AWS ECS and GCP Cloud Run); `src/haute/cli/_init_cmd.py::handle_init`
-(`--workbench` writes the table, the blank form and the form's deploy trigger, and nothing
-of an app); `src/haute/_scaffold.py::ci_files` (one set of workflows for every project, by
-provider and target alone) and `::haute_toml` (the target's `[deploy]` settings, a
-workbench project's too); `src/haute/cli/_ci.py::handle_ci_update` (regenerates by provider
-and target alone); `src/haute/_workbench_app.py::build_release` (the image's Dockerfile
-only with `[deploy.container] base_image`);
-`src/haute/_workbench_config.py::store_environments` (a server environment's sign-in
-required); `src/haute/deploy/_impact.py::score_endpoint_batched` and `::build_report`
-(batches, and top-level numeric columns compared); `src/haute/cli/_impact.py::handle_impact`
-(a first deploy reported as such); `src/haute/_workbench_input.py::workbench_request_frames`
-(one quote per request); `src/haute/deploy/_validators.py::score_test_quotes` (each case a
-request of its own); `src/haute/deploy/_container.py::build_and_push_image` and
-`::deploy_to_platform_container` (a short-hash tag, built and pushed only);
-`src/haute/_git_transactions.py::_residual_tracked_changes` (a milestone sweeps tracked
-files only).
+**Evidence:** `src/haute/_scaffold.py::workbench_ci_files`, `::_github_release_yml`,
+`::_gitlab_app_ci_yml`, `::_azure_devops_app_yml` and `::_app_publish_notice` (validate and
+publish only, nothing rolled out); `src/haute/_workbench_app.py::image_reference` and
+`::push_image` (a short-commit tag, the digest printed and not recorded);
+`src/haute/deploy/_impact.py::score_endpoint_batched` and `::build_report` (batches, and
+top-level numeric columns compared); `src/haute/_workbench_input.py::workbench_request_frames`
+(one quote per request); `src/haute/_git_transactions.py::_residual_tracked_changes` (a
+milestone sweeps tracked files only).
 
 ### WB-09 — Actions that fill the sheets
 **Why:** Underwriters key in what other systems already hold: the broker and the assured

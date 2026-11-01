@@ -34,6 +34,19 @@ This gives you the same command sequence as GitHub Actions and GitLab; a live re
 Pull request → Validation → Merge → Staging → Smoke test → Impact analysis → [Approval] → Production
 ```
 
+### Workbench projects
+
+A [workbench project](../../building-models/workbench.md) hosts no API: what it releases is
+the [underwriter app](../../building-models/workbench.md#the-underwriter-app). Its
+`azure-pipelines.yml` has two stages instead: **Validate**, which lints, type-checks and runs
+tests, then builds the app's release, which checks your pipeline and schema and scores your
+test quotes, on every pull request and on main; and **Publish**, on main only, which logs in
+to your registry and builds the app's image once, pushes it to the registry
+`[deploy.container]` names and prints the image by digest. Nothing moves your hosted app to
+the new image yet: point the app on Azure Container Apps at that digest. The Publish stage
+reads your host's variables from the `haute-credentials` group,
+`AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`.
+
 ---
 
 ## How it works, step by step

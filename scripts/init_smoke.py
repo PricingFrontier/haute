@@ -181,9 +181,10 @@ def _install_into_fresh_venv(wheel: Path, venv_dir: Path) -> Path:
 
 
 def _scaffold_project(haute_exe: Path, project_dir: Path) -> None:
+    # Every answer given, so init asks nothing even when the smoke runs at a terminal.
     _run_step(
         "haute init",
-        [str(haute_exe), "init"],
+        [str(haute_exe), "init", "--automated", "--ci", "github", "--target", "databricks"],
         cwd=project_dir,
         timeout=INIT_TIMEOUT_SECONDS,
     )

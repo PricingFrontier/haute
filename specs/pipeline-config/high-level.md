@@ -204,11 +204,14 @@ The GUI's plural listing path applies the same strict configured-path checks
 but also returns additional valid root-level pipelines. It lists rather than
 chooses among them; the single-pipeline binding policy remains authoritative.
 
-`haute init` scaffolds a new project: `haute.toml`,
+`haute init` scaffolds a new project, asking at a terminal what its flags leave out
+([cli](../cli/high-level.md)): `haute.toml`,
 `.env.example`, CI workflow YAML for one of several CI providers, a valid blank pipeline and
-starter parse test, deploy-target-specific credentials and TOML sections for one of several
-supported deploy targets, and with `--workbench` the `[workbench]` table and a blank form
-folder, the pipeline folder's `workbench/` ([workbench](../workbench/high-level.md)). The blank pipeline declares its `Pipeline` object but no nodes. Init
+starter parse test, and, for an automated project, deploy-target-specific credentials and TOML
+sections for one of several supported deploy targets, or, for a workbench project, which hosts
+no scoring API, the `[workbench]` table with the app's host and the quote store's database,
+`[deploy.container]` for the app's image, the host's credentials, `connections.toml` and a
+blank form folder, the pipeline folder's `workbench/` ([workbench](../workbench/high-level.md)). The blank pipeline declares its `Pipeline` object but no nodes. Init
 removes a root `main.py`, creates no `prompts/` directory, and creates no node sidecars.
 
 **Project layout.** The pipeline folder, the folder holding `[project].pipeline` (`rating/`
@@ -258,9 +261,17 @@ production names an environment in `[ci.production] environment`; `haute ci upda
 the GitHub and GitLab production jobs under it, so the reviewers configured on it in the
 provider gate the deploy. Where the plan offers them: GitHub gives required reviewers to a
 private repository only on GitHub Enterprise, and GitLab's protected environments need Premium.
-Re-running `haute init --force` with a different
-`--ci` prunes the previously-chosen provider's workflow files before writing the new ones, so
-switching providers doesn't leave orphaned config behind.
+A workbench project's workflows are a set of their own, the same for every provider in
+shape: a validate job (lint, type check, test, pipeline lint, `haute app build`) on a pull
+request and on a push to the default branch that changes a release input, and on that push a
+publish job that logs in to the registry with the app host's credentials and runs
+`haute app build --push`, which builds the underwriter app's image once, pushes it and prints
+the reference by digest it pushed. It has no endpoint deploy, smoke test or impact analysis,
+and no production job yet: nothing rolls a hosted app to the image, which the generated files
+say ([workbench](../workbench/high-level.md)). Re-running `haute init --force` with a different
+`--ci`, or for the other kind of project, prunes every workflow file Haute generated that the
+new set does not hold before writing the new ones, so switching providers doesn't leave
+orphaned config behind.
 
 Every emitted GitHub Actions, GitLab CI, and Azure DevOps workflow is a complete
 YAML document, not a template fragment that only looks plausible in Markdown.
@@ -638,8 +649,9 @@ and owned by the team. Two explicit commands write it again, and nothing else do
 team's hand-edits to their workflow (extra jobs, custom notifications, org-specific runners)
 stay stable across unrelated `haute.toml` changes: `haute ci update` regenerates the chosen
 provider's files from the installed Haute's templates and the `[ci]` table (the staging
-deploy, smoke and impact steps pass the recorded suffix), overwriting hand-edits to those files
-and pruning another provider's; `haute init --force` is a full re-scaffold that prunes the
+deploy, smoke and impact steps pass the recorded suffix), a workbench project's being the
+workbench's set for its `[workbench.app] host`, overwriting hand-edits to those files
+and pruning every other generated file; `haute init --force` is a full re-scaffold that prunes the
 previous provider's workflow files and rewrites the newly-chosen provider's from the
 templates.
 

@@ -9,11 +9,15 @@ versioned beside the pipeline: a file for each table and each sheet
 ([The workbench's files](#the-workbenchs-files)).
 
 !!! note "Enabling it"
-    `haute init --workbench` switches it on: in a new project, or in one that has no
-    workbench yet, it adds the table to `haute.toml`, declaring the quote store's `dev`,
-    `staging` and `prod` ([The underwriter app](#the-underwriter-app)), writes the blank
-    workbench's files and `connections.toml`, and names its sign-in variables in
-    `.env.example`.
+    Answer **Workbench** to `haute init`'s first question (or pass `--workbench`) when you
+    start the project. It then asks which database holds the saved quotes and how you sign in
+    to it, and writes the table to `haute.toml`, with where the app runs and the quote
+    store's `dev`, `staging` and `prod` on that database
+    ([The underwriter app](#the-underwriter-app)), the blank workbench's files,
+    `connections.toml`, and the workflows that check and publish the app, and names your
+    sign-in variables in `.env.example`. A workbench project hosts no API: what it releases is
+    the underwriter app. A project started without a workbench is not given one later: start
+    it again with `haute init --force`.
 
     ```toml
     [workbench]
@@ -661,8 +665,9 @@ builder on screen. With a quote store it is where they manage their quotes too.
   `quote_reference` and `quote_option`. The example `haute init` wrote is not, so rewrite it;
   until then the build names it and what to add. The release's id changes when anything
   that prices a quote changes, and the app names it in its bar.
-- Say where the app runs in `haute.toml`. Azure Container Apps is the host so far; its
-  built-in authentication signs underwriters in, and the app refuses anyone it has not.
+- Where the app runs is in `haute.toml`, as `haute init` wrote it. Azure Container Apps is
+  the host so far; its built-in authentication signs underwriters in, and the app refuses
+  anyone it has not.
   `edit_role`, if you set it, is the app role that may change quotes: everyone else the
   host signs in reads them. Ask your IT team to give the app role to the underwriters who
   quote, and to pass roles to the app; the app refuses a request whose roles it cannot
@@ -674,19 +679,26 @@ builder on screen. With a quote store it is where they manage their quotes too.
   edit_role = "Quotes.Edit"
   ```
 
-- To build the app's image, pin its base image as the container target does. The release is
-  then the image's build context, and `haute app build --image <tag>` builds it with Docker;
-  the image installs the scoring runtime and the quote store's packages, with the driver of
-  each database your environments name (below):
+- The app's image is built on the base image `haute init` pinned to your project's Python
+  in `[deploy.container]`, where you also name the registry it is published to. The release
+  is the image's build context: `haute app build --image <tag>` builds it with Docker, and
+  `haute app build --push` builds it, pushes it to the registry and prints the image by
+  digest, as the workflows do once a change merges
+  ([GitHub Actions](../deployment/ci/github-actions.md#workbench-projects)). The image installs
+  the scoring runtime and the quote store's packages, with the driver of each database your
+  environments name (below):
 
   ```toml
   [deploy.container]
+  registry = "pricingacr.azurecr.io/pricing"
+  port = 8080
   base_image = "python:3.11.9-slim"
   ```
 
 - The app keeps quotes in the database of an environment you declare in `haute.toml`, as
   your schema's tables: `dev` for `haute app serve`, and the hosted app's own, `staging` and
-  `prod` in a project `haute init --workbench` made. Declare each environment by name with
+  `prod`, all three on the database you chose when `haute init` made the project. Declare
+  each environment by name with
   its database's provider: `sqlserver` (SQL Server 2019 and later, Azure SQL Database and
   Azure SQL Managed Instance), `postgresql` (PostgreSQL, Azure Database for PostgreSQL,
   Amazon RDS and Aurora, Cloud SQL and Databricks Lakebase) or `sqlite` (a file). A server
@@ -725,7 +737,8 @@ builder on screen. With a quote store it is where they manage their quotes too.
   `HAUTE_STORE_URL`. Install `haute[sqlserver]` or `haute[postgresql]` wherever you build
   the release, as the image installs the versions installed there.
 - On your machine, the editor and `haute app serve` reach each environment's database
-  through `connections.toml` at the project root, which `haute init --workbench` writes and
+  through `connections.toml` at the project root, which `haute init` writes with the sign-in
+  you chose and
   you commit, so your team shares it. Each connection is named as its environment is and
   says where the database is and how **you** sign in, by the names of the variables that
   hold your sign-in, whose values go in your `.env` (which git ignores; `.env.example` names

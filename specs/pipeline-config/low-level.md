@@ -19,7 +19,7 @@
 | `src/haute/_graph_builders.py` | AST node-skeleton discovery separated from resolution; the strict builder resolves every skeleton fail-loud before producing canonical `GraphNode`/`GraphEdge`, while editor recovery resolves skeletons independently. |
 | `src/haute/_pipeline_recovery.py` | [server-api](../server-api/low-level.md)-owned editor-only recovery orchestration and availability diagnostics, forbidden to canonical parser consumers. |
 | `src/haute/_graph_shape.py` | Topology-only invariants independent of any single node's config (`validate_graph_shape_contracts`, `validate_pipeline_graph_shape_contracts`), including submodel child graphs. |
-| `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml`, `.env.example`, CI YAML for 3 providers × 7 deploy targets (`ci_files`, which `haute ci update` also writes), the CI secrets a target needs and their `.env.example` placeholders (`ci_secret_names`, `env_example_placeholders`), starter pipeline/tests/utilities, pre-commit hook. |
+| `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml` (`haute_toml` for an automated project, `workbench_haute_toml` for a workbench one), `.env.example` (`env_example`, `app_env_example`), `connections.toml` (`connections_toml`), CI YAML for 3 providers × 7 deploy targets (`ci_files`, which `haute ci update` also writes) and a workbench project's for 3 providers (`workbench_ci_files`, likewise), the CI secrets a target or an app host needs and their `.env.example` placeholders (`ci_secret_names`, `env_example_placeholders`), whose of the two a project's CI reads (`ci_credentials`), starter pipeline/tests/utilities, pre-commit hook. |
 | `src/haute/_project_python.py` | The project's Python, one version for local development, CI and the deployed model: `.python-version`'s pin or the lowest release `requires-python` admits, at minor precision only when it admits the whole minor (`project_python_version`, which `haute init` writes and pins CI and container base images to), the deployed model's Python (`deployed_python_version`), the checks deploy runs on the interpreter and a container's base image (`deploy_python_mismatch`, `admits`, `base_image_python_version`), and `ProjectPythonError` for a declaration it cannot read or that contradicts the other. |
 | `src/haute/_project.py` | Project-root discovery (`get_project_root`, `is_haute_project`) and pipeline-file resolution (`resolve_pipeline_file`, 4-tier fallback). |
 | `src/haute/_project_layout.py` | The project's folder layout: `PIPELINE_FILES_FOLDER` and `PIPELINE_FILES_SUBFOLDERS` (the pipeline folder's `files/` with `data/`, `models/` and `params/`), `LOCAL_FOLDERS` (the root's unversioned `data/` and `outputs/`), `VERSIONED_FILE_LIMIT_BYTES`, `versioned_name` (whether a path names a file the project versions through Haute), `pipeline_folder` (the configured pipeline folder when it lies below the project root), `pipeline_files_folder` and `default_model_folder`. |
@@ -399,7 +399,11 @@ any root `main.py` before writing `rating/main.py`.
 `haute_toml()` assembles `[project]`/`[deploy]`/`[test_quotes]`/`[safety]`/`[safety.approval]`
 (`min_approvers` hardcoded to 2 in the template — solo users lower it by hand)/`[ci]`/
 `[ci.staging]` sections, splicing in `_target_section()`'s
-`[deploy.<target>]` block, and with `workbench` set appends the `[workbench]` table. Its
+`[deploy.<target>]` block. A workbench project's `haute.toml` is `workbench_haute_toml()`'s
+instead: `[project]`, `[deploy.container]` (registry, port and the base image on the project's
+Python) and no other `[deploy]` key, `[test_quotes]`, `[ci]` and `workbench_table()`'s
+`[workbench]`, `[workbench.app] host` and the three store environments on one provider, with
+no `[safety]` or `[ci.staging]`, which only an endpoint's smoke and impact read. Its
 `[safety]` table names no `impact_dataset`: `haute impact` compares the test quotes until a
 portfolio sample is committed, and a commented example names a Parquet sample under
 tests/impact/, outside the gitignored `data/` (BUG-23: the old
@@ -417,8 +421,10 @@ closed `[assistant]` plus `[assistant.egress]` tables and the optional `[workben
 part of the shared TOML schema consumed by `DeployConfig.from_toml`, even though none is a
 deploy setting. The assistant key sets are owned by `haute.assistant._config` and the
 workbench's by `haute._workbench_config`, so deployment parsing and each reader cannot drift.
-`env_example()` and the three CI-YAML generators (`github_ci_yml`/`github_deploy_yml`/
-`github_deploy_prod_yml`, `gitlab_ci_yml`, `azure_devops_yml`) all pull the same `secrets`
+`env_example()`, `app_env_example()` and the CI-YAML generators (`github_ci_yml`/
+`github_deploy_yml`/`github_deploy_prod_yml`, `gitlab_ci_yml`, `azure_devops_yml`, and the
+workbench's `github_app_ci_yml`/`github_release_yml`, `gitlab_app_ci_yml`,
+`azure_devops_app_yml`, whose validate stage each provider's two sets share) all pull the same `secrets`
 list out of `TARGETS` through provider-specific formatters (`_github_secrets_env`,
 `_gitlab_secrets_env`, `_azure_devops_secrets_env`) so a target's credential list is defined
 once and rendered three ways; `ci_secret_names` hands the same list to `haute ci secrets` and

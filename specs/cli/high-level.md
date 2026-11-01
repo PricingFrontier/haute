@@ -42,18 +42,33 @@ Out of scope, owned elsewhere:
   contracts, while identifying the chosen invocation form in usage text.
 - `haute --help` opens with the package's own description, `pyproject.toml`'s `description`,
   and so names no deploy target: Databricks is one of several.
-- `haute init [--target ...] [--ci ...] [--workbench] [--force]` scaffolds a new project in the
-  current directory: `haute.toml`, a blank `rating/` pipeline package, `.env.example`, test-quote
-  fixtures, CI/CD workflow files for the chosen provider, a git pre-commit hook, and `.gitignore`
-  guard entries; with `--workbench`, the `[workbench]` table in `haute.toml`, declaring the
-  quote store's `dev`, `staging` and `prod`, a blank form folder, `rating/workbench/`, and
-  `connections.toml`, their connections for the editor and `haute app serve`, whose
-  variables `.env.example` names ([workbench](../workbench/high-level.md)).
-  Refuses to run if `haute.toml` already exists unless `--force` is given, but for
-  `--workbench` alone, which in a project that has a `haute.toml` adds the `[workbench]`
-  table to it, writes the blank form folder in its pipeline folder and `connections.toml`,
-  and writes `.env.example` again, touching nothing else, and refuses when the table, the
-  folder or `connections.toml` is already there. Either way a path of
+- `haute init [--automated | --workbench] [--ci ...] [--target ...] [--host ...] [--store ...]
+  [--sign-in ...] [--force]` scaffolds a new project in the current directory. At a terminal
+  it asks what its flags leave out, each question a numbered list to pick from, in turn: how
+  the project prices, automated (an API other systems call) or workbench (an app
+  underwriters price quotes in); where the repository is (GitHub, GitLab, Azure DevOps or
+  none); where it is hosted, an automated project among the deploy targets and a workbench
+  project among the underwriter app's hosts, a list of one, Azure Container Apps; and, for a
+  workbench project, which database holds the saved quotes (SQL Server or PostgreSQL) and
+  how the analyst signs in to it (a password, their Microsoft Entra ID sign-in or a service
+  principal). Without a terminal an unanswered question takes its default (automated,
+  GitHub, Databricks, a workbench project's one host), and a workbench project's database
+  and sign-in, which have none, are refused naming their flags; a flag of the other kind of
+  project (`--target` with `--workbench`, or `--host`, `--store` or `--sign-in` without it)
+  is refused. Every project gets a blank `rating/` pipeline package, `.env.example`,
+  test-quote fixtures, CI/CD workflow files for the chosen provider, a git pre-commit hook,
+  and `.gitignore` guard entries. An automated project's `haute.toml` holds its deploy
+  target's settings and its workflows deploy the scoring endpoint. A workbench project hosts
+  no scoring API: its `haute.toml` holds `[deploy.container]`, the app image's base image,
+  registry and port, and no endpoint settings, and the `[workbench]` table with
+  `[workbench.app] host` and the quote store's `dev`, `staging` and `prod` on the database
+  chosen; it also gets a blank form folder, `rating/workbench/`, and `connections.toml`, the
+  three environments' connections for the editor and `haute app serve`, on that database
+  with the analyst's sign-in, whose variables `.env.example` names beside the host's
+  credentials; and its workflows validate and publish the underwriter app
+  ([workbench](../workbench/high-level.md)). Refuses to run if `haute.toml` already exists
+  unless `--force` is given, `--workbench` included: an automated project is never
+  converted into a workbench project, but started again. A path of
   the form folder reached through a link or junction refuses the init before anything is
   written. A root `main.py` is
   always deleted: `uv init` recreates that placeholder every time it runs, and a Haute project's
@@ -82,8 +97,11 @@ Out of scope, owned elsewhere:
   scores its test quotes, and deploys it to the configured target. Non-dry-run deploys are blocked
   outside a recognised CI environment, and one whose target's credentials are not all set stops
   before any other work, naming every missing one. A Databricks deploy returns once its endpoint
-  serves the new version, or fails with Databricks' reason when it cannot.
-- `haute ci secrets [--check] [--no-verify]` sets the CI secrets the deploy target needs on the
+  serves the new version, or fails with Databricks' reason when it cannot. A workbench project
+  hosts no scoring API, so in one `haute deploy` refuses before anything else, a dry run
+  included, naming `haute app build`, which validates and builds what it releases.
+- `haute ci secrets [--check] [--no-verify]` sets the CI secrets the deploy target needs, or in
+  a workbench project its `[workbench.app] host`, on the
   project's GitHub repository from `.env`, after checking Databricks accepts them; `--check`
   reports which are set. On GitLab and Azure DevOps it names the secrets to add by hand. The
   editor's Push does the same for a GitHub repository it first publishes to, before the push,
@@ -94,9 +112,12 @@ Out of scope, owned elsewhere:
   the variables `connections.toml` names when the project has one, for the
   installed Haute and the project's `[ci]` table, so a project takes up fixed workflows, a
   changed `[ci.staging] endpoint_suffix`, or a `[ci.production] environment` whose reviewers
-  then gate production, without being initialised again.
-- `haute ci registry-host` prints the host of the registry a container target pushes to,
-  for the login step its generated deploy jobs run before `haute deploy`.
+  then gate production, without being initialised again. A workbench project's are the
+  workbench's set, for its `[workbench.app] host`, which it refuses to run without; an
+  automated project's are the scoring endpoint's, for its `[deploy] target`.
+- `haute ci registry-host` prints the host of the registry a container target, or a
+  workbench project's app image, pushes to, for the login step its generated jobs run
+  before `haute deploy` or `haute app build --push`.
 - `haute smoke [--endpoint-suffix]` sends each test quote in `tests/quotes/` to a live
   serving endpoint as a request of its own, as a pipeline reading one quote per request takes it, and
   holds each quote with an `expected` output to it as the deploy check does, walked into a
@@ -105,7 +126,7 @@ Out of scope, owned elsewhere:
   and the other quotes are still priced. HTTP health accepts any decodable 2xx JSON.
   An endpoint suffix is a Databricks naming override; HTTP targets reject it and direct operators
   to configure the complete staging endpoint URL instead.
-- `haute app build [OUTPUT] [--image TAG]` builds the workbench project's release for
+- `haute app build [OUTPUT] [--image TAG | --push]` builds the workbench project's release for
   the underwriter app into `OUTPUT` (`.haute/app/release` by default, which git
   ignores): the pipeline resolved,
   validated and bundled as `haute deploy` does it, test quotes included, with the
@@ -114,7 +135,12 @@ Out of scope, owned elsewhere:
   driver of each provider the release's environments declare, pinned as installed where it
   builds (pyodbc and Microsoft's ODBC Driver 18 for `sqlserver`, psycopg for `postgresql`,
   azure-identity for a Microsoft Entra ID sign-in), a driver not installed there refused
-  naming it; `--image` builds that image with Docker. A directory that is or holds the
+  naming it; `--image` builds that image with Docker. `--push` builds it as
+  `<registry>/<project name>:<short commit>`, the registry `[deploy.container] registry`
+  names, which it refuses to run without, pushes it there and prints the reference by digest
+  that was pushed, `<registry>/<project name>@sha256:...`, as its last line, so the
+  workbench's CI publishes each release's image once and knows exactly what it published.
+  A directory that is or holds the
   project or the working
   directory, a file, and a directory holding anything but an earlier release are refused,
   as are a project without a workbench and sheets never saved; an earlier release is

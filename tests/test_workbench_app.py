@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -1190,6 +1191,108 @@ def test_haute_app_build_builds_the_image_with_docker(
     refused = CliRunner().invoke(cli, ["app", "build", "out", "--image", "motor-app:1"])
     assert refused.exit_code != 0
     assert "Docker is not available here" in refused.output
+
+
+class _Docker:
+    """``docker`` as ``subprocess.run`` runs it in the container module: each command, the
+    images it pushed, and the digests ``docker image inspect`` reports for them."""
+
+    def __init__(self, *, digests: list[str] | None = None, push_fails: bool = False) -> None:
+        self.commands: list[list[str]] = []
+        self.digests = digests
+        self.push_fails = push_fails
+
+    def __call__(self, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        self.commands.append(list(args))
+        verb = args[1:3]
+        if verb[0] == "push" and self.push_fails:
+            return subprocess.CompletedProcess(args, 1, "", "denied: requested access")
+        if verb == ["image", "inspect"]:
+            tag = args[-1]
+            repository = tag[: tag.rindex(":")]
+            digests = (
+                self.digests if self.digests is not None else [f"{repository}@sha256:" + "a" * 64]
+            )
+            return subprocess.CompletedProcess(args, 0, json.dumps(digests), "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+
+_REGISTRY = (
+    '\n[deploy.container]\nregistry = "acr.example.io/pricing/"\n'
+    'base_image = "python:3.11.9-slim"\n'
+)
+
+
+def test_haute_app_build_push_publishes_the_image_and_prints_its_digest_last(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from click.testing import CliRunner
+
+    import haute.deploy._container as container
+    from haute.cli import cli
+
+    docker = _Docker()
+    monkeypatch.setattr(container.subprocess, "run", docker)
+    monkeypatch.setattr(container, "_git_sha_short", lambda: "abc1234")
+
+    # No registry: refused before anything is built.
+    _pin_base_image(project)
+    refused = CliRunner().invoke(cli, ["app", "build", "out", "--push"])
+    assert refused.exit_code != 0
+    assert "[deploy.container] registry is empty" in refused.output
+    assert docker.commands == []
+    assert not (project / "out").exists()
+
+    toml = project / "haute.toml"
+    toml.write_text(toml.read_text(encoding="utf-8").replace(PINNED, _REGISTRY), encoding="utf-8")
+    result = CliRunner().invoke(cli, ["app", "build", "out", "--push"])
+
+    assert result.exit_code == 0, result.output
+    tag = "acr.example.io/pricing/motor:abc1234"
+    assert [command[1:3] for command in docker.commands] == [
+        ["info"],
+        ["build", "-t"],
+        ["push", tag],
+        ["image", "inspect"],
+    ]
+    assert docker.commands[1][3] == tag and docker.commands[3][-1] == tag
+    assert f"Image pushed: {tag}" in result.output
+    # The last line is what was published, by digest: what CI records and a host runs.
+    assert result.output.rstrip().splitlines()[-1] == (
+        "acr.example.io/pricing/motor@sha256:" + "a" * 64
+    )
+
+    both = CliRunner().invoke(cli, ["app", "build", "out", "--push", "--image", "x:1"])
+    assert both.exit_code == 2
+    assert "--image and --push each build the image" in both.output
+
+
+@pytest.mark.parametrize(
+    ("docker", "said"),
+    [
+        (_Docker(push_fails=True), "Docker push failed"),
+        (_Docker(digests=["other.example.io/motor@sha256:" + "b" * 64]), "holds no digest"),
+        (_Docker(digests=[]), "holds no digest"),
+    ],
+    ids=["push-refused", "another-repository", "no-digest"],
+)
+def test_haute_app_build_push_fails_when_the_push_records_no_digest(
+    project: Path, monkeypatch: pytest.MonkeyPatch, docker: _Docker, said: str
+) -> None:
+    from click.testing import CliRunner
+
+    import haute.deploy._container as container
+    from haute.cli import cli
+
+    monkeypatch.setattr(container.subprocess, "run", docker)
+    toml = project / "haute.toml"
+    toml.write_text(toml.read_text(encoding="utf-8") + _REGISTRY, encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["app", "build", "out", "--push"])
+
+    assert result.exit_code == 1
+    assert said in result.output
+    assert "Traceback" not in result.output
 
 
 def test_the_release_prices_and_keeps_quotes_with_only_the_images_runtime_installed(
