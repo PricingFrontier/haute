@@ -887,6 +887,16 @@ class TestEnsureHauteDependencyTomlSafety:
         with pytest.raises(ValueError, match="array-of-tables"):
             _ensure_haute_dependency(pyproject, "foo")
 
+    def test_haute_where_its_extras_cannot_be_added_raises_naming_them(self, tmp_path: Path):
+        # An inline [project] table has no array to rewrite: the extras are named for the
+        # analyst to add, and the file is left as it was.
+        pyproject = tmp_path / "pyproject.toml"
+        text = 'project = { name = "foo", dependencies = ["haute>=1"] }\n'
+        pyproject.write_text(text, encoding="utf-8")
+        with pytest.raises(ValueError, match="add the azure, sqlserver extras to it yourself"):
+            _ensure_haute_dependency(pyproject, "foo", "haute[sqlserver,azure]")
+        assert pyproject.read_text(encoding="utf-8") == text
+
 
 def _own_files(project_dir: Path) -> dict[Path, bytes]:
     """The project's own files, which a re-run never writes: rating/ (but the workbench's
@@ -1433,6 +1443,22 @@ class TestInitWorkbench:
         assert not outside.exists()
         assert not (project_dir / "haute.toml").exists()
         assert not (project_dir / "rating" / "workbench").exists()
+
+    @pytest.mark.parametrize("flags", [WORKBENCH, []], ids=["workbench", "automated"])
+    def test_a_connections_toml_that_does_not_read_is_refused_writing_nothing(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str]
+    ):
+        # The team's connections, whose variables .env.example names: never replaced or
+        # passed over when they do not read.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "connections.toml").write_text('[dev]\nprovider = "oracle"\n')
+        before = _files(tmp_path)
+
+        refused = runner.invoke(cli, ["init", *flags])
+
+        assert refused.exit_code == 1
+        assert "connections.toml [dev].provider must be one of" in refused.output
+        assert _files(tmp_path) == before
 
 
 class TestInitQuestions:
