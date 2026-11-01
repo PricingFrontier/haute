@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from types import MappingProxyType
@@ -663,13 +664,21 @@ class ProjectionPlan:
     materialisation_boundaries: frozenset[str] = frozenset()
     opaque_boundaries: frozenset[str] = frozenset()
     diagnostics: ProjectionDiagnostics = field(default_factory=ProjectionDiagnostics)
-    optional_columns: frozenset[str] = frozenset()
-    """Columns some node reads only where they exist (``Contract.optional_inputs``):
-    demanded so projection keeps them, but an edge whose parent lacks one drops it."""
+    optional_by_edge: Mapping[ProjectionEdgeKey, frozenset[str]] = field(
+        default_factory=lambda: _EdgeIdentityMapping({})
+    )
+    """Per edge, the demanded columns only nodes that read them where they exist
+    (``Contract.optional_inputs``) ask for through it: projection keeps them, but the
+    edge drops one its parent lacks. A column a node requires through the edge is not
+    among them, whoever else reads a column of that name optionally."""
 
     def __post_init__(self) -> None:
         if not isinstance(self.edge_demands, _EdgeIdentityMapping):
             object.__setattr__(self, "edge_demands", _EdgeIdentityMapping(self.edge_demands))
+        if not isinstance(self.optional_by_edge, _EdgeIdentityMapping):
+            object.__setattr__(
+                self, "optional_by_edge", _EdgeIdentityMapping(self.optional_by_edge)
+            )
 
     def demand_for_edge(self, edge: GraphEdge) -> frozenset[str] | None:
         """Return the demand for exactly *edge*, or ``None`` when absent/opaque."""
@@ -3264,7 +3273,7 @@ def with_api_input_port_projection_boundaries(
         needed_by_node=MappingProxyType(needed_by_node),
         edge_demands=projection_plan.edge_demands,
         materialisation_boundaries=projection_plan.materialisation_boundaries,
-        optional_columns=projection_plan.optional_columns,
+        optional_by_edge=projection_plan.optional_by_edge,
         opaque_boundaries=projection_plan.opaque_boundaries | newly_opaque,
         diagnostics=ProjectionDiagnostics(
             opaque_reasons=MappingProxyType(opaque_reasons),
@@ -3326,6 +3335,11 @@ def _authored_refusal(exc: BaseException) -> bool:
     return True
 
 
+#: False while the planner's second sweep finds what each edge carries for nodes that
+#: require it: every contract then reads none of its optional inputs.
+_READS_OPTIONAL_INPUTS: ContextVar[bool] = ContextVar("reads_optional_inputs", default=True)
+
+
 def _node_column_contract(node: GraphNode, node_type: NodeType, config: dict[str, Any]) -> Contract:
     """Return *node*'s builder column contract, failing visibly.
 
@@ -3336,7 +3350,7 @@ def _node_column_contract(node: GraphNode, node_type: NodeType, config: dict[str
     error. A refusal that wraps a dependency failure stays internal.
     """
     try:
-        return get_node_contract(node_type, config)
+        contract = get_node_contract(node_type, config)
     except HauteError as exc:
         if (
             node_type is not NodeType.MODEL_SCORE
@@ -3348,6 +3362,9 @@ def _node_column_contract(node: GraphNode, node_type: NodeType, config: dict[str
             f"Model Score '{node.data.label}' cannot load its model: {exc.message}",
             setting="model",
         ) from exc
+    if contract.optional_inputs and not _READS_OPTIONAL_INPUTS.get():
+        return replace(contract, optional_inputs=frozenset())
+    return contract
 
 
 def projection_contract(node: GraphNode) -> Contract:
@@ -5229,15 +5246,36 @@ def compute_prepared_plan(
             message="column contract algebra",
         )
 
-    return _freeze_plan(
+    plan = _freeze_plan(
         needed,
         edge_demands,
         node_reasons=node_reasons,
         edge_reasons=edge_reasons,
-        optional_columns=frozenset().union(
-            *(contract.optional_inputs for contract in effective_contracts.values())
-        ),
     )
+    if not any(contract.optional_inputs for contract in effective_contracts.values()):
+        return plan
+    # The same sweep with every optional read left out says which columns each edge
+    # carries for a node that requires them; the rest of its demand is optional.
+    token = _READS_OPTIONAL_INPUTS.set(False)
+    try:
+        required = compute_prepared_plan(
+            order,
+            children_of,
+            node_map,
+            required_columns_by_node,
+            relevant_edges=relevant_edges,
+            submodels=submodels,
+            selector_aliases=selector_aliases,
+            known_output_columns=known_output_columns,
+        )
+    finally:
+        _READS_OPTIONAL_INPUTS.reset(token)
+    optional_by_edge: dict[ProjectionEdgeKey, frozenset[str]] = {}
+    for key, demand in plan.edge_demands.items():
+        required_demand = required.edge_demands.get(key)
+        if demand is not None and required_demand is not None and demand - required_demand:
+            optional_by_edge[key] = demand - required_demand
+    return replace(plan, optional_by_edge=_EdgeIdentityMapping(optional_by_edge))
 
 
 def _freeze_columns(columns: set[str] | frozenset[str] | None) -> frozenset[str] | None:
@@ -5250,7 +5288,6 @@ def _freeze_plan(
     *,
     node_reasons: Mapping[str, ProjectionReason] | None = None,
     edge_reasons: Mapping[ProjectionEdgeKey, ProjectionReason] | None = None,
-    optional_columns: frozenset[str] = frozenset(),
 ) -> ProjectionPlan:
     frozen_needed = {
         node_id: _freeze_columns(columns) for node_id, columns in needed_by_node.items()
@@ -5280,7 +5317,6 @@ def _freeze_plan(
         edge_demands=_EdgeIdentityMapping(frozen_edges),
         opaque_boundaries=opaque_boundaries,
         diagnostics=diagnostics,
-        optional_columns=optional_columns,
     )
 
 
@@ -5411,7 +5447,7 @@ def with_runtime_inferred_streaming_edges(
         needed_by_node=MappingProxyType(needed_by_node),
         edge_demands=_EdgeIdentityMapping(edge_demands),
         materialisation_boundaries=projection_plan.materialisation_boundaries,
-        optional_columns=projection_plan.optional_columns,
+        optional_by_edge=projection_plan.optional_by_edge,
         opaque_boundaries=(projection_plan.opaque_boundaries - resolved_parents),
         diagnostics=ProjectionDiagnostics(
             opaque_reasons=MappingProxyType(opaque_reasons),

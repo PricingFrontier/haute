@@ -35,8 +35,9 @@ from haute._types import (
     NodeType,
     PipelineGraph,
 )
-from haute.errors import NodeConfigError, failing_node
+from haute.errors import ContractMismatchError, NodeConfigError, failing_node
 from haute.execution import execute_lazy_graph
+from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -45,6 +46,13 @@ from haute.execution import execute_lazy_graph
 
 def _e(src: str, tgt: str) -> GraphEdge:
     return GraphEdge(id=f"e_{src}_{tgt}", source=src, target=tgt)
+
+
+def _output_node(nid: str, fields: list[str]) -> GraphNode:
+    return GraphNode(
+        id=nid,
+        data=NodeData(label=nid, nodeType=NodeType.OUTPUT, config=make_output_config(fields)),
+    )
 
 
 def _port_edge(src: str, tgt: str, port: str) -> GraphEdge:
@@ -1201,6 +1209,58 @@ class TestExecuteLazyDelegatesToBuildFuncs:
 # ═══════════════════════════════════════════════════════════════════════════
 # D4: selected_columns applied consistently in lazy and eager paths
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestOptionalInputsRelaxOnlyTheirOwnEdges:
+    """A column one node reads only where it exists is dropped from the edges that feed
+    that node, never from another node's edge that requires a column of that name."""
+
+    @staticmethod
+    def _graph(*, with_polars_reader: bool) -> PipelineGraph:
+        from haute._contracts import (
+            _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
+            _DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY,
+        )
+
+        score = GraphNode(
+            id="score",
+            data=NodeData(
+                label="score",
+                nodeType=NodeType.MODEL_SCORE,
+                config={
+                    "output_column": "prediction",
+                    _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY: ["age"],
+                    _DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY: ["exposure"],
+                },
+            ),
+        )
+        nodes = [_source_node("src"), score, _output_node("priced", ["prediction"])]
+        edges = [_e("src", "score"), _e("score", "priced")]
+        if with_polars_reader:
+            code = "df = src.with_columns(doubled=pl.col('exposure') * 2)"
+            nodes += [_transform_node("calc", code=code), _output_node("out", ["doubled"])]
+            edges += [_e("src", "calc"), _e("calc", "out")]
+        return PipelineGraph(nodes=nodes, edges=edges)
+
+    @staticmethod
+    def _build(node: GraphNode, **kwargs):
+        if node.id == "src":
+            return node.id, lambda: pl.LazyFrame({"age": [30, 40]}), True
+        if node.id == "score":
+            return node.id, lambda frame: frame.with_columns(prediction=pl.col("age") * 2), False
+        if node.id == "calc":
+            return node.id, lambda frame: frame.with_columns(doubled=pl.col("exposure") * 2), False
+        return node.id, lambda frame: frame, False
+
+    def test_a_model_score_alone_prices_without_the_exposure(self):
+        outputs, *_ = execute_lazy_graph(self._graph(with_polars_reader=False), self._build)
+        assert outputs["score"].collect()["prediction"].to_list() == [60, 80]
+
+    def test_a_polars_node_that_needs_the_column_is_refused_at_its_edge_by_name(self):
+        with pytest.raises(ContractMismatchError) as raised:
+            execute_lazy_graph(self._graph(with_polars_reader=True), self._build)
+        assert raised.value.context["node_id"] == "calc"
+        assert raised.value.context["missing"] == ["exposure"]
 
 
 class TestSelectedColumnsInPaths:
