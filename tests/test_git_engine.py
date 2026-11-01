@@ -1359,6 +1359,7 @@ class TestSeedGitignoreGuards:
             "pyproject.toml",
             "uv.lock",
             ".env.example",
+            "connections.toml",
             "rating/main.py",
             "rating/main.haute.json",
             "rating/utility/helpers.py",

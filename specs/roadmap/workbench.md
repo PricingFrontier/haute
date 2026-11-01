@@ -35,7 +35,6 @@ Allowed field.
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
 | WB-41 | Planned | P2 | `useQuoteListStore` fences `loadingMore` across list switches, `priceSample` resolves `WORKBENCH_OUTPUT` inside submodels via `qualifiedRuntimeNodeId`, and the workbench high-level specification removes the stale `The blank form is a form` bullet. |
-| WB-45 | Planned | P2 | The schema pane compares the form with the tables a hosted environment's database holds, marking each difference, and writes the SQL that brings those tables to the form from what is there, for the analyst to run. |
 
 ## Planned improvements
 
@@ -113,7 +112,7 @@ pull request, Validate and the packaged app tested in the CI runner before any h
 against SQLite and once against the server engine IT's instance runs (a service container),
 each a throwaway store of the branch's form made for the tests alone, since SQLite proves
 nothing of that engine's types; CI rehearses no migration, whose SQL the analysts write in
-the schema pane (WB-45) and run themselves:
+the schema pane ([workbench](../workbench/high-level.md)) and run themselves:
 the test quotes of WB-12 re-priced one request each against their accepted outputs, a quote
 saved, reopened and, once WB-11's formats exist, exported through the app, and the sheets
 driven in a browser. On the
@@ -209,7 +208,8 @@ response's JSON onto columns. Whether actions are declared alone (a statement or
 request with named parameters) or Python actions are allowed too. Where the pieces live:
 the Import's settings beside the schema in the form file, as they are, since they name
 tables and columns by id and version with the sheets; the connection its name stands
-for in `connections.toml`, the file of named connections WB-45 decides, with the names
+for in `connections.toml`, the file of named connections the editor and `haute app serve`
+already read ([workbench](../workbench/high-level.md)), with the names
 of its credential variables; the values in `.env`, never in a file the ledger pushes. Whether a press in Build writes the
 sample, which Save then writes to disk, or actions run in Preview alone. Then the
 slices: the connections of `connections.toml`, which an Import's connection names; a route
@@ -423,66 +423,3 @@ missing-folder rule.
 `frontend/src/workbench/priceSample.ts::priceSample`;
 `frontend/src/utils/submodelRuntimeTarget.ts::qualifiedRuntimeNodeId`;
 `specs/workbench/high-level.md`.
-
-### WB-45 — Comparing the form with an environment's tables
-**Why:** Analysts migrate a hosted quote store's tables themselves: Haute writes the SQL and
-they run it in their database (the owner's ruling, 31 October 2026); nothing in CI writes or
-runs it. Today the schema pane's SQL (`POST /api/workbench/store-sql`) writes the change from
-the form the default branch holds, read from git, or from none, so it takes the database to
-hold exactly that form's tables. It cannot see what the database really holds: a column
-someone added, retyped or dropped in SQL, one the form removed and the database kept, a script
-run part way, an environment behind or ahead of `main`, or which columns hold values a change
-would convert. The app's check (`_catalogue_differences`) finds each such difference, but only
-the started app reads it, and only to close its quotes. Nothing points the editor at a hosted
-database: a location and a sign-in are read from the host's variables, one environment per
-process.
-
-**Plan:** Decided with the owner (31 October 2026): the editor reaches each database through
-`connections.toml` at the project root, committed with the project and written by
-`haute init --workbench`, a table for each named connection holding its provider, server,
-database and SQL schema, and how the analyst signs in, by the names of the variables that
-hold the secrets (as a store environment names its sign-in's), whose values live in the
-clone's `.env`, which git ignores, and `.env.example` naming each. It holds no secret, so
-the team shares one set of connections; a value written into it is refused naming the
-variable it belongs in. It is the analyst's own sign-in, a password from `.env` or their
-Microsoft Entra ID sign-in, never the app's managed identity, and the editor reads under it
-alone. A hosted app and a release never read the file: a host still places the app's
-database through its own variables, so a pull request changing the file repoints no hosted
-app. A connection named as a declared environment is that environment's. Then, in the schema
-pane, an environment chosen among those declared that has a connection: Haute connects
-through the store's providers, reads the catalogue as the app's check
-does, with the quotes holding values in each column a change would touch, and changes nothing.
-Each table and column of the form is marked where it differs there (missing, of another kind,
-taking a null otherwise, keyed or referring otherwise, under another collation on SQL Server),
-each table or column the database holds that the form does not is listed, and a database that
-matches says so. Generate SQL writes the migration from the tables as they are to the form, as
-the SQL window writes it now: renames in two steps, a retype in place with its note and the
-quotes holding values it converts, a removal's DROP commented out, one transaction. A column
-the form has that the database lacks is paired with one the database has that the form lacks
-as a rename where the default branch's form names both by one id, or where the analyst pairs
-them in the pane. The analyst copies the SQL and runs it; Haute runs nothing and records
-nothing. The SQL from the default branch's form or from none stays for a database the editor
-cannot reach. No location, credential or value read is shown, logged or written to the
-project.
-
-**Acceptance:** With an environment reachable from the analyst's machine, the schema pane marks
-each table and column whose catalogue differs from the form, lists what the database holds
-beyond it and counts the quotes a change would convert; the SQL it writes, run on that
-database, leaves the app's check finding nothing, on SQL Server and on PostgreSQL; a pair the
-analyst marks is renamed, keeping its values; a database it cannot reach or sign in to is said
-naming the variables, never the server or the user; nothing is written to the database, the
-project or the logs. `haute init --workbench` writes `connections.toml` and names its
-variables in `.env.example`; a secret's value written into the file is refused naming the
-variable it belongs in; and a hosted app reads nothing of the file.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_quote_store/_store.py::_catalogue_differences` (the app's check and
-its differences); `src/haute/_quote_store/_migrate.py::counts`, `::offline_plan` and
-`::render_sql` (the quotes holding values, the plan between two structures and its SQL);
-`src/haute/routes/workbench.py::store_sql` and `src/haute/_workbench_folder.py::form_at_ref`
-(the SQL from the default branch's form); `src/haute/_quote_store/_environment.py::resolve_store`
-(a location and a sign-in from one process's variables); `frontend/src/workbench/SchemaPane.tsx`
-and `frontend/src/workbench/StoreSqlWindow.tsx` (where the SQL is shown now);
-`src/haute/deploy/_config.py` (`.env` read with python-dotenv) and `src/haute/_scaffold.py`
-(`.env.example` written by `haute init`).

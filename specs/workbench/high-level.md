@@ -44,9 +44,12 @@ In scope:
 - `GET /api/workbench/form`, the form with its folder's revision, and
   `PUT /api/workbench/form`, which writes the form's files unless one changed since they
   were read.
-- `POST /api/workbench/store-sql`, the SQL that brings each hosted environment the project
-  declares to a form the view holds, from the form as the project's default branch holds
-  it or from none.
+- `POST /api/workbench/store-sql`, the SQL that brings each environment the project
+  declares to a form the view holds, from the form as the project's default branch holds it
+  or from none; `POST /api/workbench/store-catalogue`, the tables an environment's database
+  holds, read through its connection in `connections.toml`; and
+  `POST /api/workbench/store-compare`, a form the view holds compared with those tables, with
+  the SQL that brings them to it.
 - `GET /api/workbench/params`, a params file's header and a column's distinct values,
   which a column's allowed values are read from (and Banding's categorical rules imported).
 - The Workbench view: how it is shown beside the pipeline editor and what the pipeline
@@ -61,10 +64,10 @@ In scope:
 - The Workbench Output, the node type that reads the output tables from the form folder,
   which the editor shows, and whose ports take the frames that fill them.
 - The quote store: saved quotes as rows of the form's own tables, each quote's latest
-  state, its tables derived from the form and the activity of each quote: dev's SQLite
-  file, which Haute keeps in step with the form, and hosted databases, whose owners change
-  their tables in SQL starting from the SQL Haute writes, checked by the app before its
-  quotes open.
+  state, its tables derived from the form and the activity of each quote: the declared
+  environments (`dev`, `staging`, `prod`), whose tables are changed in SQL starting from the
+  SQL Haute writes, compared live in the schema pane through `connections.toml` and checked
+  by the app before its quotes open.
 
 Out of scope:
 
@@ -103,14 +106,19 @@ Out of scope:
   deploy`'s whole-file check of `haute.toml` accepts the table, and deploy reads the form a
   pipeline's Workbench nodes take their tables from strictly, refusing one it cannot read or
   that does not fit the pipeline ([deploy](../deploy/high-level.md)).
-  `haute init --workbench` writes the table and a blank form folder in a new project, and
-  in a project that already has a `haute.toml` it adds the two and nothing else, refusing
-  when either is there; either way a path of the folder reached through a link or a
-  junction refuses it, nothing written. Nothing else makes the folder. The deploy workflow `haute init`
-  generates for GitHub or Azure DevOps starts when a file in the pipeline folder changes,
-  the form's files among them; `haute init --force` rewrites `haute.toml`, so the table
-  stays only when `--workbench` is given again, while the form folder is left as it is. A
-  nested `[workbench.app]` table says where the
+  `haute init --workbench` writes the table (with `[workbench.store]` declaring `dev`,
+  `staging` and `prod`, each `sqlserver` signed in to by the hosted app's managed identity),
+  a blank form folder and `connections.toml` (a `[dev]`, `[staging]` and `[prod]` connection,
+  each `sqlserver` with its server and database left empty for the analyst to fill in and a
+  password sign-in whose variables `.env.example` names, as `haute ci update` writes it again)
+  in a new project, and in a project that already has a `haute.toml` it adds them and writes
+  `.env.example` again, refusing when the table, the folder or `connections.toml` is there;
+  either way a path reached through a link or a junction refuses it, nothing written.
+  Nothing else makes the folder. The deploy workflow `haute init` generates for GitHub or Azure
+  DevOps starts when a file in the pipeline folder changes, the form's files among them;
+  `haute init --force` rewrites `haute.toml`, so the table stays only when `--workbench` is
+  given again, while the form folder and `connections.toml` are left as they are, either
+  written only when absent. A nested `[workbench.app]` table says where the
   underwriter app runs: `host` is `azure-container-apps`, and `edit_role`, when given, is
   the role the host signs underwriters in with that may change quotes, every other
   underwriter reading them; any other key, host or role that is not a name is refused by
@@ -433,19 +441,44 @@ Out of scope:
     match". While it filters nothing is added, moved or collapsed (no Add column, Add table
     or index, no grips, no Alt+Up or Alt+Down, Enter in a name only committing it, the
     collapse toggles off), so each edit is to a column it shows; emptying it, by its clear
-    button or Escape, shows the whole schema again as it was. It stays open as the mode changes and as another sheet shows, and opening it keeps the selection and the
-    properties panel. While building it edits the schema; in Preview it shows the schema
-    read only: a table still collapses and expands and a column's label and rules still
-    open, but no field takes typing, no select takes a choice, and no table or column is
-    added, removed or moved. Keys pressed in it are its own, never the sheet's.
+    button or Escape, shows the whole schema again as it was. Its Compare, beside its SQL,
+    chooses one of the environments `haute.toml` declares, or none, and compares the form
+    with the tables that environment's database holds: Haute reads them through the
+    environment's connection in `connections.toml` (the quote store, below) as Compare
+    chooses it and as its Read again is pressed, never as the form is edited, counting the
+    quotes holding values in each table and column, and changes nothing; the form the view
+    holds, saved or not, is compared with what was read as it changes. Each table and column
+    of the form is marked where it differs there (missing, renamed from another name, of
+    another kind, a table of other rows, taking a null otherwise, keyed or referring
+    otherwise, under another collation on SQL Server, the store's own columns missing or of
+    another kind), each mark saying how, with the quotes holding values it concerns;
+    `haute_activity` missing is said above the tables; each table of the store's (one with
+    the quote's `quote_reference` and `quote_option`) and each column of the form's tables
+    that the database holds and the form does not is listed with the quotes holding values
+    in it, and such a column is paired with a column of its table that the form has and the
+    database lacks, chosen beside it, as a rename; the database matching the form is said.
+    A table or column the form has that the database lacks is taken for a rename where the
+    project's default branch's form names it by one id with a table or column the database
+    holds and the form does not. An environment with no connection, one that cannot be read
+    or a database that cannot be reached or refuses the sign-in is said, naming the file and
+    the variables to set, never a server, a database, a user, a credential or a value read.
+    The comparison is the view's own, neither saved nor undone, and closes with the pane.
+    It stays open as the mode changes and as another
+    sheet shows, and opening it keeps the selection and the properties panel. While building
+    it edits the schema; in Preview it shows the schema read only: a table still collapses
+    and expands and a column's label and rules still open, but no field takes typing, no
+    select takes a choice, and no table or column is added, removed or moved. Keys pressed
+    in it are its own, never the sheet's.
 
   - **The tables' SQL.** While building, the schema's pane's SQL, beside its Close, opens a
-    window of the SQL that brings a hosted environment's tables to the form the view holds,
-    saved or not (the quote store, below): a tab for each environment `haute.toml`
-    declares, its SQL in that environment's engine; what it starts from, the form as the
-    project's default branch holds it or none, for a database that holds no store yet, the
-    first while that branch holds a form, else none alone; and Copy. With no environment
-    declared the window says so. In Preview, SQL is disabled.
+    window of the SQL that brings an environment's tables to the form the view holds, saved
+    or not (the quote store, below): a tab for each environment `haute.toml` declares, its
+    SQL in that environment's engine; what it starts from: the tables the database holds, on
+    the tab of the environment Compare shows, the first there, with its renames and the
+    quotes holding values in each table and column a change touches; the form as the
+    project's default branch holds it, the first elsewhere while that branch holds a form;
+    or none, for a database that holds no store yet; and Copy. With no environment declared
+    the window says so. In Preview, SQL is disabled.
 
   - **Save.** Save and Ctrl/Cmd+S save the project, the same from either toolbar, with a
     focused field's edit included: the form is saved first when it holds unsaved edits or
@@ -1236,9 +1269,10 @@ Out of scope:
   The app keeps the quotes saved in its quote store as rows of the form's own tables (the
   quote store, below). A hosted app keeps them in the environment its host names in
   `HAUTE_ENVIRONMENT`, one its release declares, at the database the host's own variables say
-  it is at, whose tables the people who own that database make and change in SQL; `haute app
-  serve` keeps its quotes in dev's store, `.haute/app/store.sqlite`, beside the release rather
-  than in it, its tables built from the release's form as it starts, so a rebuild keeps them.
+  it is at; `haute app serve` keeps its quotes in the `dev` environment its release declares,
+  at the database `connections.toml` names for `[dev]` and signed in from `.env` or Microsoft
+  Entra ID. In every environment, the people who own that database make and change its tables
+  in SQL, starting from the SQL the schema's pane writes.
   The app starts whatever its store holds, and its quotes are open only while the store's
   check (below) finds nothing wrong. Until then they are closed: every quote route and
   `POST /api/app/price` answer 503 naming why, `quote_store_mismatch` with each way the
@@ -1781,9 +1815,8 @@ Out of scope:
     such connections, but cannot add, change, rename or delete one: its node card says the
     tables are the workbench's and the analyst adds the node from the palette.
 - **The quote store.** The quotes the underwriter app keeps are rows of the form's own tables
-  in a database, saved and read with plain SQL: a SQLite file on the analyst's machine,
-  dev's, which `haute app serve` keeps and Haute makes and changes, and, hosted, the
-  database the app is given, whose tables the people who own it make and change. Each
+  in a database, saved and read with plain SQL: the database of the environment the app runs
+  in, `dev` for `haute app serve`, whose tables the people who own it make and change. Each
   table of the form's schema is a table of the same name: `quote_details`, every input table
   and every output table, its columns the schema's under their names and in their types, an
   Integer a 64-bit integer, a Decimal a double, Text unbounded text, True/false a boolean and
@@ -1806,11 +1839,8 @@ Out of scope:
   GROUP BY d.broker;
   ```
 
-  Beside them the app keeps `haute_activity`, and dev's store `haute_store` too. `haute_store`
-  holds one row: the project, the environment, the release and Haute version it was made for
-  and when, and the structure of the form's tables it holds, each table's and column's stable
-  id with its name, type, role, rows and whether it is the index; a hosted database holds no
-  such record, so Haute keeps nothing there of its tables' shape. `haute_activity` grows by a row for
+  Beside them the app keeps `haute_activity`; a database holds no record of its tables'
+  shape, so Haute keeps nothing there of what made them. `haute_activity` grows by a row for
   each thing done to a quote (made, saved, assigned, archived, restored, marked final,
   amended, noted), holding who did it and when, the quote's version after it, its operation
   key, and the reason, note, assignee or pricing release it carried; nothing changes or
@@ -1895,77 +1925,93 @@ Out of scope:
   option alone), newest saved first, by reference from A to Z with its options in order, or
   by insured, with each list's count and each stage's.
 
-  A project's quotes live in dev, on the analyst's laptop, and in the hosted environments its
-  `haute.toml` declares, each a `[workbench.store.<name>]` table naming its database's
+  A project's quotes live in the environments its `haute.toml` declares (`dev`, `staging`,
+  `prod`), each a `[workbench.store.<name>]` table naming its database's
   provider: `sqlserver` (SQL Server 2019 and later, Azure SQL Database and Azure SQL Managed
   Instance, through pyodbc and Microsoft ODBC Driver 18), `postgresql` (PostgreSQL and its
   hosted forms, Azure Database for PostgreSQL, Amazon RDS and Aurora, Cloud SQL and
   Databricks Lakebase, through psycopg) or `sqlite`, a file on the host, which takes no
-  sign-in. A server's environment says how the app signs in, `auth`, naming the variable
+  sign-in. A server's environment says how a hosted app signs in, `auth`, naming the variable
   that holds each thing it reads, never its value: `managed-identity` (with `client_id_env`
   for a user-assigned identity), `service-principal` (`tenant_id_env`, `client_id_env` and
   `client_secret_env`) or `password` (`username_env` and `password_env`); on `postgresql` an
   Entra ID sign-in names with `username_env` the role it takes. A managed identity or a
   service principal signs in through Microsoft Entra ID, a token asked for as each connection
-  is made, and a variable that holds nothing is refused naming it. Dev is the SQLite file
-  `.haute/app/store.sqlite` that `haute app serve` keeps; no project declares dev, and nothing
-  points a laptop at a hosted environment. A host picks an environment with
-  `HAUTE_ENVIRONMENT`, and the host's own environment says where its database is: on a
+  is made, and a variable that holds nothing is refused naming it. A host picks an environment
+  with `HAUTE_ENVIRONMENT`, and the host's own environment says where its database is: on a
   server, `HAUTE_STORE_SERVER` as the engine's own clients take it and
   `HAUTE_STORE_DATABASE`, or `HAUTE_STORE_URL`, a whole connection URL holding no sign-in,
   never both, and optionally `HAUTE_STORE_SCHEMA`, the SQL schema every name of the store is
   qualified with, the connection's default when none is named, so a project lays its
   environments out as it likes, a database each, a schema each or both; for a SQLite file,
   `HAUTE_STORE_DATABASE`, the file's path, or `HAUTE_STORE_URL`, never both. No credential,
-  server or database name is in a file the project versions: a table naming where a
-  database is, or holding a secret's value, is refused naming the variable it belongs in, so
-  a pull request cannot point an environment elsewhere. A release carries the
-  declarations with it, so a hosted app reads them from the release it runs, never from a
-  project checkout, and an environment the release does not declare closes its quotes
-  naming those it does. Nothing in a hosted database says which environment it is: each
-  environment's own sign-in keeps an app off another's database, and a copy of one
+  server or database name is in `haute.toml`: a `[workbench.store.<name>]` table naming where
+  a database is, or holding a secret's value, is refused naming the variable it belongs in.
+  A release carries the declarations with it, so a hosted app reads them from the release it
+  runs, never from a project checkout or `connections.toml`, and an environment the release
+  does not declare closes its quotes naming those it does.
+
+  On the analyst's machine the editor and `haute app serve` reach each database through
+  `connections.toml` at the project root, committed with the project, so the team shares one
+  set of connections: a `[<name>]` table for each, its name as an environment's is, holding
+  its `provider` (`sqlserver`, `postgresql` or `sqlite`); for a server its `server`, as the
+  engine's own clients take it, its `database`, optionally its `schema`, and how the analyst
+  signs in, `auth`, by the names of the variables that hold what it needs: `password`
+  (`username_env` and `password_env`), `service-principal` (`tenant_id_env`, `client_id_env`
+  and `client_secret_env`) or `entra`, the analyst's own Microsoft Entra ID sign-in, made in
+  the browser as the connection is first made, naming with `username_env` on `postgresql` the
+  role it takes; and for `sqlite` its `database` alone, the file's path from the project root.
+  Each variable's value is read from the clone's `.env`, which git ignores, or from the
+  environment, which wins, and `.env.example` names each; a variable that holds nothing is
+  refused naming it. The file holds no secret: a key that would hold one's value
+  (`password`, `user`, `username`, `client_id`, `client_secret`, `secret`, `token`,
+  `connection_string`, `url`) is refused naming the key that names its variable, as is
+  `managed-identity`, which is a hosted app's sign-in, and any other key; a server or
+  database left empty, as `haute init --workbench` writes them, is refused as the connection
+  is used, naming the key to set. A connection named as a declared environment is that
+  environment's, its provider the one the environment declares. `haute app serve` keeps its
+  quotes in `dev` at the database its connection names, signed in as it says, and refuses to
+  start, naming what to set, while `haute.toml` declares no `dev` or `connections.toml`
+  holds no `[dev]`. A hosted app and a release never read the file, so a pull request that
+  changes it repoints no hosted app. Nothing in any database says which environment it is:
+  each environment's own sign-in keeps an app off another's database, and a copy of one
   environment's tables serves another as it stands.
 
-  Dev's store holds the tables of one form, as its `haute_store` records them by stable id,
-  and one planner brings it to a release's form as `haute app serve` starts, in one
-  transaction, refusing before any DDL a step it cannot take. It makes a table the form
-  gains, gives a table a nullable column the form gains, renames a table or column the form
-  renamed, in two steps through temporary names so a change of case or a swap of two names
-  works, drops what the form removed and builds again what changed its type, rows or role,
-  naming each table whose quotes' rows went and each column whose values went, and builds
-  the whole store afresh when an earlier Haute made it with other columns of its own. A plan
-  refuses a table or column name longer than its engine keeps whole. `required` never
-  becomes NOT NULL.
-
-  Haute never changes a hosted database's tables, and nothing in CI does: the people who
-  own the database make and change them in SQL. To start them off, the schema's pane writes
-  the SQL (the tables' SQL, above) that brings an environment's tables from the form as the
-  project's default branch holds it, or from none for a database that holds no store yet,
-  to the form being built, for the engine the environment declares: a table the form gains
-  made with the store's own columns, its keys and its reference to its quote, and, from
-  none, `haute_activity` with them; a column it gains added taking a null; a table or column
-  it renamed, known by its stable id, renamed through the engine's own rename, in two steps
-  as dev's planner renames; a type change as the engine's ALTER, with a note that a value
-  which does not convert stops it, and on SQLite, which cannot change a column's type, a
-  note alone; a change of a table's rows or role as a note of what the table needs; a table
-  or column it removed as a DROP left commented out, since the check passes a column that
-  takes a null; and a name its engine does not keep whole (PostgreSQL's 63 bytes), or a
-  table or column taking the name of one the form removes, as a note. The SQL is one
-  transaction, so a statement that fails leaves the tables as they were, and holds nothing
-  of Haute's beyond the tables: nothing reads it back or records that it ran, and the check
-  alone judges the tables. A Haute release that changes the store's own columns gives their
-  SQL in its upgrade notes.
+  Haute never changes a database's tables, in any environment, and nothing in CI does: the
+  people who own the database make and change them in SQL. To start them off, the schema's
+  pane compares the form with the tables an environment's database holds (the schema's pane,
+  above), and writes the SQL (the tables' SQL, above) that brings an environment's tables to
+  the form being built, for the engine the environment declares, from the tables its
+  database holds, from the form as the project's default branch holds it, or from none for
+  a database that holds no store yet: a table the form gains made with the store's own
+  columns, its keys and its reference to its quote, and, where the database lacks it,
+  `haute_activity` with them; a column it gains added taking a null; a table or column it
+  renamed, known by its stable id in the default branch's form or, from the database, a
+  column paired in the pane, renamed through the engine's own rename, in two steps through
+  temporary names so a change of case or a swap of two names works; a type change as the
+  engine's ALTER in place, with a note that a value which does not convert stops it, and on
+  SQLite, which cannot change a column's type, a note alone; a change of a table's rows or
+  role as a note of what the table needs; a table or column the form does not have as a DROP
+  left commented out, since the check passes a column that takes a null; from the database,
+  each other way its tables differ (a column taking a null otherwise, a table keyed or
+  referring otherwise, a collation, the store's own columns missing or of another kind) as a
+  note that the SQL does not change it, and each note on a table or column that holds
+  values with the quotes holding them; and a name its engine does not keep whole
+  (PostgreSQL's 63 bytes), or a table or column taking the name of one the form removes, as
+  a note. The SQL is one transaction, so a statement that fails leaves the tables as they
+  were, and holds nothing of Haute's beyond the tables: nothing reads it back or records
+  that it ran, and the check alone judges the tables. No location, credential or value read
+  from a database is shown, logged or written to the project. A Haute release that changes
+  the store's own columns gives their SQL in its upgrade notes.
 
   The app's check reads the database's own catalogue against its release's form: every
-  table and column the release uses there, `haute_activity`'s and, in dev, `haute_store`'s
-  too, of its kind, taking a null as the store's does, keyed and referring to its quote as
-  the store keys it, every other column of those tables taking a null, and, on SQL Server,
-  each text the store compares exactly under its binary collation; on a server, each
-  privilege the store needs (reading, inserting, changing and emptying the form's tables as
-  each needs, and reading and inserting in `haute_activity`); and, in dev, the tables as
-  `haute_store` records them, a store of an earlier Haute's, of another project or holding a
-  table of the form's name the store did not make refused, nothing adopted. Each difference
-  it finds is named, and closes the quotes (the app, above). Every table and column name is quoted in the SQL Haute writes, so
+  table and column the release uses there and `haute_activity`'s, of its kind, taking a null
+  as the store's does, keyed and referring to its quote as the store keys it, every other
+  column of those tables taking a null, and, on SQL Server, each text the store compares
+  exactly under its binary collation; on a server, each privilege the store needs (reading,
+  inserting, changing and emptying the form's tables as each needs, and reading and inserting
+  in `haute_activity`). Each difference it finds is named, and closes the quotes (the app,
+  above). Every table and column name is quoted in the SQL Haute writes, so
   a reserved word (`order`, `group`) is a name like any other; refused wherever the form is
   saved, naming each, are two columns of one table whose names differ only in case, a name
   longer than 63 characters, a name starting `haute_` (Haute's own `haute_version` aside), a
@@ -2333,23 +2379,26 @@ Out of scope:
   JSON a report would have to parse. A quote is its current state: a save replaces its rows,
   no revision is kept, and what happened to it is the activity log, so a copy of an offer is
   made by duplicating the quote.
-- **One store, two databases.** A quote saved by `haute app serve` on an analyst's machine
-  and one saved by a hosted app go through the same code, so what the SQLite file proves
-  holds for the server database; only the connection differs. SQLAlchemy Core, which MLflow
-  already installs with Haute, speaks to SQLite and the server engines alike.
-- **Hosted tables are their owners'.** Once the app is live, the people who own a project's
-  databases change the store's tables in SQL, as they change every other table they own,
-  and nothing in CI changes them. A planner that changed hosted tables itself, recording
-  their shape in a table of its own, was taken out: a change made in SQL left its record
-  behind, so the app refused tables the change had put right; it could not convert a
-  column's values, so a column holding values could not change type and keep them; and its
-  record named the environment, so a copy of prod's tables could not serve test. Haute
-  writes the SQL to start from and checks the tables it finds, which is all the app needs:
-  that each table and column it reads and writes is there as it reads and writes it. A
-  closed app stays up and opens no quote, rather than refusing to start, so the tables put
-  right open its quotes with no new image, and nothing is keyed or priced that could not be
-  saved. Dev's store is Haute's own file, which nobody else changes, so the planner keeps it
-  in step with the form.
+- **One store across every environment.** A quote saved by `haute app serve` in `dev` and
+  one saved by a hosted app in `staging` or `prod` go through the same code and the same
+  catalogue check; only where the connection is read from differs (`connections.toml` and
+  `.env` on the analyst's machine, `HAUTE_ENVIRONMENT` and `HAUTE_STORE_*` on a host).
+  SQLAlchemy Core, which MLflow already installs with Haute, speaks to SQLite and the server
+  engines alike.
+- **Database tables are their owners'.** The people who own a project's databases (`dev`,
+  `staging` and `prod` alike) change the store's tables in SQL, as they change every other
+  table they own, and neither `haute app serve` nor CI changes them automatically. A planner
+  that changed tables itself, recording their shape in a `haute_store` table of its own, was
+  taken out: a change made in SQL left its record behind, so the app refused tables the
+  change had put right; it could not convert a column's values, so a column holding values
+  could not change type and keep them; and its record named the environment, so a copy of
+  prod's tables could not serve test. Instead, the schema's pane compares the form with any
+  configured environment's live catalogue, writes the migration SQL from the live tables as
+  they are (with quote counts on affected columns and tables), and the app's gate checks the
+  tables it finds, which is all the app needs: that each table and column it reads and writes
+  is there as it reads and writes it. A closed app stays up and opens no quote, rather than
+  refusing to start, so the tables put right open its quotes with no new image, and nothing
+  is keyed or priced that could not be saved.
 - **Required gates final, never a save.** An underwriter saves whenever they like, a draft
   with any field empty; only a value the store cannot hold as its column's type refuses a
   save, since writing it would lose it. Required is what a quote needs before it is offered,

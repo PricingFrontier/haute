@@ -7,9 +7,8 @@ empty. Each row holds the quote's identity, ``quote_reference`` and ``quote_opti
 row of a many-row table holds ``quote_row`` too, the store's number for it. The identity,
 with ``quote_row`` in a many-row table, is each table's primary key, and each table's
 identity refers to its quote's ``quote_details`` row. Beside the form's tables the store
-keeps ``haute_activity``, a row for each thing done to a quote, and dev's store
-``haute_store`` too, one row recording what the database holds; a hosted database records
-nothing of its shape. ``quote_details`` holds the store's own columns besides the form's
+keeps ``haute_activity``, a row for each thing done to a quote; a database records nothing of
+its tables' shape. ``quote_details`` holds the store's own columns besides the form's
 (:data:`STORE_COLUMNS`), which no request holds.
 """
 
@@ -52,11 +51,8 @@ from haute._workbench_form import (
 )
 from haute._workbench_tables import QUOTE_ROW
 
-#: Haute's own tables: what dev's store holds, and what was done to each quote.
-STORE_TABLE = "haute_store"
+#: Haute's own table: what was done to each quote.
 ACTIVITY_TABLE = "haute_activity"
-#: The structural schema's format, which ``haute_store`` records with it.
-SCHEMA_FORMAT = 2
 
 #: The longest reference a quote keys, its option's place, a principal, a release, a stage,
 #: a relation and an operation key.
@@ -201,12 +197,10 @@ class StoredTable:
 @dataclass(frozen=True, slots=True)
 class StoreSchema:
     """The store's tables for one form: the form's tables in the schema's order, each keyed
-    by its stable id, Haute's activity, and the record of what the database holds, dev's
-    store's alone, None for a hosted database."""
+    by its stable id, and Haute's activity."""
 
     metadata: MetaData
     tables: tuple[StoredTable, ...]
-    store: Table | None
     activity: Table
 
     @property
@@ -225,12 +219,9 @@ class StoreSchema:
 
 def structure(form: FormSpec) -> dict[str, Any]:
     """What of *form* decides the store's tables, by stable id: each table's name, role and
-    rows, and each column's name, type and whether it is the index, as dev's ``haute_store``
-    records it. Labels, rules and the sheets decide nothing there."""
+    rows, and each column's name, type and whether it is the index, as the SQL Haute writes
+    plans from it. Labels, rules and the sheets decide nothing there."""
     return {
-        "format": SCHEMA_FORMAT,
-        # The store's own columns are Haute's: an upgrade that changes them changes this.
-        "store_columns": [name for name, _, _ in STORE_COLUMNS],
         "tables": [
             {
                 "id": table.id,
@@ -271,20 +262,12 @@ def store_columns(form: FormSpec) -> dict[str, list[tuple[str, StoreColumnKind]]
     return kept
 
 
-def store_schema(
-    form: FormSpec, *, sql_schema: str | None = None, record: bool = True
-) -> StoreSchema:
-    """The store's tables for *form*: its tables, then ``haute_activity`` and, with *record*,
-    as dev's store keeps it, ``haute_store``, each in the SQL schema *sql_schema*, or the
-    connection's default when it names none."""
+def store_schema(form: FormSpec, *, sql_schema: str | None = None) -> StoreSchema:
+    """The store's tables for *form*: its tables, then ``haute_activity``, each in the SQL
+    schema *sql_schema*, or the connection's default when it names none."""
     metadata = MetaData(schema=sql_schema)
     tables = tuple(_stored(metadata, table) for table in form.data_schema.tables)
-    return StoreSchema(
-        metadata=metadata,
-        tables=tables,
-        store=_store_table(metadata) if record else None,
-        activity=_activity_table(metadata),
-    )
+    return StoreSchema(metadata=metadata, tables=tables, activity=_activity_table(metadata))
 
 
 def _stored(metadata: MetaData, table: SchemaTable) -> StoredTable:
@@ -325,21 +308,6 @@ def _stored(metadata: MetaData, table: SchemaTable) -> StoredTable:
             )
         )
     return StoredTable(form=table, table=Table(table.name, metadata, *columns, *constraints))
-
-
-def _store_table(metadata: MetaData) -> Table:
-    """What dev's store holds: one row, its id 1."""
-    return Table(
-        STORE_TABLE,
-        metadata,
-        Column("id", Integer, primary_key=True, autoincrement=False),
-        Column("project", _text(), nullable=False),
-        Column("environment", _text(), nullable=False),
-        Column("release", _text(), nullable=True),
-        Column("haute_version", _text(), nullable=True),
-        Column("migrated_at", UtcDateTime, nullable=False),
-        Column("schema", _text(), nullable=False),
-    )
 
 
 def _activity_table(metadata: MetaData) -> Table:

@@ -11,11 +11,10 @@ another is named: the pipeline bundled as ``haute deploy`` bundles it, after the
 validation and test quotes, with the sheets, what the release is and its entry point.
 ``serve`` builds the release there and serves it on the analyst's machine, on loopback
 alone, signed in as the analyst's git identity, so the sheets underwriters will see are
-checked before a merge; the quotes saved there are kept in dev's quote store, a SQLite file
-beside the release, not in it, so a rebuild keeps them. Its tables are the form's, brought to
-it as it starts by the store's planner in dev's mode, which drops what the form removed and
-builds again what changed while holding values, naming each. No command changes a hosted
-environment's tables: the people who own its database change them in SQL.
+checked before a merge; the quotes saved there are kept in the ``dev`` environment, at the
+database its connection in ``connections.toml`` names, checked as a hosted app checks its own.
+No command changes any environment's tables: the people who own its database change them in
+SQL, starting from the SQL the Workbench view's schema pane writes.
 """
 
 from __future__ import annotations
@@ -30,9 +29,8 @@ import click
 #: Where ``build`` writes a release unless told otherwise, and ``serve`` always: the
 #: clone's own state directory, which git ignores, model files and all.
 RELEASE_DIR = Path(".haute") / "app" / "release"
-#: Where ``serve`` keeps the quotes saved in it, dev's quote store: beside the release,
-#: which a build replaces.
-QUOTES_FILE = Path(".haute") / "app" / "store.sqlite"
+#: The environment ``serve`` keeps the quotes saved in it in.
+SERVE_ENVIRONMENT = "dev"
 #: ``serve`` binds this address alone: everyone reaching it is signed in as the analyst.
 SERVE_HOST = "127.0.0.1"
 
@@ -117,50 +115,31 @@ def handle_app_serve(config: AppServeConfig) -> None:
         raise click.ClickException(
             "Set your git identity first (git config user.email): the app signs you in as it."
         )
-    from haute._quote_store import DEV, StoreLocation
+    from haute._connections import project_environ
+    from haute._quote_store import connected_store
+    from haute._workbench_config import read_workbench_config
 
+    with _said():
+        # Where dev's database is, before anything is built: a project that does not say
+        # stops here, naming what to set.
+        store = connected_store(
+            read_workbench_config(project_dir), SERVE_ENVIRONMENT, project_environ(project_dir)
+        )
     release_dir = (project_dir / RELEASE_DIR).resolve()
     _built(project_dir, release_dir)
-    url = _local_store(project_dir, release_dir)
     with _said():
         application = create_app(
             release_dir,
             local_principal=principal,
             static_dir=config.static_dir,
-            store=StoreLocation(DEV, url),
+            store=store,
             local_reader=config.reader,
         )
     reading = ", reading quotes only" if config.reader else ""
     click.echo(f"  ✓ Signed in as {principal} (your git identity){reading}")
-    click.echo(f"  ✓ Quotes kept in {QUOTES_FILE.as_posix()}")
+    click.echo(f"  ✓ Quotes kept in the {SERVE_ENVIRONMENT} database ({store.named_by})")
     click.echo(f"\nThe underwriter app: http://{SERVE_HOST}:{config.port}/")
     uvicorn.run(application, host=SERVE_HOST, port=config.port, log_level="warning")
-
-
-def _local_store(project_dir: Path, release_dir: Path) -> str:
-    """The URL of ``serve``'s own quote store, dev's, brought to the tables of the form of the
-    release in *release_dir* as it starts: each table whose quotes' rows dev's plan drops, and
-    each column whose values it drops, named."""
-    from haute._quote_store import prepare_store, store_url
-    from haute._workbench_app import read_release
-
-    path = project_dir / QUOTES_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
-    url = store_url(path)
-    with _said():
-        release, form, _ = read_release(release_dir)
-        made = prepare_store(
-            url,
-            form,
-            project=release.pipeline_name,
-            haute_version=release.haute_version,
-            release=release.id,
-        )
-    for name in made.dropped:
-        click.echo(f"  ! The form's change took {name}'s quotes' rows")
-    for name in made.cleared:
-        click.echo(f"  ! The form's change took the quotes' values in {name}")
-    return url
 
 
 @click.group(name="app")

@@ -206,7 +206,9 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // The quote store's tables changed in SQL (WB-44): the schema pane's SQL window and its
 // contract, and the underwriter app's closed quotes, bring it to 1,760.7 KiB; 1,762 KiB
 // restores about 1.3 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1762
+// The schema pane's Compare (WB-45): its controls, marks and store, and the catalogue
+// and comparison contracts, bring it to 1,763.9 KiB; 1,765 KiB restores about 1.1 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1765
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

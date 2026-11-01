@@ -13,6 +13,7 @@ import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { isIdentityColumn } from "../../utils/quoteIdentity"
 import { buttonUses, changeSchemaColumnType, conditionUses, fieldUses, moveSchemaColumn, QUOTE_DETAILS_MANAGED, removeSchemaColumn, updateSchemaColumn } from "../../utils/workbenchForm"
 import { COLUMN_TYPES, COLUMN_TYPE_OPTIONS } from "../columnTypes"
+import { DatabaseMark } from "../StoreCompare"
 import { ColumnDetails } from "./ColumnDetails"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
@@ -133,6 +134,7 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
           className={`${COMPACT_FIELD_CLASS} flex-1 font-mono`}
           style={INPUT_STYLE}
         />
+        <DatabaseMark table={table.id} column={column.id} />
         {table.rows === "many" && !identity && (
           <IconButton
             icon={KeyRound}

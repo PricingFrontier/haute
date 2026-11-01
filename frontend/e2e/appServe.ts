@@ -1,11 +1,13 @@
 /**
  * The underwriter app through `haute app serve` on the journeys' project (specs/workbench):
  * its page built from the frontend as it is, the app started as an analyst starts it in the
- * project, building the project's release and serving it on loopback, and dev's quote store,
- * the SQLite file it keeps its quotes in, read with plain SQL.
+ * project, building the project's release and serving it on loopback, and the `dev`
+ * environment's quote store, a SQLite file its connection in connections.toml names, its
+ * tables made and changed by running the SQL Haute writes, as the people who own a database
+ * run it, and read with plain SQL.
  */
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process"
-import { existsSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, writeFileSync } from "node:fs"
 import { createServer } from "node:net"
 import { resolve } from "node:path"
 import { expect } from "@playwright/test"
@@ -13,8 +15,10 @@ import { expect } from "@playwright/test"
 import { e2eProjectRoot, repoRoot } from "./projectIsolation"
 
 const frontendDir = resolve(repoRoot, "frontend")
-/** Dev's quote store: the file `haute app serve` keeps the quotes saved in it in. */
-export const storeFile = resolve(e2eProjectRoot, ".haute", "app", "store.sqlite")
+/** Where `dev`'s connection puts its database, from the project root: git ignores `.haute/`. */
+const STORE_PATH = ".haute/app/store.sqlite"
+/** The `dev` environment's quote store: the file `haute app serve` keeps the quotes saved in it in. */
+export const storeFile = resolve(e2eProjectRoot, STORE_PATH)
 /** How long the app may take to build the project's release and answer its health check. */
 const START_TIMEOUT_MS = 180_000
 /** The most of a process's output a failure shows: its last characters. */
@@ -114,9 +118,9 @@ function pinProjectPython(): void {
 
 /**
  * `haute app serve` started in the journeys' project, as an analyst starts it, with the page
- * in `staticDir`: answered once it has built the project's release, made dev's quote store
- * hold the form's tables and answers its health check; refused with its output when it stops
- * first or does not answer in time.
+ * in `staticDir`: answered once it has built the project's release and answers its health
+ * check, its quotes open or closed as `dev`'s tables fit the release's form; refused with its
+ * output when it stops first or does not answer in time.
  */
 export async function startAppServe(staticDir: string): Promise<AppServe> {
   pinProjectPython()
@@ -170,6 +174,63 @@ export async function startAppServe(staticDir: string): Promise<AppServe> {
   return { url, release: health.release, output, stop }
 }
 
+/** Run `program`, Python, with the repository's Haute, `args` its arguments; what it prints. */
+function python(program: string, ...args: string[]): string {
+  return execFileSync("uv", ["run", "python", "-I", "-", ...args], { cwd: repoRoot, input: program, encoding: "utf8" })
+}
+
+/**
+ * Declare the journeys' project's `dev` environment on SQLite, give it a connection in
+ * connections.toml at `STORE_PATH`, and make its tables from the SQL Haute writes for the
+ * project's form from none, as its owner would: a fresh file each time. After the workbench
+ * is enabled and its form written; the project's reset takes haute.toml back.
+ */
+export function makeDevStore(): void {
+  appendFileSync(resolve(e2eProjectRoot, "haute.toml"), '\n[workbench.store.dev]\nprovider = "sqlite"\n')
+  writeFileSync(resolve(e2eProjectRoot, "connections.toml"), `[dev]\nprovider = "sqlite"\ndatabase = "${STORE_PATH}"\n`)
+  python(
+    [
+      "import sqlite3, sys",
+      "from pathlib import Path",
+      "from haute._quote_store import offline_plan, render_sql",
+      "from haute._workbench_config import read_workbench_config",
+      "from haute._workbench_folder import read_form_document",
+      "from haute._workbench_form import with_quote_details",
+      "root, store = Path(sys.argv[1]), Path(sys.argv[2])",
+      "form = with_quote_details(read_form_document(read_workbench_config(root)).spec)",
+      "store.parent.mkdir(parents=True, exist_ok=True)",
+      "store.unlink(missing_ok=True)",
+      "connection = sqlite3.connect(store)",
+      "try:",
+      "    connection.executescript(render_sql(offline_plan(None, form), form, 'sqlite'))",
+      "finally:",
+      "    connection.close()",
+    ].join("\n"),
+    e2eProjectRoot,
+    storeFile,
+  )
+}
+
+/** Run `sql` on the `dev` environment's quote store, as its owner runs the SQL Haute writes. */
+export function runOnStore(sql: string): void {
+  // Handed over as a file beside the store, which the project's reset cleans away.
+  const script = resolve(e2eProjectRoot, ".haute", "app", "change.sql")
+  writeFileSync(script, sql)
+  python(
+    [
+      "import sqlite3, sys",
+      "from pathlib import Path",
+      "connection = sqlite3.connect(sys.argv[1])",
+      "try:",
+      "    connection.executescript(Path(sys.argv[2]).read_text(encoding='utf-8'))",
+      "finally:",
+      "    connection.close()",
+    ].join("\n"),
+    storeFile,
+    script,
+  )
+}
+
 /** A row of the quote store as SQLite holds it, by column name. */
 export type StoreRow = Record<string, string | number | null>
 
@@ -180,8 +241,8 @@ export interface StoreQuery {
 }
 
 /**
- * What each of `queries` reads from dev's quote store with plain SQL, by the name it is given:
- * the rows as SQLite holds them, the file opened read only.
+ * What each of `queries` reads from the `dev` quote store with plain SQL, by the name it is
+ * given: the rows as SQLite holds them, the file opened read only.
  */
 export function readStore<Name extends string>(queries: Record<Name, StoreQuery>): Record<Name, StoreRow[]> {
   const program = [

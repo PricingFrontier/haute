@@ -7,7 +7,7 @@ project name, deploy target, and CI provider.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path, PurePosixPath
 
 from haute._project_python import DEFAULT_PYTHON, container_base_image
@@ -474,13 +474,68 @@ endpoint_suffix = "{DEFAULT_STAGING_ENDPOINT_SUFFIX}"
 {_service_addresses(name, target)}""",
     ]
     if workbench:
-        sections.append(
-            """\
+        sections.append(workbench_table())
+    return "\n".join(sections)
+
+
+# ── The workbench's table and its connections ─────────────────────────
+
+#: The quote store's environments a new workbench declares: ``dev`` for ``haute app serve``,
+#: ``staging`` and ``prod`` for the hosted app.
+WORKBENCH_ENVIRONMENTS = ("dev", "staging", "prod")
+
+
+def workbench_table() -> str:
+    """``haute.toml``'s ``[workbench]`` table as ``haute init --workbench`` writes it: the
+    workbench enabled and the quote store's environments declared, each on SQL Server and
+    signed in to by the hosted app's managed identity (specs/workbench)."""
+    environments = "\n".join(
+        f'[workbench.store.{name}]\nprovider = "sqlserver"\nauth = "managed-identity"\n'
+        for name in WORKBENCH_ENVIRONMENTS
+    )
+    return f"""\
 [workbench]
 enabled = true
+
+# The quote store's environments. A hosted app finds its database through the host's
+# HAUTE_STORE_* variables; the editor and haute app serve through connections.toml.
+{environments}"""
+
+
+def connections_toml() -> str:
+    """``connections.toml`` as ``haute init --workbench`` writes it: a connection for each of
+    the quote store's environments, on SQL Server, its server and database left for the
+    analyst to fill in, signed in with a password whose variables ``.env`` holds."""
+    connections = "\n".join(
+        f"""\
+[{name}]
+provider = "sqlserver"
+server = ""
+database = ""
+auth = "password"
+username_env = "HAUTE_{name.upper()}_USERNAME"
+password_env = "HAUTE_{name.upper()}_PASSWORD"
 """
-        )
-    return "\n".join(sections)
+        for name in WORKBENCH_ENVIRONMENTS
+    )
+    return f"""\
+# Where each of the quote store's databases is, for the editor and haute app serve.
+# The values of the variables a sign-in names are read from .env, never from this file.
+
+{connections}"""
+
+
+def connection_variables(project_root: Path) -> list[str]:
+    """The variables the connections of *project_root*'s ``connections.toml`` read their
+    sign-ins from, in the file's order; none without the file."""
+    from haute._connections import read_connections
+
+    named = (
+        variable
+        for connection in read_connections(project_root).values()
+        for variable in connection.variables.values()
+    )
+    return list(dict.fromkeys(named))
 
 
 def _service_addresses(name: str, target: str) -> str:
@@ -521,15 +576,22 @@ _ENV_EXAMPLE_HEADER = """\
 """
 
 
-def env_example(target: str) -> str:
-    """Generate ``.env.example`` with only the credentials for the chosen target."""
+def env_example(target: str, connection_variables: Sequence[str] = ()) -> str:
+    """Generate ``.env.example`` with only the credentials for the chosen target, and the
+    variables ``connections.toml``'s sign-ins read, *connection_variables*, when it names any."""
     cfg = _get_target(target)
     label = cfg["label"]
     assert isinstance(label, str)
     env_body = cfg["env_body"]
     assert isinstance(env_body, str)
     notice = _build_only_notice(target)
-    return _ENV_EXAMPLE_HEADER.format(label=label) + (f"#\n{notice}" if notice else "") + env_body
+    text = _ENV_EXAMPLE_HEADER.format(label=label) + (f"#\n{notice}" if notice else "") + env_body
+    if connection_variables:
+        named = "".join(f"{variable}=\n" for variable in connection_variables)
+        text += (
+            f"\n# The sign-ins connections.toml names, for the editor and haute app serve\n{named}"
+        )
+    return text
 
 
 # What marks a value in ``.env.example`` as a stand-in for the real one: the token

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from haute._scaffold import connection_variables, connections_toml, env_example
 from haute._workbench_form import blank_form
 from haute.cli import cli
 from haute.cli._init_cmd import _ensure_haute_dependency, _toml_basic_string
@@ -814,7 +815,17 @@ class TestInitWorkbench:
 
         with open(project_dir / "haute.toml", "rb") as fh:
             doc = tomllib.load(fh)
-        assert doc["workbench"] == {"enabled": True}
+        assert doc["workbench"]["enabled"] is True
+        assert list(doc["workbench"]["store"]) == ["dev", "staging", "prod"]
+        # Where each environment's database is on this machine, and in .env.example the
+        # variables its sign-in reads.
+        assert (project_dir / "connections.toml").read_text(encoding="utf-8") == (
+            connections_toml()
+        )
+        env = (project_dir / ".env.example").read_text(encoding="utf-8")
+        assert env == env_example("databricks", connection_variables(project_dir))
+        assert "HAUTE_DEV_USERNAME=\n" in env and "HAUTE_PROD_PASSWORD=\n" in env
+        assert "connections.toml" in result.output
         folder = project_dir / "rating" / "workbench"
         assert sorted(
             path.relative_to(folder).as_posix() for path in folder.rglob("*") if path.is_file()
@@ -864,6 +875,8 @@ class TestInitWorkbench:
             assert "workbench" not in tomllib.load(fh)
         assert not (tmp_path / "rating" / "workbench").exists()
         assert "rating/workbench/" not in result.output
+        assert not (tmp_path / "connections.toml").exists()
+        assert "HAUTE_DEV_" not in (tmp_path / ".env.example").read_text(encoding="utf-8")
 
     def test_force_reinit_keeps_the_table_only_when_asked_again_and_the_form_always(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -873,18 +886,32 @@ class TestInitWorkbench:
         index = tmp_path / "rating" / "workbench" / "form.json"
         index.write_bytes(index.read_bytes().replace(b'"name": "', b'"name": "edited '))
         edited = index.read_bytes()
+        # The team's connections, filled in and one of them signing in another way.
+        connections = tmp_path / "connections.toml"
+        connections.write_text(
+            '[dev]\nprovider = "sqlserver"\nserver = "tcp:dev.example.net,1433"\n'
+            'database = "pricing_dev"\nauth = "password"\nusername_env = "DEV_USER"\n'
+            'password_env = "DEV_PASSWORD"\n',
+            encoding="utf-8",
+        )
+        filled = connections.read_bytes()
 
         # haute.toml is rewritten wholesale, so the table goes unless --workbench is repeated;
-        # the form folder is the analyst's form and is never replaced by a blank one.
+        # the form folder is the analyst's form and connections.toml the team's, and neither
+        # is ever replaced by a blank one: .env.example names what the connections read.
         runner.invoke(cli, ["init", "--force"], catch_exceptions=False)
         with open(tmp_path / "haute.toml", "rb") as fh:
             assert "workbench" not in tomllib.load(fh)
         assert index.read_bytes() == edited
+        assert connections.read_bytes() == filled
+        env = (tmp_path / ".env.example").read_text(encoding="utf-8")
+        assert "DEV_USER=\nDEV_PASSWORD=\n" in env and "HAUTE_DEV_USERNAME" not in env
 
         runner.invoke(cli, ["init", "--force", "--workbench"], catch_exceptions=False)
         with open(tmp_path / "haute.toml", "rb") as fh:
             assert tomllib.load(fh)["workbench"]["enabled"] is True
         assert index.read_bytes() == edited
+        assert connections.read_bytes() == filled
 
     def _existing(self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         """A project initialised without a workbench, its haute.toml as init wrote it."""
@@ -894,15 +921,16 @@ class TestInitWorkbench:
         assert result.exit_code == 0, result.output
         return tmp_path
 
-    def test_workbench_in_an_existing_project_adds_the_table_and_the_folder_alone(
+    def test_workbench_in_an_existing_project_adds_the_table_the_form_and_the_connections(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         project_dir = self._existing(runner, tmp_path, monkeypatch)
         toml_before = (project_dir / "haute.toml").read_bytes()
+        written = {"haute.toml", "connections.toml", ".env.example"}
         others = {
             path: path.read_bytes()
             for path in project_dir.rglob("*")
-            if path.is_file() and path.name != "haute.toml"
+            if path.is_file() and path.name not in written
         }
 
         result = runner.invoke(cli, ["init", "--workbench"], catch_exceptions=False)
@@ -910,14 +938,24 @@ class TestInitWorkbench:
         assert result.exit_code == 0, result.output
         toml_after = (project_dir / "haute.toml").read_bytes()
         assert toml_after.startswith(toml_before.rstrip())
-        assert tomllib.loads(toml_after.decode("utf-8"))["workbench"] == {"enabled": True}
+        table = tomllib.loads(toml_after.decode("utf-8"))["workbench"]
+        assert table["enabled"] is True
+        assert list(table["store"]) == ["dev", "staging", "prod"]
         assert self._form(project_dir).revision
+        # connections.toml written, and .env.example again with the variables it names.
+        assert (project_dir / "connections.toml").read_text(encoding="utf-8") == (
+            connections_toml()
+        )
+        assert (project_dir / ".env.example").read_text(encoding="utf-8") == env_example(
+            "databricks", connection_variables(project_dir)
+        )
+        assert "connections.toml" in result.output and ".env.example" in result.output
         # Nothing else of the project was touched.
         assert {
             path: path.read_bytes()
             for path in project_dir.rglob("*")
             if path.is_file()
-            and path.name != "haute.toml"
+            and path.name not in written
             and "workbench" not in path.relative_to(project_dir).parts
         } == others
 
@@ -938,6 +976,47 @@ class TestInitWorkbench:
         assert "rating/workbench is already there" in refused.output
         assert (project_dir / "haute.toml").read_bytes() == toml_before
         assert list((project_dir / "rating" / "workbench").iterdir()) == []
+
+    def test_workbench_in_an_existing_project_refuses_connections_already_there(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        project_dir = self._existing(runner, tmp_path, monkeypatch)
+        connections = project_dir / "connections.toml"
+        connections.write_text(
+            '[dev]\nprovider = "sqlite"\ndatabase = "q.sqlite"\n', encoding="utf-8"
+        )
+        before = {
+            name: (project_dir / name).read_bytes()
+            for name in ("haute.toml", "connections.toml", ".env.example")
+        }
+
+        refused = runner.invoke(cli, ["init", "--workbench"])
+
+        assert refused.exit_code == 1
+        assert "connections.toml is already there; the project has its connections" in (
+            refused.output
+        )
+        # Refused writing nothing: the team's connections are never replaced.
+        assert {name: (project_dir / name).read_bytes() for name in before} == before
+        assert not (project_dir / "rating" / "workbench").exists()
+
+    def test_workbench_in_an_existing_project_refuses_one_naming_no_deploy_target(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        project_dir = self._existing(runner, tmp_path, monkeypatch)
+        toml = project_dir / "haute.toml"
+        text = toml.read_text(encoding="utf-8")
+        assert 'target = "databricks"\n' in text
+        toml.write_text(text.replace('target = "databricks"\n', ""), encoding="utf-8")
+        toml_before = toml.read_bytes()
+
+        refused = runner.invoke(cli, ["init", "--workbench"])
+
+        assert refused.exit_code == 1
+        assert "haute.toml names no [deploy] target" in refused.output
+        assert toml.read_bytes() == toml_before
+        assert not (project_dir / "connections.toml").exists()
+        assert not (project_dir / "rating" / "workbench").exists()
 
     def test_workbench_in_an_existing_project_refuses_a_pipeline_folder_outside_it(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -991,18 +1070,50 @@ class TestInitWorkbench:
         assert [path.name for path in project_dir.iterdir()] == ["rating"]
         assert list(outside.iterdir()) == []
 
-    def test_workbench_in_an_existing_project_undoes_what_it_made_when_it_fails(
+    def test_workbench_in_an_existing_project_refuses_a_connections_toml_link_writing_nothing(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import os
+
+        project_dir = self._existing(runner, tmp_path / "p", monkeypatch)
+        toml_before = (project_dir / "haute.toml").read_bytes()
+        # connections.toml a link to somewhere outside the project that is not there.
+        outside = tmp_path / "outside"
+        if os.name == "nt":
+            import _winapi
+
+            outside.mkdir()
+            _winapi.CreateJunction(str(outside), str(project_dir / "connections.toml"))
+            outside.rmdir()
+        else:
+            os.symlink(outside, project_dir / "connections.toml")
+
+        refused = runner.invoke(cli, ["init", "--workbench"])
+
+        assert refused.exit_code == 1
+        assert "connections.toml is reached through a link or junction" in refused.output
+        assert not outside.exists()
+        assert (project_dir / "haute.toml").read_bytes() == toml_before
+        assert not (project_dir / "rating" / "workbench").exists()
+
+    @pytest.mark.parametrize("failing", [".env.example", "haute.toml"])
+    def test_workbench_in_an_existing_project_undoes_what_it_made_when_it_fails(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: str
     ):
         import haute._file_ops
 
         project_dir = self._existing(runner, tmp_path, monkeypatch)
         toml_before = (project_dir / "haute.toml").read_bytes()
+        env_before = (project_dir / ".env.example").read_bytes()
+        written = haute._file_ops.atomic_write_bytes
 
         def failing_write(path: Path, data: bytes) -> None:
-            raise PermissionError(f"[Errno 13] Permission denied: {path.name}")
+            if path.name == failing:
+                raise PermissionError(f"[Errno 13] Permission denied: {path.name}")
+            written(path, data)
 
-        # The folder is written first; haute.toml, last, cannot be.
+        # The folder and connections.toml are written first, then .env.example and haute.toml,
+        # last; whichever of those two cannot be written, what the run made goes.
         monkeypatch.setattr(haute._file_ops, "atomic_write_bytes", failing_write)
         failed = runner.invoke(cli, ["init", "--workbench"])
         monkeypatch.undo()
@@ -1011,6 +1122,8 @@ class TestInitWorkbench:
         assert failed.exit_code == 1
         assert "the workbench could not be added" in failed.output
         assert (project_dir / "haute.toml").read_bytes() == toml_before
+        assert (project_dir / ".env.example").read_bytes() == env_before
+        assert not (project_dir / "connections.toml").exists()
         assert not (project_dir / "rating" / "workbench").exists()
 
         # A second run starts from where the first did.

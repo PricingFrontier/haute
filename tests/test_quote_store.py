@@ -1,6 +1,7 @@
-"""The quote store's database (specs/workbench): made to hold the form's tables, built again
-in dev when the form changes, refused when it holds another form's, another project's or an
-earlier Haute's store, and opened only when it holds exactly the form's tables."""
+"""The quote store's database (specs/workbench): its tables made from the SQL Haute writes, as
+the people who own a database make them, opened only when its catalogue holds the form's
+tables as the store reads and writes them, and refused naming each difference otherwise, in
+every environment alike."""
 
 from __future__ import annotations
 
@@ -11,14 +12,7 @@ from typing import Any
 import pytest
 from sqlalchemy import inspect, text
 
-from haute._quote_store import (
-    QuoteStoreEnvironmentError,
-    QuoteStoreMismatchError,
-    open_book,
-    prepare_store,
-    store_url,
-)
-from haute._quote_store._schema import STORE_TABLE
+from haute._quote_store import QuoteStoreMismatchError, open_book, store_url
 from haute._quote_store._store import make_engine, writing
 from haute._workbench_form import FormSpec, with_quote_details
 from tests._store_servers import Target
@@ -72,145 +66,29 @@ def tables(url: str) -> set[str]:
         engine.dispose()
 
 
-def rows(url: str, table: str) -> list[tuple[Any, ...]]:
-    engine = make_engine(url)
-    try:
-        with engine.connect() as connection:
-            return [tuple(row) for row in connection.execute(text(f'SELECT * FROM "{table}"'))]
-    finally:
-        engine.dispose()
-
-
-def add_quote(url: str, *, vehicles: int = 0) -> None:
-    """A quote's rows written straight into the tables, as a report would see them."""
-    engine = make_engine(url)
-    try:
-        with writing(engine) as connection:
-            connection.execute(
-                text(
-                    "INSERT INTO quote_details (quote_reference, quote_option, stage, assignee, "
-                    "archived, created_date, created_by, modified_date, modified_by, "
-                    "quote_version, saved_at, saved_by) VALUES ('A-1', 1, 'draft', 'ana', 0, "
-                    "'2026-10-30', 'ana', '2026-10-30', 'ana', 1, '2026-10-30 09:00:00', 'ana')"
-                )
-            )
-            for number in range(1, vehicles + 1):
-                connection.execute(
-                    text(
-                        "INSERT INTO vehicles (quote_reference, quote_option, quote_row, reg) "
-                        f"VALUES ('A-1', 1, {number}, 'R{number}')"
-                    )
-                )
-    finally:
-        engine.dispose()
-
-
-def test_an_empty_database_takes_the_forms_tables_and_haute_s_two(url: str) -> None:
-    assert prepare_store(url, form(POLICY, VEHICLES), project=PROJECT).dropped == []
-
-    assert tables(url) == {"quote_details", "policy", "vehicles", "haute_store", "haute_activity"}
-    [record] = rows(url, "haute_store")
-    assert record[1:3] == (PROJECT, "dev")
-    # Opened for the same form, project and environment, it is the book's.
-    open_book(url, form(POLICY, VEHICLES), project=PROJECT, haute_version="1.0").close()
-
-
-def test_preparing_again_for_the_same_form_changes_nothing(url: str) -> None:
-    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT)
-    add_quote(url, vehicles=2)
-
-    assert prepare_store(url, form(POLICY, VEHICLES), project=PROJECT).steps == ()
-    assert len(rows(url, "vehicles")) == 2
-
-
-def test_dev_takes_a_column_the_form_added_keeping_every_row(url: str) -> None:
-    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT)
-    add_quote(url, vehicles=2)
-    seats = {**VEHICLES, "columns": [*VEHICLES["columns"], column("seats", "int")]}
-
-    made = prepare_store(url, form(POLICY, seats), project=PROJECT)
-
-    assert [(step.kind, step.column) for step in made.steps] == [("add column", "seats")]
-    assert made.dropped == []
-    assert len(rows(url, "vehicles")) == 2
-    columns = make_engine(url)
-    try:
-        with columns.connect() as connection:
-            names = [c["name"] for c in inspect(connection).get_columns("vehicles")]
-    finally:
-        columns.dispose()
-    assert "seats" in names
-
-
-def test_dev_drops_a_table_the_form_no_longer_has(url: str) -> None:
-    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT)
-    add_quote(url, vehicles=1)
-
-    assert prepare_store(url, form(POLICY), project=PROJECT).dropped == ["vehicles"]
-    assert "vehicles" not in tables(url)
-
-
 def _hosted(url: str, spec: FormSpec) -> None:
     """*spec*'s tables made in the file at *url* from the SQL Haute writes, as the people who
-    own a hosted database make them."""
-    target = Target("sqlite", url)
-    target.script(target.sql(spec))
+    own a database make them."""
+    Target("sqlite", url).make(spec)
 
 
-def test_a_hosted_database_opens_from_its_catalogue_alone(url: str) -> None:
+def test_a_database_opens_from_its_catalogue_alone_in_any_environment(url: str) -> None:
     _hosted(url, form(POLICY, VEHICLES))
 
     # Nothing records the shape, the project or the environment: a copy of one environment's
-    # tables serves another as it stands.
-    assert STORE_TABLE not in tables(url)
-    for environment in ("test", "prod"):
-        open_book(
-            url, form(POLICY, VEHICLES), project=PROJECT, environment=environment, haute_version="1"
-        ).close()
+    # tables serves another as it stands, dev's as any other's.
+    assert tables(url) == {"quote_details", "policy", "vehicles", "haute_activity"}
+    for environment in ("dev", "test", "prod"):
+        open_book(url, form(POLICY, VEHICLES), environment=environment, haute_version="1").close()
 
 
 def test_a_database_that_does_not_hold_the_forms_tables_is_not_opened(url: str) -> None:
-    with pytest.raises(QuoteStoreMismatchError, match="holds no quote store yet"):
-        open_book(url, form(POLICY), project=PROJECT, haute_version="1.0")
+    with pytest.raises(QuoteStoreMismatchError, match="the table quote_details is missing"):
+        open_book(url, form(POLICY), environment="test", haute_version="1.0")
 
-    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT)
-    with pytest.raises(QuoteStoreMismatchError, match="policy is no longer the form's"):
-        open_book(url, form(VEHICLES), project=PROJECT, haute_version="1.0")
-
-
-def test_a_dev_store_recorded_for_another_project_is_refused_naming_both(url: str) -> None:
-    prepare_store(url, form(POLICY), project=PROJECT)
-
-    with pytest.raises(
-        QuoteStoreEnvironmentError, match="of 'motor' in 'dev', not of 'home' in 'dev'"
-    ):
-        open_book(url, form(POLICY), project="home", haute_version="1")
-    with pytest.raises(QuoteStoreEnvironmentError):
-        prepare_store(url, form(POLICY), project="home")
-
-
-def test_tables_of_the_forms_names_the_store_did_not_make_are_never_adopted(url: str) -> None:
-    with sqlite3.connect(url.removeprefix("sqlite:///")) as raw:
-        raw.execute("CREATE TABLE policy (region TEXT)")
-
-    with pytest.raises(QuoteStoreMismatchError, match=r"did not make \(policy\)"):
-        prepare_store(url, form(POLICY), project=PROJECT)
-    assert tables(url) == {"policy"}
-
-
-def test_an_earlier_haute_s_store_is_refused_naming_its_tables(url: str) -> None:
-    with sqlite3.connect(url.removeprefix("sqlite:///")) as raw:
-        raw.execute("CREATE TABLE haute_quote_store_version (version_num TEXT)")
-        raw.execute("CREATE TABLE haute_quotes (id TEXT)")
-
-    for attempt in (
-        lambda: prepare_store(url, form(POLICY), project=PROJECT),
-        lambda: open_book(url, form(POLICY), project=PROJECT, haute_version="1"),
-    ):
-        with pytest.raises(
-            QuoteStoreMismatchError, match=r"\(haute_quote_store_version, haute_quotes\)"
-        ):
-            attempt()
+    _hosted(url, form(POLICY))
+    with pytest.raises(QuoteStoreMismatchError, match="the table vehicles is missing"):
+        open_book(url, form(POLICY, VEHICLES), environment="test", haute_version="1.0")
 
 
 def _raw(url: str, *statements: str) -> None:
@@ -223,13 +101,11 @@ def _raw(url: str, *statements: str) -> None:
 
 def _refusal(url: str, environment: str = "test") -> QuoteStoreMismatchError:
     with pytest.raises(QuoteStoreMismatchError) as refused:
-        open_book(
-            url, form(POLICY, VEHICLES), project=PROJECT, environment=environment, haute_version="1"
-        )
+        open_book(url, form(POLICY, VEHICLES), environment=environment, haute_version="1")
     return refused.value
 
 
-def test_the_check_refuses_a_hosted_database_whose_catalogue_does_not_fit(url: str) -> None:
+def test_the_check_refuses_a_database_whose_catalogue_does_not_fit(url: str) -> None:
     _hosted(url, form(POLICY, VEHICLES))
     _raw(
         url,
@@ -244,7 +120,10 @@ def test_the_check_refuses_a_hosted_database_whose_catalogue_does_not_fit(url: s
         "be saved",
         "vehicles.value is missing",
     ]
-    assert "Change the test database's tables in SQL to fit this release's form" in str(refused)
+    assert str(refused).endswith(
+        ". Change the test database's tables in SQL to fit this release's form: the Workbench "
+        "view's schema pane writes the SQL to start from."
+    )
 
 
 def test_a_table_gone_retyped_or_keyed_otherwise_is_named(url: str) -> None:
@@ -271,16 +150,20 @@ def test_a_column_the_sql_side_added_that_takes_a_null_is_no_difference(url: str
     _hosted(url, form(POLICY, VEHICLES))
     _raw(url, "ALTER TABLE policy ADD COLUMN notes TEXT")
 
-    open_book(
-        url, form(POLICY, VEHICLES), project=PROJECT, environment="test", haute_version="1"
-    ).close()
+    open_book(url, form(POLICY, VEHICLES), environment="test", haute_version="1").close()
 
 
-def test_dev_s_refusal_says_to_start_haute_app_serve_again(url: str) -> None:
-    prepare_store(url, form(POLICY, VEHICLES), project=PROJECT)
+def test_dev_s_refusal_is_any_environment_s_naming_its_database(url: str) -> None:
+    _hosted(url, form(POLICY, VEHICLES))
     _raw(url, "ALTER TABLE vehicles DROP COLUMN value")
 
-    assert "Start haute app serve again" in str(_refusal(url, environment="dev"))
+    refused = _refusal(url, environment="dev")
+
+    assert str(refused) == (
+        "This database's tables do not fit the form: vehicles.value is missing. Change the dev "
+        "database's tables in SQL to fit this release's form: the Workbench view's schema pane "
+        "writes the SQL to start from."
+    )
 
 
 def test_ddl_in_a_write_that_fails_is_rolled_back_whole(url: str) -> None:
@@ -296,7 +179,7 @@ def test_ddl_in_a_write_that_fails_is_rolled_back_whole(url: str) -> None:
 
 
 def test_foreign_keys_are_held_on_every_connection(url: str) -> None:
-    prepare_store(url, form(VEHICLES), project=PROJECT)
+    _hosted(url, form(VEHICLES))
     engine = make_engine(url)
     try:
         with pytest.raises(Exception, match="FOREIGN KEY"), writing(engine) as connection:

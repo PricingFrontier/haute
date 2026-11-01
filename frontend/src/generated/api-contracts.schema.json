@@ -18909,6 +18909,117 @@
       "title": "WorkbenchAppReleaseResponse",
       "type": "object"
     },
+    "WorkbenchCatalogueColumn": {
+      "description": "A column as an environment's database holds it: its name, its kind (``boolean``,\n``integer``, ``float``, ``datetime``, ``date``, ``string`` or another type's), its type as\nthe database names it, whether it takes a null, its collation where it has one, and the\nquotes holding a value in it, None when the table lacks a quote identity column.",
+      "properties": {
+        "collation": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Collation"
+        },
+        "kind": {
+          "maxLength": 512,
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 512,
+          "title": "Name",
+          "type": "string"
+        },
+        "nullable": {
+          "title": "Nullable",
+          "type": "boolean"
+        },
+        "quotes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quotes"
+        },
+        "type": {
+          "maxLength": 512,
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "type",
+        "nullable",
+        "collation",
+        "quotes"
+      ],
+      "title": "WorkbenchCatalogueColumn",
+      "type": "object"
+    },
+    "WorkbenchCatalogueTable": {
+      "description": "A table of the store's as an environment's database holds it: its columns, its primary\nkey's columns, whether it refers by the identity to its quote's quote_details row, and\nthe quotes holding a row in it, None when the table lacks a quote identity column.",
+      "properties": {
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchCatalogueColumn"
+          },
+          "maxItems": 10000,
+          "title": "Columns",
+          "type": "array"
+        },
+        "name": {
+          "maxLength": 512,
+          "title": "Name",
+          "type": "string"
+        },
+        "primary_key": {
+          "items": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "title": "Primary Key",
+          "type": "array"
+        },
+        "quotes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quotes"
+        },
+        "refers": {
+          "title": "Refers",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "columns",
+        "primary_key",
+        "refers",
+        "quotes"
+      ],
+      "title": "WorkbenchCatalogueTable",
+      "type": "object"
+    },
     "WorkbenchColumn": {
       "additionalProperties": false,
       "description": "A column of a table: its name in the frame and its type.",
@@ -19048,6 +19159,14 @@
           "title": "Enabled",
           "type": "boolean"
         },
+        "environments": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Environments",
+          "type": "array"
+        },
         "form": {
           "anyOf": [
             {
@@ -19063,9 +19182,32 @@
       },
       "required": [
         "enabled",
-        "form"
+        "form",
+        "environments"
       ],
       "title": "WorkbenchStatusResponse",
+      "type": "object"
+    },
+    "WorkbenchStoreCatalogueResponse": {
+      "description": "The tables an environment's database holds, read through its connection: each table\nholding the quote's identity, ``haute_activity`` among them. Names, kinds and counts\nalone, never a value, a location or a sign-in.",
+      "properties": {
+        "environment": {
+          "title": "Environment",
+          "type": "string"
+        },
+        "tables": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchCatalogueTable"
+          },
+          "title": "Tables",
+          "type": "array"
+        }
+      },
+      "required": [
+        "environment",
+        "tables"
+      ],
+      "title": "WorkbenchStoreCatalogueResponse",
       "type": "object"
     },
     "WorkbenchStoreColumn": {
@@ -19092,8 +19234,195 @@
       "title": "WorkbenchStoreColumn",
       "type": "object"
     },
+    "WorkbenchStoreCompareResponse": {
+      "description": "The form compared with an environment's tables: each difference, each extra, the\npairings taken, whether the database matches the form, the SQL that brings its tables to\nthe form, from what they hold, and the default branch whose form named renames, null\nwhen none did.",
+      "properties": {
+        "branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Branch"
+        },
+        "differences": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchStoreDifference"
+          },
+          "title": "Differences",
+          "type": "array"
+        },
+        "extras": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchStoreExtra"
+          },
+          "title": "Extras",
+          "type": "array"
+        },
+        "matches": {
+          "title": "Matches",
+          "type": "boolean"
+        },
+        "renames": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchStoreRename"
+          },
+          "title": "Renames",
+          "type": "array"
+        },
+        "sql": {
+          "title": "Sql",
+          "type": "string"
+        }
+      },
+      "required": [
+        "differences",
+        "extras",
+        "renames",
+        "matches",
+        "sql",
+        "branch"
+      ],
+      "title": "WorkbenchStoreCompareResponse",
+      "type": "object"
+    },
+    "WorkbenchStoreDifference": {
+      "description": "A way the database differs from the form: the form's table and column by id (no table\nfor Haute's own haute_activity), its kind and what it is.",
+      "properties": {
+        "column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Column"
+        },
+        "kind": {
+          "enum": [
+            "missing",
+            "renamed",
+            "type",
+            "rows",
+            "null",
+            "key",
+            "refers",
+            "collation",
+            "store"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "table": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Table"
+        }
+      },
+      "required": [
+        "table",
+        "column",
+        "kind",
+        "message"
+      ],
+      "title": "WorkbenchStoreDifference",
+      "type": "object"
+    },
+    "WorkbenchStoreExtra": {
+      "description": "A table of the store's, or a column of one of the form's tables, that the database\nholds and the form does not: its table's and its name there, the form's table's id when\nthe table is the form's, and the quotes holding values in it, None when the table lacks a\nquote identity column.",
+      "properties": {
+        "column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Column"
+        },
+        "quotes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quotes"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        },
+        "table_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Table Id"
+        }
+      },
+      "required": [
+        "table",
+        "column",
+        "table_id",
+        "quotes"
+      ],
+      "title": "WorkbenchStoreExtra",
+      "type": "object"
+    },
+    "WorkbenchStoreRename": {
+      "description": "A column of the form's table ``table`` (by id), ``column`` (by id), that the database\nholds as ``was``: the analyst's pairing of the two as a rename.",
+      "properties": {
+        "column": {
+          "maxLength": 512,
+          "title": "Column",
+          "type": "string"
+        },
+        "table": {
+          "maxLength": 512,
+          "title": "Table",
+          "type": "string"
+        },
+        "was": {
+          "maxLength": 512,
+          "title": "Was",
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "column",
+        "was"
+      ],
+      "title": "WorkbenchStoreRename",
+      "type": "object"
+    },
     "WorkbenchStoreSqlEnvironment": {
-      "description": "One hosted environment the project declares, its engine and the SQL for it.",
+      "description": "One environment the project declares, its engine and the SQL for it.",
       "properties": {
         "name": {
           "title": "Name",
@@ -19117,7 +19446,7 @@
       "type": "object"
     },
     "WorkbenchStoreSqlResponse": {
-      "description": "The SQL for each hosted environment the project declares, and the default branch\nwhose form it starts from: null when it starts from none.",
+      "description": "The SQL for each environment the project declares, and the default branch whose form\nit starts from: null when it starts from none.",
       "properties": {
         "branch": {
           "anyOf": [
@@ -19615,6 +19944,12 @@
     "WorkbenchStatusResponse": {
       "$ref": "#/$defs/WorkbenchStatusResponse"
     },
+    "WorkbenchStoreCatalogueResponse": {
+      "$ref": "#/$defs/WorkbenchStoreCatalogueResponse"
+    },
+    "WorkbenchStoreCompareResponse": {
+      "$ref": "#/$defs/WorkbenchStoreCompareResponse"
+    },
     "WorkbenchStoreSqlResponse": {
       "$ref": "#/$defs/WorkbenchStoreSqlResponse"
     },
@@ -19721,6 +20056,8 @@
     "WorkbenchFormSaveResponse",
     "WorkbenchParamFileResponse",
     "WorkbenchStoreSqlResponse",
+    "WorkbenchStoreCatalogueResponse",
+    "WorkbenchStoreCompareResponse",
     "WorkbenchAppReleaseResponse",
     "WorkbenchAppFormResponse",
     "WorkbenchAppPriceResponse",
@@ -19900,7 +20237,9 @@
       "WorkbenchFormResponse",
       "WorkbenchFormSaveResponse",
       "WorkbenchParamFileResponse",
-      "WorkbenchStoreSqlResponse"
+      "WorkbenchStoreSqlResponse",
+      "WorkbenchStoreCatalogueResponse",
+      "WorkbenchStoreCompareResponse"
     ],
     "workbench-app": [
       "WorkbenchAppReleaseResponse",

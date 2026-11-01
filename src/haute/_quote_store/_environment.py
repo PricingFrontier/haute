@@ -1,15 +1,17 @@
-"""Where a hosted app's quote store is (specs/workbench): the environment a host or a CI job
-names, among those the release declares, and the database the host's own environment says it
-is at. No file a project versions says where a database is or holds a credential, so a pull
-request cannot point an environment at another database; the URL resolved here is handed to
-the store alone, never logged, stored or answered.
+"""Where a quote store is (specs/workbench): for a hosted app, the environment a host or a CI
+job names, among those the release declares, and the database the host's own environment says
+it is at (:func:`resolve_store`); on the analyst's machine, an environment the project declares
+at the database its connection in ``connections.toml`` names (:func:`connected_store`). No file
+a release carries says where a database is or holds a credential, so a pull request cannot
+point a hosted environment at another database; the URL resolved here is handed to the store
+alone, never logged, stored or answered.
 
 The variables are ``ENVIRONMENT_ENV``, naming the environment, and either the database's parts
 (``STORE_SERVER_ENV`` and ``STORE_DATABASE_ENV``) or one whole connection URL
 (``STORE_URL_ENV``), with, on a server, ``STORE_SCHEMA_ENV`` naming the SQL schema its tables
 are in. A SQLite database is a file: its database variable is the file's path, and it has no
 server and no schema. A server database's sign-in reads what it needs from the variables its
-environment names (:class:`._providers.SignIn`), and its URL holds none of it.
+environment or connection names (:class:`._providers.SignIn`), and its URL holds none of it.
 """
 
 from __future__ import annotations
@@ -21,13 +23,14 @@ from pathlib import Path
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
+from haute._connections import CONNECTIONS_FILE, Connection, read_connections
 from haute._credential_security import (
     CredentialMaterialError,
     is_credential_name,
     validate_credential_free_uri,
 )
 from haute._quote_store._providers import PROVIDERS, SignIn, provider_of, server_url
-from haute._quote_store._store import QuoteStoreEnvironmentError, store_url
+from haute._quote_store._store import HOST_VARIABLES, QuoteStoreEnvironmentError, store_url
 from haute._workbench_config import (
     ENVIRONMENT_ENV,
     FILE_PROVIDERS,
@@ -36,6 +39,7 @@ from haute._workbench_config import (
     STORE_SERVER_ENV,
     STORE_URL_ENV,
     StoreEnvironment,
+    WorkbenchConfig,
 )
 
 #: What each sign-in key's variable holds, as a refusal names it.
@@ -54,13 +58,15 @@ _ODBC_SIGN_IN = frozenset({"uid", "user id", "trusted_connection", "integrated s
 @dataclass(frozen=True, slots=True)
 class StoreLocation:
     """The quote store an app keeps its quotes in: its environment; its database's URL and the
-    SQL schema its tables are in, the connection's default when None, neither ever shown; and
-    how the app signs in, None for a file."""
+    SQL schema its tables are in, the connection's default when None, neither ever shown; how
+    the app signs in, None for a file; and what places it and signs it in, as a database not
+    reached is said: the host's variables, or a connection and the variables it reads."""
 
     environment: str
     url: str = field(repr=False)
     sql_schema: str | None = field(default=None, repr=False)
     sign_in: SignIn | None = field(default=None, repr=False)
+    named_by: str = HOST_VARIABLES
 
 
 def _given(environ: Mapping[str, str], name: str) -> str | None:
@@ -68,25 +74,37 @@ def _given(environ: Mapping[str, str], name: str) -> str | None:
     return value or None
 
 
-def _sign_in(environment: StoreEnvironment, environ: Mapping[str, str]) -> SignIn:
-    """The sign-in *environment* declares, with what it needs read from the variables it
-    names; refused naming a variable that holds nothing."""
+def _read_sign_in(
+    auth: str,
+    variables: Mapping[str, str],
+    environ: Mapping[str, str],
+    who: str,
+    where: str = "",
+) -> SignIn:
+    """The sign-in *auth*, with what it needs read from the *variables* it names; refused
+    naming a variable that holds nothing, as *who* signs in, and *where* it is set."""
     values: dict[str, str] = {}
-    for key, variable in environment.variables.items():
+    for key, variable in variables.items():
         value = environ.get(variable, "")
         if not value.strip():
             raise QuoteStoreEnvironmentError(
-                f"The {environment.name} store signs in with {environment.auth}, which reads "
-                f"its {_HELD.get(key, key)} from {variable}: set it."
+                f"{who} signs in with {auth}, which reads its {_HELD.get(key, key)} from "
+                f"{variable}: set it{where}."
             )
         values[key] = value
     return SignIn(
-        str(environment.auth),
+        auth,
         username=values.get("username_env"),
         client_id=values.get("client_id_env"),
         tenant_id=values.get("tenant_id_env"),
         secret=values.get("password_env") or values.get("client_secret_env"),
     )
+
+
+def _sign_in(environment: StoreEnvironment, environ: Mapping[str, str]) -> SignIn:
+    """The sign-in *environment* declares, read from the host's variables."""
+    who = f"The {environment.name} store"
+    return _read_sign_in(str(environment.auth), environment.variables, environ, who)
 
 
 def _file_location_url(environment: StoreEnvironment, url: str) -> None:
@@ -199,3 +217,67 @@ def resolve_store(
     else:
         url = server_url(provider, server, database)
     return StoreLocation(name, url, sql_schema=schema, sign_in=_sign_in(environment, environ))
+
+
+def _filled(connection: Connection, key: str, value: str | None, what: str) -> str:
+    """*value*, the connection's *key*, refused naming it while it is empty."""
+    if not value:
+        raise QuoteStoreEnvironmentError(f"{connection.where}.{key} is empty: set it to {what}.")
+    return value
+
+
+def connection_of(config: WorkbenchConfig, name: str) -> Connection:
+    """The connection in the project's ``connections.toml`` of the environment *name*, one
+    *config* declares. Refused (:class:`QuoteStoreEnvironmentError`) for an environment not
+    declared, naming those that are; no file or no connection of that name; and a connection
+    of another provider than the environment's."""
+    environment = next((each for each in config.store if each.name == name), None)
+    if environment is None:
+        names = ", ".join(each.name for each in config.store) or "none"
+        raise QuoteStoreEnvironmentError(
+            f"haute.toml declares no {name} environment ([workbench.store.{name}]); it declares "
+            f"{names}."
+        )
+    connection = read_connections(config.project_root).get(name)
+    if connection is None:
+        raise QuoteStoreEnvironmentError(
+            f"{CONNECTIONS_FILE} has no [{name}] connection: add one saying where the {name} "
+            "database is and how you sign in to it."
+        )
+    if connection.provider != environment.provider:
+        raise QuoteStoreEnvironmentError(
+            f"{connection.where} is a {connection.provider} connection, but the {name} "
+            f"environment is {environment.provider} ([workbench.store.{name}] in haute.toml)."
+        )
+    return connection
+
+
+def connected_store(
+    config: WorkbenchConfig, name: str, environ: Mapping[str, str]
+) -> StoreLocation:
+    """The store of the environment *name* at the database its connection names
+    (:func:`connection_of`), signed in as the connection says from *environ*'s variables (the
+    clone's ``.env`` under the process's own). Refused (:class:`QuoteStoreEnvironmentError`)
+    as :func:`connection_of` refuses, and for a server or database left empty and a sign-in
+    whose variables hold nothing."""
+    connection = connection_of(config, name)
+    if connection.provider in FILE_PROVIDERS:
+        database = _filled(connection, "database", connection.database, "the file's path")
+        return StoreLocation(
+            name,
+            store_url(config.project_root / database),
+            named_by=connection.where,
+        )
+    server = _filled(connection, "server", connection.server, f"the {name} database's server")
+    database = _filled(connection, "database", connection.database, f"the {name} database")
+    variables = ", ".join(connection.variables.values())
+    reads = f" and the variables its sign-in reads ({variables})" if variables else ""
+    return StoreLocation(
+        name,
+        server_url(PROVIDERS[connection.provider], server, database),
+        sql_schema=connection.schema,
+        sign_in=_read_sign_in(
+            str(connection.auth), connection.variables, environ, connection.where, " in .env"
+        ),
+        named_by=f"{connection.where}{reads}",
+    )

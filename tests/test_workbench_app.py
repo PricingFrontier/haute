@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 import haute._workbench_app as workbench_app
 from haute._execution_admission import ExecutionAdmissionError
-from haute._quote_store import DEV, StoreLocation, prepare_store, store_url
+from haute._quote_store import StoreLocation, store_url
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute._workbench_app import (
@@ -37,6 +37,7 @@ from haute._workbench_form import (
 )
 from haute.deploy._utils import shipped_graph
 from haute.execution import ExecutionProfile
+from tests._store_servers import Target
 from tests._workbench_helpers import form_files, write_files
 from tests.test_workbench_routes import POLICY, PRICING, form
 
@@ -53,6 +54,8 @@ VALUES = {
 SIGNED_IN = {EASY_AUTH_NAME: "uw@example.com"}
 #: Where ``haute app serve`` is reached: served so, the app takes a loopback host alone.
 LOOPBACK = "http://127.0.0.1:8001"
+#: The environment ``haute app serve`` keeps its quotes in.
+DEV = "dev"
 
 
 #: The runtime a test release prices on, as a build reads it from the installed versions.
@@ -121,13 +124,18 @@ def release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     set_project_root(original)
 
 
+def _made(path: Path, directory: Path) -> str:
+    """The URL of a SQLite store at *path* holding the tables of the form of the release in
+    *directory*, made from the SQL Haute writes, as the people who own a database make them."""
+    store = Target("sqlite", store_url(path))
+    store.make(read_release(directory)[1])
+    return store.url
+
+
 def _store(directory: Path) -> StoreLocation:
-    """Dev's store for the release in *directory*, its tables the release's form's as
-    ``haute app serve`` keeps it, so the app's quotes are open."""
-    built, spec, _ = read_release(directory)
-    url = store_url(directory.parent / "store.sqlite")
-    prepare_store(url, spec, project=built.pipeline_name)
-    return StoreLocation(DEV, url)
+    """Dev's store for the release in *directory*, its tables the release's form's, so the
+    app's quotes are open."""
+    return StoreLocation(DEV, _made(directory.parent / "store.sqlite", directory))
 
 
 def _client(directory: Path, **options: Any) -> TestClient:
@@ -717,15 +725,14 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from haute._quote_store import DEV, StoreLocation, prepare_store, store_url
-from haute._workbench_app import create_app, read_release
+from haute._quote_store import StoreLocation, store_url
+from haute._workbench_app import create_app
 
 release = Path(sys.argv[1])
-built, form, _ = read_release(release)
+# Dev's tables, made from the SQL Haute writes before the child ran.
 url = store_url(release.parent / "store.sqlite")
-prepare_store(url, form, project=built.pipeline_name)
 client = TestClient(
-    create_app(release, local_principal="analyst@example.com", store=StoreLocation(DEV, url)),
+    create_app(release, local_principal="analyst@example.com", store=StoreLocation("dev", url)),
     base_url="http://127.0.0.1:8001",
 )
 revision = client.get("/api/app/form").json()["revision"]
@@ -760,6 +767,7 @@ def test_the_app_prices_on_the_utility_code_the_release_carries(project: Path) -
     build_release(project, release_dir)
     assert (release_dir / "utility.py").read_text(encoding="utf-8") == "RATE = 1\n"
     (project / "utility.py").write_text("RATE = 2\n", encoding="utf-8")
+    _made(release_dir.parent / "store.sqlite", release_dir)
     child = project / "price_from_the_project.py"
     child.write_text(_PRICE_FROM_THE_PROJECT, encoding="utf-8")
 
@@ -930,20 +938,47 @@ def test_the_app_commands_say_a_fault_and_print_no_traceback(project: Path) -> N
         assert isinstance(result.exception, SystemExit), result.exception
 
 
-def test_haute_app_serve_serves_the_release_on_loopback_as_the_analyst(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+#: The project's dev environment, on SQLite, as haute.toml declares it.
+DEV_DECLARED = '\n[workbench.store.dev]\nprovider = "sqlite"\n'
+#: Where dev's database is on the analyst's machine, as connections.toml says.
+DEV_CONNECTION = '[dev]\nprovider = "sqlite"\ndatabase = "quotes.sqlite"\n'
+
+
+def _serving(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """What ``haute app serve`` hands uvicorn, which serves nothing here, signed in as Ana."""
     import uvicorn
-    from click.testing import CliRunner
 
     import haute._git_setup as git_setup
-    from haute.cli import cli
 
     served: dict[str, Any] = {}
     monkeypatch.setattr(
         uvicorn, "run", lambda application, **options: served.update(app=application, **options)
     )
     monkeypatch.setattr(git_setup, "get_identity", lambda cwd=None: ("Ana", "ana@example.com"))
+    return served
+
+
+def _declare_dev(project: Path) -> None:
+    toml = project / "haute.toml"
+    toml.write_text(toml.read_text(encoding="utf-8") + DEV_DECLARED, encoding="utf-8")
+
+
+def test_haute_app_serve_serves_the_release_on_loopback_as_the_analyst(
+    project: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    from click.testing import CliRunner
+
+    import haute._git_setup as git_setup
+    from haute.cli import cli
+
+    served = _serving(monkeypatch)
+    # Dev declared, its connection a SQLite file whose tables were made from the SQL Haute
+    # writes, as the people who own any environment's database make them.
+    _declare_dev(project)
+    (project / "connections.toml").write_text(DEV_CONNECTION, encoding="utf-8")
+    elsewhere = tmp_path_factory.mktemp("release") / "app"
+    build_release(project, elsewhere)
+    _made(project / "quotes.sqlite", elsewhere)
 
     result = CliRunner().invoke(cli, ["app", "serve", "--port", "8123"])
 
@@ -951,8 +986,9 @@ def test_haute_app_serve_serves_the_release_on_loopback_as_the_analyst(
     assert "Signed in as ana@example.com" in result.output
     assert (served["host"], served["port"]) == ("127.0.0.1", 8123)
     assert (project / ".haute" / "app" / "release" / "release.json").is_file()
-    assert (project / ".haute" / "app" / "store.sqlite").is_file()
-    assert "Quotes kept in .haute/app/store.sqlite" in result.output
+    assert "Quotes kept in the dev database (connections.toml [dev])" in result.output
+    # The quotes are kept in dev's database alone: serve makes no store of its own.
+    assert not (project / ".haute" / "app" / "store.sqlite").exists()
     with TestClient(served["app"], base_url=LOOPBACK) as client:
         signed_in = client.get("/api/app/release").json()
     assert (signed_in["principal"], signed_in["quotes"]["open"]) == ("ana@example.com", True)
@@ -967,6 +1003,58 @@ def test_haute_app_serve_serves_the_release_on_loopback_as_the_analyst(
     unnamed = CliRunner().invoke(cli, ["app", "serve"])
     assert unnamed.exit_code != 0
     assert "Set your git identity first" in unnamed.output
+
+
+def test_haute_app_serve_refuses_a_project_declaring_no_dev_environment(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from click.testing import CliRunner
+
+    from haute.cli import cli
+
+    served = _serving(monkeypatch)
+    (project / "connections.toml").write_text(DEV_CONNECTION, encoding="utf-8")
+
+    refused = CliRunner().invoke(cli, ["app", "serve"])
+
+    assert refused.exit_code == 1, refused.output
+    assert (
+        "haute.toml declares no dev environment ([workbench.store.dev]); it declares none."
+        in refused.output
+    )
+    assert "Traceback" not in refused.output
+    # Refused before anything is built or served.
+    assert not (project / ".haute" / "app" / "release").exists()
+    assert served == {}
+
+
+@pytest.mark.parametrize(
+    "connections",
+    [None, '[staging]\nprovider = "sqlite"\ndatabase = "staging.sqlite"\n'],
+    ids=["no file", "another environment's alone"],
+)
+def test_haute_app_serve_refuses_a_project_with_no_dev_connection(
+    project: Path, monkeypatch: pytest.MonkeyPatch, connections: str | None
+) -> None:
+    from click.testing import CliRunner
+
+    from haute.cli import cli
+
+    served = _serving(monkeypatch)
+    _declare_dev(project)
+    if connections is not None:
+        (project / "connections.toml").write_text(connections, encoding="utf-8")
+
+    refused = CliRunner().invoke(cli, ["app", "serve"])
+
+    assert refused.exit_code == 1, refused.output
+    assert (
+        "connections.toml has no [dev] connection: add one saying where the dev database is "
+        "and how you sign in to it." in refused.output
+    )
+    assert "Traceback" not in refused.output
+    assert not (project / ".haute" / "app" / "release").exists()
+    assert served == {}
 
 
 # ── The release's image ───────────────────────────────────────────────────
@@ -1115,9 +1203,7 @@ def test_the_release_prices_and_keeps_quotes_with_only_the_images_runtime_instal
     import subprocess
     import sys
 
-    from haute._quote_store import store_url
     from haute._workbench_config import ENVIRONMENT_ENV, STORE_URL_ENV
-    from tests._store_servers import Target
     from tests.test_container_smoke_script import _modules_outside_the_image
 
     _pin_base_image(project)
@@ -1135,11 +1221,8 @@ def test_the_release_prices_and_keeps_quotes_with_only_the_images_runtime_instal
     blocked = _modules_outside_the_image(installed)
     assert "mlflow" in blocked
     assert not {"sqlalchemy", "alembic"} & set(blocked)
-    url = store_url(project / "store.sqlite")
-    built, form, _ = read_release(release_dir)
     # The hosted tables made from the SQL Haute writes, as their owners make them.
-    hosted = Target("sqlite", url)
-    hosted.script(hosted.sql(form))
+    url = _made(project / "store.sqlite", release_dir)
     child = project / "price_one_quote.py"
     child.write_text(_SLIM_RELEASE_CHILD, encoding="utf-8")
 

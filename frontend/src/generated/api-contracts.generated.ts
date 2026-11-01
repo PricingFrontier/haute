@@ -2723,6 +2723,7 @@ export interface UtilityDeleteResponse {
  */
 export interface WorkbenchStatusResponse {
   enabled: boolean;
+  environments: string[];
   form: string | null;
 }
 /**
@@ -3264,20 +3265,106 @@ export interface WorkbenchParamFileResponse {
   values: string[];
 }
 /**
- * The SQL for each hosted environment the project declares, and the default branch
- * whose form it starts from: null when it starts from none.
+ * The SQL for each environment the project declares, and the default branch whose form
+ * it starts from: null when it starts from none.
  */
 export interface WorkbenchStoreSqlResponse {
   branch: string | null;
   environments: WorkbenchStoreSqlEnvironment[];
 }
 /**
- * One hosted environment the project declares, its engine and the SQL for it.
+ * One environment the project declares, its engine and the SQL for it.
  */
 export interface WorkbenchStoreSqlEnvironment {
   name: string;
   provider: string;
   sql: string;
+}
+/**
+ * The tables an environment's database holds, read through its connection: each table
+ * holding the quote's identity, ``haute_activity`` among them. Names, kinds and counts
+ * alone, never a value, a location or a sign-in.
+ */
+export interface WorkbenchStoreCatalogueResponse {
+  environment: string;
+  tables: WorkbenchCatalogueTable[];
+}
+/**
+ * A table of the store's as an environment's database holds it: its columns, its primary
+ * key's columns, whether it refers by the identity to its quote's quote_details row, and
+ * the quotes holding a row in it, None when the table lacks a quote identity column.
+ */
+export interface WorkbenchCatalogueTable {
+  /**
+   * @maxItems 10000
+   */
+  columns: WorkbenchCatalogueColumn[];
+  name: string;
+  /**
+   * @maxItems 10000
+   */
+  primary_key: string[];
+  quotes: number | null;
+  refers: boolean;
+}
+/**
+ * A column as an environment's database holds it: its name, its kind (``boolean``,
+ * ``integer``, ``float``, ``datetime``, ``date``, ``string`` or another type's), its type as
+ * the database names it, whether it takes a null, its collation where it has one, and the
+ * quotes holding a value in it, None when the table lacks a quote identity column.
+ */
+export interface WorkbenchCatalogueColumn {
+  collation: string | null;
+  kind: string;
+  name: string;
+  nullable: boolean;
+  quotes: number | null;
+  type: string;
+}
+/**
+ * The form compared with an environment's tables: each difference, each extra, the
+ * pairings taken, whether the database matches the form, the SQL that brings its tables to
+ * the form, from what they hold, and the default branch whose form named renames, null
+ * when none did.
+ */
+export interface WorkbenchStoreCompareResponse {
+  branch: string | null;
+  differences: WorkbenchStoreDifference[];
+  extras: WorkbenchStoreExtra[];
+  matches: boolean;
+  renames: WorkbenchStoreRename[];
+  sql: string;
+}
+/**
+ * A way the database differs from the form: the form's table and column by id (no table
+ * for Haute's own haute_activity), its kind and what it is.
+ */
+export interface WorkbenchStoreDifference {
+  column: string | null;
+  kind: 'missing' | 'renamed' | 'type' | 'rows' | 'null' | 'key' | 'refers' | 'collation' | 'store';
+  message: string;
+  table: string | null;
+}
+/**
+ * A table of the store's, or a column of one of the form's tables, that the database
+ * holds and the form does not: its table's and its name there, the form's table's id when
+ * the table is the form's, and the quotes holding values in it, None when the table lacks a
+ * quote identity column.
+ */
+export interface WorkbenchStoreExtra {
+  column: string | null;
+  quotes: number | null;
+  table: string;
+  table_id: string | null;
+}
+/**
+ * A column of the form's table ``table`` (by id), ``column`` (by id), that the database
+ * holds as ``was``: the analyst's pairing of the two as a rename.
+ */
+export interface WorkbenchStoreRename {
+  column: string;
+  table: string;
+  was: string;
 }
 /**
  * The underwriter app's release, and who the host signed in.

@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
-from haute._scaffold import ci_files, env_example
+from haute._scaffold import ci_files, connection_variables, connections_toml, env_example
 from haute.cli import cli
 
 _VALUES = {
@@ -245,6 +245,28 @@ def test_update_rewrites_the_generated_files(runner, project: Path) -> None:
     assert "updated   .github/workflows/deploy-staging.yml" in result.output
     assert "updated   .env.example" in result.output
     assert "unchanged .github/workflows/ci.yml" in result.output
+
+
+def test_update_names_the_sign_ins_connections_toml_reads_in_env_example(
+    runner, project: Path
+) -> None:
+    (project / "connections.toml").write_text(connections_toml(), encoding="utf-8")
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
+    written = (project / ".env.example").read_text(encoding="utf-8")
+    assert written == env_example("databricks", connection_variables(project))
+    assert "HAUTE_DEV_USERNAME=\n" in written and "HAUTE_PROD_PASSWORD=\n" in written
+    assert "updated   .env.example" in result.output
+
+    # A connections.toml that cannot be read is said, and nothing is rewritten.
+    (project / "connections.toml").write_text("[dev\n", encoding="utf-8")
+    refused = runner.invoke(cli, ["ci", "update"])
+    assert refused.exit_code == 1
+    assert "connections.toml is malformed" in refused.output
+    assert "Traceback" not in refused.output
+    assert (project / ".env.example").read_text(encoding="utf-8") == written
 
 
 def test_update_follows_a_change_of_provider(runner, project: Path) -> None:

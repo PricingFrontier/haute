@@ -91,7 +91,7 @@ def test_a_store_whose_tables_fit_opens() -> None:
     [
         (MISMATCH, "quote_store_mismatch", ["policy.region is missing"]),
         (
-            QuoteStoreUnreachableError("could not be reached, or it refused the app's sign-in"),
+            QuoteStoreUnreachableError("could not be reached, or it refused the sign-in"),
             "quote_store_unreachable",
             [],
         ),

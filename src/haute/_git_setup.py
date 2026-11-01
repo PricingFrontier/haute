@@ -53,6 +53,8 @@ _SEED_PATHSPECS: tuple[str, ...] = (
     "uv.lock",
     ".gitignore",
     ".env.example",
+    # The connections the team shares (specs/workbench), which hold no secret.
+    "connections.toml",
     "*.py",
     "*.haute.json",
     "config/",
