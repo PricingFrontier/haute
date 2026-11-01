@@ -204,7 +204,7 @@ class TestItem18ConfigPathFailsLoudly:
         # kwarg for recovery.  Default behaviour must NOT silently load
         # the recovered config.
         try:
-            _, loaded = _resolve_node_config(
+            _, loaded, _editor = _resolve_node_config(
                 {"config": mangled_path},
                 body="",
                 param_names=["df"],
