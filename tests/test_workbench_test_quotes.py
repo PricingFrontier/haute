@@ -740,13 +740,46 @@ def test_accepting_the_project_answers_fewer_outputs_since_the_run_is_refused(
     before = _file(project).read_bytes()
     toml = project / "haute.toml"
     toml.write_text(
-        toml.read_text(encoding="utf-8") + '\n[deploy]\noutput_fields = ["premium"]\n',
+        toml.read_text(encoding="utf-8") + '\n[deploy]\noutput_fields = ["pricing"]\n',
         encoding="utf-8",
     )
+    # A projection the pipeline answers: the project still resolves.
+    resolve_release(project).close()
 
     refused = _accept(http, run)
 
     assert refused.status_code == 409
+    assert "What the run priced on changed since" in refused.json()["detail"]
+    assert _file(project).read_bytes() == before
+
+
+def test_a_helper_changed_while_a_run_priced_keeps_its_result_from_being_accepted(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute.routes.workbench as routes
+
+    (project / "utility.py").write_text("RATE = 1\n", encoding="utf-8")
+    (project / "main.py").write_text(
+        "import utility  # noqa\n" + (project / "main.py").read_text(), encoding="utf-8"
+    )
+    http = client()
+    assert _save(http).status_code == 200
+    real_check = routes.check_test_quote
+
+    def helper_edited_meanwhile(release: Any, quote: Any) -> Any:
+        checked = real_check(release, quote)
+        (project / "utility.py").write_text("RATE = 2\n", encoding="utf-8")
+        return checked
+
+    monkeypatch.setattr(routes, "check_test_quote", helper_edited_meanwhile)
+    run = _run(http).json()
+    monkeypatch.setattr(routes, "check_test_quote", real_check)
+    before = _file(project).read_bytes()
+
+    refused = _accept(http, run)
+
+    assert refused.status_code == 409
+    assert "What the run priced on changed since" in refused.json()["detail"]
     assert _file(project).read_bytes() == before
 
 

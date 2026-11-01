@@ -783,12 +783,17 @@ async def run_test_quote(file: str) -> WorkbenchTestQuoteRunResponse:
             _, quote = _held(path)
         return branch, quote
 
+    def priced(release: ResolvedRelease) -> tuple[Checked, str | None]:
+        # The basis is read as the release was resolved, before it prices: a helper changed
+        # on disk while it priced makes it differ from the project's next basis, so the
+        # result is never accepted onto code it was not priced on.
+        run_basis = basis(release)
+        return check_test_quote(release, quote), run_basis
+
     try:
         branch, quote = await run_in_threadpool(prepare)
         checked, run_basis = await _within_deadline(
-            lambda: _priced_on_release(
-                config, lambda release: (check_test_quote(release, quote), basis(release))
-            ),
+            lambda: _priced_on_release(config, priced),
             lambda: (
                 Checked(
                     quote.name,
