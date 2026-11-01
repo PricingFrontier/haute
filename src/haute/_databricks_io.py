@@ -1,10 +1,10 @@
 """Bounded Databricks snapshot acquisition for canonical Data Input nodes.
 
 Connection details live on the Data Input node (``http_path`` in config).
-Secrets are resolved from the environment:
-    DATABRICKS_HOST
-    DATABRICKS_TOKEN                                  (PAT; takes precedence)
-    DATABRICKS_CLIENT_ID / DATABRICKS_CLIENT_SECRET   (service-principal OAuth)
+The sign-in is resolved from the environment by
+:mod:`haute._databricks_credentials`: a personal access token, a service
+principal, or one of the user sign-ins (the Databricks CLI's, the SDK's browser
+flow, or a named CLI profile).
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from haute._databricks_credentials import (
     DatabricksConfigError,
     DatabricksCredentials,
+    databricks_sdk_config,
     resolve_databricks_credentials,
 )
 from haute._logging import get_logger
@@ -112,17 +113,40 @@ def _service_principal_credentials(
     return provider
 
 
+def _user_sign_in_credentials(credentials: DatabricksCredentials) -> Callable[[], Any]:
+    """Zero-arg credentials provider for the SQL connector from a user sign-in.
+
+    The SDK config that signs the user in (``databricks_sdk_config``) is built when
+    the connector asks, not before, so the sign-in (a CLI call, or a browser the
+    SDK opens) happens at connection time and only then; its ``authenticate`` is
+    the header factory the connector calls per request, so the SDK refreshes the
+    token while a long fetch runs. The SDK import is deferred for the same reason
+    as the service-principal provider's.
+    """
+
+    def provider() -> Any:
+        try:
+            import databricks.sdk.core  # noqa: F401
+        except ImportError as exc:
+            raise DatabricksConfigError(
+                "A Databricks user sign-in requires the databricks-sdk package. "
+                "Install the databricks extra: haute[databricks]."
+            ) from exc
+
+        return databricks_sdk_config(credentials).authenticate
+
+    return provider
+
+
 def _resolve_connection(
     http_path: str | None, *, node_label: str
 ) -> tuple[DatabricksCredentials, str]:
     """The environment's credentials and the stripped *http_path*, both required.
 
-    Auth precedence is the shared resolver's: an explicit ``DATABRICKS_TOKEN``
-    (PAT) wins; otherwise a ``DATABRICKS_CLIENT_ID``/``DATABRICKS_CLIENT_SECRET``
-    service-principal pair (injected automatically inside a Databricks App
-    container) authenticates via OAuth M2M. A missing *http_path* is named as the
-    *node_label* node's, in the same failure message as any missing variable,
-    which names every consulted source without echoing any value.
+    The sign-in form and its precedence are the shared resolver's
+    (:func:`resolve_databricks_credentials`). A missing *http_path* is named as
+    the *node_label* node's, in the same failure message as any missing
+    variable, which names every consulted source without echoing any value.
     """
     resolved_http_path = (http_path or "").strip()
     credentials = resolve_databricks_credentials(
@@ -138,6 +162,8 @@ def _sql_auth_kwargs(credentials: DatabricksCredentials) -> dict[str, Any]:
     if credentials.auth_mode == "pat":
         assert credentials.token is not None
         return {"access_token": credentials.token}
+    if credentials.signs_in_as_user:
+        return {"credentials_provider": _user_sign_in_credentials(credentials)}
     assert credentials.client_id is not None
     assert credentials.client_secret is not None
     return {

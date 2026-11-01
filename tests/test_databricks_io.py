@@ -43,14 +43,17 @@ def _connection_settings(http_path: str | None) -> tuple[str, dict[str, Any], st
 
 
 @pytest.fixture()
-def _no_ambient_databricks_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _no_ambient_databricks_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     for name in (
         "DATABRICKS_HOST",
         "DATABRICKS_TOKEN",
         "DATABRICKS_CLIENT_ID",
         "DATABRICKS_CLIENT_SECRET",
+        "DATABRICKS_AUTH_TYPE",
+        "DATABRICKS_CONFIG_PROFILE",
     ):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(tmp_path / "no-profiles.cfg"))
 
 
 @pytest.mark.usefixtures("_no_ambient_databricks_env")
@@ -182,6 +185,74 @@ def test_service_principal_provider_reports_missing_sdk(
     monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "sp-secret")
     # A None entry makes `from databricks.sdk.core import …` raise ImportError
     # deterministically, whether or not the SDK is installed locally.
+    monkeypatch.setitem(sys.modules, "databricks.sdk.core", None)
+
+    _, auth_kwargs, _ = _connection_settings("/sql/warehouse")
+    with pytest.raises(DatabricksConfigError, match=r"haute\[databricks\]"):
+        auth_kwargs["credentials_provider"]()
+
+
+def _stub_sdk_config(monkeypatch: pytest.MonkeyPatch) -> tuple[dict[str, object], object]:
+    """A ``databricks.sdk.core.Config`` stand-in that records its arguments and
+    whose ``authenticate`` is a fixed callable, as the real one is a bound method."""
+    import sys
+    import types
+
+    recorded: dict[str, object] = {}
+    authenticate = MagicMock(name="authenticate")
+
+    class FakeConfig:
+        def __init__(self, **kwargs: object) -> None:
+            recorded.update(kwargs)
+            self.authenticate = authenticate
+
+    stub = types.ModuleType("databricks.sdk.core")
+    stub.Config = FakeConfig  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "databricks.sdk.core", stub)
+    return recorded, authenticate
+
+
+@pytest.mark.usefixtures("_no_ambient_databricks_env")
+def test_user_sign_in_provider_hands_the_connector_the_sdk_config_s_authenticate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABRICKS_HOST", "workspace.example")
+    monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "databricks-cli")
+    recorded, authenticate = _stub_sdk_config(monkeypatch)
+
+    host, auth_kwargs, _ = _connection_settings("/sql/warehouse")
+
+    # The SDK is not built until the connector asks: a sign-in is a side effect.
+    assert recorded == {}
+    assert auth_kwargs["credentials_provider"]() is authenticate
+    assert host == "workspace.example"
+    assert recorded == {"host": "workspace.example", "auth_type": "databricks-cli"}
+
+
+@pytest.mark.usefixtures("_no_ambient_databricks_env")
+def test_a_profile_connects_to_the_profile_s_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    profiles = tmp_path / "databrickscfg"
+    profiles.write_text("[work]\nhost = https://profile.example/\n", encoding="utf-8")
+    monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(profiles))
+    monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "work")
+    recorded, authenticate = _stub_sdk_config(monkeypatch)
+
+    host, auth_kwargs, http_path = _connection_settings("/sql/warehouse")
+
+    assert host == "profile.example"
+    assert http_path == "/sql/warehouse"
+    assert auth_kwargs["credentials_provider"]() is authenticate
+    assert recorded == {"profile": "work"}
+
+
+@pytest.mark.usefixtures("_no_ambient_databricks_env")
+def test_user_sign_in_provider_reports_missing_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    monkeypatch.setenv("DATABRICKS_HOST", "workspace.example")
+    monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "external-browser")
     monkeypatch.setitem(sys.modules, "databricks.sdk.core", None)
 
     _, auth_kwargs, _ = _connection_settings("/sql/warehouse")

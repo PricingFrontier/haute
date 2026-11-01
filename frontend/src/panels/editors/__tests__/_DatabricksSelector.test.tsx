@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, act, waitFor, within } from "@testing-library/react"
-import { WarehousePicker, CatalogTablePicker, TargetTablePicker } from "../_DatabricksSelector"
+import {
+  DatabricksConnection,
+  WarehousePicker,
+  CatalogTablePicker,
+  TargetTablePicker,
+} from "../_DatabricksSelector"
+import type { DatabricksConnectionResponse } from "../../../api/types"
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -22,6 +28,8 @@ vi.mock("../../../api/client", () => {
     getCatalogs: vi.fn(),
     getSchemas: vi.fn(),
     getTables: vi.fn(),
+    getDatabricksConnection: vi.fn(),
+    testDatabricksConnection: vi.fn(),
     ApiError,
   }
 })
@@ -31,6 +39,8 @@ import {
   getCatalogs,
   getSchemas,
   getTables,
+  getDatabricksConnection,
+  testDatabricksConnection,
   ApiError,
 } from "../../../api/client"
 
@@ -38,6 +48,8 @@ const mockGetWarehouses = getWarehouses as ReturnType<typeof vi.fn>
 const mockGetCatalogs = getCatalogs as ReturnType<typeof vi.fn>
 const mockGetSchemas = getSchemas as ReturnType<typeof vi.fn>
 const mockGetTables = getTables as ReturnType<typeof vi.fn>
+const mockGetConnection = getDatabricksConnection as ReturnType<typeof vi.fn>
+const mockTestConnection = testDatabricksConnection as ReturnType<typeof vi.fn>
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const ApiErrorCtor = ApiError as any
@@ -705,5 +717,138 @@ describe("TargetTablePicker", () => {
     fireEvent.change(screen.getByLabelText("Catalog"), { target: { value: "" } })
 
     expect(onSelect).toHaveBeenLastCalledWith("")
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DatabricksConnection
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("DatabricksConnection", () => {
+  beforeEach(() => vi.clearAllMocks())
+  afterEach(cleanup)
+
+  const connection = (
+    overrides: Partial<DatabricksConnectionResponse>,
+  ): DatabricksConnectionResponse => ({
+    configured: true,
+    auth_mode: "pat",
+    profile: "",
+    sdk_auth_type: "",
+    detail: "",
+    ...overrides,
+  })
+
+  it("names a token sign-in by its variable and never signs in on its own", async () => {
+    mockGetConnection.mockResolvedValue(connection({}))
+    render(<DatabricksConnection />)
+
+    expect(await screen.findByTestId("databricks-connection")).toHaveTextContent(
+      "Personal access token (DATABRICKS_TOKEN)",
+    )
+    expect(mockTestConnection).not.toHaveBeenCalled()
+    expect(screen.getByRole("button", { name: "Test" })).not.toBeDisabled()
+  })
+
+  it.each([
+    ["service_principal", "Service principal (DATABRICKS_CLIENT_ID)"],
+    ["cli_login", "Databricks CLI sign-in (DATABRICKS_AUTH_TYPE)"],
+    ["browser_login", "Browser sign-in (DATABRICKS_AUTH_TYPE)"],
+  ] as const)("names the %s form", async (auth_mode, words) => {
+    mockGetConnection.mockResolvedValue(connection({ auth_mode }))
+    render(<DatabricksConnection />)
+
+    expect(await screen.findByTestId("databricks-connection")).toHaveTextContent(words)
+  })
+
+  it("names a profile and the sign-in it declares", async () => {
+    mockGetConnection.mockResolvedValue(
+      connection({ auth_mode: "profile", profile: "haute-spike", sdk_auth_type: "databricks-cli" }),
+    )
+    render(<DatabricksConnection />)
+
+    expect(await screen.findByTestId("databricks-connection")).toHaveTextContent(
+      "Profile haute-spike (databricks-cli)",
+    )
+  })
+
+  it("shows what is missing and offers no Test until configured", async () => {
+    mockGetConnection.mockResolvedValue(
+      connection({
+        configured: false,
+        auth_mode: "",
+        detail: "Missing Databricks configuration:\n  DATABRICKS_TOKEN\n  or DATABRICKS_CONFIG_PROFILE=<profile>",
+      }),
+    )
+    render(<DatabricksConnection />)
+
+    expect(await screen.findByTestId("databricks-connection")).toHaveTextContent(
+      "DATABRICKS_CONFIG_PROFILE",
+    )
+    expect(screen.getByRole("button", { name: "Test" })).toBeDisabled()
+  })
+
+  it("Test shows who Haute signs in as", async () => {
+    mockGetConnection.mockResolvedValue(
+      connection({ auth_mode: "profile", profile: "haute-spike", sdk_auth_type: "databricks-cli" }),
+    )
+    mockTestConnection.mockResolvedValue({
+      ok: true,
+      identity: "nick@example.com",
+      sdk_auth_type: "databricks-cli",
+      detail: "",
+    })
+    render(<DatabricksConnection />)
+    await screen.findByText("Profile haute-spike (databricks-cli)")
+
+    fireEvent.click(screen.getByRole("button", { name: "Test" }))
+
+    expect(await screen.findByTestId("databricks-connection-test")).toHaveTextContent(
+      "Signed in as nick@example.com (databricks-cli)",
+    )
+    expect(mockTestConnection).toHaveBeenCalledTimes(1)
+  })
+
+  it("Test shows an expired sign-in in the server's words", async () => {
+    mockGetConnection.mockResolvedValue(
+      connection({ auth_mode: "profile", profile: "haute-spike", sdk_auth_type: "databricks-cli" }),
+    )
+    mockTestConnection.mockResolvedValue({
+      ok: false,
+      identity: "",
+      sdk_auth_type: "",
+      detail:
+        "Databricks sign-in for profile 'haute-spike' failed or has expired: " +
+        "run `databricks auth login --profile haute-spike` and try again.",
+    })
+    render(<DatabricksConnection />)
+    await screen.findByText("Profile haute-spike (databricks-cli)")
+
+    fireEvent.click(screen.getByRole("button", { name: "Test" }))
+
+    expect(await screen.findByTestId("databricks-connection-test")).toHaveTextContent(
+      "run `databricks auth login --profile haute-spike` and try again.",
+    )
+  })
+
+  it("Test shows a failed request's message", async () => {
+    mockGetConnection.mockResolvedValue(connection({}))
+    mockTestConnection.mockRejectedValue(makeApiError("Internal Server Error", 500, "Operation failed"))
+    render(<DatabricksConnection />)
+    await screen.findByText("Personal access token (DATABRICKS_TOKEN)")
+
+    fireEvent.click(screen.getByRole("button", { name: "Test" }))
+
+    expect(await screen.findByTestId("databricks-connection-test")).toHaveTextContent(
+      "Operation failed",
+    )
+  })
+
+  it("shows the request's failure when the connection cannot be read", async () => {
+    mockGetConnection.mockRejectedValue(makeApiError("Service Unavailable", 503, "server down"))
+    render(<DatabricksConnection />)
+
+    expect(await screen.findByTestId("databricks-connection")).toHaveTextContent("server down")
+    expect(screen.getByRole("button", { name: "Test" })).toBeDisabled()
   })
 })

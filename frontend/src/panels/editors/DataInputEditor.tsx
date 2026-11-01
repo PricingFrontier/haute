@@ -1,6 +1,6 @@
 import { CommittedTextArea, EditorLabel } from "../../components/form"
 import type { IoCapabilityGroup, IoFormatCapability } from "../../api/types"
-import { WarehousePicker, CatalogTablePicker } from "./_DatabricksSelector"
+import { DatabricksConnection, WarehousePicker, CatalogTablePicker } from "./_DatabricksSelector"
 import IoFormatEditor, { IoArgumentsEditor } from "./_IoFormatEditor"
 import { hasNonEmptyString, ioBranchConfig } from "./_ioProvider"
 import IoProviderPicker from "./_IoProviderPicker"
@@ -172,6 +172,7 @@ export default function DataInputEditor({
               ))}
             </section>
           )}
+          <DatabricksConnection />
           <WarehousePicker
             httpPath={typeof config.http_path === "string" ? config.http_path : ""}
             onSelect={(value) => onUpdate("http_path", value)}
