@@ -395,23 +395,26 @@ def test_an_app_still_busy_after_its_tries_stops_the_run() -> None:
         (_refused(401, "Sign in"), "HTTP 401: Sign in"),
         (_refused(409, "drawn for another release"), "HTTP 409: drawn for another release"),
         (HttpAnswer(302, b"", "/.auth/login/aad"), "HTTP 302"),
+        (_refused(503, "busy"), "HTTP 503: busy"),
     ],
-    ids=["no-answer", "sign-in-refused", "release-changed", "sign-in-redirect"],
+    ids=["no-answer", "sign-in-refused", "release-changed", "sign-in-redirect", "busy"],
 )
 @pytest.mark.parametrize("route", ["/api/app/quotes/Q-000002/1", "/api/app/price"])
 def test_production_failing_mid_run_stops_the_run_and_the_report_is_written(
     answer: HttpAnswer, said: str, route: str
 ) -> None:
     apps = _apps(count=3)
+    # A busy answer stops the run only once it is still busy after its tries.
+    failing = [answer] * (impacts.BUSY_TRIES if answer.status == 503 else 1)
     if route == "/api/app/price":
         # The first quote's pricing answers; the second's fails.
         first = apps.prod.answer(
             "POST", route, {"release": "p1", "form_revision": "rev-p1", "values": _values(1.0)}
         )
         apps.prod.asked.clear()
-        apps.prod.queued[route] = [first, answer]
+        apps.prod.queued[route] = [first, *failing]
     else:
-        apps.prod.queued[route] = [answer]
+        apps.prod.queued[route] = failing
 
     report = _run(apps)
 

@@ -681,7 +681,8 @@ def _measure(
     say(f"  ✓ {len(run.listed)} of prod's final quotes listed")
     for reference, option in run.listed:
         run.quotes.append(_quote(reference, option, production, staging, fields, get, send, budget))
-    say(f"  ✓ {len(run.quotes)} quotes priced on both apps")
+    priced = sum(1 for quote in run.quotes if quote.outcome in _PRICED_ON_BOTH)
+    say(f"  ✓ {priced} quotes priced on both apps")
 
 
 # ---------------------------------------------------------------------------
