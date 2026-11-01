@@ -251,6 +251,7 @@ export default function CodeMirrorEditor({
   errorLine,
   availableColumns,
   onEditorView,
+  reportEachChange = false,
 }: {
   defaultValue: string
   onChange: (value: string) => void
@@ -260,11 +261,17 @@ export default function CodeMirrorEditor({
   availableColumns?: string[]
   /** Callback to expose the EditorView for external operations (e.g. text insertion) */
   onEditorView?: (view: EditorView | null) => void
+  /**
+   * Report every change at once, not once typing pauses: for an owner whose `onChange` is
+   * cheap and must always hold the text as it is (one that saves only when asked).
+   */
+  reportEachChange?: boolean
 }) {
   const externalSyncAnnotation = useRef(Annotation.define<boolean>())
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const onChangeRef = useRef(onChange)
+  const reportEachChangeRef = useRef(reportEachChange)
   const onEditorViewRef = useRef(onEditorView)
   const notifiedEditorViewCallbackRef = useRef<((view: EditorView | null) => void) | undefined>(undefined)
   const diagnosticsClearRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -354,7 +361,12 @@ export default function CodeMirrorEditor({
         )
         if (isExternalSync) return
         const value = update.state.doc.toString()
-        localChange.schedule([value])
+        if (reportEachChangeRef.current) {
+          lastPropValueRef.current = value
+          onChangeRef.current(value)
+        } else {
+          localChange.schedule([value])
+        }
         // Clear diagnostics after the current CodeMirror transaction completes.
         if (diagnosticsClearRef.current) clearTimeout(diagnosticsClearRef.current)
         const view = update.view

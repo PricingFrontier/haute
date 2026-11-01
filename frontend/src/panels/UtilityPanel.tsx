@@ -118,8 +118,7 @@ export default function UtilityPanel({
       const saved = await updateUtilityFile(module, value, revision)
       reportSaveCapture(saved)
       const active = mountedRef.current && activeModuleRef.current === module
-      // The editor's text as it is now: it reports an edit only once typing pauses.
-      const typedSince = active && (editorViewRef.current?.state.doc.toString() ?? contentRef.current) !== value
+      const typedSince = active && contentRef.current !== value
       if (typedSince && saved.content !== value) {
         // The file is not what was sent (a project hook rewrote it, or another editor
         // changed it meanwhile) and text was typed since: neither replaces the other unasked.
@@ -129,17 +128,26 @@ export default function UtilityPanel({
           module,
           message: `utility/${module}.py changed while it was saved. Reload it, or overwrite it with your edit.`,
         })
-        return true
+        return false
       }
       revisionsRef.current.set(module, saved.revision)
       if (active) {
         setErrorLine(null)
         setErrorMsg(null)
-        // The file as the save left it, a project hook's formatting included.
+        // The file as the save left it, a project hook's formatting included, in the editor
+        // as it is, the cursor kept where the text allows.
         if (saved.content !== value) {
           contentRef.current = saved.content
           setContent(saved.content)
-          setReadGeneration((generation) => generation + 1)
+          const view = editorViewRef.current
+          if (view) {
+            view.dispatch({
+              changes: { from: 0, to: view.state.doc.length, insert: saved.content },
+              selection: { anchor: Math.min(view.state.selection.main.head, saved.content.length) },
+            })
+          } else {
+            setReadGeneration((generation) => generation + 1)
+          }
         }
       }
       return true
@@ -172,6 +180,13 @@ export default function UtilityPanel({
     return queued
   }, [persistSave])
 
+  const recordEdit = useCallback((module: string, value: string) => {
+    if (value === contentRef.current) return
+    if (draftRef.current === null) setUtilityUnsaved(true)
+    draftRef.current = { module, value }
+    contentRef.current = value
+  }, [setUtilityUnsaved])
+
   // Send *draft*, which stops being the draft once saved unless text was typed since.
   const sendDraft = useCallback((draft: { module: string; value: string }): Promise<boolean> => {
     const result = queueSave(draft.module, draft.value).then((saved) => {
@@ -200,13 +215,6 @@ export default function UtilityPanel({
     }
     return true
   }, [sendDraft])
-
-  const recordEdit = (module: string, value: string) => {
-    if (value === contentRef.current) return
-    if (draftRef.current === null) setUtilityUnsaved(true)
-    draftRef.current = { module, value }
-    contentRef.current = value
-  }
 
   // Closing, or another panel opening in this one's place, waits (the store holds it) for
   // the draft to save; a refused save keeps the panel open showing why.
@@ -525,13 +533,6 @@ export default function UtilityPanel({
               // The file's own save; the pipeline's Ctrl+S skips a key handled here.
               if (!hasModifier(event.nativeEvent) || event.key !== "s") return
               event.preventDefault()
-              // The editor reports an edit once typing pauses or it loses focus: commit the
-              // text typed just now, keeping the focus where it is.
-              const view = editorViewRef.current
-              if (view?.hasFocus) {
-                view.contentDOM.blur()
-                view.focus()
-              }
               void saveDraft(false)
             }}
           >
@@ -540,6 +541,9 @@ export default function UtilityPanel({
                 key={`${activeModule}:${readGeneration}`}
                 defaultValue={content}
                 onEditorView={(view) => { editorViewRef.current = view }}
+                // The draft is the text as it is at every keystroke, so a close, a switch or
+                // Ctrl+S right after typing saves all of it.
+                reportEachChange
                 onChange={(val) => {
                   setContent(val)
                   recordEdit(activeModule, val)

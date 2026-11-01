@@ -319,9 +319,10 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
    it saves again until no draft is left. A draft a save is already sending is waited for,
    not sent twice, and once that save settles a later save sends it again. Switching files, or to the Imports entry, first awaits `saveDraft(true)`; a
    refused save stops the switch, and the draft plus inline error remain visible until a later
-   save succeeds. Ctrl+S (`hasModifier`, on the open file's editor) first blurs and refocuses the
-   editor, which reports an edit only once typing pauses or it loses focus, so the text typed
-   just now is the draft, then runs `saveDraft(false)` and prevents the key, so the pipeline's window-level Ctrl+S, which skips a prevented key, does
+   save succeeds. The editor reports every change at once (`reportEachChange`), so the draft
+   and `utilityUnsaved` hold the text as it is at each keystroke and a close, a switch or a
+   save straight after typing takes all of it. Ctrl+S (`hasModifier`, on the open file's
+   editor) runs `saveDraft(false)` and prevents the key, so the pipeline's window-level Ctrl+S, which skips a prevented key, does
    not also run; on the Imports entry the key is left to the pipeline's save, the preamble
    being the pipeline's.
 3. Closing the panel, or any UI-store change that would hide it (another panel, a node click),
@@ -333,12 +334,12 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
    with the reason and **Discard** (`utility-discard`, beside the error or the conflict), which
    drops the draft and closes. A save answers with the file as the save left it
    (`UtilityWriteResponse.content`, a project hook's rewrite included, and its revision); while
-   the editor (its live document) still holds what was sent it shows that content and takes
-   that revision. Text typed since stays as typed: with the file as sent it is saved next
+   the editor still holds what was sent it puts that content in the editor in place, the
+   cursor kept where the text allows, and takes that revision. Text typed since stays as typed: with the file as sent it is saved next
    against the returned revision; with the file changed (a hook, or another editor during the
    save) the panel keeps the old revision and shows the conflict below ("utility/<module>.py
    changed while it was saved. Reload it, or overwrite it with your edit."), so neither
-   replaces the other unasked. Unmount by another path saves a remaining draft fire-and-forget and clears
+   replaces the other unasked; that save counts as refused, so a close waiting on it stays. Unmount by another path saves a remaining draft fire-and-forget and clears
    `utilityUnsaved` and `utilityLeave`; `beforeunload` is prevented while a draft exists.
    Post-await state updates verify both mounted state and the module still selected, dropping
    stale replies.
@@ -498,7 +499,9 @@ file switch and on Ctrl+S; a held close or panel change; Discard; the content a 
 text typed during a save, kept and saved next, or a conflict when the file came back changed;
 a failed save sent again; a refused delete keeping its draft; the unload warning; stale
 responses) and syntax errors; `frontend/src/stores/__tests__/useUIStore.exclusivity.test.ts` pins the
-held changes and actions. The Explore suites also pin progressbar name/value semantics, TSV headers and
+held changes and actions, and `frontend/src/panels/__tests__/UtilityPanel.liveEditor.test.tsx`, with
+the real editor, text typed while a close waits on a save, saved before it closes or kept
+behind the conflict, and Ctrl+S straight after typing. The Explore suites also pin progressbar name/value semantics, TSV headers and
 contents, RFC-4180 CSV quoting through the download blob, full filtered-schema export across
 pagination, disabled empty-table actions, and native-button accessibility.
 `frontend/src/__tests__/App.utilityPanelLazy.test.ts` and the bundle-budget tests
