@@ -44,15 +44,18 @@ Pull request → CI checks → Merge → target-dependent staging deploy → smo
 
 A [workbench project](../../building-models/workbench.md) hosts no API: what it releases is
 the [underwriter app](../../building-models/workbench.md#the-underwriter-app). Its
-`haute init` writes two workflow files instead:
+`haute init` writes three workflow files instead:
 
 | File | When it runs | What it does |
 |---|---|---|
 | `ci.yml` | On every pull request | Lints, type-checks and runs tests, then builds the app's release, which checks your pipeline and schema and scores your test quotes |
-| `release.yml` | On a push to main or manual dispatch | Runs the same checks, then, on main only, logs in to your registry and builds the app's image once, pushes it to the registry `[deploy.container]` names and prints the image by digest |
+| `release.yml` | On a push to main or manual dispatch | Runs the same checks, then, on main only, builds the app's image once, pushes it to the registry `[deploy.container]` names, and rolls the staging app out to it |
+| `release-production.yml` | When you click "Run workflow" manually | Rolls the production app out to the release staging runs, for the commit you give (main's head when blank) |
 
-Nothing moves your hosted app to the new image yet: point the app on Azure Container Apps at
-the digest the **Publish the app's image** job prints. The job reads your host's secrets,
+Each rollout stops the old release before the new one starts, checks the app, and puts the
+previous release back when the new one fails
+([The underwriter app](../../building-models/workbench.md#the-underwriter-app)). One rollout
+of an environment runs at a time. The jobs read your host's secrets,
 `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`,
 which `haute ci secrets` sets from `.env`; the service principal needs the AcrPush role on
 the registry.

@@ -38,13 +38,17 @@ Pull request → Validation → Merge → Staging → Smoke test → Impact anal
 
 A [workbench project](../../building-models/workbench.md) hosts no API: what it releases is
 the [underwriter app](../../building-models/workbench.md#the-underwriter-app). Its
-`azure-pipelines.yml` has two stages instead: **Validate**, which lints, type-checks and runs
-tests, then builds the app's release, which checks your pipeline and schema and scores your
-test quotes, on every pull request and on main; and **Publish**, on main only, which logs in
-to your registry and builds the app's image once, pushes it to the registry
-`[deploy.container]` names and prints the image by digest. Nothing moves your hosted app to
-the new image yet: point the app on Azure Container Apps at that digest. The Publish stage
-reads your host's variables from the `haute-credentials` group,
+`azure-pipelines.yml` has three stages instead: **Validate**, which lints, type-checks and
+runs tests, then builds the app's release, which checks your pipeline and schema and scores
+your test quotes, on every pull request and on main; **Publish**, on main only, a deployment
+to the `staging` environment that builds the app's image once, pushes it to the registry
+`[deploy.container]` names and rolls the staging app out to it; and **DeployProduction**, a
+deployment to the `production` environment that you run by hand, which rolls the production
+app out to the release staging runs. Each rollout checks the app and puts the previous
+release back when the new one fails
+([The underwriter app](../../building-models/workbench.md#the-underwriter-app)). Add an
+**Exclusive lock** check to both environments so one rollout of each runs at a time. The
+stages read your host's variables from the `haute-credentials` group,
 `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`.
 
 ---

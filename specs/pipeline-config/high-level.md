@@ -263,12 +263,16 @@ provider gate the deploy. Where the plan offers them: GitHub gives required revi
 private repository only on GitHub Enterprise, and GitLab's protected environments need Premium.
 A workbench project's workflows are a set of their own, the same for every provider in
 shape: a validate job (lint, type check, test, pipeline lint, `haute app build`) on a pull
-request and on a push to the default branch that changes a release input, and on that push a
-publish job that logs in to the registry with the app host's credentials and runs
+request and on a push to the default branch that changes a release input; on that push a
+publish job that logs in to the registry with the app host's credentials, runs
 `haute app build --push`, which builds the underwriter app's image once, pushes it and prints
-the reference by digest it pushed. It has no endpoint deploy, smoke test or impact analysis,
-and no production job yet: nothing rolls a hosted app to the image, which the generated files
-say ([workbench](../workbench/high-level.md)). Re-running `haute init --force` with a different
+the reference by digest it pushed, and rolls the staging app to that reference with
+`haute app rollout staging --image`; and a production job, run by hand after the provider's
+approval (GitHub's `release-production.yml`, GitLab's manual `deploy-production` job, Azure
+DevOps' `DeployProduction` stage, triggered by hand, under its `production` environment),
+that rolls production to the release staging runs for the commit with `haute app rollout prod --from
+staging`. It has no endpoint deploy, smoke test or impact analysis
+([workbench](../workbench/high-level.md)). Re-running `haute init --force` with a different
 `--ci`, or for the other kind of project, prunes every workflow file Haute generated that the
 new set does not hold before writing the new ones, so switching providers doesn't leave
 orphaned config behind.

@@ -48,6 +48,16 @@ class AppBuildConfig:
 
 
 @dataclass
+class AppRolloutConfig:
+    """Parsed inputs for the ``haute app rollout`` command: the hosted environment rolled out,
+    and the image, by digest, or the environment whose recorded release it takes."""
+
+    environment: str
+    image: str | None = None
+    source: str | None = None
+
+
+@dataclass
 class AppServeConfig:
     """Parsed inputs for the ``haute app serve`` command."""
 
@@ -120,6 +130,44 @@ def handle_app_build(config: AppBuildConfig) -> None:
     click.echo(f"  ✓ Image built: {config.image}")
 
 
+def handle_app_rollout(config: AppRolloutConfig) -> None:
+    """Roll the hosted environment's app out to the image, check it there and record it
+    (specs/workbench, Control flow 35), printing each step and the release id last. Every
+    refusal and failure, quotes closed by a store mismatch included, is a Click error."""
+    from haute import _workbench_rollout as rollouts
+    from haute._workbench_config import read_workbench_config
+
+    project_dir = Path.cwd()
+    with _said():
+        workbench = read_workbench_config(project_dir)
+        target = rollouts.app_environment(workbench, config.environment)
+        # Every refusal comes before anything changes: the source's record is read first too.
+        source = (
+            None if config.source is None else rollouts.app_environment(workbench, config.source)
+        )
+        commit = rollouts.head_commit(project_dir)
+        values = rollouts.credentials()
+        if source is not None:
+            assert config.source is not None
+            image = rollouts.promoted(
+                rollouts.AzureContainerApps(source, values), config.source, commit
+            )
+            click.echo(f"  ✓ {config.source} runs {image} for commit {commit[:12]}")
+        else:
+            assert config.image is not None
+            image = config.image
+        release = rollouts.rollout(
+            rollouts.AzureContainerApps(target, values),
+            environment=config.environment,
+            image=image,
+            commit=commit,
+            say=click.echo,
+            get=rollouts.fetch,
+        )
+    # The last line: the release that runs.
+    click.echo(release)
+
+
 def handle_app_serve(config: AppServeConfig) -> None:
     """Build the project's release under ``.haute/`` and serve it on loopback, signed in as the
     analyst's git identity."""
@@ -187,6 +235,22 @@ def build(output: Path, image: str | None, push: bool) -> None:
     if image is not None and push:
         raise click.UsageError("--image and --push each build the image: pass one.")
     handle_app_build(AppBuildConfig(output=output, image=image, push=push))
+
+
+@app.command(name="rollout")
+@click.argument("environment")
+@click.option("--image", default=None, help="The image to roll out, named by digest.")
+@click.option(
+    "--from",
+    "source",
+    default=None,
+    help="Roll out the release this environment's app runs, for the commit checked out.",
+)
+def rollout_command(environment: str, image: str | None, source: str | None) -> None:
+    """Roll a hosted environment's app out to an image, check it there and record it."""
+    if (image is None) == (source is None):
+        raise click.UsageError("Pass --image or --from, one of them.")
+    handle_app_rollout(AppRolloutConfig(environment=environment, image=image, source=source))
 
 
 @app.command()

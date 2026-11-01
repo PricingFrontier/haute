@@ -322,7 +322,11 @@ def test_update_rewrites_a_workbench_projects_own_set(runner, workbench_project:
     assert result.exit_code == 0, result.output
     expected = workbench_ci_files("azure-container-apps", "github", python_version="3.11")
     assert release.read_text(encoding="utf-8") == expected[".github/workflows/release.yml"]
-    assert sorted(path.name for path in workflows.iterdir()) == ["ci.yml", "release.yml"]
+    assert sorted(path.name for path in workflows.iterdir()) == [
+        "ci.yml",
+        "release-production.yml",
+        "release.yml",
+    ]
     assert (workbench_project / ".env.example").read_text(encoding="utf-8") == app_env_example(
         "azure-container-apps", connection_variables(workbench_project)
     )
@@ -333,10 +337,10 @@ def test_update_rewrites_a_workbench_projects_own_set(runner, workbench_project:
 def test_update_refuses_a_workbench_project_naming_no_host(runner, workbench_project: Path) -> None:
     toml = workbench_project / "haute.toml"
     text = toml.read_text(encoding="utf-8")
-    assert '[workbench.app]\nhost = "azure-container-apps"\n' in text
-    toml.write_text(
-        text.replace('[workbench.app]\nhost = "azure-container-apps"\n', ""), encoding="utf-8"
-    )
+    # The whole [workbench.app] table gone, its hosted environments' tables with it.
+    start = text.index("[workbench.app]\n")
+    end = text.index("# The quote store's environments")
+    toml.write_text(text[:start] + text[end:], encoding="utf-8")
     release = workbench_project / ".github" / "workflows" / "release.yml"
     release.write_text("name: edited\n", encoding="utf-8")
 

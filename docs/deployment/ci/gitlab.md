@@ -38,12 +38,15 @@ Merge request → Validation → Merge → Staging → Smoke test → Impact ana
 
 A [workbench project](../../building-models/workbench.md) hosts no API: what it releases is
 the [underwriter app](../../building-models/workbench.md#the-underwriter-app). Its
-`.gitlab-ci.yml` has two stages instead: **validate**, which lints, type-checks and runs
+`.gitlab-ci.yml` has three stages instead: **validate**, which lints, type-checks and runs
 tests, then builds the app's release, which checks your pipeline and schema and scores your
-test quotes, on every merge request and on main; and **publish**, on main only, which logs in
-to your registry and builds the app's image once, pushes it to the registry
-`[deploy.container]` names and prints the image by digest. Nothing moves your hosted app to
-the new image yet: point the app on Azure Container Apps at that digest. The publish job
+test quotes, on every merge request and on main; **publish**, on main only, which builds the
+app's image once, pushes it to the registry `[deploy.container]` names and rolls the staging
+app out to it; and **production**, a manual `deploy-production` job that rolls the production
+app out to the release staging runs. Each rollout checks the app and puts the previous
+release back when the new one fails
+([The underwriter app](../../building-models/workbench.md#the-underwriter-app)), and one
+rollout of an environment runs at a time. The publish and production jobs
 reads your host's variables, `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`,
 `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`, and needs the privileged runner a
 container target does. Tick **Protect variable** on all four, not optionally: GitLab gives a

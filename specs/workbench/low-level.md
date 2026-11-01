@@ -4,7 +4,8 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/_workbench_config.py` | The `[workbench]` table of `haute.toml`: `WORKBENCH_TOML_KEYS` (`enabled`, `app`, `store`), `APP_HOSTS` (where the underwriter app can run: `azure-container-apps`), the form folder's name in the pipeline folder (`workbench`), `WorkbenchError` (the base of every workbench problem the analyst fixes in the project), `WorkbenchConfigError`, the frozen `WorkbenchConfig` record (`enabled`, `project_root`, `app_host` and `app_edit_role` from the nested `[workbench.app]` table through `_app_settings`, `store`, the quote store's environments, the form folder, the pipeline folder's `workbench/`, the pipeline folder being the folder of the project's pipeline file, and `form`, that folder's path from the project root as the status and every message name it) and `read_workbench_config` (the table read and checked from the project root's `haute.toml`: disabled without the file or the table; `form` refused with what replaced it); the store's environments: `StoreEnvironment` (a name, a provider, its `auth` and the names of its sign-in's `variables`, and `declared`, as a release records it), read by `store_environments` from `[workbench.store.<name>]` or a release through `_environment` (a name matching `ENVIRONMENT_NAME`, `dev` among them; a provider of `STORE_PROVIDERS`; for a database not in `FILE_PROVIDERS`, an `auth` of `STORE_SIGN_INS` with each of its keys naming a variable, `VARIABLE_NAME`, a managed identity's client_id_env optional (`_OPTIONAL_SIGN_IN_KEYS`) and, on a provider of `ROLE_NAMED`, an Entra ID sign-in's username_env, the role it takes; a location key refused naming the variable it belongs in, `_LOCATION_KEYS`, a secret's value naming the key that names its variable, `SECRET_KEYS`, and any other key by name), and the variables a host names its environment and its database with, `ENVIRONMENT_ENV`, `STORE_SERVER_ENV`, `STORE_DATABASE_ENV`, `STORE_SCHEMA_ENV` and `STORE_URL_ENV`. |
+| `src/haute/_workbench_rollout.py` | The hosted app rolled out and checked, for `haute app rollout` (Control flow 35). `RolloutError` (a `WorkbenchError` naming what failed and what was done) and `QuotesClosedError` (the release stays: its `differences`); `CREDENTIAL_VARIABLES` (the subscription, tenant, client ID and secret of the CI service principal, each an AZURE_ variable) and `credentials` (their values read from the environment, each one unset named in one refusal); `DIGEST_REFERENCE` (an image named by digest); `ROLLOUT_TIMEOUT_SECONDS` (600: Azure's update and the provisioning together), `HEALTH_TIMEOUT_SECONDS` (300), `RECOVERY_TIMEOUT_SECONDS` (600), `REQUEST_TIMEOUT_SECONDS` (30, each request) and `POLL_SECONDS` (10). The host as the rollout sees it: `Recorded` (the release a rollout recorded on the app: `image`, `release`, `commit`), `AppState` (whether it keeps one revision active, its containers' images, its public address, its latest revision, its active revisions, its Entra ID registration's client ID, None without one, the names of its Azure tags and its `Recorded`, None without a whole one), `TAG_LIMIT` (50) and `TAG_VALUE_LIMIT` (256), Azure's limits on a resource's tags, `RevisionState` (a revision's image, whether it is active, its provisioning and running states) and the `ContainerAppHost` protocol (`state`, `revision`, `deactivate`, `limit`, which bounds every request from then on, retries and their waits included, to a deadline, `set_image`, which sets the image with a revision suffix of its own within a deadline and answers the revision it made, `record`, which sets the record's Azure tags, and `token`), which `AzureContainerApps` implements through `azure-mgmt-appcontainers`' `ContainerAppsAPIClient` and an `azure-identity` `ClientSecretCredential`, the client ID read from the app's `current` auth config and a token asked for `<client id>/.default`, Azure's long-running update waited on no longer than the deadline. `HttpAnswer` and `fetch` (one GET through `urllib` within `REQUEST_TIMEOUT_SECONDS`, redirects not followed, answering status, body and where a redirect points; a stall, no server or a body that ends early answering status 0, an error whose body ends early its status), the hosted check's transport; `forged_principal` (the headers a host's sign-in would set for a principal, which the app accepts when they reach it unchanged). `rollout` (Control flow 35: the preflight, the maintenance window, the wait, `hosted_check`, `_roll_back`, the record; answers the release id), `hosted_check` and `promoted` (the release `--from` takes, its record validated against the source app and the commit checked out). |
+| `src/haute/_workbench_config.py` | The `[workbench]` table of `haute.toml`: `WORKBENCH_TOML_KEYS` (`enabled`, `app`, `store`), `APP_HOSTS` (where the underwriter app can run: `azure-container-apps`), the form folder's name in the pipeline folder (`workbench`), `WorkbenchError` (the base of every workbench problem the analyst fixes in the project), `WorkbenchConfigError`, the frozen `WorkbenchConfig` record (`enabled`, `project_root`, `app_host`, `app_edit_role` and `app_environments` (each hosted environment's `AppEnvironment`, its `name`, `resource_group` and `container_app`, empty while unset, from `[workbench.app.<name>]`, a name `[workbench.store]` declares, refused otherwise as is a key other than `APP_ENVIRONMENT_KEYS` or a value that is not text) from the nested `[workbench.app]` table through `_app_settings`, `store`, the quote store's environments, the form folder, the pipeline folder's `workbench/`, the pipeline folder being the folder of the project's pipeline file, and `form`, that folder's path from the project root as the status and every message name it) and `read_workbench_config` (the table read and checked from the project root's `haute.toml`: disabled without the file or the table; `form` refused with what replaced it); the store's environments: `StoreEnvironment` (a name, a provider, its `auth` and the names of its sign-in's `variables`, and `declared`, as a release records it), read by `store_environments` from `[workbench.store.<name>]` or a release through `_environment` (a name matching `ENVIRONMENT_NAME`, `dev` among them; a provider of `STORE_PROVIDERS`; for a database not in `FILE_PROVIDERS`, an `auth` of `STORE_SIGN_INS` with each of its keys naming a variable, `VARIABLE_NAME`, a managed identity's client_id_env optional (`_OPTIONAL_SIGN_IN_KEYS`) and, on a provider of `ROLE_NAMED`, an Entra ID sign-in's username_env, the role it takes; a location key refused naming the variable it belongs in, `_LOCATION_KEYS`, a secret's value naming the key that names its variable, `SECRET_KEYS`, and any other key by name), and the variables a host names its environment and its database with, `ENVIRONMENT_ENV`, `STORE_SERVER_ENV`, `STORE_DATABASE_ENV`, `STORE_SCHEMA_ENV` and `STORE_URL_ENV`. |
 | `src/haute/_connections.py` | `connections.toml` at the project root (`CONNECTIONS_FILE`), the databases the editor and `haute app serve` reach on the analyst's machine: `read_connections` (each table of the file a `Connection` by name, in the file's order, none without the file; a name matching `ENVIRONMENT_NAME`; a provider of `STORE_PROVIDERS`; a file provider's `database` alone, the path from the project root, taking no sign-in; a server's `server`, `database` and optional `schema` (`_LOCATION_KEYS`), each text that may be empty, and its `auth` of `CONNECTION_SIGN_INS` (`password`, `service-principal`, `entra`) with each key naming a variable, `VARIABLE_NAME`, an Entra ID sign-in (`_ENTRA`) on a provider of `ROLE_NAMED` naming username_env too; `managed-identity` refused as a hosted app's, a key holding a secret's value or a connection string (`_REFUSED_KEYS`, `SECRET_KEYS` with connection_string and `url`) refused naming what to name instead, any other key by name, and a file that cannot be read, parsed or decoded, each a `ConnectionsError`, a `WorkbenchConfigError`, never saying the value refused, which may be a secret put in the wrong key); `Connection` (frozen: `name`, `provider`, `database`, `server`, `schema`, `auth` and the sign-in's `variables` by key, never a value; `where`, the file and its table as a message names them); and `project_environ` (the clone's `.env`, read afresh through python-dotenv's `dotenv_values`, under the process's own environment, which wins). |
 | `src/haute/_workbench_app.py` | The underwriter app. `write_release` writes, beside a bundle already in a release directory (`MANIFEST_FILE` and its artifacts), the form rendered without its sample (`FORM_FILE`, written as rendered so its revision is the one recorded), the `Release` record (`RELEASE_FILE`: an id hashed from the form and the manifest without when and by whom it was built, the form's revision, the pipeline's name, the Haute version, when, the host, the edit role and the quote store's `environments` the project declares, each as its `declared` record holds it, which `store_environments` reads back) and the entry point `APP_ENTRY` (`app.py`); the id, from `_release_id`, hashes through `canonical_json` the form as shipped, the manifest's `_PRICING_KEYS` with the pipeline graph as it prices (`_as_priced`, each graph through `_graphs`: its nodes by id, label, type and config, sorted by id, and its edges by their ends, `_EDGE_ENDS`, so a node's place on the canvas, its description, an edge's canvas id and the pipeline's file name nothing), each artifact's bytes, the bundled utility code's (`_utility_hashes`) through `content_hash`, and the runtime the pipeline prices on (`write_release`'s `runtime`, the installed versions `build_release` reads through the deploy's `runtime_versions`, an image or not, a runtime that cannot be read refused as a `WorkbenchAppError`); `read_release` reads the three back, each checked where it is read, refusing as `WorkbenchAppError` an unreadable file, a `RELEASE_FILE` that is not an object of the `Release` fields, a `FORM_FILE` that is not a form (its first error's place and message) and a `MANIFEST_FILE` without the keys the app prices with (`_MANIFEST_KEYS`). `build_release` builds a project's release: the workbench enabled and its sheets saved, each input column's allowed values from a params file read again through `with_param_options` (a `ParamFileError` refused as a `WorkbenchAppError` naming the form, before the directory is touched), the directory checked by `_check_output` (refused when it is or holds the project or the working directory, when it is a file, and when it holds anything but an earlier release: `haute.toml`, `.git`, or files `_is_release` does not take, a release being a `RELEASE_FILE` that reads as a `Release` with `MANIFEST_FILE` and `app.py` beside it), the pipeline resolved from `haute.toml` through `resolve_config`, checked through `validate_deploy` with its test quotes, bundled through `write_bundle`, or, with `[deploy.container] base_image` set and pinned (`_validate_base_image_pinning`), through `prepare_build_directory` with `FORM_FILE` and `RELEASE_FILE` copied too and `STORE_DEPENDENCIES` installed with each declared environment's driver (`store_dependencies`, through the provider's packages and azure-identity for an Entra ID sign-in) and Microsoft's ODBC driver where an environment is `sqlserver`, the image's build context, into a folder beside the directory, then the release written there, its entry point in the scoring app's place, which passes `create_app` `hosted_store` for its release, for the store's gate to resolve as it checks, and the folder put in the directory's place by `_swap_in` (an earlier release moved aside first, put back when the new one cannot take its place, and removed after, each move through `src/haute/_file_ops.py::rename_directory` and the removal through `src/haute/_file_ops.py::remove_tree`, a removal that fails refused naming where it was moved); a build that fails removes its folder and leaves the earlier release as it was. `build_image` builds that context with Docker (`_check_docker_available`, `_docker_build`), refusing a release without a Dockerfile and naming the setting; `image_reference` names the image `haute app build --push` publishes, `<registry>/<name>:<short commit>` from `[deploy.container] registry` (refused, naming it, when empty), the project's name in lower case and the commit `git rev-parse --short HEAD` names in the project (refused when git names none), and `push_image` builds it, pushes it (`_docker_push`) and answers the reference by digest the registry holds for it (`_docker_repo_digest`, the container module's, read from what `docker image inspect` reports, refused when no digest names that repository). `create_app` serves a release, each graph's source file placed in the release so the pipeline imports the bundle's utility code, the project root set to it through `set_project_root` and the page from the `static_dir` given or Haute's own; its quotes are kept behind a `StoreGate` (`src/haute/_workbench_app_store.py`) over the `store` it is given, a `StoreLocation` (dev's, on the analyst's machine), a resolver of one (`hosted_store`: the environment `ENVIRONMENT_ENV` names, which the release must declare, at the database the host's variables locate, through `resolve_store`, and none while no environment is named, nothing of the store's loaded) or none, the gate opening the book through `open_book` for the release's form and pipeline in the store's environment, SQL schema and sign-in, tried once as the app is made, a closed gate logged and never raised, and its book closed in the app's lifespan; given a `local_principal`, `LocalTrustedHostMiddleware` with `DEFAULT_TRUSTED_HOSTS` is installed outside every other middleware, refusing (400) a request, `GET /health` included, for any other host or carrying forwarded metadata before it is signed in (a hosted app takes its front's forwarded headers); a middleware signs in every request but `GET /health` (the `local_principal` given, else, for `azure-container-apps`, the `EASY_AUTH_NAME` or `EASY_AUTH_ID` header) and answers 401 without one, worded for a release with no host, 403 to a write `_cross_site` judges another site's (its `sec-fetch-site` not in `_SAME_SITE`, or, without one, its `origin` not the host), and 401 naming `EASY_AUTH_PRINCIPAL` when `may_edit` cannot tell whether the principal may change quotes (a release's `edit_role` held, through `easy_auth_roles`, or the local principal unless `local_reader`), keeping the answer as the request's `can_edit`; `GET /api/app/release` (the release without its environments, the principal, `quotes`, the gate's state as `src/haute/_workbench_app_store.py::StoreGate.state` checks it on a worker thread, and whether the principal may change quotes), `GET /api/app/form` (the form and its revision) and `POST /api/app/price` (the body read within the deployed `/quote` route's limit, `deploy_quote_request_body_limit_bytes`, through `read_limited_json_body` before it is parsed: 413 past it, 400 for a malformed length and 422 for a body that is not JSON or not a `WorkbenchAppPriceRequest`; 409 for another form revision or release, 503 with the gate's refusal while it is closed (the gate's `book` on a worker thread, the answer its `QuoteStoreClosedError`'s `detail`), else `price_values`: 422 for an empty quote, else the request through `quote_request`, admitted through `admit_deploy_execution` and priced through `score_graph` as a `QuoteRequest` of one, its admission kept past the scoring, through rendering it with `render_output_document`, one document for the one quote however little it holds, each value in it that is not finite made null through `finite_document`, all in the app's own pricing pool, and released there, bounded by `PRICE_TIMEOUT_SECONDS`: the pool's threads and a bounded semaphore of its places are both sized by `int_env(PRICING_WORKERS_ENV, PRICING_WORKERS)` when the app is made, a place taken without waiting before the pricing is handed to the pool and given back by the pricing's own completion, never the request's, so one past its timeout keeps its place until it ends, 503 with `Retry-After: BUSY_RETRY_SECONDS` at once when no place is free, the pool shut down without waiting in the app's lifespan; 504 past the timeout, 503 refused admission, 507 over the memory limit, 422 a public contract error, and 500 "The pipeline failed on this quote: <reason>" for any other failure of the pipeline, logged, as the deployed pricing API answers one; `price_values` answers a `Pricing`, its tables through `priced_tables`, the request priced through `to_json_safe` and the document, which a save keeps), `GET /` and `APP_PAGES` (`APP_PAGE` from the app's own build, `_STATIC`, `src/haute/static/app/`, 503 while it is not built) and its assets; and the quote routes of `quote_router` over the gate, mounted whatever it holds. |
 | `src/haute/_workbench_app_quotes.py` | The app's quote routes: `QuoteApp` (the release's id and sheets' revision, its form, the `StoreGate` and its `Pricer`, which answers a `Pricing`), `quote_model` (an `AppQuote` as a `WorkbenchAppQuote`, its details by column name and its source's label), `quote_router` (under `/api/app`, a quote named by its reference and option, the reference URL-encoded: the list; create (a creation repeated with its key answered first, through `replayed`; then 409 for another sheets' revision or release through `_drawn_for`; then `create`, unpriced, with the reference and the source the body names); open (`read`); save (a save repeated with its key answered first, through `replayed`, before the release is checked or anything priced; then `_drawn_for`; the values as the write keeps them, `as_written` with the book's `managed` at the one instant `now` gives, 422 when nothing is typed (`quote_request` with `_APP_SET_CELLS` untyped, so the app's details decide what the sheets show but are no typing); unpriced as it is, else its values' types checked through `input_rows` before they are priced again through the `Pricer`, the `Pricing`'s document kept as `PricedOutputs`); the changes through `change` (`assignee`, `archive`, `restore`, `final`, `amend`, each answering with the quote as its own transaction left it); the note (no version); the activity, through `_related` for the quotes it names, and the people), each quote answered through `answer` (its values, its outputs, the request its values price as, through `quote_request`, the rows it dropped, and, for a save, `_moved`: the prices it keeps against those the page showed, through `response_changes` at `PRICE_TOLERANCE`, one part in a billion, the quote's identity left out of both by `_without_identity`), `_body` (a body read within `deploy_quote_request_body_limit_bytes` through `read_limited_json_body`), `_editor` (the principal changing a quote, 403 to one who may only read them, before any create, save or change) `_book` (the gate's book on a worker thread as each route starts, a closed gate answered 503 with its `QuoteStoreClosedError`'s `detail`) and `_call` (the work on a worker thread through `run_in_threadpool`: `QuoteNotFoundError` 404, `StaleQuoteError` 409 with the quote as it is now, `QuoteNotReadyError` 409 with each field missing, `WriteSupersededError` 409 with when the write landed and who changed the quote when, `QuoteLockedError` 409, `ReferenceTakenError` 409 with the quote holding the reference, `QuoteValuesError` 422 with each cell, any other `QuoteStoreError` 422, each detail its message and error code). A store `_call` meets unreached (`src/haute/_quote_store/_store.py::unreached`) closes the gate as unreachable (`src/haute/_workbench_app_store.py::StoreGate.unreachable`, on a worker thread, as the gate may be held by a check) and is answered 503, quote_store_unreachable, logged by `logger` without the driver's text; any other statement the database refuses (a `DBAPIError` holding its statement) makes the gate check at once (`src/haute/_workbench_app_store.py::StoreGate.recheck`), answered 503 with the refusal's `detail` when the tables no longer fit and raised as it was when they do; and a gate closed meanwhile (`QuoteStoreClosedError`) is answered so too. |
@@ -118,7 +119,8 @@ request group, which only the tests load, so the form's models are generated typ
 with `WORKBENCH_TOML_KEYS`, in the `haute.toml` schema its whole-file check accepts.
 `src/haute/_scaffold.py` renders a workbench project's `haute.toml`, `workbench_haute_toml`
 (`[project]`, `[deploy.container]` with the base image on the project's Python, `[test_quotes]`,
-`[ci]` and the table, `workbench_table`, its `[workbench.app] host` and the quote store's
+`[ci]` and the table, `workbench_table`, its `[workbench.app] host`, `HOSTED_ENVIRONMENTS`'
+`[workbench.app.<name>]` with `resource_group` and `container_app` empty, and the quote store's
 `WORKBENCH_ENVIRONMENTS` declared on the one provider, `STORE_USERNAME_ENV` naming the role on
 `postgresql`), `connections_toml`, their connections on that provider with the analyst's
 sign-in (`connection_sign_in`, each environment's variables `HAUTE_<ENVIRONMENT>_<KEY>`),
@@ -127,8 +129,14 @@ sign-in (`connection_sign_in`, each environment's variables `HAUTE_<ENVIRONMENT>
 workflows, `workbench_ci_files` (`.github/workflows/ci.yml` and `release.yml`, or
 `.gitlab-ci.yml`, or `azure-pipelines.yml`: the validate job ending in `haute app build`, and
 on the default branch alone, a manual run's included, the publish job logging in to the
-registry with the host's credentials and running `haute app build --push`, under
-`_app_publish_notice`), `ci_credentials` (the
+registry with the host's credentials, running `haute app build --push` and rolling staging to
+the reference it prints with `haute app rollout staging --image`, and a production job run by
+hand, GitHub's `release-production.yml`, GitLab's manual `deploy-production` job and Azure
+DevOps' `DeployProduction` stage (`trigger: manual`), rolling production with `haute app
+rollout prod --from staging`; every job that rolls out given the host's credentials, an hour
+(publish) or forty-five minutes (production), and serialised per environment: GitHub's
+`concurrency` group, GitLab's `resource_group`, Azure DevOps' `lockBehavior: sequential`),
+`ci_credentials` (the
 `TARGETS` key whose credentials a project's CI reads: a workbench project's host, refused
 naming `[workbench.app] host` when it names none), and the blank form as `starter_form`;
 `src/haute/cli/_init_cmd.py` writes them for `haute init` answered for workbench pricing, and
@@ -836,23 +844,18 @@ no longer has; and `InputSource` in
     group. In the editor, `singletonTypesOccupiedBy` gives both for either, so the palette greys
     out the one it offers and the drop and paste checks refuse a second, with
     `singletonLimitMessage` naming "Quote Response or Workbench Output".
-15. **Scaffolding.** `handle_init` with `workbench` set passes it to `haute_toml`, which appends
-    the `[workbench]` table (`enabled = true`) after `[ci.staging]`, and writes the folder
-    files of `blank_form(name)` (one sheet, "Sheet 1", Haute's quote_details alone, no sample:
-    `form.json`, `schema/quote_details.json`, `sheets/sheet_1.json` and
+15. **Scaffolding.** `handle_init` answered for workbench pricing writes `haute.toml` through
+    `workbench_haute_toml` (the `[workbench]` table, `enabled = true`, with the app's host, its
+    hosted environments' Container Apps and the store's environments on one database), and
+    writes the folder files of `blank_form(name)` (one sheet, "Sheet 1", Haute's quote_details
+    alone, no sample: `form.json`, `schema/quote_details.json`, `sheets/sheet_1.json` and
     `sheets/sheet_1.layout.json`) to the pipeline folder's `workbench/`, reporting both in its
     summary, having held every path of the folder to `ordinary_path_problem`
     (`_form_folder_problem`) before writing anything, so a pipeline folder reached
-    through a junction refuses the init with exit 1 and nothing written. In a project
-    that already has a `haute.toml`, `--workbench` without `--force`
-    appends the table to the end of that `haute.toml` (`_add_workbench`) and writes the
-    folder, touching nothing else; `--force --workbench` rewrites the scaffold but keeps a
-    form folder that is already there. It checks first: the table
-    absent, the folder absent, and every path it will write ordinary
-    (`ordinary_path_problem`), refusing with exit 1 and nothing written otherwise. It then
-    writes the folder's files, and last `haute.toml` atomically; a failure removes the files
-    and folders this run made, leaves `haute.toml`'s bytes as they were and exits 1 naming
-    the cause, so a second run starts from where the first did. `_SEED_PATHSPECS` carries `workbench/` and `*/workbench/*`, so
+    through a junction refuses the init with exit 1 and nothing written. A project that
+    already has a `haute.toml` is refused without `--force`, `--workbench` included;
+    `--force --workbench` rewrites the scaffold but keeps a form folder and a
+    `connections.toml` that are already there. `_SEED_PATHSPECS` carries `workbench/` and `*/workbench/*`, so
     `set_working_branch`'s unborn-repository seed stages the form with the pipeline's
     files, and the generated deploy workflows need no trigger of the form's own: the
     pipeline folder they watch holds it.
@@ -1257,6 +1260,69 @@ no longer has; and `InputSource` in
     or to set the options is an alert in its place. `ChartSettings` changes its options
     through `updateWidget`, and the Rows select offers `labelColumns` once `chartGrain` is
     many-row.
+
+35. **Rolled out.** `handle_app_rollout` reads the workbench config and the environment's
+    `AppEnvironment`, then hands `rollout` everything it needs, every refusal before any change
+    (the preflight): a host other than `azure-container-apps`, an environment the config does
+    not name or whose `resource_group` or `container_app` is empty, the commit git names for
+    HEAD in the project (`git rev-parse HEAD`, refused when it names none), `credentials()`,
+    and the image: `--image` held to `DIGEST_REFERENCE`, or `--from`'s through
+    `promoted(source_host, commit)`, which reads the source app's `state()` and refuses a
+    record missing or partial, an image not matching `DIGEST_REFERENCE`, a commit other than
+    HEAD's, and a source whose latest revision is not active on that image. `rollout` reads
+    `host.state()` and refuses an app keeping more than one revision active, not running
+    exactly one container, with no public address or no Entra ID client ID, an image reference
+    longer than `TAG_VALUE_LIMIT` (256) characters and an app whose tags, with the record's
+    three added, would pass `TAG_LIMIT` (50), then asks `host.token(client_id)`, refused when
+    Azure gives none. When the latest revision is active, provisioned and on the image, nothing
+    is rolled: a failed or degraded running state fails the run, and so does the check, with
+    nothing undone. Otherwise the image the app serves is kept as the one to go back to: its
+    serving revision's, Azure's latest ready revision while it is active (not its template's,
+    which a failed update of Azure's own can leave naming an image no revision serves, nor
+    another active revision's on its way out, which takes no traffic; none when the latest
+    ready revision is not active), then, with `host.limit(ROLLOUT_TIMEOUT_SECONDS)`, within the
+    recovered
+    scope, every active revision deactivated (`deactivate`) and `set_image(image, suffix,
+    timeout)` sets it with a revision suffix of its own (`_suffix`: `h`, the UTC time to the
+    second as twelve digits and six random hex digits from `secrets`, so two rollouts in one
+    second never share one, and every rollback gets another) and answers the revision,
+    `AzureContainerApps` spending the timeout from its first request (each request's
+    connection and read bounded by `REQUEST_TIMEOUT_SECONDS`, retried at most twice through a
+    retry policy that waits no longer than ten seconds whatever `Retry-After` asks, and given
+    the SDK's `timeout`, its retries and their waits included, of at most a minute and what is
+    left of the bound `limit` set, a request asked once it is spent refused), Azure's update
+    waited on with
+    `LROPoller.wait` no longer than what is left, and the revision Azure answers refused unless
+    its name ends with the suffix, since the resource Azure answers may already hold another
+    change; the revision is then polled every `POLL_SECONDS` until it is provisioned within the
+    deadline, a `Failed` provisioning, a `Failed` or `Degraded` running state or the end of
+    the deadline, provisioned or not, failing it. `hosted_check(fetch, address, token)` polls `GET /health` signed
+    in until it answers 200 with a release or `HEALTH_TIMEOUT_SECONDS` pass; sends
+    `GET /api/app/release` with `forged_principal()` and no token, which must answer 401, 403
+    or a 3xx whose `Location`, parsed, is the host's sign-in: `/.auth/login` or under it on
+    the app's own address (or relative), or `login.microsoftonline.com` itself, over https; and sends it again with `Authorization: Bearer`, which must
+    answer 200 for the release `/health` named with `quotes.open`. A `QuotesClosedError`
+    (`quotes.error_code` `quote_store_mismatch`, carrying the release and the differences)
+    leaves the release running. Any other failure, the update's included (refused, failed or
+    past its deadline), starts one recovery deadline, `RECOVERY_TIMEOUT_SECONDS`, and
+    `host.limit` with it, which the ownership read, the update (`AzureContainerApps` never
+    waiting past the bound) and the wait all share; `_roll_back` reads `state()`: when the
+    latest revision ends with this rollout's suffix (the revision it made) or is still the one
+    it started from (the update refused or not yet applied, or a deactivation Azure applied
+    and answered with a failure), it deactivates this rollout's revision when there is one and
+    sets the kept image again with a suffix of its own, or, with none kept, leaves the failed
+    revision stopped, waiting on it within the deadline, a recovery that fails (its ownership
+    read included) naming its failure beside the original and the app's state, read with the
+    bound lifted (`_last_state`), or why that read failed too; when
+    a third revision is the latest, nothing is undone and the run fails saying another change
+    replaced it. The release that stays, open or closed, is recorded
+    (`record(Recorded(image, release, commit))`, the app's other tags kept) only while its
+    revision is still the latest. The guard is best effort, a read before each write: Azure
+    takes no conditional update of a Container App, so a change landing between the read and
+    the write is not seen; the generated jobs, serialised per environment, are what keep two
+    rollouts of one app apart.
+    The command raises `QuotesClosedError`'s message as a Click error when the quotes are
+    closed, or prints the release id last.
 
 ## Edge cases and invariants
 
@@ -2257,6 +2323,39 @@ no longer has; and `InputSource` in
   whose file can no longer give them; `tests/test_workbench_routes.py` also covers
   `GET /api/workbench/params` serving a header and a column's values, 409 with the
   message for a column the file does not have, and 404 while disabled.
+- `tests/test_workbench_rollout.py` covers `haute app rollout` against a fake
+  `ContainerAppHost` and a fake `fetch`: each preflight refusal with nothing changed (another
+  host, an environment not named or left empty, an image named by tag, no commit, each unset
+  credential named, multiple revision mode, two containers, no public address, no Entra ID
+  client ID, no token; `--from` with no record, a partial one, a tag-named image, another
+  commit and a source not running the recorded image); the maintenance window's order (every
+  active revision deactivated before the image is set, with a suffix of its own, two
+  rollouts with the clock fixed to one second getting two suffixes; the image put back the
+  one the active revision served, when the template names another; a deactivation Azure
+  applied and answered with a failure put back; Azure answering another writer's revision
+  refused; the deadline spent from the adapter's first request; a revision provisioned past
+  the deadline failed; every request given what is left of its bound and refused once it is
+  spent, the retry policy's wait capped at ten seconds; the image put back the serving
+  revision's when another active revision is on its way out; a redirect elsewhere than the
+  sign-in, by host, path or scheme, no
+  refusal; `fetch` against a loopback server stalling, cutting a body short, and cutting an
+  error's body short); a re-run of an active,
+  provisioned revision on the image rolling nothing, its failed check and a degraded revision
+  each undoing nothing; an inactive revision on the image rolled again to a new revision; the
+  update refused after the old revision stopped, before a new one exists, putting the
+  previous image back; an image reference past 256 characters and an app with no room for
+  the record's tags refused before anything changes; an update or a
+  provisioning past its deadline, a failed provisioning, a degraded revision, a `/health`
+  that never answers, a stalled request, a forged principal answered 200 or redirected
+  elsewhere than the sign-in, a signed-in request refused, another release and quotes closed
+  for another reason, each rolled back to the previous image on a revision of its own, or left
+  deactivated with none, and a rollback that fails naming the app's state; quotes closed by a
+  store mismatch left running, recorded and failed naming each difference; another revision
+  made latest before the guard looks, never undone nor recorded over; and the record set,
+  the app's other tags kept, only after a rollout that stays. The forged principal is held against the real app's middleware, which
+  accepts it when it reaches the app unchanged. `AzureContainerApps` is held to the SDK with
+  a fake client: the state it reads, the revision suffix and image it sets, the deadline it
+  waits on the update, the tags it records and the scope it asks a token for.
 - `tests/test_cli_init.py` covers a workbench `haute init` writing the table, its host and
   the one provider for dev, staging and prod, `[deploy.container]` and no endpoint settings,
   `connections.toml` for each provider and sign-in, the blank form folder in the pipeline

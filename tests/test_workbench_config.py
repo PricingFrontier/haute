@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from haute._workbench_config import (
+    AppEnvironment,
     WorkbenchConfigError,
     read_workbench_config,
     store_environments,
@@ -74,6 +75,65 @@ def test_the_app_table_names_where_the_underwriter_app_runs(tmp_path: Path) -> N
     )
     assert read_workbench_config(tmp_path).app_host == "azure-container-apps"
     assert read_workbench_config(tmp_path).app_edit_role is None
+
+
+def test_each_hosted_environment_names_the_container_app_it_runs_as(tmp_path: Path) -> None:
+    """``[workbench.app.<name>]`` names where the host runs a store environment's app, each
+    value left empty until IT fills it in (specs/workbench)."""
+    stores = (
+        "[workbench.store.staging]\nprovider = 'sqlite'\n\n"
+        "[workbench.store.prod]\nprovider = 'sqlite'\n"
+    )
+    enable(
+        tmp_path,
+        "[workbench]\nenabled = true\n\n[workbench.app]\nhost = 'azure-container-apps'\n\n"
+        "[workbench.app.staging]\nresource_group = ' pricing-rg '\n"
+        "container_app = 'motor-staging'\n\n"
+        "[workbench.app.prod]\n\n" + stores,
+    )
+
+    config = read_workbench_config(tmp_path)
+
+    assert config.app_host == "azure-container-apps"
+    assert config.app_environments == (
+        AppEnvironment("staging", "pricing-rg", "motor-staging"),
+        AppEnvironment("prod", "", ""),
+    )
+
+
+@pytest.mark.parametrize(
+    ("app", "message"),
+    [
+        (
+            "[workbench.app.test]\n",
+            "[workbench.app.test] names no environment [workbench.store] declares",
+        ),
+        (
+            "[workbench.app.prod]\nregion = 'uk'\n",
+            "[workbench.app.prod] has unknown key(s): region",
+        ),
+        (
+            "[workbench.app.prod]\ncontainer_app = 3\n",
+            "[workbench.app.prod].container_app must be text",
+        ),
+        # host and edit_role are the app's own settings, never an environment's table.
+        ("host = { name = 'azure' }\n", "[workbench.app].host must be one of azure-container-apps"),
+        ("label = 'x'\n", "[workbench.app] has unknown key(s): label"),
+    ],
+    ids=["undeclared", "unknown-key", "not-text", "host-table", "unknown-setting"],
+)
+def test_a_hosted_environments_table_is_refused_naming_what_is_wrong(
+    tmp_path: Path, app: str, message: str
+) -> None:
+    host = "host = 'azure-container-apps'\n" if not app.startswith("host") else ""
+    enable(
+        tmp_path,
+        "[workbench]\nenabled = true\n\n[workbench.store.prod]\nprovider = 'sqlite'\n\n"
+        f"[workbench.app]\n{host}{app}",
+    )
+
+    with pytest.raises(WorkbenchConfigError, match=re.escape(message)):
+        read_workbench_config(tmp_path)
 
 
 def test_the_store_tables_declare_the_hosted_environments_by_provider(tmp_path: Path) -> None:

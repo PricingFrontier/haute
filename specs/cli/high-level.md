@@ -62,7 +62,9 @@ Out of scope, owned elsewhere:
   no scoring API: its `haute.toml` holds `[deploy.container]`, the app image's base image,
   registry and port, and no endpoint settings, and the `[workbench]` table with
   `[workbench.app] host` and the quote store's `dev`, `staging` and `prod` on the database
-  chosen; it also gets a blank form folder, `rating/workbench/`, and `connections.toml`, the
+  chosen and `[workbench.app.staging]` and `[workbench.app.prod]`, the Container Apps each
+  hosted environment runs as, left for IT to fill in; it also gets a blank form folder,
+  `rating/workbench/`, and `connections.toml`, the
   three environments' connections for the editor and `haute app serve`, on that database
   with the analyst's sign-in, whose variables `.env.example` names beside the host's
   credentials; and its workflows validate and publish the underwriter app
@@ -148,6 +150,15 @@ Out of scope, owned elsewhere:
   as are a project without a workbench and sheets never saved; an earlier release is
   replaced only once the new one has built beside it, so a build that fails leaves it as
   it was.
+- `haute app rollout ENVIRONMENT (--image REFERENCE | --from ENVIRONMENT)` rolls a
+  workbench project's hosted app, the Container App `[workbench.app.<ENVIRONMENT>]` names, to
+  an image by digest in a maintenance window, checks the release there (it runs, the host's
+  sign-in stands in front of it, and its quotes are open), puts the previous release back
+  when the new one fails, and records the release that stays on the Container App as Azure
+  tags; `--from` rolls to the release another environment's app runs, when it runs the commit
+  checked out. It is what
+  the workbench's generated jobs run, signed in as their service principal, and exits 1 naming
+  what failed ([workbench](../workbench/high-level.md)).
 - `haute app serve [--port PORT] [--static-dir DIR] [--reader]` builds the release
   under `.haute/app/release` and serves the underwriter app on `127.0.0.1` alone (port
   8001 by default), every request signed in as the analyst's git identity, able to

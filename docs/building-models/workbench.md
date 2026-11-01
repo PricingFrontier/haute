@@ -14,8 +14,8 @@ versioned beside the pipeline: a file for each table and each sheet
     to it, and writes the table to `haute.toml`, with where the app runs and the quote
     store's `dev`, `staging` and `prod` on that database
     ([The underwriter app](#the-underwriter-app)), the blank workbench's files,
-    `connections.toml`, and the workflows that check and publish the app, and names your
-    sign-in variables in `.env.example`. A workbench project hosts no API: what it releases is
+    `connections.toml`, and the workflows that check, publish and roll out the app, and
+    names your sign-in variables in `.env.example`. A workbench project hosts no API: what it releases is
     the underwriter app. A project started without a workbench is not given one later: start
     it again with `haute init --force`.
 
@@ -694,6 +694,39 @@ builder on screen. With a quote store it is where they manage their quotes too.
   port = 8080
   base_image = "python:3.11.9-slim"
   ```
+
+- Each change merged to `main` is rolled out to the staging app on its own, and to
+  production when you ask for it, by the workflows `haute init` wrote
+  ([GitHub Actions](../deployment/ci/github-actions.md#workbench-projects)). Name the
+  Container App each environment's app runs as, which your IT team gives you:
+
+  ```toml
+  [workbench.app.staging]
+  resource_group = "pricing-rg"
+  container_app = "motor-staging"
+
+  [workbench.app.prod]
+  resource_group = "pricing-rg"
+  container_app = "motor"
+  ```
+
+  A rollout stops the release the app runs before it starts the new one, so two releases
+  never take quotes at once, then checks the app: it answers, it signs no one in but through
+  Azure, and its quotes are open. A release that fails is replaced by the one before it. A
+  release whose quotes are closed because the environment's tables don't fit your schema yet
+  stays, and the run names each difference: once the database's owners run the schema's SQL,
+  its quotes open with no new run. Production takes the release staging runs for the commit
+  you promote, and is refused when staging runs another. Each app's Azure tags
+  `haute-image`, `haute-release` and `haute-commit` say what it runs.
+
+  Your IT team sets up, once, for each app:
+
+  | What | Why |
+  |---|---|
+  | One service principal, its tenant, client ID, secret and subscription in the CI secrets `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` and `AZURE_SUBSCRIPTION_ID` | CI pushes the image and rolls the apps out as it |
+  | AcrPush on the registry, and Container Apps Contributor on both apps, for that service principal | to push the image, and to change and tag the apps |
+  | Single revision mode and a public address (external ingress) on each app | one release at a time, and an address the check can reach |
+  | Azure's built-in authentication with Microsoft Entra ID on each app, letting that service principal sign in | underwriters sign in through it, and so does the check |
 
 - The app keeps quotes in the database of an environment you declare in `haute.toml`, as
   your schema's tables: `dev` for `haute app serve`, and the hosted app's own, `staging` and
