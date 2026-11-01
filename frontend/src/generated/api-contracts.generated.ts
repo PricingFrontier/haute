@@ -3367,6 +3367,92 @@ export interface WorkbenchStoreRename {
   was: string;
 }
 /**
+ * The test-quote folder's files by name, and the branch they were read on.
+ */
+export interface WorkbenchTestQuotesResponse {
+  branch: string;
+  quotes: WorkbenchTestQuoteSummary[];
+}
+/**
+ * A file of the test-quote folder: its name, its file's name, its revision (a digest of
+ * its bytes) and, for one the panel cannot open, why.
+ */
+export interface WorkbenchTestQuoteSummary {
+  file: string;
+  name: string;
+  problem: string | null;
+  revision: string;
+}
+/**
+ * A test quote written or deleted: the file as it now stands (None once deleted), and
+ * the write's capture on the save ledger.
+ */
+export interface WorkbenchTestQuoteWriteResponse {
+  git_sha: string | null;
+  identity_required: boolean;
+  quote: WorkbenchTestQuoteSummary | null;
+  uncaptured: string[];
+  warnings: string[];
+}
+/**
+ * A test quote's values as the sheets hold them, and each value it could not place.
+ */
+export interface WorkbenchTestQuoteOpenResponse {
+  not_opened: string[];
+  values: {
+    [k: string]: {
+      [k: string]: string | boolean;
+    }[];
+  };
+}
+/**
+ * A test quote priced and compared: its outcome (``unchanged``, ``moved``,
+ * ``no_longer_compares`` or ``failed``), its moves, the tables and columns its expected
+ * answer holds that the form no longer has, why, the file's revision it read, the basis it
+ * priced on and the branch.
+ */
+export interface WorkbenchTestQuoteRunResponse {
+  basis: string | null;
+  branch: string;
+  file: string;
+  moves: WorkbenchTestQuoteMove[];
+  name: string;
+  outcome: 'unchanged' | 'moved' | 'no_longer_compares' | 'failed';
+  removed: string[];
+  revision: string;
+  why: string | null;
+}
+/**
+ * A field of a test quote that moved: its table, its row (key values or position; null
+ * in a one-row table), its column (null for a row only one side holds, ``before`` and
+ * ``after`` then saying which), the expected value and the new.
+ */
+export interface WorkbenchTestQuoteMove {
+  after: unknown;
+  before: unknown;
+  column: string | null;
+  row: string | null;
+  table: string;
+}
+/**
+ * The test quotes accepted, as they now stand, those not, with why, and the capture.
+ */
+export interface WorkbenchTestQuotesAcceptResponse {
+  accepted: WorkbenchTestQuoteSummary[];
+  git_sha: string | null;
+  identity_required: boolean;
+  refused: WorkbenchTestQuoteRefusal[];
+  uncaptured: string[];
+  warnings: string[];
+}
+/**
+ * A test quote not accepted, and why.
+ */
+export interface WorkbenchTestQuoteRefusal {
+  file: string;
+  why: string;
+}
+/**
  * The underwriter app's release, and who the host signed in.
  */
 export interface WorkbenchAppReleaseResponse {
@@ -3620,4 +3706,34 @@ export interface WorkbenchAppQuoteAmend {
  */
 export interface WorkbenchAppQuoteNote {
   note: string;
+}
+/**
+ * Save the sample as saved: under a new ``name``, or over the test quote ``replace``
+ * names; with the branch and the form folder's revision the panel saved.
+ */
+export interface WorkbenchTestQuoteSaveRequest {
+  branch: string;
+  form_revision: string;
+  name?: string | null;
+  replace?: WorkbenchTestQuoteTarget | null;
+}
+/**
+ * A test quote's file, with the revision a decision about it was made on.
+ */
+export interface WorkbenchTestQuoteTarget {
+  file: string;
+  revision: string;
+}
+/**
+ * Accept the new answers of these test quotes, each at the revision its run read, on
+ * the basis the run priced on and the branch it was made on.
+ */
+export interface WorkbenchTestQuotesAcceptRequest {
+  basis: string;
+  branch: string;
+  /**
+   * @minItems 1
+   * @maxItems 10000
+   */
+  quotes: WorkbenchTestQuoteTarget[];
 }

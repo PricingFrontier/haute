@@ -143,6 +143,13 @@ from haute.schemas import (
     WorkbenchStoreCompareResponse,
     WorkbenchStoreSqlResponse,
     WorkbenchTablesResponse,
+    WorkbenchTestQuoteOpenResponse,
+    WorkbenchTestQuoteRunResponse,
+    WorkbenchTestQuotesAcceptRequest,
+    WorkbenchTestQuotesAcceptResponse,
+    WorkbenchTestQuoteSaveRequest,
+    WorkbenchTestQuotesResponse,
+    WorkbenchTestQuoteWriteResponse,
     WriteOutputResponse,
 )
 
@@ -169,6 +176,12 @@ REQUEST_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         WorkbenchAppQuoteAssign,
         WorkbenchAppQuoteAmend,
         WorkbenchAppQuoteNote,
+    ),
+    # The open request carries a whole form, read as the form's save reads one: described in
+    # validation mode it would split every form type into an input and an output shape.
+    "workbench-requests": (
+        WorkbenchTestQuoteSaveRequest,
+        WorkbenchTestQuotesAcceptRequest,
     ),
 }
 
@@ -285,6 +298,11 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         WorkbenchStoreSqlResponse,
         WorkbenchStoreCatalogueResponse,
         WorkbenchStoreCompareResponse,
+        WorkbenchTestQuotesResponse,
+        WorkbenchTestQuoteWriteResponse,
+        WorkbenchTestQuoteOpenResponse,
+        WorkbenchTestQuoteRunResponse,
+        WorkbenchTestQuotesAcceptResponse,
     ),
     # The underwriter app's own page reads these; the builder never does, so its chunks
     # carry none of them.

@@ -1065,6 +1065,40 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/WorkbenchTablesResponse"},
         },
     },
+    "/api/workbench/test-quotes": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuotesResponse"},
+        },
+        "POST": {
+            "request_ref": "#/components/schemas/WorkbenchTestQuoteSaveRequest",
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuoteWriteResponse"},
+        },
+    },
+    "/api/workbench/test-quotes/accept": {
+        "POST": {
+            "request_ref": "#/components/schemas/WorkbenchTestQuotesAcceptRequest",
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuotesAcceptResponse"},
+        },
+    },
+    "/api/workbench/test-quotes/{file}": {
+        "DELETE": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuoteWriteResponse"},
+        },
+    },
+    "/api/workbench/test-quotes/{file}/open": {
+        "POST": {
+            "request_ref": "#/components/schemas/WorkbenchTestQuoteOpenRequest",
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuoteOpenResponse"},
+        },
+    },
+    "/api/workbench/test-quotes/{file}/run": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuoteRunResponse"},
+        },
+    },
 }
 
 

@@ -131,8 +131,11 @@ Out of scope, owned elsewhere:
 - `haute app build [OUTPUT] [--image TAG | --push]` builds the workbench project's release for
   the underwriter app into `OUTPUT` (`.haute/app/release` by default, which git
   ignores): the pipeline resolved,
-  validated and bundled as `haute deploy` does it, test quotes included, with the
-  sheets, what the release is and its entry point, and, with `[deploy.container]
+  validated and bundled as `haute deploy` does it, with the sheets, what the release is
+  and its entry point, its test quotes priced and compared (one that fails to price
+  failing the build, one whose outputs moved listed while the build passes, each in
+  `test_quotes_report.md`, written in the working directory whatever the outcome;
+  [workbench](../workbench/high-level.md), Test quotes), and, with `[deploy.container]
   base_image` set, the Dockerfile that makes it the image's build context, installing the
   driver of each provider the release's environments declare, pinned as installed where it
   builds (pyodbc and Microsoft's ODBC Driver 18 for `sqlserver`, psycopg for `postgresql`,

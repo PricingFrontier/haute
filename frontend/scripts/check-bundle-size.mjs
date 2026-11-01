@@ -208,7 +208,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // restores about 1.3 KiB.
 // The schema pane's Compare (WB-45): its controls, marks and store, and the catalogue
 // and comparison contracts, bring it to 1,763.9 KiB; 1,765 KiB restores about 1.1 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1765
+// The test quotes in Preview (WB-12): their panel, store and client, and the test-quote
+// contracts in the workbench validators, bring it to 1,769.5 KiB; 1,771 KiB restores about
+// 1.5 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1771
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

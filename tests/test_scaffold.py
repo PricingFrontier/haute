@@ -1736,10 +1736,26 @@ class TestWorkbenchCiFiles:
             ".github/workflows/release-production.yml",
         ]
         checks = files[".github/workflows/ci.yml"]
-        validate = [step.get("run") for step in checks["jobs"]["pipeline-validate"]["steps"]]
-        assert validate[-2:] == ["uv run haute lint", "uv run haute app build"]
+        steps = checks["jobs"]["pipeline-validate"]["steps"]
+        assert [step.get("run") for step in steps[-3:-1]] == [
+            "uv run haute lint",
+            "uv run haute app build",
+        ]
+        # The test quotes' report is kept whether the build passes or fails.
+        assert steps[-1] == {
+            "name": "Upload test quotes report",
+            "if": "always()",
+            "uses": "actions/upload-artifact@v4",
+            "with": {"name": "test-quotes-report", "path": "test_quotes_report.md"},
+        }
 
         release = files[".github/workflows/release.yml"]
+        assert release["jobs"]["validate"]["steps"][-1] == {
+            "name": "Upload test quotes report",
+            "if": "always()",
+            "uses": "actions/upload-artifact@v4",
+            "with": {"name": "test-quotes-report", "path": "test_quotes_report.md"},
+        }
         # PyYAML reads the bare key "on" as True.
         assert release[True]["push"]["branches"] == ["main"]
         publish = release["jobs"]["publish"]
@@ -1777,10 +1793,20 @@ class TestWorkbenchCiFiles:
         assert job["steps"][-1]["run"] == "uv run haute app rollout prod --from staging"
         assert set(job["steps"][-1]["env"]) == self._SECRETS
 
+    def test_the_validate_jobs_keep_the_report_the_build_writes(self) -> None:
+        from haute._scaffold import _TEST_QUOTES_REPORT
+        from haute._workbench_test_quotes import REPORT_FILE
+
+        assert _TEST_QUOTES_REPORT == REPORT_FILE
+
     def test_gitlab_publishes_and_stages_on_main_and_promotes_by_hand(self) -> None:
         pipeline = self._parsed("gitlab")[".gitlab-ci.yml"]
         assert pipeline["stages"] == ["validate", "publish", "production"]
         assert pipeline["lint"]["script"][-1] == "uv run haute app build"
+        assert pipeline["lint"]["artifacts"] == {
+            "when": "always",
+            "paths": ["test_quotes_report.md"],
+        }
         # Validation names no registry credential: only the rollout jobs do.
         assert "variables" not in pipeline["lint"]
         publish = pipeline["publish"]
@@ -1806,7 +1832,13 @@ class TestWorkbenchCiFiles:
         assert pipeline["lockBehavior"] == "sequential"
         stages = {stage["stage"]: stage for stage in pipeline["stages"]}
         assert list(stages) == ["Validate", "Publish", "DeployProduction"]
-        assert stages["Validate"]["jobs"][-1]["steps"][-1]["script"] == "uv run haute app build"
+        validate = stages["Validate"]["jobs"][-1]["steps"]
+        assert validate[-2]["script"] == "uv run haute app build"
+        assert validate[-1] == {
+            "publish": "test_quotes_report.md",
+            "artifact": "test-quotes-report",
+            "condition": "succeededOrFailed()",
+        }
         publish = stages["Publish"]
         assert "refs/heads/main" in publish["condition"]
         job = publish["jobs"][0]

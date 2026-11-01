@@ -15,24 +15,24 @@ import pytest
 
 from haute import _workbench_impact as impacts
 from haute import _workbench_rollout as rollouts
+from haute._workbench_compare import Move, SharedFields, SharedTable, compare_quote
 from haute._workbench_config import AppEnvironment
 from haute._workbench_impact import (
     IMPACT_TIMEOUT_SECONDS,
     ImpactReport,
-    Move,
-    SharedFields,
-    SharedTable,
-    compare_quote,
     impact,
-    moved,
     render_report,
-    shared_fields,
 )
 from haute._workbench_rollout import AppState, Clock, HttpAnswer
 
 COMMIT = "c0ffee" + "0" * 34
 PROD = "motor-prod.example.azurecontainerapps.io"
 STAGING = "motor-staging.example.azurecontainerapps.io"
+
+
+def _compare(fields: SharedFields, before: Any, after: Any) -> Any:
+    """Two answers compared as the impact compares production's and staging's."""
+    return compare_quote(fields, before, after, sides=("on production", "on staging"))
 
 
 # ── Fakes ─────────────────────────────────────────────────────────────────
@@ -669,158 +669,6 @@ def test_time_running_out_before_productions_token_asks_azure_for_none() -> None
     assert apps.prod.asked == []
 
 
-def test_shared_fields_are_those_both_releases_name_with_the_same_rows() -> None:
-    production = _form(
-        _table("pricing_output", ["premium", "commission"]),
-        _table("schedule", ["item", "rate"], rows="many", keys=("item",)),
-        _table("legacy", ["x"]),
-        _table("covers", ["cover", "price"], rows="many", keys=("cover",)),
-        _table("one_to_many", ["v"]),
-        _table("many_to_one", ["v"], rows="many"),
-    )
-    candidate = _form(
-        _table("pricing_output", ["premium", "fee"]),
-        _table("schedule", ["item", "rate", "excess"], rows="many", keys=("item", "rate")),
-        _table("covers", ["cover", "price"], rows="many"),
-        _table("one_to_many", ["v"], rows="many"),
-        _table("many_to_one", ["v"]),
-        _table("extras", ["y"]),
-    )
-
-    fields = shared_fields(production, candidate)
-
-    assert fields.tables == (
-        SharedTable("pricing_output", False, ("premium",), ()),
-        # A key marked on one side alone is no key.
-        SharedTable("schedule", True, ("item", "rate"), ("item",)),
-        SharedTable("covers", True, ("cover", "price"), ()),
-    )
-    assert fields.added == ("extras", "pricing_output.fee", "schedule.excess")
-    assert fields.removed == ("legacy", "pricing_output.commission")
-    assert fields.reshaped == ("one_to_many", "many_to_one")
-
-
-def test_a_reshaped_table_is_listed_once_and_never_compared() -> None:
-    fields = shared_fields(
-        _form(_table("covers", ["price"], rows="many")), _form(_table("covers", ["price"]))
-    )
-    # A many-row answer holding one row is still not compared against a one-row table.
-    compared = compare_quote(fields, {"covers": [{"price": 1.0}]}, {"covers": [{"price": 2.0}]})
-
-    assert compared.moves == () and compared.why is None
-    assert fields.reshaped == ("covers",)
-
-
-ONE = SharedFields((SharedTable("pricing_output", False, ("premium", "decline"), ()),))
-KEYED = SharedFields((SharedTable("schedule", True, ("item", "rate"), ("item",)),))
-PLACED = SharedFields((SharedTable("schedule", True, ("item", "rate"), ()),))
-
-
-def test_a_one_row_table_compares_column_by_column() -> None:
-    compared = compare_quote(
-        ONE,
-        {"pricing_output": [{"premium": 100.0, "decline": False}]},
-        {"pricing_output": [{"premium": 110.0, "decline": False}], "other": [{"x": 1}]},
-    )
-
-    assert compared.moves == (Move("pricing_output", None, "premium", 100.0, 110.0),)
-
-
-def test_a_one_row_table_one_side_leaves_out_is_empty() -> None:
-    compared = compare_quote(ONE, {}, {"pricing_output": [{"premium": 1.0}]})
-
-    assert compared.moves == (Move("pricing_output", None, "premium", None, 1.0),)
-
-
-def test_a_many_row_table_matches_rows_by_key_and_names_rows_added_and_removed() -> None:
-    compared = compare_quote(
-        KEYED,
-        {"schedule": [{"item": "a", "rate": 1.0}, {"item": "b", "rate": 2.0}]},
-        {"schedule": [{"item": "c", "rate": 3.0}, {"item": "a", "rate": 1.5}]},
-    )
-
-    assert compared.moves == (
-        Move("schedule", "item=a", "rate", 1.0, 1.5),
-        Move("schedule", "item=b", None, True, False),
-        Move("schedule", "item=c", None, False, True),
-    )
-
-
-def test_a_numeric_key_matches_whether_it_is_written_whole_or_decimal() -> None:
-    compared = compare_quote(
-        KEYED,
-        {"schedule": [{"item": 1, "rate": 100.0}, {"item": True, "rate": 1.0}]},
-        {"schedule": [{"item": 1.0, "rate": 125.0}, {"item": 2, "rate": 1.0}]},
-    )
-
-    assert compared.moves == (
-        Move("schedule", "item=1", "rate", 100.0, 125.0),
-        # True is no number: its row is not the row keyed 1.
-        Move("schedule", "item=True", None, True, False),
-        Move("schedule", "item=2", None, False, True),
-    )
-
-
-@pytest.mark.parametrize(
-    ("before", "after", "why"),
-    [
-        (
-            [{"item": "a", "rate": 1.0}, {"item": "a", "rate": 2.0}],
-            [{"item": "a", "rate": 1.0}],
-            "schedule on production holds the key item=a twice",
-        ),
-        (
-            [{"item": "a", "rate": 1.0}],
-            [{"rate": 1.0}],
-            "a row of schedule on staging leaves its key item empty",
-        ),
-    ],
-    ids=["key-twice", "key-empty"],
-)
-def test_rows_that_cannot_be_matched_no_longer_compare(
-    before: list[Any], after: list[Any], why: str
-) -> None:
-    compared = compare_quote(KEYED, {"schedule": before}, {"schedule": after})
-
-    assert (compared.moves, compared.why) == ((), why)
-
-
-def test_rows_without_a_shared_key_compare_by_position_when_counts_match() -> None:
-    rows = [{"item": "a", "rate": 1.0}, {"item": "b", "rate": 2.0}]
-
-    compared = compare_quote(
-        PLACED, {"schedule": rows}, {"schedule": [rows[0], {"item": "b", "rate": 2.5}]}
-    )
-    unequal = compare_quote(PLACED, {"schedule": rows}, {"schedule": rows[:1]})
-
-    assert compared.moves == (Move("schedule", "row 2", "rate", 2.0, 2.5),)
-    assert unequal.why == (
-        "schedule has 2 rows on production and 1 on staging, and no key both releases mark "
-        "matches them"
-    )
-
-
-@pytest.mark.parametrize(
-    ("before", "after", "has_moved"),
-    [
-        (100.0, 100.0 + 100.0 * 1e-9, False),
-        (100.0, 100.0 + 100.0 * 1e-7, True),
-        (100, 100.0, False),
-        (0, 0.0, False),
-        (0, 1e-12, True),
-        (True, 1, True),
-        (False, 0, True),
-        (None, 0, True),
-        (None, None, False),
-        ("NY", "NY", False),
-        ("NY", "CA", True),
-        (-50.0, -50.0, False),
-    ],
-)
-def test_a_value_moves_by_the_rule(before: Any, after: Any, has_moved: bool) -> None:
-    assert moved(before, after) is has_moved
-
-
 # ── The report ────────────────────────────────────────────────────────────
 
 
@@ -832,7 +680,7 @@ def test_the_report_gives_percentages_only_between_numbers_from_a_non_zero_value
         "Q-1",
         1,
         "moved",
-        moves=compare_quote(
+        moves=_compare(
             fields,
             {"pricing_output": [{"premium": 0.0, "loading": -200.0, "note": 5.0, "credit": None}]},
             {"pricing_output": [{"premium": 12.5, "loading": -100.0, "note": "n/a", "credit": 3}]},
@@ -875,7 +723,7 @@ def test_the_report_lists_the_fields_only_one_release_has_once() -> None:
 def test_a_cell_keeps_its_table_whole() -> None:
     fields = SharedFields((SharedTable("t", False, ("why",), ()),))
     quote = impacts.QuoteImpact(
-        "Q-1", 1, "moved", moves=compare_quote(fields, {}, {"t": [{"why": "a|b\nc"}]}).moves
+        "Q-1", 1, "moved", moves=_compare(fields, {}, {"t": [{"why": "a|b\nc"}]}).moves
     )
     report = ImpactReport(
         impacts.Released("prod", "p1", None),

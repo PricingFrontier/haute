@@ -879,12 +879,15 @@ def handle_init(config: InitConfig) -> None:
     # -- Starter test file + test quotes ---------------------------------------
     tests_dir = project_dir / "tests"
     tests_dir.mkdir(exist_ok=True)
-    quotes_dir = tests_dir / "quotes"
-    quotes_dir.mkdir(exist_ok=True)
-    (quotes_dir / "example.json").write_text(
-        starter_test_quote(),
-        encoding="utf-8",
-    )
+    # A workbench's test quotes are saved from Preview, the folder made with the first; an
+    # automated project starts with an example in deploy's shape.
+    if not workbench:
+        quotes_dir = tests_dir / "quotes"
+        quotes_dir.mkdir(exist_ok=True)
+        (quotes_dir / "example.json").write_text(
+            starter_test_quote(),
+            encoding="utf-8",
+        )
     (tests_dir / "test_pipeline.py").write_text(
         starter_test(name),
         encoding="utf-8",

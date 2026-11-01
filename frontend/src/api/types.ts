@@ -619,6 +619,15 @@ export type {
   WorkbenchStoreSqlResponse,
   WorkbenchTable,
   WorkbenchTablesResponse,
+  WorkbenchTestQuoteMove,
+  WorkbenchTestQuoteOpenResponse,
+  WorkbenchTestQuoteRefusal,
+  WorkbenchTestQuoteRunResponse,
+  WorkbenchTestQuotesAcceptResponse,
+  WorkbenchTestQuotesResponse,
+  WorkbenchTestQuoteSummary,
+  WorkbenchTestQuoteTarget,
+  WorkbenchTestQuoteWriteResponse,
 } from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------

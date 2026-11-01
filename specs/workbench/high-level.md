@@ -150,8 +150,9 @@ Out of scope:
   scoring endpoint. On a pull request, and again on a
   push to the default branch that changes a release input, the validate job lints,
   type-checks and tests the project, lints the pipeline and runs `haute app build`, which
-  resolves, validates and bundles the pipeline as a deploy does, its test quotes scored, with
-  the form. On that push, and on a manual run of the default branch alone, the publish job,
+  resolves, validates and bundles the pipeline as a deploy does, with the form, its test
+  quotes priced and compared (Test quotes, below) and their report kept as the job's
+  artifact whether it passes or fails. On that push, and on a manual run of the default branch alone, the publish job,
   given the host's credentials, logs in to the
   registry `[deploy.container] registry` names (the host `haute ci registry-host` prints)
   and runs `haute app build --push`, which builds the release's image once, pushes it and
@@ -608,9 +609,10 @@ Out of scope:
     Assistant, Help, the branch, Save and Commit) and shows the view's own, the same in
     both modes, so the toolbar keeps its layout as the mode changes: the form's Undo and
     Redo and Zoom In over Zoom Out, where the pipeline toolbar has its own Undo and Redo and
-    zoom, then Build over Preview, Schema over Display and Reset, then, in Preview, why
-    pricing the sample last failed; there is no Price and no Clear. Reset starts the
-    sample again as a new quote (the sample, below). Schema opens and closes the
+    zoom, then Build over Preview, Schema over Display and Reset over Test quotes, then, in
+    Preview, why pricing the sample last failed; there is no Price and no Clear. Reset
+    starts the sample again as a new quote (the sample, below), and Test quotes opens and
+    closes the test quotes' panel (Test quotes, below), pressed while it is open. Schema opens and closes the
     schema's pane in either mode, pressed while it is open. A control the mode has no use
     for stays in its place, disabled, as the palette's components are in Preview:
 
@@ -618,6 +620,7 @@ Out of scope:
     |---|---|
     | Display | In Preview |
     | Reset | While building, and while the sample holds a new quote's values and nothing else |
+    | Test quotes | While building, and until the form is read |
 
   - **The schema's pane.** Schema opens the schema editor in a pane that slides in from
     the left over the sheet, under the sheet tabs, covering the sheet's left part without
@@ -1393,6 +1396,83 @@ Out of scope:
   marks never stop the pricing. Ctrl/Cmd+S still saves the project in Preview, Ctrl/Cmd+1
   fits the sheet, and Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z (or Ctrl/Cmd+Y) undo and redo
   outside a text field, as Undo and Redo do; the sheet's editing keys do nothing.
+- **Test quotes.** An analyst keeps test quotes: quotes priced again as the pipeline changes,
+  so a change to the pricing shows on quotes they know. Each is a file in the project's
+  test-quote folder, `[test_quotes] dir` of `haute.toml` (`tests/quotes` when it names
+  none), where deploy's test quotes are kept: `<name>.json`, the one-row array deploy's test
+  quotes take, `[{"input": ..., "expected": ...}]`. `input` is the request the sheets'
+  values build as a pricing builds it (a cell the sheets hide left out, `quote_details`
+  whole but for the columns the quote store keeps alone), tables and columns by name, under
+  the identity Preview prices a quote under (reference `PREVIEW`, option 1), so the file
+  prices as it stands wherever it is read. `expected` is the Workbench Output's answer as
+  the underwriter app's price route gives it: every output table by name as a list of its
+  rows, a one-row table's included, values as JSON carries them (a date as ISO text, a
+  number that is not finite as null) and a value left empty left out. A file in the folder
+  holding anything else (several rows, a row without `expected`, an `expected` that is not
+  tables of rows) is one of deploy's test quotes, which the panel lists as one it cannot
+  open and the build scores as deploy does. The toolbar's Test quotes, in Preview, opens a
+  panel beside the sheets listing them by name:
+  - **Priced as saved.** Test quotes are priced on the project as saved, resolved as
+    `haute app build` resolves it (the pipeline file, the form folder and the allowed
+    values its params files give), through the scorer the underwriter app prices with, one
+    quote a request and its answer whole: no row limit, and a quote too large for a
+    request, or one that runs out of memory or time, fails, named so. While the project
+    has unsaved changes, each of the panel's actions that prices saves it first, the
+    sample with it, as Save does.
+  - **Saved.** Save as test quote saves the quote typed in Preview, the sample, under a
+    name the analyst gives: letters, digits, spaces, hyphens and underscores, at most 100
+    characters, refused when another test quote's file has that name in any case. Its
+    request is built from the sample as saved; one with nothing typed is
+    refused ("Type the quote first"), and one that does not price is refused saying why;
+    otherwise its answer is its `expected`. A save is refused once the form has been saved
+    again since, from another tab, so the quote saved is always the one typed here.
+  - **Opened.** Opening a test quote puts its request's values on the sheets in the
+    sample's place, one undo step, onto the form as the view holds it, unless the sample
+    was typed into or another quote opened while it was being read, by table and column name as the sheets hold values
+    (true and false as ticks, a number as plain text, a date as ISO text, a column's
+    preset rows placed by their values); each value whose table or column the form no
+    longer has, or that its column's type or allowed values no longer take, is listed as
+    not opened. What is opened can be changed and saved as a new test quote, or replace
+    the one opened, after asking.
+  - **Run.** Run prices every test quote, or those ticked, one at a time, showing how far
+    it has come and able to be stopped, each from its stored request (never rebuilt from
+    the sheets), and compares each answer with its `expected` on the output tables of the
+    form as saved: a one-row table column by column, one answering more than one row
+    no longer comparing; a many-row table's rows matched by
+    the columns the form marks as its keys, or by position when both hold as many rows; a
+    number moved when it differs from the expected value by more than a millionth of a
+    percent of it (from zero, by anything), or by more than the row's `tolerance_pct` (a
+    fraction, as deploy reads it) when it gives one, and anything else when it differs; a
+    table or column `expected` holds that the form no longer has is named as removed,
+    and one the form has gained reads as empty in `expected`. Each quote shows
+    unchanged, moved (each field and its row, the expected value beside the new), no
+    longer compares (a key held twice or empty, or rows matched by position whose counts
+    differ) or failed, with why.
+  - **Accepted.** Accepting a moved or no-longer-comparing quote, or all of them, prices it
+    again on the server and writes that answer as its `expected`; Accept all names any it
+    did not accept.
+  - **Deleted.** Deleting a test quote, after asking, removes its file.
+
+  Saving, replacing, accepting and deleting are project writes, as the form's save is: each
+  takes its turn with every other save and a branch switch, and is captured on the save
+  ledger as a save of the file, so a milestone's sweep commits it; one that wrote but could
+  not be captured, or that needs the git identity, says so as the form's save does. Each is
+  decided on what the panel read: replacing, accepting and deleting act only while the file
+  is still the revision the panel read (a digest of its bytes), accepting also only while
+  what the run priced on is unchanged (the pipeline, its helper code, the form, the outputs
+  it answers and its artifacts' contents), and none on another branch than the one it was
+  read on, so an edit from another tab or outside the editor is never overwritten; one
+  refused is named, nothing written, to be run again.
+
+  `haute app build` prices each test quote the same way, on the form the release ships, and
+  compares it by the same rule. In a workbench project a test quote whose outputs moved, or
+  that no longer compares, is listed and the build still passes; one that fails to price, a
+  file that is not test quotes, or one of deploy's test quotes whose expected output does not
+  match, fails it, as deploy fails it. The build writes `test_quotes_report.md` in the
+  working directory whatever the outcome, which the workbench's validate jobs keep as an
+  artifact. A workbench project with no test quotes builds, and `haute init` writes none for
+  one. An automated project's dry run and deploy keep failing on any expected output that
+  does not match ([deploy](../deploy/high-level.md)).
 - **The underwriter app.** The sheets reach underwriters through an app Haute builds from
   the project, apart from the builder. `haute app build` writes a release: the pipeline's
   bundle as a deploy builds it (the sample left out), the form without its sample
@@ -2331,6 +2411,20 @@ Out of scope:
   rather than reading the saved file, so a Collection shows the pipeline's answer for what
   is on the sheet now, as a rater's cell would; every other run reads the saved folder, so
   a save is still what changes the pipeline.
+- **Test quotes priced as saved.** Pricing the sample asks for the unsaved form's tables, so
+  the sheets answer what is typed now; test quotes are priced on the project as saved, as
+  `haute app build` prices them in CI, through the scorer the app prices with, so a quote
+  Preview shows unchanged is one CI shows unchanged, and the preview route's row limit never
+  cuts a kept answer short. A test quote replays its stored request rather than the sheets
+  rebuilding it, so what is accepted is always the answer to the request kept beside it.
+- **One file a test quote, in deploy's shape.** A JSON file each, in the folder deploy's test
+  quotes already use and the shape they already take, so git diffs and merges test quotes
+  as text, a pull request shows an accepted change as the lines of `expected` it changes,
+  and every reader (the panel, the build, deploy's check) reads one format; the first
+  version's single SQLite file needed diff and merge drivers of its own.
+- **Moved is reported, not failed.** In a workbench project a test quote whose prices moved
+  is the change the pull request makes, for its reviewers to read in the report, so the
+  build lists it and passes; a quote that cannot be priced is a broken pipeline, and fails.
 - **One sheet, three sets of values.** The components draw a new quote, the sample and
   the app's quote through one set of values given to the sheet, rather than a body for
   each: what a cell holds, how it changes, what the last pricing gave and which cells are

@@ -19,8 +19,10 @@ checks and writes, as every read of the folder does.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn, TypeVar
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -28,6 +30,7 @@ from fastapi.concurrency import run_in_threadpool
 from haute._artifact_paths import PATH_PROBLEMS, ordinary_path_problem
 from haute._git_lock import repository_mutation
 from haute._logging import get_logger
+from haute._workbench_app import ResolvedRelease, resolve_release
 from haute._workbench_config import WorkbenchConfig, read_workbench_config
 from haute._workbench_folder import (
     FormFolderNameError,
@@ -48,9 +51,30 @@ from haute._workbench_tables import (
     output_tables,
     workbench_tables,
 )
+from haute._workbench_test_quotes import (
+    RUN_TIMEOUT_SECONDS,
+    Checked,
+    TestQuoteError,
+    TestQuoteFile,
+    TestQuoteTakenError,
+    basis,
+    check_name,
+    check_test_quote,
+    effective_request,
+    opened_values,
+    price_request,
+    read_test_quote,
+    read_test_quotes,
+    revision_of,
+    test_quote_bytes,
+    test_quote_file,
+    too_large,
+)
+from haute.errors import HauteError
 from haute.routes._contract_errors import contract_error_http_exception
 from haute.routes._helpers import project_write
 from haute.routes._save_pipeline import (
+    LedgerCapture,
     StaleDocumentRevisionError,
     _rollback_artifacts,
     _stage_artifact_delete,
@@ -79,6 +103,18 @@ from haute.schemas import (
     WorkbenchStoreSqlRequest,
     WorkbenchStoreSqlResponse,
     WorkbenchTablesResponse,
+    WorkbenchTestQuoteMove,
+    WorkbenchTestQuoteOpenRequest,
+    WorkbenchTestQuoteOpenResponse,
+    WorkbenchTestQuoteRefusal,
+    WorkbenchTestQuoteRunResponse,
+    WorkbenchTestQuotesAcceptRequest,
+    WorkbenchTestQuotesAcceptResponse,
+    WorkbenchTestQuoteSaveRequest,
+    WorkbenchTestQuotesResponse,
+    WorkbenchTestQuoteSummary,
+    WorkbenchTestQuoteTarget,
+    WorkbenchTestQuoteWriteResponse,
 )
 
 router = APIRouter(prefix="/api/workbench", tags=["workbench"])
@@ -482,3 +518,423 @@ async def get_param_file(file: str, column: str | None = None) -> WorkbenchParam
     # The project is the working directory, as it is for the rest of the server.
     read = await run_in_threadpool(read_param_file, Path.cwd(), file, column)
     return WorkbenchParamFileResponse(columns=read.columns, values=read.values)
+
+
+# ── Test quotes (specs/workbench, Test quotes; Control flow 37) ─────────────
+
+_T = TypeVar("_T")
+_W = TypeVar("_W")
+
+
+class _RefusedError(Exception):
+    """A test-quote write refused: its status and why, nothing written."""
+
+    def __init__(self, status: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status = status
+        self.detail = detail
+
+
+def _test_quote_folder(config: WorkbenchConfig) -> Path:
+    """The test-quote folder: ``[test_quotes] dir``, or ``tests/quotes`` when it names none,
+    whether or not it exists yet (the first save makes it)."""
+    from haute.deploy._config import DEFAULT_TEST_QUOTES_DIR, DeployConfig
+
+    named = DeployConfig.from_toml(config.project_root / "haute.toml").test_quotes_dir
+    return named if named is not None else config.project_root / DEFAULT_TEST_QUOTES_DIR
+
+
+def _branch(config: WorkbenchConfig) -> str:
+    from haute._git_core import _get_current_branch
+
+    return _get_current_branch(config.project_root)
+
+
+def _summary(quote: TestQuoteFile) -> WorkbenchTestQuoteSummary:
+    return WorkbenchTestQuoteSummary(
+        name=quote.name, file=quote.file, revision=quote.revision, problem=quote.problem
+    )
+
+
+def _named_file(config: WorkbenchConfig, folder: Path, file: str) -> Path:
+    try:
+        return test_quote_file(config.project_root, folder, file)
+    except TestQuoteError as exc:
+        raise _RefusedError(422, exc.message or str(exc)) from None
+
+
+def _held(path: Path) -> tuple[bytes, TestQuoteFile]:
+    """The file at *path* as read, refused when it is gone or is not a Preview test quote."""
+    if not path.is_file():
+        raise _RefusedError(404, f"{path.name} is no longer kept: list the test quotes again.")
+    data = path.read_bytes()
+    quote = read_test_quote(path)
+    if quote.input is None:
+        raise _RefusedError(422, f"{path.name} cannot be opened here: {quote.problem}.")
+    return data, quote
+
+
+def _on_branch(config: WorkbenchConfig, branch: str) -> None:
+    now = _branch(config)
+    if now != branch:
+        raise _RefusedError(
+            409,
+            f"The branch is {now} now, not {branch}, which the panel read: list the test "
+            "quotes again.",
+        )
+
+
+def _resolved(config: WorkbenchConfig) -> ResolvedRelease:
+    """The project as saved, resolved as ``haute app build`` resolves it; a project that
+    does not resolve is refused, saying why."""
+    try:
+        return resolve_release(config.project_root)
+    except HauteError as exc:
+        raise _RefusedError(409, exc.message or str(exc)) from None
+
+
+async def _within_deadline(work: Callable[[], _T], timed_out: Callable[[], _T]) -> _T:
+    """*work* in the thread pool within ``RUN_TIMEOUT_SECONDS``, its resolution of the project
+    included (which can run the pipeline); past the deadline *timed_out*'s answer, the work
+    left running to end on its own, releasing what it holds and writing nothing."""
+    loop = asyncio.get_running_loop()
+    running = loop.run_in_executor(None, work)
+    try:
+        return await asyncio.wait_for(asyncio.shield(running), RUN_TIMEOUT_SECONDS)
+    except TimeoutError:
+        return timed_out()
+
+
+def _priced_on_release(config: WorkbenchConfig, work: Callable[[ResolvedRelease], _T]) -> _T:
+    """*work* on the project as saved, resolved for it alone and closed once it is done."""
+    release = _resolved(config)
+    try:
+        return work(release)
+    finally:
+        release.close()
+
+
+def _http(refused: _RefusedError) -> HTTPException:
+    return HTTPException(status_code=refused.status, detail=refused.detail)
+
+
+def _written(
+    config: WorkbenchConfig, writes: dict[Path, bytes | None]
+) -> tuple[list[str], LedgerCapture]:
+    """Stage *writes* (bytes to write, None to delete) as the form's save stages its files,
+    every one rolled back when one fails, and capture them on the save ledger as one save;
+    answers the capture's warnings and the capture."""
+    touched: list[_TouchedFile] = []
+    try:
+        for path, data in writes.items():
+            if data is None:
+                _stage_artifact_delete(path, touched)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                _stage_artifact_write_bytes(path, data, touched)
+    except OSError as exc:
+        _rollback_artifacts(touched)
+        logger.warning("workbench_test_quote_write_failed", error=str(exc))
+        raise _RefusedError(409, f"The test quotes could not be written: {exc}") from None
+    return _captured(config, list(writes))
+
+
+def _captured(config: WorkbenchConfig, paths: list[Path]) -> tuple[list[str], LedgerCapture]:
+    """*paths*, written or deleted, captured on the save ledger as one save."""
+    changed = [path.relative_to(config.project_root).as_posix() for path in paths]
+    warnings: list[str] = []
+    captured = capture_save_in_ledger(config.project_root, changed, warnings)
+    return warnings, captured
+
+
+@router.get("/test-quotes", response_model=WorkbenchTestQuotesResponse)
+async def list_test_quotes() -> WorkbenchTestQuotesResponse:
+    """The test-quote folder's files by name, with the branch they were read on."""
+    config = await _enabled_config()
+
+    def read() -> WorkbenchTestQuotesResponse:
+        with repository_mutation(config.project_root):
+            folder = _test_quote_folder(config)
+            return WorkbenchTestQuotesResponse(
+                branch=_branch(config), quotes=[_summary(q) for q in read_test_quotes(folder)]
+            )
+
+    return await run_in_threadpool(read)
+
+
+@router.post("/test-quotes", response_model=WorkbenchTestQuoteWriteResponse)
+async def save_test_quote(body: WorkbenchTestQuoteSaveRequest) -> WorkbenchTestQuoteWriteResponse:
+    """Save the sample as saved as a test quote: priced on the project as saved, then
+    written under a new name or over the test quote it replaces."""
+    config = await _enabled_config()
+    if (body.name is None) == (body.replace is None):
+        raise HTTPException(422, "Name a new test quote, or the one it replaces.")
+
+    def priced(release: ResolvedRelease) -> tuple[dict[str, Any], dict[str, Any]]:
+        if release.document.revision != body.form_revision:
+            raise _RefusedError(
+                409,
+                f"{config.form} was saved again since this panel saved it: save the project "
+                "again to save this quote.",
+            )
+        request = effective_request(release.form)
+        if not request:
+            raise _RefusedError(422, "Type the quote first.")
+        large = too_large(request)
+        if large is not None:
+            raise _RefusedError(422, f"The quote cannot be kept: {large}.")
+        try:
+            return request, price_request(release, request)
+        # A pipeline's own code can raise anything on a request: the save says why.
+        except Exception as exc:  # noqa: BLE001
+            message = getattr(exc, "message", None) or str(exc) or type(exc).__name__
+            raise _RefusedError(422, f"The quote did not price: {message}") from None
+
+    def took_too_long() -> tuple[dict[str, Any], dict[str, Any]]:
+        raise _RefusedError(
+            422, f"The quote took longer than {RUN_TIMEOUT_SECONDS} seconds to price."
+        )
+
+    try:
+        request, answer = await _within_deadline(
+            lambda: _priced_on_release(config, priced), took_too_long
+        )
+    except _RefusedError as refused:
+        raise _http(refused) from None
+
+    def write() -> WorkbenchTestQuoteWriteResponse:
+        _on_branch(config, body.branch)
+        with form_folder_lock(config.project_root):
+            if read_folder_unlocked(config).revision != body.form_revision:
+                raise _RefusedError(
+                    409,
+                    f"{config.form} was saved again while the quote priced: save the project "
+                    "again to save this quote.",
+                )
+        folder = _test_quote_folder(config)
+        tolerance: float | None = None
+        metadata: dict[str, Any] = {}
+        if body.replace is not None:
+            path = _named_file(config, folder, body.replace.file)
+            data, held = _held(path)
+            if revision_of(data) != body.replace.revision:
+                raise _RefusedError(
+                    409, f"{path.name} changed since the panel read it: list the test quotes again."
+                )
+            tolerance, metadata = held.tolerance, held.metadata
+        else:
+            assert body.name is not None
+            taken = [each.name for each in folder.glob("*.json")] if folder.is_dir() else []
+            try:
+                name = check_name(body.name, taken)
+            except TestQuoteTakenError as exc:
+                raise _RefusedError(409, exc.message or str(exc)) from None
+            except TestQuoteError as exc:
+                raise _RefusedError(422, exc.message or str(exc)) from None
+            path = _named_file(config, folder, f"{name}.json")
+        data = test_quote_bytes(request, answer, tolerance, metadata)
+        warnings, captured = _written(config, {path: data})
+        return WorkbenchTestQuoteWriteResponse(
+            quote=_summary(read_test_quote(path)), warnings=warnings, **captured._asdict()
+        )
+
+    return await _write(config, write)
+
+
+async def _write(config: WorkbenchConfig, work: Callable[[], _W]) -> _W:
+    try:
+        return await project_write(config.project_root, work)
+    except _RefusedError as refused:
+        raise _http(refused) from None
+
+
+@router.post("/test-quotes/{file}/open", response_model=WorkbenchTestQuoteOpenResponse)
+async def open_test_quote(
+    file: str, body: WorkbenchTestQuoteOpenRequest
+) -> WorkbenchTestQuoteOpenResponse:
+    """A test quote's values put back onto the form the view holds, and what it could not
+    place."""
+    config = await _enabled_config()
+
+    def read() -> WorkbenchTestQuoteOpenResponse:
+        with repository_mutation(config.project_root):
+            path = _named_file(config, _test_quote_folder(config), file)
+            _, quote = _held(path)
+        assert quote.input is not None
+        values, not_opened = opened_values(with_quote_details(body.form), quote.input)
+        return WorkbenchTestQuoteOpenResponse(values=values, not_opened=not_opened)
+
+    try:
+        return await run_in_threadpool(read)
+    except _RefusedError as refused:
+        raise _http(refused) from None
+
+
+@router.post("/test-quotes/{file}/run", response_model=WorkbenchTestQuoteRunResponse)
+async def run_test_quote(file: str) -> WorkbenchTestQuoteRunResponse:
+    """A test quote priced from its stored request on the project as saved, and compared
+    with its expected answer."""
+    config = await _enabled_config()
+
+    def prepare() -> tuple[str, TestQuoteFile]:
+        with repository_mutation(config.project_root):
+            branch = _branch(config)
+            path = _named_file(config, _test_quote_folder(config), file)
+            _, quote = _held(path)
+        return branch, quote
+
+    def priced(release: ResolvedRelease) -> tuple[Checked, str | None]:
+        # The basis is read as the release was resolved, before it prices: a helper changed
+        # on disk while it priced makes it differ from the project's next basis, so the
+        # result is never accepted onto code it was not priced on.
+        run_basis = basis(release)
+        return check_test_quote(release, quote), run_basis
+
+    try:
+        branch, quote = await run_in_threadpool(prepare)
+        checked, run_basis = await _within_deadline(
+            lambda: _priced_on_release(config, priced),
+            lambda: (
+                Checked(
+                    quote.name,
+                    quote.file,
+                    "failed",
+                    why=f"it took longer than {RUN_TIMEOUT_SECONDS} seconds to price",
+                ),
+                None,
+            ),
+        )
+    except _RefusedError as refused:
+        raise _http(refused) from None
+    return WorkbenchTestQuoteRunResponse(
+        name=checked.name,
+        file=checked.file,
+        outcome=checked.outcome,
+        moves=[
+            WorkbenchTestQuoteMove(
+                table=move.table,
+                row=move.row,
+                column=move.column,
+                before=move.before,
+                after=move.after,
+            )
+            for move in checked.moves
+        ],
+        removed=list(checked.removed),
+        why=checked.why,
+        revision=quote.revision,
+        basis=run_basis,
+        branch=branch,
+    )
+
+
+@router.post("/test-quotes/accept", response_model=WorkbenchTestQuotesAcceptResponse)
+async def accept_test_quotes(
+    body: WorkbenchTestQuotesAcceptRequest,
+) -> WorkbenchTestQuotesAcceptResponse:
+    """Accept test quotes' new answers: each priced again on the server, on the basis the
+    run priced on, and written over its expected answer while it is still the revision the
+    run read."""
+    config = await _enabled_config()
+
+    def accept() -> WorkbenchTestQuotesAcceptResponse:
+        _on_branch(config, body.branch)
+        accepted: list[Path] = []
+        refused: list[WorkbenchTestQuoteRefusal] = []
+        touched: list[_TouchedFile] = []
+        release = _resolved(config)
+        try:
+            if basis(release) != body.basis:
+                raise _RefusedError(
+                    409,
+                    "What the run priced on changed since (the pipeline, its helper code, the "
+                    "form, the outputs it answers or a model): run the test quotes again.",
+                )
+            folder = _test_quote_folder(config)
+            for target in body.quotes:
+                why = _accept_one(config, release, folder, target, touched)
+                if why is None:
+                    accepted.append(folder / target.file)
+                else:
+                    refused.append(WorkbenchTestQuoteRefusal(file=target.file, why=why))
+        except OSError as exc:
+            _rollback_artifacts(touched)
+            logger.warning("workbench_test_quote_write_failed", error=str(exc))
+            raise _RefusedError(409, f"The test quotes could not be written: {exc}") from None
+        finally:
+            release.close()
+        if not accepted:
+            return WorkbenchTestQuotesAcceptResponse(accepted=[], refused=refused)
+        warnings, captured = _captured(config, accepted)
+        return WorkbenchTestQuotesAcceptResponse(
+            accepted=[_summary(read_test_quote(path)) for path in accepted],
+            refused=refused,
+            warnings=warnings,
+            **captured._asdict(),
+        )
+
+    return await _write(config, accept)
+
+
+def _accept_one(
+    config: WorkbenchConfig,
+    release: ResolvedRelease,
+    folder: Path,
+    target: WorkbenchTestQuoteTarget,
+    touched: list[_TouchedFile],
+) -> str | None:
+    """Price one test quote again and stage its new file at once, its path and revision
+    checked immediately before; answers why it is not accepted, None when it is. An
+    ``OSError`` staging it leaves *touched* for the caller to roll back."""
+    try:
+        path = test_quote_file(config.project_root, folder, target.file)
+    except TestQuoteError as exc:
+        return exc.message or str(exc)
+    if not path.is_file():
+        return "it is no longer kept"
+    if revision_of(path.read_bytes()) != target.revision:
+        return "it changed since the run"
+    quote = read_test_quote(path)
+    if quote.input is None:
+        return f"it cannot be opened here: {quote.problem}"
+    large = too_large(quote.input)
+    if large is not None:
+        return large
+    try:
+        answer = price_request(release, quote.input)
+    # A pipeline's own code can raise anything on a request: the quote is named, not accepted.
+    except Exception as exc:  # noqa: BLE001
+        return f"it did not price: {getattr(exc, 'message', None) or exc}"
+    # An editor outside Haute takes no lock: the file is checked again just before it is
+    # staged, so an edit made while it priced is never overwritten.
+    try:
+        test_quote_file(config.project_root, folder, target.file)
+    except TestQuoteError as exc:
+        return exc.message or str(exc)
+    data = test_quote_bytes(quote.input, answer, quote.tolerance, quote.metadata)
+    if not path.is_file() or revision_of(path.read_bytes()) != target.revision:
+        return "it changed while it priced"
+    _stage_artifact_write_bytes(path, data, touched)
+    return None
+
+
+@router.delete("/test-quotes/{file}", response_model=WorkbenchTestQuoteWriteResponse)
+async def delete_test_quote(
+    file: str, revision: str, branch: str
+) -> WorkbenchTestQuoteWriteResponse:
+    """Delete a test quote, while it is still the revision the panel read."""
+    config = await _enabled_config()
+
+    def delete() -> WorkbenchTestQuoteWriteResponse:
+        _on_branch(config, branch)
+        path = _named_file(config, _test_quote_folder(config), file)
+        if not path.is_file():
+            raise _RefusedError(404, f"{file} is no longer kept: list the test quotes again.")
+        if revision_of(path.read_bytes()) != revision:
+            raise _RefusedError(
+                409, f"{file} changed since the panel read it: list the test quotes again."
+            )
+        warnings, captured = _written(config, {path: None})
+        return WorkbenchTestQuoteWriteResponse(quote=None, warnings=warnings, **captured._asdict())
+
+    return await _write(config, delete)

@@ -19548,6 +19548,462 @@
       "title": "WorkbenchTablesResponse",
       "type": "object"
     },
+    "WorkbenchTestQuoteMove": {
+      "description": "A field of a test quote that moved: its table, its row (key values or position; null\nin a one-row table), its column (null for a row only one side holds, ``before`` and\n``after`` then saying which), the expected value and the new.",
+      "properties": {
+        "after": {
+          "title": "After"
+        },
+        "before": {
+          "title": "Before"
+        },
+        "column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Column"
+        },
+        "row": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Row"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "row",
+        "column",
+        "before",
+        "after"
+      ],
+      "title": "WorkbenchTestQuoteMove",
+      "type": "object"
+    },
+    "WorkbenchTestQuoteOpenResponse": {
+      "description": "A test quote's values as the sheets hold them, and each value it could not place.",
+      "properties": {
+        "not_opened": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Not Opened",
+          "type": "array"
+        },
+        "values": {
+          "additionalProperties": {
+            "items": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "title": "Values",
+          "type": "object"
+        }
+      },
+      "required": [
+        "values",
+        "not_opened"
+      ],
+      "title": "WorkbenchTestQuoteOpenResponse",
+      "type": "object"
+    },
+    "WorkbenchTestQuoteRefusal": {
+      "description": "A test quote not accepted, and why.",
+      "properties": {
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "why": {
+          "title": "Why",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "why"
+      ],
+      "title": "WorkbenchTestQuoteRefusal",
+      "type": "object"
+    },
+    "WorkbenchTestQuoteRunResponse": {
+      "description": "A test quote priced and compared: its outcome (``unchanged``, ``moved``,\n``no_longer_compares`` or ``failed``), its moves, the tables and columns its expected\nanswer holds that the form no longer has, why, the file's revision it read, the basis it\npriced on and the branch.",
+      "properties": {
+        "basis": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Basis"
+        },
+        "branch": {
+          "title": "Branch",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "moves": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchTestQuoteMove"
+          },
+          "title": "Moves",
+          "type": "array"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "unchanged",
+            "moved",
+            "no_longer_compares",
+            "failed"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "removed": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Removed",
+          "type": "array"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        },
+        "why": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Why"
+        }
+      },
+      "required": [
+        "name",
+        "file",
+        "outcome",
+        "moves",
+        "removed",
+        "why",
+        "revision",
+        "basis",
+        "branch"
+      ],
+      "title": "WorkbenchTestQuoteRunResponse",
+      "type": "object"
+    },
+    "WorkbenchTestQuoteSaveRequest": {
+      "description": "Save the sample as saved: under a new ``name``, or over the test quote ``replace``\nnames; with the branch and the form folder's revision the panel saved.",
+      "properties": {
+        "branch": {
+          "maxLength": 512,
+          "title": "Branch",
+          "type": "string"
+        },
+        "form_revision": {
+          "maxLength": 512,
+          "title": "Form Revision",
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "replace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchTestQuoteTarget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "branch",
+        "form_revision"
+      ],
+      "title": "WorkbenchTestQuoteSaveRequest",
+      "type": "object"
+    },
+    "WorkbenchTestQuoteSummary": {
+      "description": "A file of the test-quote folder: its name, its file's name, its revision (a digest of\nits bytes) and, for one the panel cannot open, why.",
+      "properties": {
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "problem": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Problem"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "file",
+        "revision",
+        "problem"
+      ],
+      "title": "WorkbenchTestQuoteSummary",
+      "type": "object"
+    },
+    "WorkbenchTestQuoteTarget": {
+      "description": "A test quote's file, with the revision a decision about it was made on.",
+      "properties": {
+        "file": {
+          "maxLength": 512,
+          "title": "File",
+          "type": "string"
+        },
+        "revision": {
+          "maxLength": 512,
+          "title": "Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "revision"
+      ],
+      "title": "WorkbenchTestQuoteTarget",
+      "type": "object"
+    },
+    "WorkbenchTestQuoteWriteResponse": {
+      "description": "A test quote written or deleted: the file as it now stands (None once deleted), and\nthe write's capture on the save ledger.",
+      "properties": {
+        "git_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Git Sha"
+        },
+        "identity_required": {
+          "default": false,
+          "title": "Identity Required",
+          "type": "boolean"
+        },
+        "quote": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchTestQuoteSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "uncaptured": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Uncaptured",
+          "type": "array"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "warnings",
+        "git_sha",
+        "identity_required",
+        "uncaptured",
+        "quote"
+      ],
+      "title": "WorkbenchTestQuoteWriteResponse",
+      "type": "object"
+    },
+    "WorkbenchTestQuotesAcceptRequest": {
+      "description": "Accept the new answers of these test quotes, each at the revision its run read, on\nthe basis the run priced on and the branch it was made on.",
+      "properties": {
+        "basis": {
+          "maxLength": 512,
+          "title": "Basis",
+          "type": "string"
+        },
+        "branch": {
+          "maxLength": 512,
+          "title": "Branch",
+          "type": "string"
+        },
+        "quotes": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchTestQuoteTarget"
+          },
+          "maxItems": 10000,
+          "minItems": 1,
+          "title": "Quotes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "branch",
+        "basis",
+        "quotes"
+      ],
+      "title": "WorkbenchTestQuotesAcceptRequest",
+      "type": "object"
+    },
+    "WorkbenchTestQuotesAcceptResponse": {
+      "description": "The test quotes accepted, as they now stand, those not, with why, and the capture.",
+      "properties": {
+        "accepted": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchTestQuoteSummary"
+          },
+          "title": "Accepted",
+          "type": "array"
+        },
+        "git_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Git Sha"
+        },
+        "identity_required": {
+          "default": false,
+          "title": "Identity Required",
+          "type": "boolean"
+        },
+        "refused": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchTestQuoteRefusal"
+          },
+          "title": "Refused",
+          "type": "array"
+        },
+        "uncaptured": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Uncaptured",
+          "type": "array"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "warnings",
+        "git_sha",
+        "identity_required",
+        "uncaptured",
+        "accepted",
+        "refused"
+      ],
+      "title": "WorkbenchTestQuotesAcceptResponse",
+      "type": "object"
+    },
+    "WorkbenchTestQuotesResponse": {
+      "description": "The test-quote folder's files by name, and the branch they were read on.",
+      "properties": {
+        "branch": {
+          "title": "Branch",
+          "type": "string"
+        },
+        "quotes": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchTestQuoteSummary"
+          },
+          "title": "Quotes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "branch",
+        "quotes"
+      ],
+      "title": "WorkbenchTestQuotesResponse",
+      "type": "object"
+    },
     "WriteOutputResponse": {
       "properties": {
         "execution_metrics": {
@@ -19956,6 +20412,27 @@
     "WorkbenchTablesResponse": {
       "$ref": "#/$defs/WorkbenchTablesResponse"
     },
+    "WorkbenchTestQuoteOpenResponse": {
+      "$ref": "#/$defs/WorkbenchTestQuoteOpenResponse"
+    },
+    "WorkbenchTestQuoteRunResponse": {
+      "$ref": "#/$defs/WorkbenchTestQuoteRunResponse"
+    },
+    "WorkbenchTestQuoteSaveRequest": {
+      "$ref": "#/$defs/WorkbenchTestQuoteSaveRequest"
+    },
+    "WorkbenchTestQuoteWriteResponse": {
+      "$ref": "#/$defs/WorkbenchTestQuoteWriteResponse"
+    },
+    "WorkbenchTestQuotesAcceptRequest": {
+      "$ref": "#/$defs/WorkbenchTestQuotesAcceptRequest"
+    },
+    "WorkbenchTestQuotesAcceptResponse": {
+      "$ref": "#/$defs/WorkbenchTestQuotesAcceptResponse"
+    },
+    "WorkbenchTestQuotesResponse": {
+      "$ref": "#/$defs/WorkbenchTestQuotesResponse"
+    },
     "WriteOutputResponse": {
       "$ref": "#/$defs/WriteOutputResponse"
     },
@@ -19976,6 +20453,8 @@
     "WorkbenchAppQuoteAssign",
     "WorkbenchAppQuoteAmend",
     "WorkbenchAppQuoteNote",
+    "WorkbenchTestQuoteSaveRequest",
+    "WorkbenchTestQuotesAcceptRequest",
     "UtilityListResponse",
     "UtilityReadResponse",
     "UtilityWriteResponse",
@@ -20058,6 +20537,11 @@
     "WorkbenchStoreSqlResponse",
     "WorkbenchStoreCatalogueResponse",
     "WorkbenchStoreCompareResponse",
+    "WorkbenchTestQuotesResponse",
+    "WorkbenchTestQuoteWriteResponse",
+    "WorkbenchTestQuoteOpenResponse",
+    "WorkbenchTestQuoteRunResponse",
+    "WorkbenchTestQuotesAcceptResponse",
     "WorkbenchAppReleaseResponse",
     "WorkbenchAppFormResponse",
     "WorkbenchAppPriceResponse",
@@ -20100,6 +20584,10 @@
       "WorkbenchAppQuoteAssign",
       "WorkbenchAppQuoteAmend",
       "WorkbenchAppQuoteNote"
+    ],
+    "workbench-requests": [
+      "WorkbenchTestQuoteSaveRequest",
+      "WorkbenchTestQuotesAcceptRequest"
     ]
   },
   "x-haute-response-groups": {
@@ -20239,7 +20727,12 @@
       "WorkbenchParamFileResponse",
       "WorkbenchStoreSqlResponse",
       "WorkbenchStoreCatalogueResponse",
-      "WorkbenchStoreCompareResponse"
+      "WorkbenchStoreCompareResponse",
+      "WorkbenchTestQuotesResponse",
+      "WorkbenchTestQuoteWriteResponse",
+      "WorkbenchTestQuoteOpenResponse",
+      "WorkbenchTestQuoteRunResponse",
+      "WorkbenchTestQuotesAcceptResponse"
     ],
     "workbench-app": [
       "WorkbenchAppReleaseResponse",

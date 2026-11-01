@@ -262,8 +262,9 @@ the GitHub and GitLab production jobs under it, so the reviewers configured on i
 provider gate the deploy. Where the plan offers them: GitHub gives required reviewers to a
 private repository only on GitHub Enterprise, and GitLab's protected environments need Premium.
 A workbench project's workflows are a set of their own, the same for every provider in
-shape: a validate job (lint, type check, test, pipeline lint, `haute app build`) on a pull
-request and on a push to the default branch that changes a release input; on that push a
+shape: a validate job (lint, type check, test, pipeline lint, `haute app build`, keeping
+the test quotes' report as its artifact) on a pull request and on a push to the default
+branch that changes a release input; on that push a
 publish job that logs in to the registry with the app host's credentials, runs
 `haute app build --push`, which builds the underwriter app's image once, pushes it and prints
 the reference by digest it pushed, rolls the staging app to that reference with

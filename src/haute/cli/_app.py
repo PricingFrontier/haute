@@ -22,12 +22,16 @@ SQL, starting from the SQL the Workbench view's schema pane writes.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
+
+if TYPE_CHECKING:
+    from haute._workbench_test_quotes import Checked
 
 #: Where ``build`` writes a release unless told otherwise, and ``serve`` always: the
 #: clone's own state directory, which git ignores, model files and all.
@@ -93,21 +97,51 @@ def _said() -> Iterator[None]:
         raise click.ClickException(str(exc)) from exc
 
 
-def _built(project_dir: Path, release_dir: Path) -> None:
-    from haute._workbench_app import build_release
+def _built(project_dir: Path, release_dir: Path, *, report: bool = False) -> None:
+    """Build the release, printing each test quote that did not stay unchanged; with
+    *report*, write the test quotes' report in the working directory once they were checked,
+    whether the build passes or fails."""
+    from haute._workbench_app import TestQuotesFailedError, build_release
 
     try:
         with _said():
-            release = build_release(project_dir, release_dir)
+            try:
+                built = build_release(project_dir, release_dir)
+            except TestQuotesFailedError as exc:
+                _told(exc.results, report=report)
+                raise
     # A project file the build reads missing, or one it cannot parse.
     except (FileNotFoundError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
+    _told(built.test_quotes, report=report)
+    release = built.release
     click.echo(f"  ✓ Release {release.id} of {release.pipeline_name} in {release_dir}")
     if release.host is None:
         click.echo(
             "  ! [workbench.app] host is not set: hosted, this release answers its health "
             "check alone."
         )
+
+
+def _told(results: Sequence[Checked], *, report: bool) -> None:
+    """Print each test quote that did not stay unchanged, and with *report* write the
+    report."""
+    from haute._workbench_test_quotes import REPORT_FILE, render_test_quotes_report
+
+    for result in results:
+        if result.outcome == "moved":
+            fields = [
+                f"{move.table}.{move.column}" if move.column else move.table
+                for move in result.moves
+            ] + list(result.removed)
+            click.echo(f"  ! Test quote {result.file} moved: {', '.join(dict.fromkeys(fields))}")
+        elif result.outcome == "no_longer_compares":
+            click.echo(f"  ! Test quote {result.file} no longer compares: {result.why}")
+        elif result.outcome == "failed":
+            click.echo(f"  ✗ Test quote {result.file} failed: {result.why}")
+    if report:
+        (Path.cwd() / REPORT_FILE).write_bytes(render_test_quotes_report(results).encode("utf-8"))
+        click.echo(f"  ✓ Test quotes report written: {REPORT_FILE}")
 
 
 def handle_app_build(config: AppBuildConfig) -> None:
@@ -126,7 +160,7 @@ def handle_app_build(config: AppBuildConfig) -> None:
         except (FileNotFoundError, ValueError) as exc:
             raise click.ClickException(str(exc)) from exc
     release_dir = config.output.resolve()
-    _built(project_dir, release_dir)
+    _built(project_dir, release_dir, report=True)
     if reference is not None:
         with _said():
             pushed = push_image(release_dir, reference)

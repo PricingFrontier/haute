@@ -30,7 +30,7 @@ Allowed field.
 | WB-08 | Planned | P2 | A workbench project's CI tests the packaged app before any host sees it, and an export template's change starts the release. |
 | WB-09 | Decision | P2 | An Import on a sheet, or a lookup beside a key cell, runs against a file, a database or an API and fills input cells with what comes back, through the server with no credential in the browser, while pricing stays as pure as it is. |
 | WB-11 | Decision | P2 | An underwriter exports a final quote from the app in the formats the project needs, naming the release that priced it. |
-| WB-12 | Decision | P3 | Analysts keep test quotes and price them again as the pipeline changes, built again after the first version was taken out. |
+| WB-12 | Planned | P3 | An analyst saves the quote typed in Preview as a test quote in `tests/quotes`, prices every test quote again from Preview as the pipeline changes and accepts what moved, and CI reports the test quotes whose outputs moved. |
 | WB-13 | Planned | P3 | An underwriter records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
@@ -249,16 +249,112 @@ commits are `352823c4d`, `d4249d583`, `448aee189`, `42a7309b3` and `5ccc51fff`, 
 pricing went through the preview route, which answers at most 10,000 rows of a table, so a
 quote whose many-row table ran past that could not be kept.
 
-**Plan:** Decided with the owner before work starts: what a test quote is, where it is
-kept, how it is run and reviewed, and how CI uses it. A pricing that answers the Workbench
-Output's response whole, apart from the preview route's limits, keeps long quotes in full.
+**Plan:** Decided with the owner on 1 November 2026: test quotes are kept in the
+project's test-quote folder, `[test_quotes] dir`, `tests/quotes` unless it names another,
+where deploy's test quotes already live; each is saved from the quote typed in Preview; in a
+workbench project CI reports a test quote whose outputs moved and fails only one that does
+not price; an automated project's dry run and deploy keep failing on a moved output. The
+rest follows from those.
 
-**Acceptance:** Set with the plan.
+*The file.* One JSON file per test quote, `<name>.json`, holding the one-row array deploy's
+test quotes take, `[{"input": ..., "expected": ...}]`, so the dry run, deploy's check,
+`haute app build` and WB-08's packaged-app tests read one format. `input` is the effective
+request Preview prices: the request the sheets build (`quote_request`), with the identity
+Preview stands in for an unsaved quote (`quote_reference` `PREVIEW`, `quote_option` 1)
+written into its `quote_details`, so the file prices as it stands wherever it is read.
+`expected` is the Workbench Output's answer in the price route's shape: every table, one-row
+tables included, a list of rows by table name, values JSON-safe as the route sends them
+(dates as ISO text, a non-finite number as null, a document pruned as the route prunes it).
+Every pricing of a test quote, in Preview and in CI, renders its answer through that one
+normalisation before it compares. A name is letters, digits, spaces, hyphens and underscores,
+up to 100 characters; a name that matches an existing file's ignoring case is refused, and
+the file's whole path is checked as any project write's is (inside the folder, no link,
+junction or hard link). Saving under a new name refuses one that matches an existing file
+ignoring case; replacing a test quote targets the file the analyst picked from the list,
+under its own spelling, after asking. A file in the folder that holds anything else (several rows, an
+input-only smoke case, another Input's request) is not a Preview test quote: Preview lists
+it as one it cannot open, and CI prices it as deploy does today.
+
+*Replaying, not rebuilding.* A test quote is priced from its stored `input`, never rebuilt
+from the sheets, so Preview and CI price the same request and accepting new outputs keeps
+them with the request that produced them. Opening one onto the sheets is a view: each
+table's and column's value is put back by name as the sheets hold it, as the quote store
+puts a saved quote back (true and false as a ticked or empty box, a number as plain text, a
+date as ISO text), preset rows placed by the column's values; a value whose table
+or column the form no longer has, or that a column's type or options no longer take, is
+listed as not opened. Changing the sheets and saving under the same name replaces the test
+quote with the new request and its pricing, after asking.
+
+*Pricing whole.* A test quote is priced by a route of its own on the editor's server through
+the scorer the app prices with (`score_graph` on the project as saved, resolved as
+`haute app build` resolves it, the project saved first when it has unsaved changes), its
+response whole rather than cut at the preview route's 10,000
+rows; a quote past the request body limit, or one that runs out of memory or time, is a
+failure named as such, never a truncated answer. Pricing all runs one quote at a time and
+can be cancelled.
+
+*Moved.* One comparison, used by Preview and CI alike, compares `expected` with the new
+answer on the output tables of the form as it stands: a one-row table column by column; a
+many-row table's rows matched by the columns the form marks as its keys, else by position
+when the counts match; a number moved when it differs by more than a millionth of a percent
+of the expected value, or by more than the row's `tolerance_pct` when it gives one; a field
+only one side holds named as added or removed. The outcomes are unchanged, moved (each
+field and row named, the expected and new values), no longer compares (a key held twice or
+empty, counts by position that differ) and failed (it did not price). An automated project's
+dry run and deploy keep their strict comparison.
+
+*Saving, accepting, deleting.* Each is a project write as the editor's others are, serialised
+against saves and branch switches and refused on a branch other than the one the run was
+made on. Each names the revision (a digest of the whole file) it was decided on, checked
+inside the write: Save writes a new file atomically; replacing, Accept and Delete act only
+while the file is still that revision, Accept also only while the run's pipeline and form
+are those on disk, so an edit from another tab or outside the editor is never overwritten;
+Accept all accepts each quote that still matches and names any that did not. Each lands on the save ledger as a save does (captured for
+the milestone Commit, not merely staged), reporting a write that succeeded but was not
+captured, and asking for the git identity first, as Save does.
+
+*CI.* Pricing test quotes answers structured results, each quote ok, moved (with its
+differences), no longer compares, or failed, instead of the dry run's one error status.
+In a workbench project `haute app build` passes with moved and no-longer-comparing quotes,
+prints each with its fields, writes `test_quotes_report.md` in the working directory whatever
+the outcome, and fails when a quote failed to price or a file is not a test quote; a
+workbench project with no test quotes builds. The generated validate jobs keep the report
+as an artifact whether the job passes or fails, `haute ci update` writing them again, and
+WB-08's packaged-app tests apply the same rule. Workbench `haute init` writes no starter
+test quote; the folder appears with the first save.
+
+Not decided yet: opening a quote from a quote store's tables into Preview, which would then
+be saved as any typed quote is. A real quote carries customer data, the insured and broker in
+`quote_details` and whatever its input tables hold, into git once saved; whether it is
+blanked, which environments it is read from, or left to the analyst is the owner's to decide
+first.
+
+**Acceptance:** An analyst saves the quote typed in Preview as a test quote, and it appears
+in `tests/quotes` as `<name>.json`, one row in deploy's test-quote shape whose `input` prices
+as saved, captured on the save ledger; opening it puts its values back on the sheets and
+names any it cannot; after a change to the pipeline, pricing all of them again marks the one
+whose output moved and accepting it rewrites its `expected`, refused when the file changed
+since it was priced; a quote whose schedule runs past 10,000 rows is saved, priced again,
+compared and accepted whole; a workbench pull request whose test quote's output moved passes
+its validate job, the kept report naming the quote and the field, while one whose test
+quote fails to price fails it; an automated project's dry run still fails on a moved output.
 
 **Dependencies:** None.
 
-**Evidence:** The commits above; `src/haute/deploy/_validators.py::score_test_quotes` (the
-dry run's pricing of deploy's JSON test quotes, one request each).
+**Evidence:** The commits above (the first version); `src/haute/deploy/_validators.py`
+(`score_test_quotes`, deploy's test-quote rows `{"input", "expected", "tolerance_pct"}`
+and the expected-output comparison that fails the dry run);
+`src/haute/deploy/_config.py::test_quote_files` and `_test_quotes_dir` (`[test_quotes]
+dir`, `tests/quotes` by default); `src/haute/_workbench_app.py::build_release` (the release
+validated and its test quotes priced as a deploy does); `src/haute/_workbench_tables.py`
+(`quote_request`, the request the sheets build); `src/haute/_workbench_impact.py`
+(`compare_quote`, the comparison of two answers' tables);
+`src/haute/_workbench_input.py` (the stand-in identity Preview prices an unsaved quote
+with); `src/haute/_workbench_app.py` (`price_values`, the app's whole pricing through
+`score_graph`, `priced_tables` and `finite_document`); `src/haute/routes/_helpers.py` and
+`src/haute/routes/_save_pipeline.py` (project writes serialised against saves and branch
+switches, and the save ledger's capture); `src/haute/cli/_init_cmd.py` (the starter test
+quote `haute init` writes today).
 
 ### WB-13 — Managing quotes in the underwriter app
 **Why:** The underwriter app opens on its quotes ([workbench](../workbench/high-level.md)):
