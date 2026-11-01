@@ -67,6 +67,7 @@ from haute.errors import (
     ContractColumnsMissingError,
     ContractMismatchError,
     ContractResolutionError,
+    NodeConfigError,
     SchemaMismatchError,
 )
 
@@ -98,7 +99,7 @@ def _edge_join_recipe(
     shaping = dict(node.data.config)
 
     def finish(lf: pl.LazyFrame) -> pl.LazyFrame:
-        selected = _apply_selected_columns(lf, shaping)
+        selected = _apply_selected_columns(lf, shaping, node_label=node.data.label)
         renamed = _apply_column_renames(selected, shaping)
         return renamed if isinstance(renamed, pl.LazyFrame) else renamed.lazy()
 
@@ -137,7 +138,7 @@ def _write_recipe(
     )
 
     def finish(lf: pl.LazyFrame) -> pl.LazyFrame:
-        selected = _apply_selected_columns(lf, shaping)
+        selected = _apply_selected_columns(lf, shaping, node_label=node.data.label)
         renamed = _apply_column_renames(selected, shaping)
         return renamed if isinstance(renamed, pl.LazyFrame) else renamed.lazy()
 
@@ -650,13 +651,17 @@ def _apply_column_renames(
 def _apply_selected_columns(
     frame: pl.LazyFrame | pl.DataFrame,
     config: dict[str, Any],
+    *,
+    node_label: str,
 ) -> pl.LazyFrame | pl.DataFrame:
     """Filter *frame* to only the columns listed in *config*'s ``selected_columns``.
 
-    If ``selected_columns`` is absent, empty, or names no valid columns the
-    frame is returned unchanged.  Only columns that actually exist in the
-    frame are kept, and the filter is a no-op when every column is selected
-    (avoids an unnecessary projection).
+    If ``selected_columns`` is absent or empty the frame is returned unchanged.
+    Only columns that actually exist in the frame are kept (a column an upstream
+    edit renamed or removed is left out), and the filter is a no-op when every
+    column is selected (avoids an unnecessary projection). A selection none of
+    whose columns exist any more is refused, naming the node and the columns:
+    keeping every column instead would silently widen the node's output.
     """
     sel_cols: list[str] | None = config.get("selected_columns")
     if not sel_cols:
@@ -673,7 +678,14 @@ def _apply_selected_columns(
         if c in all_cols and c not in seen:
             valid.append(c)
             seen.add(c)
-    if valid and len(valid) < len(all_cols):
+    if not valid:
+        stale = ", ".join(repr(column) for column in dict.fromkeys(sel_cols))
+        raise NodeConfigError(
+            f"Node {node_label!r} keeps columns its input no longer has any of: {stale}. "
+            "Choose its columns again.",
+            setting="selected_columns",
+        )
+    if len(valid) < len(all_cols):
         return frame.select(valid)
     return frame
 
@@ -1562,18 +1574,22 @@ def _build_funcs(
         target_handles = [edge.targetHandle for edge in connected_edges]
         # OUTPUT uses each source port to distinguish frames from one apiInput.
         src_ports = [edge.sourceHandle or id_to_name[edge.source] for edge in connected_edges]
-        src_names: list[str] = []
-        for edge in connected_edges:
-            source_node = node_map[edge.source]
-            try:
-                src_names.append(edge_input_name(edge, source_node, submodels=submodels))
-            except ValueError:
-                # Preview reports null-handle routing errors on the consumer.
-                if not (
-                    source_node.data.nodeType in REQUEST_INPUT_NODE_TYPES
-                    and edge.sourceHandle is None
-                ):
-                    raise
+        unnamed = [
+            node_map[edge.source]
+            for edge in connected_edges
+            if node_map[edge.source].data.nodeType in REQUEST_INPUT_NODE_TYPES
+            and edge.sourceHandle is None
+        ]
+        if unnamed:
+            # Its frame would reach the node without a name, and the builder binds
+            # names to frames by position. The node fails when it runs, so a
+            # preview reports it on the node.
+            funcs[nid] = (_unnamed_request_input(node_map[nid], unnamed[0]), False)
+            continue
+        src_names = [
+            edge_input_name(edge, node_map[edge.source], submodels=submodels)
+            for edge in connected_edges
+        ]
         duplicates = duplicate_input_names(src_names)
         if duplicates:
             raise ConfigError(
@@ -1620,6 +1636,20 @@ def _build_funcs(
         )
         funcs[nid] = (fn, is_source)
     return funcs
+
+
+def _unnamed_request_input(node: GraphNode, source: GraphNode) -> Callable[..., Any]:
+    """A node function refusing an input from a request input that names no table."""
+
+    def refuse(*_frames: Any, **_kwargs: Any) -> Any:
+        raise ConfigError(
+            f"Node {node.data.label!r} takes an input from {source.data.label!r} that "
+            "does not name the table it takes. Connect it again from the table.",
+            node_id=node.id,
+            source_node_id=source.id,
+        )
+
+    return refuse
 
 
 def _extract_error_line(exc: Exception) -> int | None:

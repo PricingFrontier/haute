@@ -35,6 +35,7 @@ from haute._types import (
     NodeType,
     PipelineGraph,
 )
+from haute.errors import NodeConfigError, failing_node
 from haute.execution import execute_lazy_graph
 
 # ---------------------------------------------------------------------------
@@ -1053,7 +1054,7 @@ class TestApplySelectedColumns:
     def test_lazyframe_selects_valid_columns(self):
         """LazyFrame: only valid selected_columns are kept."""
         lf = pl.DataFrame({"a": [1], "b": [2], "c": [3]}).lazy()
-        result = _apply_selected_columns(lf, {"selected_columns": ["a", "c"]})
+        result = _apply_selected_columns(lf, {"selected_columns": ["a", "c"]}, node_label="node")
         assert isinstance(result, pl.LazyFrame)
         df = result.collect()
         assert df.columns == ["a", "c"]
@@ -1061,47 +1062,50 @@ class TestApplySelectedColumns:
     def test_dataframe_selects_valid_columns(self):
         """DataFrame: only valid selected_columns are kept."""
         df = pl.DataFrame({"a": [1], "b": [2], "c": [3]})
-        result = _apply_selected_columns(df, {"selected_columns": ["a", "c"]})
+        result = _apply_selected_columns(df, {"selected_columns": ["a", "c"]}, node_label="node")
         assert isinstance(result, pl.DataFrame)
         assert result.columns == ["a", "c"]
 
     def test_no_selected_columns_returns_unchanged(self):
         """Missing or None selected_columns returns the frame unchanged."""
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
-        result = _apply_selected_columns(lf, {})
+        result = _apply_selected_columns(lf, {}, node_label="node")
         schema = result.collect_schema().names()
         assert schema == ["a", "b"]
 
     def test_empty_selected_columns_returns_unchanged(self):
         """Empty list selected_columns returns the frame unchanged."""
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
-        result = _apply_selected_columns(lf, {"selected_columns": []})
+        result = _apply_selected_columns(lf, {"selected_columns": []}, node_label="node")
         schema = result.collect_schema().names()
         assert schema == ["a", "b"]
 
     def test_all_columns_selected_returns_unchanged(self):
         """When all columns are in selected_columns, no projection is applied."""
         df = pl.DataFrame({"a": [1], "b": [2]})
-        result = _apply_selected_columns(df, {"selected_columns": ["a", "b"]})
+        result = _apply_selected_columns(df, {"selected_columns": ["a", "b"]}, node_label="node")
         # Should be the exact same object (no unnecessary projection)
         assert result.columns == ["a", "b"]
 
     def test_nonexistent_columns_ignored(self):
         """Columns in selected_columns that don't exist are silently skipped."""
         df = pl.DataFrame({"a": [1], "b": [2]})
-        result = _apply_selected_columns(df, {"selected_columns": ["a", "missing"]})
+        result = _apply_selected_columns(
+            df, {"selected_columns": ["a", "missing"]}, node_label="node"
+        )
         assert result.columns == ["a"]
 
-    def test_all_nonexistent_returns_unchanged(self):
-        """If no selected_columns exist in the frame, frame is unchanged."""
+    def test_all_nonexistent_is_refused_naming_the_node(self):
+        """A selection none of whose columns exist would keep every column: refused."""
         df = pl.DataFrame({"a": [1], "b": [2]})
-        result = _apply_selected_columns(df, {"selected_columns": ["x", "y"]})
-        assert result.columns == ["a", "b"]
+        with pytest.raises(NodeConfigError, match="'node'.*'x', 'y'") as raised:
+            _apply_selected_columns(df, {"selected_columns": ["x", "y"]}, node_label="node")
+        assert raised.value.setting == "selected_columns"
 
     def test_preserves_data_values(self):
         """Verify data integrity after column filtering."""
         df = pl.DataFrame({"a": [10, 20], "b": [30, 40], "c": [50, 60]})
-        result = _apply_selected_columns(df, {"selected_columns": ["a", "c"]})
+        result = _apply_selected_columns(df, {"selected_columns": ["a", "c"]}, node_label="node")
         assert result["a"].to_list() == [10, 20]
         assert result["c"].to_list() == [50, 60]
 
@@ -1215,6 +1219,24 @@ class TestSelectedColumnsInPaths:
         df = outputs["t"].collect()
         # Only "x" should survive (not "y" which is added by transform)
         assert df.columns == ["x"]
+
+    def test_a_selection_whose_columns_are_all_gone_fails_naming_the_node(self):
+        """An upstream rename leaves a node's selection naming no column it receives:
+        the run fails naming the node and the columns instead of keeping every column."""
+        g = PipelineGraph(
+            nodes=[
+                _source_node("s"),
+                _transform_node("t", label="Pricing", selected_columns=["renamed_x"]),
+            ],
+            edges=[_e("s", "t")],
+        )
+        with pytest.raises(NodeConfigError, match="'Pricing'.*'renamed_x'") as raised:
+            execute_lazy_graph(g, _simple_build_fn)
+        assert failing_node(raised.value) == "t"
+
+        # A preview answers it as the node setting to fix (HTTP 422), like any NodeConfigError.
+        with pytest.raises(NodeConfigError, match="'Pricing'"):
+            walk_graph(g, _simple_build_fn, policy=CollectPolicy.display(record_failures=True))
 
     def test_eager_path_applies_selected_columns(self):
         """A display walk applies selected_columns using _apply_selected_columns."""

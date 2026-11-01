@@ -1460,7 +1460,8 @@ class _Walk:
                     )
                 )
             except ValueError:
-                # API-input null handle only; _build_funcs raises first for every other.
+                # A request input's edge naming no table: the node's own function
+                # refuses it when invoked (_build_funcs raises first for every other).
                 pass
         return names
 
@@ -1483,7 +1484,8 @@ class _Walk:
             # snapshot records so a seeded preview can still report them.
             self.unshaped_frames[node_id] = frame
         config = boundary.node.data.config
-        shaped = _lazy(_apply_column_renames(_lazy(_apply_selected_columns(frame, config)), config))
+        selected = _apply_selected_columns(frame, config, node_label=boundary.node.data.label)
+        shaped = _lazy(_apply_column_renames(_lazy(selected), config))
         names = self._describe(node_id, boundary.node, frame, shaped) if self.display else None
         self._check_output(boundary, shaped, names, created=frame if shapes else None)
         return _NodeFrame(frame=shaped, boundary=boundary, output_names=names)
@@ -1577,13 +1579,15 @@ class _Walk:
             return
         if not self._recipe_link_proved(edge, selected, parent_recipe):
             return
-        config = self.node_map[node_id].data.config
+        node = self.node_map[node_id]
+        config = node.data.config
 
         def project(lf: pl.LazyFrame) -> pl.LazyFrame:
             return _lazy(self._project_edge(edge, lf)[0])
 
         def column_step(lf: pl.LazyFrame) -> pl.LazyFrame:
-            return _lazy(_apply_column_renames(_apply_selected_columns(lf, config), config))
+            selected = _apply_selected_columns(lf, config, node_label=node.data.label)
+            return _lazy(_apply_column_renames(selected, config))
 
         self.write_recipes[node_id] = parent_recipe.then(project).then(column_step)
 

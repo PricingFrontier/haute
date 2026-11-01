@@ -82,7 +82,7 @@ from haute._source_cache import SourceCacheGenerationMissingError
 from haute._submodel_instances import runtime_instance_id
 from haute._types import NodeData, SubmodelEndpoint
 from haute._validation_error import HauteValidationError
-from haute.errors import HauteError, PreambleError
+from haute.errors import ExecutionError, HauteError, PreambleError, mark_failing_node
 from haute.graph_utils import (
     NodeType,
     PipelineGraph,
@@ -2405,12 +2405,21 @@ def prepare_data_output(
                 node_id=output_node_id,
             )
 
-        if execution_context is not None:
-            execution_context.checkpoint(label="before_output_write", node_id=output_node_id)
-            with execution_context.stage("output_write", node_id=output_node_id):
+        execution_context.checkpoint(label="before_output_write", node_id=output_node_id)
+        with execution_context.stage("output_write", node_id=output_node_id):
+            try:
                 _write(lf)
-        else:
-            _write(lf)
+            except pl.exceptions.PolarsError as exc:
+                # A data-dependent failure (a cast, say) surfaces only when the
+                # write collects the plan, after every node has been built, so
+                # no node was running: the write names the node it was writing.
+                label = graph.node_map[output_node_id].data.label
+                failure = ExecutionError(
+                    f"Writing Data Output {label!r} failed while computing its rows: {exc}",
+                    node_id=output_node_id,
+                )
+                mark_failing_node(failure, output_node_id)
+                raise failure from exc
         del lf
         gc.collect()
         _malloc_trim()

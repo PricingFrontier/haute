@@ -916,7 +916,8 @@ API and real JSON round-trips rather than mocks:
 - **`test_standalone_nodes.py`** — the standalone configured-node runtime: a sidecar-typed node without `config=` is
   called as a plain function; every configured type run as a declaration returns what its work produces (a Data Input's loaded rows, a Model
   Score's predictions, an Output's assembled document, a Live Switch's scenario-selected
-  frame, an Edge Join's joined rows, a Constant's frame from its sidecar, and a Constant with two
+  frame (`run()` and `score()` never running the inactive branch's source or the node between
+  it and the switch), an Edge Join's joined rows, a Constant's frame from its sidecar, and a Constant with two
   entries of one name refused as the executor refuses it); a Data Input, Model
   Score, Rating Step, Scenario Expander and Explore hook receives the configured result as
   `df` and an External File hook its inputs and `obj`; a sidecar edit changes the next run

@@ -1343,7 +1343,7 @@ def execute_lazy_graph(
     target_node_id: str | None = None,
     preamble_ns: dict[str, Any] | None = None,
     source: str = "live",
-    enforce_contracts: bool = False,
+    enforce_contracts: bool = True,
     preserve_node_ids: set[str] | frozenset[str] | None = None,
     required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
     execution_context: ExecutionContext | None = None,

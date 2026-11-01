@@ -483,7 +483,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
   checks it at every checkpoint rather than polling continuously.
 - Column contracts are enforced at both input and output boundaries of every node
   whose builder declares a concrete (non-opaque) contract, on both the eager and lazy
-  paths, so a mismatch (missing column, wrong dtype on a join key) is detected at the
+  paths (`execute_lazy_graph` enforces them unless its caller says otherwise), so a mismatch (missing column, wrong dtype on a join key) is detected at the
   offending node rather than as an opaque Polars error three nodes later. Missing
   columns use `ContractMismatchError`; join-key dtype disagreement uses
   `SchemaMismatchError`. Both propagate identically through a display walk and

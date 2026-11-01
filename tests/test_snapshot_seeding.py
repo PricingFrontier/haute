@@ -28,9 +28,11 @@ from haute._seed_plans import SeedPlan, SeedPlanRequest, open_seed_plan
 from haute._source_cache import SourceCacheIdentity
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import (
+    ConfigError,
     ContractMismatchError,
     GroupByExecutionUnsupportedError,
     SnapshotPlanInputsChangedError,
+    failing_node,
 )
 from haute.execution import execute_lazy_graph
 
@@ -57,19 +59,34 @@ def test_recipe_builders_refuse_non_frame_inputs() -> None:
     )
 
 
-def test_single_frame_api_builder_preserves_legacy_null_handle_input() -> None:
+def test_a_request_input_edge_without_a_table_fails_its_consumer() -> None:
+    """The edge's frame would reach the node without a name, binding every later frame
+    to the previous edge's name: the consumer fails, naming the input, and never runs."""
     graph = PipelineGraph(
-        nodes=[_node("api", NodeType.API_INPUT, {}), _node("T", NodeType.POLARS, {})],
-        edges=[GraphEdge(id="edge", source="api", target="T")],
+        nodes=[
+            _node("api", NodeType.API_INPUT, {}),
+            _node("rates", NodeType.DATA_INPUT, {}),
+            _node("T", NodeType.POLARS, {}),
+        ],
+        edges=[
+            GraphEdge(id="edge", source="api", target="T"),
+            GraphEdge(id="rates_edge", source="rates", target="T"),
+        ],
     )
+    built: list[str] = []
 
     def build(node: GraphNode, **kwargs: Any) -> Any:
+        built.append(node.id)
         if node.id == "api":
             return node.id, lambda: pl.LazyFrame({"x": [1, 2]}), True
-        return node.id, lambda frame: frame.with_columns(y=pl.col("x") + 1), False
+        if node.id == "rates":
+            return node.id, lambda: pl.LazyFrame({"r": [3, 4]}), True
+        return node.id, lambda *frames: frames[0], False
 
-    outputs, *_ = execute_lazy_graph(graph, build, enforce_contracts=False)
-    assert outputs["T"].collect().to_dict(as_series=False) == {"x": [1, 2], "y": [2, 3]}
+    with pytest.raises(ConfigError, match="'T'.*'api'.*does not name the table") as raised:
+        execute_lazy_graph(graph, build, enforce_contracts=False)
+    assert failing_node(raised.value) == "T"
+    assert "T" not in built
 
 
 def _node(node_id: str, node_type: NodeType, config: dict[str, Any]) -> GraphNode:

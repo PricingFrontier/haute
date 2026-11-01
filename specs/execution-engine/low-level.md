@@ -513,8 +513,11 @@ A recorded failure's error line (`WalkResult.error_lines`, which the preview res
 every node's output in every execution profile. Source builders never push it into the
 physical read and never validate it against the file schema, so a Data Input's post-load
 code may add or consume any column — a column the code creates can be selected — and a
-stale selection is simply absent from the output rather than fatal, identically in preview
-and bounded profiles. A node may deselect or rename a column it creates: its output contract
+stale selected column is simply absent from the output rather than fatal, identically in
+preview and bounded profiles. A selection none of whose columns the frame still has (an
+upstream rename) is refused as a `NodeConfigError` on `selected_columns` naming the node and
+the columns: keeping every column instead would silently widen the node's output. Projection's
+static output schema (`_configured_output_schema`) proves none for such a selection. A node may deselect or rename a column it creates: its output contract
 describes what its builder creates, so every walk checks it against the frame the node
 returned, before the node's own selection and renames, while the node's reported, cached and
 downstream columns are the shaped ones. A builder that fails to create a promised column
@@ -680,8 +683,12 @@ that shapes its columns, its frame before that step. Beside edge joins, the lazy
 write recipes for single-input `NodeType.POLARS` nodes by classifying their code with
 `classify_chunk_local_polars_code` (with bound source frame names and preamble selector aliases)
 using the prepared boundary's source nodes directly. Missing source nodes are invalid prepared
-state and must fail, never silently omit a recipe input name. A legacy single-frame API builder
-with a null handle still follows the shared builder's existing unnamed-input behavior.
+state and must fail, never silently omit a recipe input name. An edge from a request input
+(API, Quote or Workbench Input) with no `sourceHandle` names no table: `_build_funcs` gives its
+consumer a function that raises `ConfigError` naming the consumer and the input instead of
+building it, since the builder binds names to frames by position and the edge's frame would
+reach it without a name. A multi-frame input's edge fails first, when the consumer's frame is
+picked, naming the tables it has.
 The recipe composes the node's column shaping step as finish; an ineligible node carries the decision's
 reason and blocking operator without a function, and `write_recipes` hands them to callers that
 write a node in full (`_PlannedCaptures.capture` composing its own column step, and
@@ -903,6 +910,11 @@ format uses a bounded Polars sink. Writer-only formats and
 database outputs use `write_polars_output()`, whose `streaming_collect()` evaluates
 with Polars' streaming engine but returns a fully materialised `DataFrame` before the
 eager writer/database API is called; it never performs a second broad `.collect()`.
+A Polars error raised by the write is data-dependent (a strict cast meeting a bad value):
+it surfaces only when the write collects the plan, after every node was built, so no node
+was running. `prepare_data_output` raises it as an `ExecutionError` naming the Data Output
+("Writing Data Output 'X' failed while computing its rows: ..."), marked as that node's
+failure (`mark_failing_node`), with the Polars error as its cause.
 
 Every Data Output destination is resolved through the current I/O registry and contained
 inside the selected project root. When the root is not passed explicitly, it is inferred
@@ -2941,7 +2953,7 @@ present a structural or schema result as execution evidence.
 - `tests/test_extract_column_refs.py` — extraction of referenced columns across empty/minimal, selected/excluded, and node-config shapes.
 - `tests/test_graph_input_identity.py` — edge-derived pipeline input-name derivation contract across source handles and graph edges.
 - `tests/test_polars_backend_strategy_contract.py` — execution-strategy planning, boundedness/diagnostics payloads, projection, and error contracts, including the cross-profile table that plans each admitted Polars shape (row-preserving, row-reducing, bounded-expansion, and audited string/temporal predicates ahead of a group-by) under every `ExecutionProfile` with the real estimator and requires identical strategy diagnostics apart from the profile itself; it also proves that an unavailable estimate becomes the `warned` `full-width-conservative` strategy under an active native cap (`native_memory_backend_scope`) and the typed `materialisation_estimate_unavailable` rejection without one, with admission and headroom failures unchanged in both. It also covers every newly admitted boundary operator: `sort`, `unique`, `join`, `join_asof`, `top_k`, `bottom_k`, `reverse`, `shift`, an `over` inside `with_columns`, and `shift`, `diff`, and `pct_change` columns inside `with_columns` each plan `materialisation-boundary` with a positive estimate and identical diagnostics on every profile; `explode` plans `warned` `full-width-conservative` under a native cap and rejects without one; and `unpivot`, `rolling`, and `merge_sorted` plan no boundary at all. A `diff` built inside a user helper is still a boundary (its estimate unavailable, so conservative under a cap and rejected without one), while a `list` namespace method reached through an alias is not.
-- `tests/test_data_io_nodes.py` — sink execution and publication: the isolated output worker's admission release and failure classification, atomic staging/commit, overwrite and race handling, and the end-to-end group-by sink, including a conservative (`warned`) run whose written frame equals plain Polars and whose metrics payload carries the warned strategy.
+- `tests/test_data_io_nodes.py` — sink execution and publication: a cast failing only on the data naming the Data Output being written, the isolated output worker's admission release and failure classification, atomic staging/commit, overwrite and race handling, and the end-to-end group-by sink, including a conservative (`warned`) run whose written frame equals plain Polars and whose metrics payload carries the warned strategy.
 - `tests/test_scenario_propagation.py` — active scenario propagation through routes, executor, builders, and live-switch pruning.
 - `tests/test_streaming_collect_contract.py` — static contract that bounded callers use `streaming_collect` across execution/deploy/training/optimiser modules.
 
@@ -2950,13 +2962,16 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
 - **`test_execute_lazy.py`** — the core suite: `_prune_live_switch_edges`, shared
   `PreparedExecution`/`NodeBoundaryRunner` preparation and routing parity,
   lazy execution through `execute_lazy_graph`, `_build_funcs`, display walks (recorded
-  vs. raised failures, timings, memory accounting), `_apply_selected_columns`, and full-versus-planned equivalence for every admitted boundary operator —
+  vs. raised failures, timings, memory accounting), `_apply_selected_columns` (a selection
+  whose columns are all gone refused naming the node, in a sink walk and a preview), and full-versus-planned equivalence for every admitted boundary operator —
   a graph executed through the real admitted executor equals the plain lazy result on
   ordering (`sort`, `reverse`, `top_k`), schema, row multiplicity (`unique`, a
   duplicate-key `join`, `explode`), and both ports' retained columns for a join.
 - **`test_execute_lazy_contracts.py`** / **`test_execute_lazy_contract_coverage.py`**
-  — column-contract enforcement at node boundaries on both paths, including the
-  contract-resolution-degradation behaviour.
+  — column-contract enforcement at node boundaries on both paths, including a caller of
+  `execute_lazy_graph` that does not pass `enforce_contracts`, and the
+  contract-resolution-degradation behaviour. `test_snapshot_seeding.py` fails the consumer of a
+  request input's edge that names no table, never running it.
 - **`test_graph_walker.py`** — the shared walker's policies, including a node's own
   shaping against its output contract on display and lazy walks: a Scenario Expander
   may deselect or rename the column it creates, a consumer of the deselected column

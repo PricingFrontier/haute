@@ -4762,8 +4762,11 @@ def _configured_output_schema(
 ) -> frozenset[str] | None:
     """Apply executor output shaping to a proven schema, without hiding collisions."""
     selected = set(config.get("selected_columns") or [])
-    kept = columns & selected
-    if kept:
+    if selected:
+        kept = columns & selected
+        if not kept:
+            # The executor refuses a selection none of whose columns exist.
+            return None
         columns = frozenset(kept)
     renames = config.get("column_renames") or {}
     renamed = frozenset(renames.get(column, column) for column in columns)
