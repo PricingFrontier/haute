@@ -1446,8 +1446,9 @@ no longer has; and `InputSource` in
     memory fails, named, and nothing cuts the answer short. A request whose JSON passes
     `request_limit` bytes is never priced: Save refuses it (422) and a run, an accept and
     the build fail the quote ("larger than the app takes"). Save and Run each resolve a
-    release of their own and price within `RUN_TIMEOUT_SECONDS` (60, the app's own bound
-    on a pricing) in the thread pool; past it the quote is `failed` ("took longer than 60
+    release of their own and price it, the resolution (which can run the pipeline) and the
+    pricing together within `RUN_TIMEOUT_SECONDS` (60, the app's own bound on a pricing) in
+    the thread pool; past it the quote is `failed` ("took longer than 60
     seconds") and Save writes nothing, while the pricing left running releases its
     admission and closes its own release when it ends, never writing. Accept prices with
     no deadline of its own, each quote it accepts having priced within it on its run, on

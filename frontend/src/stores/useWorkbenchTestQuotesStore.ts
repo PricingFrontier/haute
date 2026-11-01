@@ -288,6 +288,9 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     set({ busy: true, error: null, notice: null })
     const mine = runAsked.current()
     try {
+      // Accepting prices again: on the project as saved, which a save of edits made since the
+      // run changes, and the server then refuses as priced on something else.
+      if (!(await saved())) return
       const answered = await acceptTestQuotes({
         branch: first.branch,
         basis: first.basis,

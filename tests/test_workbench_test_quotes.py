@@ -574,9 +574,10 @@ def test_the_basis_moves_with_helper_code_outputs_and_artifact_content(project: 
         release.resolved.artifact_digests["model"] = "a" * 64
         with_artifact = basis(release)
         release.resolved.artifact_digests["model"] = "b" * 64
-        assert basis(release) != with_artifact != first
+        before_outputs = basis(release)
+        assert before_outputs != with_artifact != first
         release.resolved.config.output_fields = ["premium"]
-        assert basis(release) != with_artifact
+        assert basis(release) != before_outputs
     finally:
         release.close()
     (project / "utility.py").write_text("RATE = 1\n", encoding="utf-8")
@@ -728,3 +729,82 @@ def test_haute_app_build_writes_the_report_whether_it_passes_or_fails(
         assert "Test quote Fleet.json moved: pricing.premium" in result.output
         assert "## Moved" in report
     assert b"\r\n" not in (project / "test_quotes_report.md").read_bytes()
+
+
+def test_accepting_the_project_answers_fewer_outputs_since_the_run_is_refused(
+    project: Path,
+) -> None:
+    http = client()
+    assert _save(http).status_code == 200
+    run = _run(http).json()
+    before = _file(project).read_bytes()
+    toml = project / "haute.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8") + '\n[deploy]\noutput_fields = ["premium"]\n',
+        encoding="utf-8",
+    )
+
+    refused = _accept(http, run)
+
+    assert refused.status_code == 409
+    assert _file(project).read_bytes() == before
+
+
+def test_accepting_two_keeps_an_edit_made_to_the_first_while_the_second_priced(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute.routes.workbench as routes
+
+    http = client()
+    assert _save(http).status_code == 200
+    assert _save(http, "Second").status_code == 200
+    first, second = _run(http).json(), _run(http, "Second").json()
+    real_price = routes.price_request
+    priced: list[str] = []
+
+    def second_edits_the_first(release: Any, request: Any) -> Any:
+        priced.append("priced")
+        if len(priced) == 2:
+            _file(project).write_text(_file(project).read_text() + " ", encoding="utf-8")
+        return real_price(release, request)
+
+    monkeypatch.setattr(routes, "price_request", second_edits_the_first)
+
+    answered = _accept(
+        http,
+        first,
+        quotes=[
+            {"file": "Fleet.json", "revision": first["revision"]},
+            {"file": "Second.json", "revision": second["revision"]},
+        ],
+    ).json()
+
+    # The first was staged before the second priced: the edit after it is the file's now.
+    assert [quote["file"] for quote in answered["accepted"]] == ["Fleet.json", "Second.json"]
+    assert _file(project).read_text().endswith(" ")
+
+
+def test_a_run_whose_resolution_runs_past_the_deadline_fails(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute.routes.workbench as routes
+
+    http = client()
+    assert _save(http).status_code == 200
+    resolving = threading.Event()
+    real_resolve = routes.resolve_release
+
+    def slow_resolve(root: Path) -> Any:
+        resolving.wait(5)
+        return real_resolve(root)
+
+    monkeypatch.setattr(routes, "resolve_release", slow_resolve)
+    monkeypatch.setattr(routes, "RUN_TIMEOUT_SECONDS", 0.05)
+
+    run = _run(http).json()
+    saved = _save(http, "Other")
+    resolving.set()
+
+    assert run["outcome"] == "failed" and "took longer than" in run["why"]
+    assert run["basis"] is None
+    assert saved.status_code == 422 and "took longer than" in saved.json()["detail"]

@@ -593,24 +593,25 @@ def _resolved(config: WorkbenchConfig) -> ResolvedRelease:
         raise _RefusedError(409, exc.message or str(exc)) from None
 
 
-async def _within_deadline(
-    release: ResolvedRelease, work: Callable[[], _T], timed_out: Callable[[], _T]
-) -> _T:
-    """*work* on *release* in the thread pool within ``RUN_TIMEOUT_SECONDS``, *release* closed
-    once it is done; past the deadline *timed_out*'s answer, the work left running closing
-    *release* itself when it ends."""
+async def _within_deadline(work: Callable[[], _T], timed_out: Callable[[], _T]) -> _T:
+    """*work* in the thread pool within ``RUN_TIMEOUT_SECONDS``, its resolution of the project
+    included (which can run the pipeline); past the deadline *timed_out*'s answer, the work
+    left running to end on its own, releasing what it holds and writing nothing."""
     loop = asyncio.get_running_loop()
     running = loop.run_in_executor(None, work)
     try:
-        answer = await asyncio.wait_for(asyncio.shield(running), RUN_TIMEOUT_SECONDS)
+        return await asyncio.wait_for(asyncio.shield(running), RUN_TIMEOUT_SECONDS)
     except TimeoutError:
-        running.add_done_callback(lambda _: release.close())
         return timed_out()
-    except BaseException:
+
+
+def _priced_on_release(config: WorkbenchConfig, work: Callable[[ResolvedRelease], _T]) -> _T:
+    """*work* on the project as saved, resolved for it alone and closed once it is done."""
+    release = _resolved(config)
+    try:
+        return work(release)
+    finally:
         release.close()
-        raise
-    release.close()
-    return answer
 
 
 def _http(refused: _RefusedError) -> HTTPException:
@@ -635,7 +636,12 @@ def _written(
         _rollback_artifacts(touched)
         logger.warning("workbench_test_quote_write_failed", error=str(exc))
         raise _RefusedError(409, f"The test quotes could not be written: {exc}") from None
-    changed = [path.relative_to(config.project_root).as_posix() for path in writes]
+    return _captured(config, list(writes))
+
+
+def _captured(config: WorkbenchConfig, paths: list[Path]) -> tuple[list[str], LedgerCapture]:
+    """*paths*, written or deleted, captured on the save ledger as one save."""
+    changed = [path.relative_to(config.project_root).as_posix() for path in paths]
     warnings: list[str] = []
     captured = capture_save_in_ledger(config.project_root, changed, warnings)
     return warnings, captured
@@ -663,12 +669,8 @@ async def save_test_quote(body: WorkbenchTestQuoteSaveRequest) -> WorkbenchTestQ
     config = await _enabled_config()
     if (body.name is None) == (body.replace is None):
         raise HTTPException(422, "Name a new test quote, or the one it replaces.")
-    try:
-        release = await run_in_threadpool(_resolved, config)
-    except _RefusedError as refused:
-        raise _http(refused) from None
 
-    def priced() -> tuple[dict[str, Any], dict[str, Any]]:
+    def priced(release: ResolvedRelease) -> tuple[dict[str, Any], dict[str, Any]]:
         if release.document.revision != body.form_revision:
             raise _RefusedError(
                 409,
@@ -694,7 +696,9 @@ async def save_test_quote(body: WorkbenchTestQuoteSaveRequest) -> WorkbenchTestQ
         )
 
     try:
-        request, answer = await _within_deadline(release, priced, took_too_long)
+        request, answer = await _within_deadline(
+            lambda: _priced_on_release(config, priced), took_too_long
+        )
     except _RefusedError as refused:
         raise _http(refused) from None
 
@@ -772,32 +776,31 @@ async def run_test_quote(file: str) -> WorkbenchTestQuoteRunResponse:
     with its expected answer."""
     config = await _enabled_config()
 
-    def prepare() -> tuple[str, TestQuoteFile, ResolvedRelease, str]:
+    def prepare() -> tuple[str, TestQuoteFile]:
         with repository_mutation(config.project_root):
             branch = _branch(config)
             path = _named_file(config, _test_quote_folder(config), file)
             _, quote = _held(path)
-        release = _resolved(config)
-        try:
-            return branch, quote, release, basis(release)
-        except BaseException:
-            release.close()
-            raise
+        return branch, quote
 
     try:
-        branch, quote, release, run_basis = await run_in_threadpool(prepare)
+        branch, quote = await run_in_threadpool(prepare)
+        checked, run_basis = await _within_deadline(
+            lambda: _priced_on_release(
+                config, lambda release: (check_test_quote(release, quote), basis(release))
+            ),
+            lambda: (
+                Checked(
+                    quote.name,
+                    quote.file,
+                    "failed",
+                    why=f"it took longer than {RUN_TIMEOUT_SECONDS} seconds to price",
+                ),
+                None,
+            ),
+        )
     except _RefusedError as refused:
         raise _http(refused) from None
-    checked = await _within_deadline(
-        release,
-        lambda: check_test_quote(release, quote),
-        lambda: Checked(
-            quote.name,
-            quote.file,
-            "failed",
-            why=f"it took longer than {RUN_TIMEOUT_SECONDS} seconds to price",
-        ),
-    )
     return WorkbenchTestQuoteRunResponse(
         name=checked.name,
         file=checked.file,
@@ -831,8 +834,9 @@ async def accept_test_quotes(
 
     def accept() -> WorkbenchTestQuotesAcceptResponse:
         _on_branch(config, body.branch)
-        writes: dict[Path, bytes | None] = {}
+        accepted: list[Path] = []
         refused: list[WorkbenchTestQuoteRefusal] = []
+        touched: list[_TouchedFile] = []
         release = _resolved(config)
         try:
             if basis(release) != body.basis:
@@ -843,16 +847,22 @@ async def accept_test_quotes(
                 )
             folder = _test_quote_folder(config)
             for target in body.quotes:
-                why = _accept_one(config, release, folder, target, writes)
-                if why is not None:
+                why = _accept_one(config, release, folder, target, touched)
+                if why is None:
+                    accepted.append(folder / target.file)
+                else:
                     refused.append(WorkbenchTestQuoteRefusal(file=target.file, why=why))
+        except OSError as exc:
+            _rollback_artifacts(touched)
+            logger.warning("workbench_test_quote_write_failed", error=str(exc))
+            raise _RefusedError(409, f"The test quotes could not be written: {exc}") from None
         finally:
             release.close()
-        if not writes:
+        if not accepted:
             return WorkbenchTestQuotesAcceptResponse(accepted=[], refused=refused)
-        warnings, captured = _written(config, writes)
+        warnings, captured = _captured(config, accepted)
         return WorkbenchTestQuotesAcceptResponse(
-            accepted=[_summary(read_test_quote(path)) for path in writes],
+            accepted=[_summary(read_test_quote(path)) for path in accepted],
             refused=refused,
             warnings=warnings,
             **captured._asdict(),
@@ -866,10 +876,11 @@ def _accept_one(
     release: ResolvedRelease,
     folder: Path,
     target: WorkbenchTestQuoteTarget,
-    writes: dict[Path, bytes | None],
+    touched: list[_TouchedFile],
 ) -> str | None:
-    """Price one test quote again and add its new file to *writes*; answers why it is not
-    accepted, None when it is."""
+    """Price one test quote again and stage its new file at once, its path and revision
+    checked immediately before; answers why it is not accepted, None when it is. An
+    ``OSError`` staging it leaves *touched* for the caller to roll back."""
     try:
         path = test_quote_file(config.project_root, folder, target.file)
     except TestQuoteError as exc:
@@ -895,9 +906,10 @@ def _accept_one(
         test_quote_file(config.project_root, folder, target.file)
     except TestQuoteError as exc:
         return exc.message or str(exc)
+    data = test_quote_bytes(quote.input, answer, quote.tolerance, quote.metadata)
     if not path.is_file() or revision_of(path.read_bytes()) != target.revision:
         return "it changed while it priced"
-    writes[path] = test_quote_bytes(quote.input, answer, quote.tolerance, quote.metadata)
+    _stage_artifact_write_bytes(path, data, touched)
     return None
 
 

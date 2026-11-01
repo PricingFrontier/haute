@@ -166,6 +166,17 @@ describe("useWorkbenchTestQuotesStore", () => {
     expect(accepted.status === "done" && accepted.outcome).toBe("unchanged")
   })
 
+  it("saves a dirty project before it accepts", async () => {
+    await store().run()
+    useGraphStore.setState({ dirty: true })
+
+    await store().accept("a.json")
+
+    expect(saveProject).toHaveBeenCalledOnce()
+    expect(acceptTestQuotes).toHaveBeenCalledOnce()
+    expect(saveProject.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(acceptTestQuotes).mock.invocationCallOrder[0])
+  })
+
   it("names what the server did not accept", async () => {
     await store().run()
     vi.mocked(acceptTestQuotes).mockResolvedValueOnce({ ...written, accepted: [], refused: [{ file: "a.json", why: "it changed since the run" }] })
