@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from haute._git_state import write_working_branch
-from tests._git_helpers import git_run, init_repo
+from tests._git_helpers import REWRITING_PRE_COMMIT_HOOK, git_run, init_repo, install_hook
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -451,11 +451,11 @@ class TestWritesAgainstARevision:
         )
         assert target.read_text(encoding="utf-8") == "VALUE = 2\n"
 
-    def test_a_change_made_while_a_write_is_captured_is_not_answered_as_its_own(
+    def test_a_change_made_while_a_write_is_captured_is_handed_back_with_it(
         self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Another editor saving while the write is captured in the ledger: the
-        revision answered is the written bytes', so the next write is refused."""
+        """Another editor saving while the write is captured in the ledger, as a project
+        hook does: the answer hands the editor the file as it is then, with its revision."""
         import haute.routes.utility as utility_routes
 
         target = tmp_path / "utility" / "helpers.py"
@@ -474,10 +474,8 @@ class TestWritesAgainstARevision:
         monkeypatch.setattr(utility_routes, "capture_save_in_ledger", capture)
 
         assert written.status_code == 200, written.text
-        res = _put(client, "helpers", "VALUE = 3\n", revision=written.json()["revision"])
-
-        assert res.status_code == 412
-        assert target.read_text(encoding="utf-8") == "VALUE = 9\n"
+        assert written.json()["content"] == "VALUE = 9\n"
+        assert written.json()["revision"] == _revision(client, "helpers")
 
     def test_a_delete_against_a_changed_file_is_refused_and_keeps_it(
         self, client: TestClient, tmp_path: Path
@@ -631,6 +629,24 @@ class TestLedgerCapture:
         assert self._ledger(repository) == (deleted.json()["git_sha"], ["utility/helpers.py"])
         tracked = git_run(repository, "ls-tree", "-r", "--name-only", f"{_WORKING}-save")
         assert "utility/helpers.py" not in tracked.splitlines()
+
+    def test_a_save_a_project_hook_rewrites_answers_with_the_file_it_left(
+        self, client: TestClient, repository: Path
+    ) -> None:
+        """The capture runs the project's pre-commit hook. The editor is handed the content and
+        the revision the hook left, so its next save is not refused as a change made outside."""
+        install_hook(repository, "pre-commit", REWRITING_PRE_COMMIT_HOOK)
+        created = client.post("/api/utility", json={"name": "helpers", "content": "X = 1\n"})
+        assert created.status_code == 200, created.text
+
+        first = _put(client, "helpers", "X = 2\n", revision=created.json()["revision"])
+
+        assert first.status_code == 200, first.text
+        on_disk = (repository / "utility" / "helpers.py").read_text(encoding="utf-8")
+        assert on_disk == "X = 2\n# formatted\n"
+        assert first.json()["content"] == on_disk
+        second = _put(client, "helpers", on_disk + "Y = 3\n", revision=first.json()["revision"])
+        assert second.status_code == 200, second.text
 
 
 class TestBoundedNames:

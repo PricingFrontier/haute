@@ -7,5 +7,6 @@
   "name": "helpers",
   "module": "helpers",
   "import_line": "from utility.helpers import *",
+  "content": "VALUE = 1\n",
   "revision": "29-1761750000000000000"
 }

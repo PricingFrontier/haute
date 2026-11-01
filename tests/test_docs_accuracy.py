@@ -161,7 +161,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "frontend-modelling-optimiser-ui",
     "frontend-node-editors",
     "frontend-shared",
-    "git-integration",
     "io-layer",
     "model-scoring",
     "modelling",

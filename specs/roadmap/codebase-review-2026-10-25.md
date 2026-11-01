@@ -125,8 +125,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the thirty-eight packages delivered or settled since (thirteen by 28
-October 2026, twenty-five more on 29 October) have been removed from the sections below; the coverage table keeps the
+The findings of the forty packages delivered or settled since (thirteen by 28
+October 2026, twenty-five more on 29 October, two on 1 November) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -247,7 +247,6 @@ production:
   can run code on the server without saving. No package is filed; the choice
   is the owner's.
 - `haute run` executes the whole pipeline eagerly in memory (`CLI-R02`).
-- Automatic ledger saves run the project's git hooks (`GIT-R06`).
 
 ## Findings mapped to packages
 
@@ -293,8 +292,6 @@ production:
 | Modelling | MDL-2, MDL-18, MDL-22 | `MOD-R06` |
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
 | Tracing | TRC-8, TRC-9, TRC-10, TRC-14 | `TRACE-R03` |
-| Git integration | GIT-12, GIT-13 | `GIT-R05` |
-| Git integration | GIT-14 | `GIT-R06` (Decision) |
 | Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |
 | Assistant | ASA-3, ASA-4, ASA-6, ASA-9 | `ASSIST-55` |
 | Assistant | ASA-5, ASA-8, ASA-10, ASA-11, ASA-12, ASA-14 | `ASSIST-56` |

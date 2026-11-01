@@ -10,6 +10,8 @@ export type CodeEditorProps = {
   availableColumns?: string[]
   /** Callback to expose the EditorView for external operations (e.g. text insertion) */
   onEditorView?: (view: EditorView | null) => void
+  /** Report every change at once, not once typing pauses (see `CodeMirrorEditor`). */
+  reportEachChange?: boolean
 }
 
 const LazyCodeMirrorEditor = lazy(() => import("./CodeMirrorEditor"))

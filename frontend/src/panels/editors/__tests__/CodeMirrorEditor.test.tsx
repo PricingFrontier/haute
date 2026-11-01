@@ -49,6 +49,29 @@ describe("CodeMirrorEditor", () => {
     expect(onChange).toHaveBeenCalledWith("ab")
   })
 
+  it("reports each change at once with reportEachChange", async () => {
+    const onChange = vi.fn()
+    let editorView: EditorView | null = null
+
+    render(
+      <CodeMirrorEditor
+        defaultValue=""
+        onChange={onChange}
+        reportEachChange
+        onEditorView={(view) => {
+          editorView = view
+        }}
+      />,
+    )
+
+    await act(async () => {
+      editorView!.dispatch({ changes: { from: 0, insert: "a" } })
+      editorView!.dispatch({ changes: { from: 1, insert: "b" } })
+    })
+
+    expect(onChange.mock.calls).toEqual([["a"], ["ab"]])
+  })
+
   it("flushes a pending local document change on blur", async () => {
     const onChange = vi.fn()
     let editorView: EditorView | null = null

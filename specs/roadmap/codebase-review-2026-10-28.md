@@ -89,7 +89,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P3 | Copied Explore node B receives cached result.node_id A for the same producer/card. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual pivot service/cache. Numbers are correct; browser stores them under B, so no numerical cross-node corruption claim. |
 | P2 | Training status discards eight recorded tuning progress fields. | [MOD-R08](modelling.md#mod-r08--training-status-carries-the-progress-the-worker-records) | Real JobStore and async status route. Cancel response has the same omission by source inspection. |
 | P2 | Shared-flight operation TimeoutError is mistaken for a polling timeout; completed work spins until cancellation. | [ROAD-WORKER-09](background-jobs-api.md#road-worker-09--completed-operation-timeouts-are-terminal-failures) | Real SharedFlights and LatestWinsQueue with controlled failure/cancellation. |
-| P2 | Push rejection names origin; after dropdown changes, its Catch up/Spin off submits backup. | [GIT-R18](git-integration.md#git-r18--recovery-acts-on-the-remote-named-by-its-dialog) | Actual component/ApiError/response parser, both actions, with the remote changed mid-push. Spin off sets local work aside on a branch; a real wrong-remote mutation was not executed. |
 | P2 | Returning from a failed directory to a cached parent leaves the error hiding the files. | [FNED-R02](frontend-node-editors.md#fned-r02--drafts-in-step-with-the-document-errors-with-their-detail), extended | Actual FileBrowser and settings cache, list transport substituted. |
 | P2 | Use detected schema applies A's completed schema into B while B loads. | [FNED-R06](frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft), extended | Actual DataInputEditor/hooks, API transport substituted. |
 | P2 | Deployment proves a literal-only select preserves request order, then fails a three-quote request with one row. | [EXEC-R09](execution-engine.md#exec-r09--column-free-selects-are-not-row-local), extended | Actual row proof and score_graph. Existing chunk row-count corruption stays P1; this added deployment failure is loud. |
@@ -236,7 +235,6 @@ adds a finding group or changes the 42-group count.
 | rating permissive numeric parsing / grids | Duplicate **FNED-R04**; grid/helper duplication belongs **FNED-R03/FNED-R05**. |
 | assistant undo/state fencing | Duplicate **ASSIST-60**. |
 | typed allowed-values onto older form | Duplicate **WB-38**. |
-| recurring Git failures/compensation | Duplicate compensation mechanisms are **GIT-R05**. These broad notes do not establish any additional specific exception path. |
 | non-SQLite form insertion | Duplicate **WB-43** for non-SQLite form insertion (the scratch spelling WB-R10 is not another package). The note gives no additional concrete database defect. |
 | sandbox project globals | Duplicate **PCFG-R04**. |
 | Assistant bounds, blocking tools, factual context, tool hygiene and provider handling | Duplicates **ASSIST-55**, **ASSIST-57**, **ASSIST-58**, **ASSIST-59**, **ASSIST-54** respectively. The recipe-consolidation note names no additional behavior. |
@@ -256,7 +254,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | Earlier candidate note | Accepted owner |
 |---|---|
 | dispersion caller ownership / estimate queued | **FMOU-R06** for same-mounted draft identity; separate helper error-contract wording is **FSH-R06**. |
-| rejection remote “candidate pending” | **GIT-R18**. |
 | cancellation caller / result consumer identity | **FSH-R11**. Native polling's captured-job guard is not itself a new defect. |
 | request-input edits / explicit Auto Layout | **FSH-R10**, **FGC-R05**; mixed Delete **FGC-R07**. |
 | delayed drill-in | **FGC-R06**. |

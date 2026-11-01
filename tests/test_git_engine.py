@@ -5,6 +5,7 @@ plumbing so the tests document the model's graph shapes, not just function
 return values.
 """
 
+import os
 import subprocess
 import sys
 import threading
@@ -23,7 +24,6 @@ from haute._git import (
     GitGuardrailError,
     GitMilestoneForkError,
     GitPushRejectedError,
-    _slugify,
     archive_commit,
     archive_working_pair,
     branch_away,
@@ -37,7 +37,6 @@ from haute._git import (
     delete_working_pair,
     divergence_state,
     fast_forward_pair,
-    fetch_pair,
     get_identity,
     is_eligible_working_branch,
     ledger_name,
@@ -61,6 +60,7 @@ from haute._git import (
 from haute._types import GraphNode, NodeData, PipelineGraph
 from haute.graph_utils import _sanitize_func_name
 from haute.schemas import SavePipelineRequest, SavePipelineResponse
+from tests._git_helpers import REWRITING_PRE_COMMIT_HOOK, install_hook
 from tests.conftest import current_source_revision
 
 
@@ -128,43 +128,6 @@ def repo(tmp_path: Path) -> Path:
     _git(root, "commit", "-m", "initial pipeline")
     _git(root, "checkout", "-b", WORKING)
     return root
-
-
-class TestSlugify:
-    """`_slugify` makes user-supplied text safe for use as a git ref component.
-
-    It still backs the user-slug derivation in production, so its guarantees are
-    pinned here as direct unit tests (these were the only `_slugify` tests; they
-    moved here when the v0 git surface and its test file were removed).
-    """
-
-    def test_basic(self) -> None:
-        assert _slugify("Update area factors") == "update-area-factors"
-
-    def test_special_chars(self) -> None:
-        assert _slugify("Fix postcode (v2)") == "fix-postcode-v2"
-
-    def test_leading_trailing_dashes(self) -> None:
-        assert _slugify("---hello---") == "hello"
-
-    def test_empty_returns_user(self) -> None:
-        assert _slugify("") == "user"
-
-    def test_numbers(self) -> None:
-        assert _slugify("Add NCD step 3") == "add-ncd-step-3"
-
-    def test_strips_emoji(self) -> None:
-        # The real protection against odd input: emoji and other non-ASCII are
-        # collapsed away, leaving only the git-safe ASCII slug.
-        slug = _slugify("Rocket launch \U0001f680")
-        assert "\U0001f680" not in slug
-        assert slug == "rocket-launch"
-
-    def test_handles_long_description(self) -> None:
-        # A long ASCII description slugifies to itself (lowercased, dash-joined)
-        # — `_slugify` imposes no length cap of its own.
-        long_desc = "a" * 250
-        assert _slugify(long_desc) == long_desc
 
 
 class TestNamingAndCategories:
@@ -429,6 +392,90 @@ class TestMilestoneMerge:
 
         assert "rating/new.csv" not in _git(repo, "ls-tree", "-r", "--name-only", milestone)
 
+    def test_a_milestone_runs_the_pre_commit_hook_on_its_changes(self, repo: Path) -> None:
+        """As a `git commit` of the milestone would: the hook sees the milestone's changes
+        staged on the working branch, and what it rewrites is recorded before the milestone."""
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        (repo / "untouched.py").write_text("# as committed\n")
+        _git(repo, "add", "untouched.py")
+        _git(repo, "commit", "-q", "-m", "another module")
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        install_hook(repo, "pre-commit", REWRITING_PRE_COMMIT_HOOK)
+
+        response = commit_milestone("Rated", repo, cwd=repo)
+
+        assert _git(repo, "show", f"{response.sha}:rating.py") == "# v2\n# formatted"
+        assert _git(repo, "show", f"{response.sha}:untouched.py") == "# as committed"
+        assert (repo / "rating.py").read_text() == "# v2\n# formatted\n"
+        assert _git(repo, "log", "-1", "--format=%s", LEDGER) == (
+            "Changes made by the project's pre-commit hook"
+        )
+        assert _tree(repo, response.sha) == _tree(repo, LEDGER)
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
+        assert _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
+
+    def test_a_pre_commit_hook_that_refuses_refuses_the_milestone(self, repo: Path) -> None:
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        install_hook(repo, "pre-commit", "#!/bin/sh\necho 'rating.py: line too long' >&2\nexit 1\n")
+        working_tip = _git(repo, "rev-parse", WORKING)
+
+        with pytest.raises(
+            GitDomainError,
+            match="The project's pre-commit hook refused the milestone: rating.py: line too long",
+        ):
+            commit_milestone("Rated", repo, cwd=repo)
+
+        assert _git(repo, "rev-parse", WORKING) == working_tip
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
+
+    @pytest.mark.parametrize("failure", ["an interrupt", "a cleanup failure"])
+    def test_head_returns_to_the_ledger_whatever_ends_the_hooks(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+    ) -> None:
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        install_hook(repo, "pre-commit", "#!/bin/sh\nexit 0\n")
+        if failure == "an interrupt":
+
+            def interrupted(*_args: object, **_kwargs: object) -> None:
+                raise KeyboardInterrupt
+
+            monkeypatch.setattr(git_transactions, "_run_hook", interrupted)
+            expected: type[BaseException] = KeyboardInterrupt
+        else:
+            unlink = Path.unlink
+
+            def unlink_refused(path: Path, missing_ok: bool = False) -> None:
+                if path.name == "haute-milestone-index":
+                    raise PermissionError(path)
+                unlink(path, missing_ok=missing_ok)
+
+            monkeypatch.setattr(Path, "unlink", unlink_refused)
+            expected = PermissionError
+
+        with pytest.raises(expected):
+            commit_milestone("Rated", repo, cwd=repo)
+
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
+
+    def test_a_commit_msg_hook_may_rewrite_the_milestone_message(self, repo: Path) -> None:
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        install_hook(repo, "commit-msg", '#!/bin/sh\nprintf "\\nRefs: PRICE-42\\n" >> "$1"\n')
+
+        response = commit_milestone("Rated", repo, cwd=repo)
+
+        assert _git(repo, "log", "-1", "--format=%B", response.sha) == "Rated\n\nRefs: PRICE-42"
+
     def test_milestone_refuses_a_pipeline_file_too_large_to_version(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -436,7 +483,7 @@ class TestMilestoneMerge:
 
         write_working_branch(repo, WORKING)
         _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
-        monkeypatch.setattr(git_transactions, "VERSIONED_FILE_LIMIT_BYTES", 1024 * 1024)
+        monkeypatch.setattr(git_core, "VERSIONED_FILE_LIMIT_BYTES", 1024 * 1024)
         data = repo / "rating" / "files" / "data"
         data.mkdir(parents=True)
         (data / "portfolio.parquet").write_bytes(b"x" * (1024 * 1024 + 1))
@@ -890,6 +937,44 @@ class TestWorkingBranchStatus:
 
 
 class TestSetWorkingBranch:
+    @staticmethod
+    def _track_project_hook(repo: Path) -> Path:
+        """The scaffolded hook, tracked as `haute init` leaves it; a clone has no copy of it
+        in `.git/hooks`."""
+        from haute._scaffold import pre_commit_hook
+
+        (repo / ".githooks").mkdir()
+        (repo / ".githooks" / "pre-commit").write_text(pre_commit_hook(), newline="\n")
+        _git(repo, "add", ".githooks/pre-commit")
+        _git(repo, "commit", "-q", "-m", "project hook")
+        return repo / ".githooks" / "pre-commit"
+
+    def test_a_clone_gets_the_projects_tracked_hook(self, repo: Path) -> None:
+        tracked = self._track_project_hook(repo)
+
+        set_working_branch(WORKING, repo, cwd=repo)
+
+        installed = repo / ".git" / "hooks" / "pre-commit"
+        assert installed.read_text() == tracked.read_text()
+        if sys.platform != "win32":
+            assert os.access(installed, os.X_OK)
+
+    @pytest.mark.parametrize("existing", ["a hook", "a hooks path"])
+    def test_a_hook_the_analyst_set_up_is_left_alone(self, repo: Path, existing: str) -> None:
+        self._track_project_hook(repo)
+        if existing == "a hook":
+            own = install_hook(repo, "pre-commit", "#!/bin/sh\nexit 0\n")
+        else:
+            _git(repo, "config", "core.hooksPath", "my-hooks")
+
+        set_working_branch(WORKING, repo, cwd=repo)
+
+        if existing == "a hook":
+            assert own.read_text() == "#!/bin/sh\nexit 0\n"
+        else:
+            assert not (repo / "my-hooks").exists()
+            assert not (repo / ".git" / "hooks" / "pre-commit").exists()
+
     def test_adopt_existing(self, repo: Path) -> None:
         result = set_working_branch(WORKING, repo, cwd=repo)
         assert result.working_branch == WORKING
@@ -1266,6 +1351,39 @@ class TestSeedGitignoreGuards:
         )
         assert _git(unborn_repo, "rev-list", "--all") == ""
         assert not (unborn_repo / ".haute" / "state.json").exists()
+
+    def test_a_first_commit_holding_a_file_too_large_to_version_is_refused(
+        self, unborn_repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GitHub refuses a file over the limit, and no later commit can take it out of the
+        root commit's history."""
+        monkeypatch.setattr(git_core, "VERSIONED_FILE_LIMIT_BYTES", 1024 * 1024)
+        (unborn_repo / "main.py").write_text("x = 1\n")
+        fixtures = unborn_repo / "tests" / "fixtures"
+        fixtures.mkdir(parents=True)
+        (fixtures / "portfolio.parquet").write_bytes(b"x" * (1024 * 1024 + 1))
+
+        with pytest.raises(
+            GitDomainError,
+            match=r"tests/fixtures/portfolio\.parquet \(1 MiB\) is too large for version "
+            r"history, which takes files up to 1 MiB",
+        ):
+            set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        assert _git(unborn_repo, "rev-list", "--all") == ""
+
+    def test_a_large_file_the_seed_leaves_out_does_not_stop_it(
+        self, unborn_repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(git_core, "VERSIONED_FILE_LIMIT_BYTES", 1024 * 1024)
+        (unborn_repo / "main.py").write_text("x = 1\n")
+        (unborn_repo / "notes.bin").write_bytes(b"x" * (1024 * 1024 + 1))
+
+        set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        committed = _git(unborn_repo, "show", "--name-only", "--format=", "main").splitlines()
+        assert "main.py" in committed
+        assert "notes.bin" not in committed
 
     def test_seed_appends_guards_to_partial_gitignore(self, unborn_repo: Path) -> None:
         """An existing .gitignore missing the guard entries gets them appended;
@@ -2856,21 +2974,8 @@ def _fork_setup(repo: Path) -> dict[str, str]:
     return {"m1": m1, "s2": s2, "s3": s3}
 
 
-class TestFetchThrottleAndHardening:
-    """F7 (per-(cwd, remote, kind) fetch throttle) and F1 (prompt-proof,
-    time-bounded fetch that degrades to local refs)."""
-
-    def test_should_fetch_is_keyed_per_cwd(self) -> None:
-
-        git_core._fetch_cooldowns.clear()
-        a, b = Path("/tmp/haute-wt-a"), Path("/tmp/haute-wt-b")
-        assert git_core._should_fetch("origin", cwd=a) is True
-        # Second call for the same key is throttled within the window…
-        assert git_core._should_fetch("origin", cwd=a) is False
-        # …but a different worktree is NOT starved by the first (the F7 fix)…
-        assert git_core._should_fetch("origin", cwd=b) is True
-        # …nor is a different fetch family for the same worktree.
-        assert git_core._should_fetch("origin", cwd=a, kind="pair") is True
+class TestFetchHardening:
+    """F1: a prompt-proof, time-bounded fetch that degrades to local refs."""
 
     def test_fetch_refs_degrades_on_bad_remote(self, repo: Path) -> None:
 
@@ -3619,7 +3724,7 @@ class TestRemotesAndPush:
         _git(other, "commit", "-m", "remote save")
         _git(other, "push", "origin", LEDGER)
         # Refresh is an explicit action; listing remotes reads local refs only.
-        fetch_pair("origin", WORKING, cwd=repo)
+        _git(repo, "fetch", "origin")
         r = next(x for x in list_remotes(repo, cwd=repo).remotes if x.name == "origin")
         assert r.working is not None and r.working.status == "synced"  # working level
         assert r.ledger is not None and r.ledger.status == "behind"  # ledger VISIBLE
@@ -4761,7 +4866,6 @@ class TestRemotesAndPush:
         _git(other, "add", "rating.py")
         _git(other, "commit", "-m", "rewritten line")
         _git(other, "push", "--force", "origin", WORKING)
-        git_core._fetch_cooldowns.clear()
 
         with pytest.raises(GitPushRejectedError) as exc:
             push_working_pair("origin", repo, cwd=repo)
@@ -5057,8 +5161,7 @@ class TestMilestoneForkGate:
         commit_milestone("teammate milestone", other, cwd=other)
         _git(other, "push", "origin", WORKING)
 
-        git_core._fetch_cooldowns.clear()
-        fetch_pair("origin", WORKING, cwd=repo)  # refresh repo's tracking ref
+        _git(repo, "fetch", "origin")  # refresh repo's tracking ref
 
     def test_divergence_state_none_without_remote(self, repo: Path) -> None:
         self._setup_pair(repo)

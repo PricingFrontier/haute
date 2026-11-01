@@ -37,3 +37,22 @@ def init_repo(path: Path, *, user: str = "Test User") -> Path:
     git_run(path, "add", ".")
     git_run(path, "commit", "-m", "Initial commit")
     return path
+
+
+# A pre-commit hook in the shape of the one `haute init` scaffolds: it rewrites each staged
+# Python file on disk and stages it again, so the commit holds the hook's bytes.
+REWRITING_PRE_COMMIT_HOOK = """#!/bin/sh
+for f in $(git diff --cached --name-only --diff-filter=ACM -- '*.py'); do
+  printf '# formatted\\n' >> "$f"
+  git add "$f"
+done
+"""
+
+
+def install_hook(repository: Path, name: str, script: str) -> Path:
+    """Install *script* as the repository's *name* hook (``pre-commit``, ``commit-msg``)."""
+    hook = repository / ".git" / "hooks" / name
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text(script, encoding="utf-8", newline="\n")
+    hook.chmod(0o755)
+    return hook

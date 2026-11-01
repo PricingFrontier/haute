@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_git.py` | Stable import facade. Re-exports the route/public Git API and exception taxonomy from the cohesive domain modules below; owns no subprocess, mutable state, cache, or branch transaction. |
-| `src/haute/_git_core.py` | Sole Git command and repository-mutation boundary: exception taxonomy, prompt-proof subprocess adapters, fetch serialization/cooldowns, ref validation and branch-pair naming, guardrails, immutable object/ref queries, content-addressed primitive caches (including parsed graph-log rows), and the tree fence every working-tree-rewriting command runs through (`_rewrite_tree`, `_tracked_changes`, `GitFilesInUseError`). Domain modules depend on this layer; it depends on none of them. |
+| `src/haute/_git_core.py` | Sole Git command and repository-mutation boundary: exception taxonomy, prompt-proof subprocess adapters, fetch serialization, ref validation and branch-pair naming (`_free_pair_name`), guardrails, the compensation of a failed mutation (`_compensate`), immutable object/ref queries, content-addressed primitive caches (including parsed graph-log rows), and the tree fence every working-tree-rewriting command runs through (`_rewrite_tree`, `_tracked_changes`, `GitFilesInUseError`). Domain modules depend on this layer; it depends on none of them. |
 | `src/haute/_git_setup.py` | Repository and clone setup: repository readiness, identity, default/working-branch association, unborn-repository seeding, and Git preferences. |
 | `src/haute/_git_transactions.py` | Working/ledger branch-pair transactions: path-scoped saves, invariant checks, the sweep of unrecorded project files, milestone merge/ref transaction, version restore, and branch creation/fork replay with compensating rollback. |
 | `src/haute/_git_read_models.py` | Immutable panel read models for repository/working-branch readiness and managed working-branch listings, and the project-file reads behind the Pipeline files panel: `pipeline_file_states` (how each file in a folder stands against version history: `new`, `changed` or `ignored`) and `ignore_rule` (the `.gitignore` rule that ignores a path). It performs no mutation or fetch. |
@@ -28,7 +28,13 @@ conversion in the routes).
   - `GitDomainError(GitError)` — hand-written, safe-to-surface message.
     - `GitGuardrailError(GitDomainError)` — guardrail block → HTTP 403.
     - `GitTransactionError(GitDomainError)` — the primary mutation and at least one
-      compensating rollback step both failed.
+      compensating rollback step both failed. Every multi-step mutation (archive,
+      delete, undelete, working-branch creation and adoption, fork, catch-up, spin-off)
+      undoes itself through `_compensate`: on any exception it runs each undo step in
+      order, the later ones even after one fails, and re-raises the original error when
+      all took effect; a step that reports `False` or raises a `GitError` or `OSError`
+      makes it raise "<action> failed and automatic rollback was incomplete. Inspect the
+      repository before retrying." from the original error.
     - `GitHistoryReadError(GitDomainError)` — history git could not read (a milestone list
       or a range of saves), or historical archive/extraction/parsing could not produce a
       trustworthy pipeline graph.
@@ -210,7 +216,10 @@ current) → `git status --porcelain -- <paths>` to check anything in *paths* ac
 changed (idempotent no-op returns `None`; a status git cannot answer raises `GitError`,
 never reads as no change) → `git add -- <paths>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
 <paths>` (pathspec-scoped, so it commits only those paths' working-tree state regardless of
-what else the user may have pre-staged) → returns the new SHA. Every path reaches Git as a
+what else the user may have pre-staged) → returns the new SHA. The `git commit` runs the project's hooks (a pre-commit hook may
+rewrite and restage a file, so the commit holds its bytes), except with
+`run_hooks=False`, which passes `--no-verify` for a save the milestone's own hook pass
+covers. Every path reaches Git as a
 `:(literal)` pathspec, so a filename holding `*`, `?` or `[` names only itself, as in the
 unborn-repo seed. A canvas save passes no
 message, so the default names the changed files; an assistant apply passes its change
@@ -297,8 +306,24 @@ out even where `.gitignore` lacks it, and a file `.gitignore` ignores stays out.
 Any swept path inside the pipeline folder that is a file larger than
 `VERSIONED_FILE_LIMIT_BYTES` raises `GitDomainError` naming it, its size and the root's
 `data/` as the place for it, before anything is committed. A non-empty sweep is recorded in
-one final ledger save with the fixed message `"Updated project files"`; a new file outside
-the pipeline folder is never included → `merge_to_working`
+one final ledger save with the fixed message `"Updated project files"`, without hooks; a new
+file outside the pipeline folder is never included → `_run_commit_hooks` runs the project's
+`pre-commit` and `commit-msg` hooks, the ones a `git commit` of the milestone would run, when
+either is installed where git looks for it (`git rev-parse --git-path hooks/<name>`, which
+follows `core.hooksPath`). The milestone's saves are already on the ledger, so for the hooks
+HEAD names the working branch (`symbolic-ref`, no checkout) and a scratch index
+(`GIT_INDEX_FILE`, `read-tree` of the ledger) holds the ledger's tree: the milestone's changes
+are what is staged, and the real index and files are untouched. Each hook runs through `git
+hook run --ignore-missing` (git 2.36 or later; an older git with a hook installed is refused
+with "This project has a <hook> hook, and running it needs git 2.36 or later. Update git,
+then commit again."), bounded by `_HOOK_TIMEOUT_SECONDS` (300 s). A hook that exits non-zero
+refuses the milestone with "The project's <hook> hook refused the milestone: <the end of what
+it printed>", nothing recorded; `commit-msg` gets the message in a file and may rewrite it,
+and a message it empties is refused. HEAD returns to the ledger in a `finally`, whatever
+ended the hooks (an interrupt included), before the scratch files are removed; a return that
+fails is `GitTransactionError`. What `pre-commit` left changed
+on disk, swept by the same rules, is recorded as one more save without hooks, "Changes made by
+the project's pre-commit hook" → `merge_to_working`
 validates the message (non-empty, no C0 control characters — a stray record-separator would
 corrupt the ledger-save parser's delimiter), runs `check_invariants` (see below) and raises
 `GitDomainError` on any violation, computes `merge_base(working_tip, ledger_tip)` and raises
@@ -345,8 +370,8 @@ equals the last-merged ledger commit's tree, not an ancestor relationship.
     operation in progress and tracked changes ("You have unsaved changes. Save or discard
     them before opening the new branch."), since the checkout replaces the files.
 
-  Either way, a failure after the first ref runs `_rollback_fork` and puts the recorded
-  working branch back. A complete rollback re-raises, and an incomplete one raises
+  Either way, a failure after the first ref runs `_rollback_fork`'s steps and puts the
+  recorded working branch back. A complete rollback re-raises, and an incomplete one raises
   `GitTransactionError`, so no lone ref leaks.
   - `move=True`: only legal at the latest milestone or a pending save (not an older
     milestone or a folded save), and not with `switch`, which it implies. Refuses if the spawning ledger's later commits are already published on
@@ -359,7 +384,7 @@ equals the last-merged ledger commit's tree, not an ancestor relationship.
     topology. The operation then creates both new branches and checks out the new ledger
     (its tree matches old HEAD's, so uncommitted edits carry across untouched), rewinds the
     spawning branch's ledger to the fork point, and records the new working branch. Any
-    exception in this multi-step sequence triggers `_rollback_fork`; a complete rollback
+    exception in this multi-step sequence runs `_rollback_fork`'s steps; a complete rollback
     re-raises the original error, while any failed compensation raises
     `GitTransactionError`.
 
@@ -409,6 +434,13 @@ old '<path>'` on stderr, else the tracked changes left. The restore then raises
 capture does. `commit_milestone` takes its sweep from the same
 `_unrecorded_project_files`.
 
+**The project's hook in a clone.** `set_working_branch`, once its arguments are valid and
+before it changes anything, installs the project's `.githooks/pre-commit` (which `haute init`
+scaffolds and the seed versions) as the repository's `pre-commit` hook, executable, when the
+file exists, no `core.hooksPath` is configured and git's hook path holds nothing: a clone
+carries no `.git/hooks`, so its first working branch brings the hook its saves and milestones
+then run. A hook already there is left alone.
+
 **Adopt-create's start (inside `set_working_branch`, `create=True`, a born repository).**
 The new branch starts at HEAD, unless HEAD is a save of a working branch's ledger off every
 working branch's first-parent spine. `_branch_start` reads every working branch whose ledger
@@ -441,7 +473,12 @@ drops nothing. More than `_SEED_FILE_LIMIT` (1,000)
 files left is refused with a `GitDomainError` before staging, naming the count and the
 top-level folder holding most of them: "The first version of this project would hold <n>
 files, <m> of them in '<folder>/'. That is more than a project holds: move that folder out of
-the project or add it to .gitignore, then try again." The matched files are added with
+the project or add it to .gitignore, then try again." A file left larger than
+`VERSIONED_FILE_LIMIT_BYTES` (100 MiB) is refused next by `_refuse_too_large_for_history`
+(`_git_core`), the check the sweep before a milestone or restore applies to the pipeline
+folder (`_refuse_unversionable`): "<path> (<size>) is too large for version history, which
+takes files up to 100 MiB. Move it to the project's data/ folder, which stays on this machine,
+and try again." A larger file the pathspecs leave out is never a candidate. The matched files are added with
 `:(literal)` prefixes so a filename containing glob characters can't re-expand the pathspec.
 An empty result still commits (`--allow-empty`) to establish the root. A `git commit` failure whose
 stderr mentions missing author identity is translated to a `GitDomainError` steering the
@@ -593,8 +630,8 @@ ref never lands without the other. A bootstrap default-push rejection, including
 different-SHA default winning the create-only race, follows a safe non-409 push-failure path
 and is never misreported as working/ledger divergence. A
 working/ledger non-fast-forward failure (`non-fast-forward` / `fetch first` / `[rejected]`
-in stderr) is turned into `_push_rejection`, which force-fetches past the throttle (a
-rejection is authoritative, not a poll) in the namespace form, so a pair leg the remote
+in stderr) is turned into `_push_rejection`, which force-fetches (a rejection is
+authoritative) in the namespace form, so a pair leg the remote
 lacks reads as a missing tracking ref instead of failing the fetch, recomputes both legs,
 and checks `_is_rewrite` per leg using the last-pushed-SHA record. The same validated working/ledger SHA snapshots used
 as push sources are recorded on success via `_git_state.record_pushed_shas`, so a concurrent
@@ -659,14 +696,14 @@ choosing an aside name or mutating refs. This
 authoritative snapshot lets an absent optional ledger remain a successful fetch while
 removing a deleted tracking ref; an absent working branch is then a distinct domain
 refusal. It renames the current pair to a unique dated aside name
-(`_unique_aside_name`), creates fresh
+(`_free_pair_name`: `<W>-local-<YYYYMMDD>`, then `-2`, `-3`… until it and its ledger are
+both free), creates fresh
 `working`/`ledger` branches at the remote's tips, checks out the new ledger, and records the
 merge-base of the old and new working tips as the aside branch's fork point (for the branch
 manager's back-link). If the remote has no ledger (`X2`), the local ledger is respawned at
-the adopted tip rather than adopted. The whole sequence is wrapped with
-`_rollback_branch_away` (drops any freshly created canonical refs, renames the aside pair
-back, and restores HEAD) on any `GitError`/`OSError`; incomplete compensation raises
-`GitTransactionError`.
+the adopted tip rather than adopted. On any exception the sequence is compensated
+(drops any freshly created canonical refs, renames the aside pair back, and puts HEAD on
+the ledger again); incomplete compensation raises `GitTransactionError`.
 
 **Archive/delete active pair.** HEAD detaches at the working branch's tip, its last
 milestone, through the tree fence. A confirmed delete forces it over a dirty tree; an archive
@@ -675,7 +712,9 @@ or an unconfirmed delete refuses tracked changes first, with `_switch_away_if_ac
 "deleting it"), and the tree is left as it was. The
 ledger's later saves stay with the archived ledger or the trash pins. HEAD never moves to
 another branch, so the analyst is not left on a default branch's unrelated files. Archive
-moves the pair with one `update-ref --stdin` transaction: it creates `archive/<X>` and its
+moves the pair with one `update-ref --stdin` transaction: it creates `archive/<X>` (or,
+when that or its ledger is taken, `_free_pair_name`'s dated `archive/<X>-<YYYYMMDD>`, then
+`-2`, `-3`…) and its
 ledger at their tips and deletes `<X>` and its ledger with their tips as expected values.
 Un-archive (`restore_working_pair`) is the same transaction the other way.
 
@@ -856,14 +895,18 @@ process failures, and precise ref-movement races deterministic.
   serialized mutator.
 - **`tests/test_git_engine.py`** — the primary unit suite for the Git facade and domain
   modules, organized into
-  focused test classes covering: slugification, branch-category naming, ledger
+  focused test classes covering: branch-category naming, ledger
   resolve/spawn, `commit_save` (including idempotent-no-op saves, a
   filename with glob characters committing only itself, a save during a merge refused with
   the reason and a status check git cannot answer raising), a typed branch name refused
   naming each rule and git deciding one the rules let through, the milestone sweep of the pipeline
   folder (a new file there recorded, a new file outside it, an ignored file, `__pycache__/`,
   `.haute_build/`, bytecode and the names the Files panels hide left out, and a file over the
-  limit refusing the Commit by name),
+  limit refusing the Commit by name), the milestone's run of the project's hooks (the
+  pre-commit hook seeing only the milestone's changes and its rewrite recorded before the
+  milestone, a refusing hook refusing it with HEAD back on the ledger, a commit-msg hook
+  rewriting the message), the project's tracked hook installed in a clone and an analyst's
+  own hook or hooks path left alone,
   milestone merge and its
   invariant checks, git identity get/set, working-branch status across all eight readiness states,
   `set_working_branch` including a branch created from a detached pending save, folded
@@ -872,8 +915,9 @@ process failures, and precise ref-movement races deterministic.
   in a project with no repository (nothing owed), the unborn-repo seed path and its
   gitignore-guard
   interaction (`TestSeedGitignoreGuards`, `TestSetWorkingBranchUnbornNonDefault`; a venv,
-  an env and a conda environment left out of the root commit whatever their names, and a
-  seed over the limit refused naming its folder), version
+  an env and a conda environment left out of the root commit whatever their names, a
+  seed over the limit refused naming its folder, and a seed holding a file too large to
+  version refused naming it while a large file outside the pathspecs is left out), version
   restore (`TestRestoreVersion`: a pending save, a milestone and a folded save restored as
   one save on the same branch with later saves kept, files changed, deleted and added since
   put back, untracked files, `.haute/` and `outputs/` untouched and caches wiped,
@@ -949,7 +993,7 @@ process failures, and precise ref-movement races deterministic.
   archive state replacement, archive restore, undelete, and explicit incomplete-
   compensation failures.
 - **`tests/test_git_rollback_coverage.py`** — crash-safety-net tests specifically for the
-  partial-failure rollback paths: `_rollback_fork`, `_rollback_branch_away`, branch-away
+  partial-failure rollback paths: the fork's and the branch-away's compensation, branch-away
   guard conditions, and that unreachable-remote push preflight and fast-forward failures
   correctly raise rather than swallow.
 - **`tests/test_git_content_caches.py`** — the SHA-keyed cache layer specifically: milestone

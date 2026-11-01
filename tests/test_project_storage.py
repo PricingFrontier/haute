@@ -46,6 +46,7 @@ from haute._project_storage import (
     UCHead,
     UCLineage,
 )
+from haute.hosted import DATABRICKS_APP_ENV_VARS
 from haute.schemas import GitPushRejection, GitRemoteLeg
 
 WORKING = "pricing-dev"
@@ -419,6 +420,23 @@ class TestCredentialHostAllowlist:
         """A file:// remote has no host and receives no credential."""
         monkeypatch.setenv(GIT_TOKEN_ENV, "t")
         assert _project_storage.validate_remote_url("file:///tmp/r.git")
+
+    @pytest.mark.parametrize("url", ["file://server/share/r.git", "file://10.0.0.5/r.git"])
+    def test_file_urls_naming_another_host_are_refused(self, url: str) -> None:
+        """Windows git reads the host as a network share; Linux git drops it silently."""
+        host = url.split("/")[2]
+        with pytest.raises(StorageConfigError, match=f"'{host}'.*file:///"):
+            _project_storage.validate_remote_url(url)
+
+    def test_file_urls_may_name_localhost(self) -> None:
+        assert _project_storage.validate_remote_url("file://localhost/tmp/r.git")
+
+    def test_a_databricks_app_refuses_file_urls(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An app container's disk goes when it restarts, so it cannot hold the project."""
+        for name in DATABRICKS_APP_ENV_VARS:
+            monkeypatch.setenv(name, "haute-app")
+        with pytest.raises(StorageConfigError, match="restarts"):
+            _project_storage.validate_remote_url("file:///tmp/r.git")
 
     def test_bind_refuses_before_any_git_command_runs(
         self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch

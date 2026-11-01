@@ -3326,6 +3326,8 @@ class UtilityWriteResponse(SaveCapture):
     name: str = ""
     module: str = ""
     import_line: str = ""  # e.g. "from utility.features import *"
+    # The file as the save left it, a project hook's rewrite included, and its revision.
+    content: str
     revision: str
 
 
@@ -5796,7 +5798,6 @@ class GitLedgerSavesResponse(BaseModel):
 
 class GitBranchItem(BaseModel):
     name: str
-    is_yours: bool
     is_current: bool
     is_archived: bool
     last_commit_time: str = ""

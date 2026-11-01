@@ -1,4 +1,5 @@
 import { AppWindow, Workflow, type LucideIcon } from "lucide-react"
+import useUIStore from "../stores/useUIStore"
 import useWorkbenchStore, { type EditorView } from "../stores/useWorkbenchStore"
 
 const VIEWS: ReadonlyArray<{ view: EditorView; label: string; Icon: LucideIcon }> = [
@@ -35,7 +36,8 @@ export default function ViewSwitcher({ compact }: { compact: boolean }) {
           aria-pressed={activeView === view}
           aria-label={compact ? label : undefined}
           title={`Show ${label}`}
-          onClick={() => showView(view)}
+          // Another view hides an open utility panel, so it waits for the panel's unsaved edit.
+          onClick={() => useUIStore.getState().afterUtilitySaved(() => showView(view))}
           className={
             compact
               ? "toolbar-btn w-7 h-7 rounded-md flex items-center justify-center"

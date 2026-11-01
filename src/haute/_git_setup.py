@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -11,15 +13,19 @@ from pathlib import Path
 from haute._git_core import (
     GitDomainError,
     GitError,
-    GitTransactionError,
     _assert_eligible_working,
     _assert_git_repo,
     _assert_new_branch_name,
+    _checkout_back,
     _clear_content_caches,
+    _compensate,
+    _delete_branch_if_present,
     _get_current_branch,
+    _head_position,
     _is_ancestor,
     _ledger_or_branch_sha,
     _list_branches_with_tips,
+    _refuse_too_large_for_history,
     _rev_parse,
     _rewrite_tree,
     _run_git,
@@ -223,8 +229,8 @@ def set_working_branch(
     created restores HEAD and deletes the half-created branch.
     """
     from haute._git_state import (
-        clear_working_branch,
         read_working_branch,
+        restore_working_branch,
         write_working_branch,
     )
 
@@ -233,6 +239,7 @@ def set_working_branch(
         _assert_new_branch_name(branch, cwd=cwd)
     _validate_ref_name(branch)
     _assert_eligible_working(branch)
+    _install_project_hook(project_root, cwd)
 
     previous_working = read_working_branch(project_root)
     exists = _rev_parse(branch, cwd=cwd) is not None
@@ -291,6 +298,8 @@ def set_working_branch(
             )
             seed_files = _outside_environments([f for f in listed.split("\0") if f], cwd)
             _refuse_implausible_seed(seed_files)
+            # Nothing can later take a file out of the root commit's history.
+            _refuse_too_large_for_history(seed_files, cwd or Path.cwd(), "try again")
             if seed_files:
                 # :(literal) so a filename containing glob characters cannot
                 # re-expand into a broader pathspec at add time.
@@ -318,14 +327,7 @@ def set_working_branch(
                 raise
 
         # Capture pre-creation position for atomic rollback.
-        ok_sym, sym = _run_git_ok("symbolic-ref", "--short", "HEAD", cwd=cwd)
-        if ok_sym:
-            _rb_ref = sym.strip()
-            _rb_detach = False
-        else:
-            # Detached HEAD (a checkout outside Haute): capture SHA for restore.
-            _rb_ref = _run_git("rev-parse", "HEAD", cwd=cwd)
-            _rb_detach = True
+        head = _head_position(cwd)
 
         # A branch made from a save opens at an anchoring milestone (same tree, so
         # the checkout changes no file and carries uncommitted edits across).
@@ -340,31 +342,16 @@ def set_working_branch(
             # Also drop the ledger resolve_ledger may have just spawned — leaving
             # it orphaned would let a later fork off an advanced default read as
             # `invalid` via check_invariants (tree mismatch vs the stale ledger).
-            restored_head, _ = (
-                _run_git_ok("checkout", "--detach", _rb_ref, cwd=cwd)
-                if _rb_detach
-                else _run_git_ok("checkout", _rb_ref, cwd=cwd)
+            _compensate(
+                exc,
+                "Creating the working branch",
+                [
+                    lambda: _checkout_back(head, cwd=cwd),
+                    lambda: _delete_branch_if_present(branch, cwd=cwd),
+                    lambda: _delete_branch_if_present(ledger_name(branch), cwd=cwd),
+                    lambda: restore_working_branch(project_root, previous_working),
+                ],
             )
-            removed_working = True
-            if _rev_parse(branch, cwd=cwd) is not None:
-                removed_working, _ = _run_git_ok("branch", "-D", branch, cwd=cwd)
-            removed_ledger = True
-            created_ledger = ledger_name(branch)
-            if _rev_parse(created_ledger, cwd=cwd) is not None:
-                removed_ledger, _ = _run_git_ok("branch", "-D", created_ledger, cwd=cwd)
-            try:
-                if previous_working is None:
-                    clear_working_branch(project_root)
-                else:
-                    write_working_branch(project_root, previous_working)
-                restored_state = True
-            except OSError:
-                restored_state = False
-            if not all((restored_head, removed_working, removed_ledger, restored_state)):
-                raise GitTransactionError(
-                    "Creating the working branch failed and automatic rollback was incomplete. "
-                    "Inspect the repository before retrying."
-                ) from exc
             raise
     else:
         if not exists:
@@ -373,34 +360,20 @@ def set_working_branch(
         # any newly-spawned ledger when either checkout or state replacement fails.
         ledger = ledger_name(branch)
         ledger_existed = _rev_parse(ledger, cwd=cwd) is not None
-        attached, previous_head = _run_git_ok("symbolic-ref", "--short", "HEAD", cwd=cwd)
-        if not attached:
-            previous_head = _run_git("rev-parse", "HEAD", cwd=cwd)
+        head = _head_position(cwd)
         try:
             resolve_ledger(branch, cwd=cwd)
             write_working_branch(project_root, branch)
         except Exception as exc:
-            restored_head, _ = (
-                _run_git_ok("checkout", previous_head, cwd=cwd)
-                if attached
-                else _run_git_ok("checkout", "--detach", previous_head, cwd=cwd)
+            _compensate(
+                exc,
+                "Selecting the working branch",
+                [
+                    lambda: _checkout_back(head, cwd=cwd),
+                    lambda: ledger_existed or _delete_branch_if_present(ledger, cwd=cwd),
+                    lambda: restore_working_branch(project_root, previous_working),
+                ],
             )
-            removed_ledger = True
-            if not ledger_existed and _rev_parse(ledger, cwd=cwd) is not None:
-                removed_ledger, _ = _run_git_ok("branch", "-D", ledger, cwd=cwd)
-            try:
-                if previous_working is None:
-                    clear_working_branch(project_root)
-                else:
-                    write_working_branch(project_root, previous_working)
-                restored_state = True
-            except OSError:
-                restored_state = False
-            if not all((restored_head, removed_ledger, restored_state)):
-                raise GitTransactionError(
-                    "Selecting the working branch failed and automatic rollback was incomplete. "
-                    "Inspect the repository before retrying."
-                ) from exc
             raise
 
     logger.info("working_branch_set", branch=branch, created=create)
@@ -410,6 +383,28 @@ def set_working_branch(
         state="ready",
         last_save_sha=_ledger_or_branch_sha(branch, cwd=cwd),
     )
+
+
+def _install_project_hook(project_root: Path, cwd: Path | None) -> None:
+    """Install the project's ``.githooks/pre-commit``, which ``haute init`` scaffolds and the
+    repository tracks, where git runs hooks, when nothing is there: a clone carries no
+    ``.git/hooks``. A hook already there, or a ``core.hooksPath`` the analyst set, is left
+    alone."""
+    source = project_root / ".githooks" / "pre-commit"
+    if not source.is_file():
+        return
+    configured, _ = _run_git_ok("config", "--get", "core.hooksPath", cwd=cwd)
+    if configured:
+        return
+    target = (cwd or Path.cwd()) / _run_git("rev-parse", "--git-path", "hooks/pre-commit", cwd=cwd)
+    if target.exists():
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+    # git on Windows runs a hook whatever its mode bits say.
+    if sys.platform != "win32":
+        target.chmod(0o755)
+    logger.info("project_hook_installed", hook="pre-commit")
 
 
 def _outside_environments(paths: list[str], cwd: Path | None) -> list[str]:
