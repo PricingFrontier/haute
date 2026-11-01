@@ -7,6 +7,7 @@ import {
   getNodeDataPoint,
   runNodeData,
 } from "../api/client"
+import { apiErrorMessage } from "../api/errors"
 import { nextOperationToken } from "../utils/operationToken"
 import type { NodeDataColumns, NodeDataPointResponse, NodeDataRetention } from "../api/types"
 import type { SimpleEdge, SimpleNode } from "../panels/editors"
@@ -281,7 +282,7 @@ export default function useNodeDataCache({
         }
         addToast(
           "error",
-          `Data cache inspection failed: ${err instanceof Error ? err.message : String(err)}`,
+          `Data cache inspection failed: ${apiErrorMessage(err)}`,
         )
       })
     return () => controller.abort()
@@ -362,9 +363,7 @@ export default function useNodeDataCache({
                 } catch (retried) {
                   addToast(
                     "error",
-                    `Cancelling the data cache failed: ${
-                      retried instanceof Error ? retried.message : String(retried)
-                    }`,
+                    `Cancelling the data cache failed: ${apiErrorMessage(retried)}`,
                   )
                 }
               })()
@@ -398,7 +397,7 @@ export default function useNodeDataCache({
         await cancelNodeData(jobId)
         await readPoint(fence)
       } catch (err) {
-        addToast("error", `Cancelling the data cache failed: ${err instanceof Error ? err.message : String(err)}`)
+        addToast("error", `Cancelling the data cache failed: ${apiErrorMessage(err)}`)
       }
     },
     [addToast, readPoint],
@@ -446,7 +445,7 @@ export default function useNodeDataCache({
       } catch (err) {
         if (!isDocumentExecutionFenceCurrent(fence)) return
         const name = (err as { name?: unknown } | null)?.name
-        const detail = err instanceof Error ? err.message : String(err)
+        const detail = apiErrorMessage(err)
         // A cancellation the server refused leaves work running the user asked
         // to stop, so it is reported as that rather than as a failed build.
         if (name === "CancellationFailed") {
@@ -562,7 +561,7 @@ export default function useNodeDataCache({
       }
       await readPoint(fence)
     } catch (err) {
-      addToast("error", `Clearing the data cache failed: ${err instanceof Error ? err.message : String(err)}`)
+      addToast("error", `Clearing the data cache failed: ${apiErrorMessage(err)}`)
     }
   }, [
     activeSource,

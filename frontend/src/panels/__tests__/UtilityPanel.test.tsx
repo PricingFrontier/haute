@@ -23,11 +23,13 @@ const { mockListFiles, mockReadFile, mockCreateFile, mockUpdateFile, mockDeleteF
   class MockApiError extends Error {
     status: number
     detail?: string
-    constructor(message: string, status: number, detail?: string) {
+    rawDetail?: unknown
+    constructor(message: string, status: number, detail?: string | { line: number | null; message: string }) {
       super(message)
       this.name = "ApiError"
       this.status = status
-      this.detail = detail
+      this.rawDetail = typeof detail === "object" ? detail : undefined
+      this.detail = typeof detail === "string" ? detail : detail?.message
     }
   }
   return {
@@ -184,7 +186,7 @@ describe("UtilityPanel", () => {
   it("shows a refused create in the empty panel, keeping the typed name", async () => {
     mockListFiles.mockResolvedValue({ files: [] })
     mockCreateFile.mockRejectedValue(
-      new MockApiError("Invalid module name: 'class' is a Python keyword", 400),
+      new MockApiError("HTTP 400", 400, "Invalid module name: 'class' is a Python keyword"),
     )
 
     render(<UtilityPanel {...defaultProps} />)
@@ -364,7 +366,7 @@ describe("UtilityPanel auto-save", () => {
     )
     mockUpdateFile
       .mockRejectedValueOnce(
-        new MockApiError("HTTP 400", 400, "Syntax error on line 1: invalid draft"),
+        new MockApiError("HTTP 400", 400, { line: 1, message: "Syntax error on line 1: invalid draft" }),
       )
       .mockResolvedValueOnce({
         status: "ok", name: "features.py", module: "features", import_line: "", revision: "2-2",
@@ -383,6 +385,9 @@ describe("UtilityPanel auto-save", () => {
     expect(screen.getByTestId("code-editor")).toHaveValue("broken draft\n")
     expect(screen.getByText("Syntax error on line 1: invalid draft")).toBeInTheDocument()
     expect(screen.getByText("features")).toBeInTheDocument()
+    expect(useToastStore.getState().toasts.map((t) => t.text)).toContain(
+      'Cannot switch utility files while "features" has unsaved errors: Syntax error on line 1: invalid draft',
+    )
 
     fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "fixed = True\n" } })
     await act(async () => { vi.advanceTimersByTime(600) })
@@ -422,7 +427,7 @@ describe("UtilityPanel auto-save", () => {
     expect(mockReadFile).not.toHaveBeenCalledWith("helpers")
 
     await act(async () => {
-      rejectSave(new MockApiError("HTTP 400", 400, "Syntax error on line 1: invalid draft"))
+      rejectSave(new MockApiError("HTTP 400", 400, { line: 1, message: "Syntax error on line 1: invalid draft" }))
     })
 
     expect(mockReadFile).not.toHaveBeenCalledWith("helpers")
@@ -441,7 +446,7 @@ describe("UtilityPanel auto-save", () => {
       Promise.resolve({ name: `${module}.py`, module, content: `# ${module}\n`, revision: "1-1" }),
     )
     mockUpdateFile.mockRejectedValue(
-      new MockApiError("HTTP 400", 400, "Syntax error on line 1: invalid draft"),
+      new MockApiError("HTTP 400", 400, { line: 1, message: "Syntax error on line 1: invalid draft" }),
     )
 
     render(<UtilityPanel {...defaultProps} />)
@@ -470,12 +475,14 @@ describe("UtilityPanel auto-save", () => {
     expect(screen.getByTestId("code-editor")).toHaveValue("broken draft\n")
     expect(screen.getByText("Syntax error on line 1: invalid draft")).toBeInTheDocument()
     expect(screen.getByText("features")).toBeInTheDocument()
+    expect(useToastStore.getState().toasts.map((t) => t.text)).toContain(
+      'Cannot switch utility files while "features" has unsaved errors: Syntax error on line 1: invalid draft',
+    )
   })
 
   it("shows syntax error from auto-save", async () => {
-    // Item #76: backend emits a flat string detail "Syntax error on line N: <msg>".
     mockUpdateFile.mockRejectedValue(
-      new MockApiError("HTTP 400", 400, "Syntax error on line 3: unexpected EOF"),
+      new MockApiError("HTTP 400", 400, { line: 3, message: "Syntax error on line 3: unexpected EOF" }),
     )
 
     render(<UtilityPanel {...defaultProps} />)
@@ -492,7 +499,7 @@ describe("UtilityPanel auto-save", () => {
   it("clears error when user edits again", async () => {
     mockUpdateFile
       .mockRejectedValueOnce(
-        new MockApiError("HTTP 400", 400, "Syntax error on line 3: unexpected EOF"),
+        new MockApiError("HTTP 400", 400, { line: 3, message: "Syntax error on line 3: unexpected EOF" }),
       )
       .mockResolvedValueOnce({
         status: "ok", name: "features.py", module: "features", import_line: "", revision: "2-2",
@@ -515,7 +522,7 @@ describe("UtilityPanel auto-save", () => {
 
   it("shows error from failed auto-save", async () => {
     mockUpdateFile.mockRejectedValue(
-      new MockApiError("HTTP 400", 400, "Syntax error on line 1: Save failed"),
+      new MockApiError("HTTP 400", 400, { line: 1, message: "Syntax error on line 1: Save failed" }),
     )
 
     render(<UtilityPanel {...defaultProps} />)
@@ -688,10 +695,9 @@ describe("UtilityPanel auto-save", () => {
     )
   })
 
-  it("sets error-line attribute on editor when save detail mentions a line", async () => {
-    // parseSyntaxError extracts the line number from the flat string via /line (\d+)/.
+  it("sets error-line attribute on editor when save detail includes a structured line", async () => {
     mockUpdateFile.mockRejectedValue(
-      new MockApiError("HTTP 400", 400, "Syntax error on line 5: unexpected token"),
+      new MockApiError("HTTP 400", 400, { line: 5, message: "Syntax error on line 5: unexpected token" }),
     )
 
     render(<UtilityPanel {...defaultProps} />)

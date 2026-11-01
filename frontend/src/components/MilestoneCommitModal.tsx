@@ -74,7 +74,7 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
         // A structured 409 this client cannot read: name the status rather
         // than print the unread body.
         if (typeof body === "object" && body !== null) {
-          addToast("error", `Could not commit: ${err.message}`)
+          addToast("error", `Could not commit: ${apiErrorMessage(err)}`)
           return
         }
       }

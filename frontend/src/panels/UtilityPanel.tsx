@@ -15,27 +15,29 @@ import {
   updateUtilityFile,
   deleteUtilityFile,
 } from "../api/client"
-import { apiErrorStatus } from "../api/errors"
+import { apiErrorMessage, apiErrorRawDetail, apiErrorStatus } from "../api/errors"
 import type { UtilityFile } from "../api/types"
 
 /**
- * Extract syntax error info from an ApiError's flat string detail.
- *
- * Server responses are ``{"detail": "Syntax error on line N: <msg>"}``.
- * The line number is extracted via a ``/line (\d+)/`` regex for the editor's
- * gutter; the raw message is shown to the user.
+ * Extract 400 error info from an ApiError's structured `{line, message}` detail
+ * (syntax errors) or flat string detail (such as name-collision refusals).
  */
 function parseSyntaxError(err: unknown): { error: string; error_line: number | null } | null {
   if (!(err instanceof ApiError) || err.status !== 400) return null
-  const raw = err.detail
-  if (!raw) return null
-
-  const message = String(raw)
-  const match = /\bline\s+(\d+)\b/i.exec(message)
-  return {
-    error: message,
-    error_line: match ? Number.parseInt(match[1], 10) : null,
+  const record = apiErrorRawDetail(err)
+  if (record && typeof record.message === "string" && record.message.trim()) {
+    return {
+      error: record.message,
+      error_line: typeof record.line === "number" ? record.line : null,
+    }
   }
+  if (typeof err.detail === "string" && err.detail.trim()) {
+    return {
+      error: err.detail,
+      error_line: null,
+    }
+  }
+  return null
 }
 
 interface UtilityPanelProps {
@@ -77,6 +79,7 @@ export default function UtilityPanel({
   // failure separate from the in-flight queue so a later file switch cannot
   // overwrite the only local copy of the draft.
   const failedSaveModuleRef = useRef<string | null>(null)
+  const failedSaveErrorRef = useRef<{ line: number | null; message: string } | null>(null)
   // Each file's revision as its read, create or last save returned it: a save or delete
   // sends it, so the server refuses one made against a file changed outside the panel.
   const revisionsRef = useRef(new Map<string, string>())
@@ -112,6 +115,7 @@ export default function UtilityPanel({
       reportSaveCapture(saved)
       if (failedSaveModuleRef.current === module) {
         failedSaveModuleRef.current = null
+        failedSaveErrorRef.current = null
       }
       if (mountedRef.current && activeModuleRef.current === module) {
         setErrorLine(null)
@@ -123,14 +127,19 @@ export default function UtilityPanel({
         failedSaveModuleRef.current = module
         const syntaxErr = parseSyntaxError(err)
         if (syntaxErr) {
+          failedSaveErrorRef.current = { line: syntaxErr.error_line, message: syntaxErr.error }
           setErrorLine(syntaxErr.error_line)
           setErrorMsg(syntaxErr.error)
         } else if (apiErrorStatus(err) === 412) {
+          const message = apiErrorMessage(err)
+          failedSaveErrorRef.current = { line: null, message }
           conflictModuleRef.current = module
-          setConflict({ module, message: err instanceof Error ? err.message : String(err) })
+          setConflict({ module, message })
         } else {
-          const detail = err instanceof Error ? err.message : "unknown error"
-          addToast("error", `Failed to save utility file "${module}": ${detail}`)
+          const detail = apiErrorMessage(err, "unknown error")
+          const message = `Failed to save utility file "${module}": ${detail}`
+          failedSaveErrorRef.current = { line: null, message }
+          addToast("error", message)
           setErrorMsg("Failed to save")
         }
       }
@@ -167,6 +176,21 @@ export default function UtilityPanel({
       || failedSaveModuleRef.current !== activeModuleRef.current
   }, [pendingSave])
 
+  const notifyRefusedSwitch = useCallback(() => {
+    const lastError = failedSaveErrorRef.current
+    if (lastError && conflictModuleRef.current === null) {
+      setErrorLine(lastError.line)
+      setErrorMsg(lastError.message)
+    }
+    const moduleName = activeModuleRef.current ?? "current file"
+    addToast(
+      "error",
+      lastError
+        ? `Cannot switch utility files while "${moduleName}" has unsaved errors: ${lastError.message}`
+        : `Cannot switch utility files while "${moduleName}" has unsaved errors.`,
+    )
+  }, [addToast])
+
   // Load file list.  The backend returns `{files: []}` for a missing
   // utility/ dir, so anything reaching this catch is a real failure
   // (network, 500, auth) — surface it as a toast, not a silent empty list.
@@ -175,7 +199,7 @@ export default function UtilityPanel({
       const res = await listUtilityFiles()
       setFiles(res.files)
     } catch (err) {
-      const detail = err instanceof Error ? err.message : "unknown error"
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Failed to list utility files: ${detail}`)
       setFiles([])
     }
@@ -188,7 +212,10 @@ export default function UtilityPanel({
   const loadFile = useCallback(async (module: string) => {
     // Flush (persist) any pending save for the previous file before switching —
     // a bare clearTimeout here would silently discard the last edit.
-    if (!await flushSave()) return
+    if (!await flushSave()) {
+      notifyRefusedSwitch()
+      return
+    }
     try {
       const res = await readUtilityFile(module)
       revisionsRef.current.set(module, res.revision)
@@ -198,11 +225,11 @@ export default function UtilityPanel({
       setErrorLine(null)
       setErrorMsg(null)
     } catch (err) {
-      const detail = err instanceof Error ? err.message : "unknown error"
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Failed to load utility file "${module}": ${detail}`)
       setErrorMsg(`Failed to load ${module}`)
     }
-  }, [addToast, flushSave])
+  }, [addToast, flushSave, notifyRefusedSwitch])
 
   // Reload drops the draft for the file as it is now; Overwrite saves the draft over it.
   // Either first drops the edit waiting to save and lets the saves already queued
@@ -219,7 +246,7 @@ export default function UtilityPanel({
       try {
         read = await readUtilityFile(module)
       } catch (err) {
-        const detail = err instanceof Error ? err.message : "unknown error"
+        const detail = apiErrorMessage(err, "unknown error")
         addToast("error", `Failed to load utility file "${module}": ${detail}`)
         return
       }
@@ -234,6 +261,7 @@ export default function UtilityPanel({
       setConflict(null)
       if (choice === "reload") {
         failedSaveModuleRef.current = null
+        failedSaveErrorRef.current = null
         setContent(read.content)
         setReadGeneration((generation) => generation + 1)
         setErrorLine(null)
@@ -248,11 +276,14 @@ export default function UtilityPanel({
   }, [addToast, pendingSave, queueSave])
 
   const selectImports = useCallback(async () => {
-    if (!await flushSave()) return
+    if (!await flushSave()) {
+      notifyRefusedSwitch()
+      return
+    }
     setImportsSelected(true)
     setErrorLine(null)
     setErrorMsg(null)
-  }, [flushSave])
+  }, [flushSave, notifyRefusedSwitch])
 
   // Auto-select first file
   useEffect(() => {
@@ -280,7 +311,7 @@ export default function UtilityPanel({
       loadFile(res.module)
     } catch (err) {
       const syntaxErr = parseSyntaxError(err)
-      setCreateError(syntaxErr ? syntaxErr.error : err instanceof Error ? err.message : "Failed to create")
+      setCreateError(syntaxErr ? syntaxErr.error : apiErrorMessage(err, "Failed to create"))
     }
   }, [newName, loadFiles, loadFile, onImportAdded])
 
@@ -296,12 +327,13 @@ export default function UtilityPanel({
       revisionsRef.current.delete(activeModule)
       if (failedSaveModuleRef.current === activeModule) {
         failedSaveModuleRef.current = null
+        failedSaveErrorRef.current = null
       }
       setActiveModule(null)
       setContent("")
       await loadFiles()
     } catch (err) {
-      const detail = err instanceof Error ? err.message : "unknown error"
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Failed to delete utility file "${activeModule}": ${detail}`)
       setErrorMsg("Failed to delete")
     }

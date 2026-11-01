@@ -199,7 +199,7 @@ export default function RemotePushControl({
         // A structured 409 this client cannot read: name the status rather
         // than print the unread body.
         if (typeof body === "object" && body !== null) {
-          addToast("error", `Push failed: ${err.message}`)
+          addToast("error", `Push failed: ${apiErrorMessage(err)}`)
           return
         }
       }

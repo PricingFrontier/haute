@@ -1,5 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react"
+import { useLayoutEffect, useRef, useState } from "react"
 import useClickOutside from "../hooks/useClickOutside"
+import { useMenuKeyboard } from "../hooks/useMenuKeyboard"
 import { CONNECTION_DROP_TYPES, NODE_TYPE_META, type NodeTypeValue } from "../utils/nodeTypes"
 
 const VIEWPORT_MARGIN = 8
@@ -21,10 +22,10 @@ export default function ConnectionDropMenu({
   inputChoices,
 }: ConnectionDropMenuProps) {
   const ref = useRef<HTMLDivElement>(null)
-  const itemRefs = useRef<(HTMLButtonElement | null)[]>([])
   const [position, setPosition] = useState({ left: x, top: y })
 
   useClickOutside(ref, onClose, true)
+  useMenuKeyboard(ref, onClose)
 
   // Keep the whole list on screen when the release point is near an edge. The
   // offset size ignores the fade-in's scale transform, unlike the client rect.
@@ -37,40 +38,12 @@ export default function ConnectionDropMenu({
     })
   }, [x, y])
 
-  useLayoutEffect(() => {
-    itemRefs.current[0]?.focus()
-  }, [])
-
-  // Escape closes the menu wherever focus is. The document listener runs
-  // before the window-level shortcuts, which skip a prevented event.
-  useEffect(() => {
-    const handler = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== "Escape") return
-      event.preventDefault()
-      onClose()
-    }
-    document.addEventListener("keydown", handler)
-    return () => document.removeEventListener("keydown", handler)
-  }, [onClose])
-
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return
-    event.preventDefault()
-    const items = itemRefs.current.filter((item): item is HTMLButtonElement => !!item)
-    if (items.length === 0) return
-    const current = items.findIndex((item) => item === document.activeElement)
-    const step = event.key === "ArrowDown" ? 1 : -1
-    const next = current === -1 ? 0 : (current + step + items.length) % items.length
-    items[next].focus()
-  }
-
   return (
     <div
       ref={ref}
       data-testid="connection-drop-menu"
       role="menu"
       aria-label={inputChoices ? "Inputs" : "Add node"}
-      onKeyDown={onKeyDown}
       className="fixed z-50 rounded-lg shadow-2xl py-1 min-w-[190px] max-h-[calc(100vh-16px)] overflow-y-auto animate-fade-in"
       style={{ left: position.left, top: position.top, background: "var(--bg-panel)", border: "1px solid var(--border-bright)" }}
     >
@@ -81,7 +54,7 @@ export default function ConnectionDropMenu({
         {inputChoices ? "Inputs" : "Add node"}
       </div>
       {inputChoices ? inputChoices.map((name, i) => (
-        <button key={name} ref={(el) => { itemRefs.current[i] = el }} type="button" role="menuitem"
+        <button key={name} type="button" role="menuitem" tabIndex={i === 0 ? 0 : -1}
           onClick={() => onSelect(name)} className="w-full text-left px-3 py-1.5 text-[12px] hover-chrome">
           {name}
         </button>
@@ -91,9 +64,9 @@ export default function ConnectionDropMenu({
         return (
           <button
             key={type}
-            ref={(el) => { itemRefs.current[i] = el }}
             type="button"
             role="menuitem"
+            tabIndex={i === 0 ? 0 : -1}
             data-testid={`connection-drop-item-${type}`}
             title={meta.description}
             onClick={() => onSelect(type)}

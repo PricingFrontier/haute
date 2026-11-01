@@ -10,6 +10,7 @@ import {
   resolveEditorGraphIdentities,
 } from "../utils/editorIdentities"
 import { createNodeInstance, createSubmodel, dissolveSubmodel } from "../api/client"
+import { apiErrorMessage } from "../api/errors"
 import useToastStore from "../stores/useToastStore"
 import useGraphStore from "../stores/useGraphStore"
 import {
@@ -250,7 +251,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       return {
         ok: false,
-        error: `Create submodel failed: ${err instanceof Error ? err.message : String(err)}`,
+        error: `Create submodel failed: ${apiErrorMessage(err)}`,
       }
     }
   }, [graphRef, parentGraphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveCanonicalIdentities, setSelectedNode, setLastSelectedId])
@@ -338,7 +339,7 @@ export default function useSubmodelNavigation({
       }
       setTimeout(() => fitView({ padding: 0.8 }), 100)
     } catch (err: unknown) {
-      addToast("error", `Drill-down failed: ${err instanceof Error ? err.message : String(err)}`)
+      addToast("error", `Drill-down failed: ${apiErrorMessage(err)}`)
     }
   }, [graphRef, parentGraphRef, setActiveSubmodelIdentity, submodelsRef, setNodesRaw, setEdgesRaw, setSelectedNode, setLastSelectedId, setPreviewData, sourceFileRef, fitView, addToast, reservedApiInputFrameLabels, resolveGraphIdentities])
 
@@ -486,7 +487,7 @@ export default function useSubmodelNavigation({
         setTimeout(() => fitView({ padding: 0.8 }), 100)
       }
     } catch (err: unknown) {
-      addToast("error", `Dissolve failed: ${err instanceof Error ? err.message : String(err)}`)
+      addToast("error", `Dissolve failed: ${apiErrorMessage(err)}`)
     }
   }, [graphRef, parentGraphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveCanonicalIdentities])
 

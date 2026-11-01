@@ -16,6 +16,7 @@ import {
   type OnConnectEnd,
   type OnSelectionChangeFunc,
 } from "@xyflow/react"
+import { apiErrorMessage } from "../api/errors"
 import { effectiveNodeType, isSubmodelInstanceConfig, nodeData } from "../types/node"
 import {
   NODE_TYPES,
@@ -267,10 +268,7 @@ export default function useEdgeHandlers({
         try {
           return attachEditorEdgeIdentities([edge], currentNodes)[0]
         } catch (error: unknown) {
-          addToast(
-            "error",
-            `Connection rejected: ${error instanceof Error ? error.message : String(error)}`,
-          )
+          addToast("error", `Connection rejected: ${apiErrorMessage(error)}`)
           return null
         }
       }
@@ -379,7 +377,7 @@ export default function useEdgeHandlers({
           clearTrace()
           cancelPreview()
         } catch (err: unknown) {
-          addToast("error", `Create node failed: ${err instanceof Error ? err.message : String(err)}`)
+          addToast("error", `Create node failed: ${apiErrorMessage(err)}`)
         }
       }
 
@@ -557,7 +555,7 @@ export default function useEdgeHandlers({
         }
         apply(resolved.nodes[0], capturedGraph)
       } catch (err: unknown) {
-        addToast("error", `Create node failed: ${err instanceof Error ? err.message : String(err)}`)
+        addToast("error", `Create node failed: ${apiErrorMessage(err)}`)
       }
     })()
   }, [addToast, graphRef, resolveGraphIdentities])
@@ -733,7 +731,7 @@ export default function useEdgeHandlers({
         }
         config = parsed as Record<string, unknown>
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
+        const message = apiErrorMessage(err)
         addToast("error", `Drop rejected: invalid node config JSON (${message})`)
         return
       }

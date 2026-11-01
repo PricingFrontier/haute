@@ -1,4 +1,5 @@
 import { Package } from "lucide-react"
+import { apiErrorMessage } from "../../api/errors"
 import { EditorLabel } from "../../components/form"
 import useGraphStore from "../../stores/useGraphStore"
 import { isSubmodelDefinition, isSubmodelInstanceConfig } from "../../types/node"
@@ -57,7 +58,7 @@ export default function SubmodelEditor({ nodeId, config, accentColor, readOnly =
       const next = retargetSubmodelInput(state, nodeId, port, edgeId || null)
       state.setNodesAndEdgesAndSubmodels(next.nodes, next.edges, next.submodels)
     } catch (error: unknown) {
-      useToastStore.getState().addToast("error", error instanceof Error ? error.message : String(error))
+      useToastStore.getState().addToast("error", apiErrorMessage(error))
     }
   }
   if (!isSubmodelInstanceConfig(config) || !isSubmodelDefinition(definition, config.definitionId)) {

@@ -1,5 +1,6 @@
-import { useMemo, useState, type CSSProperties } from "react"
+import { useMemo, type CSSProperties } from "react"
 import { AlertTriangle, Plus, Trash2, Variable } from "lucide-react"
+import { CommittedTextField } from "../components/form"
 import PanelShell from "./PanelShell"
 import { INPUT_STYLE } from "./editors/_shared"
 import { isPlainObject } from "../types/guards"
@@ -157,17 +158,9 @@ interface ConstantRowProps {
 function ConstantRow({ index, draft, issues, sources, readers, disabled, onChange, onRename, onDelete }: ConstantRowProps) {
   // The name commits on blur or Enter, so a rename of a constant that is read
   // asks once rather than on every keystroke.
-  const [name, setName] = useState(draft.name)
-  const [editedFrom, setEditedFrom] = useState(draft.name)
-  if (editedFrom !== draft.name) {
-    setEditedFrom(draft.name)
-    setName(draft.name)
-  }
-  const commitName = () => {
-    if (name === draft.name) return
-    void onRename(name).then((renamed) => {
-      if (!renamed) setName(draft.name)
-    })
+  const commitName = (next: string) => {
+    if (next === draft.name) return
+    void onRename(next)
   }
   const toggleSplit = async () => {
     if (!draft.split) {
@@ -186,18 +179,14 @@ function ConstantRow({ index, draft, issues, sources, readers, disabled, onChang
   return (
     <tr data-testid={`constant-row-${index}`} className="group" style={{ borderTop: "1px solid var(--border-subtle)" }}>
       <td className="px-2 py-1.5 align-top">
-        <input
+        <CommittedTextField
           data-testid={`constant-name-${index}`}
           aria-label={`Constant ${index + 1} name`}
           title={issues.name}
-          value={name}
+          value={draft.name}
           disabled={disabled}
           aria-invalid={issues.name ? true : undefined}
-          onChange={(event) => setName(event.target.value)}
-          onBlur={commitName}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") event.currentTarget.blur()
-          }}
+          onCommit={commitName}
           className={CELL_INPUT}
           style={cellStyle(issues.name)}
         />

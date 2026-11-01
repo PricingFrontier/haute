@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, useMemo } from "react"
+import { useEffect, useRef, useMemo } from "react"
 import { Trash2, Copy, Type, Ungroup, Link2 } from "lucide-react"
+import { useMenuKeyboard } from "../hooks/useMenuKeyboard"
 
 interface ContextMenuProps {
   x: number
@@ -35,8 +36,6 @@ export default function ContextMenu({
   nodeId,
 }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null)
-  const [focusIndex, setFocusIndex] = useState(0)
-  const buttonRefs = useRef<(HTMLButtonElement | null)[]>([])
 
   const items = useMemo(() => {
     const list: { label: string; icon: typeof Type; action: () => void; danger?: boolean }[] = [
@@ -68,36 +67,7 @@ export default function ContextMenu({
     return () => document.removeEventListener("mousedown", handler)
   }, [onClose])
 
-  // Auto-focus first item
-  useEffect(() => {
-    buttonRefs.current[0]?.focus()
-  }, [])
-
-  // Keyboard navigation: Escape, ArrowDown, ArrowUp
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { onClose(); return }
-      if (e.key === "ArrowDown") {
-        e.preventDefault()
-        setFocusIndex((prev) => {
-          const next = (prev + 1) % items.length
-          buttonRefs.current[next]?.focus()
-          return next
-        })
-        return
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault()
-        setFocusIndex((prev) => {
-          const next = (prev - 1 + items.length) % items.length
-          buttonRefs.current[next]?.focus()
-          return next
-        })
-      }
-    }
-    document.addEventListener("keydown", handler)
-    return () => document.removeEventListener("keydown", handler)
-  }, [onClose, items.length])
+  useMenuKeyboard(ref, onClose)
 
   return (
     <div
@@ -119,9 +89,8 @@ export default function ContextMenu({
         return (
           <button
             key={item.label}
-            ref={(el) => { buttonRefs.current[i] = el }}
             role="menuitem"
-            tabIndex={i === focusIndex ? 0 : -1}
+            tabIndex={i === 0 ? 0 : -1}
             onClick={() => {
               item.action()
               onClose()

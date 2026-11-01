@@ -159,11 +159,8 @@ def _validate_syntax(content: str) -> tuple[bool, str | None, int | None]:
 
 
 def _format_syntax_error(err_msg: str | None, err_line: int | None) -> str:
-    """Build a user-facing flat string describing a syntax error.
+    """Build a user-facing string describing a syntax error.
 
-    The line number is embedded in the string itself so the frontend can
-    extract it with a ``/line (\\d+)/`` regex — structured ``{error,
-    error_line}`` dict details are no longer part of the HTTP contract.
     ``str(SyntaxError)`` already contains ``" (<unknown>, line N)"`` so
     the result is de-duplicated on the first ``" (<unknown>, "`` marker.
     """
@@ -309,7 +306,10 @@ def _refuse_syntax_error(module: str, content: str) -> None:
         )
         raise HTTPException(
             status_code=400,
-            detail=_format_syntax_error(err_msg, err_line),
+            detail={
+                "line": err_line,
+                "message": _format_syntax_error(err_msg, err_line),
+            },
         )
 
 

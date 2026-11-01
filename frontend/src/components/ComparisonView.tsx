@@ -27,6 +27,7 @@ import {
 import { X, History, AlertTriangle, Loader2, Columns2, Rows2 } from "lucide-react"
 
 import { getCommitPipeline, getCommitContext } from "../api/client"
+import { apiErrorMessage, apiErrorStatus } from "../api/errors"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import { resolveEditorGraphIdentities } from "../utils/editorIdentities"
 import { nodeTypes } from "../utils/nodeTypeRegistry"
@@ -376,7 +377,7 @@ export default function ComparisonView({
     }
     load().catch((err) => {
       if (ctrl.signal.aborted) return
-      setError(err instanceof Error ? err.message : "Could not load this version.")
+      setError(apiErrorMessage(err, "Could not load this version."))
     })
     return () => ctrl.abort()
   }, [comparison.sha, sourceFile, reservedApiInputFrameLabelSet])
@@ -389,7 +390,10 @@ export default function ComparisonView({
       .then((ctx) => {
         if (!ctrl.signal.aborted) setHistoricalCtx(ctx)
       })
-      .catch(() => {})
+      .catch((err) => {
+        if (ctrl.signal.aborted) return
+        console.warn(`Commit context fetch failed (${apiErrorStatus(err) ?? apiErrorMessage(err)})`)
+      })
     return () => ctrl.abort()
   }, [comparison.sha])
 
@@ -403,7 +407,10 @@ export default function ComparisonView({
       .then((ctx) => {
         if (!ctrl.signal.aborted) setCurrentCtx(ctx)
       })
-      .catch(() => {})
+      .catch((err) => {
+        if (ctrl.signal.aborted) return
+        console.warn(`Commit context fetch failed (${apiErrorStatus(err) ?? apiErrorMessage(err)})`)
+      })
     return () => ctrl.abort()
   }, [lastSaveSha, comparison.sha])
 

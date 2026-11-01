@@ -1,21 +1,8 @@
 import ModalShell from "./ModalShell"
+import { KEYBOARD_SHORTCUT_BINDINGS } from "../hooks/useKeyboardShortcuts"
 
 const isMac = typeof navigator !== "undefined" && /Mac/.test(navigator.userAgent)
 const mod = isMac ? "\u2318" : "Ctrl"
-
-const shortcuts = [
-  { keys: `${mod}+Z`, label: "Undo" },
-  { keys: `${mod}+Shift+Z`, label: "Redo" },
-  { keys: `${mod}+C`, label: "Copy selected nodes" },
-  { keys: `${mod}+V`, label: "Paste nodes" },
-  { keys: `${mod}+A`, label: "Select all nodes" },
-  { keys: `${mod}+S`, label: "Save pipeline" },
-  { keys: `${mod}+K`, label: "Search nodes" },
-  { keys: `${mod}+1`, label: "Fit view" },
-  { keys: `${mod}+Enter`, label: "Refresh the open preview" },
-  { keys: "Delete / Backspace", label: "Delete selected" },
-  { keys: "?", label: "Show this help" },
-]
 
 export default function KeyboardShortcuts({ onClose }: { onClose: () => void }) {
   return (
@@ -32,21 +19,24 @@ export default function KeyboardShortcuts({ onClose }: { onClose: () => void }) 
         </button>
       </div>
       <div className="px-4 py-3 space-y-1.5">
-        {shortcuts.map((s) => (
-          <div key={s.keys} className="flex items-center justify-between py-1">
-            <span className="text-[12px]" style={{ color: "var(--text-secondary)" }}>{s.label}</span>
-            <kbd
-              className="text-[11px] font-mono px-2 py-0.5 rounded"
-              style={{
-                background: "var(--bg-input)",
-                border: "1px solid var(--border)",
-                color: "var(--text-muted)",
-              }}
-            >
-              {s.keys}
-            </kbd>
-          </div>
-        ))}
+        {KEYBOARD_SHORTCUT_BINDINGS.map((s) => {
+          const keys = s.keys(mod)
+          return (
+            <div key={s.id} className="flex items-center justify-between py-1">
+              <span className="text-[12px]" style={{ color: "var(--text-secondary)" }}>{s.label}</span>
+              <kbd
+                className="text-[11px] font-mono px-2 py-0.5 rounded"
+                style={{
+                  background: "var(--bg-input)",
+                  border: "1px solid var(--border)",
+                  color: "var(--text-muted)",
+                }}
+              >
+                {keys}
+              </kbd>
+            </div>
+          )
+        })}
       </div>
     </ModalShell>
   )

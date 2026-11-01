@@ -15,7 +15,6 @@ packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FGC-R04 | Planned | P3 | One copy of each shell mechanism (menu keyboard handling, the radio group, the committed draft), every error shown with the server's detail, the Hotkeys list derived from the bindings, the dead prop gone and the swallowed context fetches logged. |
 | FGC-R05 | Planned | P1 | Finishing auto-layout changes positions without restoring older node data or replacing a different graph. |
 | FGC-R06 | Planned | P1 | A delayed drill-in cannot replace a newer graph, source path or navigation stack. |
 | FGC-R07 | Planned | P3 | Deleting selected nodes and separate selected edges performs one complete, undoable selection change. |
@@ -26,44 +25,6 @@ packages come from the
 | FGC-R12 | Planned | P2 | `previewPortLabel` honours `chosenFrame` on multi-table `apiInput` and `workbenchInput` nodes, `computeStructuralFingerprint` and `computePanelContextFingerprint` include `submodels` and submodel boundary `ports`, `Ctrl+V` refuses `submodel` and `submodelPort` nodes, and `Escape` in a non-empty `SearchField` does not close an enclosing `ModalShell`. |
 
 ## Planned improvements
-
-### FGC-R04 — One copy of each shell mechanism, errors with their detail
-**Why:** Six error surfaces in the utility panel and the comparison view build their text
-from `err.message`, which for an `ApiError` is only `HTTP <status>`, so the server's
-detail is dropped ("Failed to create: HTTP 409"); `apiErrorMessage` exists and the lint
-bans two other shapes but not this one. Four menus implement arrow-key roving focus by
-hand in four shapes, one of them landing ArrowUp from outside on the second-last item.
-`CalculationSettings` re-implements the radio group `ToggleButtonGroup` provides, minus
-Home/End. The Hotkeys list is hand-maintained and omits Ctrl+Y, Ctrl+G and Escape, which
-the hook binds. `NodePanelProps.onRecoverSettings` is declared and never read or passed.
-The utility editor recovers the error line by regex from the route's flat sentence, and a
-file whose last save was refused cannot be left with nothing saying why. Two fields
-re-implement the committed draft beside the form kit's `useCommittedDraft`. The
-breadcrumb-context fetches swallow every failure.
-
-**Plan:** `apiErrorMessage` at the six sites and the lint selector extended to the
-`instanceof Error ? err.message` shape. One `useMenuKeyboard(ref)` hook (roving focus,
-Home/End, Escape) for the four menus. `CalculationSettings` renders `ToggleButtonGroup`
-with a two-line label. The Hotkeys modal and the hook read one bindings table. Delete the
-prop. The utility route returns `{line, message}` in its 400 detail; a refused switch
-toasts why. `PipelineSettingField` and `ConstantRow` use `CommittedTextField` or
-`ValidatedTextField`. The context fetches log the status on failure.
-
-**Acceptance:** Grep finds one roving-focus implementation, one radio group, one bindings
-table and no `err.message` toast; the lint fails on the old shape; the Hotkeys modal lists
-Ctrl+Y and Ctrl+G; a 409 in the utility panel shows the server's detail.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/UtilityPanel.tsx`, `frontend/src/components/ComparisonView.tsx`,
-`frontend/src/api/errors.ts::apiErrorMessage`, `frontend/eslint.config.js`,
-`frontend/src/components/ContextMenu.tsx`, `frontend/src/components/ConnectionDropMenu.tsx`,
-`frontend/src/components/ProjectControls.tsx`, `frontend/src/app/ui.tsx`,
-`frontend/src/components/PipelineSettingsModal.tsx::CalculationSettings`,
-`frontend/src/components/ToggleButtonGroup.tsx`, `frontend/src/components/KeyboardShortcuts.tsx`,
-`frontend/src/hooks/useKeyboardShortcuts.ts`, `frontend/src/panels/NodePanel.tsx`,
-`src/haute/routes/utility.py`, `frontend/src/panels/GlobalConstantsPanel.tsx::ConstantRow`,
-`frontend/src/components/form/CommittedTextField.tsx::useCommittedDraft`.
 
 ### FGC-R05 — Auto-layout cannot overwrite edits
 **Why:** The [28 October review](codebase-review-2026-10-28.md) delayed a layout,

@@ -314,8 +314,10 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
    `utilityOpen`; the bundle checker treats its chunk as lazy-only and rejects startup preload.
 2. `frontend/src/panels/UtilityPanel.tsx` loads files on mount and selects the first file when
    none is active. Switching files first awaits `flushSave()`; a pending/in-flight failure or an
-   already-settled rejected draft stops the switch, and the draft plus inline error remain visible
-   until a later save succeeds.
+   already-settled rejected draft stops the switch, toasts the refusal reason, and keeps the draft
+   plus inline error visible until a later save succeeds. Syntax errors read `{line, message}` from
+   the 400 response's structured `detail` (`apiErrorRawDetail`), and all error surfaces format
+   messages through `apiErrorMessage`.
 3. Edits debounce for 500ms. Unmount flushes any pending write fire-and-forget; post-await
    state updates verify both mounted state and the module still selected, dropping stale replies.
 4. The panel keeps each file's revision as its read, create or last save returned it, and an

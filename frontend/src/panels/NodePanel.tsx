@@ -55,7 +55,6 @@ type NodePanelProps = {
   onDeleteSubmodelInputPort?: (portName: string) => void
   onSwapEdgeJoinInputs?: (nodeId: string) => void
   onRefreshPreview?: () => void
-  onRecoverSettings?: () => void
   /** True when showing last-selected node while nothing is actively selected */
   dimmed?: boolean
   /** 1-based line number of the error in user code, if any */

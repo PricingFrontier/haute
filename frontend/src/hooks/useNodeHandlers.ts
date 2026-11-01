@@ -7,6 +7,7 @@
  */
 import { useCallback, useRef, useState, type MutableRefObject } from "react"
 import type { Node, Edge, NodeChange, InternalNode } from "@xyflow/react"
+import { apiErrorMessage } from "../api/errors"
 import useToastStore from "../stores/useToastStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useUIStore from "../stores/useUIStore"
@@ -182,7 +183,7 @@ export default function useNodeHandlers({
       setSelectedNode(resolvedNode)
       setLastSelectedId?.(resolvedNode.id)
     } catch (err: unknown) {
-      addToast("error", `Create node failed: ${err instanceof Error ? err.message : String(err)}`)
+      addToast("error", `Create node failed: ${apiErrorMessage(err)}`)
     }
   }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast, resolveNodeIdentities])
 
@@ -312,7 +313,7 @@ export default function useNodeHandlers({
       setLastSelectedId?.(resolvedNode.id)
       addToast("info", `Created instance of "${origData.label}"`)
     } catch (err: unknown) {
-      addToast("error", `Create node failed: ${err instanceof Error ? err.message : String(err)}`)
+      addToast("error", `Create node failed: ${apiErrorMessage(err)}`)
     }
   }, [graphRef, setNodes, setSelectedNode, setLastSelectedId, addToast, submodels, resolveNodeIdentities, createWrappedNodeInstance])
 
