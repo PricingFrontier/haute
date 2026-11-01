@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -237,6 +239,7 @@ def set_working_branch(
         _assert_new_branch_name(branch, cwd=cwd)
     _validate_ref_name(branch)
     _assert_eligible_working(branch)
+    _install_project_hook(project_root, cwd)
 
     previous_working = read_working_branch(project_root)
     exists = _rev_parse(branch, cwd=cwd) is not None
@@ -380,6 +383,28 @@ def set_working_branch(
         state="ready",
         last_save_sha=_ledger_or_branch_sha(branch, cwd=cwd),
     )
+
+
+def _install_project_hook(project_root: Path, cwd: Path | None) -> None:
+    """Install the project's ``.githooks/pre-commit``, which ``haute init`` scaffolds and the
+    repository tracks, where git runs hooks, when nothing is there: a clone carries no
+    ``.git/hooks``. A hook already there, or a ``core.hooksPath`` the analyst set, is left
+    alone."""
+    source = project_root / ".githooks" / "pre-commit"
+    if not source.is_file():
+        return
+    configured, _ = _run_git_ok("config", "--get", "core.hooksPath", cwd=cwd)
+    if configured:
+        return
+    target = (cwd or Path.cwd()) / _run_git("rev-parse", "--git-path", "hooks/pre-commit", cwd=cwd)
+    if target.exists():
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+    # git on Windows runs a hook whatever its mode bits say.
+    if sys.platform != "win32":
+        target.chmod(0o755)
+    logger.info("project_hook_installed", hook="pre-commit")
 
 
 def _outside_environments(paths: list[str], cwd: Path | None) -> list[str]:

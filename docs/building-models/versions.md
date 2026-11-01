@@ -12,6 +12,12 @@ The panel lists the saves since the last milestone in a highlighted box, then th
 milestones. Opening a milestone shows the saves in it. Each row's commit code is a short ID
 for that save or milestone.
 
+Saves and milestones run your project's git hooks, as `git commit` does. The pre-commit hook
+`haute init` sets up formats the Python you save, and the editor shows the formatted file.
+At **Commit a milestone** the hooks check everything the milestone records; if one refuses,
+nothing is committed and the message says why. A copy of the project you clone gets the
+same hook once you choose your working branch.
+
 ## Going back to a version
 
 Choose **Restore this version** on any earlier save or milestone (the button on its row, or

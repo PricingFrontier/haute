@@ -292,7 +292,7 @@ when a path/query/body fails model validation):
 | `GET /api/input-cache/jobs/{job_id}` / `DELETE /api/input-cache/jobs/{job_id}` | Job id | Polls or requests cancellation of a cache build |
 | `GET /api/utility` | No body | `UtilityListResponse {files:[{name,module}]}`; 403 when `utility/` resolves outside the project, as for every utility route |
 | `GET /api/utility/{module}` | Python-identifier module path | `UtilityReadResponse {name,module,content,revision}`; 404 when the file is missing |
-| `POST /api/utility` | `UtilityCreateRequest {name, content=""}` | `UtilityWriteResponse {status="ok", name, module, import_line, revision, git_sha, identity_required, warnings, uncaptured}`; 409 `file_exists` for a file that appeared since the name check |
+| `POST /api/utility` | `UtilityCreateRequest {name, content=""}` | `UtilityWriteResponse {status="ok", name, module, import_line, content, revision, git_sha, identity_required, warnings, uncaptured}`, `content` and `revision` read after the ledger capture, whose git hooks may rewrite the file; 409 `file_exists` for a file that appeared since the name check |
 | `PUT /api/utility/{module}` | `UtilityWriteRequest {content, revision}` | `UtilityWriteResponse`; 404 when the file is missing, 412 `file_changed` when its revision is not the request's (nothing written) |
 | `DELETE /api/utility/{module}` | Module path, query `revision` | `UtilityDeleteResponse {status="ok", module, git_sha, identity_required, warnings, uncaptured}`; 404 when the file is missing, 412 `file_changed` when its revision is not the request's (nothing deleted) |
 | `POST /api/output-assemble/dry-run` | `OutputAssembleDryRunRequest {graph, node_id, output_mapping=[], output_format="json", row_limit=100 (1..10000), source="live"}` | `OutputAssembleDryRunResponse {status: "ok"|"error", document=[], row_count=0, error=null}` |
@@ -564,7 +564,10 @@ milestone, restore or switch never meets a half-written save
     commit identity, `identity_required` is set to `true` to prompt the client, while every
     other capture failure leaves it `false`; either way `uncaptured` names the files the
     capture left off the ledger), while an unexpected exception still propagates
-    after the filesystem transaction and stale cleanup have committed. Return the
+    after the filesystem transaction and stale cleanup have committed. The capture's
+    `git commit` runs the project's hooks; when a capture that committed leaves a file
+    this save wrote with other bytes (a formatter's pre-commit hook), the document is
+    loaded again, and that document and its revision are the committed ones. Return the
     committed `source_revision` and the committed document's fingerprint with the normal
     response fields, keeping the committed document as `committed_document` for the
     route, which publishes it (`pipeline_document_update_payload`) with the request's

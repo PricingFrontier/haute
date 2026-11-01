@@ -34,6 +34,7 @@ from haute.schemas import (
     PipelineRepairRecoverRequest,
     SavePipelineRequest,
 )
+from tests._git_helpers import REWRITING_PRE_COMMIT_HOOK, install_hook
 
 WORKING = "pricing"
 # How long a Git action is watched while the writer it must wait for is paused.
@@ -470,3 +471,19 @@ def test_a_failed_repair_rolls_back_before_the_waiting_milestone_records_anythin
         assert (project / path).read_text(encoding="utf-8") == text
         assert _blob(project, milestone.sha, path) == text.rstrip("\n")
     assert _blob(project, milestone.sha, "notes.md") == "Reviewed."
+
+
+def test_a_save_a_hook_rewrites_hands_back_the_document_on_disk(project: Path) -> None:
+    """The ledger capture runs the project's hooks; the editor is given the revision and the
+    document the hook left, so its next save is not refused as stale."""
+    install_hook(project, "pre-commit", REWRITING_PRE_COMMIT_HOOK)
+    service = SavePipelineService(project_root=project)
+
+    response = service.save(_save_request(project, banding=True))
+
+    assert (project / "main.py").read_text(encoding="utf-8").endswith("# formatted\n")
+    assert _blob(project, response.git_sha, "main.py").endswith("# formatted")
+    on_disk = load_pipeline_editor_document(project / "main.py", project_root=project)
+    assert response.source_revision == on_disk.source_revision
+    assert service.committed is not None
+    assert service.committed.payload == on_disk.model_dump(mode="json", by_alias=True)

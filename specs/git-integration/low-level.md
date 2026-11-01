@@ -216,7 +216,10 @@ current) → `git status --porcelain -- <paths>` to check anything in *paths* ac
 changed (idempotent no-op returns `None`; a status git cannot answer raises `GitError`,
 never reads as no change) → `git add -- <paths>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
 <paths>` (pathspec-scoped, so it commits only those paths' working-tree state regardless of
-what else the user may have pre-staged) → returns the new SHA. Every path reaches Git as a
+what else the user may have pre-staged) → returns the new SHA. The `git commit` runs the project's hooks (a pre-commit hook may
+rewrite and restage a file, so the commit holds its bytes), except with
+`run_hooks=False`, which passes `--no-verify` for a save the milestone's own hook pass
+covers. Every path reaches Git as a
 `:(literal)` pathspec, so a filename holding `*`, `?` or `[` names only itself, as in the
 unborn-repo seed. A canvas save passes no
 message, so the default names the changed files; an assistant apply passes its change
@@ -303,8 +306,23 @@ out even where `.gitignore` lacks it, and a file `.gitignore` ignores stays out.
 Any swept path inside the pipeline folder that is a file larger than
 `VERSIONED_FILE_LIMIT_BYTES` raises `GitDomainError` naming it, its size and the root's
 `data/` as the place for it, before anything is committed. A non-empty sweep is recorded in
-one final ledger save with the fixed message `"Updated project files"`; a new file outside
-the pipeline folder is never included → `merge_to_working`
+one final ledger save with the fixed message `"Updated project files"`, without hooks; a new
+file outside the pipeline folder is never included → `_run_commit_hooks` runs the project's
+`pre-commit` and `commit-msg` hooks, the ones a `git commit` of the milestone would run, when
+either is installed where git looks for it (`git rev-parse --git-path hooks/<name>`, which
+follows `core.hooksPath`). The milestone's saves are already on the ledger, so for the hooks
+HEAD names the working branch (`symbolic-ref`, no checkout) and a scratch index
+(`GIT_INDEX_FILE`, `read-tree` of the ledger) holds the ledger's tree: the milestone's changes
+are what is staged, and the real index and files are untouched. Each hook runs through `git
+hook run --ignore-missing` (git 2.36 or later; an older git with a hook installed is refused
+with "This project has a <hook> hook, and running it needs git 2.36 or later. Update git,
+then commit again."), bounded by `_HOOK_TIMEOUT_SECONDS` (300 s). A hook that exits non-zero
+refuses the milestone with "The project's <hook> hook refused the milestone: <the end of what
+it printed>", nothing recorded; `commit-msg` gets the message in a file and may rewrite it,
+and a message it empties is refused. HEAD returns to the ledger whatever happens
+(`_compensate`; a return that fails is `GitTransactionError`). What `pre-commit` left changed
+on disk, swept by the same rules, is recorded as one more save without hooks, "Changes made by
+the project's pre-commit hook" → `merge_to_working`
 validates the message (non-empty, no C0 control characters — a stray record-separator would
 corrupt the ledger-save parser's delimiter), runs `check_invariants` (see below) and raises
 `GitDomainError` on any violation, computes `merge_base(working_tip, ledger_tip)` and raises
@@ -414,6 +432,13 @@ old '<path>'` on stderr, else the tracked changes left. The restore then raises
 `pause_watcher()`, then calls `_project_storage.enqueue_push()` as a save's
 capture does. `commit_milestone` takes its sweep from the same
 `_unrecorded_project_files`.
+
+**The project's hook in a clone.** `set_working_branch`, once its arguments are valid and
+before it changes anything, installs the project's `.githooks/pre-commit` (which `haute init`
+scaffolds and the seed versions) as the repository's `pre-commit` hook, executable, when the
+file exists, no `core.hooksPath` is configured and git's hook path holds nothing: a clone
+carries no `.git/hooks`, so its first working branch brings the hook its saves and milestones
+then run. A hook already there is left alone.
 
 **Adopt-create's start (inside `set_working_branch`, `create=True`, a born repository).**
 The new branch starts at HEAD, unless HEAD is a save of a working branch's ledger off every
@@ -869,14 +894,18 @@ process failures, and precise ref-movement races deterministic.
   serialized mutator.
 - **`tests/test_git_engine.py`** — the primary unit suite for the Git facade and domain
   modules, organized into
-  focused test classes covering: slugification, branch-category naming, ledger
+  focused test classes covering: branch-category naming, ledger
   resolve/spawn, `commit_save` (including idempotent-no-op saves, a
   filename with glob characters committing only itself, a save during a merge refused with
   the reason and a status check git cannot answer raising), a typed branch name refused
   naming each rule and git deciding one the rules let through, the milestone sweep of the pipeline
   folder (a new file there recorded, a new file outside it, an ignored file, `__pycache__/`,
   `.haute_build/`, bytecode and the names the Files panels hide left out, and a file over the
-  limit refusing the Commit by name),
+  limit refusing the Commit by name), the milestone's run of the project's hooks (the
+  pre-commit hook seeing only the milestone's changes and its rewrite recorded before the
+  milestone, a refusing hook refusing it with HEAD back on the ledger, a commit-msg hook
+  rewriting the message), the project's tracked hook installed in a clone and an analyst's
+  own hook or hooks path left alone,
   milestone merge and its
   invariant checks, git identity get/set, working-branch status across all eight readiness states,
   `set_working_branch` including a branch created from a detached pending save, folded

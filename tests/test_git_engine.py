@@ -5,6 +5,7 @@ plumbing so the tests document the model's graph shapes, not just function
 return values.
 """
 
+import os
 import subprocess
 import sys
 import threading
@@ -59,6 +60,7 @@ from haute._git import (
 from haute._types import GraphNode, NodeData, PipelineGraph
 from haute.graph_utils import _sanitize_func_name
 from haute.schemas import SavePipelineRequest, SavePipelineResponse
+from tests._git_helpers import REWRITING_PRE_COMMIT_HOOK, install_hook
 from tests.conftest import current_source_revision
 
 
@@ -389,6 +391,58 @@ class TestMilestoneMerge:
         milestone = commit_milestone("No pipeline folder", repo, cwd=repo).sha
 
         assert "rating/new.csv" not in _git(repo, "ls-tree", "-r", "--name-only", milestone)
+
+    def test_a_milestone_runs_the_pre_commit_hook_on_its_changes(self, repo: Path) -> None:
+        """As a `git commit` of the milestone would: the hook sees the milestone's changes
+        staged on the working branch, and what it rewrites is recorded before the milestone."""
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        (repo / "untouched.py").write_text("# as committed\n")
+        _git(repo, "add", "untouched.py")
+        _git(repo, "commit", "-q", "-m", "another module")
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        install_hook(repo, "pre-commit", REWRITING_PRE_COMMIT_HOOK)
+
+        response = commit_milestone("Rated", repo, cwd=repo)
+
+        assert _git(repo, "show", f"{response.sha}:rating.py") == "# v2\n# formatted"
+        assert _git(repo, "show", f"{response.sha}:untouched.py") == "# as committed"
+        assert (repo / "rating.py").read_text() == "# v2\n# formatted\n"
+        assert _git(repo, "log", "-1", "--format=%s", LEDGER) == (
+            "Changes made by the project's pre-commit hook"
+        )
+        assert _tree(repo, response.sha) == _tree(repo, LEDGER)
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
+        assert _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
+
+    def test_a_pre_commit_hook_that_refuses_refuses_the_milestone(self, repo: Path) -> None:
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        install_hook(repo, "pre-commit", "#!/bin/sh\necho 'rating.py: line too long' >&2\nexit 1\n")
+        working_tip = _git(repo, "rev-parse", WORKING)
+
+        with pytest.raises(
+            GitDomainError,
+            match="The project's pre-commit hook refused the milestone: rating.py: line too long",
+        ):
+            commit_milestone("Rated", repo, cwd=repo)
+
+        assert _git(repo, "rev-parse", WORKING) == working_tip
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
+
+    def test_a_commit_msg_hook_may_rewrite_the_milestone_message(self, repo: Path) -> None:
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        install_hook(repo, "commit-msg", '#!/bin/sh\nprintf "\\nRefs: PRICE-42\\n" >> "$1"\n')
+
+        response = commit_milestone("Rated", repo, cwd=repo)
+
+        assert _git(repo, "log", "-1", "--format=%B", response.sha) == "Rated\n\nRefs: PRICE-42"
 
     def test_milestone_refuses_a_pipeline_file_too_large_to_version(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch
@@ -851,6 +905,44 @@ class TestWorkingBranchStatus:
 
 
 class TestSetWorkingBranch:
+    @staticmethod
+    def _track_project_hook(repo: Path) -> Path:
+        """The scaffolded hook, tracked as `haute init` leaves it; a clone has no copy of it
+        in `.git/hooks`."""
+        from haute._scaffold import pre_commit_hook
+
+        (repo / ".githooks").mkdir()
+        (repo / ".githooks" / "pre-commit").write_text(pre_commit_hook(), newline="\n")
+        _git(repo, "add", ".githooks/pre-commit")
+        _git(repo, "commit", "-q", "-m", "project hook")
+        return repo / ".githooks" / "pre-commit"
+
+    def test_a_clone_gets_the_projects_tracked_hook(self, repo: Path) -> None:
+        tracked = self._track_project_hook(repo)
+
+        set_working_branch(WORKING, repo, cwd=repo)
+
+        installed = repo / ".git" / "hooks" / "pre-commit"
+        assert installed.read_text() == tracked.read_text()
+        if sys.platform != "win32":
+            assert os.access(installed, os.X_OK)
+
+    @pytest.mark.parametrize("existing", ["a hook", "a hooks path"])
+    def test_a_hook_the_analyst_set_up_is_left_alone(self, repo: Path, existing: str) -> None:
+        self._track_project_hook(repo)
+        if existing == "a hook":
+            own = install_hook(repo, "pre-commit", "#!/bin/sh\nexit 0\n")
+        else:
+            _git(repo, "config", "core.hooksPath", "my-hooks")
+
+        set_working_branch(WORKING, repo, cwd=repo)
+
+        if existing == "a hook":
+            assert own.read_text() == "#!/bin/sh\nexit 0\n"
+        else:
+            assert not (repo / "my-hooks").exists()
+            assert not (repo / ".git" / "hooks" / "pre-commit").exists()
+
     def test_adopt_existing(self, repo: Path) -> None:
         result = set_working_branch(WORKING, repo, cwd=repo)
         assert result.working_branch == WORKING
