@@ -269,8 +269,8 @@ publish job that logs in to the registry with the app host's credentials, runs
 the reference by digest it pushed, and rolls the staging app to that reference with
 `haute app rollout staging --image`; and a production job, run by hand after the provider's
 approval (GitHub's `release-production.yml`, GitLab's manual `deploy-production` job, Azure
-DevOps' `DeployProduction` stage under its `production` environment), that rolls production
-to the image staging was rolled to for the commit with `haute app rollout prod --from
+DevOps' `DeployProduction` stage, triggered by hand, under its `production` environment),
+that rolls production to the release staging runs for the commit with `haute app rollout prod --from
 staging`. It has no endpoint deploy, smoke test or impact analysis
 ([workbench](../workbench/high-level.md)). Re-running `haute init --force` with a different
 `--ci`, or for the other kind of project, prunes every workflow file Haute generated that the

@@ -83,7 +83,7 @@ host) and `::build_release` (the release and the image's build context);
 app's release on every pull request and on a push to `main` that changes a release input;
 on that push they publish the app's image once, by digest, and roll the staging app to it,
 and by hand, after approval, roll production to the image staging ran for that commit, each
-rollout checked on the host and recorded as a git tag
+rollout checked on the host and recorded on its Container App
 ([workbench](../workbench/high-level.md)). Two things the release flow promised are missing.
 Nothing tests the packaged app before a host sees it: `haute app build` validates the
 pipeline and scores the committed test quotes, but no step starts the app the image holds,

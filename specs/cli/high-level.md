@@ -154,8 +154,9 @@ Out of scope, owned elsewhere:
   workbench project's hosted app, the Container App `[workbench.app.<ENVIRONMENT>]` names, to
   an image by digest in a maintenance window, checks the release there (it runs, the host's
   sign-in stands in front of it, and its quotes are open), puts the previous release back
-  when the new one fails, and records the release that stays as a git tag; `--from` rolls
-  to the image another environment's rollout recorded for the commit checked out. It is what
+  when the new one fails, and records the release that stays on the Container App as Azure
+  tags; `--from` rolls to the release another environment's app runs, when it runs the commit
+  checked out. It is what
   the workbench's generated jobs run, signed in as their service principal, and exits 1 naming
   what failed ([workbench](../workbench/high-level.md)).
 - `haute app serve [--port PORT] [--static-dir DIR] [--reader]` builds the release
