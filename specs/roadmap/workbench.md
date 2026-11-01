@@ -286,8 +286,9 @@ listed as not opened. Changing the sheets and saving under the same name replace
 quote with the new request and its pricing, after asking.
 
 *Pricing whole.* A test quote is priced by a route of its own on the editor's server through
-the scorer the app prices with (`score_graph` on the pipeline and form as they stand,
-snapshotted for the run), its response whole rather than cut at the preview route's 10,000
+the scorer the app prices with (`score_graph` on the project as saved, resolved as
+`haute app build` resolves it, the project saved first when it has unsaved changes), its
+response whole rather than cut at the preview route's 10,000
 rows; a quote past the request body limit, or one that runs out of memory or time, is a
 failure named as such, never a truncated answer. Pricing all runs one quote at a time and
 can be cancelled.
@@ -315,7 +316,7 @@ captured, and asking for the git identity first, as Save does.
 *CI.* Pricing test quotes answers structured results, each quote ok, moved (with its
 differences), no longer compares, or failed, instead of the dry run's one error status.
 In a workbench project `haute app build` passes with moved and no-longer-comparing quotes,
-prints each with its fields, writes `test_quotes_report.md` beside the release whatever
+prints each with its fields, writes `test_quotes_report.md` in the working directory whatever
 the outcome, and fails when a quote failed to price or a file is not a test quote; a
 workbench project with no test quotes builds. The generated validate jobs keep the report
 as an artifact whether the job passes or fails, `haute ci update` writing them again, and
