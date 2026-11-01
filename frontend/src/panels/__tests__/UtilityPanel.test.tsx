@@ -271,6 +271,7 @@ describe("UtilityPanel saving", () => {
     useGitStore.setState({ uncaptured: [] })
     useUIStore.setState({
       utilityOpen: true, gitOpen: false, utilityUnsaved: false, utilityLeave: null,
+      utilityLeaveActions: [],
     })
     mockListFiles.mockResolvedValue({
       files: [{ name: "features.py", module: "features" }],
@@ -383,12 +384,48 @@ describe("UtilityPanel saving", () => {
     type("x = 2\n")
     pressSave()
     type("x = 3\n")
-    await act(async () => { finish(saved("x = 2\n# formatted\n", "2-2")) })
+    await act(async () => { finish(saved("x = 2\n", "2-2")) })
 
     expect(editor()).toHaveValue("x = 3\n")
     fireEvent.click(screen.getByTitle("Close"))
     await waitFor(() => expect(screen.getByTestId("no-panel")).toBeInTheDocument())
     expect(mockUpdateFile).toHaveBeenLastCalledWith("features", "x = 3\n", "2-2")
+  })
+
+  it("asks, saving nothing more, when the file changed during a save and text was typed since", async () => {
+    let finish: (value: unknown) => void = () => {}
+    mockUpdateFile.mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
+    render(<RightPanel />)
+    await waitFor(() => expect(editor()).toBeInTheDocument())
+
+    type("x = 2\n")
+    pressSave()
+    type("x = 3\n")
+    // A project hook, or another editor, changed the file while it was saved.
+    await act(async () => { finish(saved("x = 2\n# formatted\n", "2-2")) })
+
+    expect(await screen.findByText(/utility\/features\.py changed while it was saved/)).toBeInTheDocument()
+    expect(editor()).toHaveValue("x = 3\n")
+    fireEvent.click(screen.getByTitle("Close"))
+    await waitFor(() => expect(useUIStore.getState().utilityLeave).toBeNull())
+    expect(screen.getByTestId("utility-panel")).toBeInTheDocument()
+    expect(mockUpdateFile).toHaveBeenCalledOnce()
+  })
+
+  it("sends a draft again after a save that failed", async () => {
+    mockUpdateFile
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce(saved("x = 2\n", "2-2"))
+    render(<RightPanel />)
+    await waitFor(() => expect(editor()).toBeInTheDocument())
+
+    type("x = 2\n")
+    pressSave()
+    await waitFor(() => expect(screen.getByText("Failed to save")).toBeInTheDocument())
+    pressSave()
+
+    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledTimes(2))
+    expect(mockUpdateFile).toHaveBeenLastCalledWith("features", "x = 2\n", "1-1")
   })
 
   it("leaves Ctrl+S to the pipeline while the Imports entry is open", async () => {
@@ -486,6 +523,27 @@ describe("UtilityPanel saving", () => {
 
     await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledExactlyOnceWith("features", "x = 5\n", "1-1"))
     expect(useUIStore.getState().utilityUnsaved).toBe(false)
+  })
+
+  it("keeps a refused draft when the delete fails, and opens no other file over it", async () => {
+    twoFiles()
+    mockUpdateFile.mockRejectedValue(new MockApiError("HTTP 400", 400, "Syntax error on line 1: bad"))
+    mockDeleteFile.mockRejectedValue(new Error("file in use"))
+    render(<RightPanel />)
+    await waitFor(() => expect(editor()).toBeInTheDocument())
+
+    type("def broken(\n")
+    pressSave()
+    await screen.findByText("Syntax error on line 1: bad")
+    fireEvent.click(screen.getByTitle("Delete features"))
+    await answerQuestion("confirm")
+    await waitFor(() => expect(mockDeleteFile).toHaveBeenCalled())
+    await switchTo("helpers")
+
+    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledTimes(2))
+    expect(editor()).toHaveValue("def broken(\n")
+    expect(mockReadFile).not.toHaveBeenCalledWith("helpers")
+    expect(useUIStore.getState().utilityUnsaved).toBe(true)
   })
 
   it("drops the draft when its file is deleted", async () => {

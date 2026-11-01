@@ -433,6 +433,38 @@ class TestMilestoneMerge:
         assert _git(repo, "rev-parse", WORKING) == working_tip
         assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
 
+    @pytest.mark.parametrize("failure", ["an interrupt", "a cleanup failure"])
+    def test_head_returns_to_the_ledger_whatever_ends_the_hooks(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+    ) -> None:
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        install_hook(repo, "pre-commit", "#!/bin/sh\nexit 0\n")
+        if failure == "an interrupt":
+
+            def interrupted(*_args: object, **_kwargs: object) -> None:
+                raise KeyboardInterrupt
+
+            monkeypatch.setattr(git_transactions, "_run_hook", interrupted)
+            expected: type[BaseException] = KeyboardInterrupt
+        else:
+            unlink = Path.unlink
+
+            def unlink_refused(path: Path, missing_ok: bool = False) -> None:
+                if path.name == "haute-milestone-index":
+                    raise PermissionError(path)
+                unlink(path, missing_ok=missing_ok)
+
+            monkeypatch.setattr(Path, "unlink", unlink_refused)
+            expected = PermissionError
+
+        with pytest.raises(expected):
+            commit_milestone("Rated", repo, cwd=repo)
+
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
+
     def test_a_commit_msg_hook_may_rewrite_the_milestone_message(self, repo: Path) -> None:
         from haute._git_state import write_working_branch
 

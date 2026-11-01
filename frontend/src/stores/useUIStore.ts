@@ -38,6 +38,14 @@ interface UIState {
    * (`completeUtilityLeave` applies it) or a save is refused (`cancelUtilityLeave`).
    */
   utilityLeave: Partial<UIState> | null
+  /** Actions held with `utilityLeave`, run once it completes. */
+  utilityLeaveActions: Array<() => void>
+  /**
+   * Run *action* now, or, while the utility panel is open with an unsaved edit, hold it
+   * with `utilityLeave` until the panel saves the edit: an action outside this store that
+   * hides the panel (another view) waits as a panel change does.
+   */
+  afterUtilitySaved: (action: () => void) => void
   completeUtilityLeave: () => void
   cancelUtilityLeave: () => void
   constantsOpen: boolean
@@ -148,7 +156,7 @@ function leavingUtility(state: UIState, next: Partial<UIState>): Partial<UIState
   return next
 }
 
-const useUIStore = create<UIState>()((set) => ({
+const useUIStore = create<UIState>()((set, get) => ({
   // Modals / panels
   paletteOpen: true,
   setPaletteOpen: (open) => set({ paletteOpen: open }),
@@ -157,10 +165,22 @@ const useUIStore = create<UIState>()((set) => ({
   utilityUnsaved: false,
   setUtilityUnsaved: (unsaved) => set({ utilityUnsaved: unsaved }),
   utilityLeave: null,
-  completeUtilityLeave: () => set((s) => (
-    s.utilityLeave === null ? {} : { ...s.utilityLeave, utilityLeave: null, utilityUnsaved: false }
-  )),
-  cancelUtilityLeave: () => set({ utilityLeave: null }),
+  utilityLeaveActions: [],
+  afterUtilitySaved: (action) => {
+    const s = get()
+    if (!(s.utilityOpen && s.utilityUnsaved)) {
+      action()
+      return
+    }
+    set({ utilityLeave: s.utilityLeave ?? {}, utilityLeaveActions: [...s.utilityLeaveActions, action] })
+  },
+  completeUtilityLeave: () => {
+    const { utilityLeave, utilityLeaveActions } = get()
+    if (utilityLeave === null) return
+    set({ ...utilityLeave, utilityLeave: null, utilityLeaveActions: [], utilityUnsaved: false })
+    for (const action of utilityLeaveActions) action()
+  },
+  cancelUtilityLeave: () => set({ utilityLeave: null, utilityLeaveActions: [] }),
   constantsOpen: false,
   setConstantsOpen: (open) => set((s) => leavingUtility(s, { constantsOpen: open, utilityOpen: false, assistantOpen: false, gitOpen: false, filesPlace: null })),
   assistantOpen: false,

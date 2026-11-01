@@ -487,3 +487,25 @@ def test_a_save_a_hook_rewrites_hands_back_the_document_on_disk(project: Path) -
     assert response.source_revision == on_disk.source_revision
     assert service.committed is not None
     assert service.committed.payload == on_disk.model_dump(mode="json", by_alias=True)
+
+
+def test_a_hook_that_rewrites_and_then_refuses_still_hands_back_the_document_on_disk(
+    project: Path,
+) -> None:
+    """A formatter hook that fixes the files and fails the commit (as the pre-commit
+    framework does) leaves the save uncaptured, and the editor still gets the file on disk."""
+    install_hook(
+        project,
+        "pre-commit",
+        REWRITING_PRE_COMMIT_HOOK.replace(
+            "done\n", "done\necho 'files were modified' >&2\nexit 1\n"
+        ),
+    )
+
+    response = SavePipelineService(project_root=project).save(_save_request(project, banding=True))
+
+    assert response.git_sha is None
+    assert response.warnings
+    on_disk = load_pipeline_editor_document(project / "main.py", project_root=project)
+    assert (project / "main.py").read_text(encoding="utf-8").endswith("# formatted\n")
+    assert response.source_revision == on_disk.source_revision

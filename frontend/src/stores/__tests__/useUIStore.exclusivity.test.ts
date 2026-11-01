@@ -5,7 +5,7 @@
  * can never render two panels.
  */
 
-import { beforeEach, describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import useUIStore from "../useUIStore"
 
@@ -18,6 +18,7 @@ function reset() {
     filesPlace: null,
     utilityUnsaved: false,
     utilityLeave: null,
+    utilityLeaveActions: [],
   })
 }
 
@@ -120,6 +121,39 @@ describe("the utility panel holding an unsaved edit", () => {
     expect(state.utilityLeave).toBeNull()
     expect(state.utilityOpen).toBe(true)
     expect(state.gitOpen).toBe(false)
+  })
+
+  it("holds an action that hides the panel, another view's, until the edit is saved", () => {
+    const showView = vi.fn()
+
+    useUIStore.getState().afterUtilitySaved(showView)
+
+    expect(showView).not.toHaveBeenCalled()
+    expect(useUIStore.getState().utilityLeave).not.toBeNull()
+    useUIStore.getState().completeUtilityLeave()
+    expect(showView).toHaveBeenCalledOnce()
+    expect(useUIStore.getState().utilityLeaveActions).toEqual([])
+  })
+
+  it("drops a held action when the save is refused", () => {
+    const showView = vi.fn()
+    useUIStore.getState().afterUtilitySaved(showView)
+
+    useUIStore.getState().cancelUtilityLeave()
+    useUIStore.getState().setUtilityUnsaved(false)
+    useUIStore.getState().completeUtilityLeave()
+
+    expect(showView).not.toHaveBeenCalled()
+  })
+
+  it("runs an action at once while nothing is unsaved", () => {
+    useUIStore.getState().setUtilityUnsaved(false)
+    const showView = vi.fn()
+
+    useUIStore.getState().afterUtilitySaved(showView)
+
+    expect(showView).toHaveBeenCalledOnce()
+    expect(useUIStore.getState().utilityLeave).toBeNull()
   })
 
   it("holds nothing back once the edit is saved", () => {

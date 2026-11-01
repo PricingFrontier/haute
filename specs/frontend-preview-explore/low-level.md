@@ -317,21 +317,28 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
    store's `utilityUnsaved`; nothing saves while typing. `saveDraft(all)` sends it through the
    one save queue and drops it once that draft saved, unless text was typed since; with `all`
    it saves again until no draft is left. A draft a save is already sending is waited for,
-   not sent twice. Switching files, or to the Imports entry, first awaits `saveDraft(true)`; a
+   not sent twice, and once that save settles a later save sends it again. Switching files, or to the Imports entry, first awaits `saveDraft(true)`; a
    refused save stops the switch, and the draft plus inline error remain visible until a later
-   save succeeds. Ctrl+S (`hasModifier`, on the open file's editor) runs `saveDraft(false)` and
-   prevents the key, so the pipeline's window-level Ctrl+S, which skips a prevented key, does
+   save succeeds. Ctrl+S (`hasModifier`, on the open file's editor) first blurs and refocuses the
+   editor, which reports an edit only once typing pauses or it loses focus, so the text typed
+   just now is the draft, then runs `saveDraft(false)` and prevents the key, so the pipeline's window-level Ctrl+S, which skips a prevented key, does
    not also run; on the Imports entry the key is left to the pipeline's save, the preamble
    being the pipeline's.
 3. Closing the panel, or any UI-store change that would hide it (another panel, a node click),
-   is held back by the store while `utilityUnsaved` (`utilityLeave`, the held changes merged).
+   is held back by the store while `utilityUnsaved` (`utilityLeave`, the held changes merged);
+   an action outside the store that hides it, the view switcher's change of view, is held the
+   same way through `afterUtilitySaved` (`utilityLeaveActions`, run once the change completes).
    The panel then runs `saveDraft(true)`: `completeUtilityLeave` applies the held change once
    it saved, `cancelUtilityLeave` drops it when a save is refused, and the panel stays open
    with the reason and **Discard** (`utility-discard`, beside the error or the conflict), which
    drops the draft and closes. A save answers with the file as the save left it
    (`UtilityWriteResponse.content`, a project hook's rewrite included, and its revision); while
-   the editor still holds what was sent it shows that content, and text typed since stays as
-   typed. Unmount by another path saves a remaining draft fire-and-forget and clears
+   the editor (its live document) still holds what was sent it shows that content and takes
+   that revision. Text typed since stays as typed: with the file as sent it is saved next
+   against the returned revision; with the file changed (a hook, or another editor during the
+   save) the panel keeps the old revision and shows the conflict below ("utility/<module>.py
+   changed while it was saved. Reload it, or overwrite it with your edit."), so neither
+   replaces the other unasked. Unmount by another path saves a remaining draft fire-and-forget and clears
    `utilityUnsaved` and `utilityLeave`; `beforeunload` is prevented while a draft exists.
    Post-await state updates verify both mounted state and the module still selected, dropping
    stale replies.
@@ -346,7 +353,7 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
    that file's conflict. Every
    create, save and delete reports its ledger capture through `reportSaveCapture`, as the
    pipeline's save does.
-5. Delete drops the deleted file's draft. Create refreshes the list,
+5. A delete that succeeds drops the deleted file's draft; a refused one keeps it. Create refreshes the list,
    loads the new module and passes the server-returned import line back to the preamble owner.
    The typed name stays in the create field until a create succeeds; a refused create (a
    keyword, a Windows device name, a case-variant of an existing module, a syntax error) shows
@@ -488,7 +495,10 @@ overview/chart card ordering and config, the data-cache state and profile lifecy
 list/configure/back/toggle behavior, chart
 visualisation empty/error states, roving-tab accessibility, utility saving (nothing while typing; on close, on
 file switch and on Ctrl+S; a held close or panel change; Discard; the content a save returns;
-text typed during a save; the unload warning; stale responses) and syntax errors. The Explore suites also pin progressbar name/value semantics, TSV headers and
+text typed during a save, kept and saved next, or a conflict when the file came back changed;
+a failed save sent again; a refused delete keeping its draft; the unload warning; stale
+responses) and syntax errors; `frontend/src/stores/__tests__/useUIStore.exclusivity.test.ts` pins the
+held changes and actions. The Explore suites also pin progressbar name/value semantics, TSV headers and
 contents, RFC-4180 CSV quoting through the download blob, full filtered-schema export across
 pagination, disabled empty-table actions, and native-button accessibility.
 `frontend/src/__tests__/App.utilityPanelLazy.test.ts` and the bundle-budget tests

@@ -565,9 +565,9 @@ milestone, restore or switch never meets a half-written save
     other capture failure leaves it `false`; either way `uncaptured` names the files the
     capture left off the ledger), while an unexpected exception still propagates
     after the filesystem transaction and stale cleanup have committed. The capture's
-    `git commit` runs the project's hooks; when a capture that committed leaves a file
-    this save wrote with other bytes (a formatter's pre-commit hook), the document is
-    loaded again, and that document and its revision are the committed ones. Return the
+    `git commit` runs the project's hooks; when the capture leaves a file this save wrote
+    with other bytes (a formatter's pre-commit hook, whether or not it then refused the
+    commit), the document is loaded again, and that document and its revision are the committed ones. Return the
     committed `source_revision` and the committed document's fingerprint with the normal
     response fields, keeping the committed document as `committed_document` for the
     route, which publishes it (`pipeline_document_update_payload`) with the request's

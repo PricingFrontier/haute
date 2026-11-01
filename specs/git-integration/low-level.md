@@ -319,8 +319,9 @@ with "This project has a <hook> hook, and running it needs git 2.36 or later. Up
 then commit again."), bounded by `_HOOK_TIMEOUT_SECONDS` (300 s). A hook that exits non-zero
 refuses the milestone with "The project's <hook> hook refused the milestone: <the end of what
 it printed>", nothing recorded; `commit-msg` gets the message in a file and may rewrite it,
-and a message it empties is refused. HEAD returns to the ledger whatever happens
-(`_compensate`; a return that fails is `GitTransactionError`). What `pre-commit` left changed
+and a message it empties is refused. HEAD returns to the ledger in a `finally`, whatever
+ended the hooks (an interrupt included), before the scratch files are removed; a return that
+fails is `GitTransactionError`. What `pre-commit` left changed
 on disk, swept by the same rules, is recorded as one more save without hooks, "Changes made by
 the project's pre-commit hook" → `merge_to_working`
 validates the message (non-empty, no C0 control characters — a stray record-separator would

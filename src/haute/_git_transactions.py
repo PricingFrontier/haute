@@ -674,10 +674,6 @@ def _run_commit_hooks(
     message_file = _git_path("HAUTE_MILESTONE_MSG", cwd)
     env = _git_env({"GIT_INDEX_FILE": str(index)})
 
-    def head_on_ledger() -> bool:
-        ok, _ = _run_git_ok("symbolic-ref", "HEAD", f"refs/heads/{ledger}", cwd=cwd)
-        return ok
-
     _run_git("symbolic-ref", "HEAD", f"refs/heads/{working}", cwd=cwd)
     try:
         _run_git("read-tree", ledger, cwd=cwd, env=env)
@@ -689,17 +685,17 @@ def _run_commit_hooks(
             message = message_file.read_text(encoding="utf-8").strip()
             if not message:
                 raise GitDomainError("The project's commit-msg hook left the message empty.")
-    except Exception as exc:
-        _compensate(exc, "Running the project's commit hooks", [head_on_ledger])
-        raise
     finally:
+        # HEAD goes back first, whatever ended the hooks (an interrupt included), so no
+        # failure below can leave it on the working branch.
+        head_back, _ = _run_git_ok("symbolic-ref", "HEAD", f"refs/heads/{ledger}", cwd=cwd)
+        if not head_back:
+            raise GitTransactionError(
+                "Running the project's commit hooks left HEAD on the working branch. "
+                "Inspect the repository before retrying."
+            )
         index.unlink(missing_ok=True)
         message_file.unlink(missing_ok=True)
-    if not head_on_ledger():
-        raise GitTransactionError(
-            "Running the project's commit hooks left HEAD on the working branch. "
-            "Inspect the repository before retrying."
-        )
 
     rewritten = _unrecorded_project_files(project_root, pipeline_folder, cwd)
     if rewritten:

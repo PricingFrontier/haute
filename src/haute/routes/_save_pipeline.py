@@ -693,11 +693,10 @@ class SavePipelineService:
         }
         captured = self._capture_save_in_ledger(touched, removed, warnings, commit_message)
         # The capture runs the project's git hooks, which may rewrite what the save wrote
-        # (a formatter's pre-commit hook): hand back the document they left, so the
-        # editor's next save is made against the revision on disk.
-        if captured.git_sha is not None and any(
-            _artifact_digest(target) != digest for target, digest in written.items()
-        ):
+        # (a formatter's pre-commit hook), whether or not they then let the commit through:
+        # hand back the document they left, so the editor's next save is made against the
+        # revision on disk.
+        if any(_artifact_digest(target) != digest for target, digest in written.items()):
             committed_document = _helpers.load_pipeline_editor_document(
                 py_path, project_root=self._root
             )

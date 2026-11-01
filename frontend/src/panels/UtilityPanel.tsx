@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react"
+import type { EditorView } from "@codemirror/view"
 import { Plus, Trash2, FileCode2, ChevronDown } from "lucide-react"
 import { CodeEditor } from "./editors/CodeEditor"
 import PanelShell from "./PanelShell"
@@ -96,6 +97,7 @@ export default function UtilityPanel({
   const [recovering, setRecovering] = useState(false)
   const recoveringRef = useRef(false)
   const contentRef = useRef(content)
+  const editorViewRef = useRef<EditorView | null>(null)
   useEffect(() => { contentRef.current = content }, [content])
   const activeModuleRef = useRef(activeModule)
   const mountedRef = useRef(true)
@@ -114,14 +116,27 @@ export default function UtilityPanel({
       const revision = revisionsRef.current.get(module)
       if (revision === undefined) throw new Error(`no revision of ${module} was read`)
       const saved = await updateUtilityFile(module, value, revision)
-      revisionsRef.current.set(module, saved.revision)
       reportSaveCapture(saved)
-      if (mountedRef.current && activeModuleRef.current === module) {
+      const active = mountedRef.current && activeModuleRef.current === module
+      // The editor's text as it is now: it reports an edit only once typing pauses.
+      const typedSince = active && (editorViewRef.current?.state.doc.toString() ?? contentRef.current) !== value
+      if (typedSince && saved.content !== value) {
+        // The file is not what was sent (a project hook rewrote it, or another editor
+        // changed it meanwhile) and text was typed since: neither replaces the other unasked.
+        // The old revision stays, so nothing more saves until Reload or Overwrite.
+        conflictModuleRef.current = module
+        setConflict({
+          module,
+          message: `utility/${module}.py changed while it was saved. Reload it, or overwrite it with your edit.`,
+        })
+        return true
+      }
+      revisionsRef.current.set(module, saved.revision)
+      if (active) {
         setErrorLine(null)
         setErrorMsg(null)
-        // The file as the save left it, a project hook's formatting included, replaces the
-        // text while that is still what was sent; text typed since stays as typed.
-        if (contentRef.current === value && saved.content !== value) {
+        // The file as the save left it, a project hook's formatting included.
+        if (saved.content !== value) {
           contentRef.current = saved.content
           setContent(saved.content)
           setReadGeneration((generation) => generation + 1)
@@ -160,6 +175,8 @@ export default function UtilityPanel({
   // Send *draft*, which stops being the draft once saved unless text was typed since.
   const sendDraft = useCallback((draft: { module: string; value: string }): Promise<boolean> => {
     const result = queueSave(draft.module, draft.value).then((saved) => {
+      // Settled: a later save of the same draft sends it again.
+      if (sendingRef.current?.draft === draft) sendingRef.current = null
       if (saved && draftRef.current === draft) {
         draftRef.current = null
         useUIStore.getState().setUtilityUnsaved(false)
@@ -185,6 +202,7 @@ export default function UtilityPanel({
   }, [sendDraft])
 
   const recordEdit = (module: string, value: string) => {
+    if (value === contentRef.current) return
     if (draftRef.current === null) setUtilityUnsaved(true)
     draftRef.current = { module, value }
     contentRef.current = value
@@ -355,13 +373,13 @@ export default function UtilityPanel({
   const handleDelete = useCallback(async () => {
     if (!activeModule) return
     if (!(await confirmed({ title: `Delete ${activeModule}?`, confirm: "Delete", danger: true }))) return
-    // The file is being removed, its draft with it.
-    draftRef.current = null
-    setUtilityUnsaved(false)
     try {
       const revision = revisionsRef.current.get(activeModule)
       if (revision === undefined) throw new Error(`no revision of ${activeModule} was read`)
       reportSaveCapture(await deleteUtilityFile(activeModule, revision))
+      // The file is gone, its draft with it; a refused delete keeps both.
+      draftRef.current = null
+      setUtilityUnsaved(false)
       revisionsRef.current.delete(activeModule)
       setActiveModule(null)
       setContent("")
@@ -507,6 +525,13 @@ export default function UtilityPanel({
               // The file's own save; the pipeline's Ctrl+S skips a key handled here.
               if (!hasModifier(event.nativeEvent) || event.key !== "s") return
               event.preventDefault()
+              // The editor reports an edit once typing pauses or it loses focus: commit the
+              // text typed just now, keeping the focus where it is.
+              const view = editorViewRef.current
+              if (view?.hasFocus) {
+                view.contentDOM.blur()
+                view.focus()
+              }
               void saveDraft(false)
             }}
           >
@@ -514,6 +539,7 @@ export default function UtilityPanel({
               <CodeEditor
                 key={`${activeModule}:${readGeneration}`}
                 defaultValue={content}
+                onEditorView={(view) => { editorViewRef.current = view }}
                 onChange={(val) => {
                   setContent(val)
                   recordEdit(activeModule, val)
