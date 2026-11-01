@@ -294,7 +294,7 @@ production:
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
 | Tracing | TRC-8, TRC-9, TRC-10, TRC-14 | `TRACE-R03` |
 | Git integration | GIT-12, GIT-13 | `GIT-R05` |
-| Git integration | GIT-14 | `GIT-R06` (Decision) |
+| Git integration | GIT-14 | `GIT-R06` |
 | Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |
 | Assistant | ASA-3, ASA-4, ASA-6, ASA-9 | `ASSIST-55` |
 | Assistant | ASA-5, ASA-8, ASA-10, ASA-11, ASA-12, ASA-14 | `ASSIST-56` |
