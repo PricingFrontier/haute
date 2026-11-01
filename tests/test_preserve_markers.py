@@ -489,3 +489,155 @@ class TestUnkeptModuleStatements:
 
         assert unkept_module_statements(source) == []
         assert _extract_preamble(source) == "RATE = 1.05"
+
+
+# Every place a comment can sit in a pipeline file. The ``kept`` ones are where a
+# save keeps it (the preamble, a preserved block, a node's code, the wire comment);
+# a save regenerates every other line without it.
+_COMMENTED_PIPELINE = '''\
+# lost: header above the docstring
+"""Pipeline: demo"""
+
+# lost: above the imports
+import haute
+import polars as pl
+
+# kept: preamble comment
+RATE = 2  # kept: preamble trailing
+
+pipeline = haute.Pipeline("demo")  # lost: constructor trailing
+
+# lost: between constructor and first node
+
+# haute:preserve-start
+# kept: inside a preserved block
+# haute:preserve-end
+
+
+@pipeline.polars  # lost: decorator trailing
+# lost: between decorator and def
+def source() -> pl.LazyFrame:  # lost: def line trailing
+    """A source."""  # lost: docstring trailing
+    # kept: first body comment
+    df = pl.LazyFrame({"x": [1]})  # kept: statement trailing
+    # kept: between statements
+    df = df.with_columns(y=pl.lit(RATE))
+    # kept: before return
+    return df  # lost: return trailing
+    # lost: after return
+
+
+# lost: between node functions
+
+
+@pipeline.polars
+def scaled(
+    source: pl.LazyFrame,  # lost: parameter trailing
+) -> pl.LazyFrame:
+    df = source
+    return df
+
+
+@pipeline.banding(config="config/banding/band.json")
+def band(scaled):
+    # lost: inside a declaration
+    ...
+
+
+@pipeline.data_input(config="config/data_input/quotes.json")
+def quotes(df: pl.LazyFrame) -> pl.LazyFrame:
+    # kept: hook code
+    df = df.head(1)  # kept: hook statement trailing
+    return df  # lost: hook return trailing
+
+
+# lost: before the wire comment
+# Wire nodes together - edges define data flow
+pipeline.connect("source", "scaled")  # lost: connect trailing
+pipeline.connect("scaled", "band")
+# lost: end of file
+'''
+
+
+def _comments(text: str) -> list[tuple[int, str]]:
+    import io
+    import tokenize
+
+    return [
+        (token.start[0], token.string)
+        for token in tokenize.generate_tokens(io.StringIO(text).readline)
+        if token.type == tokenize.COMMENT
+    ]
+
+
+class TestUnkeptComments:
+    """PCFG-R12: every comment a save would drop is reported, and no other."""
+
+    def _graph(self, tmp_path: Path):
+        band = tmp_path / "config" / "banding" / "band.json"
+        band.parent.mkdir(parents=True)
+        band.write_text('{"factors": []}', encoding="utf-8")
+        quotes = tmp_path / "config" / "data_input" / "quotes.json"
+        quotes.parent.mkdir(parents=True)
+        quotes.write_text(
+            '{"inputType": "file", "format": "parquet", "mode": "scan", '
+            '"path": "quotes.parquet", "arguments": {}}',
+            encoding="utf-8",
+        )
+        return parse_pipeline_source(_COMMENTED_PIPELINE, _base_dir=tmp_path)
+
+    def _codes(self, graph) -> dict[str, str]:
+        return {node.id: str(node.data.config.get("code") or "") for node in graph.nodes}
+
+    def test_the_comments_reported_are_exactly_those_a_save_drops(self, tmp_path: Path):
+        from haute._ast_helpers import unkept_comments
+
+        graph = self._graph(tmp_path)
+        regenerated = graph_to_code(
+            graph,
+            pipeline_name="demo",
+            preamble=graph.preamble or "",
+            preserved_blocks=graph.preserved_blocks,
+        )
+        kept_texts = [text for _line, text in _comments(regenerated)]
+        dropped = []
+        for line, text in _comments(_COMMENTED_PIPELINE):
+            if text in kept_texts:
+                kept_texts.remove(text)
+            else:
+                dropped.append(line)
+
+        reported = [
+            line for line, _column in unkept_comments(_COMMENTED_PIPELINE, codes=self._codes(graph))
+        ]
+
+        assert reported == dropped
+        assert [text for line, text in _comments(_COMMENTED_PIPELINE) if line in reported] == [
+            text for _line, text in _comments(_COMMENTED_PIPELINE) if "lost:" in text
+        ]
+
+    def test_a_file_whose_comments_are_all_kept_reports_none(self, tmp_path: Path):
+        from haute._ast_helpers import unkept_comments
+
+        graph = self._graph(tmp_path)
+        regenerated = graph_to_code(
+            graph,
+            pipeline_name="demo",
+            preamble=graph.preamble or "",
+            preserved_blocks=graph.preserved_blocks,
+        )
+        reparsed = parse_pipeline_source(regenerated, _base_dir=tmp_path)
+
+        assert any("kept:" in text for _line, text in _comments(regenerated))
+        assert unkept_comments(regenerated, codes=self._codes(reparsed)) == []
+
+    def test_a_comment_inside_a_reported_statement_is_not_reported_again(self):
+        from haute._ast_helpers import unkept_comments
+
+        source = (
+            'import haute\n\npipeline = haute.Pipeline("p")\n\n'
+            "def helper(x):\n    # inside the helper\n    return x\n"
+        )
+
+        assert unkept_module_statements(source) == [(5, 7)]
+        assert unkept_comments(source, codes={}) == []

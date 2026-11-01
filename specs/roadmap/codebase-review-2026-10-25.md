@@ -203,8 +203,6 @@ these are the Majors still open.
   7.6 s; no job registry is cancelled at shutdown.
 - **A remote user error replaces the warm worker; one failed replacement
   disables the slot for the life of the server** (two Majors, `EXEC-R12`).
-- **Every save drops authored comments outside the kept regions** (Major,
-  `PCFG-R12`; five kinds reproduced) with no diagnostic.
 - **The optimiser's MLflow log writes the complete result artifact without the
   finiteness gate the save applies** (Major, `OPT-R01`): a missing defence layer
   on a pricing artifact, since the status poll corrects the UI path.
@@ -280,7 +278,6 @@ production:
 | Background jobs | WRK-2 | `ROAD-WORKER-06` |
 | Background jobs | WRK-5, WRK-6, WRK-11, WRK-14 | `ROAD-WORKER-07` |
 | Background jobs | WRK-8, WRK-9, WRK-10 | `ROAD-WORKER-08` |
-| Pipeline config | PCF-3 | `PCFG-R12` |
 | Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
 | Optimiser | OPR-1, OPR-8, OPR-12 | `OPT-R01` |
 | Optimiser | OPR-3 | `OPT-R02` |

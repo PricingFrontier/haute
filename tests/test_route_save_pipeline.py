@@ -2325,8 +2325,11 @@ class TestStaleSavePrecondition:
         assert r_a is not None
 
         py_file = tmp_path / "my_pipeline.py"
+        # A preamble comment: an edit a save keeps, so the document stays ready.
         py_file.write_text(
-            py_file.read_text(encoding="utf-8") + "\n# external edit\n",
+            py_file.read_text(encoding="utf-8").replace(
+                "\npipeline = haute.Pipeline(", "\n# external edit\npipeline = haute.Pipeline(", 1
+            ),
             encoding="utf-8",
         )
 

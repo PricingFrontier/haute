@@ -27,6 +27,7 @@ from haute._ast_helpers import (
     _is_submodel_authored_decorator,
     is_submodel_import,
     reject_removed_node_decorator,
+    unkept_comments,
     unkept_module_statements,
 )
 from haute._cache import canonical_json
@@ -2104,51 +2105,77 @@ def name_violations_payload(violations: Sequence[NameViolation]) -> list[Pipelin
     ]
 
 
-def _unkept_statement_diagnostics(
+def _unkept_source_diagnostics(
     source: str,
     *,
     source_file: str,
+    codes: Mapping[str, str],
     receiver: Literal["pipeline", "submodel"] = "pipeline",
 ) -> list[PipelineRecoveryDiagnostic]:
-    """One diagnostic per module statement that a save would drop.
+    """One diagnostic per module statement, and per comment, that a save would drop.
 
     *source* is the pipeline file's, or a registered submodel file's with
-    *receiver* ``"submodel"``: a save regenerates both the same way. Each
-    degrades the document, so nothing regenerates the file without the
-    statement until it moves into the preamble or a preserved block.
+    *receiver* ``"submodel"``: a save regenerates both the same way, keeping
+    each node's extracted code (*codes*, by node function name). Each degrades
+    the document, so nothing regenerates the file without the statement or
+    comment until it moves where a save keeps it. They are listed in line order.
     """
     constructor = "Pipeline" if receiver == "pipeline" else "Submodel"
     lines = python_lines(source)
-    diagnostics = []
+    preamble = (
+        f"between the `import haute` line and `{receiver} = haute.{constructor}(...)`, where "
+        "it becomes part of the preamble"
+    )
+    preserved = "`# haute:preserve-start` and `# haute:preserve-end` lines"
+    found: list[tuple[int, int, int, str, str]] = []
+    tree = ast.parse(source)
     for start_line, end_line in unkept_module_statements(
-        source, receiver=receiver, constructor_name=constructor
+        source, tree, receiver=receiver, constructor_name=constructor
     ):
         first = lines[start_line - 1].strip()
         excerpt = first if len(first) <= 60 else f"{first[:57]}..."
-        diagnostics.append(
-            _diagnostic(
-                code="unkept_module_statement",
-                scope=receiver,
-                message=(
-                    f"`{excerpt}` is outside the preamble and preserved blocks, where a save "
-                    "would drop it."
-                ),
-                source_file=source_file,
-                source_span=RecoverySourceSpan(
-                    start_line=start_line,
-                    start_column=0,
-                    end_line=end_line,
-                    end_column=len(lines[end_line - 1]),
-                ),
-                remediation=(
-                    f"Move it between the `import haute` line and "
-                    f"`{receiver} = haute.{constructor}(...)`, where it becomes part of the "
-                    "preamble, or wrap it in `# haute:preserve-start` and "
-                    "`# haute:preserve-end` lines."
-                ),
+        found.append(
+            (
+                start_line,
+                0,
+                end_line,
+                f"`{excerpt}` is outside the preamble and preserved blocks, where a save "
+                "would drop it.",
+                f"Move it {preamble}, or wrap it in {preserved}.",
             )
         )
-    return diagnostics
+    for line, column in unkept_comments(
+        source, tree, codes=codes, receiver=receiver, constructor_name=constructor
+    ):
+        text = lines[line - 1][column:].strip()
+        excerpt = text if len(text) <= 60 else f"{text[:57]}..."
+        found.append(
+            (
+                line,
+                column,
+                line,
+                f"The comment `{excerpt}` is outside the preamble, preserved blocks and node "
+                "code, where a save would drop it.",
+                f"Move it {preamble}, into a node's code above its `return df`, or between "
+                f"{preserved}.",
+            )
+        )
+    return [
+        _diagnostic(
+            code="unkept_module_statement",
+            scope=receiver,
+            message=message,
+            source_file=source_file,
+            source_span=RecoverySourceSpan(
+                start_line=start_line,
+                start_column=start_column,
+                end_line=end_line,
+                end_column=len(lines[end_line - 1]),
+            ),
+            remediation=remediation,
+        )
+        for start_line, start_column, end_line, message, remediation in sorted(found)
+    ]
 
 
 def _capabilities(
@@ -2175,6 +2202,17 @@ _SCOPED_EDITABLE_TYPES = {
 }
 
 
+def _iter_snapshot_nodes(
+    nodes: list[RecoveryPipelineNode],
+    submodels: dict[str, RecoverySubmodelDefinition] | None,
+) -> list[RecoveryPipelineNode]:
+    """Every node of a document graph, then of each submodel definition's, recursively."""
+    collected = list(nodes)
+    for definition in (submodels or {}).values():
+        collected.extend(_iter_snapshot_nodes(definition.graph.nodes, definition.graph.submodels))
+    return collected
+
+
 def _mark_scoped_editable(
     nodes: list[RecoveryPipelineNode],
     submodels: dict[str, RecoverySubmodelDefinition] | None,
@@ -2185,17 +2223,7 @@ def _mark_scoped_editable(
     trustworthy source span and no config reference
     shared with another node. Document-wide fences stay separate.
     """
-    all_nodes: list[RecoveryPipelineNode] = []
-
-    def collect(
-        graph_nodes: list[RecoveryPipelineNode],
-        graph_submodels: dict[str, RecoverySubmodelDefinition] | None,
-    ) -> None:
-        all_nodes.extend(graph_nodes)
-        for definition in (graph_submodels or {}).values():
-            collect(definition.graph.nodes, definition.graph.submodels)
-
-    collect(nodes, submodels)
+    all_nodes = _iter_snapshot_nodes(nodes, submodels)
     reference_counts = Counter(node.config_reference for node in all_nodes if node.config_reference)
     for node in all_nodes:
         node.scoped_editable = (
@@ -2354,11 +2382,24 @@ def _load_readable_pipeline_editor_document(
         edges = snapshot.edges
         unresolved = snapshot.unresolved_connections
         submodels = snapshot.submodels
-        diagnostics.extend(_unkept_statement_diagnostics(source, source_file=source_file))
+        codes: dict[str, dict[str, str]] = {}
+        for graph_node in _iter_snapshot_nodes(nodes, submodels):
+            if graph_node.source_file is not None:
+                codes.setdefault(graph_node.source_file, {})[graph_node.authored_id] = str(
+                    (graph_node.config or {}).get("code") or ""
+                )
+        diagnostics.extend(
+            _unkept_source_diagnostics(
+                source, source_file=source_file, codes=codes.get(source_file, {})
+            )
+        )
         for child_file, child_source in submodel_sources.items():
             diagnostics.extend(
-                _unkept_statement_diagnostics(
-                    child_source, source_file=child_file, receiver="submodel"
+                _unkept_source_diagnostics(
+                    child_source,
+                    source_file=child_file,
+                    codes=codes.get(child_file, {}),
+                    receiver="submodel",
                 )
             )
 

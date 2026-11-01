@@ -15,12 +15,11 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 | PCFG-R07 | Planned | P2 | Every node type has a typed config model that is the single validation boundary. |
 | PCFG-R08 | Planned | P3 | Editor-only state travels beside the node config, not inside it. |
 | PCFG-R09 | Planned | P3 | A node type is declared in one place. |
-| PCFG-R12 | Planned | P2 | A save keeps every authored comment, or reports the ones it would drop before it proceeds. |
 | PCFG-R16 | Decision | P3 | The `earlier` step spelling is either dropped or named as the one allowed recogniser of old generated code. |
 
 `PCFG-R04` to `PCFG-R09` come from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md);
-`PCFG-R12` and `PCFG-R16` from the
+`PCFG-R16` from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 `PCFG-R08` should precede `PCFG-R07` so the models do not have to carry
 editor state.
@@ -182,33 +181,6 @@ specific node type for a concern the specification owns.
 `src/haute/_registry.py::NODE_REGISTRY`; `src/haute/_builders.py`;
 `src/haute/_codegen_builders.py`; `src/haute/projection.py`;
 `src/haute/_trace_correlation.py`; `src/haute/assistant/_catalog.py`.
-
-### PCFG-R12 — Comments survive a save
-**Why:** `_render_module` assembles the file from the preamble, the constructor, the
-preserved blocks, each node's source and regenerated `connect` calls, so every save
-drops a module-level comment between node functions, a comment between a decorator
-and its `def`, a comment after a body's last statement and a comment on a
-`connect()` line (probed, five kinds); the only loss detector,
-`unkept_module_statements`, walks `tree.body` and cannot see comments, so the
-document reads ready and the save proceeds. The codegen specification lists the
-statements regeneration keeps and says nothing of comments.
-
-**Plan:** Either report comment-only lines outside the kept regions as a diagnostic
-of the `unkept_module_statement` kind (a tokenizer pass over the gaps between kept
-spans), or carry them: attach comments between functions to the following function
-as leading lines and keep trailing body comments inside the extracted code. State
-the rule in the codegen specification either way.
-
-**Acceptance:** The probe file round-trips with its five comments kept, or the
-document reports each as unkept with its line and the save is refused until it is
-moved.
-
-**Dependencies:** None. The statement check runs over submodel files as well as the
-pipeline file, so a comment check built beside it covers both.
-
-**Evidence:** `src/haute/codegen.py::_render_module`;
-`src/haute/_ast_helpers.py::_function_body_source`;
-`src/haute/_ast_helpers.py::unkept_module_statements`.
 
 ### PCFG-R16 — The `earlier` step spelling
 **Why:** The parser recognises the renderer's earlier call spelling so bodies saved
