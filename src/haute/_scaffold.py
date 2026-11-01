@@ -799,6 +799,17 @@ def _github_login_step(target: str, secrets_env: str) -> str:
 # and holds the form to the pipeline. Each is a display name and the command it runs.
 _DRY_RUN_CHECK = ("Dry-run deploy (score test quotes)", "uv run haute deploy --dry-run")
 _APP_BUILD_CHECK = ("Build the app's release (score test quotes)", "uv run haute app build")
+#: The report a workbench project's ``haute app build`` writes of its test quotes
+#: (``haute._workbench_test_quotes.REPORT_FILE``), which its validate jobs keep.
+_TEST_QUOTES_REPORT = "test_quotes_report.md"
+_GITHUB_TEST_QUOTES_UPLOAD = f"""\
+      - name: Upload test quotes report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-quotes-report
+          path: {_TEST_QUOTES_REPORT}
+"""
 #: What a workbench project's publish job runs once logged in to the registry.
 _APP_PUBLISH = "uv run haute app build --push"
 #: What rolls a hosted environment out (specs/workbench, Control flow 35).
@@ -826,12 +837,14 @@ def github_ci_yml(*, python_version: str = DEFAULT_CI_PYTHON) -> str:
 def github_app_ci_yml(*, python_version: str = DEFAULT_CI_PYTHON) -> str:
     """A workbench project's PR checks: :func:`_github_ci_yml` ending in the app's release
     build, every job's Python pinned to *python_version*."""
-    return _pin_ci_python(_github_ci_yml(_APP_BUILD_CHECK), python_version)
+    return _pin_ci_python(_github_ci_yml(_APP_BUILD_CHECK, report=True), python_version)
 
 
-def _github_ci_yml(check: tuple[str, str]) -> str:
-    """PR checks workflow for GitHub Actions, its pipeline validation ending in *check*."""
+def _github_ci_yml(check: tuple[str, str], *, report: bool = False) -> str:
+    """PR checks workflow for GitHub Actions, its pipeline validation ending in *check*, and
+    with *report* keeping the test quotes' report whether it passes or fails."""
     check_name, check_run = check
+    upload = _GITHUB_TEST_QUOTES_UPLOAD if report else ""
     return f"""\
 name: CI
 
@@ -899,7 +912,7 @@ jobs:
         run: uv run haute lint
       - name: {check_name}
         run: {check_run}
-"""
+{upload}"""
 
 
 def github_deploy_yml(
@@ -1170,11 +1183,17 @@ def _gitlab_docker_job(target: str) -> str:
 """
 
 
-def _gitlab_head(stages: Sequence[str], check: str) -> str:
+def _gitlab_head(stages: Sequence[str], check: str, *, report: bool = False) -> str:
     """The head every GitLab pipeline Haute generates opens with: its *stages*, uv's cache and
     the default job, then the validate job, run on a merge request and on the default branch,
-    ending in *check*."""
+    ending in *check*, and with *report* keeping the test quotes' report whether it passes or
+    fails."""
     stage_lines = "".join(f"  - {stage}\n" for stage in stages)
+    artifacts = (
+        f"  artifacts:\n    when: always\n    paths:\n      - {_TEST_QUOTES_REPORT}\n"
+        if report
+        else ""
+    )
     return f"""\
 stages:
 {stage_lines}
@@ -1202,7 +1221,7 @@ lint:
     - uv run pytest -v
     - uv run haute lint
     - {check}
-  rules:
+{artifacts}  rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 """
@@ -1319,12 +1338,22 @@ _AZURE_DRY_RUN_CHECK = ("uv run haute deploy --dry-run", "Dry-run deploy")
 _AZURE_APP_BUILD_CHECK = ("uv run haute app build", "Build the app's release")
 
 
-def _azure_devops_head(check: tuple[str, str], *, sequential: bool = False) -> str:
+def _azure_devops_head(
+    check: tuple[str, str], *, sequential: bool = False, report: bool = False
+) -> str:
     """The head every Azure DevOps pipeline Haute generates opens with: its triggers and the
     Validate stage, run on a pull request and on a push to main, its pipeline validation
-    ending in *check*; *sequential* runs one deployment of an environment at a time, under the
-    exclusive lock IT sets on it."""
+    ending in *check*, with *report* keeping the test quotes' report whether it passes or
+    fails; *sequential* runs one deployment of an environment at a time, under the exclusive
+    lock IT sets on it."""
     check_script, check_name = check
+    publish = (
+        f"          - publish: {_TEST_QUOTES_REPORT}\n"
+        "            artifact: test-quotes-report\n"
+        "            condition: succeededOrFailed()\n"
+        if report
+        else ""
+    )
     lock = (
         "\n# One rollout of an environment at a time, with an exclusive lock on it.\n"
         "lockBehavior: sequential\n"
@@ -1413,7 +1442,7 @@ stages:
             displayName: Lint pipeline
           - script: {check_script}
             displayName: {check_name}
-"""
+{publish}"""
 
 
 def azure_devops_yml(
@@ -1732,7 +1761,7 @@ jobs:
         run: uv run haute lint
       - name: {check_name}
         run: {check_run}
-
+{_GITHUB_TEST_QUOTES_UPLOAD}
   publish:
     name: Publish → Staging
     needs: validate
@@ -1834,7 +1863,7 @@ def _gitlab_app_ci_yml(host: str) -> str:
     secrets_env = _gitlab_secrets_env(host)
     return (
         _app_publish_notice(host)
-        + _gitlab_head(["validate", "publish", "production"], _APP_BUILD_CHECK[1])
+        + _gitlab_head(["validate", "publish", "production"], _APP_BUILD_CHECK[1], report=True)
         + f"""\
 {_gitlab_docker_job(host)}# ── Publish → Staging ─────────────────────────────────────────
 publish:
@@ -1886,7 +1915,7 @@ def _azure_devops_app_yml(host: str) -> str:
     the ``haute-credentials`` variable group, each a deployment under its environment, whose
     exclusive lock keeps its rollouts one at a time."""
     secrets_env = _azure_devops_secrets_env(host, indent=" " * 20)
-    head = _azure_devops_head(_AZURE_APP_BUILD_CHECK, sequential=True)
+    head = _azure_devops_head(_AZURE_APP_BUILD_CHECK, sequential=True, report=True)
     return (
         _app_publish_notice(host)
         + head

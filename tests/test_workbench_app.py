@@ -690,7 +690,7 @@ def write_sheets(project: Path, tables: list[dict[str, Any]]) -> None:
 
 
 def test_a_project_builds_a_release_that_prices_as_its_pipeline(project: Path) -> None:
-    built = build_release(project, project / "build" / "app")
+    built = build_release(project, project / "build" / "app").release
 
     assert built.host == "azure-container-apps"
     assert built.pipeline_name == "main"
@@ -708,8 +708,8 @@ def test_a_project_builds_a_release_that_prices_as_its_pipeline(project: Path) -
     }
 
     # Built again, into the same directory or another, it is the same release.
-    assert build_release(project, project / "build" / "app").id == built.id
-    assert build_release(project, project / "elsewhere").id == built.id
+    assert build_release(project, project / "build" / "app").release.id == built.id
+    assert build_release(project, project / "elsewhere").release.id == built.id
 
 
 def test_a_project_naming_an_edit_role_builds_a_release_that_records_it(project: Path) -> None:
@@ -722,7 +722,7 @@ def test_a_project_naming_an_edit_role_builds_a_release_that_records_it(project:
         encoding="utf-8",
     )
 
-    built = build_release(project, project / "build" / "app")
+    built = build_release(project, project / "build" / "app").release
 
     assert built.edit_role == "Quotes.Edit"
     assert read_release(project / "build" / "app")[0].edit_role == "Quotes.Edit"
@@ -741,8 +741,8 @@ def test_the_same_project_checked_out_twice_builds_the_same_release(
         elif source.is_file():
             shutil.copy2(source, other / name)
 
-    here = build_release(project, project / "build" / "app")
-    there = build_release(other, other / "build" / "app")
+    here = build_release(project, project / "build" / "app").release
+    there = build_release(other, other / "build" / "app").release
 
     assert there.id == here.id
 
@@ -919,7 +919,7 @@ def test_an_earlier_release_is_replaced_only_once_its_successor_has_built(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     release_dir = project / "build" / "app"
-    earlier = build_release(project, release_dir)
+    earlier = build_release(project, release_dir).release
 
     def unwritten(*_: Any, **__: Any) -> Any:
         raise WorkbenchAppError("the release could not be written")
@@ -1161,11 +1161,11 @@ def _pin_base_image(project: Path) -> None:
 
 
 def test_a_pinned_base_image_makes_the_release_the_images_build_context(project: Path) -> None:
-    plain = build_release(project, project / "plain")
+    plain = build_release(project, project / "plain").release
     assert not (project / "plain" / "Dockerfile").exists()
     _pin_base_image(project)
 
-    built = build_release(project, project / "image")
+    built = build_release(project, project / "image").release
 
     dockerfile = (project / "image" / "Dockerfile").read_text(encoding="utf-8")
     assert dockerfile.startswith("FROM python:3.11.9-slim")

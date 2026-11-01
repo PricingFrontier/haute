@@ -19,11 +19,18 @@ from __future__ import annotations
 import json
 import math
 import urllib.parse
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypeGuard
 
 from haute import _workbench_rollout as rollouts
+from haute._workbench_compare import (
+    Move,
+    SharedFields,
+    compare_quote,
+    is_number,
+    shared_fields,
+)
 from haute._workbench_config import WorkbenchError
 from haute._workbench_rollout import (
     _CLOCK,
@@ -69,9 +76,6 @@ _PAGE_LIMIT = 200
 #: ten at most.
 _BUSY_WAIT_SECONDS = 5.0
 _MAX_BUSY_WAIT_SECONDS = 10.0
-#: A number has moved when it differs from production's by more than this part of it: a
-#: millionth of a percent, as the endpoint's impact counts a change.
-_RELATIVE_CHANGE = 1e-8
 
 Verdict = Literal["compared", "same_release", "no_baseline", "stopped"]
 Outcome = Literal[
@@ -115,50 +119,6 @@ class Side:
 
     def signed(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}"}
-
-
-@dataclass(frozen=True, slots=True)
-class SharedTable:
-    """An output table both releases name: whether it has one row per quote, the columns
-    both name and the columns both mark as its keys, in staging's order."""
-
-    name: str
-    many: bool
-    columns: tuple[str, ...]
-    keys: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class SharedFields:
-    """The output fields the two releases share, and those only one has: a table as its
-    name, a column as ``table.column``. A table one release has one row per quote and the
-    other many is ``reshaped``, not compared."""
-
-    tables: tuple[SharedTable, ...]
-    added: tuple[str, ...] = ()
-    removed: tuple[str, ...] = ()
-    reshaped: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class Move:
-    """A field that moved: its table, its row (its key values or its position; None in a
-    one-row table), its column, production's value and staging's. A row only one side holds
-    is a move with no column, ``before`` and ``after`` saying which side holds it."""
-
-    table: str
-    row: str | None
-    column: str | None
-    before: Any
-    after: Any
-
-
-@dataclass(frozen=True, slots=True)
-class Comparison:
-    """Two answers compared: the moves, or why the quote no longer compares."""
-
-    moves: tuple[Move, ...] = ()
-    why: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,172 +175,6 @@ class ImpactReport:
     def passed(self) -> bool:
         """Whether the run passes: it did not stop and staging failed on no quote."""
         return self.verdict != "stopped" and not self.failed
-
-
-# ---------------------------------------------------------------------------
-# The fields compared
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class _FormTable:
-    many: bool
-    columns: tuple[str, ...]
-    keys: frozenset[str]
-
-
-def _output_tables(form: Mapping[str, Any]) -> dict[str, _FormTable]:
-    """The output tables of a form as an app's ``/api/app/form`` answers it, by name: read
-    from the document as it stands, so a form another Haute version wrote reads alike."""
-    schema = form.get("schema")
-    tables = schema.get("tables") if isinstance(schema, Mapping) else None
-    found: dict[str, _FormTable] = {}
-    for table in tables if isinstance(tables, list) else []:
-        if not isinstance(table, Mapping) or table.get("role", "input") != "output":
-            continue
-        columns = [each for each in table.get("columns") or [] if isinstance(each, Mapping)]
-        found[str(table.get("name"))] = _FormTable(
-            many=table.get("rows", "one") == "many",
-            columns=tuple(str(column.get("name")) for column in columns),
-            keys=frozenset(str(column.get("name")) for column in columns if column.get("key")),
-        )
-    return found
-
-
-def shared_fields(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> SharedFields:
-    """The output fields production's form (*baseline*) and staging's (*candidate*) share, in
-    staging's order, and those only one has."""
-    before = _output_tables(baseline)
-    after = _output_tables(candidate)
-    tables: list[SharedTable] = []
-    added: list[str] = [name for name in after if name not in before]
-    removed: list[str] = [name for name in before if name not in after]
-    reshaped: list[str] = []
-    for name, table in after.items():
-        old = before.get(name)
-        if old is None:
-            continue
-        if old.many != table.many:
-            reshaped.append(name)
-            continue
-        columns = tuple(column for column in table.columns if column in old.columns)
-        added.extend(f"{name}.{column}" for column in table.columns if column not in old.columns)
-        removed.extend(f"{name}.{column}" for column in old.columns if column not in table.columns)
-        keys = tuple(column for column in columns if column in table.keys and column in old.keys)
-        tables.append(SharedTable(name, table.many, columns, keys if table.many else ()))
-    return SharedFields(tuple(tables), tuple(added), tuple(removed), tuple(reshaped))
-
-
-# ---------------------------------------------------------------------------
-# One quote compared
-# ---------------------------------------------------------------------------
-
-
-def _number(value: Any) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool)
-
-
-def moved(before: Any, after: Any) -> bool:
-    """Whether a value moved from production's (*before*) to staging's (*after*): a number by
-    more than :data:`_RELATIVE_CHANGE` of production's, or from zero by anything; any other
-    value when it is not the same."""
-    if _number(before) and _number(after):
-        if before == 0:
-            return bool(after != 0)
-        return bool(abs(after - before) > abs(before) * _RELATIVE_CHANGE)
-    if _number(before) != _number(after):
-        return True
-    return bool(before != after)
-
-
-def _rows(answer: Mapping[str, Any], table: str) -> list[Mapping[str, Any]]:
-    rows = answer.get(table)
-    if rows is None:
-        return []
-    if isinstance(rows, Mapping):
-        return [rows]
-    return [row if isinstance(row, Mapping) else {} for row in rows]
-
-
-def _keyed(
-    rows: Sequence[Mapping[str, Any]], keys: tuple[str, ...], side: str, table: str
-) -> dict[tuple[Any, ...], Mapping[str, Any]] | str:
-    """*rows* by their key values, or why they cannot be: a key column empty, or a key held
-    twice."""
-    keyed: dict[tuple[Any, ...], Mapping[str, Any]] = {}
-    for row in rows:
-        key = tuple(row.get(column) for column in keys)
-        empty = [column for column, value in zip(keys, key, strict=True) if value is None]
-        if empty:
-            return f"a row of {table} on {side} leaves its key {', '.join(empty)} empty"
-        hashable = tuple(_key_value(value) for value in key)
-        if hashable in keyed:
-            return f"{table} on {side} holds the key {_key_label(keys, key)} twice"
-        keyed[hashable] = row
-    return keyed
-
-
-def _key_value(value: Any) -> tuple[str, Any]:
-    """A key value as rows are matched by it: a number by its value, so a key column that
-    becomes a decimal still matches ``1`` with ``1.0``; any other value, true and false
-    included, by its JSON."""
-    if _number(value):
-        return ("number", value)
-    return ("value", json.dumps(value, sort_keys=True))
-
-
-def _key_label(keys: tuple[str, ...], values: Iterable[Any]) -> str:
-    return ", ".join(f"{column}={value}" for column, value in zip(keys, values, strict=True))
-
-
-def _row_moves(
-    table: SharedTable, row: str | None, before: Mapping[str, Any], after: Mapping[str, Any]
-) -> list[Move]:
-    return [
-        Move(table.name, row, column, before.get(column), after.get(column))
-        for column in table.columns
-        if moved(before.get(column), after.get(column))
-    ]
-
-
-def compare_quote(
-    fields: SharedFields, before: Mapping[str, Any], after: Mapping[str, Any]
-) -> Comparison:
-    """Production's answer (*before*) and staging's (*after*), each table's rows by name,
-    compared on the shared *fields*: the moves, or why the quote no longer compares."""
-    moves: list[Move] = []
-    for table in fields.tables:
-        old = _rows(before, table.name)
-        new = _rows(after, table.name)
-        if not table.many:
-            moves.extend(_row_moves(table, None, old[0] if old else {}, new[0] if new else {}))
-            continue
-        if not table.keys:
-            if len(old) != len(new):
-                return Comparison(
-                    why=f"{table.name} has {len(old)} rows on production and {len(new)} on "
-                    "staging, and no key both releases mark matches them"
-                )
-            for position, (was, now) in enumerate(zip(old, new, strict=True), 1):
-                moves.extend(_row_moves(table, f"row {position}", was, now))
-            continue
-        old_keyed = _keyed(old, table.keys, "production", table.name)
-        if isinstance(old_keyed, str):
-            return Comparison(why=old_keyed)
-        new_keyed = _keyed(new, table.keys, "staging", table.name)
-        if isinstance(new_keyed, str):
-            return Comparison(why=new_keyed)
-        for key, was in old_keyed.items():
-            label = _key_label(table.keys, (was.get(column) for column in table.keys))
-            if key in new_keyed:
-                moves.extend(_row_moves(table, label, was, new_keyed[key]))
-            else:
-                moves.append(Move(table.name, label, None, True, False))
-        for key, now in new_keyed.items():
-            if key not in old_keyed:
-                label = _key_label(table.keys, (now.get(column) for column in table.keys))
-                moves.append(Move(table.name, label, None, False, True))
-    return Comparison(moves=tuple(moves))
 
 
 # ---------------------------------------------------------------------------
@@ -607,7 +401,9 @@ def _quote(
         return QuoteImpact(reference, option, "refused", reason=_quote_reason(after))
     if after.status != 200:
         return QuoteImpact(reference, option, "failed", reason=_quote_reason(after))
-    compared = compare_quote(fields, baseline_tables, _tables(candidate, after))
+    compared = compare_quote(
+        fields, baseline_tables, _tables(candidate, after), sides=("on production", "on staging")
+    )
     if compared.why is not None:
         return QuoteImpact(reference, option, "no_longer_compares", reason=compared.why)
     outcome: Outcome = "moved" if compared.moves else "unchanged"
@@ -756,7 +552,7 @@ def _cell(value: Any) -> str:
 
 def _change(before: Any, after: Any) -> tuple[str, str]:
     """A number's move as its difference and as a percentage of production's."""
-    if not (_number(before) and _number(after)):
+    if not (is_number(before) and is_number(after)):
         return "", ""
     difference = after - before
     percent = "" if before == 0 else f"{difference / abs(before) * 100:+.2f}%"
@@ -764,7 +560,7 @@ def _change(before: Any, after: Any) -> tuple[str, str]:
 
 
 def _percent(move: Move) -> float | None:
-    if _number(move.before) and _number(move.after) and move.before != 0:
+    if is_number(move.before) and is_number(move.after) and move.before != 0:
         return float((move.after - move.before) / abs(move.before) * 100)
     return None
 

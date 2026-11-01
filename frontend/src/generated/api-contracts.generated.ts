@@ -2770,39 +2770,39 @@ export interface WorkbenchStoreColumn {
  * The workbench's form as its folder holds it now, with the folder's revision.
  */
 export interface WorkbenchFormResponse {
-  form: FormSpec;
+  form: FormSpecOutput;
   repairs: string[];
   revision: string;
 }
 /**
  * The form: what the workbench edits and its ``workbench/`` folder stores.
  */
-export interface FormSpec {
+export interface FormSpecOutput {
   name: string;
   /**
    * @minItems 1
    */
-  pages: Page[];
+  pages: PageOutput[];
   sample: {
     [k: string]: {
       [k: string]: string | boolean;
     }[];
   };
-  schema: FormSchema;
-  theme: Theme;
+  schema: FormSchemaOutput;
+  theme: ThemeOutput;
   version: 1;
 }
 /**
  * A sheet: ``width`` pixels wide, when it shows, and its sections, stacked one under
  * the next.
  */
-export interface Page {
+export interface PageOutput {
   id: string;
   /**
    * @minItems 1
    */
-  sections: Section[];
-  show_when: ShowWhen;
+  sections: SectionOutput[];
+  show_when: ShowWhenOutput;
   title: string;
   width: number;
 }
@@ -2811,20 +2811,27 @@ export interface Page {
  * under the sections before it; when it shows; and its widgets, each placed freely inside
  * it.
  */
-export interface Section {
+export interface SectionOutput {
   height: number;
   id: string;
-  show_when: ShowWhen;
+  show_when: ShowWhenOutput;
   title: string;
-  widgets: (TableInputWidget | CollectionWidget | ChartWidget | HeadingWidget | ImportWidget | ExportWidget)[];
+  widgets: (
+    | TableInputWidgetOutput
+    | CollectionWidgetOutput
+    | ChartWidgetOutput
+    | HeadingWidgetOutput
+    | ImportWidgetOutput
+    | ExportWidgetOutput
+  )[];
 }
 /**
  * When a sheet, a section, a widget or a widget's field shows: always, without
  * conditions; else while all of them hold, any, or at least a number of them, as ``match``
  * says, each a condition or a group of them.
  */
-export interface ShowWhen {
-  conditions: (Condition | RowsCondition | RowCount | RowTotal | ConditionGroup)[];
+export interface ShowWhenOutput {
+  conditions: (ConditionOutput | RowsConditionOutput | RowCountOutput | RowTotalOutput | ConditionGroupOutput)[];
   match: ('all' | 'any') | number;
 }
 /**
@@ -2834,7 +2841,7 @@ export interface ShowWhen {
  * fit one another is ``haute._workbench_visibility.condition_fits``'s question, asked
  * where conditions are tested: retyping a column can unfit a condition the form holds.
  */
-export interface Condition {
+export interface ConditionOutput {
   column: string;
   days: number;
   field: FieldRef | null;
@@ -2869,20 +2876,20 @@ export interface FieldRef {
  * A many-row table's rows, by table id, passing all of its tests in the same row: any
  * of them, or every one, as ``rows`` says.
  */
-export interface RowsCondition {
+export interface RowsConditionOutput {
   rows: 'any' | 'every';
   table: string;
   /**
    * @minItems 1
    */
-  where: RowTest[];
+  where: RowTestOutput[];
 }
 /**
  * A test a row of a many-row table must pass: a ``Condition``'s column, test and values,
  * its table the condition's that holds it, and another column of the same row, by id, to
  * test against.
  */
-export interface RowTest {
+export interface RowTestOutput {
   column: string;
   days: number;
   field: string | null;
@@ -2909,42 +2916,42 @@ export interface RowTest {
  * How many of a many-row table's rows, by table id, pass all of its tests in the same
  * row: every row while it has none.
  */
-export interface RowCount {
+export interface RowCountOutput {
   count: number;
   op: 'equals' | 'not_equals' | 'above' | 'at_least' | 'below' | 'at_most';
   table: string;
-  where: RowTest[];
+  where: RowTestOutput[];
 }
 /**
  * A total of a number column's values in the rows of a many-row table, by table id,
  * passing all of its tests in the same row, every row while it has none, tested against
  * a number typed as text.
  */
-export interface RowTotal {
+export interface RowTotalOutput {
   column: string;
   op: 'equals' | 'not_equals' | 'above' | 'at_least' | 'below' | 'at_most';
   table: string;
   total: 'sum' | 'min' | 'max' | 'average';
   value: string;
-  where: RowTest[];
+  where: RowTestOutput[];
 }
 /**
  * Conditions that count as one: holding while all of them hold, any, or at least a
  * number of them, as ``match`` says. A group holds no group.
  */
-export interface ConditionGroup {
+export interface ConditionGroupOutput {
   /**
    * @minItems 1
    */
-  conditions: (Condition | RowsCondition | RowCount | RowTotal)[];
+  conditions: (ConditionOutput | RowsConditionOutput | RowCountOutput | RowTotalOutput)[];
   match: ('all' | 'any') | number;
 }
 /**
  * A Table: a grid showing columns of many-row schema tables, each of its columns given
  * a look of its own looking as its ``column_looks`` entry says.
  */
-export interface TableInputWidget {
-  column_looks: ColumnLook[];
+export interface TableInputWidgetOutput {
+  column_looks: ColumnLookOutput[];
   density: 'compact' | 'comfortable';
   fields: FieldRef[];
   fixed_rows: boolean;
@@ -2969,7 +2976,7 @@ export interface TableInputWidget {
   id: string;
   row_numbers: boolean;
   rows: number;
-  show_when: ShowWhen;
+  show_when: ShowWhenOutput;
   striped: boolean;
   title: string;
   transposed: boolean;
@@ -2988,7 +2995,7 @@ export interface TableInputWidget {
  * Collection makes it, and shown with its component while ``show_when`` has no
  * conditions.
  */
-export interface ColumnLook {
+export interface ColumnLookOutput {
   align: 'auto' | 'left' | 'center' | 'right';
   bold: boolean;
   cell_color: string | null;
@@ -2997,7 +3004,7 @@ export interface ColumnLook {
   header_align: 'auto' | 'left' | 'center' | 'right';
   header_color: string | null;
   header_font_color: string | null;
-  show_when: ShowWhen;
+  show_when: ShowWhenOutput;
   table: string;
   width: number | null;
 }
@@ -3006,13 +3013,13 @@ export interface ColumnLook {
  * a gap across it wherever one of its ``spacers`` sits among them, each of its fields given
  * a look of its own looking as its ``column_looks`` entry says.
  */
-export interface CollectionWidget {
+export interface CollectionWidgetOutput {
   box_align: 'auto' | 'left' | 'center' | 'right';
   box_color: string | null;
   box_style: 'solid' | 'dashed' | 'dotted';
   box_weight: 'thin' | 'medium' | 'thick';
   box_width: number | null;
-  column_looks: ColumnLook[];
+  column_looks: ColumnLookOutput[];
   columns: number;
   density: 'compact' | 'comfortable';
   fields: FieldRef[];
@@ -3031,7 +3038,7 @@ export interface CollectionWidget {
   id: string;
   label_width: number | null;
   labels: 'above' | 'beside';
-  show_when: ShowWhen;
+  show_when: ShowWhenOutput;
   spacers: number[];
   title: string;
   type: 'collection';
@@ -3043,7 +3050,7 @@ export interface CollectionWidget {
  * A Chart: number columns plotted, of one-row tables a point each, or of many-row tables
  * whose rows line up a series each over their rows. It takes nothing typed.
  */
-export interface ChartWidget {
+export interface ChartWidgetOutput {
   category: FieldRef | null;
   chart_type: 'column' | 'line' | 'area' | 'pie';
   data_labels: boolean;
@@ -3052,7 +3059,7 @@ export interface ChartWidget {
   id: string;
   legend: 'bottom' | 'top' | 'left' | 'right' | 'none';
   orientation: 'vertical' | 'horizontal';
-  show_when: ShowWhen;
+  show_when: ShowWhenOutput;
   stacked: boolean;
   title: string;
   type: 'chart';
@@ -3064,12 +3071,12 @@ export interface ChartWidget {
  * A Heading: text naming a section of the sheet, or the sheet itself, with a line under
  * it saying what the section is for. It shows no schema columns and takes nothing typed.
  */
-export interface HeadingWidget {
+export interface HeadingWidgetOutput {
   align: 'left' | 'center' | 'right';
   description: string;
   h: number;
   id: string;
-  show_when: ShowWhen;
+  show_when: ShowWhenOutput;
   size: 'large' | 'medium' | 'small';
   text: string;
   type: 'heading';
@@ -3082,13 +3089,13 @@ export interface HeadingWidget {
  * database. It shows no schema columns and takes nothing typed; nothing runs it yet, so
  * it is drawn disabled where the sheets are used.
  */
-export interface ImportWidget {
+export interface ImportWidgetOutput {
   column_names: ColumnName[];
   h: number;
   id: string;
   label: string;
   mode: 'replace' | 'append' | 'update';
-  show_when: ShowWhen;
+  show_when: ShowWhenOutput;
   source: CsvImport | ExcelImport | SqlImport;
   table: string | null;
   type: 'import';
@@ -3144,11 +3151,11 @@ export interface QueryParameter {
  * or a database. It shows no schema columns and takes nothing typed; nothing runs it yet,
  * so it is drawn disabled where the sheets are used.
  */
-export interface ExportWidget {
+export interface ExportWidgetOutput {
   h: number;
   id: string;
   label: string;
-  show_when: ShowWhen;
+  show_when: ShowWhenOutput;
   tables: string[];
   target: CsvExport | ExcelExport | SqlExport;
   type: 'export';
@@ -3195,17 +3202,17 @@ export interface TableName {
 /**
  * The data the sheets work with: tables of named, typed columns.
  */
-export interface FormSchema {
-  tables: SchemaTable[];
+export interface FormSchemaOutput {
+  tables: SchemaTableOutput[];
 }
-export interface SchemaTable {
-  columns: SchemaColumn[];
+export interface SchemaTableOutput {
+  columns: SchemaColumnOutput[];
   id: string;
   name: string;
   role: 'input' | 'output';
   rows: 'one' | 'many';
 }
-export interface SchemaColumn {
+export interface SchemaColumnOutput {
   decimal_places: number | null;
   default_value: string | boolean;
   group: string;
@@ -3237,7 +3244,7 @@ export interface OptionsSource {
 /**
  * The sheets' colours, wherever they show, each the editor's own while None.
  */
-export interface Theme {
+export interface ThemeOutput {
   background_color: string | null;
   border_color: string | null;
   font_color: string | null;
@@ -3249,7 +3256,7 @@ export interface Theme {
  * The form as written, with its new revision and the save's version capture.
  */
 export interface WorkbenchFormSaveResponse {
-  form: FormSpec;
+  form: FormSpecOutput;
   git_sha: string | null;
   identity_required: boolean;
   revision: string;
@@ -3367,6 +3374,92 @@ export interface WorkbenchStoreRename {
   was: string;
 }
 /**
+ * The test-quote folder's files by name, and the branch they were read on.
+ */
+export interface WorkbenchTestQuotesResponse {
+  branch: string;
+  quotes: WorkbenchTestQuoteSummary[];
+}
+/**
+ * A file of the test-quote folder: its name, its file's name, its revision (a digest of
+ * its bytes) and, for one the panel cannot open, why.
+ */
+export interface WorkbenchTestQuoteSummary {
+  file: string;
+  name: string;
+  problem: string | null;
+  revision: string;
+}
+/**
+ * A test quote written or deleted: the file as it now stands (None once deleted), and
+ * the write's capture on the save ledger.
+ */
+export interface WorkbenchTestQuoteWriteResponse {
+  git_sha: string | null;
+  identity_required: boolean;
+  quote: WorkbenchTestQuoteSummary | null;
+  uncaptured: string[];
+  warnings: string[];
+}
+/**
+ * A test quote's values as the sheets hold them, and each value it could not place.
+ */
+export interface WorkbenchTestQuoteOpenResponse {
+  not_opened: string[];
+  values: {
+    [k: string]: {
+      [k: string]: string | boolean;
+    }[];
+  };
+}
+/**
+ * A test quote priced and compared: its outcome (``unchanged``, ``moved``,
+ * ``no_longer_compares`` or ``failed``), its moves, the tables and columns its expected
+ * answer holds that the form no longer has, why, the file's revision it read, the basis it
+ * priced on and the branch.
+ */
+export interface WorkbenchTestQuoteRunResponse {
+  basis: string | null;
+  branch: string;
+  file: string;
+  moves: WorkbenchTestQuoteMove[];
+  name: string;
+  outcome: 'unchanged' | 'moved' | 'no_longer_compares' | 'failed';
+  removed: string[];
+  revision: string;
+  why: string | null;
+}
+/**
+ * A field of a test quote that moved: its table, its row (key values or position; null
+ * in a one-row table), its column (null for a row only one side holds, ``before`` and
+ * ``after`` then saying which), the expected value and the new.
+ */
+export interface WorkbenchTestQuoteMove {
+  after: unknown;
+  before: unknown;
+  column: string | null;
+  row: string | null;
+  table: string;
+}
+/**
+ * The test quotes accepted, as they now stand, those not, with why, and the capture.
+ */
+export interface WorkbenchTestQuotesAcceptResponse {
+  accepted: WorkbenchTestQuoteSummary[];
+  git_sha: string | null;
+  identity_required: boolean;
+  refused: WorkbenchTestQuoteRefusal[];
+  uncaptured: string[];
+  warnings: string[];
+}
+/**
+ * A test quote not accepted, and why.
+ */
+export interface WorkbenchTestQuoteRefusal {
+  file: string;
+  why: string;
+}
+/**
  * The underwriter app's release, and who the host signed in.
  */
 export interface WorkbenchAppReleaseResponse {
@@ -3395,7 +3488,7 @@ export interface WorkbenchAppQuoteStore {
  * The release's form, without its sample, with the revision a price quotes.
  */
 export interface WorkbenchAppFormResponse {
-  form: FormSpec;
+  form: FormSpecOutput;
   revision: string;
 }
 /**
@@ -3620,4 +3713,417 @@ export interface WorkbenchAppQuoteAmend {
  */
 export interface WorkbenchAppQuoteNote {
   note: string;
+}
+/**
+ * Save the sample as saved: under a new ``name``, or over the test quote ``replace``
+ * names; with the branch and the form folder's revision the panel saved.
+ */
+export interface WorkbenchTestQuoteSaveRequest {
+  branch: string;
+  form_revision: string;
+  name?: string | null;
+  replace?: WorkbenchTestQuoteTarget | null;
+}
+/**
+ * A test quote's file, with the revision a decision about it was made on.
+ */
+export interface WorkbenchTestQuoteTarget {
+  file: string;
+  revision: string;
+}
+/**
+ * The form the view holds, which a test quote is opened onto.
+ */
+export interface WorkbenchTestQuoteOpenRequest {
+  form: FormSpec;
+}
+/**
+ * The form: what the workbench edits and its ``workbench/`` folder stores.
+ */
+export interface FormSpec {
+  name: string;
+  /**
+   * @minItems 1
+   */
+  pages: Page[];
+  sample?: {
+    [k: string]: {
+      [k: string]: string | boolean;
+    }[];
+  };
+  schema?: FormSchema;
+  theme?: Theme;
+  version?: 1;
+}
+/**
+ * A sheet: ``width`` pixels wide, when it shows, and its sections, stacked one under
+ * the next.
+ */
+export interface Page {
+  id: string;
+  /**
+   * @minItems 1
+   */
+  sections: Section[];
+  show_when?: ShowWhen;
+  title: string;
+  width: number;
+}
+/**
+ * A section of a sheet: a strip across the sheet's whole width, ``height`` pixels tall,
+ * under the sections before it; when it shows; and its widgets, each placed freely inside
+ * it.
+ */
+export interface Section {
+  height: number;
+  id: string;
+  show_when?: ShowWhen;
+  title: string;
+  widgets?: (TableInputWidget | CollectionWidget | ChartWidget | HeadingWidget | ImportWidget | ExportWidget)[];
+}
+/**
+ * When a sheet, a section, a widget or a widget's field shows: always, without
+ * conditions; else while all of them hold, any, or at least a number of them, as ``match``
+ * says, each a condition or a group of them.
+ */
+export interface ShowWhen {
+  conditions?: (Condition | RowsCondition | RowCount | RowTotal | ConditionGroup)[];
+  match?: ('all' | 'any') | number;
+}
+/**
+ * A test of the value in a one-row table's column, the column by table and column id.
+ *
+ * The shape is all the file holds a condition to. Whether its column, test and values
+ * fit one another is ``haute._workbench_visibility.condition_fits``'s question, asked
+ * where conditions are tested: retyping a column can unfit a condition the form holds.
+ */
+export interface Condition {
+  column: string;
+  days?: number;
+  field?: FieldRef | null;
+  op:
+    | 'ticked'
+    | 'not_ticked'
+    | 'filled'
+    | 'empty'
+    | 'equals'
+    | 'not_equals'
+    | 'contains'
+    | 'not_contains'
+    | 'starts_with'
+    | 'ends_with'
+    | 'one_of'
+    | 'not_one_of'
+    | 'above'
+    | 'at_least'
+    | 'below'
+    | 'at_most';
+  table: string;
+  values?: string[];
+}
+/**
+ * A many-row table's rows, by table id, passing all of its tests in the same row: any
+ * of them, or every one, as ``rows`` says.
+ */
+export interface RowsCondition {
+  rows: 'any' | 'every';
+  table: string;
+  /**
+   * @minItems 1
+   */
+  where: RowTest[];
+}
+/**
+ * A test a row of a many-row table must pass: a ``Condition``'s column, test and values,
+ * its table the condition's that holds it, and another column of the same row, by id, to
+ * test against.
+ */
+export interface RowTest {
+  column: string;
+  days?: number;
+  field?: string | null;
+  op:
+    | 'ticked'
+    | 'not_ticked'
+    | 'filled'
+    | 'empty'
+    | 'equals'
+    | 'not_equals'
+    | 'contains'
+    | 'not_contains'
+    | 'starts_with'
+    | 'ends_with'
+    | 'one_of'
+    | 'not_one_of'
+    | 'above'
+    | 'at_least'
+    | 'below'
+    | 'at_most';
+  values?: string[];
+}
+/**
+ * How many of a many-row table's rows, by table id, pass all of its tests in the same
+ * row: every row while it has none.
+ */
+export interface RowCount {
+  count: number;
+  op: 'equals' | 'not_equals' | 'above' | 'at_least' | 'below' | 'at_most';
+  table: string;
+  where: RowTest[];
+}
+/**
+ * A total of a number column's values in the rows of a many-row table, by table id,
+ * passing all of its tests in the same row, every row while it has none, tested against
+ * a number typed as text.
+ */
+export interface RowTotal {
+  column: string;
+  op: 'equals' | 'not_equals' | 'above' | 'at_least' | 'below' | 'at_most';
+  table: string;
+  total: 'sum' | 'min' | 'max' | 'average';
+  value: string;
+  where: RowTest[];
+}
+/**
+ * Conditions that count as one: holding while all of them hold, any, or at least a
+ * number of them, as ``match`` says. A group holds no group.
+ */
+export interface ConditionGroup {
+  /**
+   * @minItems 1
+   */
+  conditions: (Condition | RowsCondition | RowCount | RowTotal)[];
+  match: ('all' | 'any') | number;
+}
+/**
+ * A Table: a grid showing columns of many-row schema tables, each of its columns given
+ * a look of its own looking as its ``column_looks`` entry says.
+ */
+export interface TableInputWidget {
+  column_looks?: ColumnLook[];
+  density?: 'compact' | 'comfortable';
+  fields?: FieldRef[];
+  fixed_rows?: boolean;
+  font_size?: 10 | 11 | 12 | 13 | 14 | 16 | 18;
+  frame?: boolean;
+  frame_color?: string | null;
+  frame_weight?: 'thin' | 'medium' | 'thick';
+  grid_color?: string | null;
+  grid_style?: 'solid' | 'dashed' | 'dotted';
+  grid_weight?: 'thin' | 'medium' | 'thick';
+  gridlines?: 'rows' | 'all' | 'none';
+  groups?: boolean;
+  h: number;
+  header?: 'caps' | 'plain';
+  header_align?: 'auto' | 'left' | 'center' | 'right';
+  header_bold?: boolean;
+  header_color?: string | null;
+  header_font_color?: string | null;
+  header_font_size?: 10 | 11 | 12 | 13 | 14 | 16 | 18 | null;
+  header_orientation?: 'horizontal' | 'up' | 'down' | 'stacked';
+  header_wrap?: boolean;
+  id: string;
+  row_numbers?: boolean;
+  rows?: number;
+  show_when?: ShowWhen;
+  striped?: boolean;
+  title?: string;
+  transposed?: boolean;
+  type: 'tableInput';
+  w: number;
+  x: number;
+  y: number;
+}
+/**
+ * How one of a Table's columns, or one of a Collection's fields, looks and when it shows,
+ * its field by table and column id: each colour the component's own while None, its values
+ * placed as its type puts them, or as the Collection places its boxes', while ``align`` is
+ * ``auto``, its label as its component places its labels while ``header_align`` is, and
+ * over a Table's column as its values sit while the Table's is too, while ``width`` is
+ * None, a Table's column as wide as the grid makes it and a Collection's box as wide as the
+ * Collection makes it, and shown with its component while ``show_when`` has no
+ * conditions.
+ */
+export interface ColumnLook {
+  align?: 'auto' | 'left' | 'center' | 'right';
+  bold?: boolean;
+  cell_color?: string | null;
+  column: string;
+  font_color?: string | null;
+  header_align?: 'auto' | 'left' | 'center' | 'right';
+  header_color?: string | null;
+  header_font_color?: string | null;
+  show_when?: ShowWhen;
+  table: string;
+  width?: number | null;
+}
+/**
+ * A Collection: boxes showing columns of one-row schema tables, ``columns`` across, with
+ * a gap across it wherever one of its ``spacers`` sits among them, each of its fields given
+ * a look of its own looking as its ``column_looks`` entry says.
+ */
+export interface CollectionWidget {
+  box_align?: 'auto' | 'left' | 'center' | 'right';
+  box_color?: string | null;
+  box_style?: 'solid' | 'dashed' | 'dotted';
+  box_weight?: 'thin' | 'medium' | 'thick';
+  box_width?: number | null;
+  column_looks?: ColumnLook[];
+  columns?: number;
+  density?: 'compact' | 'comfortable';
+  fields?: FieldRef[];
+  font_size?: 10 | 11 | 12 | 13 | 14 | 16 | 18;
+  frame?: boolean;
+  frame_color?: string | null;
+  frame_weight?: 'thin' | 'medium' | 'thick';
+  h: number;
+  header?: 'caps' | 'plain';
+  header_align?: 'auto' | 'left' | 'center' | 'right';
+  header_bold?: boolean;
+  header_color?: string | null;
+  header_font_color?: string | null;
+  header_font_size?: 10 | 11 | 12 | 13 | 14 | 16 | 18 | null;
+  header_wrap?: boolean;
+  id: string;
+  label_width?: number | null;
+  labels?: 'above' | 'beside';
+  show_when?: ShowWhen;
+  spacers?: number[];
+  title?: string;
+  type: 'collection';
+  w: number;
+  x: number;
+  y: number;
+}
+/**
+ * A Chart: number columns plotted, of one-row tables a point each, or of many-row tables
+ * whose rows line up a series each over their rows. It takes nothing typed.
+ */
+export interface ChartWidget {
+  category?: FieldRef | null;
+  chart_type?: 'column' | 'line' | 'area' | 'pie';
+  data_labels?: boolean;
+  fields?: FieldRef[];
+  h: number;
+  id: string;
+  legend?: 'bottom' | 'top' | 'left' | 'right' | 'none';
+  orientation?: 'vertical' | 'horizontal';
+  show_when?: ShowWhen;
+  stacked?: boolean;
+  title?: string;
+  type: 'chart';
+  w: number;
+  x: number;
+  y: number;
+}
+/**
+ * A Heading: text naming a section of the sheet, or the sheet itself, with a line under
+ * it saying what the section is for. It shows no schema columns and takes nothing typed.
+ */
+export interface HeadingWidget {
+  align?: 'left' | 'center' | 'right';
+  description?: string;
+  h: number;
+  id: string;
+  show_when?: ShowWhen;
+  size?: 'large' | 'medium' | 'small';
+  text?: string;
+  type: 'heading';
+  w: number;
+  x: number;
+  y: number;
+}
+/**
+ * An Import: a button an underwriter presses to fill an input table from a file or a
+ * database. It shows no schema columns and takes nothing typed; nothing runs it yet, so
+ * it is drawn disabled where the sheets are used.
+ */
+export interface ImportWidget {
+  column_names: ColumnName[];
+  h: number;
+  id: string;
+  label: string;
+  mode: 'replace' | 'append' | 'update';
+  show_when?: ShowWhen;
+  source: CsvImport | ExcelImport | SqlImport;
+  table: string | null;
+  type: 'import';
+  w: number;
+  x: number;
+  y: number;
+}
+/**
+ * An Export: a button an underwriter presses to take the quote's tables out to a file
+ * or a database. It shows no schema columns and takes nothing typed; nothing runs it yet,
+ * so it is drawn disabled where the sheets are used.
+ */
+export interface ExportWidget {
+  h: number;
+  id: string;
+  label: string;
+  show_when?: ShowWhen;
+  tables: string[];
+  target: CsvExport | ExcelExport | SqlExport;
+  type: 'export';
+  w: number;
+  x: number;
+  y: number;
+}
+/**
+ * The data the sheets work with: tables of named, typed columns.
+ */
+export interface FormSchema {
+  tables?: SchemaTable[];
+}
+export interface SchemaTable {
+  columns?: SchemaColumn[];
+  id: string;
+  name: string;
+  role?: 'input' | 'output';
+  rows?: 'one' | 'many';
+}
+export interface SchemaColumn {
+  decimal_places?: number | null;
+  default_value?: string | boolean;
+  group?: string;
+  help?: string;
+  id: string;
+  index?: boolean;
+  key?: boolean;
+  label?: string;
+  max?: number | null;
+  min?: number | null;
+  name: string;
+  number_format?: 'general' | 'number' | 'percent' | 'currency_gbp' | 'currency_usd' | 'currency_eur';
+  options?: string[];
+  options_source?: OptionsSource | null;
+  placeholder?: string;
+  required?: boolean;
+  row_per_value?: boolean;
+  type?: 'int' | 'float' | 'str' | 'bool' | 'date';
+  use_grouping?: boolean;
+}
+/**
+ * The sheets' colours, wherever they show, each the editor's own while None.
+ */
+export interface Theme {
+  background_color?: string | null;
+  border_color?: string | null;
+  font_color?: string | null;
+  input_cell_color?: string | null;
+  output_cell_color?: string | null;
+  sheet_color?: string | null;
+}
+/**
+ * Accept the new answers of these test quotes, each at the revision its run read, on
+ * the basis the run priced on and the branch it was made on.
+ */
+export interface WorkbenchTestQuotesAcceptRequest {
+  basis: string;
+  branch: string;
+  /**
+   * @minItems 1
+   * @maxItems 10000
+   */
+  quotes: WorkbenchTestQuoteTarget[];
 }

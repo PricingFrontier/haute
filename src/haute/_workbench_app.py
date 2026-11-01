@@ -75,6 +75,10 @@ from haute.schemas import (
 if TYPE_CHECKING:
     from haute._quote_store import QuoteBook
     from haute._quote_store._environment import StoreLocation
+    from haute._workbench_config import WorkbenchConfig
+    from haute._workbench_form import FormDocument
+    from haute._workbench_test_quotes import Checked
+    from haute.deploy._config import DeployConfig, ResolvedDeploy
 
 RELEASE_FILE = "release.json"
 FORM_FILE = "form.json"
@@ -306,38 +310,32 @@ def write_release(
     return release
 
 
-def build_release(
-    project_dir: Path, release_dir: Path, *, haute_requirement: str | None = None
-) -> Release:
-    """Build the project's release into *release_dir*: its pipeline resolved, validated and
-    bundled as ``haute deploy`` does it, test quotes included, then the release beside it.
-    With ``[deploy.container] base_image`` set, pinned as a container deploy pins it, the
-    directory is the image's build context: the container's Dockerfile, copying the release
-    too, with the release's entry point in the scoring app's place; *haute_requirement* is the
-    ``haute`` the image installs, as the container target takes it.
+@dataclass(frozen=True)
+class ResolvedRelease:
+    """The project as a release prices it: its workbench, its form as the folder holds it and
+    with the allowed values its params files give, and the pipeline resolved with that form
+    as a deploy resolves it. :meth:`close` lets go of what resolution holds."""
 
-    *release_dir* is replaced when it holds an earlier release (``_is_release``) and refused
-    when it holds anything else, or is or holds the project or the working directory. The
-    release is built in a folder beside it and takes its place only once it has built, so a
-    build that fails leaves the earlier release as it was. Raises :class:`WorkbenchAppError`
-    for a project without a workbench, sheets naming a column the schema does not hold, allowed
-    values a params file can no longer give, a directory that is not a release, or a pipeline
-    that does not validate.
-    """
-    import shutil
+    config: WorkbenchConfig
+    document: FormDocument
+    form: FormSpec
+    deploy_config: DeployConfig
+    resolved: ResolvedDeploy
 
+    def close(self) -> None:
+        self.resolved.close()
+
+
+def resolve_release(project_dir: Path) -> ResolvedRelease:
+    """The project at *project_dir* as saved, resolved as :func:`build_release` and the test
+    quotes price it. Raises :class:`WorkbenchAppError` for a project without a workbench, a
+    form naming a column its schema does not hold, or allowed values a params file can no
+    longer give; a pipeline that does not resolve raises as a deploy's does."""
     from haute._project import resolve_pipeline_file
     from haute._workbench_config import read_workbench_config
     from haute._workbench_folder import read_form_document, unresolved_references
     from haute._workbench_params import ParamFileError, with_param_options
-    from haute.deploy._config import (
-        DeployConfig,
-        _validate_base_image_pinning,
-        resolve_config,
-    )
-    from haute.deploy._container import prepare_build_directory, runtime_versions, write_bundle
-    from haute.deploy._validators import validate_deploy
-    from haute.errors import DeployError
+    from haute.deploy._config import DeployConfig, resolve_config
 
     project_dir = project_dir.resolve()
     set_project_root(project_dir)
@@ -356,39 +354,91 @@ def build_release(
         form = with_param_options(document.spec, project_dir)
     except ParamFileError as exc:
         raise WorkbenchAppError(f"{config.form}: {exc.message}") from exc
-    _check_output(project_dir, release_dir)
-
     deploy_config = DeployConfig.from_toml(project_dir / "haute.toml")
     deploy_config.pipeline_file = resolve_pipeline_file(project_dir)
-    base_image = deploy_config.container.base_image
+    # The workbench nodes take their tables from the form the release ships, read once.
+    resolved = resolve_config(deploy_config, form=document)
+    return ResolvedRelease(config, document, form, deploy_config, resolved)
+
+
+@dataclass(frozen=True)
+class BuiltRelease:
+    """A release :func:`build_release` built, and how its test quotes priced."""
+
+    release: Release
+    test_quotes: tuple[Checked, ...]
+
+
+class TestQuotesFailedError(WorkbenchAppError):
+    """Test quotes that failed to price refused the build; ``results`` are every test
+    quote's, for the report."""
+
+    __test__ = False
+
+    def __init__(self, message: str, results: tuple[Checked, ...]) -> None:
+        super().__init__(message)
+        self.results = results
+
+
+def build_release(
+    project_dir: Path, release_dir: Path, *, haute_requirement: str | None = None
+) -> BuiltRelease:
+    """Build the project's release into *release_dir*: its pipeline resolved, validated and
+    bundled as ``haute deploy`` does it, test quotes included, then the release beside it.
+    With ``[deploy.container] base_image`` set, pinned as a container deploy pins it, the
+    directory is the image's build context: the container's Dockerfile, copying the release
+    too, with the release's entry point in the scoring app's place; *haute_requirement* is the
+    ``haute`` the image installs, as the container target takes it.
+
+    *release_dir* is replaced when it holds an earlier release (``_is_release``) and refused
+    when it holds anything else, or is or holds the project or the working directory. The
+    release is built in a folder beside it and takes its place only once it has built, so a
+    build that fails leaves the earlier release as it was. Raises :class:`WorkbenchAppError`
+    for a project without a workbench, sheets naming a column the schema does not hold, allowed
+    values a params file can no longer give, a directory that is not a release, or a pipeline
+    that does not validate.
+    """
+    import shutil
+
+    from haute._workbench_test_quotes import check_folder
+    from haute.deploy._config import _validate_base_image_pinning
+    from haute.deploy._container import prepare_build_directory, runtime_versions, write_bundle
+    from haute.deploy._validators import validate_deploy
+    from haute.errors import DeployError
+
+    project_dir = project_dir.resolve()
+    _check_output(project_dir, release_dir)
+    resolution = resolve_release(project_dir)
+    config, form, resolved = resolution.config, resolution.form, resolution.resolved
+    base_image = resolution.deploy_config.container.base_image
     if base_image:
         try:
             _validate_base_image_pinning(base_image)
         except DeployError as exc:
+            resolution.close()
             raise WorkbenchAppError(f"[deploy.container] base_image: {exc.message}") from exc
-    # The workbench nodes take their tables from the form this release ships, read once.
-    resolved = resolve_config(deploy_config, form=document)
     # Built beside the release it replaces, which is left as it is until this one has built.
     building = release_dir.with_name(f".{release_dir.name}.building-{uuid.uuid4().hex[:8]}")
     try:
         try:
             try:
-                results = validate_deploy(resolved)
+                validate_deploy(resolved, test_quotes=False)
             except DeployError as exc:
                 context = exc.context if isinstance(exc.context, dict) else {}
-                details = [
-                    *(context.get("structural_errors") or []),
-                    *(context.get("test_quote_errors") or []),
-                ] or [str(exc)]
+                details = [*(context.get("structural_errors") or [])] or [str(exc)]
                 raise WorkbenchAppError(
                     "The pipeline did not validate:\n"
                     + "\n".join(f"  - {line}" for line in details)
                 ) from exc
-            failed = [result for result in results if result["status"] != "ok"]
+            # A test quote whose prices moved is the change the pull request makes, reported;
+            # one that does not price is a broken pipeline, and refuses the build.
+            checked = check_folder(resolution, resolved.config.test_quotes_dir)
+            failed = [result for result in checked if result.outcome == "failed"]
             if failed:
-                raise WorkbenchAppError(
+                raise TestQuotesFailedError(
                     "Test quotes failed:\n"
-                    + "\n".join(f"  - {result['file']}: {result['error']}" for result in failed)
+                    + "\n".join(f"  - {result.file}: {result.why}" for result in failed),
+                    checked,
                 )
             try:
                 runtime = runtime_versions(resolved)
@@ -421,7 +471,7 @@ def build_release(
     except BaseException:
         shutil.rmtree(building, ignore_errors=True)
         raise
-    return release
+    return BuiltRelease(release, checked)
 
 
 def _is_release(directory: Path) -> bool:

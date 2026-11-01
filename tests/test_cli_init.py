@@ -162,6 +162,19 @@ class TestInitCreatesProjectStructure:
         # quotes parse before the analyst replaces them.
         assert load_test_quote_file(quote_file) == [{"id": 1, "field_a": "value", "field_b": 42}]
 
+    def test_a_workbench_project_starts_with_no_test_quotes(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A workbench's test quotes are saved from Preview, the folder made by the first."""
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(
+            cli, ["init", "--workbench", "--store", "sqlserver", "--sign-in", "password"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert not (tmp_path / "tests" / "quotes").exists()
+        assert (tmp_path / "tests" / "test_pipeline.py").is_file()
+
     def test_creates_env_example(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):

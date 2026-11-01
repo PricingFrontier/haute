@@ -519,7 +519,7 @@ def _global_constant_errors(graph: PipelineGraph) -> list[str]:
     return errors
 
 
-def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
+def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> list[TestQuoteResult]:
     """Run all pre-deploy validations.
 
     Structural errors and test-quote failures are collected first, then
@@ -527,6 +527,9 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
     full picture in one report rather than a trickle of "fix this, rerun,
     fix that, rerun" cycles. On success, return the exact per-file scoring
     results so presentation callers do not execute the gate a second time.
+    With *test_quotes* False the structural and form checks run alone, neither
+    the folder's gate nor the scoring: a workbench project's build checks its
+    test quotes itself.
     """
     from haute.errors import DeployError
 
@@ -644,7 +647,7 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
     #      * The scorer raised an exception → surfaced via the result dict.
     test_quote_errors: list[str] = []
     quote_results: list[TestQuoteResult] = []
-    tq_dir = resolved.config.test_quotes_dir
+    tq_dir = resolved.config.test_quotes_dir if test_quotes else None
     if tq_dir is not None and not tq_dir.exists():
         errors.append(f"Configured test_quotes.dir does not exist: {tq_dir}")
     elif tq_dir is not None and not tq_dir.is_dir():
@@ -744,7 +747,13 @@ def score_test_quotes(
     if not json_files:
         return []
 
-    results: list[TestQuoteResult] = []
+    return [score_test_quote_file(resolved, jf) for jf in json_files]
+
+
+def score_test_quote_file(resolved: ResolvedDeploy, jf: Path) -> TestQuoteResult:
+    """Score one test-quote file as :func:`score_test_quotes` scores each: its cases
+    priced and each expected output compared, answering its result (``status`` ``ok`` or
+    ``error`` with why); never raises for the file."""
     one_quote_per_request = _reads_one_quote_per_request(resolved)
     # A Quote Input with tables reads its quotes as their records, as served.
     as_records = reads_records(resolved.pruned_graph, resolved.input_node_ids)
@@ -763,46 +772,39 @@ def score_test_quotes(
             request_rows=resolved.request_rows,
         )
 
-    for jf in json_files:
-        t0 = time.perf_counter()
-        try:
-            cases = _load_test_quote_cases(jf)
-            if not cases:
-                rows = 0
-            elif one_quote_per_request:
-                # Each case as its request was sent: the Workbench Input types it.
-                outputs = [score(QuoteRequest((case.input,))) for case in cases]
-                _validate_expected_outputs_per_case(cases=cases, outputs=outputs)
-                rows = sum(output.height for output in outputs)
-            elif case_per_request:
-                answers = [score(_request([case.input], as_records)) for case in cases]
-                _validate_expected_outputs_per_case(cases=cases, outputs=list(answers))
-                rows = sum(answer.height for answer in answers)
-            else:
-                output = score(_request([case.input for case in cases], as_records))
-                _validate_expected_outputs(cases=cases, output=output)
-                rows = output.height
+    t0 = time.perf_counter()
+    try:
+        cases = _load_test_quote_cases(jf)
+        if not cases:
+            rows = 0
+        elif one_quote_per_request:
+            # Each case as its request was sent: the Workbench Input types it.
+            outputs = [score(QuoteRequest((case.input,))) for case in cases]
+            _validate_expected_outputs_per_case(cases=cases, outputs=outputs)
+            rows = sum(output.height for output in outputs)
+        elif case_per_request:
+            answers = [score(_request([case.input], as_records)) for case in cases]
+            _validate_expected_outputs_per_case(cases=cases, outputs=list(answers))
+            rows = sum(answer.height for answer in answers)
+        else:
+            output = score(_request([case.input for case in cases], as_records))
+            _validate_expected_outputs(cases=cases, output=output)
+            rows = output.height
 
-            elapsed = (time.perf_counter() - t0) * 1000
-            results.append(
-                {
-                    "file": jf.name,
-                    "rows": rows,
-                    "status": "ok",
-                    "time_ms": round(elapsed, 1),
-                    "error": "",
-                }
-            )
-        except Exception as exc:
-            elapsed = (time.perf_counter() - t0) * 1000
-            results.append(
-                {
-                    "file": jf.name,
-                    "rows": 0,
-                    "status": "error",
-                    "time_ms": round(elapsed, 1),
-                    "error": str(exc),
-                }
-            )
-
-    return results
+    except Exception as exc:
+        elapsed = (time.perf_counter() - t0) * 1000
+        return {
+            "file": jf.name,
+            "rows": 0,
+            "status": "error",
+            "time_ms": round(elapsed, 1),
+            "error": str(exc),
+        }
+    elapsed = (time.perf_counter() - t0) * 1000
+    return {
+        "file": jf.name,
+        "rows": rows,
+        "status": "ok",
+        "time_ms": round(elapsed, 1),
+        "error": "",
+    }

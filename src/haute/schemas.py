@@ -427,6 +427,111 @@ RequestWorkbenchPricedTables = dict[
 ]
 
 
+class WorkbenchTestQuoteSummary(BaseModel):
+    """A file of the test-quote folder: its name, its file's name, its revision (a digest of
+    its bytes) and, for one the panel cannot open, why."""
+
+    name: str
+    file: str
+    revision: str
+    problem: str | None = None
+
+
+class WorkbenchTestQuotesResponse(BaseModel):
+    """The test-quote folder's files by name, and the branch they were read on."""
+
+    branch: str
+    quotes: list[WorkbenchTestQuoteSummary]
+
+
+class WorkbenchTestQuoteTarget(BaseModel):
+    """A test quote's file, with the revision a decision about it was made on."""
+
+    file: BoundedName
+    revision: BoundedName
+
+
+class WorkbenchTestQuoteSaveRequest(BaseModel):
+    """Save the sample as saved: under a new ``name``, or over the test quote ``replace``
+    names; with the branch and the form folder's revision the panel saved."""
+
+    name: BoundedName | None = None
+    replace: WorkbenchTestQuoteTarget | None = None
+    branch: BoundedName
+    form_revision: BoundedName
+
+
+class WorkbenchTestQuoteWriteResponse(SaveCapture):
+    """A test quote written or deleted: the file as it now stands (None once deleted), and
+    the write's capture on the save ledger."""
+
+    quote: WorkbenchTestQuoteSummary | None = None
+
+
+class WorkbenchTestQuoteOpenRequest(BaseModel):
+    """The form the view holds, which a test quote is opened onto."""
+
+    form: FormSpec
+
+
+class WorkbenchTestQuoteOpenResponse(BaseModel):
+    """A test quote's values as the sheets hold them, and each value it could not place."""
+
+    values: WorkbenchValues
+    not_opened: list[str]
+
+
+class WorkbenchTestQuoteMove(BaseModel):
+    """A field of a test quote that moved: its table, its row (key values or position; null
+    in a one-row table), its column (null for a row only one side holds, ``before`` and
+    ``after`` then saying which), the expected value and the new."""
+
+    table: str
+    row: str | None
+    column: str | None
+    before: Any
+    after: Any
+
+
+class WorkbenchTestQuoteRunResponse(BaseModel):
+    """A test quote priced and compared: its outcome (``unchanged``, ``moved``,
+    ``no_longer_compares`` or ``failed``), its moves, the tables and columns its expected
+    answer holds that the form no longer has, why, the file's revision it read, the basis it
+    priced on and the branch."""
+
+    name: str
+    file: str
+    outcome: Literal["unchanged", "moved", "no_longer_compares", "failed"]
+    moves: list[WorkbenchTestQuoteMove] = Field(default_factory=list)
+    removed: list[str] = Field(default_factory=list)
+    why: str | None = None
+    revision: str
+    basis: str | None
+    branch: str
+
+
+class WorkbenchTestQuotesAcceptRequest(BaseModel):
+    """Accept the new answers of these test quotes, each at the revision its run read, on
+    the basis the run priced on and the branch it was made on."""
+
+    branch: BoundedName
+    basis: BoundedName
+    quotes: list[WorkbenchTestQuoteTarget] = Field(min_length=1, max_length=MAX_REQUEST_ITEMS)
+
+
+class WorkbenchTestQuoteRefusal(BaseModel):
+    """A test quote not accepted, and why."""
+
+    file: str
+    why: str
+
+
+class WorkbenchTestQuotesAcceptResponse(SaveCapture):
+    """The test quotes accepted, as they now stand, those not, with why, and the capture."""
+
+    accepted: list[WorkbenchTestQuoteSummary]
+    refused: list[WorkbenchTestQuoteRefusal]
+
 class WorkbenchAppQuoteStore(BaseModel):
     """The app's quote store as its gate last checked it: open, or closed with the
     refusal's error code, message and differences, each null or empty while open."""

@@ -143,6 +143,14 @@ from haute.schemas import (
     WorkbenchStoreCompareResponse,
     WorkbenchStoreSqlResponse,
     WorkbenchTablesResponse,
+    WorkbenchTestQuoteOpenRequest,
+    WorkbenchTestQuoteOpenResponse,
+    WorkbenchTestQuoteRunResponse,
+    WorkbenchTestQuotesAcceptRequest,
+    WorkbenchTestQuotesAcceptResponse,
+    WorkbenchTestQuoteSaveRequest,
+    WorkbenchTestQuotesResponse,
+    WorkbenchTestQuoteWriteResponse,
     WriteOutputResponse,
 )
 
@@ -169,6 +177,11 @@ REQUEST_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         WorkbenchAppQuoteAssign,
         WorkbenchAppQuoteAmend,
         WorkbenchAppQuoteNote,
+    ),
+    "workbench-requests": (
+        WorkbenchTestQuoteSaveRequest,
+        WorkbenchTestQuoteOpenRequest,
+        WorkbenchTestQuotesAcceptRequest,
     ),
 }
 
@@ -285,6 +298,11 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         WorkbenchStoreSqlResponse,
         WorkbenchStoreCatalogueResponse,
         WorkbenchStoreCompareResponse,
+        WorkbenchTestQuotesResponse,
+        WorkbenchTestQuoteWriteResponse,
+        WorkbenchTestQuoteOpenResponse,
+        WorkbenchTestQuoteRunResponse,
+        WorkbenchTestQuotesAcceptResponse,
     ),
     # The underwriter app's own page reads these; the builder never does, so its chunks
     # carry none of them.
