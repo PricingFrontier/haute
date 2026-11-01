@@ -17,11 +17,10 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 | PCFG-R09 | Planned | P3 | A node type is declared in one place. |
 | PCFG-R12 | Planned | P2 | A save keeps every authored comment, or reports the ones it would drop before it proceeds. |
 | PCFG-R16 | Decision | P3 | The `earlier` step spelling is either dropped or named as the one allowed recogniser of old generated code. |
-| PCFG-R19 | Planned | P3 | The file-to-recovery-graph pass is written once, for a pipeline file and a submodel file alike. |
 
 `PCFG-R04` to `PCFG-R09` come from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md);
-`PCFG-R12` to `PCFG-R19` from the
+`PCFG-R12` and `PCFG-R16` from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 `PCFG-R08` should precede `PCFG-R07` so the models do not have to carry
 editor state.
@@ -230,24 +229,3 @@ matches them.
 **Evidence:** `src/haute/_config_builder.py::_reconcile_steps`;
 `src/haute/_polars_steps.py::StepSpelling`; `specs/README.md`;
 `specs/pipeline-config/low-level.md`.
-
-### PCFG-R19 — One file-to-recovery-graph pass
-**Why:** Editor recovery turns one file into recovery candidates and connections twice: for
-a submodel file in `_recover_submodel_snapshot` and for the pipeline file in
-`_load_readable_pipeline_editor_document`. Both discover the decorated nodes, mint their
-recovery ids, resolve each node, recover the connect calls and attribute the strict parse's
-binding refusal, in a different order, so a fix to one pass can miss the other. (The ids,
-the captures, the `match` bindings, the step-kind input table and the editor-sidecar read
-this package also covered were delivered.)
-
-**Plan:** One `_recover_file_graph` that both call, the pipeline file adding its submodel
-occurrences and instance refusals; fix the order of the diagnostics it emits and say it in
-the server-api specification.
-
-**Acceptance:** jscpd reports no clone between the two passes; the recovery tests pass
-unchanged apart from a stated diagnostic order.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_pipeline_recovery.py::_recover_submodel_snapshot`;
-`src/haute/_pipeline_recovery.py::_load_readable_pipeline_editor_document`.

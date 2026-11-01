@@ -4522,3 +4522,59 @@ def test_saving_over_a_submodel_statement_a_save_would_drop_is_refused_naming_it
     assert response.status_code == 409
     assert "modules/child.py:13" in response.json()["detail"]
     assert child.read_bytes() == before
+
+
+_BROKEN_NODE = (
+    "@{receiver}.polars\ndef broken(quotes, *, factor):\n    df = quotes\n    return df\n\n"
+)
+_BROKEN_CONNECT = '{receiver}.connect("quotes", 7)\n'
+
+
+def _diagnostic_order(document, source_file: str) -> list[str]:
+    return [item.code for item in document.diagnostics if item.source_file == source_file]
+
+
+def test_a_pipeline_files_diagnostics_follow_nodes_then_connections_then_registrations(
+    tmp_path: Path,
+) -> None:
+    """One recovery pass serves both files, so each reports in one order (PCFG-R19)."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "haute.toml").write_text('[project]\nname = "shapes"\n', encoding="utf-8")
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        "import haute\nimport polars as pl\n\n"
+        'pipeline = haute.Pipeline("shapes")\n\n'
+        "@pipeline.polars\ndef quotes():\n    return None\n\n"
+        + _BROKEN_NODE.format(receiver="pipeline")
+        + 'pipeline.submodel(missing.submodel, "pricing")\n'
+        + _BROKEN_CONNECT.format(receiver="pipeline"),
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert _diagnostic_order(document, "main.py") == [
+        "node_parse_invalid",
+        "connection_declaration_invalid",
+        "submodel_registration_invalid",
+    ]
+
+
+def test_a_submodel_files_diagnostics_follow_nodes_then_connections(tmp_path: Path) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "haute.toml").write_text('[project]\nname = "shapes"\n', encoding="utf-8")
+    pipeline_file = _submodel_project(
+        tmp_path,
+        input_ports="[]",
+        body=_BROKEN_CONNECT.format(receiver="submodel") + _BROKEN_NODE.format(receiver="submodel"),
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    # The definition's own refusal leads, as the pipeline's registrations report it.
+    assert _diagnostic_order(document, "modules/inputs.py") == [
+        "submodel_definition_invalid",
+        "node_parse_invalid",
+        "connection_declaration_invalid",
+    ]

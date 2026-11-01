@@ -282,7 +282,6 @@ production:
 | Background jobs | WRK-8, WRK-9, WRK-10 | `ROAD-WORKER-08` |
 | Pipeline config | PCF-3 | `PCFG-R12` |
 | Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
-| Pipeline config | PCR-8 | `PCFG-R19` |
 | Optimiser | OPR-1, OPR-8, OPR-12 | `OPT-R01` |
 | Optimiser | OPR-3 | `OPT-R02` |
 | Optimiser | OPR-4, OPR-5, OPR-6, OPR-7 | `OPT-R03` |
