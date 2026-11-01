@@ -31,16 +31,22 @@ describe("stepped node derived code", () => {
   ])("excludes generated fields only from dirty fingerprints (inside definition: %s, %s)", (inDefinition, nodeType) => {
     const node = {
       id: "transform", position: { x: 0, y: 0 },
-      data: { nodeType, config: { steps: [{ id: "s", kind: "source", input: "quotes" }], code: "old", _steps_error: "old error", _authored: "keep" } },
+      data: {
+        nodeType,
+        config: { steps: [{ id: "s", kind: "source", input: "quotes" }], code: "old", _authored: "keep" },
+        editor: { steps_error: "old error", steps_discarded: null, discarded_sidecar: null },
+      },
     } as Node
     const graph = {
       nodes: inDefinition ? [] : [node], edges: [], preamble: "",
       submodels: inDefinition ? { definition: { graph: { nodes: [node], edges: [] } } } : {},
     }
     const before = serializeSnapshot(graph)
+    // A request carries the server's editor state back; the dirty fingerprint does not.
+    expect(JSON.stringify(toCanonicalGraphPayload(graph))).toContain('"steps_error":"old error"')
     const config = node.data.config as Record<string, unknown>
     config.code = "df = quotes"
-    delete config._steps_error
+    ;(node.data as Record<string, unknown>).editor = { steps_error: null, steps_discarded: null, discarded_sidecar: null }
     expect(serializeSnapshot(graph)).toBe(before)
     expect(JSON.stringify(toCanonicalGraphPayload(graph))).toContain('"code":"df = quotes"')
     expect(JSON.stringify(cloneGraphSnapshot(graph))).toContain('"code":"df = quotes"')

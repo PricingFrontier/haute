@@ -28,6 +28,7 @@ function recoveryNode(id: string, config: Record<string, unknown>): RecoveryNode
     availability: "ready",
     display_position: { x: 0, y: 0 },
     config: structuredClone(config) as RecoveryNode["config"],
+    editor: { steps_error: null, steps_discarded: null, discarded_sidecar: null },
     config_reference: null,
     function_name: NODE_LABELS[id],
     default_input_name: NODE_LABELS[id],

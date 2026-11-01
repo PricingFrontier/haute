@@ -439,6 +439,8 @@ export default function useWebSocketSync({
               preservedBlocksRef.current = [...frame.document.preserved_blocks]
               submodelsRef.current = adapted.submodels
               preambleRef.current = nextPreamble
+              // A document from disk is a reload: set-aside Banding rules go with it.
+              useUIStore.getState().clearBandingRuleStash()
               useGraphStore.getState().loadGraphSnapshot({
                 nodes: nodesToApply,
                 edges: newEdges,

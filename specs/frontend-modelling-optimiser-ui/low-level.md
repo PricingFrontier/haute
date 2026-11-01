@@ -90,7 +90,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 ## Key types and data structures
 
 - `TrainResult`/`TrainProgress` and optimiser result/job records are consumed from
-  `frontend/src/stores/useNodeResultsStore.ts`; the panels key them by `config._nodeId` and source/
+  `frontend/src/stores/useNodeResultsStore.ts`; the panels key them by their `nodeId` prop and source/
   structural/config hash state supplied to the shared estimate/job layers.
 - Modelling configuration is a `Record<string, unknown>` split into target, feature,
   algorithm, fixed-parameter, required version-1 `evaluation`, and optional version-1

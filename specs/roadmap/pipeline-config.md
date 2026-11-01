@@ -13,16 +13,13 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 |---|---|---:|---|
 | PCFG-R04 | Planned | P2 | One project context, resolved once, replaces a dozen project-root and pipeline-directory resolvers. |
 | PCFG-R07 | Planned | P2 | Every node type has a typed config model that is the single validation boundary. |
-| PCFG-R08 | Planned | P3 | Editor-only state travels beside the node config, not inside it. |
 | PCFG-R09 | Planned | P3 | A node type is declared in one place. |
 | PCFG-R16 | Decision | P3 | The `earlier` step spelling is either dropped or named as the one allowed recogniser of old generated code. |
 
-`PCFG-R04` to `PCFG-R09` come from the
+`PCFG-R04`, `PCFG-R07` and `PCFG-R09` come from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md);
 `PCFG-R16` from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md).
-`PCFG-R08` should precede `PCFG-R07` so the models do not have to carry
-editor state.
 
 ## Planned improvements
 
@@ -123,37 +120,13 @@ validators are either deleted or called only from the model's validators; an
 invalid config for any node type fails at save with the model's message; the
 frontend node-config types and the node-reference config tables are generated.
 
-**Dependencies:** `PCFG-R08`; `API-R03` (server API) for generated browser
-types.
+**Dependencies:** `API-R03` (server API) for generated browser types.
 
 **Evidence:** `src/haute/_types.py::NodeData`;
 `src/haute/_config_validation.py::validate_node_config`;
 `src/haute/routes/_save_pipeline.py::_validate_strict_node_configs`;
 `src/haute/routes/_training_lifecycle.py::_validate_config`;
 `src/haute/routes/_optimiser_service.py::_validate_config`.
-
-### PCFG-R08 — Editor state leaves the node config
-**Why:** Transient editor and runtime state is stored inside the node config:
-in the browser `_columns`, `_nodeId`, `_schemaWarnings`, `_availableColumns`,
-`_instance` and step errors; on the backend `_steps_error`, `_steps_discarded`
-and `_discarded_sidecar`. It is then stripped again by
-exclusion lists in the browser's config hash, the backend cache-field
-classification, the sidecar allowlist and code generation.
-
-**Plan:** Carry editor state in a separate field beside `config` in the graph
-and editor-document models, and move every reader and writer to it. Delete
-the exclusion lists.
-
-**Acceptance:** No persisted or hashed node config contains an
-underscore-prefixed editor key; the exclusion lists are gone; editor
-behaviour that depends on this state is unchanged under test.
-
-**Dependencies:** None. `CACHE-S25` (caching) builds on it.
-
-**Evidence:** `frontend/src/stores/useNodeResultsStore.ts::hashConfig`;
-`src/haute/_cache.py::_classify_config_fields`;
-`src/haute/_config_io.py::_prepare_config_for_sidecar`;
-`src/haute/_types.py::NodeData`.
 
 ### PCFG-R09 — A node type is declared in one place
 **Why:** `NODE_REGISTRY` holds the runtime builder, code generator, column

@@ -1005,6 +1005,25 @@ class SubmodelConfig(TypedDict):
     instanceOf: NotRequired[str]
 
 
+class NodeEditorState(BaseModel):
+    """What the server knows about a node for its editor, carried beside the config.
+
+    None of it is a setting: it is never persisted, hashed or validated as config.
+    ``steps_error`` is derived from the node's ``steps`` whenever its data is
+    built; ``steps_discarded`` (why the parse dropped a stepped node's steps) and
+    ``discarded_sidecar`` (the transform sidecar those steps came from, which the
+    next save retires) are the parse's findings. A request may carry the field
+    back, as a transform of the graph echoes it, but a save reads neither
+    finding from it: it reparses the file on disk.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    steps_error: str | None = None
+    steps_discarded: str | None = None
+    discarded_sidecar: str | None = None
+
+
 class NodeData(BaseModel):
     """Data payload for a single pipeline node."""
 
@@ -1012,6 +1031,7 @@ class NodeData(BaseModel):
     description: str = ""
     nodeType: NodeType = NodeType.POLARS  # noqa: N815 — matches React Flow frontend convention
     config: dict[str, Any] = Field(default_factory=dict)
+    editor: NodeEditorState = Field(default_factory=NodeEditorState)
 
     @model_validator(mode="after")
     def _materialise_steps(self) -> Self:
@@ -1020,36 +1040,35 @@ class NodeData(BaseModel):
         Every consumer of a node's program reads ``config["code"]``; a stepped
         node therefore never carries any other program than its rendered
         steps. A step list that cannot be rendered materialises as empty code
-        plus an editor-state ``_steps_error`` message, so consumers see an
+        plus the editor state's ``steps_error`` message, so consumers see an
         incomplete node exactly as they see a code-less one. The render mode
         comes from ``STEPPED_NODE_TYPES``; a ``steps`` key on a node type
         outside that table (a Scenario Expander's grid size) is left alone.
         In-process config replacement must go through ``GraphNode.with_config``
         so this validator runs; ``model_copy`` does not validate.
         """
-        if "steps" not in self.config:
-            return self
         from haute._polars_steps import (
             STEPPED_NODE_TYPES,
             PolarsStepError,
             render_node_steps,
         )
 
-        if self.nodeType not in STEPPED_NODE_TYPES:
-            return self
-        steps = self.config["steps"]
-        if not isinstance(steps, list):
-            raise ValueError("Steps must be a list.")
-        config = dict(self.config)
-        try:
-            rendered = render_node_steps(self.nodeType, steps)
-        except PolarsStepError as exc:
-            config["code"] = ""
-            config["_steps_error"] = str(exc)
-        else:
-            config["code"] = rendered.code
-            config.pop("_steps_error", None)
-        self.config = config
+        steps_error: str | None = None
+        if "steps" in self.config and self.nodeType in STEPPED_NODE_TYPES:
+            steps = self.config["steps"]
+            if not isinstance(steps, list):
+                raise ValueError("Steps must be a list.")
+            config = dict(self.config)
+            try:
+                rendered = render_node_steps(self.nodeType, steps)
+            except PolarsStepError as exc:
+                config["code"] = ""
+                steps_error = str(exc)
+            else:
+                config["code"] = rendered.code
+            self.config = config
+        if self.editor.steps_error != steps_error:
+            self.editor = self.editor.model_copy(update={"steps_error": steps_error})
         return self
 
 
@@ -1068,6 +1087,7 @@ class GraphNode(BaseModel):
             description=self.data.description,
             nodeType=self.data.nodeType,
             config=deepcopy(dict(config)),
+            editor=self.data.editor,
         )
         return self.model_copy(update={"data": data})
 

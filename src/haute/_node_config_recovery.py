@@ -532,24 +532,18 @@ def _validator_issues(
                         )
                     )
     if is_stepped_config(node_type, config):
-        # A raw sidecar candidate carries no derived ``_steps_error``, so the
-        # steps are rendered here rather than trusting a field the node data
-        # model would have written. An ``edges`` surface's references can only
-        # be checked when the caller knows the connected input names.
-        problem = config.get("_steps_error")
-        if problem is None:
-            surface = stepped_surface_for(node_type)
-            eligible: list[str] | None = (
-                []
-                if surface.inputs == "none"
-                else (None if input_names is None else list(input_names))
-            )
-            try:
-                render_polars_steps(config["steps"], eligible, start=surface.start)
-            except PolarsStepError as exc:
-                problem = str(exc)
-        if problem:
-            issues.append(_issue("/steps", "incomplete", str(problem)))
+        # The steps are rendered here: a raw sidecar candidate is not node
+        # data, so no derived steps error comes with it. An ``edges`` surface's
+        # references can only be checked when the caller knows the connected
+        # input names.
+        surface = stepped_surface_for(node_type)
+        eligible: list[str] | None = (
+            [] if surface.inputs == "none" else (None if input_names is None else list(input_names))
+        )
+        try:
+            render_polars_steps(config["steps"], eligible, start=surface.start)
+        except PolarsStepError as exc:
+            issues.append(_issue("/steps", "incomplete", str(exc)))
     elif node_type is NodeType.POLARS and (
         not isinstance(config.get("code"), str) or not config["code"].strip()
     ):

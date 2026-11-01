@@ -171,7 +171,12 @@ describe("SteppedCodePane", () => {
     render(
       <SteppedCodePane
         nodeId="node-1"
-        config={{ code: "df = df.head(3)", _steps_discarded: "Steps were discarded because the function body no longer matches the rendered steps." }}
+        config={{ code: "df = df.head(3)" }}
+        editor={{
+          steps_error: null,
+          steps_discarded: "Steps were discarded because the function body no longer matches the rendered steps.",
+          discarded_sidecar: null,
+        }}
         onUpdate={vi.fn()}
         inputSources={[]}
         inputNames={[]}

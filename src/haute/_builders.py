@@ -1474,9 +1474,6 @@ def stepped_code_problem(
     """
     if node_type not in STEPPED_NODE_TYPES or not isinstance(config.get("steps"), list):
         return None
-    problem = config.get("_steps_error")
-    if problem is not None:
-        return str(problem)
     try:
         render_polars_steps(
             config["steps"], sorted(names), start=STEPPED_NODE_TYPES[node_type].start

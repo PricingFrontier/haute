@@ -670,13 +670,15 @@ class TestCollectNodeConfigs:
 # ---------------------------------------------------------------------------
 
 
-def test_an_editor_key_is_not_written_to_the_sidecar(tmp_path):
-    """The config record's own underscore keys are editor state, filtered before writing."""
+def test_an_underscore_key_is_refused_at_the_sidecar_write(tmp_path):
+    """Editor state travels beside the config, so an underscore key reaching the writer
+    is undeclared: it is refused, never written and never silently dropped."""
+    from haute.errors import ConfigError
+
     config = {"path": "d.parquet", "_steps_error": "Step 1: Pick a column."}
-    rel_path = _write_node_config_sidecar(NodeType.DATA_INPUT, "test", config, tmp_path)
-    content = json.loads((tmp_path / rel_path).read_text())
-    assert "_steps_error" not in content
-    assert content["path"] == "d.parquet"
+    with pytest.raises(ConfigError, match="_steps_error"):
+        _write_node_config_sidecar(NodeType.DATA_INPUT, "test", config, tmp_path)
+    assert not (tmp_path / config_path_for_node(NodeType.DATA_INPUT, "test")).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -973,13 +975,12 @@ class TestSidecarPreparationEdgeCases:
         assert loaded["path"] is None
         assert loaded["inputType"] is None
 
-    def test_underscore_keys_filtered(self, tmp_path):
+    def test_underscore_keys_are_refused(self, tmp_path):
+        from haute.errors import ConfigError
+
         config = {"path": "d.parquet", "_internal": "secret", "_cache": 42}
-        _write_node_config_sidecar(NodeType.DATA_INPUT, "src", config, tmp_path)
-        loaded = load_node_config("config/data_input/src.json", base_dir=tmp_path)
-        assert loaded == {"path": "d.parquet"}
-        assert "_internal" not in loaded
-        assert "_cache" not in loaded
+        with pytest.raises(ConfigError, match="_cache"):
+            _write_node_config_sidecar(NodeType.DATA_INPUT, "src", config, tmp_path)
 
     def test_code_key_excluded(self, tmp_path):
         config = {"path": "m.pkl", "code": "x = 1"}

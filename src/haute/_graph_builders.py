@@ -151,7 +151,7 @@ def _resolve_node_skeleton(
         )
     decorator_kwargs = _get_decorator_kwargs(skeleton.decorator)
     try:
-        node_type, config = _resolve_node_config(
+        node_type, config, editor = _resolve_node_config(
             decorator_kwargs,
             skeleton.body,
             list(skeleton.param_names),
@@ -177,6 +177,7 @@ def _resolve_node_skeleton(
         "node_type": node_type,
         "description": skeleton.description,
         "config": config,
+        "editor": editor,
         "param_names": list(skeleton.param_names),
         "edge_param_names": list(skeleton.edge_param_names),
     }
@@ -349,6 +350,7 @@ def _build_rf_nodes(raw_nodes: list[dict], x_spacing: int = 300) -> list[GraphNo
                 description=n["description"],
                 nodeType=n["node_type"],
                 config=n["config"],
+                editor=n["editor"],
             ),
         )
         for i, n in enumerate(raw_nodes)

@@ -10,7 +10,7 @@ import os
 import re
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -71,6 +71,7 @@ from haute._types import (
     REQUEST_INPUT_NODE_TYPES,
     GlobalConstant,
     GraphNode,
+    NodeEditorState,
     NodeType,
     PipelineGraph,
 )
@@ -164,6 +165,7 @@ class _RecoveredCandidate:
     submodel_input_ports: tuple[str, ...] = ()
     submodel_output_ports: tuple[str, ...] = ()
     position_key: str | None = None
+    editor: NodeEditorState = field(default_factory=NodeEditorState)
 
 
 @dataclass(frozen=True, slots=True)
@@ -410,6 +412,7 @@ def _candidate_from_ast(
         node_type=raw_node["node_type"],
         description=str(raw_node["description"]),
         config=dict(raw_node["config"]),
+        editor=raw_node["editor"],
         config_reference=config_reference,
         param_names=tuple(str(value) for value in raw_node["param_names"]),
         edge_param_names=tuple(str(value) for value in raw_node["edge_param_names"]),
@@ -1076,6 +1079,7 @@ def _build_recovery_graph(
                 availability=availability[candidate.recovery_id],
                 display_position=position,
                 config=candidate.config,
+                editor=candidate.editor,
                 config_reference=candidate.config_reference,
                 function_name=(
                     resolved_identity.function_name if resolved_identity else candidate.authored_id
@@ -1259,6 +1263,7 @@ def _canonical_snapshot(
                 availability="ready",
                 display_position=positions.get(node.id, node.position),
                 config=dict(node.data.config),
+                editor=node.data.editor,
                 config_reference=identity.config_reference,
                 function_name=identity.function_name,
                 default_input_name=identity.default_input_name,

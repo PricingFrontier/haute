@@ -26,6 +26,7 @@ import { BreakpointGrid } from "./banding/BreakpointGrid"
 import { BandingHistogram } from "./banding/BandingHistogram"
 import useBandingStats from "./banding/useBandingStats"
 import { useGraph } from "../useGraph"
+import useUIStore from "../../stores/useUIStore"
 import { GenerateBandsDialog } from "./banding/GenerateBandsDialog"
 import { CategoricalValuePicker } from "./banding/CategoricalValuePicker"
 import { ImportParamValues } from "./banding/ImportParamValues"
@@ -59,6 +60,13 @@ export default function BandingEditor({
 }) {
   const factors = normaliseBandingFactors(config)
   const [activeIdx, setActiveIdx] = useState(0)
+  // The rules a factor had under each banding type, by factor position, so
+  // switching the type back restores them until the pipeline reloads. Editor
+  // state, never config: it lives in the UI store under the node's id, and a
+  // removal or reorder forgets it. An editor bound to no node keeps none.
+  const ruleStash = useUIStore((state) => (nodeId ? state.bandingRuleStash[nodeId] : undefined))
+  const setBandingRuleStash = useUIStore((state) => state.setBandingRuleStash)
+  const forgetBandingRuleStash = useUIStore((state) => state.forgetBandingRuleStash)
   const safeIdx = Math.max(0, Math.min(activeIdx, factors.length - 1))
   const factor = factors[safeIdx]
   const [showGenerateDialog, setShowGenerateDialog] = useState(false)
@@ -106,13 +114,9 @@ export default function BandingEditor({
 
   const switchBandingType = (newType: BandingMode) => {
     const current = factors[safeIdx]
-    const prevRules = { ...(current._prevRules || {}), [current.banding]: current.rules }
-    const restoredRules = prevRules[newType] || []
-    updateFactor(safeIdx, {
-      banding: newType,
-      rules: restoredRules,
-      _prevRules: prevRules,
-    })
+    const stash = { ...ruleStash?.[safeIdx], [current.banding]: current.rules }
+    if (nodeId) setBandingRuleStash(nodeId, safeIdx, stash)
+    updateFactor(safeIdx, { banding: newType, rules: stash[newType] ?? [] })
   }
 
   // A new factor is Numeric; choosing a column that is not numeric makes it
@@ -128,6 +132,7 @@ export default function BandingEditor({
   const removeFactor = (idx: number) => {
     if (factors.length <= 1) return
     const next = factors.filter((_, i) => i !== idx)
+    if (nodeId) forgetBandingRuleStash(nodeId)
     commitFactors(next)
     if (safeIdx >= next.length) setActiveIdx(next.length - 1)
   }
@@ -139,6 +144,7 @@ export default function BandingEditor({
     const next = [...factors]
     const [moved] = next.splice(from, 1)
     next.splice(to, 0, moved)
+    if (nodeId) forgetBandingRuleStash(nodeId)
     commitFactors(next)
     const current = safeIdx
     setActiveIdx(

@@ -1267,11 +1267,15 @@ def _project_files(root: Path) -> dict[str, bytes]:
     }
 
 
-def _reparsed_config(root: Path, node_id: str) -> dict:
+def _reparsed_data(root: Path, node_id: str):
     from haute.routes._helpers import parse_pipeline_to_graph
 
     graph = parse_pipeline_to_graph(root / "main.py")
-    return next(node for node in graph.nodes if node.id == node_id).data.config
+    return next(node for node in graph.nodes if node.id == node_id).data
+
+
+def _reparsed_config(root: Path, node_id: str) -> dict:
+    return _reparsed_data(root, node_id).config
 
 
 @pytest.mark.usefixtures("scorable_model")
@@ -1344,9 +1348,9 @@ class TestSteppedWrites:
         assert result.verification_tier == "schema"
         saved_source = (stepped_project / "main.py").read_text(encoding="utf-8")
         assert "df = df.with_columns(flag=pl.lit(1))" in saved_source
-        saved = _reparsed_config(stepped_project, node)
-        assert saved["steps"] == steps
-        assert "_steps_discarded" not in saved and "_steps_error" not in saved
+        saved = _reparsed_data(stepped_project, node)
+        assert saved.config["steps"] == steps
+        assert saved.editor.steps_discarded is None and saved.editor.steps_error is None
 
     @pytest.mark.parametrize("node", list(_STEPPED_BASES))
     async def test_the_advertised_new_logic_applies_verbatim(
@@ -1375,9 +1379,9 @@ class TestSteppedWrites:
         ).plan
         await service.apply("main.py", plan.plan_hash)
 
-        saved = _reparsed_config(stepped_project, node)
-        assert saved["steps"] == steps
-        assert "_steps_discarded" not in saved and "_steps_error" not in saved
+        saved = _reparsed_data(stepped_project, node)
+        assert saved.config["steps"] == steps
+        assert saved.editor.steps_discarded is None and saved.editor.steps_error is None
 
     async def test_a_data_input_added_with_a_path_saves_the_palette_input_type(
         self, stepped_project: Path

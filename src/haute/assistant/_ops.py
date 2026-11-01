@@ -333,15 +333,15 @@ def _require_landed(
                 where={"node": node.id, "field": key},
                 fix=f"Write {key!r} in the shape the node's descriptor card shows.",
             )
-    if "steps" in written and "_steps_error" in config:
+    if "steps" in written and node.data.editor.steps_error is not None:
         node_type = node.data.nodeType
         try:
             render_node_steps(node_type, config["steps"])
         except PolarsStepError as exc:
             step = _step_id_at(config["steps"], exc.step_index)
             detail, fix = _unrendered_steps(node_type, config["steps"], exc)
-        else:  # pragma: no cover - `_steps_error` is this rendering's own failure
-            raise AssertionError("A node carrying _steps_error rendered its steps")
+        else:  # pragma: no cover - `steps_error` is this rendering's own failure
+            raise AssertionError("A node with a steps error rendered its steps")
         raise AssistantOperationError(
             "op_not_applied",
             f"{operation} on node {node.id!r} did not land: {detail}",
@@ -2043,8 +2043,8 @@ def _authored_config_projection(
     A node holding a ``steps`` list is checked by its steps (its ``code`` is
     derived from them); any other node of a code-carrying type by its code as
     reparse extracts it. The projection is narrow on purpose: the save path
-    legitimately normalises other fields, and editor-state keys
-    (``_steps_error``, ``_steps_discarded``) are derived. Other types have none.
+    legitimately normalises other fields, and the editor state beside the config
+    is derived. Other types have none.
     """
 
     kind = _EXTRACTION_KIND_BY_CODE_TYPE.get(node_type)

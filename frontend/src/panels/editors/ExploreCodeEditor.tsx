@@ -1,3 +1,4 @@
+import type { NodeEditorState } from "../../types/node"
 import SteppedCodePane from "./shared/SteppedCodePane"
 import type { InputSource, OnReplaceConfig, OnUpdateConfig } from "./_shared"
 
@@ -20,6 +21,8 @@ export default function ExploreCodeEditor(props: {
   nodeId: string
   /** The node's own columns as its last preview recorded them. */
   nodeColumns?: { name: string; dtype: string }[]
+  /** The server's editor state for the node, beside its config. */
+  editor?: NodeEditorState
 }) {
   return <SteppedCodePane {...props} inputNames={[]} start="frame" codeHint="assign to df" />
 }

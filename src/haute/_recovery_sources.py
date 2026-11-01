@@ -155,9 +155,12 @@ def read_raw_node_settings(
             if body_dropped:
                 validate_step_container(raw, node_type, reference, function.name)
                 reconciled = raw
+                reason = ""
             else:
-                reconciled = _reconcile_steps(raw, node_type, params, reference, function.name)
-            reason = str(reconciled.get("_steps_discarded", ""))
+                reconciled, editor = _reconcile_steps(
+                    raw, node_type, params, reference, function.name
+                )
+                reason = editor.steps_discarded or ""
         except ConfigError as exc:
             reconciled = {key: value for key, value in raw.items() if key != "steps"}
             reason = f"{exc}. The node keeps the code in its body."

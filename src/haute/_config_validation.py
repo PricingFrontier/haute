@@ -393,17 +393,15 @@ CODE_CONFIG_KEYS: frozenset[str] = frozenset({"code"})
 def unrecognized_config_keys(node_type: NodeType, config: Mapping[str, Any]) -> list[str]:
     """Return, sorted, the top-level config keys *node_type* does not declare.
 
-    ``_``-prefixed editor state and the body code are not config keys. A node
-    type without a ``TypedDict`` (``SUBMODEL_PORT``) declares nothing to check.
+    The body code is not a config key, and editor state travels beside the
+    config (``NodeData.editor``), never in it, so an underscore-prefixed key is
+    as undeclared as any other. A node type without a ``TypedDict``
+    (``SUBMODEL_PORT``) declares nothing to check.
     """
     valid = VALID_KEYS.get(node_type)
     if valid is None:
         return []
-    return sorted(
-        key
-        for key in config
-        if not key.startswith("_") and key not in CODE_CONFIG_KEYS and key not in valid
-    )
+    return sorted(key for key in config if key not in CODE_CONFIG_KEYS and key not in valid)
 
 
 def reject_unrecognized_config_keys(

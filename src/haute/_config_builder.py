@@ -44,6 +44,7 @@ from haute._polars_steps import (
 from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import (
     COLUMN_CONFIG_KEYS,
+    NodeEditorState,
     NodeType,
 )
 from haute.errors import ConfigError, ContractMismatchError, ParseError
@@ -446,16 +447,16 @@ def _reconcile_steps(
     param_names: list[str],
     config_ref: str | None,
     func_name: str,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], NodeEditorState]:
     """Keep a stepped sidecar's ``steps`` only while they still render the body.
 
     The ``.py`` body is the runtime truth. A body that differs from the
     rendering of the persisted steps was edited by hand, so the steps are
-    discarded and the node becomes code-only: the config is marked with an
-    editor-state ``_steps_discarded`` reason and, for a transform (the one
-    optional sidecar), the sidecar path is kept in ``_discarded_sidecar`` so
-    the next save retires the file. An empty body with unrenderable steps is
-    how an incomplete step list is saved, so it keeps its steps.
+    discarded and the node becomes code-only: the returned editor state says
+    why (``steps_discarded``) and, for a transform (the one optional
+    sidecar), names the sidecar (``discarded_sidecar``) so the next save
+    retires the file. An empty body with unrenderable steps is how an
+    incomplete step list is saved, so it keeps its steps.
 
     The comparison is made on equal terms: the rendering is passed through
     the same extraction the body received (``normalise_user_code``), because
@@ -465,7 +466,7 @@ def _reconcile_steps(
     earlier layout or quoting of the same steps keeps them.
     """
     if "steps" not in config:
-        return config
+        return config, NodeEditorState()
     validate_step_container(config, node_type, config_ref, func_name)
     surface = stepped_surface_for(node_type)
     steps = config["steps"]
@@ -476,7 +477,7 @@ def _reconcile_steps(
         ).code
     except PolarsStepError as exc:
         if not body_code:
-            return config
+            return config, NodeEditorState()
         reason = f"the steps cannot be rendered ({exc})"
     else:
         kind = _EXTRACTION_KIND_BY_CODE_TYPE[node_type]
@@ -492,19 +493,18 @@ def _reconcile_steps(
             _same_program(normalise_user_code(code, kind=kind), body_code)
             for code in (rendered, earlier)
         ):
-            return config
+            return config, NodeEditorState()
         reason = "the function body no longer matches the rendered steps"
-    reconciled = {k: v for k, v in config.items() if k != "steps"}
-    reconciled["_steps_discarded"] = f"Steps were discarded because {reason}."
-    if node_type == NodeType.POLARS and config_ref is not None:
-        reconciled["_discarded_sidecar"] = config_ref
     logger.warning(
         "polars_steps_discarded",
         func_name=func_name,
         config_path=config_ref,
         reason=reason,
     )
-    return reconciled
+    return {k: v for k, v in config.items() if k != "steps"}, NodeEditorState(
+        steps_discarded=f"Steps were discarded because {reason}.",
+        discarded_sidecar=config_ref if node_type == NodeType.POLARS else None,
+    )
 
 
 def _resolve_node_config(
@@ -515,8 +515,8 @@ def _resolve_node_config(
     func_name: str = "",
     explicit_node_type: NodeType | None = None,
     edge_param_names: list[str] | None = None,
-) -> tuple[NodeType, dict[str, Any]]:
-    """Resolve node type and config from decorator kwargs.
+) -> tuple[NodeType, dict[str, Any], NodeEditorState]:
+    """Resolve node type, config and editor state from decorator kwargs.
 
     Node types with external JSON config must provide
     ``config="config/…/name.json"``. Node types without a config folder are
@@ -528,7 +528,8 @@ def _resolve_node_config(
     ``inputs`` to positional edge slots while *param_names* remains available
     for function-body extraction.
 
-    Returns ``(node_type, config_dict)``.
+    Returns ``(node_type, config_dict, editor_state)``: the editor state
+    records a stepped node whose steps the body no longer matches.
     """
     from haute._config_validation import reject_removed_node_reuse_kwargs
 
@@ -536,6 +537,7 @@ def _resolve_node_config(
     # Work on a copy to avoid mutating the caller's dict.
     decorator_kwargs = dict(decorator_kwargs)
     node_type = explicit_node_type or NodeType.POLARS
+    editor = NodeEditorState()
     _validate_node_function(
         node_type,
         body,
@@ -611,14 +613,16 @@ def _resolve_node_config(
             list(edge_param_names if edge_param_names is not None else param_names),
         )
         if node_type in STEPPED_NODE_TYPES:
-            config = _reconcile_steps(config, node_type, param_names, normalised_ref, func_name)
+            config, editor = _reconcile_steps(
+                config, node_type, param_names, normalised_ref, func_name
+            )
     elif has_config_folder(node_type):
         raise _sidecar_required_error(node_type, func_name)
     else:
         config = _build_node_config(node_type, decorator_kwargs, body, param_names)
         if node_type in STEPPED_NODE_TYPES:
             # Decorator-carried steps (Explore) reconcile with the body the same way.
-            config = _reconcile_steps(config, node_type, param_names, None, func_name)
+            config, editor = _reconcile_steps(config, node_type, param_names, None, func_name)
 
     if node_type == NodeType.LIVE_SWITCH:
         config["inputs"] = list(edge_param_names if edge_param_names is not None else param_names)
@@ -665,4 +669,4 @@ def _resolve_node_config(
         config["contract"] = user_contract
 
     reject_unrecognized_config_keys(node_type, config, node_label=func_name)
-    return node_type, config
+    return node_type, config, editor

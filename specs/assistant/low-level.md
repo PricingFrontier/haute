@@ -684,8 +684,8 @@ excluded count; its path and content never cross the tool boundary.
    takes the node's sidecar exactly as `collect_node_configs` would write it, and
    resolves the node's generated function through the parser's own node resolution
    (`_resolve_node_skeleton`, against a temporary directory holding only those
-   sidecars). The resolved config must hold the planned `steps` unchanged and no
-   `_steps_discarded` reason; otherwise the plan fails with `op_not_applied` naming the
+   sidecars). The resolved config must hold the planned `steps` unchanged, and the
+   resolved editor state no `steps_discarded` reason; otherwise the plan fails with `op_not_applied` naming the
    node and the parser's reason. This is the failure class where a rendered step list
    and its extracted body disagree and reparse silently turns the node code-only.
 
@@ -735,8 +735,8 @@ excluded count; its path and content never cross the tool boundary.
    `{"steps": steps}`, and any other node of those types to
    `{"code": normalise_user_code(code, kind)}` with its type's extraction kind, which is
    exactly what reparse returns for code-mode code. Derived and editor-only fields
-   (`code` rendered from steps, `_steps_error`, `_steps_discarded`,
-   `_discarded_sidecar`, positions) are outside the projection. A save whose parser
+   (`code` rendered from steps, positions, and the editor state beside the config) are
+   outside the projection. A save whose parser
    discarded the steps reparses without `steps`, so its projection becomes the code
    form and the postcondition fails. The dry-run check trivially holds on the planned
    graph; the post-save check on the reparsed graph reports a mismatch as a committed
@@ -1930,9 +1930,9 @@ the turn that follows.
   After each operation's `with_config`, every key the model wrote must hold the written
   value in the materialised config (a key written as `null` must be absent; for
   `edit_steps`, `steps` must hold the edited list), and when the operation wrote `steps`
-  the config must carry no `_steps_error`. Otherwise the plan fails with the stable code
+  the node's editor state must carry no `steps_error`. Otherwise the plan fails with the stable code
   `op_not_applied` naming the node and the key, or the step error with `where.step` set
-  to the id of the step it names. A palette-default node's own `_steps_error` (a
+  to the id of the step it names. A palette-default node's own steps error (a
   Transform's empty step list) is not the operation's write and does not trip this
   check. Both step-render refusals (`_ops._unrendered_steps`) tell a step the surface
   cannot hold from one that is only incomplete. Only the first points at the free-code
@@ -1954,7 +1954,7 @@ the turn that follows.
   facts, read from the saved config alone: its state
   (`stepped` when its `steps` list renders, `incomplete` when the list does not render
   or the node has neither steps nor code, `code` otherwise), whether the editor
-  discarded its steps (`_steps_discarded`, a code-mode node), one entry per step (its
+  discarded its steps (`steps_discarded` in its editor state, a code-mode node), one entry per step (its
   id, its kind when it is one of `haute._polars_steps.STEP_KINDS`, otherwise none, which
   `get_pipeline` reports as `null` and the brief as `unknown`, so an incomplete list's
   saved text cannot break a line; the input names a source, join or concat step reads;
@@ -2455,7 +2455,7 @@ fixture for route tests). The implemented coverage is:
   `[source, free_code]` on the named Transform, a palette-default Rating Step filled
   with `[free_code]`, and a Load File whose free-code step uses `obj` and a second
   input by name each apply in one dry-run, reparse with their steps and no
-  `_steps_error` or `_steps_discarded`, and execute on fixture data. Project evidence
+  steps error or discarded steps, and execute on fixture data. Project evidence
   coverage pins a dataset changed after retrieval failing the dry-run with
   `stale_project_evidence` naming the file, and a dataset renamed after inspection
   blocking the dry-run with `project_source_missing` naming it until `find_data` runs
@@ -2602,7 +2602,7 @@ fixture for route tests). The implemented coverage is:
   same-length lists element by element as subsets (a key an element leaves out is free; a list
   of another length, order or shape fails at its path) and names the first differing path, the collateral layer reports a changed or removed pre-existing node
   unless the turn allows it, and the editor layer reports a new stepped-type node not authored as
-  steps or carrying `_steps_error`, while a pre-existing code-mode node is not judged. A null
+  steps or whose steps do not render, while a pre-existing code-mode node is not judged. A null
   expected target handle matches an edge by source/target endpoints for ordinary single-input
   nodes; non-null handles remain exact port assertions. `_graph_structure` is pinned directly
   against the compact renderer's own output, because reading a handle under a name the renderer

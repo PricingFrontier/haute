@@ -625,7 +625,9 @@ class TestValidateDeclaredConfigKeys:
         assert "child_transform" in exc_info.value.detail
         assert "stale" in exc_info.value.detail
 
-    def test_editor_state_keys_do_not_block_a_save(self, tmp_path: Path) -> None:
+    def test_an_underscore_config_key_is_undeclared_like_any_other(self, tmp_path: Path) -> None:
+        """Editor state travels beside the config (`NodeData.editor`), so an
+        underscore key inside it is refused rather than silently dropped."""
         graph = _make_graph(
             _make_node(
                 "out",
@@ -635,7 +637,11 @@ class TestValidateDeclaredConfigKeys:
             ),
         )
 
-        SavePipelineService._validate_declared_config_keys(graph)
+        with pytest.raises(RequestRefusedError) as exc_info:
+            SavePipelineService._validate_declared_config_keys(graph)
+
+        assert exc_info.value.status_code == 400
+        assert "_columns" in exc_info.value.detail
 
 
 class TestValidateUniqueSanitizedNamesRecursiveScope:

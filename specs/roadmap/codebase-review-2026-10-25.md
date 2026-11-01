@@ -331,7 +331,7 @@ root used by the deploy modules, the underwriter app and the server
 three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
 the hand-maintained
 browser contract (`API-R03`); the cwd-dependent resolvers in the routes and the
-parser (`PCFG-R04`), editor state inside the config (`PCFG-R08`), the per-type
+parser (`PCFG-R04`), the per-type
 validators and branches (`PCFG-R07`, `PCFG-R09`); name-violation reporting
 (`NAME-09`); the test-only config helpers and
 event-bus hooks (`ENGQ-R01`); the optimiser's unshown solve-memory forecast (`OPT-W02`) and its frontier
@@ -345,15 +345,14 @@ catalog's hand tables and
 key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
 (`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the Edge
 Join as a boundary (`EXEC-R15`); the pivot registry at shutdown (`ROAD-WORKER-06`); the
-browser's hand-written contract mirrors (`API-R03`), `hashConfig`'s exclusion
-list (`PCFG-R08`), the results store's optimiser logic (`FSH-R03`) and the dead
+browser's hand-written contract mirrors (`API-R03`), the results store's optimiser logic (`FSH-R03`) and the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
 (`ENGQ-R01`); the editors' unused barrel and unlisted `@lezer/highlight`
-(`ENGQ-R01`), Banding's `_prevRules` stash (`PCFG-R08`) and the API Input label
+(`ENGQ-R01`) and the API Input label
 rule (`NAME-09`); the dead
 `submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
-utilities (`ENGQ-R01`); Banding's `_id` and the step error string inside the config
-(`PCFG-R08`), the editors' barrels (`ENGQ-R01`), the pivot editor writing the
+utilities (`ENGQ-R01`); Banding's `_id` inside the config (`FNED-R07`), the editors'
+barrels (`ENGQ-R01`), the pivot editor writing the
 fields the backend defaults (`EDA-R02`); the panel half of the GPU loss-history
 numbering and the GLM `best_iteration` (`MOD-R05`) and a second fabricated
 train-failure sentinel (`FSH-R06`); the browser's frontier
@@ -363,8 +362,7 @@ panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and
 the app shell, the
 chart theme observer written twice (`EDA-R03`), the params-folder listing in the
 Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`), browser-locale dates (`FSH-R08`), the bootstrap without
-a deadline (`FSH-R05`), Ctrl+S inside a code box (`FSH-R07`), editor state inside
-node data (`PCFG-R08`) and the
+a deadline (`FSH-R05`), Ctrl+S inside a code box (`FSH-R07`) and the
 modelling pane badges (`FMOU-R03`); in the tests, scripts and CI, the floating
 action tags in the generated workflows (`CLI-R06`), the campaign-named test modules
 (`ENGQ-R05`), the test-only reset hooks in production code (`ENGQ-R01`), and the

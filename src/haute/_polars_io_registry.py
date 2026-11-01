@@ -73,10 +73,6 @@ _IO_UNIVERSAL_KEYS = {
     "column_renames",
     "contract",
 }
-#: Editor-state keys a stepped Data Input carries in memory (never persisted
-#: to its sidecar): the node data model's render failure and the parser's
-#: discard reason.
-_STEPPED_EDITOR_STATE_KEYS = {"_steps_error", "_steps_discarded"}
 
 
 def format_group(fmt: IoFormat) -> IoGroup:
@@ -482,17 +478,13 @@ def _validated_data_input(
     }:
         raise PolarsIoConfigError(f"Unknown inputType {input_type!r}.")
 
-    common = (
-        {
-            "inputType",
-            "format",
-            "arguments",
-            "code",
-            "steps",
-        }
-        | _IO_UNIVERSAL_KEYS
-        | _STEPPED_EDITOR_STATE_KEYS
-    )
+    common = {
+        "inputType",
+        "format",
+        "arguments",
+        "code",
+        "steps",
+    } | _IO_UNIVERSAL_KEYS
     polars_common = common | {"mode"}
     if input_type == "databricks":
         _reject_inactive_fields(
@@ -506,8 +498,7 @@ def _validated_data_input(
                 "code",
                 "steps",
             }
-            | _IO_UNIVERSAL_KEYS
-            | _STEPPED_EDITOR_STATE_KEYS,
+            | _IO_UNIVERSAL_KEYS,
             discriminant="inputType",
             value=input_type,
         )
