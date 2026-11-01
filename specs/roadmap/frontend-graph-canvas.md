@@ -15,37 +15,11 @@ packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FGC-R09 | Planned | P2 | A blocked node downstream of an unavailable source opens its recovery inspector without running healthy-editor input derivation. |
 | FGC-R10 | Planned | P1 | Submodel drill-in and breadcrumb exit isolate or reset Undo/Redo history and dirty baselines per navigation level, and close side panels and stale traces on entry and exit. |
 | FGC-R11 | Planned | P2 | Global Constants edits participate in Undo/Redo history and are restored by `undo()` and `redo()`, and `nodeConstantReads` scans expression strings inside structured Polars steps. |
 | FGC-R12 | Planned | P2 | `previewPortLabel` honours `chosenFrame` on multi-table `apiInput` and `workbenchInput` nodes, `computeStructuralFingerprint` and `computePanelContextFingerprint` include `submodels` and submodel boundary `ports`, `Ctrl+V` refuses `submodel` and `submodelPort` nodes, and `Escape` in a non-empty `SearchField` does not close an enclosing `ModalShell`. |
 
 ## Planned improvements
-
-### FGC-R09 — Recovery inspection does not require executable input identities
-
-**Why:** NodePanel computes input-source signatures before its recovery early return.
-A real backend editor document for an unknown decorator retains the source as unavailable
-with no default input identity and its downstream node as blocked. Parsing/adapting that
-exact DTO and rendering the real NodePanel throws from edgeInputName before RecoveryNodePanel
-can appear. This defeats the degraded-document inspection workflow.
-
-**Plan:** Separate the recovery/diagnostic panel boundary from healthy editor derivation,
-preserving React hook ordering without requiring unavailable sources to supply executable
-identities. Use the server recovery metadata for diagnostics and keep strict identity
-refusal in the actual executable path; do not invent a fallback input name.
-
-**Acceptance:** Load a real degraded document with an unknown source decorator and blocked
-downstream edge, adapt it through the browser parser and open the downstream inspector
-without an exception. It shows the attributed diagnostic/blocking path and does not mount
-a normal editor or trigger execution. Cover unavailable and scoped-editable cases according
-to their capability contract; healthy nodes keep strict input identity validation.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/NodePanel.tsx::NodePanelContent` (input-identity resolution); `frontend/src/panels/NodePanel.tsx::NodePanelContent` (recovery availability guard);
-`frontend/src/utils/apiInputPorts.ts::edgeInputName`; real load_pipeline_editor_document -> browser
-adapter -> NodePanel witness with no frontend mocks.
 
 ### FGC-R10 — Submodel navigation isolates Undo/Redo history, dirty baselines, side panels and trace state
 **Why:** `handleDrillIntoSubmodel` and `handleBreadcrumbNavigate` in

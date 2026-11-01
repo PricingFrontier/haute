@@ -1078,12 +1078,63 @@ function NodeEditorBody({
 
 type ActiveNodePanelProps = Omit<NodePanelProps, "node"> & { node: SimpleNode }
 
+function hasResolvableUpstreamIdentities(
+  nodeId: string,
+  allNodes: readonly SimpleNode[],
+  edges: readonly SimpleEdge[],
+  submodels: Record<string, unknown> | undefined,
+): boolean {
+  const nodeMap = Object.fromEntries(allNodes.map((n) => [n.id, n]))
+  try {
+    for (const edge of edges) {
+      if (edge.target !== nodeId) continue
+      const sourceNode = nodeMap[edge.source]
+      if (!sourceNode) return false
+      edgeInputName(edge, sourceNode, submodels)
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
 const NodePanel = memo(function NodePanel(props: NodePanelProps) {
   if (!props.node) return null
-  return <NodePanelContent key={props.node.id} {...props} node={props.node} />
+  return <NodePanelBoundary key={props.node.id} {...props} node={props.node} />
 })
 
 export default NodePanel
+
+function NodePanelBoundary(props: ActiveNodePanelProps) {
+  const { node, onClose, scopedSave, onRemoveUnavailableNode } = props
+  const { allNodes, edges, submodels } = useGraph()
+  const documentDiagnostics = useDocumentStatusStore((s) => s.diagnostics)
+  const canRepair = useDocumentStatusStore((s) => s.capabilities?.can_repair === true)
+  const recoveryAvailability = (node.data as HauteNodeData)._loadAvailability ?? "ready"
+  const scopedEditable = (node.data as HauteNodeData)._scopedEditable === true
+  const canMountScopedEditor =
+    recoveryAvailability === "blocked" &&
+    scopedEditable &&
+    Boolean(scopedSave) &&
+    hasResolvableUpstreamIdentities(node.id, allNodes, edges, submodels)
+  if (
+    recoveryAvailability === "unavailable" ||
+    (recoveryAvailability === "blocked" && !canMountScopedEditor)
+  ) {
+    return (
+      <RecoveryNodePanel
+        node={node}
+        availability={recoveryAvailability}
+        diagnostics={documentDiagnostics}
+        submodels={submodels}
+        canRepair={canRepair}
+        onClose={onClose}
+        onRemoveUnavailableNode={onRemoveUnavailableNode}
+      />
+    )
+  }
+  return <NodePanelContent {...props} />
+}
 
 function NodePanelContent({
   node,
@@ -1102,7 +1153,6 @@ function NodePanelContent({
   readOnly = false,
   documentReadOnly = false,
   scopedSave,
-  onRemoveUnavailableNode,
 }: ActiveNodePanelProps) {
   const [scopedSaving, setScopedSaving] = useState(false)
   // The editor freezes while a scoped save is in flight so keystrokes cannot
@@ -1148,8 +1198,6 @@ function NodePanelContent({
     setOptimiserPaneIssues({ nodeId, panes })
   }, [])
   const activeSource = useSettingsStore((s) => s.activeSource)
-  const documentDiagnostics = useDocumentStatusStore((s) => s.diagnostics)
-  const canRepair = useDocumentStatusStore((s) => s.capabilities?.can_repair === true)
   const reservedApiInputFrameLabels = useDocumentStatusStore(
     (s) => s.capabilities?.reserved_api_input_frame_labels,
   )
@@ -1263,7 +1311,6 @@ function NodePanelContent({
     [config, node.id]
   )
 
-  // Compute input sources (must be before early return to satisfy hook ordering rules)
   const nodeMap = useMemo(() => Object.fromEntries(allNodes.map((n) => [n.id, n])), [allNodes])
   const selectedNodeId = node.id
   const upstreamEdges = useMemo(
@@ -1297,23 +1344,6 @@ function NodePanelContent({
     [exploreProfile, upstreamColumns],
   )
   const recoveryAvailability = (node.data as HauteNodeData)._loadAvailability ?? "ready"
-  const scopedEditable = (node.data as HauteNodeData)._scopedEditable === true
-  if (
-    recoveryAvailability === "unavailable" ||
-    (recoveryAvailability === "blocked" && !(scopedEditable && scopedSave))
-  ) {
-    return (
-      <RecoveryNodePanel
-        node={node}
-        availability={recoveryAvailability}
-        diagnostics={documentDiagnostics}
-        submodels={submodels}
-        canRepair={canRepair}
-        onClose={onClose}
-        onRemoveUnavailableNode={onRemoveUnavailableNode}
-      />
-    )
-  }
 
   const nodeType = effectiveNodeType(node)
   const isKnownNodeType = Object.hasOwn(NODE_TYPE_META, nodeType)

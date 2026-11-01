@@ -859,13 +859,14 @@ candidate, with the error toast.
 
 ## Failure model
 
-> NOTE: A blocked node after an unavailable source can currently throw during
-> healthy-editor input derivation before its recovery inspector renders.
-> [FGC-R09](../roadmap/frontend-graph-canvas.md#fgc-r09--recovery-inspection-does-not-require-executable-input-identities) owns the recovery boundary.
-
 > NOTE: Distinct parsed or pasted connections can share an id.
 > [NAME-10](../roadmap/name-collisions.md#name-10--every-distinct-connection-has-a-distinct-identity) owns this gap.
 
+- `NodePanel` separates the recovery diagnostic boundary from healthy editor input-identity
+  derivation: inspecting an `unavailable` node, or a `blocked` node that is not actively
+  scoped-editing with resolvable upstream input identities, renders `RecoveryNodePanel`
+  before mounting `NodePanelContent`, while `ready` nodes and mounted `scoped_editable`
+  editors enforce strict `edgeInputName` validation.
 - `useGraph()` called outside a `<GraphProvider>` throws a plain `Error`
   naming `GraphProvider` in its message. `App.tsx` wraps the node panel in
   an `ErrorBoundary` (`name="NodePanel"`), so this surfaces as a caught

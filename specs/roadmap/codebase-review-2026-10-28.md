@@ -92,7 +92,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P2 | Deployment proves a literal-only select preserves request order, then fails a three-quote request with one row. | [EXEC-R09](execution-engine.md#exec-r09--column-free-selects-are-not-row-local), extended | Actual row proof and score_graph. Existing chunk row-count corruption stays P1; this added deployment failure is loud. |
 | P2 | Late GLM dispersion estimate for A overwrites manually chosen theta 7 in newer target B with 3. | [FMOU-R06](frontend-modelling-optimiser-ui.md#fmou-r06--dispersion-estimates-belong-to-the-initiating-training-draft) | Actual GLMTargetConfig, only the estimate promise substituted. |
 | P2 | JSON omits an all-null nested pricing object while NDJSON returns pricing:null for the same quote. | [DEP-R17](deploy.md#dep-r17--json-and-ndjson-preserve-the-same-output-document) | Real generated FastAPI app, request shredder, scorer, assembler and materializer; no scorer mock. Batch variant is source-supported. |
-| P2 | A real degraded document's blocked downstream node throws before its recovery inspector because its unavailable parent has no executable input identity. | [FGC-R09](frontend-graph-canvas.md#fgc-r09--recovery-inspection-does-not-require-executable-input-identities) | Real backend recovery DTO, browser parser/adapter, GraphProvider and NodePanel; no frontend mocks. |
 
 The first implementation pass should address the P1 packages before opportunistic
 cleanup. Each package includes the expected behaviour, scope, regression scenarios

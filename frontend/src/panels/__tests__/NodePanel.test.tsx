@@ -13,6 +13,8 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
+import { adaptPipelineEditorDocument, parsePipelineEditorDocument } from "../../types/pipelineDocument"
+import { toSimpleEdge, toSimpleNode } from "../../hooks/usePanelGraphContext"
 import { apiInputFrameLabels } from "../../utils/apiInputPorts"
 
 const { transformEditorProps, steppedCodePaneProps, edgeJoinEditorProps, exploreCodeEditorProps, explorePivotsConfigProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, submodelPortEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps, fetchExplorePivotMembers, simulatePickerRefetch } = vi.hoisted(() => ({
@@ -3339,5 +3341,140 @@ describe("scoped editing in degraded documents", () => {
     fireEvent.click(screen.getByRole("button", { name: "Dismiss recovery summary" }))
     expect(Object.keys(useRecoverySummaryStore.getState().summaries)).toHaveLength(0)
     expect(screen.queryByText(/Recovered: 1 retained/)).not.toBeInTheDocument()
+  })
+
+  it("opens the recovery inspector for a blocked downstream node fed by an unknown source decorator without executable input identities", () => {
+    const rawDto = makePipelineEditorDocument({
+      load_status: "degraded",
+      diagnostics: [
+        {
+          diagnostic_id: "diag_unknown_decorator",
+          code: "unknown_decorator",
+          severity: "error",
+          scope: "node",
+          message: "Decorator '@pipeline.unknown_source' is not a supported Haute node type.",
+          element_id: "source_a",
+          source_file: "main.py",
+          source_span: null,
+          remediation: "Replace the decorator with a supported Haute node decorator.",
+          incident_id: "inc-unknown-1",
+        },
+      ],
+      recoveryNodes: [
+        {
+          recovery_id: "source_a",
+          authored_id: "source_a",
+          label: "source_a",
+          decorator_name: "unknown_source",
+          node_type: null,
+          description: "",
+          availability: "unavailable",
+          display_position: { x: 0, y: 0 },
+          config: {},
+          config_reference: null,
+          function_name: "source_a",
+          default_input_name: null,
+          source_handle_input_names: {},
+          source_file: "main.py",
+          source_span: null,
+          diagnostic_ids: ["diag_unknown_decorator"],
+          blocking_path: [],
+          scoped_editable: false,
+        },
+        {
+          recovery_id: "downstream",
+          authored_id: "downstream",
+          label: "downstream",
+          decorator_name: "polars",
+          node_type: "polars",
+          description: "",
+          availability: "blocked",
+          display_position: { x: 300, y: 0 },
+          config: { code: "df = source_a" },
+          config_reference: null,
+          function_name: "downstream",
+          default_input_name: "downstream",
+          source_handle_input_names: {},
+          source_file: "main.py",
+          source_span: null,
+          diagnostic_ids: ["diag_unknown_decorator"],
+          blocking_path: ["source_a", "downstream"],
+          scoped_editable: true,
+        },
+      ],
+      recoveryEdges: [
+        {
+          recovery_id: "e_source_a_downstream",
+          source_recovery_id: "source_a",
+          target_recovery_id: "downstream",
+          source_authored_id: "source_a",
+          target_authored_id: "downstream",
+          source_handle: null,
+          target_handle: null,
+          input_name: null,
+          availability: "blocked",
+          source_span: null,
+          diagnostic_ids: ["diag_unknown_decorator"],
+          blocking_path: ["source_a", "downstream"],
+        },
+      ],
+    })
+    const parsedDoc = parsePipelineEditorDocument(rawDto)
+    useDocumentStatusStore.getState().loadDocumentStatus(parsedDoc)
+    const adapted = adaptPipelineEditorDocument(parsedDoc)
+    const simpleNodes = adapted.nodes.map(toSimpleNode)
+    const simpleEdges = adapted.edges.map(toSimpleEdge)
+    const downstreamNode = simpleNodes.find((n) => n.id === "downstream")!
+
+    renderPanel({
+      node: downstreamNode,
+      allNodes: simpleNodes,
+      edges: simpleEdges,
+      scopedSave: vi.fn(async () => ({ ok: true as const })),
+    })
+
+    const diagnosticsPanel = screen.getByTestId("node-recovery-diagnostics")
+    expect(diagnosticsPanel).toBeInTheDocument()
+    expect(diagnosticsPanel).toHaveTextContent("source_a → downstream")
+    expect(diagnosticsPanel).toHaveTextContent(
+      "Decorator '@pipeline.unknown_source' is not a supported Haute node type.",
+    )
+    expect(screen.queryByTestId("node-panel-editor")).not.toBeInTheDocument()
+  })
+
+  it("keeps strict input identity validation for ready nodes", () => {
+    const brokenSource: SimpleNode = {
+      id: "source_a",
+      data: {
+        label: "source_a",
+        description: "",
+        nodeType: "polars",
+        config: {},
+        _defaultInputName: null,
+      },
+    }
+    const readyDownstream = makeNode({
+      id: "downstream",
+      data: {
+        label: "downstream",
+        description: "",
+        nodeType: "polars",
+        config: {},
+        _loadAvailability: "ready",
+      },
+    })
+    const edge: SimpleEdge = {
+      id: "e_source_a_downstream",
+      source: "source_a",
+      target: "downstream",
+    }
+
+    expect(() =>
+      renderPanel({
+        node: readyDownstream,
+        allNodes: [brokenSource, readyDownstream],
+        edges: [edge],
+      }),
+    ).toThrow(/has no authoritative default input identity/)
   })
 })
