@@ -509,8 +509,9 @@ def image_reference(project_dir: Path) -> str:
     """The image ``haute app build --push`` publishes for the project at *project_dir*:
     ``<registry>/<name>:<short commit>``, the registry ``[deploy.container] registry`` names
     and the project's name (``[deploy] model_name``'s default, which a workbench project never
-    sets). Raises :class:`WorkbenchAppError` for a project naming no registry, since a
-    published image needs one, or a name an image cannot take."""
+    sets) in lower case, since Docker takes no capital in a repository's name. Raises
+    :class:`WorkbenchAppError` for a project naming no registry, since a published image needs
+    one, or a name an image cannot take."""
     from haute.deploy._config import DeployConfig
     from haute.deploy._container import _git_sha_short, _validate_model_name
 
@@ -525,7 +526,7 @@ def image_reference(project_dir: Path) -> str:
         _validate_model_name(config.model_name)
     except ValueError as exc:
         raise WorkbenchAppError(f"The project's name cannot name an image: {exc}") from exc
-    return f"{registry}/{config.model_name}:{_git_sha_short()}"
+    return f"{registry}/{config.model_name.lower()}:{_git_sha_short()}"
 
 
 def push_image(release_dir: Path, reference: str) -> str:

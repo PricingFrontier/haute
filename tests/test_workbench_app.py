@@ -1267,6 +1267,24 @@ def test_haute_app_build_push_publishes_the_image_and_prints_its_digest_last(
     assert "--image and --push each build the image" in both.output
 
 
+def test_the_published_image_is_named_in_lower_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute.deploy._container as container
+
+    monkeypatch.setattr(container, "_git_sha_short", lambda: "abc1234")
+    (tmp_path / "main.py").write_text('import haute\n\npipeline = haute.Pipeline("p")\n')
+    toml = tmp_path / "haute.toml"
+    toml.write_text('[project]\nname = "Motor_Pricing"\npipeline = "main.py"\n')
+    with pytest.raises(WorkbenchAppError, match=r"\[deploy.container\] registry is empty"):
+        workbench_app.image_reference(tmp_path)
+
+    toml.write_text(toml.read_text() + '\n[deploy.container]\nregistry = "acr.example.io/"\n')
+
+    # Docker takes no capital in a repository's name.
+    assert workbench_app.image_reference(tmp_path) == "acr.example.io/motor_pricing:abc1234"
+
+
 @pytest.mark.parametrize(
     ("docker", "said"),
     [

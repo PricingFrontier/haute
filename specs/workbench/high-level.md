@@ -1250,10 +1250,11 @@ Out of scope:
   Alembic, with the driver of each provider the release's environments declare (pyodbc and
   Microsoft ODBC Driver 18 for `sqlserver`, psycopg for `postgresql`, and azure-identity
   for a Microsoft Entra ID sign-in), pinned as the scoring runtime is, nothing more.
-  `haute app build --push` builds that image as `<registry>/<project name>:<short commit>`,
-  the registry `[deploy.container] registry` names, which it refuses to run without, pushes
-  it there and prints, as its last line, the reference by digest the registry holds for it,
-  `<registry>/<project name>@sha256:...`: what the workbench's CI publishes once per release
+  `haute app build --push` builds that image as `<registry>/<name>:<short commit>`, the
+  registry `[deploy.container] registry` names, which it refuses to run without, and the
+  project's name in lower case, as Docker takes a repository's, pushes it there and prints,
+  as its last line, the reference by digest the registry holds for it,
+  `<registry>/<name>@sha256:...`: what the workbench's CI publishes once per release
   and what a host is pointed at. The app
   serves the sheets on a page of their own, drawn as Preview draws them, with the same
   components filled from the app's routes rather than the builder's and nothing of the

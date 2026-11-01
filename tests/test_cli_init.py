@@ -1264,6 +1264,8 @@ class TestInitQuestions:
         assert STORE_CHOICES == WORKBENCH_STORES == tuple(_STORE_LABELS)
         assert set(STORE_CHOICES) <= STORE_PROVIDERS
         assert set(SIGN_IN_CHOICES) == set(CONNECTION_SIGN_INS) == set(_SIGN_IN_LABELS)
+        # The question lists them in this order.
+        assert SIGN_IN_CHOICES == ("password", "entra", "service-principal")
         assert TARGET_CHOICES == tuple(TARGETS) == tuple(_TARGET_LABELS)
 
 
