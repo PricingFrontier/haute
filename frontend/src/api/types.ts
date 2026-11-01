@@ -1278,6 +1278,8 @@ export type OptimiserStatusResponse = Omit<
 export type {
   CatalogItem as DatabricksCatalog,
   CatalogListResponse as DatabricksCatalogsResponse,
+  DatabricksConnectionResponse,
+  DatabricksTestConnectionResponse,
   SchemaItem as DatabricksSchema,
   SchemaListResponse as DatabricksSchemasResponse,
   TableItem as DatabricksTable,

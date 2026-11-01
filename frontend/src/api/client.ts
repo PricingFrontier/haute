@@ -17,8 +17,10 @@ import type {
   CacheNodesResponse,
   CacheUsageResponse,
   DatabricksCatalogsResponse,
+  DatabricksConnectionResponse,
   DatabricksSchemasResponse,
   DatabricksTablesResponse,
+  DatabricksTestConnectionResponse,
   DatabricksWarehousesResponse,
   DissolveSubmodelResponse,
   EditorIdentityBatchRequest,
@@ -1858,6 +1860,22 @@ export function getTables(
 ): Promise<DatabricksTablesResponse> {
   return request<unknown>(`/api/databricks/tables?catalog=${encodeURIComponent(catalog)}&schema=${encodeURIComponent(schema)}`, options)
     .then(async (data) => expectGeneratedContract("TableListResponse", (await databricksValidators()).validateTableListResponse, data))
+}
+
+/** How the server signs in to Databricks, from its environment alone: never signs in. */
+export function getDatabricksConnection(
+  options?: { signal?: AbortSignal },
+): Promise<DatabricksConnectionResponse> {
+  return request<unknown>("/api/databricks/connection", options)
+    .then(async (data) => expectGeneratedContract("DatabricksConnectionResponse", (await databricksValidators()).validateDatabricksConnectionResponse, data))
+}
+
+/** Sign in and ask the workspace who haute is; a browser sign-in opens the browser here. */
+export function testDatabricksConnection(
+  options?: { signal?: AbortSignal },
+): Promise<DatabricksTestConnectionResponse> {
+  return post<unknown>("/api/databricks/test-connection", {}, options ?? {})
+    .then(async (data) => expectGeneratedContract("DatabricksTestConnectionResponse", (await databricksValidators()).validateDatabricksTestConnectionResponse, data))
 }
 
 // ---------------------------------------------------------------------------

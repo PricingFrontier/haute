@@ -1,8 +1,119 @@
 import { useState, useRef, useEffect, useCallback } from "react"
-import { Check, ChevronDown, Loader2, RefreshCw } from "lucide-react"
-import { getWarehouses, getCatalogs, getSchemas, getTables } from "../../api/client"
+import { Check, CheckCircle2, ChevronDown, Loader2, RefreshCw, TriangleAlert } from "lucide-react"
+import {
+  getWarehouses,
+  getCatalogs,
+  getSchemas,
+  getTables,
+  getDatabricksConnection,
+  testDatabricksConnection,
+} from "../../api/client"
+import type {
+  DatabricksConnectionResponse,
+  DatabricksTestConnectionResponse,
+} from "../../api/types"
 import { apiErrorMessage } from "../../api/errors"
 import { CommittedTextField } from "../../components/form"
+
+// ─── DatabricksConnection ─────────────────────────────────────────
+//
+// How this server signs in to Databricks, and a Test that signs in and asks
+// the workspace who Haute is. The connection answer is read from the server's
+// environment alone and never signs in, so showing the editor cannot open a
+// browser; only Test (or Browse, or a fetch) does.
+
+/** The sign-in form in words. Never a host or a secret: the answer carries neither. */
+function describeDatabricksConnection(connection: DatabricksConnectionResponse): string {
+  if (!connection.configured) return connection.detail || "Not configured"
+  switch (connection.auth_mode) {
+    case "pat":
+      return "Personal access token (DATABRICKS_TOKEN)"
+    case "service_principal":
+      return "Service principal (DATABRICKS_CLIENT_ID)"
+    case "cli_login":
+      return "Databricks CLI sign-in (DATABRICKS_AUTH_TYPE)"
+    case "browser_login":
+      return "Browser sign-in (DATABRICKS_AUTH_TYPE)"
+    case "profile":
+      return connection.sdk_auth_type
+        ? `Profile ${connection.profile} (${connection.sdk_auth_type})`
+        : `Profile ${connection.profile}`
+    default:
+      return "Not configured"
+  }
+}
+
+export function DatabricksConnection() {
+  const [connection, setConnection] = useState<DatabricksConnectionResponse | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [testing, setTesting] = useState(false)
+  const [result, setResult] = useState<DatabricksTestConnectionResponse | null>(null)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    getDatabricksConnection({ signal: controller.signal })
+      .then((data) => setConnection(data))
+      .catch((e: Error) => {
+        if (!controller.signal.aborted) setLoadError(apiErrorMessage(e))
+      })
+    return () => controller.abort()
+  }, [])
+
+  const runTest = () => {
+    setTesting(true)
+    setResult(null)
+    testDatabricksConnection()
+      .then(setResult)
+      .catch((e: Error) =>
+        setResult({ ok: false, identity: "", sdk_auth_type: "", detail: apiErrorMessage(e) }),
+      )
+      .finally(() => setTesting(false))
+  }
+
+  const configured = connection?.configured ?? false
+  const summary = loadError ?? (connection ? describeDatabricksConnection(connection) : "Checking…")
+
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>Connection</label>
+        <button
+          type="button"
+          onClick={runTest}
+          disabled={testing || !configured}
+          className="px-2 py-0.5 rounded text-[10px] font-medium transition-colors flex items-center gap-1 disabled:opacity-40"
+          style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}
+        >
+          {testing ? <Loader2 size={10} className="animate-spin" aria-hidden="true" /> : null}
+          Test
+        </button>
+      </div>
+      <p
+        data-testid="databricks-connection"
+        className="mt-1 text-xs whitespace-pre-line"
+        style={{ color: configured ? 'var(--text-primary)' : 'var(--warning-strong)' }}
+      >
+        {summary}
+      </p>
+      {result && (
+        <p
+          data-testid="databricks-connection-test"
+          className="mt-1 flex items-center gap-1 text-[11px]"
+          style={{ color: result.ok ? 'var(--success)' : 'var(--warning-strong)' }}
+        >
+          {result.ok ? (
+            <CheckCircle2 size={12} aria-hidden="true" />
+          ) : (
+            <TriangleAlert size={12} aria-hidden="true" />
+          )}
+          {result.ok
+            ? `Signed in as ${result.identity}${result.sdk_auth_type ? ` (${result.sdk_auth_type})` : ""}`
+            : result.detail}
+        </p>
+      )}
+    </div>
+  )
+}
 
 // ─── WarehousePicker ──────────────────────────────────────────────
 //
