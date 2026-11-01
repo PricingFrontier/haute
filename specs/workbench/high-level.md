@@ -179,7 +179,9 @@ Out of scope:
   `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` and `AZURE_SUBSCRIPTION_ID` unset (each named), and
   an app that does not keep one revision active at a time (single revision mode), run one
   container, take requests at a public address and sign requests in through Microsoft Entra
-  ID, or for which the service principal those variables name cannot get a token. The
+  ID, an app with no room for the record (below: Azure takes 50 tags on a resource and 256
+  characters in a tag's value, so an image reference longer than that is refused too), or one
+  for which the service principal those variables name cannot get a token. The
   project's IT team gives that service principal the Container Apps Contributor role on the
   apps (beside AcrPush on the registry) and lets it sign in to them through Azure's built-in
   authentication, which takes a token for the app registration's client ID. `--image` names
@@ -189,11 +191,13 @@ Out of scope:
 
   A rollout takes a maintenance window: every active revision is deactivated, so the old
   release stops, then the container's image is set to the new one with a revision suffix of
-  its own, so a new revision always starts, and traffic is never split between two releases.
+  its own (the time and a random part, so no two rollouts share one), so a new revision always
+  starts, and traffic is never split between two releases.
   Azure's update and the new revision's provisioning together have ten minutes; a revision
   that fails to provision, or whose running state is failed or degraded, fails. An app whose
   latest revision is active and provisioned on the image already is not rolled again: a re-run
-  checks it and records it, and changes nothing when the check fails. The hosted check then
+  checks it and records it, and changes nothing when its running state is failed or degraded
+  or the check fails. The hosted check then
   holds the app to the release, each request given thirty seconds: `/health`, signed in as the
   service principal, answers within five minutes naming its release; a request for
   `/api/app/release` that forges, unsigned, a whole principal the app itself would accept is
@@ -206,8 +210,14 @@ Out of scope:
   deactivated. A release whose quotes are closed because the environment's tables do not fit
   its form stays, its quotes closed, the run failing naming each difference: the people who
   own the database change the tables in SQL, and the app opens its quotes once they fit, with
-  no new run. The rollout undoes and records only its own revision: when another change has
-  replaced it as the app's latest, the run fails saying so and leaves the app as it is. The
+  no new run. A failure before the new revision exists, Azure refusing the update after the
+  old revision stopped, say, puts the previous release back the same way. The rollout undoes
+  and records only its own revision or the one it started from: when another change has made
+  a third revision the app's latest, the run fails saying so and leaves the app as it is. That
+  guard sees only a change made before it looks, since Azure takes no conditional update of a
+  Container App; what keeps two rollouts of one app apart is the generated jobs, which never
+  run at once for one environment, and a rollout run by hand beside them is not guarded
+  against. The
   release that stays is recorded on the Container App, as its Azure tags `haute-image` (the
   image by digest), `haute-release` (the release's id) and `haute-commit` (the commit), which
   `--from` reads. The command says each step as it takes it and prints the release's id last.
