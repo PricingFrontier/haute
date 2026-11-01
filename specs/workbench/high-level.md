@@ -204,10 +204,10 @@ Out of scope:
   refused by the host, with 401, 403 or a redirect to its sign-in, which shows the host's
   authentication stands in front of the app; and the same request signed in answers the
   release `/health` named and finds its quotes open. A new revision that fails to start or
-  fails a check is replaced by the previous release, the image the app ran before set again
-  with a suffix of its own, within ten minutes more, and the run fails naming what failed and
-  that it rolled back; an app with no image before is left with the failed revision
-  deactivated. A release whose quotes are closed because the environment's tables do not fit
+  fails a check is replaced by the previous release, the image the app's active revision
+  served set again with a suffix of its own, within ten minutes more, and the run fails naming
+  what failed and that it rolled back; an app with no revision serving before is left with the
+  failed revision deactivated. A release whose quotes are closed because the environment's tables do not fit
   its form stays, its quotes closed, the run failing naming each difference: the people who
   own the database change the tables in SQL, and the app opens its quotes once they fit, with
   no new run. A failure before the new revision exists, Azure refusing the update after the

@@ -20,12 +20,14 @@ jobs, serialised per environment, are what keep two rollouts of one app apart.
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import os
 import re
 import secrets
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -61,6 +63,8 @@ RECOVERY_TIMEOUT_SECONDS = 600
 REQUEST_TIMEOUT_SECONDS = 30
 #: How often a revision and the app's health are asked again while waiting.
 POLL_SECONDS = 10
+#: How many times the Azure SDK retries a request, each within the request timeout.
+_SDK_RETRIES = 2
 #: Azure's limits on a resource's tags: how many it holds, and how long a value may be.
 TAG_LIMIT = 50
 TAG_VALUE_LIMIT = 256
@@ -72,8 +76,10 @@ RECORD_TAGS: Mapping[str, str] = {
     "release": "haute-release",
     "commit": "haute-commit",
 }
-#: Where a host's sign-in redirects a request it refuses: its own login, or Microsoft's.
-_SIGN_IN_REDIRECTS = ("/.auth/login", "login.microsoftonline.com")
+#: Where a host's sign-in redirects a request it refuses: its own login path on the app's
+#: address, or Microsoft's login host.
+_SIGN_IN_PATH = "/.auth/login"
+_MICROSOFT_LOGIN = "login.microsoftonline.com"
 #: A revision's states that say it is provisioned, and that it cannot serve.
 _PROVISIONED = "Provisioned"
 _FAILED_PROVISIONING = frozenset({"Failed"})
@@ -183,9 +189,15 @@ def fetch(url: str, headers: Mapping[str, str]) -> HttpAnswer:
         with opener.open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             return HttpAnswer(response.status, response.read(), response.headers.get("Location"))
     except urllib.error.HTTPError as error:
-        return HttpAnswer(error.code, error.read(), error.headers.get("Location"))
-    except (urllib.error.URLError, TimeoutError, OSError) as error:
-        return HttpAnswer(0, str(error).encode("utf-8"))
+        # An error's status is its answer; a body that stalls or ends early is none.
+        try:
+            body = error.read()
+        except (http.client.HTTPException, OSError):
+            body = b""
+        return HttpAnswer(error.code, body, error.headers.get("Location"))
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as error:
+        # No server, a stall (a timeout is an OSError) or a body that ends early.
+        return HttpAnswer(0, (str(error) or type(error).__name__).encode("utf-8"))
 
 
 def forged_principal() -> dict[str, str]:
@@ -335,13 +347,13 @@ def _wait_provisioned(
             raise RolloutError(f"The revision {name} failed to provision.")
         if revision.running in _FAILED_RUNNING:
             raise RolloutError(f"The revision {name} is {revision.running.lower()}.")
-        if revision.provisioning == _PROVISIONED:
-            return
         if clock.now() >= deadline:
             raise RolloutError(
                 f"The revision {name} was not provisioned within {budget} seconds "
                 f"(provisioning {revision.provisioning}, running {revision.running})."
             )
+        if revision.provisioning == _PROVISIONED:
+            return
         clock.sleep(POLL_SECONDS)
 
 
@@ -365,7 +377,7 @@ def hosted_check(get: Fetch, address: str, token: str, clock: Clock = _CLOCK) ->
             )
         clock.sleep(POLL_SECONDS)
     forged = get(f"{base}/api/app/release", forged_principal())
-    if not _refused(forged):
+    if not _refused(forged, address):
         raise RolloutError(
             "The app answered a request that forged a signed-in principal "
             f"({_said(forged)}): its host's built-in authentication must stand in front of it."
@@ -398,11 +410,22 @@ def hosted_check(get: Fetch, address: str, token: str, clock: Clock = _CLOCK) ->
     return release
 
 
-def _refused(answer: HttpAnswer) -> bool:
+def _refused(answer: HttpAnswer, address: str) -> bool:
+    """Whether the host refused a request: 401, 403, or a redirect to its sign-in, the app's
+    own address (*address*, or a relative location) under ``/.auth/login``, or Microsoft's
+    login host over https."""
     if answer.status in (401, 403):
         return True
-    location = answer.location or ""
-    return 300 <= answer.status < 400 and any(mark in location for mark in _SIGN_IN_REDIRECTS)
+    if not 300 <= answer.status < 400 or not answer.location:
+        return False
+    where = urllib.parse.urlsplit(answer.location)
+    host = (where.hostname or "").lower()
+    if host == _MICROSOFT_LOGIN:
+        return where.scheme == "https"
+    own = (not where.netloc and not where.scheme) or (
+        where.scheme == "https" and host == address.lower()
+    )
+    return own and (where.path == _SIGN_IN_PATH or where.path.startswith(_SIGN_IN_PATH + "/"))
 
 
 def _json(answer: HttpAnswer) -> dict[str, Any]:
@@ -515,14 +538,18 @@ def rollout(
     ):
         return _recheck(run, latest, image, commit)
 
-    kept = state.images[0]
+    # The image the app served, which a failure puts back: its active revision's, not its
+    # template's, which a failed update of Azure's own can leave naming another.
+    kept = next(
+        (each.image for each in map(host.revision, state.active_revisions) if each.image), None
+    )
     suffix = _suffix(clock)
-    for name in state.active_revisions:
-        host.deactivate(name)
-        say(f"  ✓ Stopped the revision {name}")
     deadline = clock.now() + ROLLOUT_TIMEOUT_SECONDS
     made: str | None = None
     try:
+        for name in state.active_revisions:
+            host.deactivate(name)
+            say(f"  ✓ Stopped the revision {name}")
         made = host.set_image(image, suffix, max(0.0, deadline - clock.now()))
         say(f"  ✓ Started the revision {made} on {image}")
         _wait_provisioned(host, made, deadline, clock, ROLLOUT_TIMEOUT_SECONDS)
@@ -561,7 +588,7 @@ def _roll_back(
     host: ContainerAppHost,
     suffix: str,
     previous: str | None,
-    kept: str,
+    kept: str | None,
     clock: Clock,
     say: Callable[[str], None],
 ) -> str:
@@ -581,6 +608,8 @@ def _roll_back(
         if ours is not None:
             host.deactivate(ours)
             say(f"  ✓ Stopped the failed revision {ours}")
+        if kept is None:
+            return "No revision served before it, so nothing runs: the failed revision is stopped."
         back = host.set_image(kept, _suffix(clock), max(0.0, deadline - clock.now()))
         _wait_provisioned(host, back, deadline, clock, RECOVERY_TIMEOUT_SECONDS)
     except RolloutError as failure:
@@ -617,6 +646,7 @@ class AzureContainerApps:
         *,
         client: ContainerAppsAPIClient | None = None,
         credential: ClientSecretCredential | None = None,
+        now: Callable[[], float] = time.monotonic,
     ) -> None:
         if credential is None:
             from azure.identity import ClientSecretCredential
@@ -627,7 +657,15 @@ class AzureContainerApps:
         if client is None:
             from azure.mgmt.appcontainers import ContainerAppsAPIClient
 
-            client = ContainerAppsAPIClient(credential, values["AZURE_SUBSCRIPTION_ID"])
+            # Each request bounded, and retried a few times, so a deadline holds.
+            client = ContainerAppsAPIClient(
+                credential,
+                values["AZURE_SUBSCRIPTION_ID"],
+                connection_timeout=REQUEST_TIMEOUT_SECONDS,
+                read_timeout=REQUEST_TIMEOUT_SECONDS,
+                retry_total=_SDK_RETRIES,
+            )
+        self._now = now
         self._credential = credential
         self._client = client
         self._group = environment.resource_group
@@ -715,6 +753,8 @@ class AzureContainerApps:
     def set_image(self, image: str, suffix: str, timeout: float) -> str:
         from azure.mgmt.appcontainers.models import ContainerApp, ContainerAppProperties
 
+        # The deadline holds from here: the read and the update's start spend it too.
+        end = self._now() + timeout
         app = self._app()
         template = app.properties.template
         template.containers[0].image = image
@@ -724,7 +764,7 @@ class AzureContainerApps:
         )
         with _azure(f"set the image of {self._where}"):
             poller = self._client.container_apps.begin_update(self._group, self._name, envelope)
-            poller.wait(timeout=timeout)
+            poller.wait(timeout=max(0.0, end - self._now()))
             if not poller.done():
                 raise RolloutError(
                     f"Azure's update of {self._where} did not finish within {int(timeout)} seconds."
@@ -733,6 +773,13 @@ class AzureContainerApps:
         latest = updated.properties.latest_revision_name if updated.properties else None
         if not latest:
             raise RolloutError(f"Azure's update of {self._where} named no revision.")
+        if not str(latest).endswith(f"--{suffix}"):
+            # The resource Azure answers may already hold another change: never take its
+            # revision for this rollout's.
+            raise RolloutError(
+                f"Azure's update of {self._where} answered the revision {latest}, not this "
+                f"rollout's (suffixed {suffix}): another change landed meanwhile."
+            )
         return str(latest)
 
     def record(self, recorded: Recorded) -> None:

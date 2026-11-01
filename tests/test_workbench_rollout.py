@@ -60,6 +60,8 @@ class FakeHost:
         #: Images whose update Azure refuses, or does not finish in time.
         self.refuses: set[str] = set()
         self.token_refused = False
+        #: Revisions whose deactivation Azure applies, then answers with a failure.
+        self.deactivation_lost: set[str] = set()
         #: Called after each change: a test's other writer.
         self.after: Any = None
 
@@ -81,6 +83,8 @@ class FakeHost:
     def deactivate(self, name: str) -> None:
         self.calls.append(("deactivate", name))
         self.revisions[name] = replace(self.revisions[name], active=False)
+        if name in self.deactivation_lost:
+            raise RolloutError(f"Azure's answer to stopping {name} was lost.")
 
     def set_image(self, image: str, suffix: str, timeout: float) -> str:
         self.calls.append(("set_image", image, suffix))
@@ -502,6 +506,189 @@ def _then(read: Any, side: Any) -> Any:
     return wrapped
 
 
+def test_azure_never_takes_another_writers_revision_for_its_own(azure: Any) -> None:
+    host, sdk, _ = azure
+    sdk.answers = "motor--theirs"
+
+    with pytest.raises(RolloutError, match="answered the revision motor--theirs, not this"):
+        host.set_image(NEW, "h261101120000abcdef", 412.0)
+
+
+def test_azure_spends_the_deadline_from_its_first_request(azure: Any) -> None:
+    host, sdk, _ = azure
+    sdk.start_takes = 100.0
+
+    host.set_image(NEW, "h261101120000abcdef", 412.0)
+
+    # The update's start took 100 of the 412 seconds: the wait has what is left.
+    assert sdk.pollers[0].waited == 312.0
+
+
+# ── The review's cases: what the app served, a lost answer, the deadline ──
+
+
+def test_a_failure_puts_back_the_image_the_active_revision_served() -> None:
+    """A failed update of Azure's own can leave the template naming an image no revision
+    serves: the rollback restores the one that was serving."""
+    host = FakeHost()
+    host.image = "acr.example.io/pricing/motor@sha256:" + "b" * 64
+    host.settles[NEW] = ("Failed", "Failed")
+
+    with pytest.raises(RolloutError, match="failed to provision"):
+        _roll(host, FakeApp())
+
+    assert [call[1] for call in host.changes() if call[0] == "set_image"] == [NEW, OLD]
+
+
+def test_a_stop_azure_applied_but_lost_the_answer_to_is_put_back() -> None:
+    host = FakeHost()
+    host.deactivation_lost.add("motor--old")
+
+    with pytest.raises(RolloutError, match="was lost") as failed:
+        _roll(host, FakeApp())
+
+    # Nothing new was made: the previous image runs again on a revision of its own.
+    assert [call[1] for call in host.changes() if call[0] == "set_image"] == [OLD]
+    assert host.image == OLD and host.revisions[host.latest].active
+    assert "runs again" in str(failed.value)
+
+
+def test_a_revision_provisioned_past_the_deadline_fails_and_is_rolled_back() -> None:
+    ticks = FakeClock()
+    host = FakeHost()
+
+    def slow(changed: FakeHost) -> None:
+        # Azure's update takes longer than the whole deadline.
+        changed.after = None
+        ticks.t += rollouts.ROLLOUT_TIMEOUT_SECONDS + 1
+
+    host.after = slow
+
+    with pytest.raises(RolloutError, match="not provisioned within 600 seconds"):
+        _roll(host, FakeApp(), clock=ticks.clock())
+
+    assert [call[1] for call in host.changes() if call[0] == "set_image"] == [NEW, OLD]
+
+
+def test_with_no_revision_serving_a_failed_one_is_left_stopped() -> None:
+    host = FakeHost()
+    host.revisions["motor--old"] = replace(host.revisions["motor--old"], active=False)
+    host.settles[NEW] = ("Failed", "Failed")
+
+    with pytest.raises(RolloutError, match="No revision served before it") as failed:
+        _roll(host, FakeApp())
+
+    assert [call[1] for call in host.changes() if call[0] == "set_image"] == [NEW]
+    assert not any(revision.active for revision in host.revisions.values())
+    assert "failed to provision" in str(failed.value)
+
+
+@pytest.mark.parametrize(
+    ("location", "refused"),
+    [
+        (f"https://{ADDRESS}/.auth/login/aad?post_login_redirect_uri=/", True),
+        ("/.auth/login/aad", True),
+        ("https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize", True),
+        ("https://unrelated.example/.auth/login", False),
+        ("https://unrelated.example/?next=login.microsoftonline.com", False),
+        (f"https://{ADDRESS}/.auth/loginx", False),
+        (f"http://{ADDRESS}/.auth/login", False),
+        ("http://login.microsoftonline.com/x", False),
+    ],
+    ids=[
+        "own-login",
+        "relative-login",
+        "microsoft-login",
+        "another-host-login-path",
+        "another-host-naming-microsoft",
+        "another-path",
+        "own-login-over-http",
+        "microsoft-over-http",
+    ],
+)
+def test_only_a_redirect_to_the_hosts_sign_in_is_a_refusal(location: str, refused: bool) -> None:
+    app = FakeApp(forged=HttpAnswer(302, location=location))
+    host = FakeHost()
+
+    if refused:
+        assert _roll(host, app) == "rel-1"
+    else:
+        with pytest.raises(RolloutError, match=r"forged a signed-in principal \(HTTP 302\)"):
+            _roll(host, app)
+
+
+# ── fetch, the real transport, against a server on loopback ───────────
+
+
+@pytest.fixture
+def server() -> Any:
+    """A server on loopback answering each path as the transport's failures look."""
+    import http.server
+    import threading
+    import time as clock
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:
+            return None
+
+        def do_GET(self) -> None:
+            if self.path == "/stall":
+                clock.sleep(3)
+            if self.path in ("/truncated", "/error-truncated"):
+                self.send_response(200 if self.path == "/truncated" else 500)
+                self.send_header("Content-Length", "100")
+                self.end_headers()
+                self.wfile.write(b"0123456789")
+                self.wfile.flush()
+                self.connection.close()
+                return
+            if self.path == "/sign-in":
+                self.send_response(302)
+                self.send_header("Location", "/.auth/login/aad")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            body = b'{"status": "ok"}'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{httpd.server_address[1]}"
+    httpd.shutdown()
+    httpd.server_close()
+
+
+def test_fetch_answers_a_stalled_request_within_its_timeout(
+    server: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(rollouts, "REQUEST_TIMEOUT_SECONDS", 0.5)
+
+    answer = rollouts.fetch(f"{server}/stall", {})
+
+    assert answer.status == 0
+
+
+def test_fetch_answers_a_body_that_ends_early_as_no_answer(server: str) -> None:
+    assert rollouts.fetch(f"{server}/truncated", {}).status == 0
+
+
+def test_fetch_keeps_an_errors_status_when_its_body_ends_early(server: str) -> None:
+    answer = rollouts.fetch(f"{server}/error-truncated", {})
+
+    assert (answer.status, answer.body) == (500, b"")
+
+
+def test_fetch_answers_a_redirect_without_following_it(server: str) -> None:
+    answer = rollouts.fetch(f"{server}/sign-in", {})
+
+    assert (answer.status, answer.location) == (302, "/.auth/login/aad")
+    assert rollouts.fetch(f"{server}/health", {}).status == 200
+
+
 # ── --from: the release another environment runs ─────────────────────
 
 
@@ -626,6 +813,11 @@ class _Sdk:
     def __init__(self, models: Any, *, done: bool = True) -> None:
         self.models = models
         self.done = done
+        #: The revision Azure answers an update with, else the one its suffix names.
+        self.answers: str | None = None
+        #: Seconds the update's start spends, on the adapter's clock.
+        self.start_takes = 0.0
+        self.clock = [0.0]
         self.updates: list[Any] = []
         self.pollers: list[_Poller] = []
         self.deactivated: list[str] = []
@@ -652,9 +844,12 @@ class _Sdk:
 
             def begin_update(self, group: str, name: str, envelope: Any) -> _Poller:
                 sdk.updates.append(envelope)
+                sdk.clock[0] += sdk.start_takes
+                template = envelope.properties.template if envelope.get("properties") else None
+                answered = sdk.answers or f"motor--{template.revision_suffix if template else 'x'}"
                 updated = models.ContainerApp(
                     location="uksouth",
-                    properties=models.ContainerAppProperties(latest_revision_name="motor--new"),
+                    properties=models.ContainerAppProperties(latest_revision_name=answered),
                 )
                 poller = _Poller(updated, sdk.done)
                 sdk.pollers.append(poller)
@@ -733,6 +928,7 @@ def azure() -> tuple[rollouts.AzureContainerApps, _Sdk, _Credential]:
         {},
         client=sdk,  # type: ignore[arg-type]
         credential=credential,  # type: ignore[arg-type]
+        now=lambda: sdk.clock[0],
     )
     return host, sdk, credential
 
@@ -762,7 +958,7 @@ def test_azure_sets_the_image_on_a_revision_of_its_own_within_the_deadline(azure
 
     made = host.set_image(NEW, "h261101120000abcdef", 412.0)
 
-    assert made == "motor--new"
+    assert made == "motor--h261101120000abcdef"
     template = sdk.updates[0].properties.template
     assert template.containers[0].image == NEW
     assert template.revision_suffix == "h261101120000abcdef"
