@@ -266,12 +266,14 @@ shape: a validate job (lint, type check, test, pipeline lint, `haute app build`)
 request and on a push to the default branch that changes a release input; on that push a
 publish job that logs in to the registry with the app host's credentials, runs
 `haute app build --push`, which builds the underwriter app's image once, pushes it and prints
-the reference by digest it pushed, and rolls the staging app to that reference with
-`haute app rollout staging --image`; and a production job, run by hand after the provider's
+the reference by digest it pushed, rolls the staging app to that reference with
+`haute app rollout staging --image` and runs `haute app impact`, keeping its
+`impact_report.md` as the job's artifact; and a production job, run by hand after the provider's
 approval (GitHub's `release-production.yml`, GitLab's manual `deploy-production` job, Azure
 DevOps' `DeployProduction` stage, triggered by hand, under its `production` environment),
 that rolls production to the release staging runs for the commit with `haute app rollout prod --from
-staging`. It has no endpoint deploy, smoke test or impact analysis
+staging`. It has no endpoint deploy or smoke test, and its impact prices quotes
+production saved on both apps rather than a dataset on two endpoints
 ([workbench](../workbench/high-level.md)). Re-running `haute init --force` with a different
 `--ci`, or for the other kind of project, prunes every workflow file Haute generated that the
 new set does not hold before writing the new ones, so switching providers doesn't leave

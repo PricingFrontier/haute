@@ -42,7 +42,9 @@ the [underwriter app](../../building-models/workbench.md#the-underwriter-app). I
 runs tests, then builds the app's release, which checks your pipeline and schema and scores
 your test quotes, on every pull request and on main; **Publish**, on main only, a deployment
 to the `staging` environment that builds the app's image once, pushes it to the registry
-`[deploy.container]` names and rolls the staging app out to it; and **DeployProduction**, a
+`[deploy.container]` names, rolls the staging app out to it and compares staging with
+production on saved quotes, publishing `impact_report.md` as the `impact-report`
+artifact; and **DeployProduction**, a
 deployment to the `production` environment that you run by hand, which rolls the production
 app out to the release staging runs. Each rollout checks the app and puts the previous
 release back when the new one fails

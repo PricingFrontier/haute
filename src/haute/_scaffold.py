@@ -805,8 +805,12 @@ _APP_PUBLISH = "uv run haute app build --push"
 _APP_ROLLOUT = "uv run haute app rollout"
 #: What a workbench project's production job runs: the release staging runs, promoted.
 _APP_PROMOTE = "uv run haute app rollout prod --from staging"
-# Minutes a workbench project's publish job may run: it builds and pushes one image and rolls
-# staging out, a recovery included; and the production job, a rollout and a recovery.
+#: What compares staging's release with production's on production's saved quotes once staging
+#: is rolled out (specs/workbench, Control flow 36), writing ``impact_report.md``.
+_APP_IMPACT = "uv run haute app impact"
+# Minutes a workbench project's publish job may run: it builds and pushes one image, rolls
+# staging out, a recovery included, and prices the impact's sample; and the production job, a
+# rollout and a recovery.
 _PUBLISH_TIMEOUT_MINUTES = 60
 _PRODUCTION_TIMEOUT_MINUTES = 45
 # The groups each environment's rollouts are serialised in, one at a time.
@@ -1654,13 +1658,16 @@ def ci_files(
 
 def _app_publish_notice(host: str) -> str:
     """The comment that heads a workbench project's release workflow: it publishes the app's
-    image, rolls staging out to it, and production follows by hand."""
+    image, rolls staging out to it, compares staging with production on saved quotes, and
+    production follows by hand."""
     return (
         "# On a push to main this builds the underwriter app's image once, pushes it to the\n"
         "# registry [deploy.container] names and rolls the staging app on\n"
-        f"# {_get_target(host)['label']} out to it (haute app rollout). Production is rolled\n"
-        "# out by hand to the release staging runs. [workbench.app.staging] and\n"
-        "# [workbench.app.prod] in haute.toml name the Container Apps.\n"
+        f"# {_get_target(host)['label']} out to it (haute app rollout), then prices a sample\n"
+        "# of production's saved quotes on both apps (haute app impact, its report kept as\n"
+        "# impact_report.md). Production is rolled out by hand to the release staging runs.\n"
+        "# [workbench.app.staging] and [workbench.app.prod] in haute.toml name the Container\n"
+        "# Apps.\n"
     )
 
 
@@ -1749,6 +1756,16 @@ jobs:
 {secrets_env}
         run: |
 {_publish_and_stage_script(" " * 10)}
+      - name: Compare staging with production on saved quotes
+        env:
+{secrets_env}
+        run: {_APP_IMPACT}
+      - name: Upload impact report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: impact-report
+          path: impact_report.md
 """
     )
 
@@ -1832,6 +1849,11 @@ publish:
 {_registry_login_script(host, " " * 6)}
     - |
 {_publish_and_stage_script(" " * 6)}
+    - {_APP_IMPACT}
+  artifacts:
+    when: always
+    paths:
+      - impact_report.md
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
@@ -1903,6 +1925,13 @@ def _azure_devops_app_yml(host: str) -> str:
                   displayName: Publish the app's image and roll staging out
                   env:
 {secrets_env}
+                - script: {_APP_IMPACT}
+                  displayName: Compare staging with production on saved quotes
+                  env:
+{secrets_env}
+                - publish: impact_report.md
+                  artifact: impact-report
+                  condition: succeededOrFailed()
 
   # ── Staging → Production (by hand) ───────────────────────────
   - stage: DeployProduction
@@ -1945,8 +1974,9 @@ def workbench_ci_files(
     """The CI files a workbench ``haute init`` and ``haute ci update`` write for *ci*: path ->
     content, in the order they are reported; ``"none"`` has none. They validate the project and
     the app's release on every change; on the default branch they publish the underwriter
-    app's image and roll staging out to it, and roll production out by hand, logged in with
-    *host*'s credentials; none deploys an endpoint. Every job runs *python_version*, the
+    app's image, roll staging out to it and compare it with production on saved quotes, and
+    roll production out by hand, logged in with *host*'s credentials; none deploys an
+    endpoint. Every job runs *python_version*, the
     project's Python."""
     from haute._workbench_config import APP_HOSTS
 

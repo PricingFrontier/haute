@@ -49,13 +49,14 @@ the [underwriter app](../../building-models/workbench.md#the-underwriter-app). I
 | File | When it runs | What it does |
 |---|---|---|
 | `ci.yml` | On every pull request | Lints, type-checks and runs tests, then builds the app's release, which checks your pipeline and schema and scores your test quotes |
-| `release.yml` | On a push to main or manual dispatch | Runs the same checks, then, on main only, builds the app's image once, pushes it to the registry `[deploy.container]` names, and rolls the staging app out to it |
+| `release.yml` | On a push to main or manual dispatch | Runs the same checks, then, on main only, builds the app's image once, pushes it to the registry `[deploy.container]` names, rolls the staging app out to it, and compares staging with production on saved quotes, keeping `impact_report.md` as the `impact-report` artifact |
 | `release-production.yml` | When you click "Run workflow" manually | Rolls the production app out to the release staging runs, for the commit you give (main's head when blank) |
 
 Each rollout stops the old release before the new one starts, checks the app, and puts the
 previous release back when the new one fails
-([The underwriter app](../../building-models/workbench.md#the-underwriter-app)). One rollout
-of an environment runs at a time. The jobs read your host's secrets,
+([The underwriter app](../../building-models/workbench.md#the-underwriter-app)). Read the
+impact report before you run `release-production.yml`. One rollout of an environment runs
+at a time. The jobs read your host's secrets,
 `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`,
 which `haute ci secrets` sets from `.env`; the service principal needs the AcrPush role on
 the registry.
