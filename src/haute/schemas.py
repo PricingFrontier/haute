@@ -532,6 +532,7 @@ class WorkbenchTestQuotesAcceptResponse(SaveCapture):
     accepted: list[WorkbenchTestQuoteSummary]
     refused: list[WorkbenchTestQuoteRefusal]
 
+
 class WorkbenchAppQuoteStore(BaseModel):
     """The app's quote store as its gate last checked it: open, or closed with the
     refusal's error code, message and differences, each null or empty while open."""
