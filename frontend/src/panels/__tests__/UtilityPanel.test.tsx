@@ -755,3 +755,166 @@ describe("UtilityPanel dropdown close-on-outside-click", () => {
     })
   })
 })
+
+describe("UtilityPanel pending-read draft retention and selection fencing (FGC-R08)", () => {
+  const defaultProps = {
+    onClose: vi.fn(),
+    onImportAdded: vi.fn(),
+    preamble: "from utility.features import *",
+    onPreambleChange: vi.fn(),
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    useToastStore.setState({ toasts: [] })
+    mockListFiles.mockResolvedValue({
+      files: [
+        { name: "features.py", module: "features" },
+        { name: "helpers.py", module: "helpers" },
+        { name: "utils.py", module: "utils" },
+      ],
+    })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    cleanup()
+  })
+
+  it("retains a draft typed during a pending read when its save fails and never replaces it with disk bytes", async () => {
+    let resolveHelpersRead: ((value: { name: string; module: string; content: string; revision: string }) => void) | null = null
+    mockReadFile.mockImplementation((module: string) => {
+      if (module === "features") {
+        return Promise.resolve({ name: "features.py", module: "features", content: "a = 1\n", revision: "1-1" })
+      }
+      if (module === "helpers") {
+        return new Promise((resolve) => {
+          resolveHelpersRead = resolve
+        })
+      }
+      return Promise.resolve({ name: `${module}.py`, module, content: "# other\n", revision: "1-1" })
+    })
+    mockUpdateFile.mockRejectedValue(
+      new MockApiError("HTTP 400", 400, { line: 1, message: "Syntax error on line 1: unexpected EOF" }),
+    )
+
+    render(<UtilityPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("code-editor")).toHaveValue("a = 1\n"))
+
+    // Start switching to "helpers" (read is delayed)
+    fireEvent.click(screen.getByTestId("utility-file-selector"))
+    fireEvent.click(await screen.findByText("helpers"))
+    await waitFor(() => expect(resolveHelpersRead).not.toBeNull())
+
+    // Type an invalid draft in "features" while "helpers" read is still pending
+    fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "a = (\n" } })
+
+    // Let the debounced save fire and reject while "helpers" is still loading
+    await act(async () => { vi.advanceTimersByTime(600) })
+
+    // Now resolve the delayed "helpers" read
+    await act(async () => {
+      resolveHelpersRead!({ name: "helpers.py", module: "helpers", content: "b = 2\n", revision: "2-2" })
+    })
+
+    // "features" must retain its unsaved draft and expose its error; "helpers" must not overwrite it
+    expect(screen.getByTestId("utility-file-selector")).toHaveTextContent("features")
+    expect(screen.getByTestId("code-editor")).toHaveValue("a = (\n")
+    expect(screen.getByText("Syntax error on line 1: unexpected EOF")).toBeInTheDocument()
+  })
+
+  it("flushes edits typed during a pending read before adopting the destination and refuses switch if save fails", async () => {
+    let resolveHelpersRead: ((value: { name: string; module: string; content: string; revision: string }) => void) | null = null
+    mockReadFile.mockImplementation((module: string) => {
+      if (module === "features") {
+        return Promise.resolve({ name: "features.py", module: "features", content: "a = 1\n", revision: "1-1" })
+      }
+      if (module === "helpers") {
+        return new Promise((resolve) => {
+          resolveHelpersRead = resolve
+        })
+      }
+      return Promise.resolve({ name: `${module}.py`, module, content: "# other\n", revision: "1-1" })
+    })
+    mockUpdateFile.mockRejectedValue(
+      new MockApiError("HTTP 400", 400, { line: 1, message: "Syntax error on line 1: unexpected EOF" }),
+    )
+
+    render(<UtilityPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("code-editor")).toHaveValue("a = 1\n"))
+
+    // Start switching to "helpers" (read is delayed)
+    fireEvent.click(screen.getByTestId("utility-file-selector"))
+    fireEvent.click(await screen.findByText("helpers"))
+    await waitFor(() => expect(resolveHelpersRead).not.toBeNull())
+
+    // Type an invalid draft in "features" while "helpers" read is pending, WITHOUT advancing debounce timer
+    fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "a = (\n" } })
+
+    // Resolve "helpers" read immediately while the edit in "features" is still debounced
+    await act(async () => {
+      resolveHelpersRead!({ name: "helpers.py", module: "helpers", content: "b = 2\n", revision: "2-2" })
+    })
+
+    expect(mockUpdateFile).toHaveBeenCalledWith("features", "a = (\n", "1-1")
+    expect(screen.getByTestId("utility-file-selector")).toHaveTextContent("features")
+    expect(screen.getByTestId("code-editor")).toHaveValue("a = (\n")
+    expect(screen.getByText("Syntax error on line 1: unexpected EOF")).toBeInTheDocument()
+  })
+
+  it("does not let a delayed module read steal selection after the user selects Imports or another module", async () => {
+    let resolveHelpersRead: ((value: { name: string; module: string; content: string; revision: string }) => void) | null = null
+    mockReadFile.mockImplementation((module: string) => {
+      if (module === "features") {
+        return Promise.resolve({ name: "features.py", module: "features", content: "a = 1\n", revision: "1-1" })
+      }
+      if (module === "helpers") {
+        return new Promise((resolve) => {
+          resolveHelpersRead = resolve
+        })
+      }
+      if (module === "utils") {
+        return Promise.resolve({ name: "utils.py", module: "utils", content: "u = 3\n", revision: "3-3" })
+      }
+      return Promise.resolve({ name: `${module}.py`, module, content: "", revision: "1-1" })
+    })
+
+    render(<UtilityPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("code-editor")).toHaveValue("a = 1\n"))
+
+    // Delay loading "helpers", then select "Imports"
+    fireEvent.click(screen.getByTestId("utility-file-selector"))
+    fireEvent.click(await screen.findByText("helpers"))
+    await waitFor(() => expect(resolveHelpersRead).not.toBeNull())
+
+    fireEvent.click(screen.getByTestId("utility-file-selector"))
+    fireEvent.click(await screen.findByTestId("utility-imports-entry"))
+    await waitFor(() => expect(screen.getByTestId("utility-imports")).toBeInTheDocument())
+
+    // Late response for "helpers" arrives — must not steal selection from Imports
+    await act(async () => {
+      resolveHelpersRead!({ name: "helpers.py", module: "helpers", content: "b = 2\n", revision: "2-2" })
+    })
+    expect(screen.getByTestId("utility-imports")).toBeInTheDocument()
+    expect(screen.getByTestId("utility-file-selector")).toHaveTextContent("Imports")
+
+    // Now delay loading "helpers" again, then select "utils"
+    resolveHelpersRead = null
+    fireEvent.click(screen.getByTestId("utility-file-selector"))
+    fireEvent.click(await screen.findByText("helpers"))
+    await waitFor(() => expect(resolveHelpersRead).not.toBeNull())
+
+    fireEvent.click(screen.getByTestId("utility-file-selector"))
+    fireEvent.click(await screen.findByText("utils"))
+    await waitFor(() => expect(screen.getByTestId("code-editor")).toHaveValue("u = 3\n"))
+
+    // Late response for "helpers" arrives — must not replace "utils"
+    await act(async () => {
+      resolveHelpersRead!({ name: "helpers.py", module: "helpers", content: "b = 2\n", revision: "2-2" })
+    })
+    expect(screen.getByTestId("utility-file-selector")).toHaveTextContent("utils")
+    expect(screen.getByTestId("code-editor")).toHaveValue("u = 3\n")
+  })
+})
+

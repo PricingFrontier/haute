@@ -15,39 +15,12 @@ packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FGC-R08 | Planned | P2 | A late file read cannot replace a newer selection or discard edits made while the read was pending. |
 | FGC-R09 | Planned | P2 | A blocked node downstream of an unavailable source opens its recovery inspector without running healthy-editor input derivation. |
 | FGC-R10 | Planned | P1 | Submodel drill-in and breadcrumb exit isolate or reset Undo/Redo history and dirty baselines per navigation level, and close side panels and stale traces on entry and exit. |
 | FGC-R11 | Planned | P2 | Global Constants edits participate in Undo/Redo history and are restored by `undo()` and `redo()`, and `nodeConstantReads` scans expression strings inside structured Polars steps. |
 | FGC-R12 | Planned | P2 | `previewPortLabel` honours `chosenFrame` on multi-table `apiInput` and `workbenchInput` nodes, `computeStructuralFingerprint` and `computePanelContextFingerprint` include `submodels` and submodel boundary `ports`, `Ctrl+V` refuses `submodel` and `submodelPort` nodes, and `Escape` in a non-empty `SearchField` does not close an enclosing `ModalShell`. |
 
 ## Planned improvements
-
-### FGC-R08 — Utility navigation preserves drafts across pending reads
-
-**Why:** UtilityPanel flushes the old draft before awaiting the next file read but leaves
-the old editor enabled. New typing during that await is not part of the flush. When B
-arrives it replaces A; A's later rejected autosave is ignored because A is no longer
-active, and returning to A reloads the old disk contents. The real component/debounce
-witness loses `a = (` and restores `a = 1`. A second witness selects Imports while B
-waits and B's late response steals the selection.
-
-**Plan:** Give utility reads a selection generation and preserve drafts/save outcomes
-per module, or prevent an accepted switch until every edit made during the pending
-transition is safely retained. Authenticate both source draft and destination selection
-immediately before adoption. A failed autosave must retain the unsaved text and expose
-its error even if another module is shown.
-
-**Acceptance:** Delay loading B, type in A, and reject A's eventual save: A's draft and
-error remain recoverable, never replaced by disk bytes. Delay B then select Imports/C:
-B cannot steal the newer selection. Successful ordinary navigation still flushes edits
-once and loads the requested module. Cover edit-after-flush as well as edit-before-switch.
-
-**Dependencies:** None. The utility routes refuse a write made against a changed file
-(412, specs/server-api); keeping the draft any failed save leaves is this package's.
-
-**Evidence:** `frontend/src/panels/UtilityPanel.tsx::UtilityPanel.persistSave`; `frontend/src/panels/UtilityPanel.tsx::UtilityPanel.loadFile`; `frontend/src/panels/UtilityPanel.tsx::UtilityPanel.selectImports`; actual
-component/debounce with CodeEditor textarea and API transport seams.
 
 ### FGC-R09 — Recovery inspection does not require executable input identities
 

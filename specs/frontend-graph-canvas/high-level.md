@@ -863,10 +863,6 @@ candidate, with the error toast.
 > healthy-editor input derivation before its recovery inspector renders.
 > [FGC-R09](../roadmap/frontend-graph-canvas.md#fgc-r09--recovery-inspection-does-not-require-executable-input-identities) owns the recovery boundary.
 
-> NOTE: Utility navigation can discard a draft typed during a pending read if its
-> later autosave fails, and late reads can steal a newer selection.
-> [FGC-R08](../roadmap/frontend-graph-canvas.md#fgc-r08--utility-navigation-preserves-drafts-across-pending-reads) owns draft and navigation identity.
-
 > NOTE: Distinct parsed or pasted connections can share an id.
 > [NAME-10](../roadmap/name-collisions.md#name-10--every-distinct-connection-has-a-distinct-identity) owns this gap.
 

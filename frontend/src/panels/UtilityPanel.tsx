@@ -75,11 +75,11 @@ export default function UtilityPanel({
   const [createError, setCreateError] = useState<string | null>(null)
 
   const inflightSaveRef = useRef<Promise<boolean> | null>(null)
-  // A rejected draft remains dirty after its request settles. Keep that
-  // failure separate from the in-flight queue so a later file switch cannot
-  // overwrite the only local copy of the draft.
-  const failedSaveModuleRef = useRef<string | null>(null)
-  const failedSaveErrorRef = useRef<{ line: number | null; message: string } | null>(null)
+  // Unsaved local drafts and rejected save errors are keyed by module so a
+  // pending or later file switch never drops an unpersisted draft or its error.
+  const draftsRef = useRef(new Map<string, string>())
+  const failedSavesRef = useRef(new Map<string, { line: number | null; message: string }>())
+  const selectionSerialRef = useRef(0)
   // Each file's revision as its read, create or last save returned it: a save or delete
   // sends it, so the server refuses one made against a file changed outside the panel.
   const revisionsRef = useRef(new Map<string, string>())
@@ -95,8 +95,10 @@ export default function UtilityPanel({
   const contentRef = useRef(content)
   useEffect(() => { contentRef.current = content }, [content])
   const activeModuleRef = useRef(activeModule)
+  const importsSelectedRef = useRef(importsSelected)
   const mountedRef = useRef(true)
   useEffect(() => { activeModuleRef.current = activeModule }, [activeModule])
+  useEffect(() => { importsSelectedRef.current = importsSelected }, [importsSelected])
   useEffect(() => {
     mountedRef.current = true
     return () => { mountedRef.current = false }
@@ -104,7 +106,8 @@ export default function UtilityPanel({
 
   // Persist one edit and reconcile the error banner. Post-await state updates
   // are guarded so a stale (switched-away or unmounted) response can't clobber
-  // the current file's error UI.
+  // the current file's error UI, while per-module draft and error maps retain
+  // unpersisted state across navigation races.
   const persistSave = useCallback(async (module: string, value: string): Promise<boolean> => {
     if (conflictModuleRef.current === module) return false
     try {
@@ -113,34 +116,42 @@ export default function UtilityPanel({
       const saved = await updateUtilityFile(module, value, revision)
       revisionsRef.current.set(module, saved.revision)
       reportSaveCapture(saved)
-      if (failedSaveModuleRef.current === module) {
-        failedSaveModuleRef.current = null
-        failedSaveErrorRef.current = null
+      if (draftsRef.current.get(module) === value) {
+        draftsRef.current.delete(module)
       }
-      if (mountedRef.current && activeModuleRef.current === module) {
+      failedSavesRef.current.delete(module)
+      if (mountedRef.current && !importsSelectedRef.current && activeModuleRef.current === module) {
         setErrorLine(null)
         setErrorMsg(null)
       }
       return true
     } catch (err) {
-      if (mountedRef.current && activeModuleRef.current === module) {
-        failedSaveModuleRef.current = module
-        const syntaxErr = parseSyntaxError(err)
-        if (syntaxErr) {
-          failedSaveErrorRef.current = { line: syntaxErr.error_line, message: syntaxErr.error }
+      if (!draftsRef.current.has(module)) {
+        draftsRef.current.set(module, value)
+      }
+      const syntaxErr = parseSyntaxError(err)
+      if (syntaxErr) {
+        failedSavesRef.current.set(module, { line: syntaxErr.error_line, message: syntaxErr.error })
+        if (mountedRef.current && !importsSelectedRef.current && activeModuleRef.current === module) {
           setErrorLine(syntaxErr.error_line)
           setErrorMsg(syntaxErr.error)
-        } else if (apiErrorStatus(err) === 412) {
-          const message = apiErrorMessage(err)
-          failedSaveErrorRef.current = { line: null, message }
-          conflictModuleRef.current = module
+        }
+      } else if (apiErrorStatus(err) === 412) {
+        const message = apiErrorMessage(err)
+        failedSavesRef.current.set(module, { line: null, message })
+        conflictModuleRef.current = module
+        if (mountedRef.current) {
           setConflict({ module, message })
-        } else {
-          const detail = apiErrorMessage(err, "unknown error")
-          const message = `Failed to save utility file "${module}": ${detail}`
-          failedSaveErrorRef.current = { line: null, message }
+        }
+      } else {
+        const detail = apiErrorMessage(err, "unknown error")
+        const message = `Failed to save utility file "${module}": ${detail}`
+        failedSavesRef.current.set(module, { line: null, message })
+        if (mountedRef.current) {
           addToast("error", message)
-          setErrorMsg("Failed to save")
+          if (!importsSelectedRef.current && activeModuleRef.current === module) {
+            setErrorMsg("Failed to save")
+          }
         }
       }
       return false
@@ -166,23 +177,33 @@ export default function UtilityPanel({
     pendingSave.schedule([module, value])
   }, [pendingSave])
 
-  // Flush a pending debounced save synchronously (returns the persist promise so
-  // callers can await it before switching file). No-op when nothing is pending.
+  // Flush any pending debounced and in-flight saves until the save queue drains
+  // and verify the active module has no unresolved save error.
   const flushSave = useCallback(async (): Promise<boolean> => {
-    const flushed = pendingSave.flush()
-    if (flushed) return flushed
-    if (inflightSaveRef.current) return inflightSaveRef.current
-    return failedSaveModuleRef.current === null
-      || failedSaveModuleRef.current !== activeModuleRef.current
+    while (pendingSave.pending() !== null || inflightSaveRef.current !== null) {
+      const flushed = pendingSave.flush()
+      if (flushed) {
+        if (!await flushed) return false
+        continue
+      }
+      if (inflightSaveRef.current) {
+        if (!await inflightSaveRef.current) return false
+      }
+    }
+    if (!importsSelectedRef.current && activeModuleRef.current !== null) {
+      return !failedSavesRef.current.has(activeModuleRef.current)
+    }
+    return true
   }, [pendingSave])
 
   const notifyRefusedSwitch = useCallback(() => {
-    const lastError = failedSaveErrorRef.current
+    const active = activeModuleRef.current
+    const lastError = active ? (failedSavesRef.current.get(active) ?? null) : null
     if (lastError && conflictModuleRef.current === null) {
       setErrorLine(lastError.line)
       setErrorMsg(lastError.message)
     }
-    const moduleName = activeModuleRef.current ?? "current file"
+    const moduleName = active ?? "current file"
     addToast(
       "error",
       lastError
@@ -210,21 +231,38 @@ export default function UtilityPanel({
 
   // Load file content
   const loadFile = useCallback(async (module: string) => {
+    const requestSerial = ++selectionSerialRef.current
     // Flush (persist) any pending save for the previous file before switching —
     // a bare clearTimeout here would silently discard the last edit.
     if (!await flushSave()) {
-      notifyRefusedSwitch()
+      if (mountedRef.current && selectionSerialRef.current === requestSerial) {
+        notifyRefusedSwitch()
+      }
       return
     }
+    if (!mountedRef.current || selectionSerialRef.current !== requestSerial) return
     try {
       const res = await readUtilityFile(module)
+      if (!mountedRef.current || selectionSerialRef.current !== requestSerial) return
+      // Re-verify after the async read so edits made (or rejected) while the
+      // read was in flight are flushed and cannot be overwritten on arrival.
+      if (!await flushSave()) {
+        if (mountedRef.current && selectionSerialRef.current === requestSerial) {
+          notifyRefusedSwitch()
+        }
+        return
+      }
+      if (!mountedRef.current || selectionSerialRef.current !== requestSerial) return
       revisionsRef.current.set(module, res.revision)
-      setContent(res.content)
+      const retainedDraft = draftsRef.current.get(module)
+      const retainedError = failedSavesRef.current.get(module) ?? null
+      setContent(retainedDraft ?? res.content)
       setActiveModule(module)
       setImportsSelected(false)
-      setErrorLine(null)
-      setErrorMsg(null)
+      setErrorLine(retainedError ? retainedError.line : null)
+      setErrorMsg(retainedError ? retainedError.message : null)
     } catch (err) {
+      if (!mountedRef.current || selectionSerialRef.current !== requestSerial) return
       const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Failed to load utility file "${module}": ${detail}`)
       setErrorMsg(`Failed to load ${module}`)
@@ -260,8 +298,8 @@ export default function UtilityPanel({
       conflictModuleRef.current = null
       setConflict(null)
       if (choice === "reload") {
-        failedSaveModuleRef.current = null
-        failedSaveErrorRef.current = null
+        draftsRef.current.delete(module)
+        failedSavesRef.current.delete(module)
         setContent(read.content)
         setReadGeneration((generation) => generation + 1)
         setErrorLine(null)
@@ -276,10 +314,14 @@ export default function UtilityPanel({
   }, [addToast, pendingSave, queueSave])
 
   const selectImports = useCallback(async () => {
+    const requestSerial = ++selectionSerialRef.current
     if (!await flushSave()) {
-      notifyRefusedSwitch()
+      if (mountedRef.current && selectionSerialRef.current === requestSerial) {
+        notifyRefusedSwitch()
+      }
       return
     }
+    if (!mountedRef.current || selectionSerialRef.current !== requestSerial) return
     setImportsSelected(true)
     setErrorLine(null)
     setErrorMsg(null)
@@ -325,10 +367,8 @@ export default function UtilityPanel({
       if (revision === undefined) throw new Error(`no revision of ${activeModule} was read`)
       reportSaveCapture(await deleteUtilityFile(activeModule, revision))
       revisionsRef.current.delete(activeModule)
-      if (failedSaveModuleRef.current === activeModule) {
-        failedSaveModuleRef.current = null
-        failedSaveErrorRef.current = null
-      }
+      draftsRef.current.delete(activeModule)
+      failedSavesRef.current.delete(activeModule)
       setActiveModule(null)
       setContent("")
       await loadFiles()
@@ -473,6 +513,7 @@ export default function UtilityPanel({
                 key={`${activeModule}:${readGeneration}`}
                 defaultValue={content}
                 onChange={(val) => {
+                  draftsRef.current.set(activeModule, val)
                   setContent(val)
                   // A file that changed outside the panel saves nothing until Reload or Overwrite.
                   if (conflictModuleRef.current === activeModule) return

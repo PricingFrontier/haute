@@ -286,7 +286,11 @@ edits the pipeline's preamble with `CodeEditor`, notes that `import polars as pl
 `import haute` are always included, has no delete button and never goes through the utility
 file routes. The app applies every change with the graph store's raw preamble setter, so
 importing text immediately affects derived dirty state without making an undo entry per
-keystroke.
+keystroke. Module reads and `Imports` selection transitions are fenced by a monotonic
+selection generation so a late utility file response cannot steal a newer selection;
+before and after each utility module read, pending and in-flight autosaves are drained,
+and per-module unsaved drafts and rejected save errors are retained so typing while a
+read is pending never loses an unpersisted draft or replaces it with disk bytes.
 
 **Global constants pane.** The toolbar's Constants button, under Utility, opens the Global
 Constants pane in the right-hand panel; it edits the pipeline's
