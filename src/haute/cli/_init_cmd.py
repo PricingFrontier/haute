@@ -737,12 +737,17 @@ def _current_answers(
 
 def _writes_connections(connections: Mapping[str, Connection] | None, store: str) -> bool:
     """Whether a workbench on *store* has ``connections.toml`` written: when the project has
-    none (*connections* None), or when one of its *connections* is on the other database."""
+    none (*connections* None), or when the connection of an environment ``haute.toml`` will
+    declare on *store* (``WORKBENCH_ENVIRONMENTS``) is on another database, SQLite included,
+    which the quote store would refuse as another provider than its environment's."""
+    from haute._scaffold import WORKBENCH_ENVIRONMENTS
+
     if connections is None:
         return True
     return any(
-        connection.provider in STORE_CHOICES and connection.provider != store
-        for connection in connections.values()
+        connections[name].provider != store
+        for name in WORKBENCH_ENVIRONMENTS
+        if name in connections
     )
 
 
@@ -972,8 +977,8 @@ def handle_init(config: InitConfig) -> None:
     if problem is not None:
         click.echo(f"Error: {problem}", err=True)
         raise SystemExit(1)
-    # connections.toml already there holds the team's connections: kept unless one of them is
-    # on the other database than the one answered, a changed quote store.
+    # connections.toml already there holds the team's connections: kept unless the connection
+    # of an environment haute.toml declares is on another database, a changed quote store.
     write_connections = answers.store is not None and _writes_connections(
         connections, answers.store
     )

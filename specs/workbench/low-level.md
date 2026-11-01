@@ -868,7 +868,8 @@ no longer has; and `InputSource` in
     already has a `haute.toml`, `haute init --workbench` sets it up again as a workbench
     (specs/cli): `haute.toml` afresh, the pipeline folder's files and the tests left as they
     are, a form folder already there kept, and a `connections.toml` already there kept
-    unless one of its connections is on the other database than `--store`, when it is
+    unless its `dev`, `staging` or `prod` connection is on another database than
+    `--store`, SQLite included, when it is
     written afresh. `_SEED_PATHSPECS` carries `workbench/` and `*/workbench/*`, so
     `set_working_branch`'s unborn-repository seed stages the form with the pipeline's
     files, and the generated deploy workflows need no trigger of the form's own: the

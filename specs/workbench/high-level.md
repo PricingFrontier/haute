@@ -140,8 +140,9 @@ Out of scope:
   workflows `haute init` generates for GitHub or Azure DevOps start when a file in the
   pipeline folder changes, the form's files among them; a re-run of `haute init` writes
   `haute.toml` afresh from its answers, while the form folder is left as it is, written only
-  when absent, and `connections.toml` too, unless one of its connections is on the other
-  database than the one answered, when it is written afresh for the new one. A nested `[workbench.app]` table says where
+  when absent, and `connections.toml` too, unless its `dev`, `staging` or `prod`
+  connection is on another database than the one answered, SQLite included, when it
+  is written afresh for the new one. A nested `[workbench.app]` table says where
   the underwriter app runs: `host` is `azure-container-apps`, and `edit_role`, when given,
   is the role the host signs underwriters in with that may change quotes, every other
   underwriter reading them; any other key, host or role that is not a name is refused by

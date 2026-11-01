@@ -97,7 +97,9 @@ Out of scope, owned elsewhere:
   reverse). The `haute` requirement in `pyproject.toml` gains each extra the answers need
   that it lacks, keeping its version, marker and other extras; none is taken away.
   `connections.toml` is written, the sign-in asked, when there is none or when one of its
-  connections is on another database than the one answered, a changed quote store;
+  `dev`, `staging` or `prod` connections, those of the environments the new
+  `haute.toml` declares, is on another database than the one answered (SQLite
+  included), a changed quote store;
   otherwise it is kept and the sign-in is not asked, a `--sign-in` given then answering
   nothing. A path of
   the form folder reached through a link or junction refuses the init before anything is

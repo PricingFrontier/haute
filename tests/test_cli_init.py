@@ -1366,6 +1366,48 @@ class TestInitWorkbench:
         env = (tmp_path / ".env.example").read_text(encoding="utf-8")
         assert env == app_env_example("azure-container-apps", connection_variables(tmp_path))
 
+    def test_a_re_run_from_sqlite_writes_connections_afresh_asking_the_sign_in(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import haute.cli._init_cmd
+        from haute._connections import read_connections
+
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(cli, ["init", *WORKBENCH], catch_exceptions=False)
+        # A workbench whose quote store is a SQLite file, which haute init does not offer: the
+        # new haute.toml puts dev on PostgreSQL, whose store refuses a SQLite dev connection.
+        toml = tmp_path / "haute.toml"
+        toml.write_text(
+            toml.read_text(encoding="utf-8").replace(
+                'provider = "sqlserver"', 'provider = "sqlite"'
+            ),
+            encoding="utf-8",
+        )
+        connections = tmp_path / "connections.toml"
+        connections.write_text(
+            '[dev]\nprovider = "sqlite"\ndatabase = "data/quotes.db"\n', encoding="utf-8"
+        )
+        before = _files(tmp_path)
+
+        # No server connection to take the sign-in from: without a terminal it is named.
+        refused = runner.invoke(cli, ["init", "--store", "postgresql"])
+        assert refused.exit_code == 2
+        assert "--sign-in" in refused.output
+        assert _files(tmp_path) == before
+
+        monkeypatch.setattr(haute.cli._init_cmd, "_at_terminal", lambda: True)
+        # A workbench, GitHub and the one host by Enter; Microsoft Entra ID picked.
+        result = runner.invoke(
+            cli, ["init", "--store", "postgresql"], input="\n\n\n2\n", catch_exceptions=False
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "How do you sign in to it?" in result.output
+        assert {
+            (name, each.provider, each.auth) for name, each in read_connections(tmp_path).items()
+        } == {(name, "postgresql", "entra") for name in ("dev", "staging", "prod")}
+        assert "  written    connections.toml" in result.output
+
     def test_at_a_terminal_a_re_run_on_the_same_database_keeps_connections_unasked(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
