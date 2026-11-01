@@ -349,6 +349,7 @@ jobs:
       matrix:
         python-version: ["3.11", "3.13"]
         shard: [1, 2, 3]
+        repeat: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -380,7 +381,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: backend-compat-junit-${{ matrix.python-version }}-${{ matrix.shard }}
+          name: backend-compat-junit-${{ matrix.python-version }}-${{ matrix.shard }}-${{ matrix.repeat }}
           path: .cache/junit/
           retention-days: 14
 
