@@ -9,7 +9,7 @@
 | `src/haute/cli/_polars_startup.py` | Applies Haute's Polars settings (spilling off, its folder in the working directory's `.haute_cache/polars-spill`, unknown extension columns as storage; [execution engine](../execution-engine/low-level.md)) and reaps ended processes' spill folders; `SPILL_ROOT` and `POLARS_SETTINGS`, which `haute serve` logs. |
 | `src/haute/cli/_helpers.py` | Cross-command utilities: `resolve_model_name`, `_open_browser`, `_node_env`, `_npm`, `_find_frontend_dir`, the `TransportInfo`/`resolve_transport` transport-dispatch helper, and the shared `ENDPOINT_SUFFIX_HELP` string. |
 | `src/haute/cli/_output.py` | `utf8_output`: the process's own stdout and stderr, when not UTF-8, written in UTF-8, or, when PYTHONIOENCODING chose the encoding or the stream is a terminal, kept with a mark it cannot hold replaced; a stream a caller put in the process's place left alone. |
-| `src/haute/cli/_init_cmd.py` | `haute init` — project scaffolding (a workbench project given no starter test quote, an automated one its example in tests/quotes): `InitConfig`, the questions (`_answers`, which takes each answer its flags give and, through `_pick`, asks a numbered list for the rest while `InitConfig.interactive` says the command runs at a terminal, `_at_terminal`; without one a question with a default takes it and the workbench's database and sign-in, which have none, are a usage error naming their flags, as is a flag of the other kind of project; the answers as `_Answers`), `handle_init`, TOML-aware `pyproject.toml` dependency injection, CI-provider file generation (`haute._scaffold.ci_files` for an automated project, `haute._scaffold.workbench_ci_files` for a workbench one, written by `write_generated_files`, which `haute ci update` shares) and pruning (`_prune_stale_ci_files`, every file Haute generates, `GENERATED_CI_FILES`, that the set written does not hold), a workbench project's `haute.toml` (`haute._scaffold.workbench_haute_toml`), form and `connections.toml` (written only when absent and an ordinary file's path, `_root_file_problem`, a `connections.toml` already there read first, `ConnectionsError` refused before anything is written) ([workbench](../workbench/low-level.md)) and `.env.example` (`haute._scaffold.app_env_example`), and next steps that name the CI secrets the first deploy or publication needs (`ci_secret_names`, of the target or of the app's host), with `haute ci secrets` on GitHub. |
+| `src/haute/cli/_init_cmd.py` | `haute init` — project scaffolding, or an existing project set up again (a workbench project given no starter test quote, an automated one its example in tests/quotes, each starter file written only where none is there and none on a re-run): `InitConfig`, the questions (`_answers`, which takes each answer its flags give and, through `_pick`, asks a numbered list for the rest while `InitConfig.interactive` says the command runs at a terminal, `_at_terminal`, each question's default from `_Defaults`, a new project's `NEW_PROJECT_DEFAULTS` or the project's current answers, `_current_answers`; without one a question with a default takes it and one without, the workbench's database and sign-in on a new project, is a usage error naming its flag, as is a flag of the other kind of project; the sign-in asked only when `connections.toml` is to be written, `_writes_connections`; the answers as `_Answers`), `handle_init`, TOML-aware `pyproject.toml` dependency injection (and the extras a workbench needs added to a `haute` requirement already listed), CI-provider file generation (`haute._scaffold.ci_files` for an automated project, `haute._scaffold.workbench_ci_files` for a workbench one, written by `write_generated_files`, which `haute ci update` shares) and pruning (`_prune_stale_ci_files`, every file Haute generates, `GENERATED_CI_FILES`, that the set written does not hold), a workbench project's `haute.toml` (`haute._scaffold.workbench_haute_toml`), form (written only when absent) and `connections.toml` (written when absent or when the `dev`, `staging` or `prod` connection in it is on another database than the one answered, SQLite included, since the quote store refuses a connection of another provider than its environment's, and only to an ordinary file's path, `_root_file_problem`; a `connections.toml` already there read first, `ConnectionsError` refused before anything is written) ([workbench](../workbench/low-level.md)) and `.env.example` (`haute._scaffold.app_env_example`), and next steps that name the CI secrets the first deploy or publication needs (`ci_secret_names`, of the target or of the app's host), with `haute ci secrets` on GitHub. |
 | `src/haute/cli/_run.py` | `haute run` — `RunConfig`, `handle_run`, parses + executes a pipeline and prints per-node results; a pipeline with a Workbench node is given its tables from the form folder of the project the file is in (`haute._workbench_nodes.with_form_tables`), a form that cannot be read reported as "Error reading the workbench's form: ...". |
 | `src/haute/cli/_lint.py` | `haute lint` — `LintConfig`, `handle_lint`, structural validation without execution. |
 | `src/haute/cli/_train.py` | `haute train` — `TrainConfig`, `handle_train`, loads a training script as a module, runs its `job`, prints a live progress bar. |
@@ -28,7 +28,7 @@
 Every command uses a plain mutable `@dataclass` as a configuration value bag consumed by a
 `handle_*` function.
 
-- `InitConfig(target, ci, force=False, workbench=False, host=None, store=None, sign_in=None, interactive=False)` — `_init_cmd.py`; `target`, `ci` and `workbench` are None when their flags were not given, which asks at a terminal and takes the default without one.
+- `InitConfig(target, ci, workbench=False, host=None, store=None, sign_in=None, interactive=False)` — `_init_cmd.py`; `target`, `ci` and `workbench` are None when their flags were not given, which asks at a terminal and takes the default without one.
 - `CiSecretsConfig(check_only, verify)` — `_ci.py`.
 - `RunConfig(pipeline_file: Path)` — `_run.py`.
 - `LintConfig(pipeline_file: Path)` — `_lint.py`.
@@ -79,7 +79,7 @@ rows, and are excluded from both selections. The CLI does not print schema warni
 | Command | Arguments and options | Exit and failure contract |
 |---|---|---|
 | `haute` | `--version`; `--help`. | Both print and exit 0. Unknown commands/options are Click usage errors (exit 2). |
-| `haute init` | `--automated`/`--workbench` (how the project prices; asked at a terminal, else automated); `--ci` choice: `github` (the default), `gitlab`, `azure-devops`, `none`; `--target` choice, an automated project's: `databricks` (the default), `container`, `azure-container-apps`, `aws-ecs`, `gcp-run`; `--host` choice, a workbench project's: `azure-container-apps` (the default, the only host); `--store` choice, a workbench project's: `sqlserver`, `postgresql` (no default); `--sign-in` choice, a workbench project's: `password`, `entra`, `service-principal` (no default); `-f`/`--force`. The `--target` help labels `azure-container-apps`, `aws-ecs` and `gcp-run` build and push only; the planned `sagemaker` and `azure-ml` targets are not offered. At a terminal each answer a flag does not give is asked as a numbered list, its default the answer Enter takes; a workbench project's database and sign-in have none, so an answer must be picked. | Success 0. Existing `haute.toml` without `--force` exits 1, before any question. Invalid choices exit 2 before the handler. Without a terminal, a workbench project without `--store` or `--sign-in` exits 2 naming the flag, as does `--target` with `--workbench` or `--host`, `--store` or `--sign-in` with an automated project. File/TOML/scaffold write errors are not converted into a fallback. |
+| `haute init` | `--automated`/`--workbench` (how the project prices; asked at a terminal, else automated); `--ci` choice: `github` (the default), `gitlab`, `azure-devops`, `none`; `--target` choice, an automated project's: `databricks` (the default), `container`, `azure-container-apps`, `aws-ecs`, `gcp-run`; `--host` choice, a workbench project's: `azure-container-apps` (the default, the only host); `--store` choice, a workbench project's: `sqlserver`, `postgresql` (no default); `--sign-in` choice, a workbench project's: `password`, `entra`, `service-principal` (no default). The `--target` help labels `azure-container-apps`, `aws-ecs` and `gcp-run` build and push only; the planned `sagemaker` and `azure-ml` targets are not offered. At a terminal each answer a flag does not give is asked as a numbered list, its default the answer Enter takes; on a new project a workbench project's database and sign-in have none, so an answer must be picked. In a project with a `haute.toml` each default is the project's current answer instead, and a question it holds no answer to has none, save the host's. | Success 0. An existing `haute.toml` that does not read as TOML exits 1, before any question. Invalid choices exit 2 before the handler. Without a terminal, a question without a default and without its flag (a new workbench project's `--store` or `--sign-in`, or on a re-run any the project holds no answer to) exits 2 naming the flag, as does `--target` with `--workbench` or `--host`, `--store` or `--sign-in` with an automated project. File/TOML/scaffold write errors are not converted into a fallback. |
 | `haute run [PIPELINE_FILE]` | Optional path; absent input uses `resolve_pipeline_file` project/discovery rules. | Missing/ambiguous file, parse failure, empty graph, executor failure, or any node result with non-`ok` status exits 1; success exits 0 after the optional final preview. |
 | `haute lint [PIPELINE_FILE]` | Optional path resolved exactly as `run`. | Missing/ambiguous file, parse failure, empty graph, or any collected structural issue exits 1; a clean graph exits 0. |
 | `haute train TRAINING_SCRIPT` | Required positional path. | Omission is a Click exit-2 usage error. Missing/unsafe/unloadable script, missing `job`, script exception, or `job.run` failure exits 1; successful training exits 0. |
@@ -94,35 +94,62 @@ rows, and are excluded from both selections. The CLI does not print schema warni
 
 ## Control flow
 
-**`init`**: `handle_init` checks for an existing `haute.toml` (abort unless `--force`, before any
-question), takes the answers (`_answers`: the flags', then, at a terminal, each question the
-flags leave out asked through `_pick`, which lists its options numbered and takes a number,
-Enter taking the default where the question has one; the five questions are how the project
-prices, the repository, the host, and for a workbench project the database and the analyst's
-sign-in), resolves the
-project name from `pyproject.toml` (creating/patching it via `_ensure_haute_dependency`, which adds
-`haute`, or for a workbench project `haute[<database>]`, the extra whose driver its release
-installs, when no `haute` requirement is listed, leaving one that is as it is, and which does
-a structural TOML edit rather than string templating so existing content survives, and adds a
+**`init`**: `handle_init` takes each question's default (`_Defaults`): on a re-run, a project
+with a `haute.toml`, the project's current answers (`_current_answers`; a file that does not
+read as TOML exits 1 naming the error, before any question), the kind from `[workbench]
+enabled`, the repository from `[ci] provider`, the target from `[deploy] target`, the host
+from `[workbench.app] host`, the database from the `[workbench.store.*]` tables' `provider`
+and the sign-in from `connections.toml`'s server connections' `auth`, each only when the
+project holds exactly one that the question offers, else no default; on a new project
+`NEW_PROJECT_DEFAULTS` (automated, GitHub, Databricks, no database or sign-in). It then
+takes the answers (`_answers`: the flags', then, at a terminal, each question the flags
+leave out asked through `_pick`, which lists its options numbered and takes a number, Enter
+taking the default where the question has one, and without a terminal the default, a
+question without one a usage error naming its flag; the five questions are how the project
+prices, the repository, the host, and for a workbench project the database and the
+analyst's sign-in, the last asked only when `connections.toml` is to be written,
+`_writes_connections`: there is none, or the connection of an environment the new
+`haute.toml` declares, `dev`, `staging` or `prod`, is on another database than the one
+answered, SQLite included), resolves the project name (on a re-run the
+existing `haute.toml`'s `[project] name`, else `pyproject.toml`'s, else the folder's),
+creates or patches `pyproject.toml` via `_ensure_haute_dependency`, which adds `haute`, or
+for a workbench project `haute[<database>,azure]` (the database's driver its release
+installs and the Azure management packages its rollout uses), when no `haute` requirement is
+listed, gives one that is listed each of those extras it lacks, keeping its version
+specifier, marker and other extras and taking none away, and does a structural TOML edit
+rather than string templating so existing content survives; it adds a
 `[dependency-groups]` dev group of ruff, mypy and pytest and a `[tool.mypy]` table only when the
 file has none: `mypy_path = "rating"` and `explicit_package_bases = true`, so the generated CI's
 `uv run mypy .` resolves what `rating/main.py` imports from its own folder (`utility`, and
 `modules` for its submodels) as Python does when it runs the file, and an override ignoring
-missing imports for `haute`, `catboost`, `xgboost`, `lightgbm` and `sklearn`), creates the
-`rating/` package tree (including `rating/utility/__init__.py` and
-`rating/utility/features.py`), an empty `rating/config/`, and the empty `rating/files/data/`, `rating/files/models/` and `rating/files/params/` folders where versioned data, model and parameter files go ([pipeline-config](../pipeline-config/high-level.md)), writes `haute.toml`, an automated project's via `haute._scaffold.haute_toml` for its target and
+missing imports for `haute`, `catboost`, `xgboost`, `lightgbm` and `sklearn`. On a new
+project it creates the `rating/` package tree (including `rating/utility/__init__.py` and
+`rating/utility/features.py`), an empty `rating/config/`, and the empty `rating/files/data/`, `rating/files/models/` and `rating/files/params/` folders where versioned data, model and parameter files go ([pipeline-config](../pipeline-config/high-level.md)). It writes `haute.toml` afresh, an automated project's via `haute._scaffold.haute_toml` for its target and
 a workbench project's via `haute._scaffold.workbench_haute_toml` for its host and database
 (then the blank form folder's files in `rating/workbench/` via `haute._scaffold.starter_form`
-and `connections.toml` via `haute._scaffold.connections_toml` for its database and the
-analyst's sign-in, each only when absent),
+when absent, and `connections.toml` via `haute._scaffold.connections_toml` for its database
+and the analyst's sign-in when `_writes_connections`),
 writes `.env.example` (`env_example` for the target, `app_env_example` for the app's host,
-each naming the variables `connections.toml` names), writes starter tests, writes `.python-version` with the project's Python when it has none
+each naming the variables `connections.toml` names), writes the starter tests on a new project, writes `.python-version` with the project's Python when it has none
 (`haute._project_python.project_python_version`), writes CI workflow files for the chosen
 provider on that Python, `ci_files` for the target or `workbench_ci_files` for the host
-(pruning first, on `--force`, each file Haute generates that the new set does not hold:
-another provider's, or the other kind of project's), installs a pre-commit hook into
-`.githooks/` and — if inside a git repo — `.git/hooks/`, and appends `.gitignore` guard entries via
-`haute._gitignore_guard.ensure_gitignore_guards`. A pre-existing root `main.py` is deleted and
+(on a re-run pruning first each file Haute generates that the new set does not hold:
+another provider's, or the other kind of project's; a new project prunes none, since its
+folder's workflows are the team's own), installs a pre-commit hook into
+`.githooks/` and — if inside a git repo — `.git/hooks/`, unless a `pre-commit` there is not
+Haute's (`_is_haute_hook`: it does not hold the Haute hook's header comment), which is kept
+and reported, and appends `.gitignore` guard entries via
+`haute._gitignore_guard.ensure_gitignore_guards`. On a new project each starter file
+(`rating/__init__.py`, `rating/main.py`, `rating/utility/__init__.py` and `features.py`,
+`tests/test_pipeline.py`, an automated project's example quote in tests/quotes) is written only
+where none is there, the summary naming each one kept; a re-run writes none of them and
+creates nothing in `rating/` or `tests/` but the form folder. A re-run's summary reports
+`haute.toml` written afresh and says to copy back from the previous one (in git) what was set
+by hand, the `[mlflow]` settings saved from the app among them; reports each other generated
+file, `.env.example`, the hook and the workflows, as written, updated or unchanged, and each
+workflow `_prune_stale_ci_files` removed (it returns them); says `rating/` and
+`tests/` were left as they are; and, when the kind of project changed, names the input and
+output nodes the pipeline still has, to replace. A pre-existing root `main.py` is deleted and
 reported: `uv init` recreates that placeholder whenever it runs and the project's real entry
 point is `rating/main.py`, so the root file is treated as a tooling artifact, not user content. The generated pipeline declares only
 `haute.Pipeline(name)` and therefore parses with zero nodes; its starter test checks that parse and
@@ -495,7 +522,7 @@ Key files and what they cover:
   `github_repository` reads each URL form and refuses other hosts and shapes; `run_gh`
   redacts a value from `gh`'s message and turns a timeout into `CiSecretsError`.
 - `test_cli_ux.py` — cross-cutting UX contracts: shared `ENDPOINT_SUFFIX_HELP` string reused across
-  commands, `init --force`, `train` progress-bar flushing, `status --version-only` exit codes,
+  commands, `train` progress-bar flushing, `status --version-only` exit codes,
   Windows pre-commit chmod skip.
 - `test_cli_cleanup.py` — `_node_env` failing loudly without Node, single-call browser opening,
   `_find_frontend_dir` raising when absent, that `smoke`'s error style matches project convention,
@@ -511,11 +538,18 @@ Key files and what they cover:
 - `test_cli_init.py` — full scaffold structure, project naming, every `--target`/`--ci` combination,
   the printed summary, `_ensure_haute_dependency` behaviour and its TOML-safety edge cases
   (including a real `mypy .` run under the scaffolded `[tool.mypy]` resolving `rating/main.py`'s
-  imports of its own `utility` and `modules`), and
-  `--force` re-init (including stale CI-file pruning, another provider's and the other kind of
-  project's), and a workbench project: its `haute.toml`, connections and workflows for each
-  database and sign-in, the questions asked at a terminal and their defaults, the flags
-  refused without one, and an initialised project refused rather than given a workbench.
+  imports of its own `utility` and `modules`), the extras added to a listed `haute`
+  requirement, a new project keeping the starter files already there, a `pre-commit` hook
+  that is not Haute's kept, and
+  the re-run: `rating/` and `tests/` left byte for byte, `haute.toml` written afresh keeping
+  `[project] name`, each question defaulting to the project's current answer (with and
+  without a terminal) and one it holds no answer to refused without its flag, a malformed
+  `haute.toml` refused before any question, stale CI-file pruning (another provider's and the
+  other kind of project's), the kind of project switched both ways naming the nodes to
+  replace, and a changed database writing `connections.toml` afresh while an unchanged one
+  keeps it unasked; and a workbench project: its `haute.toml`, connections and workflows for
+  each database and sign-in, the questions asked at a terminal and their defaults, and the
+  flags refused without one.
 - `test_cli_no_shadow.py` — regression guard that `haute.cli` imports as a package and is not
   shadowed by a same-named module.
 - `test_cli_serve.py` / `test_cli_train.py` — additional `serve`/`train` scenarios beyond what

@@ -2033,11 +2033,16 @@ def workbench_ci_files(
 # ── Pre-commit hook ───────────────────────────────────────────────────
 
 
+#: The comment that marks a git pre-commit hook as Haute's, which ``haute init`` replaces; a
+#: hook without it is the team's own, which it leaves as it is.
+PRE_COMMIT_HOOK_MARK = "# Haute pre-commit hook"
+
+
 def pre_commit_hook() -> str:
     """Generate a Git pre-commit hook that auto-formats with ruff."""
-    return """\
+    return f"""\
 #!/bin/sh
-# Haute pre-commit hook - auto-format staged Python files with ruff.
+{PRE_COMMIT_HOOK_MARK} - auto-format staged Python files with ruff.
 # Installed by `haute init`. To reinstall: cp .githooks/pre-commit .git/hooks/
 
 FILES=$(git diff --cached --name-only --diff-filter=ACM -- '*.py')
