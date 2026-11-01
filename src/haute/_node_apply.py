@@ -497,6 +497,7 @@ def apply_optimiser_apply_from_config(
     config: dict[str, Any] | str | PathLike[str],
     base_dir: str | Path | None = None,
     source_names: list[str] | None = None,
+    schema_only: bool = False,
 ) -> _Frame:
     """Apply a saved optimiser artifact to the selected input frame.
 
@@ -509,7 +510,7 @@ def apply_optimiser_apply_from_config(
     executor's unconfigured branch.
 
     *dfs* are the incoming frames in declared order and *source_names* are
-    their executable incoming-edge names.
+    their executable incoming-edge names. A *schema_only* walk reads no rows.
     """
     cfg = _resolve_node_config(config, base_dir)
     artifact = load_configured_optimiser_artifact(cfg, base_dir)
@@ -526,7 +527,9 @@ def apply_optimiser_apply_from_config(
     from haute._builders import _dispatch_apply, _select_optimiser_apply_input
 
     input_lf = _select_optimiser_apply_input(dfs, artifact, ratebook_input, names)
-    return _dispatch_apply(input_lf, artifact, version_col, optimised_value_col)
+    return _dispatch_apply(
+        input_lf, artifact, version_col, optimised_value_col, schema_only=schema_only
+    )
 
 
 # ---------------------------------------------------------------------------

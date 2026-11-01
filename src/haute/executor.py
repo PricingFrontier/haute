@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -80,7 +80,7 @@ from haute._seed_plans import (
 )
 from haute._source_cache import SourceCacheGenerationMissingError
 from haute._submodel_instances import runtime_instance_id
-from haute._types import NodeData, SubmodelEndpoint
+from haute._types import GraphNode, NodeData, SubmodelEndpoint
 from haute._validation_error import HauteValidationError
 from haute.errors import ExecutionError, HauteError, PreambleError, mark_failing_node
 from haute.graph_utils import (
@@ -1666,17 +1666,25 @@ def _execute_graph_core(
             # Each frame asked for, previewed from this run's bundle as a preview of it
             # alone would be.
             port_previews: dict[str, PortPreview] = {}
+            bundle = df if is_frame_bundle else {}
+            asked = [
+                *(port_labels or ()),
+                *((port_label,) if is_multi_frame_output and port_label is not None else ()),
+            ]
+            unknown = next((label for label in asked if label not in bundle), None)
+            if nid == target_node_id and unknown is not None:
+                tables = ", ".join(repr(label) for label in bundle) or "none"
+                results[nid] = NodeResult(
+                    status="error",
+                    error=(
+                        f"{node_map[nid].data.label} has no table '{unknown}' to preview; "
+                        f"its tables are {tables}."
+                    ),
+                    timing_ms=timings.get(nid, 0),
+                    memory_bytes=memory_bytes.get(nid, 0),
+                )
+                continue
             if nid == target_node_id and port_labels is not None:
-                bundle = df if is_frame_bundle else {}
-                unknown = next((label for label in port_labels if label not in bundle), None)
-                if unknown is not None:
-                    results[nid] = NodeResult(
-                        status="error",
-                        error=f"{node_map[nid].data.label} has no table '{unknown}' to preview.",
-                        timing_ms=timings.get(nid, 0),
-                        memory_bytes=memory_bytes.get(nid, 0),
-                    )
-                    continue
                 for label in port_labels:
                     frame = bundle[label]
                     frame_preview, _, frame_row_limit = _frame_preview(
@@ -1823,7 +1831,8 @@ def _eager_execute(
     for multi-frame emitters, populated whether or not the producer was
     materialised (a lazy ancestor's schema comes from ``collect_schema()``).
     """
-    preamble_error: str | None = None  # pragma: no mutate
+    build_node_fn: Callable[..., tuple[str, Callable[..., Any], bool]] = _build_node_fn
+    refused: set[str] = set()
     try:
         preamble_ns = _compile_preamble(
             graph.preamble or "",
@@ -1838,16 +1847,16 @@ def _eager_execute(
         )
         if active_profile != ExecutionProfile.PREVIEW_EAGER:
             raise
-        # Don't abort — let non-preamble nodes (data sources, model scoring,
-        # etc.) execute normally.  The error will surface on transform /
-        # source-switch nodes that actually need the preamble bindings.
+        # A preview still shows the nodes that run no code (sources, model
+        # scoring, Source Switches); every node that runs code fails with the
+        # preamble's error instead of running without its bindings.
         logger.warning("preamble_failed", error=str(exc))
         preamble_ns = {}
-        preamble_error = str(exc)
+        build_node_fn = _refusing_code_without_preamble(exc, refused)
 
     result = walk_graph(
         graph,
-        _build_node_fn,
+        build_node_fn,
         policy=CollectPolicy.display(
             collect=materialize_node_ids,
             row_limit=row_limit,
@@ -1862,20 +1871,13 @@ def _eager_execute(
         execution_context=execution_context,
         snapshot_plan=snapshot_plan,
     )
-    errors = result.errors
-    if preamble_error:
-        # Inject the preamble error only into nodes whose builders use it
-        # (transforms and live-switch nodes), not data sources / model scores.
-        preamble_types = {NodeType.POLARS, NodeType.LIVE_SWITCH}
-        node_map = {n.id: n for n in graph.nodes}
-        for nid in result.run_order:
-            nd = node_map.get(nid)
-            if nd and nd.data.nodeType in preamble_types and nid not in errors:
-                errors[nid] = preamble_error
+    for nid in refused:
+        # The preamble's line is not a line of the node's code.
+        result.error_lines.pop(nid, None)
     return (
         result.collected,
         result.run_order,
-        errors,
+        result.errors,
         result.timings,
         result.memory_bytes,
         result.error_lines,
@@ -1883,6 +1885,31 @@ def _eager_execute(
         result.output_columns,
         result.frame_columns,
     )
+
+
+def _refusing_code_without_preamble(
+    failure: PreambleError, refused: set[str]
+) -> Callable[..., tuple[str, Callable[..., Any], bool]]:
+    """A node builder for a preview whose preamble failed.
+
+    A node that runs code (a Polars node, or any node with code of its own)
+    could read a preamble binding, so it fails with the preamble's error
+    instead of running without them; its id goes into *refused*. Every other
+    node builds as usual.
+    """
+
+    def build(node: GraphNode, **kwargs: Any) -> tuple[str, Callable[..., Any], bool]:
+        name, fn, is_source = _build_node_fn(node, **kwargs)
+        if node.data.nodeType != NodeType.POLARS and not str(node.data.config.get("code") or ""):
+            return name, fn, is_source
+        refused.add(node.id)
+
+        def refuse(*_frames: Any, **_kwargs: Any) -> Any:
+            raise ExecutionError(str(failure))
+
+        return name, refuse, is_source
+
+    return build
 
 
 def _resolve_batch_scenario(graph: PipelineGraph) -> str | None:  # pragma: no mutate

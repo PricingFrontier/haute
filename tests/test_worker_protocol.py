@@ -110,6 +110,11 @@ def _worker_reporting_native_cap(runtime, request):
     return WorkerResultManifest(metadata={"backend": current_native_memory_backend()})
 
 
+def _worker_reporting_its_environment(runtime, request):
+    del runtime, request
+    return WorkerResultManifest(metadata={"value": os.environ.get("HAUTE_TEST_WORKER_VARIABLE")})
+
+
 def _request() -> WorkerRequest:
     return WorkerRequest("request-1", "training", {"items": [1, True, None]})
 
@@ -341,6 +346,23 @@ def test_a_thread_that_cannot_start_under_the_cap_is_a_memory_limit_failure(
     assert status == "error"
     assert failure.terminal_reason == "memory_limited"
     assert failure.error_type == "MemoryError"
+
+
+def test_the_protocol_worker_starts_with_its_configured_environment(tmp_path: Path) -> None:
+    """A variable set for the child at spawn reaches it, and the parent never holds it."""
+    result = run_worker_protocol(
+        _worker_reporting_its_environment,
+        _request(),
+        artifact_root=tmp_path / "artifacts",
+        artifact_kinds=frozenset(),
+        max_artifact_size_bytes=0,
+        config=IsolatedWorkerConfig(
+            timeout_seconds=60, environment={"HAUTE_TEST_WORKER_VARIABLE": "set-at-spawn"}
+        ),
+    )
+
+    assert result.metadata == {"value": "set-at-spawn"}
+    assert "HAUTE_TEST_WORKER_VARIABLE" not in os.environ
 
 
 def test_dtos_reject_non_plain_data_and_bounds() -> None:

@@ -1920,6 +1920,29 @@ class TestLiveSwitch:
         assert results["switch"].status == "ok"
         assert results["switch"].row_count == 3
 
+    def test_a_broken_preamble_fails_code_nodes_alone_without_running_them(self, tmp_path):
+        """A preview whose preamble does not compile reports the preamble's error on every
+        node that runs code, never the NameError its code would raise with no preamble, and
+        a Source Switch, which runs none, still previews."""
+        graph = self._switch_graph(tmp_path)
+        graph.preamble = "RATE = 1 / 0\n\n\ndef add_ten(col):\n    return pl.col(col) + 10\n"
+        graph.nodes.append(
+            _transform_node("priced", code="df = live_src.with_columns(y=add_ten('x'))")
+        )
+        graph.nodes.append(_transform_node("after", code="df = priced"))
+        graph.edges.extend([_edge("live_src", "priced"), _edge("priced", "after")])
+
+        results = execute_graph(graph, source="live")
+
+        assert results["switch"].status == "ok", results["switch"].error
+        assert results["switch"].row_count == 3
+        priced = results["priced"]
+        assert priced.status == "error"
+        assert "Preamble" in (priced.error or ""), priced.error
+        assert "add_ten" not in (priced.error or "")
+        assert priced.error_line is None
+        assert results["after"].status == "error"
+
     def test_live_scenario_works_regardless_of_edge_order(self, tmp_path):
         """Edge order in the graph JSON is arbitrary — live must still pick the correct input."""
         graph = self._switch_graph(tmp_path, reverse_edges=True)
@@ -4485,7 +4508,7 @@ class TestConflictingBatchScenarios:
 
 
 class TestPreambleFailureIsolation:
-    """Verify preamble errors inject only into POLARS and LIVE_SWITCH nodes."""
+    """A preview whose preamble fails fails only the nodes that run code, with its error."""
 
     def test_broken_preamble_data_source_succeeds(self, tmp_path, monkeypatch):
         """Data source nodes should execute normally even when the preamble
@@ -4530,12 +4553,9 @@ class TestPreambleFailureIsolation:
 
         _preview_cache.clear()
 
-    def test_broken_preamble_live_switch_gets_error(self, tmp_path, monkeypatch):
-        """liveSwitch nodes should also receive the preamble error.
-
-        Real failure: liveSwitch nodes silently pass through with no
-        error, hiding the preamble failure from the user.
-        """
+    def test_broken_preamble_leaves_the_live_switch_alone(self, tmp_path, monkeypatch):
+        """A Source Switch runs no code, so a broken preamble does not fail it; the nodes
+        that run code report the preamble (TestLiveSwitch pins them beside a switch)."""
         monkeypatch.chdir(tmp_path)
 
         util_dir = tmp_path / "utility"
@@ -4584,9 +4604,8 @@ class TestPreambleFailureIsolation:
         results = execute_graph(graph, source="live")
         # Data sources should succeed
         assert results["live_src"].status == "ok"
-        # liveSwitch should get the preamble error
-        assert results["sw"].status == "error"
-        assert "undefined_name" in results["sw"].error
+        assert results["sw"].status == "ok", results["sw"].error
+        assert results["sw"].row_count == 1
 
         _preview_cache.clear()
 

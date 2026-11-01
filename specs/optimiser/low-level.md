@@ -1037,13 +1037,18 @@ exposed depends on the artifact's constraints (`has_ratio_constraint`):
 
 - A `pl.DataFrame` input is applied eagerly.
 - A ratio constraint linearises against the whole apply-time frame, so the apply always reads
-  every input row and returns its eager result.
+  every input row and returns its eager result, except in a schema-only walk
+  (`NodeBuildContext.schema_only`, threaded through `apply_optimiser_apply_from_config` and
+  `_dispatch_apply`): that reads no rows, resolving the schema of the columns the apply reads
+  (a missing one fails as it would at run time) and returning an empty frame of
+  `online_apply_output_schema`.
 - Otherwise each quote is chosen independently, so the result is a
   `key_prefix_python_scan` (execution engine) keyed by the quote-id column with the schema
   `online_apply_output_schema` derives from the artifact: `quote_id` (`Utf8`), `optimal_step`
   (`Int32`), the optimised value column or its configured rename (`Float32`),
   `optimal_objective` (`Float32`), `optimal_<constraint>` (`Float32`) per sorted constraint,
-  and the version column when configured. The first three name the chosen scenario row: its
+  then each ratio constraint's numerator and denominator as `optimal_<column>` (`Float32`),
+  once each, in the constraints' order, and the version column when configured. The first three name the chosen scenario row: its
   quote id, scenario index, and scenario value cast to those dtypes
   (`online_apply_chosen_row_columns`), which trace correlation reads to find that row in the
   apply's input (see [tracing](../tracing/low-level.md)). A limit Polars pushes to the scan reads only the
@@ -1388,7 +1393,8 @@ whose message already names every problem and the remedy.
   covers the worker's cancel cell: a cancelled command stops while the worker lives on, a token
   cancelled before the command starts stops it at once, a command that registers nothing runs
   to completion, a cancel never reaches the next command, a failed command keeps nothing alive
-  into the next, a child holding the cell's lock never stalls its owner, and
+  into the next, a child holding the cell's lock never stalls its owner, a start whose
+  allocation fails closes the queue it opened and leaves the registry, and
   `on_command_cancel` raises outside a worker.
 - `tests/test_optimiser_adjustments.py` covers OPT-V10's statistical contract: bar counts
   against hand counts on a Float32 linspace grid and on `[0.8, 1.0, 1.3]`, zero-count steps kept
@@ -1523,7 +1529,8 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   prefix and applies to only the selected quotes' rows, an upstream row-local scorer predicts
   only those quotes' scenario rows, ratio-constraint results are identical under any limit,
   and `online_apply_output_schema` equals the eager apply's schema with renames, version
-  columns, and a custom quote-id column.
+  columns, and a custom quote-id column. A schema-only ratio apply reads no input row and
+  gives the full apply's schema.
 - **`tests/test_optimiser_apply_artifacts.py`** — the artifact-handle contract directly: round-
   trip persist→load, rejecting a path outside the owned root, rejecting a directory/file
   mismatch, rejecting a relative path.

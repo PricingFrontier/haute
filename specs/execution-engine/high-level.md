@@ -121,8 +121,11 @@ running heavy work in a child process the parent can kill on timeout or memory l
   both through one explicit mismatch branch. The preview HTTP adapter converts
   either mismatch into the same in-situ `PreviewNodeResponse(status="error")`
   instead of a generic 500. Preamble compilation happens outside that core:
-  interactive preview attaches a `PreambleError` only to nodes that consume its
-  namespace, while non-preview execution propagates it.
+  when it fails, an interactive preview fails every node that runs code (a Polars
+  node, or any node with code of its own) with the preamble's error, without running
+  it against an empty namespace, while the nodes that run none (sources, model scoring,
+  a Source Switch) preview as usual and the nodes downstream of a failed one report
+  it as upstream; non-preview execution propagates it.
 - **Preview row limits apply at the previewed node.** Target-only preview applies
   `row_limit` once to the previewed node's collected output, with SQL `LIMIT` semantics:
   the rows shown are rows the unlimited run produces, and Polars decides how far upstream

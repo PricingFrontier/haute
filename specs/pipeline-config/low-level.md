@@ -887,7 +887,8 @@ writing `strict=False` on a cast and a text parse when false and nothing when tr
 Tests live under `tests/`, predominantly as behavioural unit tests against the real decorator
 API and real JSON round-trips rather than mocks:
 
-- **`test_pipeline.py`** — `Node`/`Pipeline`/`Submodel` decorator registration,
+- **`test_pipeline.py`** — `Node`/`Pipeline`/`Submodel` decorator registration, `run()` and
+  `score()` refusing an empty pipeline,
   arity validation (`TestNodeArityValidation`), edge wiring and topo-order delegation, output
   resolution (`TestOutputResolution`), duplicate-name rejection
   (`TestDuplicateNodeName`), instance-reference fail-loud behaviour

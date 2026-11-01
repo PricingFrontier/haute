@@ -972,6 +972,8 @@ class Pipeline(NodeRegistry):
         """
         from haute._model_scorer import _scenario_ctx
 
+        if not self._nodes and not self._submodel_registrations:
+            raise ValueError("Pipeline has no nodes")
         if self._submodel_registrations:
             return self._with_submodels_expanded().score(df)
         _token = _scenario_ctx.set("live")

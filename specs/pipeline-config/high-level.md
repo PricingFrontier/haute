@@ -134,7 +134,8 @@ builders as source parsing and therefore reports positional parameter-name edges
 Keyword-only parameters are configuration and never become graph edges.
 
 **Standalone execution.** `Pipeline.run()` and `Pipeline.score(df)` are a self-contained
-executor over the live decorator graph (distinct from the full graph executor used for
+executor over the live decorator graph (each refusing a pipeline with no nodes, "Pipeline has
+no nodes") (distinct from the full graph executor used for
 deployment/preview, which operates on the parsed `GraphNode`/`GraphEdge` representation
 instead). They topologically sort the registered nodes and edges, run each node with its
 wired-in DataFrame(s) — a transform's function directly, a configured node's work through its

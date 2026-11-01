@@ -170,7 +170,8 @@
   `stop_poll_interval_seconds`, `process_name`, `address_space_allowance_bytes`,
   `preload_modules` (module names the protocol worker imports before installing its cap;
   empty by default), `environment` (variables set for the child at spawn only, through
-  `start_process_with_environment`; the parent's environment is restored); validates positivity
+  `start_process_with_environment`, by the one-shot and the protocol worker alike; the parent's
+  environment is restored); validates positivity
   in `__post_init__`.
 - **`RamEstimate`** (`_ram_estimate.py`, frozen dataclass) — `safe_row_limit`,
   `total_rows`, `estimated_bytes`, `available_bytes`, `bytes_per_row`,
@@ -354,8 +355,10 @@ On a partial hit (same graph, new target needs more materialised nodes), calls
 — fresh outputs win over stale cached ones for any overlapping node id, and a node
 that re-executed successfully clears any stale cached error. On a full miss, executes
 from scratch. `_eager_execute()` compiles the preamble (`_compile_preamble`, tolerant
-of failure — the error is attached only to nodes whose builder actually consumes the
-preamble namespace) and runs a display walk (`walk_graph` with
+of failure: the walk then builds through `_refusing_code_without_preamble`, which gives
+every node that runs code, a `POLARS` node or one with code of its own, a function raising
+the preamble's error as an `ExecutionError`, so it is recorded on that node without its
+code running and without the preamble's line as its error line) and runs a display walk (`walk_graph` with
 `CollectPolicy.display(collect=materialize_node_ids, row_limit=..., column_limits_by_node=...,
 record_failures=True)`), returning its collected frames, run order, errors, timings and schemas.
 When the caller omits an execution context, `execute_graph()` creates its admitted
@@ -395,14 +398,16 @@ frame, so that frame remains the node's ordinary preview without requiring
 `port_label`. A valid multi-frame target with no `port_label` has no canonical flat
 frame to preview. Its `NodeResult` is therefore `status="ok"` with empty flat
 `columns` and `preview`, while `frame_columns` carries every labelled frame schema.
-Supplying `port_label` selects exactly that frame for the flat preview; unknown
-labels fail clearly and never fall back to an arbitrary first frame. Supplying
+Supplying `port_label` selects exactly that frame for the flat preview; a label the
+target does not emit fails the target as an unknown `port_labels` label does, naming the
+tables it has, and never falls back to an arbitrary first frame. Supplying
 `port_labels` instead previews each of those frames from the same run into the
 target's `port_previews` (a `PortPreview` each, its rows through `_frame_preview`, as
 the flat preview's are, and its columns through the same column reading, read from the
 frame since a bundle records no flat schema of its own), so each is
 what a `port_label` preview of that frame alone answers; a label the target does not
-emit fails the target ("<node> has no table '<label>' to preview."). The frames asked
+emit fails the target ("<node> has no table '<label>' to preview; its tables are
+'<a>', '<b>'."). The frames asked
 for are not in the cache key: the bundle holds every frame whichever are previewed.
 
 Before fingerprinting or building functions,
@@ -1342,11 +1347,14 @@ ways:
   dead with a structured `death` (`kind`, `exit_code`, `memory_evidence`) and raises the
   existing error; the owner decides what the death means. `terminate(reason)` bypasses any
   caller-side slot, sets the stop flag, then terminates → kills → joins and removes the
-  worker's private cgroups; it is idempotent.
+  worker's private cgroups; it is idempotent. `start` registers the worker, then opens its
+  queues and shared cells and spawns inside the one guard that terminates it on any failure,
+  so a failed allocation closes what was opened and leaves the registry.
 - **The child exits when the server does**, as every haute worker does (`_parent_watch`): the
   parent passes its pid and the child's watcher thread follows the parent *process* (Windows
   `OpenProcess(SYNCHRONIZE)` + `WaitForSingleObject`, Linux ≥ 5.3 `pidfd_open` + `poll`,
-  otherwise a one-second `getppid()` poll) and `os._exit`s when it is gone. `PR_SET_PDEATHSIG` is
+  otherwise a one-second `getppid()` poll) and `os._exit`s when it is gone; the wait closes the
+  process handle or pidfd it opened once the parent has gone. `PR_SET_PDEATHSIG` is
   not used: it follows the spawning thread, and sessions are spawned from short-lived job
   threads. The module
   registry holds every live worker; the server lifespan and `atexit` set shutdown fencing
@@ -2637,10 +2645,10 @@ present a structural or schema result as execution evidence.
   reaches the parent of an interactive worker or a spawned evaluation case intact.
 - `PreambleError` (`haute.errors`, extends `ExecutionError`) — preamble compile/exec
   failure with stable public code `preamble_failed` and optional public
-  `source_line`. Interactive preview catches it inside `_eager_execute` and
-  attaches it only to `POLARS`/`LIVE_SWITCH` nodes rather than aborting the whole
-  preview; every non-preview profile propagates it through the shared HTTP/job
-  contract-error adapter.
+  `source_line`. Interactive preview catches it inside `_eager_execute` and fails
+  only the nodes that run code with it, never running them, rather than aborting the
+  whole preview; a Source Switch runs no code and is unaffected. Every non-preview
+  profile propagates it through the shared HTTP/job contract-error adapter.
 - `PreviewProjectionError` (`executor.py`, extends `HauteValidationError`, a
   `ValueError` subclass) — a requested
   preview-column projection references columns not present on the target frame.
@@ -2932,7 +2940,11 @@ present a structural or schema result as execution evidence.
   rejection, Linux/Windows aggregate enforcement, active-backend scoping, lease
   cleanup, and fork-safe ownership contracts, and the model-thread allowance's fixed
   part plus its per-CPU part.
-- `tests/test_worker_protocol.py` — also that `_protocol_entrypoint` imports every
+- `tests/test_parent_watch.py` — every kind of worker ends when its server process is killed,
+  and a process waiting on its parent's exit holds no more handles or descriptors afterwards
+  than before.
+- `tests/test_worker_protocol.py` — also that a real protocol worker starts with its
+  configured `environment` while the parent never holds it, that `_protocol_entrypoint` imports every
   `preload_modules` entry before `NativeMemoryLease.apply()`, and that a failed preload is
   the curated failure above, with the library's text only in its `error` field and traceback,
   no cap installed and the job's function never run.
@@ -2953,6 +2965,9 @@ present a structural or schema result as execution evidence.
 - `tests/test_extract_column_refs.py` — extraction of referenced columns across empty/minimal, selected/excluded, and node-config shapes.
 - `tests/test_graph_input_identity.py` — edge-derived pipeline input-name derivation contract across source handles and graph edges.
 - `tests/test_polars_backend_strategy_contract.py` — execution-strategy planning, boundedness/diagnostics payloads, projection, and error contracts, including the cross-profile table that plans each admitted Polars shape (row-preserving, row-reducing, bounded-expansion, and audited string/temporal predicates ahead of a group-by) under every `ExecutionProfile` with the real estimator and requires identical strategy diagnostics apart from the profile itself; it also proves that an unavailable estimate becomes the `warned` `full-width-conservative` strategy under an active native cap (`native_memory_backend_scope`) and the typed `materialisation_estimate_unavailable` rejection without one, with admission and headroom failures unchanged in both. It also covers every newly admitted boundary operator: `sort`, `unique`, `join`, `join_asof`, `top_k`, `bottom_k`, `reverse`, `shift`, an `over` inside `with_columns`, and `shift`, `diff`, and `pct_change` columns inside `with_columns` each plan `materialisation-boundary` with a positive estimate and identical diagnostics on every profile; `explode` plans `warned` `full-width-conservative` under a native cap and rejects without one; and `unpivot`, `rolling`, and `merge_sorted` plan no boundary at all. A `diff` built inside a user helper is still a boundary (its estimate unavailable, so conservative under a cap and rejected without one), while a `list` namespace method reached through an alias is not.
+- `tests/test_executor.py` and `tests/test_apiinput_multi_port_runtime.py` — a preview whose
+  preamble fails fails each Polars node with the preamble's error while a Source Switch
+  previews, and a `port_label` the target does not emit fails it naming its tables.
 - `tests/test_data_io_nodes.py` — sink execution and publication: a cast failing only on the data naming the Data Output being written, the isolated output worker's admission release and failure classification, atomic staging/commit, overwrite and race handling, and the end-to-end group-by sink, including a conservative (`warned`) run whose written frame equals plain Polars and whose metrics payload carries the warned strategy.
 - `tests/test_scenario_propagation.py` — active scenario propagation through routes, executor, builders, and live-switch pruning.
 - `tests/test_streaming_collect_contract.py` — static contract that bounded callers use `streaming_collect` across execution/deploy/training/optimiser modules.

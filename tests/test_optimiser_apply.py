@@ -441,6 +441,40 @@ class TestExecutorOnline:
         assert applied.equals(fn(scored.lazy()).collect())
         assert applied.height == 2
 
+    def test_a_schema_only_ratio_apply_reads_no_rows(self, write_artifact):
+        """A ratio constraint linearises against the whole frame, so its apply collects
+        it; a schema-only walk must not, and gets the apply's exact schema instead."""
+        artifact = {
+            **_make_online_artifact(),
+            "lambdas": {"loss_ratio": 0.2, "predicted_volume": 0.5},
+            "constraints": {
+                "predicted_volume": {"min": 0.9},
+                "loss_ratio": {"max": 0.6, "numerator": "claims", "denominator": "premium"},
+            },
+        }
+        node = _make_node({"sourceType": "file", "artifact_path": write_artifact(artifact)})
+        scored = _scored_df().with_columns(
+            claims=pl.col("predicted_income") * 0.6, premium=pl.lit(100.0)
+        )
+        read: list[int] = []
+
+        def counted(batch: pl.DataFrame) -> pl.DataFrame:
+            read.append(batch.height)
+            return batch
+
+        _, schema_fn, _ = _build_node_fn(node, source_names=["scored"], schema_only=True)
+        planned = schema_fn(
+            scored.lazy().map_batches(counted, schema=scored.schema)
+        ).collect_schema()
+        assert read == []
+
+        _, fn, _ = _build_node_fn(node, source_names=["scored"])
+        built = fn(scored.lazy().map_batches(counted, schema=scored.schema))
+        assert planned == built.collect_schema()
+        assert read, "the full apply reads its rows when it is built"
+        with pytest.raises(pl.exceptions.ColumnNotFoundError, match="claims"):
+            schema_fn(scored.drop("claims").lazy())
+
     def test_a_preview_of_the_apply_reads_past_a_column_it_does_not_read(self, haute_scratch):
         # A display walk does not narrow the apply's input to its planned demand.
         scored = haute_scratch / "scored.parquet"

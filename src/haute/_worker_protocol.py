@@ -381,7 +381,7 @@ def run_worker_protocol(
     )
     try:
         try:
-            start_process_with_environment(process, {})
+            start_process_with_environment(process, worker_config.environment)
         except Exception as exc:  # pragma: no cover - multiprocessing dependent
             raise IsolatedWorkerStartError(f"Failed to start isolated worker: {exc}") from exc
         rss_watchdog = _create_worker_rss_watchdog(
