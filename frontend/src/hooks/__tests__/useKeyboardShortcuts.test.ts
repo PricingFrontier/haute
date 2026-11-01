@@ -896,4 +896,108 @@ describe("useKeyboardShortcuts", () => {
     expect(params.setEdges).not.toHaveBeenCalled()
     expect(params.setSelectedNode).toHaveBeenCalledWith(null)
   })
+
+  it("Delete on a mixed selection removes the selected node, its incident edges, and unrelated selected edges in one undoable step", async () => {
+    const { default: useGraphStore } = await import("../../stores/useGraphStore")
+    cleanup()
+    const nodeA = makeNode("a", "polars", { selected: true })
+    const nodeB = makeNode("b", "polars", { selected: false })
+    const nodeC = makeNode("c", "polars", { selected: false })
+    const nodeD = makeNode("d", "polars", { selected: false })
+    const incidentEdge: Edge = { id: "e_a_b", source: "a", target: "b", selected: false }
+    const selectedUnrelatedEdge: Edge = { id: "e_b_c", source: "b", target: "c", selected: true }
+    const unselectedUnrelatedEdge: Edge = { id: "e_c_d", source: "c", target: "d", selected: false }
+
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [nodeA, nodeB, nodeC, nodeD],
+      edges: [incidentEdge, selectedUnrelatedEdge, unselectedUnrelatedEdge],
+      preamble: "",
+      submodels: {},
+    })
+
+    const storeParams = makeParams({
+      graphRef: {
+        current: {
+          nodes: useGraphStore.getState().nodes,
+          edges: useGraphStore.getState().edges,
+        },
+      },
+      setNodesAndEdges: vi.fn((nextNodes, nextEdges) => {
+        useGraphStore.getState().setNodesAndEdges(nextNodes, nextEdges)
+        storeParams.graphRef.current = {
+          nodes: useGraphStore.getState().nodes,
+          edges: useGraphStore.getState().edges,
+        }
+      }),
+      setEdges: vi.fn((nextEdges) => {
+        useGraphStore.getState().setEdges(nextEdges)
+        storeParams.graphRef.current = {
+          nodes: useGraphStore.getState().nodes,
+          edges: useGraphStore.getState().edges,
+        }
+      }),
+    })
+    renderHook(() => useKeyboardShortcuts(storeParams))
+
+    act(() => {
+      fireKey("Delete")
+    })
+
+    expect(storeParams.setNodesAndEdges).toHaveBeenCalledOnce()
+    expect(storeParams.setEdges).not.toHaveBeenCalled()
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["b", "c", "d"])
+    expect(useGraphStore.getState().edges.map((edge) => edge.id)).toEqual(["e_c_d"])
+    expect(useGraphStore.getState().undoStack).toHaveLength(1)
+
+    act(() => {
+      useGraphStore.getState().undo()
+    })
+
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["a", "b", "c", "d"])
+    expect(useGraphStore.getState().edges.map((edge) => edge.id)).toEqual([
+      "e_a_b",
+      "e_b_c",
+      "e_c_d",
+    ])
+  })
+
+  it("Delete on a mixed selection with a protected submodel owner spares the owner while deleting eligible nodes and selected edges", () => {
+    const owner = makeNode("owner", "submodel", {
+      selected: true,
+      data: {
+        label: "pricing",
+        nodeType: "submodel",
+        config: { definitionId: "def_pricing", alias: "pricing" },
+      },
+    })
+    const copy = makeNode("copy", "submodel", {
+      selected: true,
+      data: {
+        label: "pricing_2",
+        nodeType: "submodel",
+        config: { definitionId: "def_pricing", alias: "pricing_2", instanceOf: "owner" },
+      },
+    })
+    const nodeB = makeNode("b", "polars", { selected: false })
+    const nodeC = makeNode("c", "polars", { selected: false })
+    const ownerIncident: Edge = { id: "e_owner_b", source: "owner", target: "b", selected: false }
+    const copyIncident: Edge = { id: "e_copy_b", source: "copy", target: "b", selected: false }
+    const selectedUnrelated: Edge = { id: "e_b_c", source: "b", target: "c", selected: true }
+
+    params.graphRef.current = {
+      nodes: [owner, copy, nodeB, nodeC],
+      edges: [ownerIncident, copyIncident, selectedUnrelated],
+    }
+
+    fireKey("Delete")
+
+    expect(useToastStore.getState().toasts.at(-1)?.text).toContain("Dissolve Submodel")
+    expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
+    const [remainingNodes, remainingEdges] = vi.mocked(params.setNodesAndEdges).mock.calls[0] as [
+      Node[],
+      Edge[],
+    ]
+    expect(remainingNodes.map((node) => node.id)).toEqual(["owner", "b", "c"])
+    expect(remainingEdges.map((edge) => edge.id)).toEqual(["e_owner_b"])
+  })
 })

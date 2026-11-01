@@ -15,7 +15,6 @@ packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FGC-R07 | Planned | P3 | Deleting selected nodes and separate selected edges performs one complete, undoable selection change. |
 | FGC-R08 | Planned | P2 | A late file read cannot replace a newer selection or discard edits made while the read was pending. |
 | FGC-R09 | Planned | P2 | A blocked node downstream of an unavailable source opens its recovery inspector without running healthy-editor input derivation. |
 | FGC-R10 | Planned | P1 | Submodel drill-in and breadcrumb exit isolate or reset Undo/Redo history and dirty baselines per navigation level, and close side panels and stale traces on entry and exit. |
@@ -23,25 +22,6 @@ packages come from the
 | FGC-R12 | Planned | P2 | `previewPortLabel` honours `chosenFrame` on multi-table `apiInput` and `workbenchInput` nodes, `computeStructuralFingerprint` and `computePanelContextFingerprint` include `submodels` and submodel boundary `ports`, `Ctrl+V` refuses `submodel` and `submodelPort` nodes, and `Escape` in a non-empty `SearchField` does not close an enclosing `ModalShell`. |
 
 ## Planned improvements
-
-### FGC-R07 — Delete removes the complete eligible selection
-
-**Why:** The selected-node branch removes incident edges but ignores separately selected edges.
-A real keyboard/store test selects node A and the unrelated B-to-C edge; Delete removes A while
-leaving the selected edge. The edge-only branch behaves differently.
-
-**Plan:** Compute the eligible node and edge deletion set together, including incident edges
-and selected unrelated edges. Apply existing submodel-owner/boundary protections consistently
-and commit one graph transaction with its normal result cleanup.
-
-**Acceptance:** A mixed selection removes the selected node, its incident edges and the
-selected unrelated edge, preserving unrelated unselected edges. One undo restores the whole
-change. Protected submodel selections remain protected and the allowed part of a mixed
-selection follows the documented policy.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/hooks/useKeyboardShortcuts.ts::useKeyboardShortcuts.handler` (Delete/Backspace branch); `frontend/src/hooks/useKeyboardShortcuts.ts::useKeyboardShortcuts.handler` (Delete/Backspace branch).
 
 ### FGC-R08 — Utility navigation preserves drafts across pending reads
 

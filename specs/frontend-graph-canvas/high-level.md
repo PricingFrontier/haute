@@ -361,8 +361,10 @@ candidate, with the error toast.
   owner (or an occurrence with malformed identity) is refused on every one of
   those surfaces with a visible explanation, because it anchors the shared
   definition; "Dissolve Submodel" is its only removal path. A mixed keyboard
-  selection spares owners with an explanatory toast while the rest of the
-  selection still deletes; canvas-native deletion never includes an owner
+  selection of nodes and edges removes the eligible selected nodes, their
+  incident edges, and any separately selected edges in one undoable graph
+  transaction while preserving unrelated unselected edges, and spares owners
+  with an explanatory toast while the rest of the selection still deletes; canvas-native deletion never includes an owner
   because owners are stamped non-deletable, and React Flow preserves the
   edges of nodes it does not delete. An explicitly selected boundary edge
   remains deletable — removing a binding is an ordinary edit.
@@ -865,9 +867,8 @@ candidate, with the error toast.
 > later autosave fails, and late reads can steal a newer selection.
 > [FGC-R08](../roadmap/frontend-graph-canvas.md#fgc-r08--utility-navigation-preserves-drafts-across-pending-reads) owns draft and navigation identity.
 
-> NOTE: Distinct parsed or pasted connections can share an id; mixed node/edge Delete omits unrelated selected edges.
-> [NAME-10](../roadmap/name-collisions.md#name-10--every-distinct-connection-has-a-distinct-identity) and
-> [FGC-R07](../roadmap/frontend-graph-canvas.md#fgc-r07--delete-removes-the-complete-eligible-selection) own these gaps.
+> NOTE: Distinct parsed or pasted connections can share an id.
+> [NAME-10](../roadmap/name-collisions.md#name-10--every-distinct-connection-has-a-distinct-identity) owns this gap.
 
 - `useGraph()` called outside a `<GraphProvider>` throws a plain `Error`
   naming `GraphProvider` in its message. `App.tsx` wraps the node panel in

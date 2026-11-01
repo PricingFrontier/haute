@@ -424,7 +424,12 @@ export default function useKeyboardShortcuts({
           if (sharedDeletion !== "committed") {
             setNodesAndEdges(
               currentNodes.filter((n) => !selectedNodeIds.has(n.id)),
-              currentEdges.filter((ed) => !selectedNodeIds.has(ed.source) && !selectedNodeIds.has(ed.target)),
+              currentEdges.filter(
+                (ed) =>
+                  !selectedNodeIds.has(ed.source)
+                  && !selectedNodeIds.has(ed.target)
+                  && !selectedEdgeIds.has(ed.id),
+              ),
             )
           }
           if (!cleanedUp) cleanupAfterRemoval()
