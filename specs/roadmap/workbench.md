@@ -120,22 +120,25 @@ SQL Server or PostgreSQL, and how the analyst signs in to it, a password, their 
 Entra ID sign-in or a service principal. Dev, staging and prod are assumed to run on one
 engine, so the engine is written once for each, as `[workbench.store.dev]`,
 `[workbench.store.staging]` and `[workbench.store.prod]` and as the provider of each of
-`connections.toml`'s connections (WB-45). The sign-in is the analyst's, so it is written in
-`connections.toml`, where the analyst defines how to sign in, each connection naming its
-own variables in `.env.example`; the hosted app's sign-in in `haute.toml` is not asked and
-stays a managed identity, as WB-45 writes it. Each database's server and name are left
+`connections.toml`'s connections ([workbench](../workbench/high-level.md)). The sign-in is
+the analyst's, so it is written in `connections.toml`, where the analyst defines how to
+sign in, each connection naming its own variables in `.env.example`; the hosted app's
+sign-in in `haute.toml` is not asked and stays a managed identity, as `haute init
+--workbench` writes it now. Each database's server and name are left
 empty in `connections.toml` for the analyst to fill in; where a hosted app's database is,
 and every secret, still comes from the host's variables, never from the questions. Each
 question has a flag, and `haute init` asks only for what its flags leave out, and only at
 a terminal; without one an unanswered question takes today's default (automated, GitHub,
 Databricks), and a workbench project's database and sign-in, which have none, are refused
-naming their flags. Open, for the owner: how an automated project already initialised
-becomes a workbench project, its workflows replaced and its endpoint's `[deploy]` settings
-dropped; and whether the app image's base image and registry stay in `[deploy.container]`
-or move to `[workbench.app]`. The behaviour lives in Haute's commands, which read the
-workbench settings, so the YAML stays thin and alike across providers, and `haute ci
-update` reads how the project prices from `haute.toml` and regenerates that set without
-rewriting its pipeline or form, as `haute init --force` would.
+naming their flags. An automated project is never converted into a workbench project: no
+serious work is done in a project before that choice, so one that should have been a
+workbench project is started again, a new project or `haute init --force` answering
+workbench, and `haute init` no longer adds the workbench to a project that has a
+`haute.toml`. Open, for the owner: whether the app image's base image and registry stay
+in `[deploy.container]` or move to `[workbench.app]`. The behaviour lives in Haute's
+commands, which read the workbench settings, so the YAML stays thin and alike across
+providers, and `haute ci update` reads how the project prices from `haute.toml` and
+regenerates that set without rewriting its pipeline or form, as `haute init --force` would.
 The deploy triggers gain each release input as it arrives, where its specification puts it:
 the app's entry point and the export templates; the store's tables follow the form, which
 already starts the deploy. The app's delivery builds each release once. On every
@@ -174,7 +177,8 @@ Apps first; other hosts follow with the same commands.
 project's host from a list of one, writes the one engine for dev, staging and prod in
 `haute.toml` and `connections.toml`, and writes the analyst's sign-in in `connections.toml`
 alone; its flags answer every question without a terminal, and a workbench project's
-database and sign-in, given by neither, are refused naming their flags. A project `haute
+database and sign-in, given by neither, are refused naming their flags; and `haute init`
+in a project that has a `haute.toml` adds no workbench to it. A project `haute
 init` initialised for workbench pricing on Azure Container Apps and merged to `main` runs
 its generated workflow, which holds no endpoint deploy and no smoke or impact against an
 endpoint, to a staging app and, after approval, to production, with the digest CI tested
@@ -191,9 +195,7 @@ they lack, and opens its quotes once the tables fit, with no new run; a candidat
 otherwise leaves the previous release running and the run failed.
 
 **Dependencies:** WB-11 (the export the app's tests make, once its formats are
-decided) and WB-12 (the test quotes). WB-45 (PR #361): `connections.toml`, dev on a server
-database, and the environments dev, staging and prod that `haute init --workbench`
-declares. The Azure
+decided) and WB-12 (the test quotes). The Azure
 resources and identities, provided by the project's IT team. The generated deploy jobs
 already log in to the registry before a push; impact's input is the `[safety]` portfolio
 sample, or the test quotes without one.
