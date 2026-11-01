@@ -209,8 +209,8 @@ function makeProps(overrides: MakePropsOverrides = {}) {
     ...componentOverrides
   } = overrides
   const componentProps = {
+    nodeId: "opt_1",
     config: {
-      _nodeId: "opt_1",
       mode: "online",
       objective: "premium",
       constraints: {},
@@ -244,7 +244,7 @@ function makeProps(overrides: MakePropsOverrides = {}) {
  * `showPane` and the Solve pane's Go to links switch panes mid-test.
  */
 function PaneBoundConfig(props: Parameters<typeof OptimiserConfig>[0]) {
-  const remembered = useUIStore((state) => state.optimiserPanes[String(props.config._nodeId)])
+  const remembered = useUIStore((state) => state.optimiserPanes[props.nodeId])
   return <OptimiserConfig {...props} activePane={remembered ?? props.activePane} />
 }
 
@@ -377,7 +377,7 @@ describe("OptimiserConfig", () => {
     })
 
     it("renders ratebook mode as active when config.mode is ratebook", () => {
-      renderConfig(makeProps({ config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {} } }))
+      renderConfig(makeProps({ config: { mode: "ratebook", objective: "premium", constraints: {} } }))
       const ratebookBtn = screen.getByRole("button", { name: "Ratebook" })
       expect(ratebookBtn).toHaveStyle({ color: "var(--warning-strong)" })
     })
@@ -399,7 +399,7 @@ describe("OptimiserConfig", () => {
 
     it("uses distinct executable edge input names for optimiser selectors", () => {
       const props = makeProps({
-        config: { _nodeId: "opt_1", mode: "ratebook", data_input: "quote_info", banding_source: "Banding_node", objective: "premium", constraints: {} },
+        config: { mode: "ratebook", data_input: "quote_info", banding_source: "Banding_node", objective: "premium", constraints: {} },
         allNodes: [
           { id: "api", data: { label: "Quote API", description: "", nodeType: "apiInput", config: {} } },
           { id: "banding", data: { label: "Banding node", description: "", nodeType: "banding", config: {} } },
@@ -436,7 +436,6 @@ describe("OptimiserConfig", () => {
     it("rejects a stale exact data-input selection even when one input remains", () => {
       renderConfig(makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           data_input: "removed_input",
           objective: "premium",
@@ -466,7 +465,6 @@ describe("OptimiserConfig", () => {
     it("rejects a falsey non-string data-input selector instead of inferring one input", () => {
       renderConfig(makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           data_input: 0,
           objective: "premium",
@@ -506,7 +504,6 @@ describe("OptimiserConfig", () => {
     it("disables data-input column fetches when upstream columns exist", () => {
       const props = makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           data_input: "Data_Input",
           objective: "expected_margin",
@@ -553,7 +550,6 @@ describe("OptimiserConfig", () => {
       } satisfies SimpleNode
       const props = makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           data_input: "Data_Input",
           objective: "expected_margin",
@@ -589,7 +585,6 @@ describe("OptimiserConfig", () => {
     it("defers data-input column fetches while the selected preview is loading", () => {
       const props = makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           data_input: "Data_Input",
           objective: "expected_margin",
@@ -636,18 +631,18 @@ describe("OptimiserConfig", () => {
     withPane("factors")
 
     it("shows Rating Factor Source section in ratebook mode", () => {
-      renderConfig(makeProps({ config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {} } }))
+      renderConfig(makeProps({ config: { mode: "ratebook", objective: "premium", constraints: {} } }))
       expect(screen.getByText("Rating Factor Source")).toBeInTheDocument()
     })
 
     it("shows 'No Banding nodes found' when no banding nodes connected", () => {
-      renderConfig(makeProps({ config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {} } }))
+      renderConfig(makeProps({ config: { mode: "ratebook", objective: "premium", constraints: {} } }))
       expect(screen.getByText(/No Banding nodes found/)).toBeInTheDocument()
     })
 
     it("warns when an explicit Banding source is no longer directly connected", () => {
       renderConfig(makeProps({
-        config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {}, banding_source: "removed_banding" },
+        config: { mode: "ratebook", objective: "premium", constraints: {}, banding_source: "removed_banding" },
         allNodes: [
           { id: "input_1", data: { label: "Data Input", description: "", nodeType: "dataInput", config: {} } },
           { id: "banding_1", data: { label: "Banding", description: "", nodeType: "banding", config: {} } },
@@ -666,7 +661,6 @@ describe("OptimiserConfig", () => {
       })
       renderConfig(makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "ratebook",
           objective: "premium",
           constraints: {},
@@ -689,7 +683,6 @@ describe("OptimiserConfig", () => {
     it("does not rewrite a falsey non-string Banding selector to the sole input", () => {
       const made = makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "ratebook",
           data_input: "Data_Input",
           objective: "premium",
@@ -726,7 +719,7 @@ describe("OptimiserConfig", () => {
         zeroLevelOutputs: ["empty_band"], zeroLevelIssues: [{ outputColumn: "empty_band" }],
       })
       renderConfig(makeProps({
-        config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {}, banding_source: "Banding" },
+        config: { mode: "ratebook", objective: "premium", constraints: {}, banding_source: "Banding" },
         allNodes: [
           { id: "banding_1", data: { label: "Banding", description: "", nodeType: "banding", config: {} } },
         ],
@@ -745,7 +738,7 @@ describe("OptimiserConfig", () => {
       })
 
       renderConfig(makeProps({
-            config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {} },
+            config: { mode: "ratebook", objective: "premium", constraints: {} },
             allNodes: [
               { id: "input_1", data: { label: "Data Input", description: "", nodeType: "dataInput", config: {} } },
               { id: "banding_1", data: { label: "My Banding", description: "", nodeType: "banding", config: {} } },
@@ -775,7 +768,6 @@ describe("OptimiserConfig", () => {
 
       renderStatefulConfig(makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "ratebook",
           objective: "premium",
           constraints: {},
@@ -821,7 +813,6 @@ describe("OptimiserConfig", () => {
 
       renderStatefulConfig(makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "ratebook",
           objective: "premium",
           constraints: {},
@@ -867,7 +858,6 @@ describe("OptimiserConfig", () => {
 
       renderConfig(makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "ratebook",
           objective: "premium",
           constraints: {},
@@ -902,7 +892,6 @@ describe("OptimiserConfig", () => {
         deferColumnFetch: true,
         upstreamColumns: [],
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "profit",
           quote_id: "qid",
@@ -919,7 +908,7 @@ describe("OptimiserConfig", () => {
 
     it("marks a saved column the loaded input lacks", () => {
       renderConfig(makeProps({
-        config: { _nodeId: "opt_1", mode: "online", objective: "profit", constraints: {} },
+        config: { mode: "online", objective: "profit", constraints: {} },
       }))
       expect(screen.getByDisplayValue("profit (not in input)")).toBeInTheDocument()
     })
@@ -931,7 +920,6 @@ describe("OptimiserConfig", () => {
         upstreamColumns: [],
         activePane: "factors",
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: {},
@@ -953,7 +941,7 @@ describe("OptimiserConfig", () => {
     it("renders only the selected pane's controls", () => {
       renderConfig(makeProps({
         activePane: "data",
-        config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1 } } },
+        config: { mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1 } } },
       }))
       expect(screen.getByRole("tabpanel")).toHaveAttribute("id", "optimiser-data-pane")
       expect(screen.getByText("Column to maximise")).toBeInTheDocument()
@@ -975,7 +963,7 @@ describe("OptimiserConfig", () => {
     it("lists every solve-blocking issue and links each to its pane", () => {
       renderConfig(makeProps({
         activePane: "solve",
-        config: { _nodeId: "opt_1", mode: "ratebook", objective: "", constraints: {} },
+        config: { mode: "ratebook", objective: "", constraints: {} },
         edges: [],
       }))
       expect(screen.getByRole("button", { name: /Optimise/ })).toBeDisabled()
@@ -1003,7 +991,7 @@ describe("OptimiserConfig", () => {
       const onUpdate = vi.fn()
       renderStatefulConfig(makeProps({
         activePane: "constraints",
-        config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {}, data_input: "Data_Input" },
+        config: { mode: "ratebook", objective: "premium", constraints: {}, data_input: "Data_Input" },
         allNodes: [
           { id: "input_1", data: { label: "Data Input", description: "", nodeType: "dataInput", config: {} } },
           { id: "banding_1", data: { label: "Banding", description: "", nodeType: "banding", config: {} } },
@@ -1042,7 +1030,6 @@ describe("OptimiserConfig", () => {
     it("blocks an efficient frontier with an incomplete or inverted range, or too many solves", () => {
       renderConfig(makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 1 }, volume: { min: 10 } },
@@ -1061,7 +1048,6 @@ describe("OptimiserConfig", () => {
     it("needs no range for a constraint that is not swept", () => {
       renderConfig(makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 1 }, volume: { min: 10 } },
@@ -1079,7 +1065,6 @@ describe("OptimiserConfig", () => {
       renderConfig(makeProps({
         activePane: "constraints",
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 1 } },
@@ -1139,7 +1124,7 @@ describe("OptimiserConfig", () => {
     })
 
     it("does not mark the solve stale for export edits", () => {
-      const config = { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {} }
+      const config = { mode: "online", objective: "premium", constraints: {} }
       useNodeResultsStore.setState({
         solveResults: {
           opt_1: {
@@ -1182,7 +1167,6 @@ describe("OptimiserConfig", () => {
     it("Ctrl+Enter in an edited field solves the committed value, not the previous one", async () => {
       mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_key" })
       const config = {
-        _nodeId: "opt_1",
         mode: "online",
         objective: "premium",
         constraints: { loss_ratio: { max: 1 } },
@@ -1202,7 +1186,6 @@ describe("OptimiserConfig", () => {
 
     it("Ctrl+Enter judges readiness after the commit, so a now-invalid edit does not solve", async () => {
       const config = {
-        _nodeId: "opt_1",
         mode: "online",
         objective: "premium",
         constraints: { loss_ratio: { max: 1 } },
@@ -1295,7 +1278,7 @@ describe("OptimiserConfig", () => {
       const onPaneIssuesChange = vi.fn()
       renderConfig(makeProps({
         onPaneIssuesChange,
-        config: { _nodeId: "opt_1", mode: "ratebook", objective: "", constraints: {} },
+        config: { mode: "ratebook", objective: "", constraints: {} },
       }))
       expect(onPaneIssuesChange).toHaveBeenLastCalledWith("opt_1", ["data", "factors"])
     })
@@ -1358,7 +1341,6 @@ describe("OptimiserConfig", () => {
     it("renders constraint rows when constraints exist", () => {
       renderConfig(makeProps({
             config: {
-              _nodeId: "opt_1",
               mode: "online",
               objective: "premium",
               constraints: { loss_ratio: { max: 1.05 } },
@@ -1380,7 +1362,6 @@ describe("OptimiserConfig", () => {
     it("constraint type dropdown only offers absolute sum-constraint keys", () => {
       renderConfig(makeProps({
             config: {
-              _nodeId: "opt_1",
               mode: "online",
               objective: "premium",
               constraints: { loss_ratio: { max: 1.05 } },
@@ -1448,7 +1429,7 @@ describe("OptimiserConfig", () => {
     })
 
     it("ratebook mode shows CD iterations and CD tolerance", () => {
-      renderConfig(makeProps({ config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {} } }))
+      renderConfig(makeProps({ config: { mode: "ratebook", objective: "premium", constraints: {} } }))
       expect(screen.getByText("CD iterations")).toBeInTheDocument()
       expect(screen.getByText("CD tolerance")).toBeInTheDocument()
     })
@@ -1463,7 +1444,7 @@ describe("OptimiserConfig", () => {
 
     it("solve button is disabled when no objective is set", () => {
       renderConfig(makeProps({
-            config: { _nodeId: "opt_1", mode: "online", objective: "", constraints: {} },
+            config: { mode: "online", objective: "", constraints: {} },
           }))
       const btn = screen.getByRole("button", { name: /Optimise/ })
       expect(btn).toBeDisabled()
@@ -1472,7 +1453,6 @@ describe("OptimiserConfig", () => {
     it("solve button is enabled when objective and constraints are set", () => {
       renderConfig(makeProps({
             config: {
-              _nodeId: "opt_1",
               mode: "online",
               objective: "premium",
               constraints: { loss_ratio: { max: 1.05 } },
@@ -1487,7 +1467,7 @@ describe("OptimiserConfig", () => {
       const actual = await vi.importActual<typeof import("../../utils/buildGraph")>("../../utils/buildGraph")
       vi.mocked(buildGraph).mockImplementation(actual.buildGraph)
       renderConfig(makeProps({
-        config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {} },
+        config: { mode: "online", objective: "premium", constraints: {} },
       }))
       act(() => {
         useGraphStore.getState().setGlobalConstantsRaw([
@@ -1511,7 +1491,7 @@ describe("OptimiserConfig", () => {
       vi.mocked(buildGraph).mockImplementation(actual.buildGraph)
       act(() => useGraphStore.getState().setPreambleRaw("def helper(x):\n    return x\n"))
       renderConfig(makeProps({
-        config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {} },
+        config: { mode: "online", objective: "premium", constraints: {} },
       }))
       await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalled())
       fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
@@ -1528,7 +1508,6 @@ describe("OptimiserConfig", () => {
       mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_42", error: null })
       const props = makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 1.05 } },
@@ -1567,7 +1546,6 @@ describe("OptimiserConfig", () => {
       }))
       renderConfig(makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 1.05 } },
@@ -1593,7 +1571,6 @@ describe("OptimiserConfig", () => {
       })
       renderConfig(makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 1.05 } },
@@ -1627,7 +1604,6 @@ describe("OptimiserConfig", () => {
       })
       renderConfig(makeProps({
             config: {
-              _nodeId: "opt_1",
               mode: "online",
               objective: "premium",
               constraints: { loss_ratio: { max: 1.05 } },
@@ -1649,7 +1625,6 @@ describe("OptimiserConfig", () => {
     it("clicking remove button on a constraint calls handleRemoveConstraint with the name", () => {
       renderConfig(makeProps({
             config: {
-              _nodeId: "opt_1",
               mode: "online",
               objective: "premium",
               constraints: { loss_ratio: { max: 1.05 } },
@@ -1664,7 +1639,6 @@ describe("OptimiserConfig", () => {
     it("changing the constraint column dropdown calls handleConstraintColumnChange", () => {
       renderConfig(makeProps({
             config: {
-              _nodeId: "opt_1",
               mode: "online",
               objective: "premium",
               constraints: { loss_ratio: { max: 1.05 } },
@@ -1683,7 +1657,6 @@ describe("OptimiserConfig", () => {
     it("changing the constraint value input calls handleConstraintValueChange", () => {
       renderConfig(makeProps({
             config: {
-              _nodeId: "opt_1",
               mode: "online",
               objective: "premium",
               constraints: { loss_ratio: { max: 1.05 } },
@@ -1701,7 +1674,6 @@ describe("OptimiserConfig", () => {
     it("clearing a bound restores its value instead of relaxing the constraint to 0", () => {
       renderConfig(makeProps({
             config: {
-              _nodeId: "opt_1",
               mode: "online",
               objective: "premium",
               constraints: { loss_ratio: { max: 1.05 } },
@@ -1719,7 +1691,6 @@ describe("OptimiserConfig", () => {
     it("changing the constraint type dropdown calls handleConstraintValueChange", () => {
       renderConfig(makeProps({
             config: {
-              _nodeId: "opt_1",
               mode: "online",
               objective: "premium",
               constraints: { loss_ratio: { max: 1.05 } },
@@ -1735,7 +1706,6 @@ describe("OptimiserConfig", () => {
     it("shows multiple constraints with correct count", () => {
       renderConfig(makeProps({
             config: {
-              _nodeId: "opt_1",
               mode: "online",
               objective: "premium",
               constraints: { loss_ratio: { max: 1.05 }, volume: { min: 0.9 } },
@@ -1764,14 +1734,14 @@ describe("OptimiserConfig", () => {
 
     it("renders custom max_iter from config", () => {
       renderConfig(makeProps({
-            config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {}, max_iter: 200 },
+            config: { mode: "online", objective: "premium", constraints: {}, max_iter: 200 },
           }))
       expect(screen.getByDisplayValue("200")).toBeInTheDocument()
     })
 
     it("renders custom tolerance from config", () => {
       renderConfig(makeProps({
-            config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {}, tolerance: 0.01 },
+            config: { mode: "online", objective: "premium", constraints: {}, tolerance: 0.01 },
           }))
       expect(screen.getByDisplayValue("0.01")).toBeInTheDocument()
     })
@@ -1807,7 +1777,7 @@ describe("OptimiserConfig", () => {
 
     it("clicking online mode from ratebook calls onUpdate with mode online", () => {
       const props = makeProps({
-        config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: {} },
+        config: { mode: "ratebook", objective: "premium", constraints: {} },
       })
       renderConfig(props)
       fireEvent.click(screen.getByRole("button", { name: "Online" }))
@@ -1825,7 +1795,6 @@ describe("OptimiserConfig", () => {
     it("solve button is enabled when valid config has objective set", () => {
       renderConfig(makeProps({
             config: {
-              _nodeId: "opt_1",
               mode: "online",
               objective: "premium",
               constraints: {},
@@ -1838,7 +1807,6 @@ describe("OptimiserConfig", () => {
     it("ratebook mode solve button is disabled when no factor columns selected", () => {
       renderConfig(makeProps({
             config: {
-              _nodeId: "opt_1",
               mode: "ratebook",
               objective: "premium",
               constraints: {},
@@ -1858,7 +1826,7 @@ describe("OptimiserConfig", () => {
     withPane("solve")
 
     it("does not show staleness indicator when config hash matches", () => {
-      const cfg = { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {} }
+      const cfg = { mode: "online", objective: "premium", constraints: {} }
       const matchingHash = hashConfig(cfg as Record<string, unknown>)
       useNodeResultsStore.setState({
         solveResults: {
@@ -1931,7 +1899,7 @@ describe("OptimiserConfig", () => {
         },
       })
       renderConfig(makeProps({
-            config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+            config: { mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
           }))
       fireEvent.click(screen.getByRole("button", { name: "Re-run" }))
       await waitFor(() => {
@@ -1984,7 +1952,7 @@ describe("OptimiserConfig", () => {
       // Set configHash to empty to match the result's configHash
       useNodeResultsStore.setState({ solveResults: { opt_1: convergedResult } })
       renderConfig(makeProps({
-            config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+            config: { mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
           }))
       expect(screen.getByText(/Converged/)).toBeInTheDocument()
       expect(screen.getByText(/15 iterations/)).toBeInTheDocument()
@@ -2011,7 +1979,7 @@ describe("OptimiserConfig", () => {
         },
       })
       renderConfig(makeProps({
-            config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+            config: { mode: "ratebook", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
           }))
 
       expect(screen.getByText(/Converged in 11 iterations/)).toBeInTheDocument()
@@ -2028,7 +1996,7 @@ describe("OptimiserConfig", () => {
       })
 
       renderConfig(makeProps({
-        config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+        config: { mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
       }))
 
       expect(await screen.findByText("Quotes")).toBeInTheDocument()
@@ -2050,7 +2018,7 @@ describe("OptimiserConfig", () => {
       }
       useNodeResultsStore.setState({ solveResults: { opt_1: nonConverged } })
       renderConfig(makeProps({
-            config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+            config: { mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
           }))
       expect(screen.getByText(/Solver did not converge/)).toBeInTheDocument()
       expect(screen.getByText(/Did not converge/)).toBeInTheDocument()
@@ -2075,7 +2043,7 @@ describe("OptimiserConfig", () => {
         },
       })
       renderConfig(makeProps({
-        config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+        config: { mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
       }))
 
       expect(screen.getByText("Solver did not converge")).toBeInTheDocument()
@@ -2102,7 +2070,7 @@ describe("OptimiserConfig", () => {
         },
       })
       renderConfig(makeProps({
-            config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+            config: { mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
           }))
       expect(screen.getByText("Optimisation failed")).toBeInTheDocument()
       expect(screen.getByText("Solver exploded")).toBeInTheDocument()
@@ -2119,7 +2087,7 @@ describe("OptimiserConfig", () => {
         },
       })
       renderConfig(makeProps({
-            config: { _nodeId: "opt_1", mode: "ratebook", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+            config: { mode: "ratebook", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
           }))
       expect(screen.getByText("Optimisation failed")).toBeInTheDocument()
       expect(screen.getByText("Data error: Ratebook factor columns contain null values")).toBeInTheDocument()
@@ -2157,7 +2125,7 @@ describe("OptimiserConfig", () => {
         },
       })
       renderConfig(makeProps({
-            config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+            config: { mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
           }))
       expect(screen.getByText("Iteration 9 of 20")).toBeInTheDocument()
       expect(screen.getByText("12 s")).toBeInTheDocument()
@@ -2186,7 +2154,7 @@ describe("OptimiserConfig", () => {
         },
       })
       renderConfig(makeProps({
-        config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+        config: { mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
       }))
 
       expect(screen.getByText("Optimiser reached 75% of its memory allowance.")).toBeInTheDocument()
@@ -2236,7 +2204,7 @@ describe("OptimiserConfig", () => {
         },
       })
       renderConfig(makeProps({
-            config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+            config: { mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
           }))
       expect(screen.getByText("Config changed since last solve")).toBeInTheDocument()
       expect(screen.getByRole("button", { name: "Re-run" })).toBeInTheDocument()
@@ -2250,7 +2218,7 @@ describe("OptimiserConfig", () => {
   describe("Constraint sweeps / Efficient Frontier", () => {
     withPane("constraints")
 
-    const LOSS = { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } }
+    const LOSS = { mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } }
 
     it("says the optimiser is unconstrained when no constraints are configured", () => {
       renderConfig(makeProps())
@@ -2389,7 +2357,6 @@ describe("OptimiserConfig", () => {
       })
       const props = makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
@@ -2430,7 +2397,6 @@ describe("OptimiserConfig", () => {
       act(() => useGraphStore.getState().setPreambleRaw("import numpy as np"))
       renderConfig(makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
@@ -2466,7 +2432,6 @@ describe("OptimiserConfig", () => {
       })
       const props = makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 }, volume: { min: 900 } },
@@ -2494,7 +2459,6 @@ describe("OptimiserConfig", () => {
       })
       renderConfig(makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 }, volume: { min: 900 } },
@@ -2534,7 +2498,6 @@ describe("OptimiserConfig", () => {
         })
       const props = makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
@@ -2581,7 +2544,6 @@ describe("OptimiserConfig", () => {
       })
       const props = makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
@@ -2619,7 +2581,6 @@ describe("OptimiserConfig", () => {
       })
       const props = makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
@@ -2655,7 +2616,6 @@ describe("OptimiserConfig", () => {
       })
       const props = makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
@@ -2693,7 +2653,6 @@ describe("OptimiserConfig", () => {
       })
       const props = makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
@@ -2733,7 +2692,6 @@ describe("OptimiserConfig", () => {
       }))
       const props = makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
@@ -2771,7 +2729,6 @@ describe("OptimiserConfig", () => {
       })
       const props = makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
@@ -2790,7 +2747,6 @@ describe("OptimiserConfig", () => {
     it("changing a frontier minimum preserves an unset maximum", () => {
       const props = makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 1.05 } },
@@ -2810,7 +2766,6 @@ describe("OptimiserConfig", () => {
     it("changing a frontier maximum preserves an unset minimum", () => {
       const props = makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 1.05 } },
@@ -2829,7 +2784,6 @@ describe("OptimiserConfig", () => {
     it("changing frontier_steps calls onUpdate", () => {
       const props = makeProps({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 1.05 } },
@@ -2862,7 +2816,7 @@ describe("OptimiserConfig", () => {
     }
 
     function seedSolve(overrides: Record<string, unknown> = {}) {
-      const config = { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {} }
+      const config = { mode: "online", objective: "premium", constraints: {} }
       useNodeResultsStore.setState({
         solveResults: {
           opt_1: {
@@ -3337,7 +3291,6 @@ describe("OptimiserConfig", () => {
       })
       renderMlflowSection({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: {},
@@ -3363,7 +3316,6 @@ describe("OptimiserConfig", () => {
       })
       renderMlflowSection({
         config: {
-          _nodeId: "opt_1",
           mode: "online",
           objective: "premium",
           constraints: {},
@@ -3423,7 +3375,6 @@ describe("OptimiserConfig factors table", () => {
   function analysisProps(config: Record<string, unknown> = {}) {
     return makeProps({
       config: {
-        _nodeId: "opt_1",
         mode: "online",
         objective: "premium",
         constraints: {},
@@ -3537,7 +3488,6 @@ describe("OptimiserConfig factors table", () => {
     })
     const props = makeProps({
       config: {
-        _nodeId: "opt_1",
         mode: "ratebook",
         objective: "premium",
         constraints: {},
@@ -3578,7 +3528,7 @@ describe("OptimiserConfig factors table", () => {
   })
 
   it("marks the solve stale when the validation factors change", () => {
-    const config = { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {}, data_input: "scored" }
+    const config = { mode: "online", objective: "premium", constraints: {}, data_input: "scored" }
     useNodeResultsStore.setState({
       solveResults: {
         opt_1: {

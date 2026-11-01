@@ -126,7 +126,7 @@ afterEach(() => {
 // ═════════════════════════════════════════════════════════════════
 
 describe("GLMTargetConfig", () => {
-  const baseConfig = { _nodeId: "n1", algorithm: "glm", target: "claim_count", weight: "exposure", family: "poisson" }
+  const baseConfig = { algorithm: "glm", target: "claim_count", weight: "exposure", family: "poisson" }
   const onUpdate = vi.fn()
 
   beforeEach(() => onUpdate.mockReset())
@@ -866,7 +866,8 @@ describe("ModellingConfig (GLM routing)", () => {
     render(
       <GraphProvider allNodes={[]} edges={[]}>
         <ModellingConfig
-          config={{ _nodeId: "n1" }}
+          nodeId="n1"
+          config={{}}
           onUpdate={vi.fn()}
           upstreamColumns={defaultColumns}
         />
@@ -881,7 +882,8 @@ describe("ModellingConfig (GLM routing)", () => {
     render(
       <GraphProvider allNodes={[]} edges={[]}>
         <ModellingConfig
-          config={{ _nodeId: "n1" }}
+          nodeId="n1"
+          config={{}}
           onUpdate={onUpdate}
           upstreamColumns={defaultColumns}
         />
@@ -900,7 +902,6 @@ describe("ModellingConfig (GLM routing)", () => {
   it("a malformed interaction override renders a removable error card instead of failing the editor", () => {
     const onUpdate = vi.fn()
     const config = {
-      _nodeId: "n1",
       algorithm: "glm",
       target: "claim_count",
       family: "poisson",
@@ -910,7 +911,7 @@ describe("ModellingConfig (GLM routing)", () => {
     }
     const { rerender } = render(
       <GraphProvider allNodes={[]} edges={[]}>
-        <ModellingConfig config={config} onUpdate={onUpdate} upstreamColumns={defaultColumns} activePane="features" />
+        <ModellingConfig nodeId="n1" config={config} onUpdate={onUpdate} upstreamColumns={defaultColumns} activePane="features" />
       </GraphProvider>,
     )
     const card = screen.getByRole("group", { name: "Interaction 1" })
@@ -921,7 +922,7 @@ describe("ModellingConfig (GLM routing)", () => {
     for (const pane of ["target", "train"] as const) {
       rerender(
         <GraphProvider allNodes={[]} edges={[]}>
-          <ModellingConfig config={config} onUpdate={onUpdate} upstreamColumns={defaultColumns} activePane={pane} />
+          <ModellingConfig nodeId="n1" config={config} onUpdate={onUpdate} upstreamColumns={defaultColumns} activePane={pane} />
         </GraphProvider>,
       )
       expect(screen.getByRole("tabpanel")).toBeTruthy()
@@ -930,7 +931,6 @@ describe("ModellingConfig (GLM routing)", () => {
 
   it("GLM config separates target, parameters and feature settings", () => {
     const config = {
-      _nodeId: "n1",
       algorithm: "glm",
       target: "claim_count",
       weight: "exposure",
@@ -939,6 +939,7 @@ describe("ModellingConfig (GLM routing)", () => {
     const { rerender } = render(
       <GraphProvider allNodes={[]} edges={[]}>
         <ModellingConfig
+          nodeId="n1"
           config={config}
           onUpdate={vi.fn()}
           upstreamColumns={defaultColumns}
@@ -952,7 +953,7 @@ describe("ModellingConfig (GLM routing)", () => {
     expect(screen.queryByText("Regularization")).toBeNull()
     rerender(
       <GraphProvider allNodes={[]} edges={[]}>
-        <ModellingConfig config={config} onUpdate={vi.fn()} upstreamColumns={defaultColumns} activePane="params" />
+        <ModellingConfig nodeId="n1" config={config} onUpdate={vi.fn()} upstreamColumns={defaultColumns} activePane="params" />
       </GraphProvider>,
     )
     expect(screen.getByText("Regularization")).toBeTruthy()
@@ -962,6 +963,7 @@ describe("ModellingConfig (GLM routing)", () => {
     rerender(
       <GraphProvider allNodes={[]} edges={[]}>
         <ModellingConfig
+          nodeId="n1"
           config={config}
           onUpdate={vi.fn()}
           upstreamColumns={defaultColumns}
@@ -981,7 +983,6 @@ describe("ModellingConfig (GLM routing)", () => {
 
   it("GLM config routes the shared split and train sections", () => {
     const config = {
-      _nodeId: "n1",
       algorithm: "glm",
       target: "claim_count",
       weight: "exposure",
@@ -991,6 +992,7 @@ describe("ModellingConfig (GLM routing)", () => {
     const { rerender } = render(
       <GraphProvider allNodes={[]} edges={[]}>
         <ModellingConfig
+          nodeId="n1"
           config={config}
           onUpdate={vi.fn()}
           upstreamColumns={defaultColumns}
@@ -1004,6 +1006,7 @@ describe("ModellingConfig (GLM routing)", () => {
     rerender(
       <GraphProvider allNodes={[]} edges={[]}>
         <ModellingConfig
+          nodeId="n1"
           config={config}
           onUpdate={vi.fn()}
           upstreamColumns={defaultColumns}

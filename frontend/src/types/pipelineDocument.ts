@@ -1,6 +1,7 @@
 import type { Node } from "@xyflow/react"
 
 import type {
+  NodeEditorState,
   PipelineEdge,
   SubmodelDefinition,
   SubmodelEndpoint,
@@ -60,6 +61,7 @@ export interface RecoveryNode {
   availability: PipelineElementAvailability
   display_position: { x: number; y: number }
   config: Record<string, JsonValue> | null
+  editor: NodeEditorState
   config_reference: string | null
   function_name: string
   default_input_name: string | null
@@ -316,6 +318,16 @@ function parsePosition(value: unknown, field: string): { x: number; y: number } 
   return { x, y }
 }
 
+function parseEditorState(value: unknown, field: string): NodeEditorState {
+  const object = expectPlainObject(PARSER, value, field)
+  exactKeys(object, field, ["steps_error", "steps_discarded", "discarded_sidecar"])
+  return {
+    steps_error: nullableString(object, "steps_error", field),
+    steps_discarded: nullableString(object, "steps_discarded", field),
+    discarded_sidecar: nullableString(object, "discarded_sidecar", field),
+  }
+}
+
 function parseRecoveryNode(value: unknown, field: string): RecoveryNode {
   const object = expectPlainObject(PARSER, value, field)
   exactKeys(object, field, [
@@ -328,6 +340,7 @@ function parseRecoveryNode(value: unknown, field: string): RecoveryNode {
     "availability",
     "display_position",
     "config",
+    "editor",
     "config_reference",
     "function_name",
     "default_input_name",
@@ -354,6 +367,7 @@ function parseRecoveryNode(value: unknown, field: string): RecoveryNode {
     display_position: parsePosition(object.display_position, `${field}.display_position`),
     config:
       object.config === null ? null : parseJsonObject(object.config, `${field}.config`),
+    editor: parseEditorState(object.editor, `${field}.editor`),
     config_reference: nullableString(object, "config_reference", field),
     function_name: expectNonBlankString(PARSER, object.function_name, `${field}.function_name`),
     default_input_name: nullableString(object, "default_input_name", field),
@@ -840,6 +854,7 @@ function adaptRecoveryGraph(
         description: node.description,
         nodeType,
         ...(node.config === null ? {} : { config: structuredClone(node.config) }),
+        editor: { ...node.editor },
         _functionName: node.function_name,
         _recoveryId: node.recovery_id,
         ...(node.source_file === null ? {} : { _sourceFile: node.source_file }),

@@ -99,7 +99,6 @@ function defaultProps(overrides: ConfigOverrides = {}) {
     validation: { method: "single", size: 0.2 },
   }
   const defaultConfig = {
-    _nodeId: "node_1",
     target: "loss_ratio",
     task: "regression",
     algorithm: "catboost",
@@ -113,6 +112,7 @@ function defaultProps(overrides: ConfigOverrides = {}) {
     config: config === undefined
       ? defaultConfig
       : { ...config, evaluation: config.evaluation ?? evaluation },
+    nodeId: "node_1",
     onUpdate: vi.fn(),
     upstreamColumns: defaultColumns,
     activePane: defaultPane,
@@ -282,7 +282,7 @@ describe("Training configuration readiness", () => {
     renderConfig({
       activePane: "train",
       onPaneIssuesChange,
-      config: { _nodeId: "incomplete", algorithm: "catboost", target: "loss_ratio" },
+      nodeId: "incomplete", config: { algorithm: "catboost", target: "loss_ratio" },
     })
     expect(onPaneIssuesChange).toHaveBeenLastCalledWith("incomplete", ["features", "target"])
   })
@@ -302,7 +302,7 @@ describe("Training configuration readiness", () => {
     ],
   ])("flags the pane that completes %j", (config, panes) => {
     const onPaneIssuesChange = vi.fn()
-    renderConfig({ activePane: "train", onPaneIssuesChange, config: { _nodeId: "setup", ...config } })
+    renderConfig({ activePane: "train", onPaneIssuesChange, nodeId: "setup", config: { ...config } })
     expect(onPaneIssuesChange).toHaveBeenLastCalledWith("setup", panes)
   })
   it("does not let a hidden fixed-parameter draft block a tuned run", () => {
@@ -325,7 +325,7 @@ describe("Training configuration readiness", () => {
   it("starts an XGBoost study from XGBoost's own parameter keys (MOD-F02)", () => {
     const { props } = renderConfig({
       activePane: "params",
-      config: { _nodeId: "xgb", algorithm: "xgboost", target: "loss_ratio", loss_function: "RMSE", params: {} },
+      nodeId: "xgb", config: { algorithm: "xgboost", target: "loss_ratio", loss_function: "RMSE", params: {} },
     })
     fireEvent.click(screen.getByRole("radio", { name: "Tune parameters" }))
     const tuned = (props.onUpdate as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as {
@@ -336,7 +336,7 @@ describe("Training configuration readiness", () => {
   it("starts a LightGBM study from LightGBM's own parameter keys (MOD-F03)", () => {
     const { props } = renderConfig({
       activePane: "params",
-      config: { _nodeId: "lgbm", algorithm: "lightgbm", target: "loss_ratio", loss_function: "RMSE", params: {} },
+      nodeId: "lgbm", config: { algorithm: "lightgbm", target: "loss_ratio", loss_function: "RMSE", params: {} },
     })
     fireEvent.click(screen.getByRole("radio", { name: "Tune parameters" }))
     const tuned = (props.onUpdate as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as {
@@ -351,7 +351,7 @@ describe("Training configuration readiness", () => {
   it("starts an EBM study from EBM's own keys, round budget included (MOD-F04)", () => {
     const { props } = renderConfig({
       activePane: "params",
-      config: { _nodeId: "ebm", algorithm: "ebm", target: "loss_ratio", loss_function: "RMSE", params: { max_rounds: 500 } },
+      nodeId: "ebm", config: { algorithm: "ebm", target: "loss_ratio", loss_function: "RMSE", params: { max_rounds: 500 } },
     })
     fireEvent.click(screen.getByRole("radio", { name: "Tune parameters" }))
     const tuned = (props.onUpdate as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as {
@@ -366,24 +366,24 @@ describe("Training configuration readiness", () => {
   it("shows the EBM interaction control on the Features pane (MOD-F04)", () => {
     renderConfig({
       activePane: "features",
-      config: { _nodeId: "ebm", algorithm: "ebm", target: "loss_ratio", loss_function: "RMSE", params: { max_rounds: 500, interactions: 4 } },
+      nodeId: "ebm", config: { algorithm: "ebm", target: "loss_ratio", loss_function: "RMSE", params: { max_rounds: 500, interactions: 4 } },
     })
     expect(screen.getByRole("heading", { name: "Pairwise interactions" })).toBeInTheDocument()
     expect(screen.getByLabelText("Maximum interaction count")).toHaveValue(4)
   })
   it("shows issues before Train and links to the affected pane", () => {
-    renderConfig({ activePane: "train", config: { _nodeId: "readiness", algorithm: "catboost", target: "loss_ratio" } })
+    renderConfig({ activePane: "train", nodeId: "readiness", config: { algorithm: "catboost", target: "loss_ratio" } })
     expect(screen.getByRole("alert")).toHaveTextContent("Choose a training loss")
     fireEvent.click(screen.getByRole("button", { name: /Go to Target/ }))
     expect(useUIStore.getState().modellingPanes.readiness).toBe("target")
   })
   it("puts GLM regularization in Parameters", () => {
-    renderConfig({ activePane: "params", config: { _nodeId: "glm_params", algorithm: "glm", family: "poisson", target: "loss_ratio", terms: { age: { type: "linear" } } } })
+    renderConfig({ activePane: "params", nodeId: "glm_params", config: { algorithm: "glm", family: "poisson", target: "loss_ratio", terms: { age: { type: "linear" } } } })
     expect(screen.getByText("Regularization")).toBeInTheDocument()
     expect(screen.queryByText("Target column")).toBeNull()
   })
   it("keeps the missing L1 ratio issue out of Parameters for older Elastic Net configs", () => {
-    renderConfig({ activePane: "params", config: { _nodeId: "glm_params", algorithm: "glm", family: "poisson", target: "loss_ratio", terms: { age: { type: "linear" } }, regularization: "elastic_net" } })
+    renderConfig({ activePane: "params", nodeId: "glm_params", config: { algorithm: "glm", family: "poisson", target: "loss_ratio", terms: { age: { type: "linear" } }, regularization: "elastic_net" } })
     expect(screen.getByRole("slider", { name: "L1 ratio" })).toBeInTheDocument()
     expect(screen.queryByText("Choose an L1 ratio.")).toBeNull()
   })
@@ -393,8 +393,8 @@ describe("Training configuration readiness", () => {
     expect(screen.getByLabelText("Training run summary")).toHaveTextContent("3 features")
   })
   it("shows only the final fit when validation is disabled", () => {
-    renderConfig({ activePane: "train", config: {
-      _nodeId: "no_validation", target: "loss_ratio", algorithm: "catboost", loss_function: "RMSE",
+    renderConfig({ activePane: "train", nodeId: "no_validation", config: {
+      target: "loss_ratio", algorithm: "catboost", loss_function: "RMSE",
       evaluation: { schema_version: 1, strategy: "random", seed: 42, validation: { method: "none" }, test: null },
     } })
     expect(screen.getByLabelText("Training run summary")).toHaveTextContent("1 final fit")
@@ -404,8 +404,8 @@ describe("Training configuration readiness", () => {
     ["lightgbm", "LightGBM · RMSE"],
     ["ebm", "EBM · RMSE"],
   ])("names the %s family in the run summary (MOD-F04)", (algorithm, label) => {
-    renderConfig({ activePane: "train", config: {
-      _nodeId: `summary_${algorithm}`, target: "loss_ratio", algorithm, loss_function: "RMSE",
+    renderConfig({ activePane: "train", nodeId: `summary_${algorithm}`, config: {
+      target: "loss_ratio", algorithm, loss_function: "RMSE",
       params: { max_rounds: 10 },
     } })
     const summary = screen.getByLabelText("Training run summary")
@@ -413,8 +413,8 @@ describe("Training configuration readiness", () => {
     expect(summary).not.toHaveTextContent("CatBoost")
   })
   it("labels parameter-search runs as tuning fits", () => {
-    renderConfig({ activePane: "train", config: {
-      _nodeId: "tuning", target: "loss_ratio", algorithm: "catboost", loss_function: "RMSE",
+    renderConfig({ activePane: "train", nodeId: "tuning", config: {
+      target: "loss_ratio", algorithm: "catboost", loss_function: "RMSE",
       tuning: { trial_count: 3 },
     } })
     expect(screen.getByLabelText("Training run summary")).toHaveTextContent("4 total fits: 3 tuning fits + 1 final fit")
@@ -457,7 +457,7 @@ describe("ModellingConfig", () => {
     it("feature count adjusts when weight is set", () => {
       renderConfig({
         activePane: "features",
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", weight: "exposure", feature_columns: ["age", "region", "exposure"] },
+        nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "catboost", weight: "exposure", feature_columns: ["age", "region", "exposure"] },
       })
       // Target=loss_ratio, weight=exposure both excluded; the ticked weight is
       // dormant. Features: age, region = 2 of 4
@@ -481,7 +481,7 @@ describe("ModellingConfig", () => {
     it("a new node starts with every feature unticked and blocks training until one is ticked", () => {
       const { props } = renderConfig({
         activePane: "features",
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", loss_function: "RMSE" },
+        nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "catboost", loss_function: "RMSE" },
       })
       expect(screen.getByText("0 included · 3 excluded")).toBeInTheDocument()
       expect(screen.getByRole("alert")).toHaveTextContent("Tick at least one feature on the Features pane.")
@@ -495,15 +495,15 @@ describe("ModellingConfig", () => {
     })
 
     it("shows algorithm picker when algorithm is not set", () => {
-      renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio", task: "regression" } })
+      renderConfig({ nodeId: "node_1", config: { target: "loss_ratio", task: "regression" } })
       expect(screen.getByText("Select algorithm")).toBeTruthy()
       expect(screen.getByText("CatBoost")).toBeTruthy()
     })
 
     it("reports a non-string algorithm as unsupported instead of crashing", () => {
       renderConfig({
+        nodeId: "node_1",
         config: {
-          _nodeId: "node_1",
           target: "loss_ratio",
           task: "regression",
           algorithm: 42,
@@ -516,7 +516,7 @@ describe("ModellingConfig", () => {
     })
 
     it("clicking CatBoost in picker sets algorithm and shows full config", () => {
-      const { props } = renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio", task: "regression" } })
+      const { props } = renderConfig({ nodeId: "node_1", config: { target: "loss_ratio", task: "regression" } })
       fireEvent.click(screen.getByText("CatBoost"))
       expect(props.onUpdate).toHaveBeenCalledWith({
         algorithm: "catboost",
@@ -538,7 +538,7 @@ describe("ModellingConfig", () => {
     })
 
     it("clicking XGBoost in the picker seeds XGBoost's own parameters (MOD-F02)", () => {
-      const { props } = renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio", task: "regression" } })
+      const { props } = renderConfig({ nodeId: "node_1", config: { target: "loss_ratio", task: "regression" } })
       fireEvent.click(screen.getByText("XGBoost"))
       expect(props.onUpdate).toHaveBeenCalledWith({
         algorithm: "xgboost",
@@ -548,7 +548,7 @@ describe("ModellingConfig", () => {
     })
 
     it("clicking LightGBM in the picker seeds LightGBM's own parameters (MOD-F03)", () => {
-      const { props } = renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio", task: "regression" } })
+      const { props } = renderConfig({ nodeId: "node_1", config: { target: "loss_ratio", task: "regression" } })
       fireEvent.click(screen.getByText("LightGBM"))
       expect(props.onUpdate).toHaveBeenCalledWith({
         algorithm: "lightgbm",
@@ -558,7 +558,7 @@ describe("ModellingConfig", () => {
     })
 
     it("clicking EBM in the picker seeds an explicit round budget (MOD-F04)", () => {
-      const { props } = renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio", task: "regression" } })
+      const { props } = renderConfig({ nodeId: "node_1", config: { target: "loss_ratio", task: "regression" } })
       fireEvent.click(screen.getByText("EBM"))
       expect(props.onUpdate).toHaveBeenCalledWith({
         algorithm: "ebm",
@@ -568,7 +568,7 @@ describe("ModellingConfig", () => {
     })
 
     it("clicking t-boost in the picker seeds its eight starter parameters (BUG-30)", () => {
-      const { props } = renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio", task: "regression" } })
+      const { props } = renderConfig({ nodeId: "node_1", config: { target: "loss_ratio", task: "regression" } })
       fireEvent.click(screen.getByText("t-boost"))
       expect(props.onUpdate).toHaveBeenCalledWith({
         algorithm: "tboost",
@@ -589,7 +589,7 @@ describe("ModellingConfig", () => {
 
     it("offers EBM Gamma but neither MAE nor CrossEntropy (MOD-F04)", () => {
       renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "ebm", params: {} },
+        nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "ebm", params: {} },
       })
       const losses = within(screen.getByRole("group", { name: "Loss functions" }))
       expect(losses.getByRole("button", { name: "Gamma" })).toBeTruthy()
@@ -599,7 +599,7 @@ describe("ModellingConfig", () => {
 
     it("offers XGBoost the Gamma loss but not CrossEntropy (MOD-F02)", () => {
       renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "xgboost", params: {} },
+        nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "xgboost", params: {} },
       })
       const losses = within(screen.getByRole("group", { name: "Loss functions" }))
       expect(losses.getByRole("button", { name: "Gamma" })).toBeTruthy()
@@ -630,7 +630,7 @@ describe("ModellingConfig", () => {
         <GraphProvider allNodes={[]} edges={[]}>
           <ModellingConfig
             {...defaultProps({
-              config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", loss_function: "Tweedie" },
+              nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "catboost", loss_function: "Tweedie" },
             })}
           />
         </GraphProvider>,
@@ -664,7 +664,7 @@ describe("ModellingConfig", () => {
 
     it("textarea shows custom params from config", () => {
       renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", params: { iterations: 500, depth: 8 } },
+        nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "catboost", params: { iterations: 500, depth: 8 } },
       })
       const textarea = screen.getByLabelText("CatBoost hyperparameters JSON") as HTMLTextAreaElement
       const parsed = JSON.parse(textarea.value)
@@ -673,7 +673,7 @@ describe("ModellingConfig", () => {
 
     it("XGBoost's editor refuses a Haute-owned key (MOD-F02)", () => {
       renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "xgboost", params: {} },
+        nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "xgboost", params: {} },
       })
       const textarea = screen.getByLabelText("XGBoost hyperparameters JSON")
       fireEvent.change(textarea, { target: { value: '{"objective":"reg:squarederror"}' } })
@@ -682,7 +682,7 @@ describe("ModellingConfig", () => {
 
     it("CatBoost's editor refuses the loss and seed Haute sets (MOD-R04)", () => {
       renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", params: {} },
+        nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "catboost", params: {} },
       })
       const textarea = screen.getByLabelText("CatBoost hyperparameters JSON")
       fireEvent.change(textarea, { target: { value: '{"loss_function":"RMSE"}' } })
@@ -693,7 +693,7 @@ describe("ModellingConfig", () => {
 
     it("LightGBM's editor refuses a Haute-owned key (MOD-F03)", () => {
       renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "lightgbm", params: {} },
+        nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "lightgbm", params: {} },
       })
       const textarea = screen.getByLabelText("LightGBM hyperparameters JSON")
       fireEvent.change(textarea, { target: { value: '{"seed":1}' } })
@@ -725,7 +725,7 @@ describe("ModellingConfig", () => {
 
     it("strips task_type from JSON display when GPU is enabled", () => {
       renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", params: { iterations: 500, task_type: "GPU" } },
+        nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "catboost", params: { iterations: 500, task_type: "GPU" } },
       })
       const textarea = screen.getByLabelText("CatBoost hyperparameters JSON") as HTMLTextAreaElement
       const parsed = JSON.parse(textarea.value)
@@ -765,8 +765,8 @@ describe("ModellingConfig", () => {
 
     it("restores the required refit when leaving holdout validation", () => {
       const { props } = renderConfig({
+        nodeId: "node_1",
         config: {
-          _nodeId: "node_1",
           target: "loss_ratio",
           task: "regression",
           algorithm: "catboost",
@@ -785,8 +785,8 @@ describe("ModellingConfig", () => {
 
     it("temporal evaluation shows date and boundary controls", () => {
       renderConfig({
+        nodeId: "node_1",
         config: {
-          _nodeId: "node_1",
           target: "loss_ratio",
           task: "regression",
           algorithm: "catboost",
@@ -806,8 +806,8 @@ describe("ModellingConfig", () => {
 
     it("group evaluation shows the entity column", () => {
       renderConfig({
+        nodeId: "node_1",
         config: {
-          _nodeId: "node_1",
           target: "loss_ratio",
           task: "regression",
           algorithm: "catboost",
@@ -836,7 +836,7 @@ describe("ModellingConfig", () => {
     it("clicking a metric button toggles it", () => {
       const { props } = renderConfig({
         activePane: "target",
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", loss_function: "RMSE", metrics: ["gini", "rmse"] },
+        nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "catboost", loss_function: "RMSE", metrics: ["gini", "rmse"] },
       })
       // Click "MSE" metric to add it (only appears once — not a loss function)
       fireEvent.click(screen.getByRole("button", { name: "MSE" }))
@@ -846,7 +846,7 @@ describe("ModellingConfig", () => {
     it("clicking a selected metric removes it", () => {
       const { props } = renderConfig({
         activePane: "target",
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", loss_function: "RMSE", metrics: ["gini", "rmse"] },
+        nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "catboost", loss_function: "RMSE", metrics: ["gini", "rmse"] },
       })
       // Click "Gini" to remove it (only appears once — not a loss function)
       fireEvent.click(screen.getByRole("button", { name: "Gini" }))
@@ -856,8 +856,8 @@ describe("ModellingConfig", () => {
     it("shows all metrics and disables regression metrics for a classification loss", () => {
       renderConfig({
         activePane: "target",
+        nodeId: "node_1",
         config: {
-          _nodeId: "node_1",
           target: "loss_ratio",
           task: "classification",
           algorithm: "catboost",
@@ -939,7 +939,7 @@ describe("ModellingConfig", () => {
 
     it("keeps validation hidden and Train enabled before the first press", () => {
       renderConfig({
-        config: { _nodeId: "node_1", target: "", task: "regression", algorithm: "catboost" },
+        nodeId: "node_1", config: { target: "", task: "regression", algorithm: "catboost" },
       })
       const trainBtn = screen.getByRole("button", { name: /Train Model/ })
       expect(trainBtn).toBeEnabled()
@@ -948,8 +948,8 @@ describe("ModellingConfig", () => {
 
     it("shows all missing items beneath Train only after the press and sends no request", () => {
       renderConfig({
+        nodeId: "node_1",
         config: {
-          _nodeId: "node_1",
           target: "",
           task: "regression",
           algorithm: "glm",
@@ -969,7 +969,6 @@ describe("ModellingConfig", () => {
 
     it("resets the reveal after the configuration becomes valid", () => {
       const incompleteConfig = {
-        _nodeId: "node_1",
         target: "loss_ratio",
         task: "regression",
         algorithm: "catboost",
@@ -1001,7 +1000,7 @@ describe("ModellingConfig", () => {
       // silently train under CatBoost's RMSE default) — the UI must not
       // submit one.
       renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost" },
+        nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "catboost" },
       })
       const trainBtn = screen.getByRole("button", { name: /Train Model/ })
       expect(trainBtn).toBeEnabled()
@@ -1013,7 +1012,7 @@ describe("ModellingConfig", () => {
 
     it("surfaces a missing family only after Train is pressed (glm)", () => {
       renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "glm" },
+        nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "glm" },
       })
       const trainBtn = screen.getByRole("button", { name: /Train Model/ })
       expect(trainBtn).toBeEnabled()
@@ -1024,8 +1023,8 @@ describe("ModellingConfig", () => {
 
     it("surfaces an empty term set only after Train is pressed (glm)", () => {
       renderConfig({
+        nodeId: "node_1",
         config: {
-          _nodeId: "node_1",
           target: "loss_ratio",
           task: "regression",
           algorithm: "glm",
@@ -1041,8 +1040,8 @@ describe("ModellingConfig", () => {
 
     it("surfaces missing Tweedie variance power only after Train is pressed (glm)", () => {
       renderConfig({
+        nodeId: "node_1",
         config: {
-          _nodeId: "node_1",
           target: "loss_ratio",
           task: "regression",
           algorithm: "glm",
@@ -1061,8 +1060,8 @@ describe("ModellingConfig", () => {
       // RustyStats does not estimate theta and refuses to fit without it,
       // so the UI must not submit an unset value.
       renderConfig({
+        nodeId: "node_1",
         config: {
-          _nodeId: "node_1",
           target: "loss_ratio",
           task: "regression",
           algorithm: "glm",
@@ -1079,8 +1078,8 @@ describe("ModellingConfig", () => {
 
     it("train button enables on Neg. Binomial once theta is set (glm)", () => {
       renderConfig({
+        nodeId: "node_1",
         config: {
-          _nodeId: "node_1",
           target: "loss_ratio",
           task: "regression",
           algorithm: "glm",
@@ -1095,8 +1094,8 @@ describe("ModellingConfig", () => {
 
     it("surfaces missing elastic-net L1 ratio only after Train is pressed (glm)", () => {
       renderConfig({
+        nodeId: "node_1",
         config: {
-          _nodeId: "node_1",
           target: "loss_ratio",
           task: "regression",
           algorithm: "glm",
@@ -1114,8 +1113,8 @@ describe("ModellingConfig", () => {
 
     it("train button enables once the objective is explicit", () => {
       renderConfig({
+        nodeId: "node_1",
         config: {
-          _nodeId: "node_1",
           target: "loss_ratio",
           task: "regression",
           algorithm: "glm",
@@ -1281,7 +1280,6 @@ describe("ModellingConfig", () => {
 
     it("does not show staleness warning when config hash matches", () => {
       const config = {
-        _nodeId: "node_1",
         target: "loss_ratio",
         task: "regression",
         algorithm: "catboost",
@@ -1728,7 +1726,7 @@ describe("ModellingConfig", () => {
     it("GPU unchecked removes task_type from params", () => {
       const { props } = renderConfig({
         activePane: "train",
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", params: { iterations: 500, task_type: "GPU" } },
+        nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "catboost", params: { iterations: 500, task_type: "GPU" } },
       })
       const gpuCheckbox = screen.getByRole("checkbox")
       fireEvent.click(gpuCheckbox)
@@ -1737,7 +1735,6 @@ describe("ModellingConfig", () => {
     })
 
     const xgboostConfig = (extra: Record<string, unknown> = {}) => ({
-      _nodeId: "node_1",
       target: "loss_ratio",
       task: "regression",
       algorithm: "xgboost",
@@ -1796,13 +1793,13 @@ describe("ModellingConfig", () => {
 
   describe("Algorithm picker", () => {
     it("shows both CatBoost and GLM options when algorithm is not set", () => {
-      renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio", task: "regression" } })
+      renderConfig({ nodeId: "node_1", config: { target: "loss_ratio", task: "regression" } })
       expect(screen.getByText("CatBoost")).toBeTruthy()
       expect(screen.getByText("GLM")).toBeTruthy()
     })
 
     it("clicking GLM in picker sets algorithm to glm", () => {
-      const { props } = renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio", task: "regression" } })
+      const { props } = renderConfig({ nodeId: "node_1", config: { target: "loss_ratio", task: "regression" } })
       fireEvent.click(screen.getByText("GLM"))
       expect(props.onUpdate).toHaveBeenCalledWith({
         algorithm: "glm",
@@ -1829,8 +1826,8 @@ describe("ModellingConfig", () => {
 
     it("selecting RMSE sets regression task and metrics", () => {
       const { props } = renderConfig({
+        nodeId: "node_1",
         config: {
-          _nodeId: "node_1",
           target: "loss_ratio",
           task: "classification",
           algorithm: "catboost",
@@ -1873,8 +1870,8 @@ describe("ModellingConfig", () => {
 
     it("clicking RMSE loss button sets loss_function to RMSE", () => {
       const { props } = renderConfig({
+        nodeId: "node_1",
         config: {
-          _nodeId: "node_1",
           target: "loss_ratio",
           task: "regression",
           algorithm: "catboost",
@@ -1917,7 +1914,7 @@ describe("ModellingConfig", () => {
   describe("Row limit input", () => {
     beforeEach(() => { defaultPane = "split" })
     it.each(["catboost", "glm"])("renders row limit first in Split for %s", (algorithm) => {
-      renderConfig({ config: { _nodeId: "node_1", algorithm } })
+      renderConfig({ nodeId: "node_1", config: { algorithm } })
       expect(screen.getByLabelText("Row limit")).toHaveAttribute("placeholder", "All rows")
       expect(screen.getAllByRole("heading")[0]).toHaveTextContent("Row limit")
     })
@@ -1931,7 +1928,7 @@ describe("ModellingConfig", () => {
 
     it("clearing row limit calls onUpdate with null", () => {
       const { props } = renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", row_limit: 50000 },
+        nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "catboost", row_limit: 50000 },
       })
       const rowLimitInput = screen.getByDisplayValue("50000")
       fireEvent.change(rowLimitInput, { target: { value: "" } })
@@ -1940,7 +1937,7 @@ describe("ModellingConfig", () => {
 
     it("shows row count label when row limit is set", () => {
       renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", row_limit: 100000 },
+        nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "catboost", row_limit: 100000 },
       })
       expect(screen.getByLabelText("Row limit")).toHaveValue(100000)
     })
@@ -1954,7 +1951,7 @@ describe("ModellingConfig", () => {
     beforeEach(() => { defaultPane = "features" })
     it("ticking more columns accumulates in feature_columns", () => {
       const { props } = renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", feature_columns: ["age"] },
+        nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "catboost", feature_columns: ["age"] },
       })
       fireEvent.click(
         within(screen.getByRole("group", { name: "region feature" })).getByRole(
@@ -1967,7 +1964,7 @@ describe("ModellingConfig", () => {
 
     it("unticking a column removes only that column", () => {
       const { props } = renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", feature_columns: ["age", "region"] },
+        nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "catboost", feature_columns: ["age", "region"] },
       })
       fireEvent.click(
         within(screen.getByRole("group", { name: "region feature" })).getByRole(
@@ -1996,8 +1993,8 @@ describe("ModellingConfig", () => {
 
     it("clicking random rows after temporal reverts strategy", () => {
       const { props } = renderConfig({
+        nodeId: "node_1",
         config: {
-          _nodeId: "node_1",
           target: "loss_ratio",
           task: "regression",
           algorithm: "catboost",
@@ -2019,12 +2016,12 @@ describe("ModellingConfig", () => {
 
   describe("MOD-M10 exclusive-pane contract", () => {
     it("shows only the algorithm gateway for an unset algorithm and rejects unsupported algorithms", () => {
-      renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio" } })
+      renderConfig({ nodeId: "node_1", config: { target: "loss_ratio" } })
       expect(screen.getByText("Select algorithm")).toBeTruthy()
       expect(screen.queryByRole("tabpanel")).toBeNull()
       cleanup()
 
-      renderConfig({ config: { _nodeId: "node_1", algorithm: "unregistered" } })
+      renderConfig({ nodeId: "node_1", config: { algorithm: "unregistered" } })
       expect(screen.getByRole("alert")).toHaveTextContent("Unsupported modelling algorithm: unregistered.")
     })
 
@@ -2032,7 +2029,7 @@ describe("ModellingConfig", () => {
       for (const algorithm of ["catboost", "glm"] as const) {
         for (const pane of ["target", "features", "params", "split", "train", "export"] as const) {
           if (algorithm === "glm" && pane === "params") continue
-          const { unmount } = renderConfig({ activePane: pane, config: { _nodeId: "node_1", algorithm, target: "loss_ratio", loss_function: "RMSE" } })
+          const { unmount } = renderConfig({ activePane: pane, nodeId: "node_1", config: { algorithm, target: "loss_ratio", loss_function: "RMSE" } })
           expect(screen.getByRole("tabpanel")).toHaveAttribute("id", `modelling-${pane}-pane`)
           expect(screen.queryByRole("button", { name: "CatBoost" })).toBeNull()
           expect(screen.queryByRole("button", { name: "GLM" })).toBeNull()
@@ -2049,7 +2046,7 @@ describe("ModellingConfig", () => {
       rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="train" /></GraphProvider>)
       rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="params" /></GraphProvider>)
       expect(screen.getByLabelText("CatBoost hyperparameters JSON")).toHaveValue("{invalid")
-      rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="params" config={{ ...props.config, _nodeId: "node_2", params: { depth: 8 } }} /></GraphProvider>)
+      rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} nodeId="node_2" activePane="params" config={{ ...props.config, params: { depth: 8 } }} /></GraphProvider>)
       expect(screen.getByLabelText("CatBoost hyperparameters JSON")).toHaveValue(JSON.stringify({ depth: 8 }, null, 2))
     })
 
@@ -2087,8 +2084,8 @@ describe("ModellingConfig", () => {
       }
       const { rerender, props } = renderConfig({
         activePane: "params",
+        nodeId: "node_1",
         config: {
-          _nodeId: "node_1",
           target: "loss_ratio",
           task: "regression",
           algorithm: "catboost",
@@ -2120,7 +2117,7 @@ describe("ModellingConfig", () => {
     })
 
     it("autosaves fixed params exactly while Train owns GPU, Split owns row limit and Export owns MLflow", () => {
-      const { rerender, props } = renderConfig({ activePane: "params", config: { _nodeId: "node_1", algorithm: "catboost", params: { depth: 6, task_type: "GPU" } } })
+      const { rerender, props } = renderConfig({ activePane: "params", nodeId: "node_1", config: { algorithm: "catboost", params: { depth: 6, task_type: "GPU" } } })
       fireEvent.change(screen.getByLabelText("CatBoost hyperparameters JSON"), { target: { value: '{"iterations":200,"custom":true}' } })
       expect(props.onUpdate).toHaveBeenCalledWith("params", {
         iterations: 200,
@@ -2183,7 +2180,7 @@ describe("ModellingConfig", () => {
         })
         renderConfig({
           activePane: "export",
-          config: { _nodeId: "node_1", algorithm: "catboost", mlflow_destination: "databricks" },
+          nodeId: "node_1", config: { algorithm: "catboost", mlflow_destination: "databricks" },
         })
         const help = tooltipTextOf("About the experiment path")
         expect(help).toContain("Leave blank to use /Shared/haute/model.")
@@ -2204,7 +2201,7 @@ describe("ModellingConfig", () => {
         })
         renderConfig({
           activePane: "export",
-          config: { _nodeId: "node_1", algorithm: "catboost" },
+          nodeId: "node_1", config: { algorithm: "catboost" },
         })
         const help = tooltipTextOf("About the experiment path")
         expect(help).toContain("Leave blank to use model.")
@@ -2224,7 +2221,7 @@ describe("ModellingConfig", () => {
       })
 
       it("keeps a node without a destination on the local folder whatever else is configured", () => {
-        const trainConfig = { _nodeId: "node_1", algorithm: "catboost" }
+        const trainConfig = { algorithm: "catboost" }
         setMlflowInventory({
           destinations: [MLFLOW_SERVER, MLFLOW_LOCAL],
         })
@@ -2253,7 +2250,7 @@ describe("ModellingConfig", () => {
         cleanup()
         const chosen = renderConfig({
           activePane: "export",
-          config: { _nodeId: "node_1", algorithm: "catboost", mlflow_destination: "databricks" },
+          nodeId: "node_1", config: { algorithm: "catboost", mlflow_destination: "databricks" },
         })
         fireEvent.click(screen.getByRole("radio", { name: /Local folder/ }))
         expect(chosen.props.onUpdate).toHaveBeenCalledWith("mlflow_destination", undefined)
@@ -2266,7 +2263,7 @@ describe("ModellingConfig", () => {
         mockGetExperiments.mockResolvedValue([{ experiment_id: "1", name: "local-exp" }])
         renderConfig({
           activePane: "export",
-          config: { _nodeId: "node_1", algorithm: "catboost", mlflow_destination: "server" },
+          nodeId: "node_1", config: { algorithm: "catboost", mlflow_destination: "server" },
         })
         fireEvent.focus(screen.getByLabelText("MLflow experiment path"))
         await waitFor(() => {
@@ -2296,7 +2293,7 @@ describe("ModellingConfig", () => {
         })
         renderConfig({
           activePane: "export",
-          config: { _nodeId: "node_1", algorithm: "catboost", mlflow_destination: "server" },
+          nodeId: "node_1", config: { algorithm: "catboost", mlflow_destination: "server" },
         })
         fireEvent.focus(screen.getByLabelText("MLflow experiment path"))
         expect(mockGetExperiments).not.toHaveBeenCalled()
@@ -2314,7 +2311,7 @@ describe("ModellingConfig", () => {
         )
         renderConfig({
           activePane: "export",
-          config: { _nodeId: "node_1", algorithm: "catboost", mlflow_destination: "server" },
+          nodeId: "node_1", config: { algorithm: "catboost", mlflow_destination: "server" },
         })
         fireEvent.focus(screen.getByLabelText("MLflow experiment path"))
         expect(mockGetExperiments).toHaveBeenCalledTimes(1)
@@ -2356,7 +2353,7 @@ describe("ModellingConfig", () => {
         ])
         renderConfig({
           activePane: "export",
-          config: { _nodeId: "node_1", algorithm: "catboost", mlflow_destination: "server" },
+          nodeId: "node_1", config: { algorithm: "catboost", mlflow_destination: "server" },
         })
         fireEvent.focus(screen.getByLabelText("MLflow experiment path"))
         await waitFor(() => {
@@ -2499,9 +2496,7 @@ describe("ModellingConfig", () => {
           mlflow_experiment: "pricing",
           model_export_path: "models/frequency.cbm",
         }
-        // The graph store holds the node config without the panel-injected node id.
         const storedTrainingConfig: Record<string, unknown> = { ...defaultProps().config }
-        delete storedTrainingConfig._nodeId
         const modellingNode = (config: Record<string, unknown>) => ({
           id: "node_1",
           type: "modelling",
@@ -2584,7 +2579,6 @@ describe("ModellingConfig", () => {
 
         it("shows a resolved destination when it adds the folder and model extension", async () => {
           const glmConfig = {
-            _nodeId: "node_1",
             algorithm: "glm",
             target: "loss_ratio",
             model_export_path: "severity",

@@ -43,7 +43,7 @@ describe("buildExploreCacheIdentity", () => {
     const target = (node: SimpleNode) => (which === "explore" ? node : explore)
 
     // The render endpoint filling in the generated code is not a data change.
-    const rendered = stepped({ steps, code: "df = df.head(2)", _steps_error: "" })
+    const rendered = stepped({ steps, code: "df = df.head(2)" })
     expect(identity(target(rendered), nodes(rendered))).toEqual(
       identity(target(authored), nodes(authored)),
     )

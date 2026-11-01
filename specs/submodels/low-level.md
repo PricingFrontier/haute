@@ -506,7 +506,13 @@ Acquires `save_lock`, runs the body in a threadpool:
    stable safe detail to `400` or `409`. Parse failures use the application's
    shared `ParseError` handler (`400`); unexpected failures are logged and
    answered as sanitised `500` responses by the server.
-4. Run a read-only source/sidecar no-clobber preflight for `result.sm_file`.
+4. Refuse with `400` a grouping that adds a naming violation the submitted
+   graph did not have (`_refuse_new_name_violations`), reading the preserved
+   blocks' `utility` imports from the parent pipeline's directory, then the
+   project root. Then run a read-only source/sidecar no-clobber preflight for
+   `result.sm_file` in the `modules/` folder beside the parent pipeline file.
+   Both are anchored on the parent `source_file`, as Create Instance's are,
+   never on the configured pipeline's directory.
 5. Return `CreateSubmodelResponse(status="ok", submodel_file=result.sm_file,
    parent_file=body.source_file, source_revision=current_graph.source_revision,
    graph=result.graph with that same revision)`. No file changes until Save.

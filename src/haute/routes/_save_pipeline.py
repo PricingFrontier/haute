@@ -1140,6 +1140,7 @@ class SavePipelineService:
             NodeType.BANDING,
             NodeType.SCENARIO_EXPANDER,
             NodeType.MODELLING,
+            NodeType.POLARS,
         }
         for scoped_graph in graphs:
             for node in scoped_graph.nodes:
@@ -1733,13 +1734,13 @@ class SavePipelineService:
 
     @staticmethod
     def _discarded_sidecars_recursive(graph: PipelineGraph) -> list[str]:
-        """Relative sidecar paths recorded as ``_discarded_sidecar`` by the parser."""
+        """Relative sidecar paths the parser found discarded (``editor.discarded_sidecar``)."""
         found: list[str] = []
         scoped = [graph, *SavePipelineService._iter_embedded_submodel_graphs(graph)]
         for scoped_graph in scoped:
             for node in scoped_graph.nodes:
-                rel = node.data.config.get("_discarded_sidecar")
-                if isinstance(rel, str) and rel:
+                rel = node.data.editor.discarded_sidecar
+                if rel:
                     found.append(rel.replace("\\", "/"))
         return found
 

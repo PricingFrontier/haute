@@ -67,6 +67,7 @@ vi.mock("../../stores/useUIStore.ts", () => {
     // Other fields the hook destructures
     setPaletteOpen: vi.fn(),
     setShortcutsOpen: vi.fn(),
+    clearBandingRuleStash: vi.fn(),
   }
   const useUIStore = Object.assign(() => store, {
     getState: () => store,
@@ -212,6 +213,7 @@ describe("useWebSocketSync", () => {
     vi.mocked(useToastStore.getState().addToast).mockClear()
     vi.mocked(useUIStore.getState().setSyncBanner).mockClear()
     vi.mocked(useUIStore.getState().setRenameDialog).mockClear()
+    vi.mocked(useUIStore.getState().clearBandingRuleStash).mockClear()
     vi.mocked(useUIStore.getState().setSubmodelDialog).mockClear()
     useUIStore.getState().renameDialog = null
     useUIStore.getState().submodelDialog = null
@@ -473,6 +475,8 @@ describe("useWebSocketSync", () => {
       expect(params.sourceRevisionRef.current).toBe("r2")
       expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledOnce()
       expect(useGraphStore.getState().nodes).toHaveLength(1)
+      // A document from disk is a reload: Banding rules set aside by a type switch go.
+      expect(useUIStore.getState().clearBandingRuleStash).toHaveBeenCalledOnce()
     })
 
     it("ignores a document update for another source", async () => {
@@ -523,6 +527,8 @@ describe("useWebSocketSync", () => {
       expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(
         expect.stringContaining("unsaved changes"),
       )
+      // The local graph stays, so the rules its Banding nodes set aside stay too.
+      expect(useUIStore.getState().clearBandingRuleStash).not.toHaveBeenCalled()
     })
 
     it("closes dialogs for removed nodes and warns while retaining an unresolved edge", async () => {

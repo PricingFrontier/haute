@@ -10,6 +10,7 @@
 | `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers (a node's JSON config is read as strict UTF-8 by `_load_json_object`, and a byte that is not UTF-8 is a `ConfigError` naming the file and the byte; `node_configs_read_through` installs another byte reader for a block, which editor recovery uses so its revision authenticates the config bytes it read; `node_config_json` is the one sidecar text every save path writes), `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs, and the Windows-reserved-filename guard. It also owns the global constants file: `parse_global_constants` validates its strict UTF-8 bytes (which `src/haute/parser.py::load_declared_global_constants` reads) and `global_constants_json` writes it canonically. |
 | `src/haute/_global_constants.py` | Global constants analysis and the standalone sentinel: `code_constant_reads`, `step_constant_reads`, `node_code_sources` and `node_constant_reads` (what a node reads, from its steps' Constant operands and the AST of its code, or `EVERY_CONSTANT`), `code_binds_global_constants`, `preamble_binds_global_constants`, `module_binding_lines` and `is_generated_binding` (what would shadow the reserved name), `STANDALONE_GLOBAL_CONSTANTS`, the sentinel every registry's global-constants property returns, `reference_problem` and `node_step_constant_problems` (whether a step's Constant operand can read its constant: defined, of a type its slot takes, and at least zero for every source where required), and the run-time table: `GlobalConstantsNamespace` (one source's values and its per-code views), `node_code_globals`, `bind_code_view`, `function_constant_reads` and `bind_function_view`. |
 | `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's TypedDict definition, `unrecognized_config_keys`, and `reject_unrecognized_config_keys`. `removed_node_instance_error` supplies the shared refusal and one-node-submodel remediation; `reject_removed_config_keys` refuses ordinary-node `instanceOf`, and `reject_removed_node_reuse_kwargs` refuses the removed keywords in parsed and live node decorators. |
+| `src/haute/_keyword_parameters.py` | A code transform's keyword-only parameters: `keyword_parameters_from_signature` (the parse's record and located refusal), `validate_keyword_parameters` (a submitted config's contract), `reject_input_named_keyword_parameters` (codegen and the builder) and `keyword_parameter_values` (the values a run binds). |
 | `src/haute/_polars_steps.py` | Low-code Polars step schema: `validate_polars_steps`, `render_polars_steps` (a `spelling` of `current` or, only to recognise bodies it saved before, `earlier`; one statement per structured step, laid out over several lines by `src/haute/_polars_steps_layout.py` when its single-line form does not fit in 88 columns at the function body's indentation, optional input-name validation, a required `start` mode of `input` or `frame`, `PolarsStepError` with the step index), `STEPPED_NODE_TYPES` (each stepped node type's `SteppedSurface`: start mode plus input eligibility `edges`/`none`), `STEPPED_SURFACE_LABELS` (the name each stepped node type goes by in messages about its steps), `stepped_surface_for`, `step_input_names`, `is_stepped_config`, `stepped_surface_allows_input_references` (the gate for rewriting step references on a rename), `referenced_step_inputs`, `rename_step_inputs` for boundary renames, `OPERAND_KINDS` (a column, a literal, a nested expression, a step variable or a global constant; a Constant operand renders as the bare `global_constants.<name>` in value position and `pl.lit(global_constants.<name>)` in expression position, checks only the name rule, and is reported in `RenderedSteps.constant_references` as a `ConstantReference` with its step, the `CONSTANT_TYPES` its slot takes, a string operator's value taking `text` and a typed function argument following its expected type, and whether every value must be at least zero), and `resolve_free_code_columns` (the schema of `df` after each free-code step, for the free-code columns endpoint, which runs it in the interactive preview worker: the rendered prefix run through `_exec_user_code` over empty frames of the columns the editor supplied and only its schema read, or a one-line reason when it cannot be resolved). Consumed by the node data model, the parser, the executor builder, codegen, the save service, the assistant's authoring checks, the deploy interceptors, submodel flattening, and the render endpoint. |
 | `src/haute/_polars_steps_layout.py` | `restyle_statement` rewrites one rendered structured-step statement in common Python style on one line: `ast.unparse` keeps exactly the brackets operator precedence needs, and every string takes double quotes unless single ones need fewer escapes; the rewrite must parse to the same syntax tree or it is refused. `layout_statement` restyles, then lays out the statement through the document printer shared with codegen (`src/haute/_source_layout.py`) as `ruff format` lays it out inside a function body at its default 88 columns: the last call's brackets break first, a list or dict that still does not fit puts one entry per line with a trailing comma, a call chain with two or more links after a call or parentheses breaks before each such link (ruff's fluent layout), a binary expression breaks before its weakest operators, a long name or literal on the right of `=` is parenthesised only when that makes it fit, and doubled parentheses collapse to one pair. One choice is the renderer's own: a broken call always puts one argument per line with a trailing comma, where ruff would keep arguments that fit on one indented line together, and ruff keeps that layout because it reads the trailing comma as a magic trailing comma. The rendered body, indented as a function body, is therefore a fixed point of `ruff format --line-length 88` with its default quote style. It parses only the renderer's closed vocabulary and refuses anything else with a value error; free-code steps never pass through it. |
 | `src/haute/_builders.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration consumes its `NODE_REGISTRY` registration contracts. |
@@ -147,16 +148,26 @@
   registry (`DATABRICKS_MLFLOW_HOST`/`DATABRICKS_MLFLOW_TOKEN`), and the serving endpoint
   (`DATABRICKS_RATING_HOST`/`DATABRICKS_RATING_TOKEN`) — and its `secrets` list both deploy-time
   pairs, MLflow and rating.
+- **`NodeEditorState`** (`haute._types`) — what the server knows about a node for its
+  editor, carried beside the config as `NodeData.editor` and the editor document's
+  `RecoveryPipelineNode.editor`, never inside the config: `steps_error` (derived from the
+  node's `steps` whenever its data is built, so a value a request carries back is
+  recomputed), `steps_discarded` (why the parse dropped a stepped node's steps) and
+  `discarded_sidecar` (the transform sidecar those steps came from, which the next save
+  retires). No config therefore holds editor state, so no config writer, validator or
+  hash strips any: an underscore-prefixed config key is an undeclared key like any other.
+  A request may carry the field back, as a transform of the graph echoes it, but a save
+  reads neither parse finding from it: it reparses the file on disk.
 - **`GraphNode` / `GraphEdge` / `NodeData` / `PipelineGraph`** (`haute._types`, not owned by
   this component but constructed here in `_graph_builders.py`). `NodeData` materialises a
   stepped config's `code` from its `steps` on construction (`_materialise_steps`, for every
   node type in `STEPPED_NODE_TYPES`, rendering in that type's start mode against an empty
   eligibility list for an `inputs="none"` surface, so a Data Input join or concat already
-  materialises as `_steps_error`, and against no list for an `edges` surface, whose names
-  only the graph knows; writing `_steps_error` and empty code when they cannot be
-  rendered; a non-list `steps` on a stepped type is a `ValueError`, and a `steps` key on
-  a type outside the table is left alone), and `GraphNode.with_config` is the validated
-  replacement helper every in-process
+  materialises with a steps error, and against no list for an `edges` surface, whose names
+  only the graph knows; writing empty code and the error into its editor state when they
+  cannot be rendered; a non-list `steps` on a stepped type is a `ValueError`, and a `steps`
+  key on a type outside the table is left alone), and `GraphNode.with_config` is the
+  validated replacement helper every in-process
   config rewrite uses instead of `model_copy`. `TransformConfig.steps` and
   `_DataInputCommon.steps` are the persisted step lists.
 
@@ -209,7 +220,7 @@ either: loads and normalises a `config=` sidecar via `_config_io.load_node_confi
 attaches code parsed from the function body (`_attach_code_from_body`), then for a
 stepped node type's sidecar reconciles its `steps` with that body, as does an Explore
 node's decorator-carried list (`_reconcile_steps` with no config reference, which is
-why only a transform records `_discarded_sidecar`) (`_reconcile_steps`,
+why only a transform records a discarded sidecar) (`_reconcile_steps`,
 rendering in the type's start mode against `step_input_names(node_type, param_names)`
 and comparing the extracted body with the rendering passed through the same
 extraction, `_code_extraction.normalise_user_code`, as programs rather than text
@@ -220,8 +231,9 @@ both the current rendering and the renderer's earlier call spelling of the same 
 aggregations and columns and spells out Polars' sort and unique defaults as the
 renderer once did; so a body saved in an earlier layout, quoting or spelling of the
 same steps, or reformatted by `ruff format`, keeps them, while any other edit, a
-comment or a respelling in free code included, is a hand edit): keep, discard with
-`_steps_discarded` plus `_discarded_sidecar` for the transform only, or keep an
+comment or a respelling in free code included, is a hand edit): keep, discard (returning
+the editor state's `steps_discarded` reason, plus `discarded_sidecar` for the transform
+only, which `_resolve_node_config` returns beside the config), or keep an
 unrenderable list behind an empty body; `steps` plus `inputMapping` on an original
 transform is a `ConfigError`); raises
 `_sidecar_required_error` if the node type is folder-backed but no `config=` was given; or,
@@ -256,6 +268,36 @@ lists the join with its own Recover settings. A `config=` that is not a string a
 so each is that node's own failure in the editor rather than an error the whole document
 fails on.
 
+**Keyword-only parameters (`src/haute/_keyword_parameters.py`).** A node function's
+parameters after `*` are configuration, never inputs. Only a transform written as code (a
+`polars` node without `config=`) carries them as settings, and each needs a default that is an
+immutable scalar literal: `None`, `True`/`False`, an `int`, a finite `float` or a `str`. A list
+or dict default is one object every call of a Python function shares, while a canvas run binds
+the stored value afresh, so code that changed it would compute differently in the two; it is
+refused rather than carried. `keyword_parameters_from_signature`, called from
+`_resolve_node_skeleton`, records them in signature order as the config's
+`keyword_parameters`, a list of `{"name": ..., "default": ...}` records; a transform without one
+has no such key. The value is the binding, not its spelling: an annotation and the default's
+layout are not kept, as a positional parameter's annotation is regenerated. Codegen writes
+them back after a bare `*`, and the transform builder binds each value beside the inputs, so a
+parameter shadows a preamble name or global constant of the same name, as a function parameter
+does, in the generated module and in canvas execution alike; it also shadows the physical name
+an `inputMapping` renamed its input from, which the canvas binds as well, since the signature's
+inputs are the logical names.
+Every other keyword-only form is a `ParseError` naming the node, the parameter and its line,
+raised before any graph is built: the strict parse refuses the file, the editor opens the
+node unavailable, and no save rewrites the source. The refused forms are a keyword-only
+parameter without a default; a default that is not such a literal (a name, a call, an
+operator expression, a list, a dict, a tuple, a set, bytes, a complex or non-finite number); a parameter named `df` or a name in `RESERVED_NAMES`; a keyword-only
+parameter on a stepped transform, whose body is rendered from its steps, or on any other node
+type, apart from an External File hook's `obj`, which takes no default; and a `**kwargs`
+parameter on any node function. `validate_keyword_parameters` holds a submitted config to the
+same contract (a non-empty list of such records with unique identifier names, never beside
+`steps`), and `validate_node_config` runs it for a transform, so the full save and the
+node-scoped save refuse a malformed binding naming the node before anything is written.
+Codegen and the builder also refuse, with a `ConfigError` naming the node, a binding named
+like one of the node's logical inputs, which Python would refuse as a signature.
+
 **What a recover cannot fix.** The editor's Recover settings action
 (`src/haute/_pipeline_repair_actions.py::_recover_node`, over
 `src/haute/_node_config_recovery.py::reconcile_config`) never reports an unresolved problem as
@@ -276,13 +318,16 @@ absent field from `node_defaults.json` and never takes a default from another pr
 
 **Save refuses a config the executor cannot build.** Save runs
 `src/haute/_config_validation.py::validate_node_config` with `require_complete=False` for every
-node type whose builder has a required setting, and for Modelling, whose configured values
-must be trainable, on each authored config. A required setting with a legitimate incomplete
+node type whose builder has a required setting, for Modelling, whose configured values
+must be trainable, and for a transform, whose keyword-only parameters must be ones its
+signature can carry, on each authored config. A required setting with a legitimate incomplete
 form stays saveable, because refusing to save unfinished work is worse than the deferred
 error; one without is refused with a 400 naming the node and the setting, before anything is
 written. The node-scoped save runs the same validator on the proposed config and keeps its own
 refusal: a 409 `repair_action_unsupported` saying the proposed settings are not loadable, with
-nothing written.
+nothing written, whether the validator raises a `ValueError` or a `ConfigError` (a Model Score
+naming both a version and an alias, Optimiser analysis columns that include the quote id or
+use the reserved prefix).
 
 | Node type | Required setting | Incomplete form | At save |
 |---|---|---|---|
@@ -292,6 +337,7 @@ nothing written.
 | Model Score | `run_id` / `registered_model` / `model_path` for the chosen `sourceType` | yes: a source mode picked before its model | saved; the builder reports it when run |
 | Optimiser Apply | `sourceType` when `artifact_path` is set | no | reported when the node runs; save-time refusal waits for the typed config models (`PCFG-R07`) |
 | Modelling | a trainable value for each configured `algorithm`, GLM `family`/`link`/solver setting, and `loss_function` | yes: a new node is `{}`, and an unset target, objective or feature set is completeness, reported when training starts | saved when incomplete; refused when a configured value is malformed |
+| Transform | `keyword_parameters` records with a literal default and a usable name, never beside `steps` | no: a transform without parameters has no such key | refused when malformed |
 
 Modelling's malformed-value check is
 `src/haute/modelling/_train_config.py::validate_modelling_config_values`, the pure check
@@ -327,19 +373,25 @@ node without a `steps` list), preserves exact incoming-edge names in Optimiser a
 without node-id remapping. Before allowlist filtering, known removed identity fields are rejected:
 Edge Join's `baseInput`/`joinInput` and Optimiser's `scored_input`/`factors_input` never become a
 silent write-time migration. Each accepted config is then filtered through
-`_prepare_config_for_sidecar` (strips `code`, the `contract` annotation, which lives on the
-decorator so a sidecar copy could only go stale, and `_`-prefixed properties of the top-level
-config record, refuses any other key outside `VALID_KEYS` with `ConfigError` through
+`_prepare_config_for_sidecar` (strips `code` and the `contract` annotation, which lives on the
+decorator so a sidecar copy could only go stale, and refuses any other key outside
+`VALID_KEYS`, an underscore-prefixed one included, with `ConfigError` through
 `reject_unrecognized_config_keys` — a backstop, because save validation has already refused
 such a graph — then per-type canonicalisation for `BANDING`/`RATING_STEP`), and serialises the result
 to `{relative_path: json_string}` through `node_config_json`: the config record's own keys
 sorted, two-space indentation, non-ASCII text unescaped and a closing newline. Recover, Reset
 and the node-scoped save write their sidecar through the same function, so both save paths
 write byte-identical sidecars for one configuration whatever order its keys arrived in; the
-next save of an older sidecar rewrites it in that form once. Nested user mappings keep their
+next save of an older sidecar rewrites it in that form once. When one of those three rewrites a
+transform that no longer emits a sidecar (it left step mode) while its decorator named one, the
+file the reference resolves to (relative to the file holding the node) is deleted in the same
+repair transaction, so a failure later in it restores the file, unless another node's reference
+in the document resolves to the same file, which keeps it. Each node's `config=` literal is read
+on its own (`_candidate_from_ast`), so another keyword the parse cannot evaluate never hides
+which file a node names. Nested user mappings keep their
 order, since they are data. Rating-step canonicalisation always emits ordered entry rows.
-Banding canonicalisation removes transient properties from factor records and expanded rule
-records, including `_prevRules` and `_id`. Compact category maps are data and retain those
+Banding canonicalisation removes underscore-prefixed properties from factor records and
+expanded rule records, which is where the editor's rule-row `_id` sits. Compact category maps are data and retain those
 same keys. All other nested dictionaries and payloads retain user keys verbatim, including
 underscore-prefixed schema fields, inline records, rating factors and row metadata, feature
 maps, constraints, and category declarations. Serialization does not mutate the input graph.
@@ -873,7 +925,7 @@ it on the reading node instead of aborting the walk, and every other run propaga
 - `tests/test_registry_contracts.py` verifies exec/codegen registration metadata, duplicate/missing-entry failures, readiness/idempotence, and behavioural-body detection.
 - `tests/test_sidecar_golden.py` verifies canonical sidecar JSON emission and loader round-trip.
 - `tests/test_polars_steps.py` verifies the step schema (every invalid payload names its step), golden rendering per step kind and expression type (a cast's required `strict` flag
-writing `strict=False` on a cast and a text parse when false and nothing when true; a statement too long for one line read back through its step's line range; the restyle's brackets, quoting and escapes), the multi-line layout of a long select, a two-aggregation group-by and a join one column too wide for the function body beside the golden join that fits exactly (`test_long_statements_break_one_argument_per_line`), a long free-code statement kept as authored (`test_free_code_keeps_its_authored_layout_however_long`), a long text variable parenthesised only when that makes it fit (`test_a_long_variable_is_parenthesised_only_when_that_makes_it_fit`), the layout's refusal of any statement outside the renderer's vocabulary (`test_the_layout_refuses_a_statement_outside_the_renderer_vocabulary`), every golden and corpus rendering, inside a function body, left unchanged by `ruff format --isolated --line-length 88` with quotes preserved (`test_rendered_code_is_a_fixed_point_of_ruff_format`), exponent floats written without the `+` ruff drops (`test_floats_with_an_exponent_render_as_ruff_writes_them`), free code whose lines end in whitespace keeping its steps through `ruff format` while a multiline string keeps its spaces at run time (`test_free_code_trailing_whitespace_survives_ruff_format_with_its_steps`), a frame-mode body opening with a bare string staying a fixed point with its value (`test_a_leading_bare_string_step_is_a_fixed_point_with_its_value`), value-versus-expression operand positions, the extraction fixpoint, `NodeData` materialisation, chunk classification of the materialised code, assistant re-materialisation, executor runs of every step kind, incomplete and unknown-input run-time errors, `inputMapping` rejection, codegen/parse round trip, hand-edit discard (a body in an older quoting or bracketing of the same steps, or main's earlier one-line rendering with list arguments, keeps them, the earlier spelling reproduces the renderer's previous output for each step kind, while a mixed list argument, a respelled free-code statement or a sort without the stable sort the renderer now writes is still an edit, and a changed free-code comment discards them), incomplete-list retention, malformed sidecar rejection, sidecar collection, save-time sidecar write/retirement/collision/warnings, the node-scoped save of a stepped transform's sidecar, submodel flattening rewrites (downstream and internal stepped consumers, the latter executed), the render and free-code columns endpoints, and the extended vocabulary (golden renders, step-indexed rejections, and an executed program covering ordered windows, date arithmetic, string parsing, quantile and filtered aggregates, whole-frame summaries, null literals, and join validation), and nested expressions (golden renders for every operand position, the depth cap, literal-only positions, and an executed program), the expression additions (golden renders, step-indexed refusals and an executed program for a window's expression value and row filter, operand function arguments, `divide`, conditional branches and `sum_horizontal`, a window filter refused on a positional aggregate and a row count refusing `of`, and the generated shapes proved by the lineage and cardinality models), reshaping and dtype selectors (golden renders and rejections for select/drop types, dtype aggregations, pivot and unpivot; a cell-for-cell parity check of the pivot lowering against `LazyFrame.pivot` for every offered aggregate on populated, all-null, absent and empty inputs; an executed program; and a check that the generated shapes stay inside the lineage and cardinality models with and without dtypes). Its frame-start cases cover the required `start` argument, an empty frame-mode list rendering to empty code, a `source` step refused at any frame-mode position, `join`/`concat` refused against an empty eligibility list, byte-identical rendering of every other kind in both modes, `NodeData` materialisation for a Data Input (empty list, valid list, broken list, and a Scenario Expander's integer `steps` left alone), a stepped Data Input's sidecar carrying `steps` through `collect_node_configs` and `validate_data_input_config`, a Data Input's codegen/parse round trip (the rendered code after the load scaffold, and a lone `df = (df.head(2))` free-code step reloading in step mode), the hand-edit discard without `_discarded_sidecar`, the placeholder round trip keeping unrenderable steps behind empty code, the save warning naming the Data Input's step, the render endpoint in frame mode, every corpus translation without inputs reloading unchanged on a Data Input, and a free-code step whose code opens with a comment keeping its steps on every frame-start surface through the editor's save and the assistant's apply (`test_comment_first_free_code_keeps_its_steps_through_the_editor_save`, `test_comment_first_free_code_keeps_its_steps_through_the_assistant_apply`).
+writing `strict=False` on a cast and a text parse when false and nothing when true; a statement too long for one line read back through its step's line range; the restyle's brackets, quoting and escapes), the multi-line layout of a long select, a two-aggregation group-by and a join one column too wide for the function body beside the golden join that fits exactly (`test_long_statements_break_one_argument_per_line`), a long free-code statement kept as authored (`test_free_code_keeps_its_authored_layout_however_long`), a long text variable parenthesised only when that makes it fit (`test_a_long_variable_is_parenthesised_only_when_that_makes_it_fit`), the layout's refusal of any statement outside the renderer's vocabulary (`test_the_layout_refuses_a_statement_outside_the_renderer_vocabulary`), every golden and corpus rendering, inside a function body, left unchanged by `ruff format --isolated --line-length 88` with quotes preserved (`test_rendered_code_is_a_fixed_point_of_ruff_format`), exponent floats written without the `+` ruff drops (`test_floats_with_an_exponent_render_as_ruff_writes_them`), free code whose lines end in whitespace keeping its steps through `ruff format` while a multiline string keeps its spaces at run time (`test_free_code_trailing_whitespace_survives_ruff_format_with_its_steps`), a frame-mode body opening with a bare string staying a fixed point with its value (`test_a_leading_bare_string_step_is_a_fixed_point_with_its_value`), value-versus-expression operand positions, the extraction fixpoint, `NodeData` materialisation, chunk classification of the materialised code, assistant re-materialisation, executor runs of every step kind, incomplete and unknown-input run-time errors, `inputMapping` rejection, codegen/parse round trip, hand-edit discard (a body in an older quoting or bracketing of the same steps, or main's earlier one-line rendering with list arguments, keeps them, the earlier spelling reproduces the renderer's previous output for each step kind, while a mixed list argument, a respelled free-code statement or a sort without the stable sort the renderer now writes is still an edit, and a changed free-code comment discards them), incomplete-list retention, malformed sidecar rejection, sidecar collection, save-time sidecar write/retirement/collision/warnings, the node-scoped save of a stepped transform's sidecar, submodel flattening rewrites (downstream and internal stepped consumers, the latter executed), the render and free-code columns endpoints, and the extended vocabulary (golden renders, step-indexed rejections, and an executed program covering ordered windows, date arithmetic, string parsing, quantile and filtered aggregates, whole-frame summaries, null literals, and join validation), and nested expressions (golden renders for every operand position, the depth cap, literal-only positions, and an executed program), the expression additions (golden renders, step-indexed refusals and an executed program for a window's expression value and row filter, operand function arguments, `divide`, conditional branches and `sum_horizontal`, a window filter refused on a positional aggregate and a row count refusing `of`, and the generated shapes proved by the lineage and cardinality models), reshaping and dtype selectors (golden renders and rejections for select/drop types, dtype aggregations, pivot and unpivot; a cell-for-cell parity check of the pivot lowering against `LazyFrame.pivot` for every offered aggregate on populated, all-null, absent and empty inputs; an executed program; and a check that the generated shapes stay inside the lineage and cardinality models with and without dtypes). Its frame-start cases cover the required `start` argument, an empty frame-mode list rendering to empty code, a `source` step refused at any frame-mode position, `join`/`concat` refused against an empty eligibility list, byte-identical rendering of every other kind in both modes, `NodeData` materialisation for a Data Input (empty list, valid list, broken list, and a Scenario Expander's integer `steps` left alone), a stepped Data Input's sidecar carrying `steps` through `collect_node_configs` and `validate_data_input_config`, a Data Input's codegen/parse round trip (the rendered code after the load scaffold, and a lone `df = (df.head(2))` free-code step reloading in step mode), the hand-edit discard without a discarded sidecar, the placeholder round trip keeping unrenderable steps behind empty code, the save warning naming the Data Input's step, the render endpoint in frame mode, every corpus translation without inputs reloading unchanged on a Data Input, and a free-code step whose code opens with a comment keeping its steps on every frame-start surface through the editor's save and the assistant's apply (`test_comment_first_free_code_keeps_its_steps_through_the_editor_save`, `test_comment_first_free_code_keeps_its_steps_through_the_assistant_apply`).
 - Global constants: `tests/test_config_io.py` covers the file's round trip and every
   refusal; `tests/test_parser_roundtrip.py` the byte-identical round trip of every kind of
   constant, with and without a submodel file, and a missing file as a load error that keeps its

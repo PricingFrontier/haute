@@ -54,7 +54,6 @@ export default function ReadOnlyNodeConfig({ nodeType, config, nodeId }: ReadOnl
           readOnly
           nodeType={nodeType as NodeTypeValue}
           config={config}
-          configWithNodeId={{ ...config, _nodeId: nodeId }}
           node={{ id: nodeId, data: { label: "", description: "", nodeType, config } }}
           onUpdateConfig={noop}
           onReplaceConfig={noop}

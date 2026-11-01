@@ -670,13 +670,15 @@ class TestCollectNodeConfigs:
 # ---------------------------------------------------------------------------
 
 
-def test_an_editor_key_is_not_written_to_the_sidecar(tmp_path):
-    """The config record's own underscore keys are editor state, filtered before writing."""
+def test_an_underscore_key_is_refused_at_the_sidecar_write(tmp_path):
+    """Editor state travels beside the config, so an underscore key reaching the writer
+    is undeclared: it is refused, never written and never silently dropped."""
+    from haute.errors import ConfigError
+
     config = {"path": "d.parquet", "_steps_error": "Step 1: Pick a column."}
-    rel_path = _write_node_config_sidecar(NodeType.DATA_INPUT, "test", config, tmp_path)
-    content = json.loads((tmp_path / rel_path).read_text())
-    assert "_steps_error" not in content
-    assert content["path"] == "d.parquet"
+    with pytest.raises(ConfigError, match="_steps_error"):
+        _write_node_config_sidecar(NodeType.DATA_INPUT, "test", config, tmp_path)
+    assert not (tmp_path / config_path_for_node(NodeType.DATA_INPUT, "test")).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -763,6 +765,27 @@ class TestFindConfigByFuncName:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("{not valid json", encoding="utf-8")
         assert find_config_by_func_name("bad", tmp_path) is None
+
+    @pytest.mark.parametrize(
+        ("folder", "content"),
+        [
+            pytest.param("banding", b'{"factors": "\xff"}', id="invalid-utf8"),
+            pytest.param("optimisation", b'{"scored_input": "scored"}', id="removed-key"),
+            pytest.param("workbench_input", b'{"tables": []}', id="form-given-key"),
+        ],
+    )
+    def test_returns_none_for_a_config_error(self, tmp_path, folder, content):
+        """A sidecar the loader refuses with a ``ConfigError`` (not a ``ValueError``)
+        is logged as a failed recovery, like invalid JSON, instead of raising."""
+        import structlog
+
+        p = tmp_path / "config" / folder / "bad.json"
+        p.parent.mkdir(parents=True)
+        p.write_bytes(content)
+        with structlog.testing.capture_logs() as logs:
+            assert find_config_by_func_name("bad", tmp_path) is None
+        assert [entry["event"] for entry in logs] == ["config_recovery_failed"]
+        assert logs[0]["path"] == str(p)
 
 
 # ---------------------------------------------------------------------------
@@ -952,13 +975,12 @@ class TestSidecarPreparationEdgeCases:
         assert loaded["path"] is None
         assert loaded["inputType"] is None
 
-    def test_underscore_keys_filtered(self, tmp_path):
+    def test_underscore_keys_are_refused(self, tmp_path):
+        from haute.errors import ConfigError
+
         config = {"path": "d.parquet", "_internal": "secret", "_cache": 42}
-        _write_node_config_sidecar(NodeType.DATA_INPUT, "src", config, tmp_path)
-        loaded = load_node_config("config/data_input/src.json", base_dir=tmp_path)
-        assert loaded == {"path": "d.parquet"}
-        assert "_internal" not in loaded
-        assert "_cache" not in loaded
+        with pytest.raises(ConfigError, match="_cache"):
+            _write_node_config_sidecar(NodeType.DATA_INPUT, "src", config, tmp_path)
 
     def test_code_key_excluded(self, tmp_path):
         config = {"path": "m.pkl", "code": "x = 1"}

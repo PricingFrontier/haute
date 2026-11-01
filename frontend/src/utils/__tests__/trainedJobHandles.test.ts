@@ -88,7 +88,7 @@ describe("trainingLineage", () => {
       .not.toBe(trainingLineage(withConstants(18)))
   })
 
-  it("ignores key order, positions, runtime config keys and modelling export settings", () => {
+  it("ignores key order, positions and modelling export settings", () => {
     const reordered = {
       ...graph,
       nodes: [
@@ -98,7 +98,6 @@ describe("trainingLineage", () => {
             ...graph.nodes[1].data,
             config: {
               params: { iterations: 100, depth: 6 },
-              _nodeId: "model",
               target: "y",
               mlflow_experiment: "pricing",
               mlflow_destination: "databricks",

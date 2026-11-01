@@ -32,8 +32,8 @@ from tests.conftest import make_node
 class TestConfigValidationEdgeCases:
     """Edge cases not covered by test_config_validation.py."""
 
-    def test_underscore_prefixed_keys_ignored(self):
-        """Keys starting with '_' should NOT be flagged as unrecognised."""
+    def test_underscore_prefixed_keys_are_undeclared_like_any_other(self):
+        """Editor state travels beside the config, so an underscore key is undeclared."""
         from haute._config_validation import unrecognized_config_keys
         from haute._types import NodeType
 
@@ -41,7 +41,7 @@ class TestConfigValidationEdgeCases:
             NodeType.POLARS,
             {"code": "x", "_internal_marker": True, "_debug": 99},
         )
-        assert bad == []
+        assert bad == ["_debug", "_internal_marker"]
 
     def test_submodel_port_has_no_valid_keys(self):
         """SUBMODEL_PORT is not in the TypedDict registry — returns []."""

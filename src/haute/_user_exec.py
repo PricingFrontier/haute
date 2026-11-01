@@ -8,6 +8,7 @@ for user code failures.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import polars as pl
@@ -43,6 +44,7 @@ def _exec_user_code(
     orig_source_names: list[str] | None = None,
     *,
     alias_first_input_as_df: bool = False,
+    parameters: Mapping[str, Any] | None = None,
 ) -> _Frame:
     """Execute user-provided code and return the ``df`` variable.
 
@@ -50,7 +52,9 @@ def _exec_user_code(
     output variable the code must assign.  Hook-style nodes whose code box
     operates on a single implicit frame called ``df`` (external files,
     explore, and post-code hooks) pass ``alias_first_input_as_df=True`` to
-    keep that contract. Polars transforms never do.
+    keep that contract. Polars transforms never do. A transform's keyword-only
+    *parameters* are bound beside its inputs, so they too take precedence
+    over the preamble, as a function's parameters do.
     """
     local_ns: dict[str, Any] = {}
     for i, d in enumerate(dfs):
@@ -78,6 +82,7 @@ def _exec_user_code(
         )
     if alias_first_input_as_df and dfs:
         local_ns["df"] = dfs[0]
+    local_ns.update(parameters or {})
 
     try:
         validate_user_code(code)

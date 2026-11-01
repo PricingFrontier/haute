@@ -2443,8 +2443,9 @@ class TestSidecarPersistence:
         assert NODE_TYPE_TO_FOLDER[NodeType.DATA_INPUT] == "data_input"
         assert NODE_TYPE_TO_FOLDER[NodeType.DATA_OUTPUT] == "data_output"
 
-    def test_prepare_config_keeps_spec_keys_and_drops_internal_state(self) -> None:
+    def test_prepare_config_keeps_spec_keys_and_refuses_editor_state(self) -> None:
         from haute._config_io import _prepare_config_for_sidecar
+        from haute.errors import ConfigError
 
         config = {
             "inputType": "file",
@@ -2452,16 +2453,16 @@ class TestSidecarPersistence:
             "mode": "scan",
             "path": "data/q.csv",
             "arguments": {"separator": ";"},
-            "_editorOnly": {"open": True},
         }
-        prepared = _prepare_config_for_sidecar(NodeType.DATA_INPUT, config, node_label="source")
-        assert prepared == {
-            "inputType": "file",
-            "format": "csv",
-            "mode": "scan",
-            "path": "data/q.csv",
-            "arguments": {"separator": ";"},
-        }
+        assert (
+            _prepare_config_for_sidecar(NodeType.DATA_INPUT, config, node_label="source") == config
+        )
+        with pytest.raises(ConfigError, match="_editorOnly"):
+            _prepare_config_for_sidecar(
+                NodeType.DATA_INPUT,
+                {**config, "_editorOnly": {"open": True}},
+                node_label="source",
+            )
 
     def test_sidecar_save_load_exact_shape(self, haute_scratch) -> None:
         config = {

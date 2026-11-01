@@ -27,14 +27,19 @@ from haute.server import app
 from tests._property_budget import pr_budget
 
 _case_counter = itertools.count(1)
-# Each external edit appends a numbered line, so its bytes are never ones a revision has
-# named before: revisions are byte-true, and the model mints a generation per edit.
+# Each external edit adds a numbered preamble comment, so its bytes are never ones a revision
+# has named before: revisions are byte-true, and the model mints a generation per edit. The
+# preamble is where a save keeps a comment, so the edited document stays ready.
 _edit_counter = itertools.count(1)
 
 
 def _external_edit(py_path: Path) -> None:
     py_path.write_text(
-        py_path.read_text(encoding="utf-8") + f"\n# external edit {next(_edit_counter)}\n",
+        py_path.read_text(encoding="utf-8").replace(
+            "\npipeline = haute.Pipeline(",
+            f"\n# external edit {next(_edit_counter)}\npipeline = haute.Pipeline(",
+            1,
+        ),
         encoding="utf-8",
     )
 

@@ -16,7 +16,7 @@ import polars as pl
 import pytest
 
 from haute._sandbox import bound_project_root
-from haute._types import GraphEdge, PipelineGraph
+from haute._types import GraphEdge, NodeEditorState, PipelineGraph
 from haute.assistant._config import AssistantConfig, EgressPolicy
 from haute.assistant._providers import DatabricksProvider, OpenAIProvider
 from haute.assistant._render import render_pipeline_graph
@@ -87,11 +87,15 @@ def _graph(
     node_types: dict[str, str],
     edges: tuple[tuple[str, str, str | None], ...] = (),
     configs: dict[str, dict[str, object]] | None = None,
+    editors: dict[str, NodeEditorState] | None = None,
 ) -> SelfTestGraph:
     return SelfTestGraph(
         node_types=MappingProxyType(node_types),
         edges=edges,
         configs=MappingProxyType(configs or {node: {} for node in node_types}),
+        editors=MappingProxyType(
+            {node: (editors or {}).get(node, NodeEditorState()) for node in node_types}
+        ),
     )
 
 
@@ -862,6 +866,7 @@ class TestLayers:
         after_configs: dict[str, dict[str, object]],
         *,
         new_type: str = "polars",
+        editors: dict[str, NodeEditorState] | None = None,
         **overrides: object,
     ):
         node_types = {"quotes": "dataInput", "rates": "dataInput", "legacy": "polars"}
@@ -880,7 +885,7 @@ class TestLayers:
                 **overrides,
             ),
             before=self._BEFORE,
-            after=_graph(node_types=node_types, configs=configs),
+            after=_graph(node_types=node_types, configs=configs, editors=editors),
             telemetry=_telemetry(),
         )
 
@@ -979,16 +984,17 @@ class TestLayers:
         result = self._score(
             {
                 "coded": {"code": "df = quotes"},
-                "broken": {"steps": [], "_steps_error": "unknown step kind"},
+                "broken": {"steps": []},
                 "legacy": {"code": "df = quotes.head()"},
             },
+            editors={"broken": NodeEditorState(steps_error="unknown step kind")},
             modified_nodes=("legacy",),
         )
 
         # The pre-existing code-mode node stays the analyst's to convert.
         assert result.reasons == (
             "editor: node coded is not authored as steps",
-            "editor: node broken carries _steps_error",
+            "editor: node broken has steps that do not render",
         )
 
 

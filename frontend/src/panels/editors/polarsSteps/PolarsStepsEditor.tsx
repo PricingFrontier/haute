@@ -116,6 +116,7 @@ export default function PolarsStepsEditor({
   frameColumns,
   start,
   nodeId,
+  stepsError,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
@@ -133,6 +134,8 @@ export default function PolarsStepsEditor({
   start: StepStart
   /** The node being edited: its free-code columns resolve one request at a time. */
   nodeId: string
+  /** Why the server could not render the loaded steps (`NodeEditorState.steps_error`). */
+  stepsError?: string | null
 }) {
   const isFrame = start === "frame"
   const steps = useMemo(() => readSteps(config) ?? [], [config])
@@ -173,7 +176,7 @@ export default function PolarsStepsEditor({
   const columnStates = useMemo(() => columnsAtEachStep(source, steps), [source, steps])
 
   const setSteps = useCallback((next: Step[]) => onUpdate("steps", next), [onUpdate])
-  const initialError = useMemo(() => parseStepsError(config._steps_error), [config._steps_error])
+  const initialError = useMemo(() => parseStepsError(stepsError), [stepsError])
   const renderError = rendered.error ?? (rendered.status === "ok" || rendered.status === "empty" ? null : initialError)
   // A step being built is not an error yet: render problems are reported as
   // errors only once the pipeline has run and failed on this node; until then
@@ -289,7 +292,7 @@ export default function PolarsStepsEditor({
     const code = steps.length === 0 ? "" : rendered.code
     const rest: Record<string, unknown> = {}
     for (const [key, value] of Object.entries(config)) {
-      if (key !== "steps" && key !== "_steps_error") rest[key] = value
+      if (key !== "steps") rest[key] = value
     }
     void (async () => {
       if (await confirmed(SWITCH_QUESTION)) replace({ ...rest, code })

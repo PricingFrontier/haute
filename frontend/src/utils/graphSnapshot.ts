@@ -37,6 +37,7 @@ const REACT_FLOW_NODE_UI_FIELDS = [
 const REACT_FLOW_EDGE_UI_FIELDS = ["selected"] as const
 
 const LIVE_HISTORY_NODE_METADATA_FIELDS = new Set([
+  "editor",
   "_functionName",
   "_recoveryId",
   "_sourceFile",
@@ -50,17 +51,21 @@ const LIVE_HISTORY_NODE_METADATA_FIELDS = new Set([
 
 const LIVE_HISTORY_EDGE_IDENTITY_FIELDS = new Set(["_inputName"])
 const NO_RETAINED_METADATA = new Set<string>()
+/** A request carries the server's editor state back, so a transform of the graph echoes it. */
+const REQUEST_NODE_METADATA_FIELDS = new Set(["editor"])
 
 function stripNodeUiFields(n: Node, forFingerprint = false): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(n as unknown as Record<string, unknown>)) {
     if ((REACT_FLOW_NODE_UI_FIELDS as readonly string[]).includes(k)) continue
-    out[k] = k === "data" ? stripNodeDataMetadataFields(v) : v
+    out[k] = k === "data"
+      ? stripNodeDataMetadataFields(v, forFingerprint ? NO_RETAINED_METADATA : REQUEST_NODE_METADATA_FIELDS)
+      : v
   }
   const data = out.data as Record<string, unknown> | undefined
   const config = data?.config as Record<string, unknown> | undefined
   if (forFingerprint && data !== undefined && config !== undefined && isSteppedConfig(String(data.nodeType), config)) {
-    // Steps are authored; their generated body and validation result are caches.
+    // Steps are authored; their generated body is a cache.
     // Keep both in requests/history, but do not count re-materialisation as an edit.
     data.config = authoredPolarsConfig(config)
   }
@@ -129,7 +134,8 @@ function stripNodeDataMetadataFields(
 
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    if (k.startsWith("_") && !retainedMetadata.has(k)) continue
+    // `_`-prefixed fields and the server's `editor` state are metadata, never an edit.
+    if ((k.startsWith("_") || k === "editor") && !retainedMetadata.has(k)) continue
     out[k] = v
   }
   return out

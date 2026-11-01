@@ -49,7 +49,7 @@ measurement named in its own entry rather than started on the strength of its
 shape; `CACHE-S19` remains deferred. `CACHE-S13` is also measurement-gated:
 no measured preview approaches its timeout. `CACHE-S25`, from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md), sits
-outside that order: it follows the pipeline-config package `PCFG-R08`. What
+outside that order: editor state now travels beside the node config. What
 is left is measured against cost rather than shape. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
 specified. Every package builds on the node-output snapshot store (signature,
@@ -471,7 +471,7 @@ failing on any unclassified field. Most of that classification exists to keep
 editor-only state (column lists, schema warnings, step errors) out of cache
 keys, because that state is stored inside the node config.
 
-**Plan:** Once `PCFG-R08` moves editor state out of the config, key execution
+**Plan:** Editor state travels beside the config (`NodeData.editor`), so key execution
 caches on the complete canonical config and delete the per-field
 classification. Keep the consumer contracts only where a consumer genuinely
 needs a narrower identity, and say why in the specification.
@@ -480,7 +480,7 @@ needs a narrower identity, and say why in the specification.
 identity without a classification table; editor-state changes do not; the
 cache-identity tests are reduced to the remaining consumer contracts.
 
-**Dependencies:** `PCFG-R08` (pipeline config).
+**Dependencies:** None.
 
 **Owning specifications:** [caching](../caching/low-level.md).
 

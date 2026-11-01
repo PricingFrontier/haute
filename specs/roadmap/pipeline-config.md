@@ -13,22 +13,13 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 |---|---|---:|---|
 | PCFG-R04 | Planned | P2 | One project context, resolved once, replaces a dozen project-root and pipeline-directory resolvers. |
 | PCFG-R07 | Planned | P2 | Every node type has a typed config model that is the single validation boundary. |
-| PCFG-R08 | Planned | P3 | Editor-only state travels beside the node config, not inside it. |
 | PCFG-R09 | Planned | P3 | A node type is declared in one place. |
-| PCFG-R12 | Planned | P2 | A save keeps every authored comment, or reports the ones it would drop before it proceeds. |
 | PCFG-R16 | Decision | P3 | The `earlier` step spelling is either dropped or named as the one allowed recogniser of old generated code. |
-| PCFG-R19 | Planned | P3 | The file-to-recovery-graph pass is written once, for a pipeline file and a submodel file alike. |
-| PCFG-R21 | Planned | P1 | A parse/save round trip preserves supported keyword-only bindings or refuses an unsupported signature before losing it. |
-| PCFG-R22 | Planned | P2 | Scoped node save (`apply_scoped_node_save`) and sidecar lookup (`find_config_by_func_name`) catch `ConfigError` instead of raising unhandled HTTP 500 or uncaught lookup errors. |
-| PCFG-R23 | Planned | P3 | Resetting (`_reset_node`) or code-mode saving (`apply_scoped_node_save`) a stepped Polars node appends a `RepairArtifactEdit(after=None)` deletion for an exclusively owned `config/polars/<name>.json` sidecar resolved via `_resolve_config_reference`. |
-| PCFG-R24 | Planned | P2 | `create_submodel` passes `_parent_path.parent` instead of `pipeline_dir()` to `_refuse_new_name_violations` and `SavePipelineService.validate_new_module_files`. |
 
-`PCFG-R04` to `PCFG-R09` come from the
+`PCFG-R04`, `PCFG-R07` and `PCFG-R09` come from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md);
-`PCFG-R12` to `PCFG-R19` from the
+`PCFG-R16` from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md).
-`PCFG-R08` should precede `PCFG-R07` so the models do not have to carry
-editor state.
 
 ## Planned improvements
 
@@ -129,37 +120,13 @@ validators are either deleted or called only from the model's validators; an
 invalid config for any node type fails at save with the model's message; the
 frontend node-config types and the node-reference config tables are generated.
 
-**Dependencies:** `PCFG-R08`; `API-R03` (server API) for generated browser
-types.
+**Dependencies:** `API-R03` (server API) for generated browser types.
 
 **Evidence:** `src/haute/_types.py::NodeData`;
 `src/haute/_config_validation.py::validate_node_config`;
 `src/haute/routes/_save_pipeline.py::_validate_strict_node_configs`;
 `src/haute/routes/_training_lifecycle.py::_validate_config`;
 `src/haute/routes/_optimiser_service.py::_validate_config`.
-
-### PCFG-R08 — Editor state leaves the node config
-**Why:** Transient editor and runtime state is stored inside the node config:
-in the browser `_columns`, `_nodeId`, `_schemaWarnings`, `_availableColumns`,
-`_instance` and step errors; on the backend `_steps_error`, `_steps_discarded`
-and `_discarded_sidecar`. It is then stripped again by
-exclusion lists in the browser's config hash, the backend cache-field
-classification, the sidecar allowlist and code generation.
-
-**Plan:** Carry editor state in a separate field beside `config` in the graph
-and editor-document models, and move every reader and writer to it. Delete
-the exclusion lists.
-
-**Acceptance:** No persisted or hashed node config contains an
-underscore-prefixed editor key; the exclusion lists are gone; editor
-behaviour that depends on this state is unchanged under test.
-
-**Dependencies:** None. `CACHE-S25` (caching) builds on it.
-
-**Evidence:** `frontend/src/stores/useNodeResultsStore.ts::hashConfig`;
-`src/haute/_cache.py::_classify_config_fields`;
-`src/haute/_config_io.py::_prepare_config_for_sidecar`;
-`src/haute/_types.py::NodeData`.
 
 ### PCFG-R09 — A node type is declared in one place
 **Why:** `NODE_REGISTRY` holds the runtime builder, code generator, column
@@ -188,33 +155,6 @@ specific node type for a concern the specification owns.
 `src/haute/_codegen_builders.py`; `src/haute/projection.py`;
 `src/haute/_trace_correlation.py`; `src/haute/assistant/_catalog.py`.
 
-### PCFG-R12 — Comments survive a save
-**Why:** `_render_module` assembles the file from the preamble, the constructor, the
-preserved blocks, each node's source and regenerated `connect` calls, so every save
-drops a module-level comment between node functions, a comment between a decorator
-and its `def`, a comment after a body's last statement and a comment on a
-`connect()` line (probed, five kinds); the only loss detector,
-`unkept_module_statements`, walks `tree.body` and cannot see comments, so the
-document reads ready and the save proceeds. The codegen specification lists the
-statements regeneration keeps and says nothing of comments.
-
-**Plan:** Either report comment-only lines outside the kept regions as a diagnostic
-of the `unkept_module_statement` kind (a tokenizer pass over the gaps between kept
-spans), or carry them: attach comments between functions to the following function
-as leading lines and keep trailing body comments inside the extracted code. State
-the rule in the codegen specification either way.
-
-**Acceptance:** The probe file round-trips with its five comments kept, or the
-document reports each as unkept with its line and the save is refused until it is
-moved.
-
-**Dependencies:** None. The statement check runs over submodel files as well as the
-pipeline file, so a comment check built beside it covers both.
-
-**Evidence:** `src/haute/codegen.py::_render_module`;
-`src/haute/_ast_helpers.py::_function_body_source`;
-`src/haute/_ast_helpers.py::unkept_module_statements`.
-
 ### PCFG-R16 — The `earlier` step spelling
 **Why:** The parser recognises the renderer's earlier call spelling so bodies saved
 by an older Haute keep their steps; the canonical-only policy in `specs/README.md`
@@ -234,152 +174,3 @@ matches them.
 **Evidence:** `src/haute/_config_builder.py::_reconcile_steps`;
 `src/haute/_polars_steps.py::StepSpelling`; `specs/README.md`;
 `specs/pipeline-config/low-level.md`.
-
-### PCFG-R19 — One file-to-recovery-graph pass
-**Why:** Editor recovery turns one file into recovery candidates and connections twice: for
-a submodel file in `_recover_submodel_snapshot` and for the pipeline file in
-`_load_readable_pipeline_editor_document`. Both discover the decorated nodes, mint their
-recovery ids, resolve each node, recover the connect calls and attribute the strict parse's
-binding refusal, in a different order, so a fix to one pass can miss the other. (The ids,
-the captures, the `match` bindings, the step-kind input table and the editor-sidecar read
-this package also covered were delivered.)
-
-**Plan:** One `_recover_file_graph` that both call, the pipeline file adding its submodel
-occurrences and instance refusals; fix the order of the diagnostics it emits and say it in
-the server-api specification.
-
-**Acceptance:** jscpd reports no clone between the two passes; the recovery tests pass
-unchanged apart from a stated diagnostic order.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_pipeline_recovery.py::_recover_submodel_snapshot`;
-`src/haute/_pipeline_recovery.py::_load_readable_pipeline_editor_document`.
-
-### PCFG-R21 — Node signatures retain their configuration bindings
-
-**Why:** The parser retains keyword-only names temporarily but drops defaults and the canonical
-graph loses the signature. Codegen rebuilds parameters from edges. A valid node with
-`factor=1.2` and a same-named preamble value `factor=0.9` computes 120 before Save and 90 after
-real parse/codegen. Without the preamble binding it fails at execution. The specification calls
-these parameters configuration, yet existing tests check only that no implicit edge is added.
-
-**Plan:** Define supported configuration parameter bindings in the pipeline-config
-representation and preserve them through parser, recovery, codegen and standalone execution.
-Any signature the representation cannot faithfully preserve must receive a located refusal
-before healthy load/Save; never silently drop a default or redirect the name to the preamble.
-
-**Acceptance:** Execute the original and regenerated node with a shadowing preamble constant
-and assert equal results. Cover literal defaults, required keyword-only parameters and
-unsupported expressions according to the defined contract. Refused forms leave the Python bytes
-unchanged. An edge-count assertion alone is insufficient.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_graph_builders.py::_extract_decorated_node_skeletons`; `src/haute/_graph_builders.py::_resolve_node_skeleton`; `src/haute/codegen.py`; `tests/test_parser_conservation.py::TestParameterBucketConservation`.
-
-### PCFG-R22 — Catch `ConfigError` in scoped node save and sidecar lookup
-**Why:** Two config-validation and sidecar-lookup boundaries catch only `ValueError`
-while calling helpers that raise `ConfigError` (`HauteError`, which does not inherit
-from `ValueError`):
-1. `apply_scoped_node_save` in `_pipeline_repair_actions.py` wraps
-   `validate_node_config(target.node_type, deepcopy(request.config), require_complete=False)`
-   in `except ValueError:` and raises `_unsupported(...)`
-   (`PipelineRepairError("repair_action_unsupported", ...)`, HTTP 409). When
-   `validate_node_config(..., require_complete=False)` raises `ConfigError` — such as
-   an invalid `mlflow_destination` (`validate_mlflow_destination`), a whitespace-only
-   `alias` or both `version` and `alias` set on `modelScore` / `optimiserApply`
-   (`validate_registered_model_alias`), or `analysis_columns` containing the `quote_id`
-   column or a reserved `__haute_` prefix on `optimiser`
-   (`validate_optimiser_analysis_config`) — `POST /api/pipeline/node/save` returns an
-   unhandled HTTP 500 instead of the structured 409 `repair_action_unsupported`
-   response.
-2. `find_config_by_func_name` in `_config_io.py` checks `<func_name>.json` in each
-   type folder and wraps `_load_json_object(candidate)` and
-   `_normalise_loaded_config(data, node_type)` in
-   `except (json.JSONDecodeError, OSError, ValueError):` (logging
-   `config_recovery_failed` and returning `None`). When `<func_name>.json` contains
-   invalid UTF-8 bytes (`_load_json_object` raises `ConfigError`) or triggers
-   `ConfigError` in `_normalise_loaded_config` via `reject_removed_config_keys`
-   (such as `scored_input`/`factors_input` or `model_name` on `optimiser`,
-   `model_name`/`exclude` on `modelling`, or `mapping` on `workbenchOutput`) or
-   `reject_form_given_keys` (`tables`/`sample` on `workbenchInput` or `tables` on
-   `workbenchOutput`), `find_config_by_func_name` raises an uncaught `ConfigError`
-   instead of logging `config_recovery_failed` and returning `None`.
-
-**Plan:** Catch `(ValueError, ConfigError)` in `apply_scoped_node_save` and add
-`ConfigError` to the exception tuple in `find_config_by_func_name`.
-
-**Acceptance:** `POST /api/pipeline/node/save` with a `modelScore` config setting both
-`version` and `alias` or an `optimiser` config whose `analysis_columns` includes the
-`quote_id` column or a `__haute_`-prefixed column (`ConfigError`) returns 409
-`repair_action_unsupported`; and `find_config_by_func_name` logs
-`config_recovery_failed` and returns `None` when `<func_name>.json` has invalid UTF-8
-bytes or triggers `ConfigError` via `reject_removed_config_keys` or
-`reject_form_given_keys` (`tables`/`sample` on `workbenchInput`).
-
-**Dependencies:** Coordinates with `PCFG-R07` (typed config models).
-
-**Evidence:** `src/haute/_pipeline_repair_actions.py::apply_scoped_node_save`;
-`src/haute/_config_validation.py::validate_node_config`;
-`src/haute/_config_io.py::_normalise_loaded_config`;
-`src/haute/_config_io.py::find_config_by_func_name`.
-
-### PCFG-R23 — Remove orphaned `config/polars/<name>.json` sidecars on node reset and code-mode scoped save
-**Why:** `_reset_node` and `apply_scoped_node_save` in `_pipeline_repair_actions.py`
-build `edits: list[RepairArtifactEdit]` and only append a sidecar write edit when
-`node_emits_sidecar(node)` is `True`. When a stepped `NodeType.POLARS` node with
-`config="config/polars/<name>.json"` (`target.config_reference`) is reset to code-only
-defaults via `_reset_node` (`POST /api/pipeline/repair/apply`) or saved in code mode
-(`steps: []`) via `apply_scoped_node_save` (`POST /api/pipeline/node/save`),
-`node_emits_sidecar(node)` becomes `False`: the backend rewrites the `.py` decorator
-without `config="config/polars/<name>.json"`, but appends no `RepairArtifactEdit` with
-`after=None` to delete the previously owned `config/polars/<name>.json` sidecar. The
-orphaned JSON file stays on disk and can be picked up later by
-`find_config_by_func_name` recovery.
-
-**Plan:** When `_reset_node` or `apply_scoped_node_save` transitions a node from a
-sidecar-backed `target.config_reference` (resolved relative to `root_path.parent` via
-`_resolve_config_reference(root_path=root_path, project_root=root, reference=...)`) to
-`node_emits_sidecar(node) is False`, check the existing `shared` sidecar reference
-predicate across all remaining nodes and submodels and, when the sidecar was
-exclusively owned by `target`, append a `RepairArtifactEdit` with
-`before=<existing bytes>` and `after=None` so `_commit_repair_plan` deletes the
-orphaned sidecar (and rolls back the deletion from `before` if a later edit in the
-transaction fails).
-
-**Acceptance:** Resetting a stepped Polars node or saving it in code mode (`steps: []`)
-via `POST /api/pipeline/node/save` removes its exclusively owned
-`config/polars/<name>.json` file from disk (including for a nested pipeline under a
-subdirectory `subdir/main.py`, deleting `subdir/config/polars/<name>.json` rather than
-a root-level file), preserves the file when another node still references that same
-resolved path, and restores the file if the repair transaction rolls back.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_pipeline_repair_actions.py::_reset_node`;
-`src/haute/_pipeline_repair_actions.py::apply_scoped_node_save`;
-`src/haute/_pipeline_repair.py::_resolve_config_reference`;
-`src/haute/_pipeline_repair.py::_commit_repair_plan`.
-
-### PCFG-R24 — Anchor `create_submodel` validation to `_parent_path.parent` instead of `pipeline_dir()`
-**Why:** `routes/submodel.py::create_submodel` is an in-memory graph transformation
-route that validates `body.source_file` into `_parent_path`, yet lines 210–220 pass
-`pipeline_root=pipeline_dir()` instead of `_parent_path.parent` to both
-`_refuse_new_name_violations` and
-`SavePipelineService(project_root=project_root, pipeline_root=pipeline_dir()).validate_new_module_files([result.sm_file])`.
-When `body.source_file` is in a directory other than `pipeline_dir()`, name-violation
-checks and the no-clobber check for `modules/<name>.py` run against `pipeline_dir()`
-instead of `_parent_path.parent`.
-
-**Plan:** Pass `pipeline_root=_parent_path.parent` to `_refuse_new_name_violations`
-and `SavePipelineService(..., pipeline_root=_parent_path.parent)` in `create_submodel`.
-
-**Acceptance:** Calling `POST /api/submodel/create` when `body.source_file` is outside
-`pipeline_dir()` validates name violations and `modules/<name>.py` collisions against
-`_parent_path.parent` rather than `pipeline_dir()`.
-
-**Dependencies:** Coordinates with `PCFG-R04` (one project context).
-
-**Evidence:** `src/haute/routes/submodel.py::create_submodel`;
-`src/haute/routes/_save_pipeline.py::SavePipelineService.validate_new_module_files`.

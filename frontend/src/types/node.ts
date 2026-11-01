@@ -56,11 +56,24 @@ export type LoadAvailability = "ready" | "unavailable" | "blocked"
  * typed access to the fields the app actually uses, avoiding scattered
  * `as Record<string, unknown>` casts.
  */
+/**
+ * What the server knows about a node for its editor (`NodeData.editor`), carried
+ * beside the config and never in it: the steps' render error, and why the parse
+ * discarded a stepped node's steps.
+ */
+export interface NodeEditorState {
+  steps_error: string | null
+  steps_discarded: string | null
+  discarded_sidecar: string | null
+}
+
 export interface HauteNodeData extends Record<string, unknown> {
   label: string
   nodeType: NodeTypeValue | string
   description?: string
   config?: Record<string, unknown>
+  /** Server-derived editor state, beside the config (see `NodeEditorState`). */
+  editor?: NodeEditorState
   code?: string
   func_name?: string
   /** Runtime columns from last preview/run — set by usePipelineAPI */

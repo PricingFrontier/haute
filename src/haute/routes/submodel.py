@@ -20,7 +20,6 @@ from haute.routes._helpers import (
     load_pipeline_editor_document,
     load_sidecar_positions,
     parse_pipeline_to_graph,
-    pipeline_dir,
 )
 from haute.routes._save_pipeline import resolve_definition_file
 from haute.schemas import (
@@ -169,7 +168,7 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
 
     def _run() -> CreateSubmodelResponse:
         _require_parent_source_file(body.source_file)
-        project_root, _parent_path, source_revision = _load_parent_document(body.source_file)
+        project_root, parent_path, source_revision = _load_parent_document(body.source_file)
         _require_current_revision(source_revision, body.base_revision)
 
         # Reject reserved device names at creation, before the graph is
@@ -212,10 +211,10 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
             result.graph,
             body.name,
             project_root,
-            pipeline_root=pipeline_dir(),
+            pipeline_root=parent_path.parent,
         )
 
-        svc = SavePipelineService(project_root=project_root, pipeline_root=pipeline_dir())
+        svc = SavePipelineService(project_root=project_root, pipeline_root=parent_path.parent)
         try:
             svc.validate_new_module_files([result.sm_file])
         except ConfigError as exc:

@@ -50,7 +50,7 @@
 | `src/haute/_python_syntax.py` | Formatting-preserving valid-Python boundary: exact method-call discovery, exact expression/function replacement, and one import inserted below another (`insert_import_after`, used by the node-scoped save), with stable structured syntax failures. It never repairs invalid Python syntax or evaluates source. Codegen no longer edits generated source, so it does not use this module. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): codegen registers and reads per-node code builders through the canonical registry. |
 | `src/haute/_code_extraction.py` | Reverse direction of the builders: recovers the user-authored code from a function body. Three kinds (`polars`, `hook`, `external`) share one engine (`extract_user_code`): strip the docstring, recognise a declaration body (`is_declaration_body`: nothing but `...` or `pass`), strip the transform output declaration or the External File `df = <first input>` binding, recognise the incomplete placeholder, strip the trailing `return df`, and finalise with the Polars rules. |
-| `src/haute/_ast_helpers.py` | Stateless AST/source utilities with no node/graph knowledge: literal evaluation (`_eval_ast_literal`), decorator introspection (`reject_removed_node_decorator` refuses the removed instance and `of=` forms before literal evaluation; `_get_decorator_kwargs`, `_is_pipeline_authored_decorator`, `_get_decorator_node_type`), docstring/whitespace handling (`_strip_docstring`, `_dedent`), one function's body (`_function_body_source`, which keeps the comment lines above its first statement), and whole-file extraction helpers (`_extract_connect_calls`, `_extract_meta`, `_extract_preamble`, from a parsed module only, `_extract_preserved_blocks`) shared with the parser. It also reads the global constants declaration (`_extract_global_constants_declaration`) and refuses module-level bindings of the reserved name (`_reject_reserved_global_constants_bindings`). `is_submodel_import` recognises a statement importing from `modules` in any spelling; in a pipeline file such an import is generated code, so preamble extraction cuts its lines out (`_submodel_import_lines`) and `unkept_module_statements` (the statements a save would drop) does not report one, wherever it sits. |
+| `src/haute/_ast_helpers.py` | Stateless AST/source utilities with no node/graph knowledge: literal evaluation (`_eval_ast_literal`), decorator introspection (`reject_removed_node_decorator` refuses the removed instance and `of=` forms before literal evaluation; `_get_decorator_kwargs`, `_is_pipeline_authored_decorator`, `_get_decorator_node_type`), docstring/whitespace handling (`_strip_docstring`, `_dedent`), one function's body (`_function_body_source`, which keeps the comment lines above its first statement), and whole-file extraction helpers (`_extract_connect_calls`, `_extract_meta`, `_extract_preamble`, from a parsed module only, `_extract_preserved_blocks`) shared with the parser. `unkept_module_statements` and `unkept_comments` list the statements and the comments a save would drop (codegen high-level, "Preserved blocks"). It also reads the global constants declaration (`_extract_global_constants_declaration`) and refuses module-level bindings of the reserved name (`_reject_reserved_global_constants_bindings`). `is_submodel_import` recognises a statement importing from `modules` in any spelling; in a pipeline file such an import is generated code, so preamble extraction cuts its lines out (`_submodel_import_lines`) and `unkept_module_statements` (the statements a save would drop) does not report one, wherever it sits. |
 
 ## Key types and data structures
 
@@ -134,7 +134,7 @@ omitted), any preserved blocks (`_emit_preserved_block`, wrapped in
 `# haute:preserve-start/-end` markers), then each node function preceded by two
 blank lines (in emission order), the
 submodel registration calls, and the `pipeline.connect(...)`/
-`submodel.connect(...)` calls under the `# Wire nodes together` comment
+`submodel.connect(...)` calls under the `# Wire nodes together` comment (`_source_layout.WIRE_COMMENT`)
 (deduped when `dedup_connects=True`). The module ends with exactly one newline.
 The imports are `import haute` followed by `import polars as pl`; the second is
 emitted only when the rest of the module refers to the name `pl` (checked on
@@ -318,6 +318,13 @@ makes it local, so the declaration would add nothing. User code must start from 
 name (`df = quotes.join(regions, ...)`), and reading `df` before assigning it is
 a `NameError` at run time, in the generated module and canvas execution alike.
 
+A transform's `keyword_parameters` (the pipeline-config specification's keyword-only
+parameters) follow its inputs after a bare `*`, in their recorded order, each as
+`name=<literal>` with no annotation, the default printed by `_source_layout.literal` as a
+decorator keyword's value is (`Param.default`). `_gen_transform` validates them with
+`validate_keyword_parameters` and refuses, with a `ConfigError` naming the node, a binding
+named like one of the logical input names it emits, and a stepped transform carrying them.
+
 A stepped transform (`config["steps"]` is a list) has its body rendered by
 `_polars_steps.render_polars_steps` against the logical parameter names, one
 statement per step (over several lines when it does not fit in 88 columns at the body's indentation) with a
@@ -484,6 +491,7 @@ empty code.
 | stepped `polars` transform whose steps cannot be rendered | No error — incomplete placeholder body, warned at save time with the step index | `_codegen_builders._gen_transform`, `_save_pipeline._validate_transforms_are_runnable` |
 | stepped `dataInput`, `externalFile`, `ratingStep`, `modelScore`, `scenarioExpander` or `explore` whose steps cannot be rendered | No error — the hook's body is the `INCOMPLETE_STEPS_MESSAGE` placeholder, warned at save time with the step index | `_codegen_builders._stepped_body_code` and `_configured_node`, `_save_pipeline._validate_transforms_are_runnable` |
 | stepped `polars` node carrying `inputMapping` | `ConfigError` (node id/label) | `_codegen_builders._gen_transform` |
+| `polars` transform with a malformed `keyword_parameters`, one named like an input, or one beside `steps` | `ConfigError` (node id/label) | `_codegen_builders._gen_transform` |
 | `edgeJoin` codegen called with `!= 2` sources | `ConfigError` | `_codegen_builders._gen_edge_join` |
 | `Explore` node with `!= 1` incoming edge | `ParseError` | `_codegen_builders._gen_explore` |
 | Codegen dispatched on a `SUBMODEL`/`SUBMODEL_PORT` occurrence | `RuntimeError` | `_codegen_builders._gen_submodel_placeholder_unreachable` |
@@ -540,7 +548,7 @@ file tree on disk.
   transform contract and `inputs_by_parent`; a file saved with the keyword omitted parses back
   to the same effective contract, and a second save is byte-identical.
 - `tests/test_polars_steps.py::test_codegen_parse_round_trip_reproduces_rendered_code` — a stepped transform's generated module parses back to the rendered code and its steps; `test_stepped_original_rejects_input_mapping` covers the `inputMapping` rejection.
-- `tests/test_polars_steps.py::test_data_input_steps_execute_and_round_trip`, `test_data_input_incomplete_steps_fail_on_every_path`, `test_data_input_hand_edit_discards_steps_without_sidecar_marker` and `test_data_input_free_code_with_redundant_parentheses_reloads_in_step_mode` — a stepped Data Input's generated module is a `df` hook whose body is the rendered lines and parses back to its steps, an unrenderable list emits the `INCOMPLETE_STEPS_MESSAGE` placeholder that reloads as empty code with the steps kept, a hand edit discards the steps without a `_discarded_sidecar` marker, and a rendering the source finaliser normalises still reloads in step mode.
+- `tests/test_polars_steps.py::test_data_input_steps_execute_and_round_trip`, `test_data_input_incomplete_steps_fail_on_every_path`, `test_data_input_hand_edit_discards_steps_without_sidecar_marker` and `test_data_input_free_code_with_redundant_parentheses_reloads_in_step_mode` — a stepped Data Input's generated module is a `df` hook whose body is the rendered lines and parses back to its steps, an unrenderable list emits the `INCOMPLETE_STEPS_MESSAGE` placeholder that reloads as empty code with the steps kept, a hand edit discards the steps without recording a discarded sidecar, and a rendering the source finaliser normalises still reloads in step mode.
 - `tests/test_polars_steps.py::test_external_file_steps_reach_the_other_inputs_and_obj`, `test_external_file_unknown_input_and_input_mapping_fail_loudly`, `test_rating_step_steps_execute_and_round_trip`, `test_scenario_expander_steps_execute_and_round_trip` and `test_model_score_steps_round_trip_and_fail_before_any_model_loads` — each frame surface's generated module is a hook whose body is the rendering (after `df = <first input>` for an External File) and parses back to its steps, an unrenderable list emits the placeholder (an External File keeping its binding line) and reloads with the steps kept, and a stepped External File node refuses `inputMapping`.
 - `tests/test_rename_stable_binding.py` — executes a coded transform before and after the rename shape the editor produces (edge renamed, `inputMapping` recording the logical name) with equal rows, shows the unmapped shape failing on the old name, and round-trips the mapping through codegen and the parser.
 

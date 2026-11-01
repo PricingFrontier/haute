@@ -4522,3 +4522,154 @@ def test_saving_over_a_submodel_statement_a_save_would_drop_is_refused_naming_it
     assert response.status_code == 409
     assert "modules/child.py:13" in response.json()["detail"]
     assert child.read_bytes() == before
+
+
+_BROKEN_NODE = (
+    "@{receiver}.polars\ndef broken(quotes, *, factor):\n    df = quotes\n    return df\n\n"
+)
+_BROKEN_CONNECT = '{receiver}.connect("quotes", 7)\n'
+
+
+def _diagnostic_order(document, source_file: str) -> list[str]:
+    return [item.code for item in document.diagnostics if item.source_file == source_file]
+
+
+def test_a_pipeline_files_diagnostics_follow_nodes_then_connections_then_registrations(
+    tmp_path: Path,
+) -> None:
+    """One recovery pass serves both files, so each reports in one order (PCFG-R19)."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "haute.toml").write_text('[project]\nname = "shapes"\n', encoding="utf-8")
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        "import haute\nimport polars as pl\n\n"
+        'pipeline = haute.Pipeline("shapes")\n\n'
+        "@pipeline.polars\ndef quotes():\n    return None\n\n"
+        + _BROKEN_NODE.format(receiver="pipeline")
+        + 'pipeline.submodel(missing.submodel, "pricing")\n'
+        + _BROKEN_CONNECT.format(receiver="pipeline"),
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert _diagnostic_order(document, "main.py") == [
+        "node_parse_invalid",
+        "connection_declaration_invalid",
+        "submodel_registration_invalid",
+    ]
+
+
+def test_a_submodel_files_diagnostics_follow_nodes_then_connections(tmp_path: Path) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "haute.toml").write_text('[project]\nname = "shapes"\n', encoding="utf-8")
+    pipeline_file = _submodel_project(
+        tmp_path,
+        input_ports="[]",
+        body=_BROKEN_CONNECT.format(receiver="submodel") + _BROKEN_NODE.format(receiver="submodel"),
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    # The definition's own refusal leads, as the pipeline's registrations report it.
+    assert _diagnostic_order(document, "modules/inputs.py") == [
+        "submodel_definition_invalid",
+        "node_parse_invalid",
+        "connection_declaration_invalid",
+    ]
+
+
+_COMMENTS_A_SAVE_DROPS = """\
+import haute
+import polars as pl
+
+# kept: a preamble comment
+pipeline = haute.Pipeline("commented")
+
+
+@pipeline.polars
+def source():
+    # kept: in the node's code
+    df = pl.LazyFrame({"x": [1]})
+    return df
+
+
+# lost: between node functions
+
+
+@pipeline.polars
+def scaled(source):
+    df = source
+    return df
+
+
+pipeline.connect("source", "scaled")  # lost: on a connect call
+"""
+
+
+def test_comments_a_save_would_drop_degrade_the_document_at_their_lines(
+    tmp_path: Path, client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PCFG-R12: a dropped comment is reported, like a dropped statement, and the
+    save is refused naming it until the comment moves where a save keeps it."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(tmp_path / "main.py", _COMMENTS_A_SAVE_DROPS)
+    monkeypatch.chdir(tmp_path)
+    before = pipeline_file.read_bytes()
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    unkept = [d for d in document.diagnostics if d.code == "unkept_module_statement"]
+    assert document.load_status == "degraded"
+    assert document.capabilities.can_save is False
+    assert [
+        (d.source_span.start_line, d.source_span.start_column) for d in unkept if d.source_span
+    ] == [
+        (15, 0),
+        (24, 38),
+    ]
+    assert "`# lost: between node functions`" in unkept[0].message
+    assert unkept[1].remediation and "above its `return df`" in unkept[1].remediation
+
+    response = client.post(
+        "/api/pipeline/save",
+        json={
+            "name": "commented",
+            "source_file": "main.py",
+            "base_revision": document.source_revision,
+            "graph": {"nodes": [], "edges": []},
+        },
+    )
+    assert response.status_code == 409
+    assert "main.py:15" in response.json()["detail"]
+    assert pipeline_file.read_bytes() == before
+
+    moved = _COMMENTS_A_SAVE_DROPS.replace("# lost: between node functions\n", "").replace(
+        "# kept: a preamble comment\n",
+        "# kept: a preamble comment\n# lost: between node functions\n",
+    )
+    _write(pipeline_file, moved.replace("  # lost: on a connect call", ""))
+    assert load_pipeline_editor_document(pipeline_file, project_root=tmp_path).load_status == (
+        "ready"
+    )
+
+
+def test_a_comment_a_save_would_drop_from_a_submodel_file_is_reported_there(
+    tmp_path: Path,
+) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "haute.toml").write_text('[project]\nname = "shapes"\n', encoding="utf-8")
+    pipeline_file = _submodel_project(
+        tmp_path,
+        input_ports="[]",
+        body="# lost: after the last node\n",
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    (unkept,) = [d for d in document.diagnostics if d.code == "unkept_module_statement"]
+    assert unkept.source_file == "modules/inputs.py"
+    assert unkept.source_span is not None and unkept.source_span.start_line == 10

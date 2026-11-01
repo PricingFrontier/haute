@@ -1,3 +1,4 @@
+import type { NodeEditorState } from "../../types/node"
 import SteppedCodePane from "./shared/SteppedCodePane"
 import type { InputSource, OnReplaceConfig, OnUpdateConfig } from "./_shared"
 
@@ -17,6 +18,7 @@ export default function TransformEditor({
   upstreamColumns,
   nodeId,
   nodeColumns,
+  editor,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
@@ -30,6 +32,8 @@ export default function TransformEditor({
   nodeId: string
   /** The node's own columns as its last preview recorded them. */
   nodeColumns?: { name: string; dtype: string }[]
+  /** The server's editor state for the node, beside its config. */
+  editor?: NodeEditorState
 }) {
   const hasInput = inputSources.length > 0
   const inputsCanFormStarter =
@@ -54,6 +58,7 @@ export default function TransformEditor({
       nodeId={nodeId}
       codeHint={hasInput ? "use input names, assign to df" : "assign to df"}
       starterCode={starterCode}
+      editor={editor}
     />
   )
 }

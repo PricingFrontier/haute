@@ -10,7 +10,7 @@ import os
 import re
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -27,6 +27,7 @@ from haute._ast_helpers import (
     _is_submodel_authored_decorator,
     is_submodel_import,
     reject_removed_node_decorator,
+    unkept_comments,
     unkept_module_statements,
 )
 from haute._cache import canonical_json
@@ -70,6 +71,7 @@ from haute._types import (
     REQUEST_INPUT_NODE_TYPES,
     GlobalConstant,
     GraphNode,
+    NodeEditorState,
     NodeType,
     PipelineGraph,
 )
@@ -163,6 +165,7 @@ class _RecoveredCandidate:
     submodel_input_ports: tuple[str, ...] = ()
     submodel_output_ports: tuple[str, ...] = ()
     position_key: str | None = None
+    editor: NodeEditorState = field(default_factory=NodeEditorState)
 
 
 @dataclass(frozen=True, slots=True)
@@ -305,14 +308,23 @@ def _candidate_from_ast(
         skeleton.end_line,
         skeleton.end_column,
     )
-    config_reference: str | None = None
-    try:
-        decorator_kwargs = _get_decorator_kwargs(skeleton.decorator)
-    except HauteError:
-        decorator_kwargs = {}
-    raw_reference = decorator_kwargs.get("config")
-    if isinstance(raw_reference, str) and raw_reference.strip():
-        config_reference = raw_reference.replace("\\", "/")
+    # Read on its own: an unrelated keyword the parse cannot evaluate must not
+    # hide which config file this node names, since sharing decides deletions.
+    raw_reference = next(
+        (
+            keyword.value.value
+            for keyword in (
+                skeleton.decorator.keywords if isinstance(skeleton.decorator, ast.Call) else []
+            )
+            if keyword.arg == "config"
+            and isinstance(keyword.value, ast.Constant)
+            and isinstance(keyword.value.value, str)
+        ),
+        None,
+    )
+    config_reference = (
+        raw_reference.replace("\\", "/") if raw_reference and raw_reference.strip() else None
+    )
 
     try:
         reject_removed_node_decorator(skeleton.decorator)
@@ -400,6 +412,7 @@ def _candidate_from_ast(
         node_type=raw_node["node_type"],
         description=str(raw_node["description"]),
         config=dict(raw_node["config"]),
+        editor=raw_node["editor"],
         config_reference=config_reference,
         param_names=tuple(str(value) for value in raw_node["param_names"]),
         edge_param_names=tuple(str(value) for value in raw_node["edge_param_names"]),
@@ -1066,6 +1079,7 @@ def _build_recovery_graph(
                 availability=availability[candidate.recovery_id],
                 display_position=position,
                 config=candidate.config,
+                editor=candidate.editor,
                 config_reference=candidate.config_reference,
                 function_name=(
                     resolved_identity.function_name if resolved_identity else candidate.authored_id
@@ -1249,6 +1263,7 @@ def _canonical_snapshot(
                 availability="ready",
                 display_position=positions.get(node.id, node.position),
                 config=dict(node.data.config),
+                editor=node.data.editor,
                 config_reference=identity.config_reference,
                 function_name=identity.function_name,
                 default_input_name=identity.default_input_name,
@@ -1423,6 +1438,106 @@ def _attribute_instance_failure(
         candidate.availability = "unavailable"
 
 
+@dataclass(slots=True)
+class _SubmodelOccurrences:
+    """A pipeline file's submodel registrations, their definitions and occurrence cards."""
+
+    registrations: list[SubmodelRegistration]
+    submodels: dict[str, RecoverySubmodelDefinition] | None
+    candidates: list[_RecoveredCandidate]
+
+
+@dataclass(frozen=True, slots=True)
+class _FileGraph:
+    nodes: list[RecoveryPipelineNode]
+    edges: list[RecoveryPipelineEdge]
+    unresolved: list[RecoveryUnresolvedConnection]
+    connections: list[_RecoveredConnection]
+    occurrences: _SubmodelOccurrences
+
+
+def _recover_file_graph(
+    tree: ast.Module,
+    source: str,
+    *,
+    receiver: Literal["pipeline", "submodel"],
+    source_file: str,
+    base_dir: Path,
+    positions: dict[str, dict[str, float]],
+    diagnostics: list[PipelineRecoveryDiagnostic],
+    failure: BaseException | None,
+    occurrence_identities: Sequence[tuple[str, int]] = (),
+    recover_occurrences: Callable[
+        [Callable[[str, int], str], Sequence[_RecoveredConnection]], _SubmodelOccurrences
+    ]
+    | None = None,
+    boundary_incoming: Mapping[str, Sequence[str]] | None = None,
+    boundary_outgoing: Mapping[str, Sequence[str]] | None = None,
+) -> _FileGraph:
+    """Recover one pipeline or submodel file's nodes and connections as a graph.
+
+    Nodes and a pipeline file's submodel occurrences (*occurrence_identities*,
+    recovered by *recover_occurrences*) share one id space, minted over both
+    before any diagnostic records an id. Diagnostics follow one order: each
+    decorated node in source order, each connect call, the pipeline file's
+    submodel registrations and their definitions, the strict parse's refusal
+    (*failure*) attributed to the node or occurrences it names, then duplicate
+    identities and blocker propagation.
+    """
+    skeletons = _extract_decorated_node_skeletons(
+        tree,
+        _is_pipeline_authored_decorator
+        if receiver == "pipeline"
+        else _is_submodel_authored_decorator,
+        source=source,
+    )
+    recovery_id = _recovery_ids(
+        [*((skeleton.authored_id, skeleton.start_line) for skeleton in skeletons)]
+        + list(occurrence_identities)
+    )
+    candidates = [
+        _candidate_from_ast(
+            skeleton,
+            recovery_id=recovery_id(skeleton.authored_id, skeleton.start_line),
+            source_file=source_file,
+            base_dir=base_dir,
+            diagnostics=diagnostics,
+        )
+        for skeleton in skeletons
+    ]
+    connections, initially_unresolved = _recover_ast_connections(
+        tree, receiver=receiver, source_file=source_file, diagnostics=diagnostics
+    )
+    occurrences = (
+        recover_occurrences(recovery_id, connections)
+        if recover_occurrences is not None
+        else _SubmodelOccurrences(registrations=[], submodels=None, candidates=[])
+    )
+    candidates.extend(occurrences.candidates)
+    _attribute_binding_failure(
+        failure,
+        candidates,
+        source_file=source_file,
+        diagnostics=diagnostics,
+        definition=receiver == "submodel",
+    )
+    if receiver == "pipeline":
+        _attribute_instance_failure(
+            failure, candidates, source_file=source_file, diagnostics=diagnostics
+        )
+    nodes, edges, unresolved = _build_recovery_graph(
+        candidates,
+        connections,
+        source_file=source_file,
+        positions=positions,
+        diagnostics=diagnostics,
+        initial_unresolved=initially_unresolved,
+        boundary_incoming=boundary_incoming,
+        boundary_outgoing=boundary_outgoing,
+    )
+    return _FileGraph(nodes, edges, unresolved, connections, occurrences)
+
+
 def _recover_submodel_snapshot(
     child_path: Path,
     *,
@@ -1448,33 +1563,6 @@ def _recover_submodel_snapshot(
         child_path, source_file=child_source_file, captures=captures, diagnostics=diagnostics
     )
 
-    skeletons = _extract_decorated_node_skeletons(
-        tree, _is_submodel_authored_decorator, source=source
-    )
-    recovery_id = _recovery_ids((item.authored_id, item.start_line) for item in skeletons)
-    candidates = [
-        _candidate_from_ast(
-            skeleton,
-            recovery_id=recovery_id(skeleton.authored_id, skeleton.start_line),
-            source_file=child_source_file,
-            base_dir=config_base,
-            diagnostics=diagnostics,
-        )
-        for skeleton in skeletons
-    ]
-    connections, initially_unresolved = _recover_ast_connections(
-        tree,
-        receiver="submodel",
-        source_file=child_source_file,
-        diagnostics=diagnostics,
-    )
-    _attribute_binding_failure(
-        failure,
-        candidates,
-        source_file=child_source_file,
-        diagnostics=diagnostics,
-        definition=True,
-    )
     try:
         _definition_id, input_ports, output_ports = _extract_definition_contract(tree)
     except HauteError:
@@ -1488,21 +1576,23 @@ def _recover_submodel_snapshot(
         boundary_incoming, boundary_outgoing = definition_boundary_topology(
             input_ports, output_ports
         )
-    nodes, edges, unresolved = _build_recovery_graph(
-        candidates,
-        connections,
+    graph = _recover_file_graph(
+        tree,
+        source,
+        receiver="submodel",
         source_file=child_source_file,
+        base_dir=config_base,
         positions=positions,
         diagnostics=diagnostics,
-        initial_unresolved=initially_unresolved,
+        failure=failure,
         boundary_incoming=boundary_incoming,
         boundary_outgoing=boundary_outgoing,
     )
     return (
         RecoveryGraphSnapshot(
-            nodes=nodes,
-            edges=edges,
-            unresolved_connections=unresolved,
+            nodes=graph.nodes,
+            edges=graph.edges,
+            unresolved_connections=graph.unresolved,
         ),
         input_payload,
         output_payload,
@@ -1574,6 +1664,60 @@ def _recover_unavailable_submodel_definition(
         output_ports=output_ports,
         diagnostic_ids=[diagnostic.diagnostic_id],
     )
+
+
+def _recover_submodel_occurrences(
+    tree: ast.Module,
+    connections: Sequence[_RecoveredConnection],
+    *,
+    recovery_id: Callable[[str, int], str],
+    parent_path: Path,
+    project_root: Path,
+    source_file: str,
+    diagnostics: list[PipelineRecoveryDiagnostic],
+    captures: _SourceCaptures,
+) -> _SubmodelOccurrences:
+    """A pipeline file's registrations, each definition, and a card per occurrence.
+
+    A registration that cannot be read keeps an unavailable card whose ports are
+    the ones its connect calls name: authored evidence only, so the card stays
+    non-executable and its downstream path stays blocked.
+    """
+    unavailable: list[_RecoveredCandidate] = []
+    registrations = _recover_ast_submodel_registrations(
+        tree,
+        source_file=source_file,
+        diagnostics=diagnostics,
+        unavailable_candidates=unavailable,
+        recovery_id=recovery_id,
+    )
+    submodels, occurrences = _recover_registered_submodels(
+        registrations,
+        parent_path=parent_path,
+        project_root=project_root,
+        source_file=source_file,
+        diagnostics=diagnostics,
+        captures=captures,
+        recovery_id=recovery_id,
+    )
+    for card in unavailable:
+        card.submodel_output_ports = tuple(
+            dict.fromkeys(
+                connection.source_port
+                for connection in connections
+                if connection.source_authored_id == card.authored_id
+                and connection.source_port is not None
+            )
+        )
+        card.submodel_input_ports = tuple(
+            dict.fromkeys(
+                connection.target_port
+                for connection in connections
+                if connection.target_authored_id == card.authored_id
+                and connection.target_port is not None
+            )
+        )
+    return _SubmodelOccurrences(registrations, submodels, [*occurrences, *unavailable])
 
 
 def _recover_registered_submodels(
@@ -1966,51 +2110,77 @@ def name_violations_payload(violations: Sequence[NameViolation]) -> list[Pipelin
     ]
 
 
-def _unkept_statement_diagnostics(
+def _unkept_source_diagnostics(
     source: str,
     *,
     source_file: str,
+    codes: Mapping[str, str],
     receiver: Literal["pipeline", "submodel"] = "pipeline",
 ) -> list[PipelineRecoveryDiagnostic]:
-    """One diagnostic per module statement that a save would drop.
+    """One diagnostic per module statement, and per comment, that a save would drop.
 
     *source* is the pipeline file's, or a registered submodel file's with
-    *receiver* ``"submodel"``: a save regenerates both the same way. Each
-    degrades the document, so nothing regenerates the file without the
-    statement until it moves into the preamble or a preserved block.
+    *receiver* ``"submodel"``: a save regenerates both the same way, keeping
+    each node's extracted code (*codes*, by node function name). Each degrades
+    the document, so nothing regenerates the file without the statement or
+    comment until it moves where a save keeps it. They are listed in line order.
     """
     constructor = "Pipeline" if receiver == "pipeline" else "Submodel"
     lines = python_lines(source)
-    diagnostics = []
+    preamble = (
+        f"between the `import haute` line and `{receiver} = haute.{constructor}(...)`, where "
+        "it becomes part of the preamble"
+    )
+    preserved = "`# haute:preserve-start` and `# haute:preserve-end` lines"
+    found: list[tuple[int, int, int, str, str]] = []
+    tree = ast.parse(source)
     for start_line, end_line in unkept_module_statements(
-        source, receiver=receiver, constructor_name=constructor
+        source, tree, receiver=receiver, constructor_name=constructor
     ):
         first = lines[start_line - 1].strip()
         excerpt = first if len(first) <= 60 else f"{first[:57]}..."
-        diagnostics.append(
-            _diagnostic(
-                code="unkept_module_statement",
-                scope=receiver,
-                message=(
-                    f"`{excerpt}` is outside the preamble and preserved blocks, where a save "
-                    "would drop it."
-                ),
-                source_file=source_file,
-                source_span=RecoverySourceSpan(
-                    start_line=start_line,
-                    start_column=0,
-                    end_line=end_line,
-                    end_column=len(lines[end_line - 1]),
-                ),
-                remediation=(
-                    f"Move it between the `import haute` line and "
-                    f"`{receiver} = haute.{constructor}(...)`, where it becomes part of the "
-                    "preamble, or wrap it in `# haute:preserve-start` and "
-                    "`# haute:preserve-end` lines."
-                ),
+        found.append(
+            (
+                start_line,
+                0,
+                end_line,
+                f"`{excerpt}` is outside the preamble and preserved blocks, where a save "
+                "would drop it.",
+                f"Move it {preamble}, or wrap it in {preserved}.",
             )
         )
-    return diagnostics
+    for line, column in unkept_comments(
+        source, tree, codes=codes, receiver=receiver, constructor_name=constructor
+    ):
+        text = lines[line - 1][column:].strip()
+        excerpt = text if len(text) <= 60 else f"{text[:57]}..."
+        found.append(
+            (
+                line,
+                column,
+                line,
+                f"The comment `{excerpt}` is outside the preamble, preserved blocks and node "
+                "code, where a save would drop it.",
+                f"Move it {preamble}, into a node's code above its `return df`, or between "
+                f"{preserved}.",
+            )
+        )
+    return [
+        _diagnostic(
+            code="unkept_module_statement",
+            scope=receiver,
+            message=message,
+            source_file=source_file,
+            source_span=RecoverySourceSpan(
+                start_line=start_line,
+                start_column=start_column,
+                end_line=end_line,
+                end_column=len(lines[end_line - 1]),
+            ),
+            remediation=remediation,
+        )
+        for start_line, start_column, end_line, message, remediation in sorted(found)
+    ]
 
 
 def _capabilities(
@@ -2037,6 +2207,17 @@ _SCOPED_EDITABLE_TYPES = {
 }
 
 
+def _iter_snapshot_nodes(
+    nodes: list[RecoveryPipelineNode],
+    submodels: dict[str, RecoverySubmodelDefinition] | None,
+) -> list[RecoveryPipelineNode]:
+    """Every node of a document graph, then of each submodel definition's, recursively."""
+    collected = list(nodes)
+    for definition in (submodels or {}).values():
+        collected.extend(_iter_snapshot_nodes(definition.graph.nodes, definition.graph.submodels))
+    return collected
+
+
 def _mark_scoped_editable(
     nodes: list[RecoveryPipelineNode],
     submodels: dict[str, RecoverySubmodelDefinition] | None,
@@ -2047,17 +2228,7 @@ def _mark_scoped_editable(
     trustworthy source span and no config reference
     shared with another node. Document-wide fences stay separate.
     """
-    all_nodes: list[RecoveryPipelineNode] = []
-
-    def collect(
-        graph_nodes: list[RecoveryPipelineNode],
-        graph_submodels: dict[str, RecoverySubmodelDefinition] | None,
-    ) -> None:
-        all_nodes.extend(graph_nodes)
-        for definition in (graph_submodels or {}).values():
-            collect(definition.graph.nodes, definition.graph.submodels)
-
-    collect(nodes, submodels)
+    all_nodes = _iter_snapshot_nodes(nodes, submodels)
     reference_counts = Counter(node.config_reference for node in all_nodes if node.config_reference)
     for node in all_nodes:
         node.scoped_editable = (
@@ -2216,11 +2387,24 @@ def _load_readable_pipeline_editor_document(
         edges = snapshot.edges
         unresolved = snapshot.unresolved_connections
         submodels = snapshot.submodels
-        diagnostics.extend(_unkept_statement_diagnostics(source, source_file=source_file))
+        codes: dict[str, dict[str, str]] = {}
+        for graph_node in _iter_snapshot_nodes(nodes, submodels):
+            if graph_node.source_file is not None:
+                codes.setdefault(graph_node.source_file, {})[graph_node.authored_id] = str(
+                    (graph_node.config or {}).get("code") or ""
+                )
+        diagnostics.extend(
+            _unkept_source_diagnostics(
+                source, source_file=source_file, codes=codes.get(source_file, {})
+            )
+        )
         for child_file, child_source in submodel_sources.items():
             diagnostics.extend(
-                _unkept_statement_diagnostics(
-                    child_source, source_file=child_file, receiver="submodel"
+                _unkept_source_diagnostics(
+                    child_source,
+                    source_file=child_file,
+                    codes=codes.get(child_file, {}),
+                    receiver="submodel",
                 )
             )
 
@@ -2279,98 +2463,39 @@ def _load_readable_pipeline_editor_document(
             global_constants, global_constants_error = _recover_global_constants(
                 tree, path, captures
             )
-            recovered_connections, initially_unresolved = _recover_ast_connections(
+            graph = _recover_file_graph(
                 tree,
+                source,
                 receiver="pipeline",
                 source_file=source_file,
-                diagnostics=diagnostics,
-            )
-            connections = recovered_connections
-            skeletons = _extract_decorated_node_skeletons(
-                tree, _is_pipeline_authored_decorator, source=source
-            )
-            # Nodes and occurrences, valid or not, share one id space: mint every
-            # id over all of them before anything records one in a diagnostic.
-            recovery_id = _recovery_ids(
-                [
-                    *((skeleton.authored_id, skeleton.start_line) for skeleton in skeletons),
-                    *(
-                        (registration.name, registration.line or 1)
-                        for registration in _recover_ast_submodel_registrations(
-                            tree,
-                            source_file=source_file,
-                            diagnostics=[],
-                            include_invalid_references=True,
-                        )
-                    ),
-                ]
-            )
-            unavailable_registrations: list[_RecoveredCandidate] = []
-            registrations = _recover_ast_submodel_registrations(
-                tree,
-                source_file=source_file,
-                diagnostics=diagnostics,
-                unavailable_candidates=unavailable_registrations,
-                recovery_id=recovery_id,
-            )
-            candidates = [
-                _candidate_from_ast(
-                    skeleton,
-                    recovery_id=recovery_id(skeleton.authored_id, skeleton.start_line),
-                    source_file=source_file,
-                    base_dir=path.parent,
-                    diagnostics=diagnostics,
-                )
-                for skeleton in skeletons
-            ]
-            submodels, submodel_occurrences = _recover_registered_submodels(
-                registrations,
-                parent_path=path,
-                project_root=root,
-                source_file=source_file,
-                diagnostics=diagnostics,
-                captures=captures,
-                recovery_id=recovery_id,
-            )
-            candidates.extend(submodel_occurrences)
-            for unavailable in unavailable_registrations:
-                # These handles are authored connection evidence only. The unavailable
-                # card remains non-executable and its downstream path stays blocked.
-                unavailable.submodel_output_ports = tuple(
-                    dict.fromkeys(
-                        connection.source_port
-                        for connection in recovered_connections
-                        if connection.source_authored_id == unavailable.authored_id
-                        and connection.source_port is not None
-                    )
-                )
-                unavailable.submodel_input_ports = tuple(
-                    dict.fromkeys(
-                        connection.target_port
-                        for connection in recovered_connections
-                        if connection.target_authored_id == unavailable.authored_id
-                        and connection.target_port is not None
-                    )
-                )
-            candidates.extend(unavailable_registrations)
-            _attribute_binding_failure(
-                strict_failure,
-                candidates,
-                source_file=source_file,
-                diagnostics=diagnostics,
-                definition=False,
-            )
-            _attribute_instance_failure(
-                strict_failure, candidates, source_file=source_file, diagnostics=diagnostics
-            )
-            nodes, edges, unresolved = _build_recovery_graph(
-                candidates,
-                connections,
-                source_file=source_file,
+                base_dir=path.parent,
                 positions=positions,
                 diagnostics=diagnostics,
-                initial_unresolved=initially_unresolved,
+                failure=strict_failure,
+                occurrence_identities=[
+                    (registration.name, registration.line or 1)
+                    for registration in _recover_ast_submodel_registrations(
+                        tree,
+                        source_file=source_file,
+                        diagnostics=[],
+                        include_invalid_references=True,
+                    )
+                ],
+                recover_occurrences=lambda recovery_id, recovered: _recover_submodel_occurrences(
+                    tree,
+                    recovered,
+                    recovery_id=recovery_id,
+                    parent_path=path,
+                    project_root=root,
+                    source_file=source_file,
+                    diagnostics=diagnostics,
+                    captures=captures,
+                ),
             )
+            nodes, edges, unresolved = graph.nodes, graph.edges, graph.unresolved
+            connections = graph.connections
+            registrations = graph.occurrences.registrations
+            submodels = graph.occurrences.submodels
             # The recovery pass re-checks each element, but not every refusal
             # belongs to one: unless a diagnostic already shows it, the parse's
             # own refusal is shown, so no other problem on screen can hide it.

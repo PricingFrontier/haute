@@ -263,10 +263,13 @@ df = df.with_columns(
 ??? note "In the pipeline file"
     A Transform node is a function in the pipeline's `.py` file, decorated with `@pipeline.polars`. Its parameters are the node's inputs, and its body is the node's code followed by the `return df` Haute adds. While the node is built from steps, the steps are stored in a JSON sidecar, `config/polars/<node name>.json`, which the decorator names with `config=`, and the body is the code they generate. After **Switch to code** the node has no sidecar and the body is your code.
 
+    A node written as code can also take keyword-only parameters after its inputs, each with a literal default, such as `def priced(policies, *, loading=1.05)`. The code reads `loading` as it reads an input, and it takes precedence over a value of the same name defined above the pipeline. A default must be `None`, `True` or `False`, a number or a string; a list or dictionary default is refused, because a function shares one copy of it between runs. Haute will not open a node whose keyword-only parameter has no default, or has one it cannot write back (a name or a calculation, for example), and names the line; a node built from steps, and every other node type, takes none.
+
     | Setting in the editor | Stored as |
     |---|---|
     | The steps on the **TRANSFORM** tab | `steps` in the sidecar: a list with one object per card, each with an `id` and a `kind` (`"source"` for **Start from**, then `"filter"`, `"with_column"`, `"join"`, `"free_code"` and so on) and the card's fields |
     | The code, after **Switch to code** | the function body (`code` in the node's configuration) |
+    | Keyword-only parameters, written in the file | the signature, after `*` (`keyword_parameters` in the node's configuration: each one's name and default) |
     | **COLUMNS** tab | `selected_columns`, a decorator argument: the columns passed on (absent passes every column) |
 
     **Create Instance** wraps the node in a one-node submodel and adds another occurrence of its definition; see [Reusing a node](instances.md).
