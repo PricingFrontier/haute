@@ -65,6 +65,11 @@ REQUEST_TIMEOUT_SECONDS = 30
 POLL_SECONDS = 10
 #: How many times the Azure SDK retries a request, each within the request timeout.
 _SDK_RETRIES = 2
+#: The longest a request, its retries and their waits included, may take outside a deadline.
+_CALL_TIMEOUT_SECONDS = 60
+#: The longest the Azure SDK waits before a retry, whatever ``Retry-After`` Azure asks for:
+#: a request's budget is checked only between its attempts.
+_MAX_RETRY_WAIT_SECONDS = 10
 #: Azure's limits on a resource's tags: how many it holds, and how long a value may be.
 TAG_LIMIT = 50
 TAG_VALUE_LIMIT = 256
@@ -135,6 +140,9 @@ class AppState:
     client_id: str | None
     tag_names: frozenset[str] = frozenset()
     recorded: Recorded | None = None
+    #: Azure's latest ready revision: in single revision mode the one serving, while it is
+    #: active. A revision on its way out can stay active beside it, taking no traffic.
+    ready_revision: str | None = None
 
 
 class ContainerAppHost(Protocol):
@@ -146,6 +154,11 @@ class ContainerAppHost(Protocol):
     def revision(self, name: str) -> RevisionState: ...
 
     def deactivate(self, name: str) -> None: ...
+
+    def limit(self, seconds: float | None) -> None:
+        """Bound every request from now on, retries and their waits included, to end within
+        *seconds* from now, refusing one asked after; None lifts the bound."""
+        ...
 
     def set_image(self, image: str, suffix: str, timeout: float) -> str:
         """Set the app's one container to *image* on a revision suffixed *suffix*, waiting on
@@ -538,13 +551,14 @@ def rollout(
     ):
         return _recheck(run, latest, image, commit)
 
-    # The image the app served, which a failure puts back: its active revision's, not its
-    # template's, which a failed update of Azure's own can leave naming another.
-    kept = next(
-        (each.image for each in map(host.revision, state.active_revisions) if each.image), None
-    )
+    # The image the app served, which a failure puts back: its serving revision's, Azure's
+    # latest ready one while it is active, not its template's (which a failed update of
+    # Azure's own can leave naming another) nor another active revision's on its way out.
+    serving = state.ready_revision if state.ready_revision in state.active_revisions else None
+    kept = host.revision(serving).image if serving is not None else None
     suffix = _suffix(clock)
     deadline = clock.now() + ROLLOUT_TIMEOUT_SECONDS
+    host.limit(ROLLOUT_TIMEOUT_SECONDS)
     made: str | None = None
     try:
         for name in state.active_revisions:
@@ -556,11 +570,17 @@ def rollout(
         say(f"  ✓ The revision {made} is provisioned")
         release = run.check()
     except QuotesClosedError as closed:
+        host.limit(None)
         run.record(made, Recorded(image, closed.release, commit))
         raise
     except RolloutError as failure:
-        undone = _roll_back(host, suffix, previous, kept, clock, say)
+        host.limit(RECOVERY_TIMEOUT_SECONDS)
+        try:
+            undone = _roll_back(host, suffix, previous, kept, clock, say)
+        finally:
+            host.limit(None)
         raise RolloutError(f"{failure} {undone}") from failure
+    host.limit(None)
     say(f"  ✓ Release {release} runs on {environment}, its quotes open")
     run.record(made, Recorded(image, release, commit))
     return release
@@ -655,26 +675,34 @@ class AzureContainerApps:
                 values["AZURE_TENANT_ID"], values["AZURE_CLIENT_ID"], values["AZURE_CLIENT_SECRET"]
             )
         if client is None:
-            from azure.mgmt.appcontainers import ContainerAppsAPIClient
-
-            # Each request bounded, and retried a few times, so a deadline holds.
-            client = ContainerAppsAPIClient(
-                credential,
-                values["AZURE_SUBSCRIPTION_ID"],
-                connection_timeout=REQUEST_TIMEOUT_SECONDS,
-                read_timeout=REQUEST_TIMEOUT_SECONDS,
-                retry_total=_SDK_RETRIES,
-            )
+            client = _client(credential, values["AZURE_SUBSCRIPTION_ID"])
         self._now = now
+        self._end: float | None = None
         self._credential = credential
         self._client = client
         self._group = environment.resource_group
         self._name = environment.container_app
         self._where = f"the Container App {self._name} in {self._group}"
 
-    def _app(self) -> Any:
-        with _azure(f"read {self._where}"):
-            app = self._client.container_apps.get(self._group, self._name)
+    def limit(self, seconds: float | None) -> None:
+        self._end = None if seconds is None else self._now() + seconds
+
+    def _budget(self, what: str, end: float | None = None) -> float:
+        """The SDK's ``timeout`` for a request to do *what*, its retries and their waits
+        included: what is left of the bound (and of *end*), at most
+        :data:`_CALL_TIMEOUT_SECONDS`; refused when nothing is left."""
+        ends = [each for each in (self._end, end) if each is not None]
+        left = min([each - self._now() for each in ends], default=float(_CALL_TIMEOUT_SECONDS))
+        if left <= 0:
+            raise RolloutError(f"The rollout's deadline passed before Azure was asked to {what}.")
+        return min(left, float(_CALL_TIMEOUT_SECONDS))
+
+    def _app(self, end: float | None = None) -> Any:
+        what = f"read {self._where}"
+        with _azure(what):
+            app = self._client.container_apps.get(
+                self._group, self._name, timeout=self._budget(what, end)
+            )
         if app.properties is None or app.properties.template is None:
             raise RolloutError(f"Azure answered {self._where} with no template.")
         return app
@@ -687,9 +715,12 @@ class AzureContainerApps:
         mode = _named(getattr(configuration, "active_revisions_mode", None)) or "Single"
         ingress = getattr(configuration, "ingress", None)
         address = ingress.fqdn if ingress is not None and ingress.external else None
-        with _azure(f"list the revisions of {self._where}"):
+        what = f"list the revisions of {self._where}"
+        with _azure(what):
             revisions = list(
-                self._client.container_apps_revisions.list_revisions(self._group, self._name)
+                self._client.container_apps_revisions.list_revisions(
+                    self._group, self._name, timeout=self._budget(what)
+                )
             )
         active = tuple(
             str(each.name)
@@ -706,13 +737,17 @@ class AzureContainerApps:
             client_id=self._client_id(),
             tag_names=frozenset(tags),
             recorded=_recorded(tags),
+            ready_revision=properties.latest_ready_revision_name or None,
         )
 
     def _client_id(self) -> str | None:
         from azure.core.exceptions import ResourceNotFoundError
 
+        what = f"read the authentication of {self._where}"
         try:
-            auth = self._client.container_apps_auth_configs.get(self._group, self._name, "current")
+            auth = self._client.container_apps_auth_configs.get(
+                self._group, self._name, "current", timeout=self._budget(what)
+            )
         except ResourceNotFoundError:
             return None
         except Exception as error:
@@ -730,9 +765,10 @@ class AzureContainerApps:
         return entra.registration.client_id or None
 
     def revision(self, name: str) -> RevisionState:
-        with _azure(f"read the revision {name} of {self._where}"):
+        what = f"read the revision {name} of {self._where}"
+        with _azure(what):
             revision = self._client.container_apps_revisions.get_revision(
-                self._group, self._name, name
+                self._group, self._name, name, timeout=self._budget(what)
             )
         properties = revision.properties
         if properties is None:
@@ -747,23 +783,29 @@ class AzureContainerApps:
         )
 
     def deactivate(self, name: str) -> None:
-        with _azure(f"stop the revision {name} of {self._where}"):
-            self._client.container_apps_revisions.deactivate_revision(self._group, self._name, name)
+        what = f"stop the revision {name} of {self._where}"
+        with _azure(what):
+            self._client.container_apps_revisions.deactivate_revision(
+                self._group, self._name, name, timeout=self._budget(what)
+            )
 
     def set_image(self, image: str, suffix: str, timeout: float) -> str:
         from azure.mgmt.appcontainers.models import ContainerApp, ContainerAppProperties
 
         # The deadline holds from here: the read and the update's start spend it too.
         end = self._now() + timeout
-        app = self._app()
+        app = self._app(end)
         template = app.properties.template
         template.containers[0].image = image
         template.revision_suffix = suffix
         envelope = ContainerApp(
             location=app.location, properties=ContainerAppProperties(template=template)
         )
-        with _azure(f"set the image of {self._where}"):
-            poller = self._client.container_apps.begin_update(self._group, self._name, envelope)
+        what = f"set the image of {self._where}"
+        with _azure(what):
+            poller = self._client.container_apps.begin_update(
+                self._group, self._name, envelope, timeout=self._budget(what, end)
+            )
             poller.wait(timeout=max(0.0, end - self._now()))
             if not poller.done():
                 raise RolloutError(
@@ -792,9 +834,13 @@ class AzureContainerApps:
             RECORD_TAGS["release"]: recorded.release,
             RECORD_TAGS["commit"]: recorded.commit,
         }
-        with _azure(f"record the release on {self._where}"):
+        what = f"record the release on {self._where}"
+        with _azure(what):
             poller = self._client.container_apps.begin_update(
-                self._group, self._name, ContainerApp(location=app.location, tags=tags)
+                self._group,
+                self._name,
+                ContainerApp(location=app.location, tags=tags),
+                timeout=self._budget(what),
             )
             poller.wait(timeout=REQUEST_TIMEOUT_SECONDS * 4)
             if not poller.done():
@@ -804,6 +850,40 @@ class AzureContainerApps:
     def token(self, client_id: str) -> str:
         with _azure(f"give the CI service principal a token for the app {client_id}"):
             return str(self._credential.get_token(f"{client_id}/.default").token)
+
+
+def _client(credential: Any, subscription: str, **options: Any) -> ContainerAppsAPIClient:
+    """The Container Apps client a rollout reaches Azure through: each request bounded by
+    :data:`REQUEST_TIMEOUT_SECONDS`, retried at most :data:`_SDK_RETRIES` times, never waiting
+    longer than :data:`_MAX_RETRY_WAIT_SECONDS` between attempts (*options*, a test's
+    transport, say, passed on)."""
+    from azure.mgmt.appcontainers import ContainerAppsAPIClient
+
+    return ContainerAppsAPIClient(
+        credential,
+        subscription,
+        connection_timeout=REQUEST_TIMEOUT_SECONDS,
+        read_timeout=REQUEST_TIMEOUT_SECONDS,
+        retry_policy=_retry_policy(),
+        **options,
+    )
+
+
+def _retry_policy() -> Any:
+    """azure-core's retry policy, :data:`_SDK_RETRIES` retries, its ``Retry-After`` waits capped
+    at :data:`_MAX_RETRY_WAIT_SECONDS`: the policy checks a request's budget only between
+    attempts, so an uncapped wait could hold a stopped app past its deadline."""
+    from azure.core.pipeline.policies import RetryPolicy
+
+    class _BoundedRetry(RetryPolicy):
+        def _sleep_for_retry(self, response: Any, transport: Any) -> bool:
+            retry_after = self.get_retry_after(response)
+            if retry_after:
+                transport.sleep(min(retry_after, _MAX_RETRY_WAIT_SECONDS))
+                return True
+            return False
+
+    return _BoundedRetry(retry_total=_SDK_RETRIES, retry_backoff_max=_MAX_RETRY_WAIT_SECONDS)
 
 
 def _named(value: object) -> str:

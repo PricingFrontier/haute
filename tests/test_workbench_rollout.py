@@ -46,6 +46,8 @@ class FakeHost:
         old = RevisionState("motor--old", image, True, "Provisioned", "Running")
         self.revisions: dict[str, RevisionState] = {old.name: old}
         self.latest: str | None = old.name
+        self.ready: str | None = old.name
+        self.limits: list[float | None] = []
         self.image = image
         self.tags: dict[str, str] = {"owner": "pricing"}
         self.settings: dict[str, Any] = {
@@ -75,10 +77,14 @@ class FakeHost:
             client_id=self.settings["client_id"],
             tag_names=frozenset(self.tags),
             recorded=rollouts._recorded(self.tags),
+            ready_revision=self.ready,
         )
 
     def revision(self, name: str) -> RevisionState:
         return self.revisions[name]
+
+    def limit(self, seconds: float | None) -> None:
+        self.limits.append(seconds)
 
     def deactivate(self, name: str) -> None:
         self.calls.append(("deactivate", name))
@@ -96,6 +102,8 @@ class FakeHost:
             self.revisions[other] = replace(revision, active=False)
         self.revisions[name] = RevisionState(name, image, True, provisioning, running)
         self.latest, self.image = name, image
+        if provisioning == "Provisioned":
+            self.ready = name
         if self.after is not None:
             self.after(self)
         return name
@@ -524,6 +532,77 @@ def test_azure_spends_the_deadline_from_its_first_request(azure: Any) -> None:
     assert sdk.pollers[0].waited == 312.0
 
 
+def test_azure_bounds_every_request_to_what_is_left_and_refuses_once_spent(azure: Any) -> None:
+    host, sdk, _ = azure
+    host.state()
+    # Outside a deadline each request has a minute, its retries and their waits included.
+    assert {timeout for _, timeout in sdk.timeouts} == {60.0}
+
+    host.limit(5.0)
+    sdk.clock[0] += 2.0
+    sdk.timeouts.clear()
+    host.deactivate("motor--old")
+    assert sdk.timeouts == [("deactivate_revision", 3.0)]
+
+    sdk.clock[0] += 4.0
+    with pytest.raises(RolloutError, match="deadline passed before Azure was asked to stop"):
+        host.deactivate("motor--old")
+    # Nothing was asked once the deadline passed.
+    assert sdk.deactivated == ["motor--old"]
+
+
+def test_the_sdk_never_waits_longer_than_ten_seconds_before_a_retry() -> None:
+    """azure-core checks a request's budget only between attempts, so the retry policy caps
+    the wait a ``Retry-After`` asks for."""
+    from types import SimpleNamespace
+
+    policy = rollouts._retry_policy()
+    slept: list[float] = []
+    transport = SimpleNamespace(sleep=slept.append)
+    throttled = SimpleNamespace(http_response=SimpleNamespace(headers={"Retry-After": "300"}))
+
+    assert policy._sleep_for_retry(throttled, transport) is True
+    assert slept == [10]
+    assert policy.total_retries == 2
+
+
+def test_the_client_is_built_with_the_bounded_retry_policy(azure: Any) -> None:
+    client = rollouts._client(_Credential(), "subscription")
+
+    assert type(client._config.retry_policy).__name__ == "_BoundedRetry"
+    assert client._config.retry_policy.total_retries == 2
+
+
+def test_a_rollout_bounds_azure_to_its_deadline_and_its_recovery_to_its_own() -> None:
+    host = FakeHost()
+    host.settles[NEW] = ("Failed", "Failed")
+
+    with pytest.raises(RolloutError):
+        _roll(host, FakeApp())
+
+    assert host.limits == [600, 600, None]
+
+
+def test_a_failure_puts_back_the_serving_revision_not_another_active_one() -> None:
+    """In single revision mode a revision on its way out can stay active beside the one
+    serving, taking no traffic: the image put back is Azure's latest ready revision's."""
+    host = FakeHost()
+    leaving = RevisionState(
+        "motor--leaving",
+        "acr.example.io/pricing/motor@sha256:" + "c" * 64,
+        True,
+        "Deprovisioning",
+        "Running",
+    )
+    host.revisions = {leaving.name: leaving, **host.revisions}
+    host.settles[NEW] = ("Failed", "Failed")
+
+    with pytest.raises(RolloutError, match="failed to provision"):
+        _roll(host, FakeApp())
+
+    assert [call[1] for call in host.changes() if call[0] == "set_image"] == [NEW, OLD]
+
+
 # ── The review's cases: what the app served, a lost answer, the deadline ──
 
 
@@ -818,6 +897,8 @@ class _Sdk:
         #: Seconds the update's start spends, on the adapter's clock.
         self.start_takes = 0.0
         self.clock = [0.0]
+        #: Each request's budget, the SDK's timeout, by operation.
+        self.timeouts: list[tuple[str, float]] = []
         self.updates: list[Any] = []
         self.pollers: list[_Poller] = []
         self.deactivated: list[str] = []
@@ -839,10 +920,14 @@ class _Sdk:
         sdk = self
 
         class Apps:
-            def get(self, group: str, name: str) -> Any:
+            def get(self, group: str, name: str, *, timeout: float) -> Any:
+                sdk.timeouts.append(("get", timeout))
                 return sdk.app
 
-            def begin_update(self, group: str, name: str, envelope: Any) -> _Poller:
+            def begin_update(
+                self, group: str, name: str, envelope: Any, *, timeout: float
+            ) -> _Poller:
+                sdk.timeouts.append(("begin_update", timeout))
                 sdk.updates.append(envelope)
                 sdk.clock[0] += sdk.start_takes
                 template = envelope.properties.template if envelope.get("properties") else None
@@ -856,7 +941,8 @@ class _Sdk:
                 return poller
 
         class Revisions:
-            def list_revisions(self, group: str, name: str) -> list[Any]:
+            def list_revisions(self, group: str, name: str, *, timeout: float) -> list[Any]:
+                sdk.timeouts.append(("list_revisions", timeout))
                 return [
                     models.Revision(
                         name="motor--old", properties=models.RevisionProperties(active=True)
@@ -866,7 +952,8 @@ class _Sdk:
                     ),
                 ]
 
-            def get_revision(self, group: str, name: str, revision: str) -> Any:
+            def get_revision(self, group: str, name: str, revision: str, *, timeout: float) -> Any:
+                sdk.timeouts.append(("get_revision", timeout))
                 return models.Revision(
                     name=revision,
                     properties=models.RevisionProperties(
@@ -879,12 +966,16 @@ class _Sdk:
                     ),
                 )
 
-            def deactivate_revision(self, group: str, name: str, revision: str) -> None:
+            def deactivate_revision(
+                self, group: str, name: str, revision: str, *, timeout: float
+            ) -> None:
+                sdk.timeouts.append(("deactivate_revision", timeout))
                 sdk.deactivated.append(revision)
 
         class Auth:
-            def get(self, group: str, name: str, config: str) -> Any:
+            def get(self, group: str, name: str, config: str, *, timeout: float) -> Any:
                 assert config == "current"
+                sdk.timeouts.append(("auth", timeout))
                 return models.AuthConfig(
                     properties=models.AuthConfigProperties(
                         identity_providers=models.IdentityProviders(
