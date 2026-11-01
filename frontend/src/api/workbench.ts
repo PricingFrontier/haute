@@ -7,7 +7,10 @@
  * (GET /api/workbench/form), saved against that revision and captured on the save ledger
  * (PUT /api/workbench/form); a params file's header and a column's values, what allowed
  * values are read from (GET /api/workbench/params); and the SQL that brings each hosted
- * environment's tables to a form (POST /api/workbench/store-sql).
+ * environment's tables to a form (POST /api/workbench/store-sql); and the test quotes
+ * (specs/workbench, Test quotes): listed, saved, opened, run, accepted and deleted
+ * under /api/workbench/test-quotes, none of them with a deadline of the panel's own,
+ * so a write is never reported failed while it is under way.
  */
 
 import { expectGeneratedContract } from "../types/generatedContractValidation"
@@ -24,6 +27,12 @@ import type {
   WorkbenchStoreRename,
   WorkbenchStoreSqlResponse,
   WorkbenchTablesResponse,
+  WorkbenchTestQuoteOpenResponse,
+  WorkbenchTestQuoteRunResponse,
+  WorkbenchTestQuotesAcceptResponse,
+  WorkbenchTestQuotesResponse,
+  WorkbenchTestQuoteTarget,
+  WorkbenchTestQuoteWriteResponse,
 } from "./types"
 
 // Loads with the first response, so it never reaches the initial bundle.
@@ -159,6 +168,108 @@ export async function fetchParamFile(file: string, column?: string): Promise<Wor
   return expectGeneratedContract(
     "WorkbenchParamFileResponse",
     (await workbenchValidators()).validateWorkbenchParamFileResponse,
+    data,
+  )
+}
+
+
+/** The test quotes' calls wait on the server and are never retried: a write that landed
+ * but whose answer was slow is not reported failed, nor made twice. */
+const TEST_QUOTE_CALL = { timeout: null, retry: { maxRetries: 0 } } as const
+
+function testQuotePath(file: string, action = ""): string {
+  return `/api/workbench/test-quotes/${encodeURIComponent(file)}${action}`
+}
+
+/** The test-quote folder's files by name, and the branch they were read on. */
+export async function fetchTestQuotes(): Promise<WorkbenchTestQuotesResponse> {
+  const data = await request<unknown>("/api/workbench/test-quotes", TEST_QUOTE_CALL)
+  return expectGeneratedContract(
+    "WorkbenchTestQuotesResponse",
+    (await workbenchValidators()).validateWorkbenchTestQuotesResponse,
+    data,
+  )
+}
+
+/**
+ * Save the sample as saved: under a new `name`, or over the test quote `replace` names; on
+ * `branch`, the form folder's `formRevision` the panel saved.
+ */
+export async function saveTestQuote(args: {
+  name?: string
+  replace?: WorkbenchTestQuoteTarget
+  branch: string
+  formRevision: string
+}): Promise<WorkbenchTestQuoteWriteResponse> {
+  const data = await request<unknown>("/api/workbench/test-quotes", {
+    ...TEST_QUOTE_CALL,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: args.name ?? null,
+      replace: args.replace ?? null,
+      branch: args.branch,
+      form_revision: args.formRevision,
+    }),
+  })
+  return expectGeneratedContract(
+    "WorkbenchTestQuoteWriteResponse",
+    (await workbenchValidators()).validateWorkbenchTestQuoteWriteResponse,
+    data,
+  )
+}
+
+/** A test quote's values put back onto `form`, as the view holds it, and what was not. */
+export async function openTestQuote(file: string, form: FormSpec): Promise<WorkbenchTestQuoteOpenResponse> {
+  const data = await request<unknown>(testQuotePath(file, "/open"), {
+    ...TEST_QUOTE_CALL,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ form }),
+  })
+  return expectGeneratedContract(
+    "WorkbenchTestQuoteOpenResponse",
+    (await workbenchValidators()).validateWorkbenchTestQuoteOpenResponse,
+    data,
+  )
+}
+
+/** A test quote priced on the project as saved and compared with its expected answer. */
+export async function runTestQuote(file: string): Promise<WorkbenchTestQuoteRunResponse> {
+  const data = await request<unknown>(testQuotePath(file, "/run"), { ...TEST_QUOTE_CALL, method: "POST" })
+  return expectGeneratedContract(
+    "WorkbenchTestQuoteRunResponse",
+    (await workbenchValidators()).validateWorkbenchTestQuoteRunResponse,
+    data,
+  )
+}
+
+/** Accept the new answers of `quotes`, priced again on the server on the run's `basis`. */
+export async function acceptTestQuotes(args: {
+  branch: string
+  basis: string
+  quotes: WorkbenchTestQuoteTarget[]
+}): Promise<WorkbenchTestQuotesAcceptResponse> {
+  const data = await request<unknown>("/api/workbench/test-quotes/accept", {
+    ...TEST_QUOTE_CALL,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  })
+  return expectGeneratedContract(
+    "WorkbenchTestQuotesAcceptResponse",
+    (await workbenchValidators()).validateWorkbenchTestQuotesAcceptResponse,
+    data,
+  )
+}
+
+/** Delete a test quote, while it is still `revision` on `branch`. */
+export async function deleteTestQuote(file: string, revision: string, branch: string): Promise<WorkbenchTestQuoteWriteResponse> {
+  const query = new URLSearchParams({ revision, branch })
+  const data = await request<unknown>(`${testQuotePath(file)}?${query}`, { ...TEST_QUOTE_CALL, method: "DELETE" })
+  return expectGeneratedContract(
+    "WorkbenchTestQuoteWriteResponse",
+    (await workbenchValidators()).validateWorkbenchTestQuoteWriteResponse,
     data,
   )
 }

@@ -143,7 +143,6 @@ from haute.schemas import (
     WorkbenchStoreCompareResponse,
     WorkbenchStoreSqlResponse,
     WorkbenchTablesResponse,
-    WorkbenchTestQuoteOpenRequest,
     WorkbenchTestQuoteOpenResponse,
     WorkbenchTestQuoteRunResponse,
     WorkbenchTestQuotesAcceptRequest,
@@ -178,9 +177,10 @@ REQUEST_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         WorkbenchAppQuoteAmend,
         WorkbenchAppQuoteNote,
     ),
+    # The open request carries a whole form, read as the form's save reads one: described in
+    # validation mode it would split every form type into an input and an output shape.
     "workbench-requests": (
         WorkbenchTestQuoteSaveRequest,
-        WorkbenchTestQuoteOpenRequest,
         WorkbenchTestQuotesAcceptRequest,
     ),
 }

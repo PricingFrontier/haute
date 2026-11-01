@@ -643,6 +643,40 @@ no Workbench Output on the pipeline, a value that does not fit its column — th
 says why. An output table with nothing connected, or an output column the pipeline doesn't
 fill, prices all the same and shows dashes (see [Workbench Output](nodes/workbench-output.md#filling-the-tables)). Ctrl+S still saves the project in Preview.
 
+### Test quotes
+
+Test quotes are quotes you keep and price again as the pipeline changes, so a change to the
+pricing shows on quotes you know. **Test quotes** in the toolbar, in Preview, opens their
+panel beside the sheets. Each test quote is a file in `tests/quotes`, committed with the
+project, so a pull request shows a test quote you accepted as the lines of its answer that
+changed.
+
+Test quotes are priced on the project as saved, exactly as the build prices them in CI, so
+the panel saves the project first when it has unsaved changes.
+
+- **Save as test quote** keeps the quote typed on the sheets under the name you give it:
+  letters, digits, spaces, hyphens and underscores. Its answer, as the pipeline prices it
+  now, is what it is compared with from then on.
+- **Open** (the folder button beside a quote) puts its values on the sheets in place of what
+  you typed; **Undo** brings back what you had. Anything the sheets can no longer take, a
+  column you removed say, is listed. **Replace** saves what is on the sheets over the test
+  quote you opened last.
+- **Run all**, or **Run** with quotes ticked, prices each one again, one at a time, and
+  marks it **Unchanged**, **Moved**, **No longer compares** or **Failed**. Click a quote to
+  see what moved: each field, with the value it was accepted at beside the new one. A
+  schedule's rows are matched by the columns you mark as its keys. **Stop** ends a run after
+  the quote being priced.
+- **Accept** (the tick beside a quote), or **Accept all**, prices it again and keeps the new
+  answer as the one it is compared with. A quote changed since the run, or a pipeline
+  changed since, is not accepted until you run again.
+- **Delete** (the bin) removes a test quote's file.
+
+When you build the app (`haute app build`, which CI runs on every pull request), every test
+quote is priced the same way. One whose answer moved is listed and the build still passes:
+it is the change the pull request makes, for its reviewers to read in
+`test_quotes_report.md`, which CI keeps with the run. One that does not price fails the
+build.
+
 ## The underwriter app
 Underwriters use the sheets in an app of their own, apart from Haute: the sheets drawn as
 Preview draws them, priced by the pipeline packed into the same app, with nothing of the
@@ -659,12 +693,10 @@ builder on screen. With a quote store it is where they manage their quotes too.
   underwriter who may only read quotes.
 - `haute app build` writes a **release** to `.haute/app/release` (or the folder you name):
   the pipeline, checked and bundled
-  as `haute deploy` does it (the test quotes included), with the sheets and an `app.py` that
-  serves them. Once the pipeline reads the workbench, each test quote in `tests/quotes` is a
-  quote of your form: its tables by name, with `quote_details` holding the quote's
-  `quote_reference` and `quote_option`. The example `haute init` wrote is not, so rewrite it;
-  until then the build names it and what to add. The release's id changes when anything
-  that prices a quote changes, and the app names it in its bar.
+  as `haute deploy` does it, with the sheets and an `app.py` that serves them, and its
+  [test quotes](#test-quotes) priced and compared, the results written to
+  `test_quotes_report.md`. The release's id changes when anything that prices a quote
+  changes, and the app names it in its bar.
 - Where the app runs is in `haute.toml`, as `haute init` wrote it. Azure Container Apps is
   the host so far; its built-in authentication signs underwriters in, and the app refuses
   anyone it has not.

@@ -1125,119 +1125,6 @@
         "y",
         "w",
         "h",
-        "type"
-      ],
-      "title": "ChartWidget",
-      "type": "object"
-    },
-    "ChartWidgetOutput": {
-      "additionalProperties": false,
-      "description": "A Chart: number columns plotted, of one-row tables a point each, or of many-row tables\nwhose rows line up a series each over their rows. It takes nothing typed.",
-      "properties": {
-        "category": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/FieldRef"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "chart_type": {
-          "default": "column",
-          "enum": [
-            "column",
-            "line",
-            "area",
-            "pie"
-          ],
-          "title": "Chart Type",
-          "type": "string"
-        },
-        "data_labels": {
-          "default": false,
-          "title": "Data Labels",
-          "type": "boolean"
-        },
-        "fields": {
-          "items": {
-            "$ref": "#/$defs/FieldRef"
-          },
-          "title": "Fields",
-          "type": "array"
-        },
-        "h": {
-          "exclusiveMinimum": 0,
-          "title": "H",
-          "type": "integer"
-        },
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
-        "legend": {
-          "default": "bottom",
-          "enum": [
-            "bottom",
-            "top",
-            "left",
-            "right",
-            "none"
-          ],
-          "title": "Legend",
-          "type": "string"
-        },
-        "orientation": {
-          "default": "vertical",
-          "enum": [
-            "vertical",
-            "horizontal"
-          ],
-          "title": "Orientation",
-          "type": "string"
-        },
-        "show_when": {
-          "$ref": "#/$defs/ShowWhenOutput"
-        },
-        "stacked": {
-          "default": false,
-          "title": "Stacked",
-          "type": "boolean"
-        },
-        "title": {
-          "default": "",
-          "title": "Title",
-          "type": "string"
-        },
-        "type": {
-          "const": "chart",
-          "title": "Type",
-          "type": "string"
-        },
-        "w": {
-          "exclusiveMinimum": 0,
-          "title": "W",
-          "type": "integer"
-        },
-        "x": {
-          "minimum": 0,
-          "title": "X",
-          "type": "integer"
-        },
-        "y": {
-          "minimum": 0,
-          "title": "Y",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "id",
-        "x",
-        "y",
-        "w",
-        "h",
         "type",
         "title",
         "fields",
@@ -1249,7 +1136,7 @@
         "legend",
         "data_labels"
       ],
-      "title": "ChartWidgetOutput",
+      "title": "ChartWidget",
       "type": "object"
     },
     "CollectionWidget": {
@@ -1538,297 +1425,6 @@
         "y",
         "w",
         "h",
-        "type"
-      ],
-      "title": "CollectionWidget",
-      "type": "object"
-    },
-    "CollectionWidgetOutput": {
-      "additionalProperties": false,
-      "description": "A Collection: boxes showing columns of one-row schema tables, ``columns`` across, with\na gap across it wherever one of its ``spacers`` sits among them, each of its fields given\na look of its own looking as its ``column_looks`` entry says.",
-      "properties": {
-        "box_align": {
-          "default": "auto",
-          "enum": [
-            "auto",
-            "left",
-            "center",
-            "right"
-          ],
-          "title": "Box Align",
-          "type": "string"
-        },
-        "box_color": {
-          "anyOf": [
-            {
-              "pattern": "^#[0-9A-F]{6}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Box Color"
-        },
-        "box_style": {
-          "default": "solid",
-          "enum": [
-            "solid",
-            "dashed",
-            "dotted"
-          ],
-          "title": "Box Style",
-          "type": "string"
-        },
-        "box_weight": {
-          "default": "thin",
-          "enum": [
-            "thin",
-            "medium",
-            "thick"
-          ],
-          "title": "Box Weight",
-          "type": "string"
-        },
-        "box_width": {
-          "anyOf": [
-            {
-              "maximum": 1000,
-              "minimum": 24,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Box Width"
-        },
-        "column_looks": {
-          "items": {
-            "$ref": "#/$defs/ColumnLookOutput"
-          },
-          "title": "Column Looks",
-          "type": "array"
-        },
-        "columns": {
-          "default": 3,
-          "maximum": 12,
-          "minimum": 1,
-          "title": "Columns",
-          "type": "integer"
-        },
-        "density": {
-          "default": "comfortable",
-          "enum": [
-            "compact",
-            "comfortable"
-          ],
-          "title": "Density",
-          "type": "string"
-        },
-        "fields": {
-          "items": {
-            "$ref": "#/$defs/FieldRef"
-          },
-          "title": "Fields",
-          "type": "array"
-        },
-        "font_size": {
-          "default": 12,
-          "enum": [
-            10,
-            11,
-            12,
-            13,
-            14,
-            16,
-            18
-          ],
-          "title": "Font Size",
-          "type": "integer"
-        },
-        "frame": {
-          "default": true,
-          "title": "Frame",
-          "type": "boolean"
-        },
-        "frame_color": {
-          "anyOf": [
-            {
-              "pattern": "^#[0-9A-F]{6}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Frame Color"
-        },
-        "frame_weight": {
-          "default": "thin",
-          "enum": [
-            "thin",
-            "medium",
-            "thick"
-          ],
-          "title": "Frame Weight",
-          "type": "string"
-        },
-        "h": {
-          "exclusiveMinimum": 0,
-          "title": "H",
-          "type": "integer"
-        },
-        "header": {
-          "default": "plain",
-          "enum": [
-            "caps",
-            "plain"
-          ],
-          "title": "Header",
-          "type": "string"
-        },
-        "header_align": {
-          "default": "auto",
-          "enum": [
-            "auto",
-            "left",
-            "center",
-            "right"
-          ],
-          "title": "Header Align",
-          "type": "string"
-        },
-        "header_bold": {
-          "default": false,
-          "title": "Header Bold",
-          "type": "boolean"
-        },
-        "header_color": {
-          "anyOf": [
-            {
-              "pattern": "^#[0-9A-F]{6}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Header Color"
-        },
-        "header_font_color": {
-          "anyOf": [
-            {
-              "pattern": "^#[0-9A-F]{6}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Header Font Color"
-        },
-        "header_font_size": {
-          "anyOf": [
-            {
-              "enum": [
-                10,
-                11,
-                12,
-                13,
-                14,
-                16,
-                18
-              ],
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Header Font Size"
-        },
-        "header_wrap": {
-          "default": false,
-          "title": "Header Wrap",
-          "type": "boolean"
-        },
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
-        "label_width": {
-          "anyOf": [
-            {
-              "maximum": 99,
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Label Width"
-        },
-        "labels": {
-          "default": "above",
-          "enum": [
-            "above",
-            "beside"
-          ],
-          "title": "Labels",
-          "type": "string"
-        },
-        "show_when": {
-          "$ref": "#/$defs/ShowWhenOutput"
-        },
-        "spacers": {
-          "items": {
-            "minimum": 0,
-            "type": "integer"
-          },
-          "title": "Spacers",
-          "type": "array"
-        },
-        "title": {
-          "default": "",
-          "title": "Title",
-          "type": "string"
-        },
-        "type": {
-          "const": "collection",
-          "title": "Type",
-          "type": "string"
-        },
-        "w": {
-          "exclusiveMinimum": 0,
-          "title": "W",
-          "type": "integer"
-        },
-        "x": {
-          "minimum": 0,
-          "title": "X",
-          "type": "integer"
-        },
-        "y": {
-          "minimum": 0,
-          "title": "Y",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "id",
-        "x",
-        "y",
-        "w",
-        "h",
         "type",
         "title",
         "fields",
@@ -1856,7 +1452,7 @@
         "column_looks",
         "spacers"
       ],
-      "title": "CollectionWidgetOutput",
+      "title": "CollectionWidget",
       "type": "object"
     },
     "ColumnInfo": {
@@ -1988,122 +1584,6 @@
       },
       "required": [
         "table",
-        "column"
-      ],
-      "title": "ColumnLook",
-      "type": "object"
-    },
-    "ColumnLookOutput": {
-      "additionalProperties": false,
-      "description": "How one of a Table's columns, or one of a Collection's fields, looks and when it shows,\nits field by table and column id: each colour the component's own while None, its values\nplaced as its type puts them, or as the Collection places its boxes', while ``align`` is\n``auto``, its label as its component places its labels while ``header_align`` is, and\nover a Table's column as its values sit while the Table's is too, while ``width`` is\nNone, a Table's column as wide as the grid makes it and a Collection's box as wide as the\nCollection makes it, and shown with its component while ``show_when`` has no\nconditions.",
-      "properties": {
-        "align": {
-          "default": "auto",
-          "enum": [
-            "auto",
-            "left",
-            "center",
-            "right"
-          ],
-          "title": "Align",
-          "type": "string"
-        },
-        "bold": {
-          "default": false,
-          "title": "Bold",
-          "type": "boolean"
-        },
-        "cell_color": {
-          "anyOf": [
-            {
-              "pattern": "^#[0-9A-F]{6}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Cell Color"
-        },
-        "column": {
-          "title": "Column",
-          "type": "string"
-        },
-        "font_color": {
-          "anyOf": [
-            {
-              "pattern": "^#[0-9A-F]{6}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Font Color"
-        },
-        "header_align": {
-          "default": "auto",
-          "enum": [
-            "auto",
-            "left",
-            "center",
-            "right"
-          ],
-          "title": "Header Align",
-          "type": "string"
-        },
-        "header_color": {
-          "anyOf": [
-            {
-              "pattern": "^#[0-9A-F]{6}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Header Color"
-        },
-        "header_font_color": {
-          "anyOf": [
-            {
-              "pattern": "^#[0-9A-F]{6}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Header Font Color"
-        },
-        "show_when": {
-          "$ref": "#/$defs/ShowWhenOutput"
-        },
-        "table": {
-          "title": "Table",
-          "type": "string"
-        },
-        "width": {
-          "anyOf": [
-            {
-              "maximum": 1000,
-              "minimum": 24,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Width"
-        }
-      },
-      "required": [
-        "table",
         "column",
         "header_color",
         "header_font_color",
@@ -2115,7 +1595,7 @@
         "width",
         "show_when"
       ],
-      "title": "ColumnLookOutput",
+      "title": "ColumnLook",
       "type": "object"
     },
     "ColumnName": {
@@ -2203,7 +1683,10 @@
       "required": [
         "table",
         "column",
-        "op"
+        "op",
+        "values",
+        "field",
+        "days"
       ],
       "title": "Condition",
       "type": "object"
@@ -2255,126 +1738,6 @@
         "conditions"
       ],
       "title": "ConditionGroup",
-      "type": "object"
-    },
-    "ConditionGroupOutput": {
-      "additionalProperties": false,
-      "description": "Conditions that count as one: holding while all of them hold, any, or at least a\nnumber of them, as ``match`` says. A group holds no group.",
-      "properties": {
-        "conditions": {
-          "items": {
-            "oneOf": [
-              {
-                "$ref": "#/$defs/ConditionOutput"
-              },
-              {
-                "$ref": "#/$defs/RowsConditionOutput"
-              },
-              {
-                "$ref": "#/$defs/RowCountOutput"
-              },
-              {
-                "$ref": "#/$defs/RowTotalOutput"
-              }
-            ]
-          },
-          "minItems": 1,
-          "title": "Conditions",
-          "type": "array"
-        },
-        "match": {
-          "anyOf": [
-            {
-              "enum": [
-                "all",
-                "any"
-              ],
-              "type": "string"
-            },
-            {
-              "minimum": 1,
-              "type": "integer"
-            }
-          ],
-          "title": "Match"
-        }
-      },
-      "required": [
-        "match",
-        "conditions"
-      ],
-      "title": "ConditionGroupOutput",
-      "type": "object"
-    },
-    "ConditionOutput": {
-      "additionalProperties": false,
-      "description": "A test of the value in a one-row table's column, the column by table and column id.\n\nThe shape is all the file holds a condition to. Whether its column, test and values\nfit one another is ``haute._workbench_visibility.condition_fits``'s question, asked\nwhere conditions are tested: retyping a column can unfit a condition the form holds.",
-      "properties": {
-        "column": {
-          "title": "Column",
-          "type": "string"
-        },
-        "days": {
-          "default": 0,
-          "maximum": 36500,
-          "minimum": -36500,
-          "title": "Days",
-          "type": "integer"
-        },
-        "field": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/FieldRef"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "op": {
-          "enum": [
-            "ticked",
-            "not_ticked",
-            "filled",
-            "empty",
-            "equals",
-            "not_equals",
-            "contains",
-            "not_contains",
-            "starts_with",
-            "ends_with",
-            "one_of",
-            "not_one_of",
-            "above",
-            "at_least",
-            "below",
-            "at_most"
-          ],
-          "title": "Op",
-          "type": "string"
-        },
-        "table": {
-          "title": "Table",
-          "type": "string"
-        },
-        "values": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Values",
-          "type": "array"
-        }
-      },
-      "required": [
-        "table",
-        "column",
-        "op",
-        "values",
-        "field",
-        "days"
-      ],
-      "title": "ConditionOutput",
       "type": "object"
     },
     "CsvExport": {
@@ -7315,87 +6678,11 @@
         "h",
         "type",
         "label",
-        "target",
-        "tables"
-      ],
-      "title": "ExportWidget",
-      "type": "object"
-    },
-    "ExportWidgetOutput": {
-      "additionalProperties": false,
-      "description": "An Export: a button an underwriter presses to take the quote's tables out to a file\nor a database. It shows no schema columns and takes nothing typed; nothing runs it yet,\nso it is drawn disabled where the sheets are used.",
-      "properties": {
-        "h": {
-          "exclusiveMinimum": 0,
-          "title": "H",
-          "type": "integer"
-        },
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
-        "label": {
-          "title": "Label",
-          "type": "string"
-        },
-        "show_when": {
-          "$ref": "#/$defs/ShowWhenOutput"
-        },
-        "tables": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Tables",
-          "type": "array"
-        },
-        "target": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/CsvExport"
-            },
-            {
-              "$ref": "#/$defs/ExcelExport"
-            },
-            {
-              "$ref": "#/$defs/SqlExport"
-            }
-          ],
-          "title": "Target"
-        },
-        "type": {
-          "const": "export",
-          "title": "Type",
-          "type": "string"
-        },
-        "w": {
-          "exclusiveMinimum": 0,
-          "title": "W",
-          "type": "integer"
-        },
-        "x": {
-          "minimum": 0,
-          "title": "X",
-          "type": "integer"
-        },
-        "y": {
-          "minimum": 0,
-          "title": "Y",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "id",
-        "x",
-        "y",
-        "w",
-        "h",
-        "type",
-        "label",
         "show_when",
         "target",
         "tables"
       ],
-      "title": "ExportWidgetOutput",
+      "title": "ExportWidget",
       "type": "object"
     },
     "FieldRef": {
@@ -7563,25 +6850,10 @@
           "type": "array"
         }
       },
-      "title": "FormSchema",
-      "type": "object"
-    },
-    "FormSchemaOutput": {
-      "additionalProperties": false,
-      "description": "The data the sheets work with: tables of named, typed columns.",
-      "properties": {
-        "tables": {
-          "items": {
-            "$ref": "#/$defs/SchemaTableOutput"
-          },
-          "title": "Tables",
-          "type": "array"
-        }
-      },
       "required": [
         "tables"
       ],
-      "title": "FormSchemaOutput",
+      "title": "FormSchema",
       "type": "object"
     },
     "FormSpec": {
@@ -7634,62 +6906,6 @@
         }
       },
       "required": [
-        "name",
-        "pages"
-      ],
-      "title": "FormSpec",
-      "type": "object"
-    },
-    "FormSpecOutput": {
-      "additionalProperties": false,
-      "description": "The form: what the workbench edits and its ``workbench/`` folder stores.",
-      "properties": {
-        "name": {
-          "title": "Name",
-          "type": "string"
-        },
-        "pages": {
-          "items": {
-            "$ref": "#/$defs/PageOutput"
-          },
-          "minItems": 1,
-          "title": "Pages",
-          "type": "array"
-        },
-        "sample": {
-          "additionalProperties": {
-            "items": {
-              "additionalProperties": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "boolean"
-                  }
-                ]
-              },
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "title": "Sample",
-          "type": "object"
-        },
-        "schema": {
-          "$ref": "#/$defs/FormSchemaOutput"
-        },
-        "theme": {
-          "$ref": "#/$defs/ThemeOutput"
-        },
-        "version": {
-          "const": 1,
-          "default": 1,
-          "title": "Version",
-          "type": "integer"
-        }
-      },
-      "required": [
         "version",
         "name",
         "theme",
@@ -7697,7 +6913,7 @@
         "pages",
         "sample"
       ],
-      "title": "FormSpecOutput",
+      "title": "FormSpec",
       "type": "object"
     },
     "FreeCodeColumns": {
@@ -9524,84 +8740,6 @@
         "y",
         "w",
         "h",
-        "type"
-      ],
-      "title": "HeadingWidget",
-      "type": "object"
-    },
-    "HeadingWidgetOutput": {
-      "additionalProperties": false,
-      "description": "A Heading: text naming a section of the sheet, or the sheet itself, with a line under\nit saying what the section is for. It shows no schema columns and takes nothing typed.",
-      "properties": {
-        "align": {
-          "default": "left",
-          "enum": [
-            "left",
-            "center",
-            "right"
-          ],
-          "title": "Align",
-          "type": "string"
-        },
-        "description": {
-          "default": "",
-          "title": "Description",
-          "type": "string"
-        },
-        "h": {
-          "exclusiveMinimum": 0,
-          "title": "H",
-          "type": "integer"
-        },
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
-        "show_when": {
-          "$ref": "#/$defs/ShowWhenOutput"
-        },
-        "size": {
-          "default": "medium",
-          "enum": [
-            "large",
-            "medium",
-            "small"
-          ],
-          "title": "Size",
-          "type": "string"
-        },
-        "text": {
-          "default": "",
-          "title": "Text",
-          "type": "string"
-        },
-        "type": {
-          "const": "heading",
-          "title": "Type",
-          "type": "string"
-        },
-        "w": {
-          "exclusiveMinimum": 0,
-          "title": "W",
-          "type": "integer"
-        },
-        "x": {
-          "minimum": 0,
-          "title": "X",
-          "type": "integer"
-        },
-        "y": {
-          "minimum": 0,
-          "title": "Y",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "id",
-        "x",
-        "y",
-        "w",
-        "h",
         "type",
         "text",
         "description",
@@ -9609,7 +8747,7 @@
         "size",
         "align"
       ],
-      "title": "HeadingWidgetOutput",
+      "title": "HeadingWidget",
       "type": "object"
     },
     "ImportWidget": {
@@ -9702,111 +8840,13 @@
         "h",
         "type",
         "label",
-        "source",
-        "table",
-        "mode",
-        "column_names"
-      ],
-      "title": "ImportWidget",
-      "type": "object"
-    },
-    "ImportWidgetOutput": {
-      "additionalProperties": false,
-      "description": "An Import: a button an underwriter presses to fill an input table from a file or a\ndatabase. It shows no schema columns and takes nothing typed; nothing runs it yet, so\nit is drawn disabled where the sheets are used.",
-      "properties": {
-        "column_names": {
-          "items": {
-            "$ref": "#/$defs/ColumnName"
-          },
-          "title": "Column Names",
-          "type": "array"
-        },
-        "h": {
-          "exclusiveMinimum": 0,
-          "title": "H",
-          "type": "integer"
-        },
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
-        "label": {
-          "title": "Label",
-          "type": "string"
-        },
-        "mode": {
-          "enum": [
-            "replace",
-            "append",
-            "update"
-          ],
-          "title": "Mode",
-          "type": "string"
-        },
-        "show_when": {
-          "$ref": "#/$defs/ShowWhenOutput"
-        },
-        "source": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/CsvImport"
-            },
-            {
-              "$ref": "#/$defs/ExcelImport"
-            },
-            {
-              "$ref": "#/$defs/SqlImport"
-            }
-          ],
-          "title": "Source"
-        },
-        "table": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Table"
-        },
-        "type": {
-          "const": "import",
-          "title": "Type",
-          "type": "string"
-        },
-        "w": {
-          "exclusiveMinimum": 0,
-          "title": "W",
-          "type": "integer"
-        },
-        "x": {
-          "minimum": 0,
-          "title": "X",
-          "type": "integer"
-        },
-        "y": {
-          "minimum": 0,
-          "title": "Y",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "id",
-        "x",
-        "y",
-        "w",
-        "h",
-        "type",
-        "label",
         "show_when",
         "source",
         "table",
         "mode",
         "column_names"
       ],
-      "title": "ImportWidgetOutput",
+      "title": "ImportWidget",
       "type": "object"
     },
     "InputCacheBuildResponse": {
@@ -14868,48 +13908,10 @@
         "id",
         "title",
         "width",
-        "sections"
-      ],
-      "title": "Page",
-      "type": "object"
-    },
-    "PageOutput": {
-      "additionalProperties": false,
-      "description": "A sheet: ``width`` pixels wide, when it shows, and its sections, stacked one under\nthe next.",
-      "properties": {
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
-        "sections": {
-          "items": {
-            "$ref": "#/$defs/SectionOutput"
-          },
-          "minItems": 1,
-          "title": "Sections",
-          "type": "array"
-        },
-        "show_when": {
-          "$ref": "#/$defs/ShowWhenOutput"
-        },
-        "title": {
-          "title": "Title",
-          "type": "string"
-        },
-        "width": {
-          "exclusiveMinimum": 0,
-          "title": "Width",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "id",
-        "title",
-        "width",
         "show_when",
         "sections"
       ],
-      "title": "PageOutput",
+      "title": "Page",
       "type": "object"
     },
     "PipelineNameViolation": {
@@ -15692,113 +14694,7 @@
       "title": "RowCount",
       "type": "object"
     },
-    "RowCountOutput": {
-      "additionalProperties": false,
-      "description": "How many of a many-row table's rows, by table id, pass all of its tests in the same\nrow: every row while it has none.",
-      "properties": {
-        "count": {
-          "minimum": 0,
-          "title": "Count",
-          "type": "integer"
-        },
-        "op": {
-          "enum": [
-            "equals",
-            "not_equals",
-            "above",
-            "at_least",
-            "below",
-            "at_most"
-          ],
-          "title": "Op",
-          "type": "string"
-        },
-        "table": {
-          "title": "Table",
-          "type": "string"
-        },
-        "where": {
-          "items": {
-            "$ref": "#/$defs/RowTestOutput"
-          },
-          "title": "Where",
-          "type": "array"
-        }
-      },
-      "required": [
-        "table",
-        "where",
-        "op",
-        "count"
-      ],
-      "title": "RowCountOutput",
-      "type": "object"
-    },
     "RowTest": {
-      "additionalProperties": false,
-      "description": "A test a row of a many-row table must pass: a ``Condition``'s column, test and values,\nits table the condition's that holds it, and another column of the same row, by id, to\ntest against.",
-      "properties": {
-        "column": {
-          "title": "Column",
-          "type": "string"
-        },
-        "days": {
-          "default": 0,
-          "maximum": 36500,
-          "minimum": -36500,
-          "title": "Days",
-          "type": "integer"
-        },
-        "field": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Field"
-        },
-        "op": {
-          "enum": [
-            "ticked",
-            "not_ticked",
-            "filled",
-            "empty",
-            "equals",
-            "not_equals",
-            "contains",
-            "not_contains",
-            "starts_with",
-            "ends_with",
-            "one_of",
-            "not_one_of",
-            "above",
-            "at_least",
-            "below",
-            "at_most"
-          ],
-          "title": "Op",
-          "type": "string"
-        },
-        "values": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Values",
-          "type": "array"
-        }
-      },
-      "required": [
-        "column",
-        "op"
-      ],
-      "title": "RowTest",
-      "type": "object"
-    },
-    "RowTestOutput": {
       "additionalProperties": false,
       "description": "A test a row of a many-row table must pass: a ``Condition``'s column, test and values,\nits table the condition's that holds it, and another column of the same row, by id, to\ntest against.",
       "properties": {
@@ -15862,7 +14758,7 @@
         "field",
         "days"
       ],
-      "title": "RowTestOutput",
+      "title": "RowTest",
       "type": "object"
     },
     "RowTotal": {
@@ -15922,63 +14818,6 @@
       "title": "RowTotal",
       "type": "object"
     },
-    "RowTotalOutput": {
-      "additionalProperties": false,
-      "description": "A total of a number column's values in the rows of a many-row table, by table id,\npassing all of its tests in the same row, every row while it has none, tested against\na number typed as text.",
-      "properties": {
-        "column": {
-          "title": "Column",
-          "type": "string"
-        },
-        "op": {
-          "enum": [
-            "equals",
-            "not_equals",
-            "above",
-            "at_least",
-            "below",
-            "at_most"
-          ],
-          "title": "Op",
-          "type": "string"
-        },
-        "table": {
-          "title": "Table",
-          "type": "string"
-        },
-        "total": {
-          "enum": [
-            "sum",
-            "min",
-            "max",
-            "average"
-          ],
-          "title": "Total",
-          "type": "string"
-        },
-        "value": {
-          "title": "Value",
-          "type": "string"
-        },
-        "where": {
-          "items": {
-            "$ref": "#/$defs/RowTestOutput"
-          },
-          "title": "Where",
-          "type": "array"
-        }
-      },
-      "required": [
-        "table",
-        "total",
-        "column",
-        "where",
-        "op",
-        "value"
-      ],
-      "title": "RowTotalOutput",
-      "type": "object"
-    },
     "RowsCondition": {
       "additionalProperties": false,
       "description": "A many-row table's rows, by table id, passing all of its tests in the same row: any\nof them, or every one, as ``rows`` says.",
@@ -16010,39 +14849,6 @@
         "where"
       ],
       "title": "RowsCondition",
-      "type": "object"
-    },
-    "RowsConditionOutput": {
-      "additionalProperties": false,
-      "description": "A many-row table's rows, by table id, passing all of its tests in the same row: any\nof them, or every one, as ``rows`` says.",
-      "properties": {
-        "rows": {
-          "enum": [
-            "any",
-            "every"
-          ],
-          "title": "Rows",
-          "type": "string"
-        },
-        "table": {
-          "title": "Table",
-          "type": "string"
-        },
-        "where": {
-          "items": {
-            "$ref": "#/$defs/RowTestOutput"
-          },
-          "minItems": 1,
-          "title": "Where",
-          "type": "array"
-        }
-      },
-      "required": [
-        "table",
-        "rows",
-        "where"
-      ],
-      "title": "RowsConditionOutput",
       "type": "object"
     },
     "SaveCapture": {
@@ -16265,163 +15071,6 @@
       },
       "required": [
         "id",
-        "name"
-      ],
-      "title": "SchemaColumn",
-      "type": "object"
-    },
-    "SchemaColumnOutput": {
-      "additionalProperties": false,
-      "properties": {
-        "decimal_places": {
-          "anyOf": [
-            {
-              "maximum": 10,
-              "minimum": 0,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Decimal Places"
-        },
-        "default_value": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "boolean"
-            }
-          ],
-          "default": "",
-          "title": "Default Value"
-        },
-        "group": {
-          "default": "",
-          "title": "Group",
-          "type": "string"
-        },
-        "help": {
-          "default": "",
-          "title": "Help",
-          "type": "string"
-        },
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
-        "index": {
-          "default": false,
-          "title": "Index",
-          "type": "boolean"
-        },
-        "key": {
-          "default": false,
-          "title": "Key",
-          "type": "boolean"
-        },
-        "label": {
-          "default": "",
-          "title": "Label",
-          "type": "string"
-        },
-        "max": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Max"
-        },
-        "min": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Min"
-        },
-        "name": {
-          "title": "Name",
-          "type": "string"
-        },
-        "number_format": {
-          "default": "general",
-          "enum": [
-            "general",
-            "number",
-            "percent",
-            "currency_gbp",
-            "currency_usd",
-            "currency_eur"
-          ],
-          "title": "Number Format",
-          "type": "string"
-        },
-        "options": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Options",
-          "type": "array"
-        },
-        "options_source": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/OptionsSource"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "placeholder": {
-          "default": "",
-          "title": "Placeholder",
-          "type": "string"
-        },
-        "required": {
-          "default": false,
-          "title": "Required",
-          "type": "boolean"
-        },
-        "row_per_value": {
-          "default": false,
-          "title": "Row Per Value",
-          "type": "boolean"
-        },
-        "type": {
-          "default": "str",
-          "enum": [
-            "int",
-            "float",
-            "str",
-            "bool",
-            "date"
-          ],
-          "title": "Type",
-          "type": "string"
-        },
-        "use_grouping": {
-          "default": true,
-          "title": "Use Grouping",
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "id",
         "name",
         "type",
         "label",
@@ -16441,7 +15090,7 @@
         "decimal_places",
         "use_grouping"
       ],
-      "title": "SchemaColumnOutput",
+      "title": "SchemaColumn",
       "type": "object"
     },
     "SchemaItem": {
@@ -16518,56 +15167,12 @@
       },
       "required": [
         "id",
-        "name"
-      ],
-      "title": "SchemaTable",
-      "type": "object"
-    },
-    "SchemaTableOutput": {
-      "additionalProperties": false,
-      "properties": {
-        "columns": {
-          "items": {
-            "$ref": "#/$defs/SchemaColumnOutput"
-          },
-          "title": "Columns",
-          "type": "array"
-        },
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
-        "name": {
-          "title": "Name",
-          "type": "string"
-        },
-        "role": {
-          "default": "input",
-          "enum": [
-            "input",
-            "output"
-          ],
-          "title": "Role",
-          "type": "string"
-        },
-        "rows": {
-          "default": "one",
-          "enum": [
-            "one",
-            "many"
-          ],
-          "title": "Rows",
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
         "name",
         "role",
         "rows",
         "columns"
       ],
-      "title": "SchemaTableOutput",
+      "title": "SchemaTable",
       "type": "object"
     },
     "Section": {
@@ -16620,66 +15225,11 @@
       "required": [
         "id",
         "title",
-        "height"
-      ],
-      "title": "Section",
-      "type": "object"
-    },
-    "SectionOutput": {
-      "additionalProperties": false,
-      "description": "A section of a sheet: a strip across the sheet's whole width, ``height`` pixels tall,\nunder the sections before it; when it shows; and its widgets, each placed freely inside\nit.",
-      "properties": {
-        "height": {
-          "exclusiveMinimum": 0,
-          "title": "Height",
-          "type": "integer"
-        },
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
-        "show_when": {
-          "$ref": "#/$defs/ShowWhenOutput"
-        },
-        "title": {
-          "title": "Title",
-          "type": "string"
-        },
-        "widgets": {
-          "items": {
-            "oneOf": [
-              {
-                "$ref": "#/$defs/TableInputWidgetOutput"
-              },
-              {
-                "$ref": "#/$defs/CollectionWidgetOutput"
-              },
-              {
-                "$ref": "#/$defs/ChartWidgetOutput"
-              },
-              {
-                "$ref": "#/$defs/HeadingWidgetOutput"
-              },
-              {
-                "$ref": "#/$defs/ImportWidgetOutput"
-              },
-              {
-                "$ref": "#/$defs/ExportWidgetOutput"
-              }
-            ]
-          },
-          "title": "Widgets",
-          "type": "array"
-        }
-      },
-      "required": [
-        "id",
-        "title",
         "height",
         "show_when",
         "widgets"
       ],
-      "title": "SectionOutput",
+      "title": "Section",
       "type": "object"
     },
     "SessionStatusResponse": {
@@ -16974,59 +15524,11 @@
           "title": "Match"
         }
       },
-      "title": "ShowWhen",
-      "type": "object"
-    },
-    "ShowWhenOutput": {
-      "additionalProperties": false,
-      "description": "When a sheet, a section, a widget or a widget's field shows: always, without\nconditions; else while all of them hold, any, or at least a number of them, as ``match``\nsays, each a condition or a group of them.",
-      "properties": {
-        "conditions": {
-          "items": {
-            "oneOf": [
-              {
-                "$ref": "#/$defs/ConditionOutput"
-              },
-              {
-                "$ref": "#/$defs/RowsConditionOutput"
-              },
-              {
-                "$ref": "#/$defs/RowCountOutput"
-              },
-              {
-                "$ref": "#/$defs/RowTotalOutput"
-              },
-              {
-                "$ref": "#/$defs/ConditionGroupOutput"
-              }
-            ]
-          },
-          "title": "Conditions",
-          "type": "array"
-        },
-        "match": {
-          "anyOf": [
-            {
-              "enum": [
-                "all",
-                "any"
-              ],
-              "type": "string"
-            },
-            {
-              "minimum": 1,
-              "type": "integer"
-            }
-          ],
-          "default": "all",
-          "title": "Match"
-        }
-      },
       "required": [
         "match",
         "conditions"
       ],
-      "title": "ShowWhenOutput",
+      "title": "ShowWhen",
       "type": "object"
     },
     "SqlExport": {
@@ -17368,287 +15870,6 @@
         "y",
         "w",
         "h",
-        "type"
-      ],
-      "title": "TableInputWidget",
-      "type": "object"
-    },
-    "TableInputWidgetOutput": {
-      "additionalProperties": false,
-      "description": "A Table: a grid showing columns of many-row schema tables, each of its columns given\na look of its own looking as its ``column_looks`` entry says.",
-      "properties": {
-        "column_looks": {
-          "items": {
-            "$ref": "#/$defs/ColumnLookOutput"
-          },
-          "title": "Column Looks",
-          "type": "array"
-        },
-        "density": {
-          "default": "compact",
-          "enum": [
-            "compact",
-            "comfortable"
-          ],
-          "title": "Density",
-          "type": "string"
-        },
-        "fields": {
-          "items": {
-            "$ref": "#/$defs/FieldRef"
-          },
-          "title": "Fields",
-          "type": "array"
-        },
-        "fixed_rows": {
-          "default": false,
-          "title": "Fixed Rows",
-          "type": "boolean"
-        },
-        "font_size": {
-          "default": 12,
-          "enum": [
-            10,
-            11,
-            12,
-            13,
-            14,
-            16,
-            18
-          ],
-          "title": "Font Size",
-          "type": "integer"
-        },
-        "frame": {
-          "default": true,
-          "title": "Frame",
-          "type": "boolean"
-        },
-        "frame_color": {
-          "anyOf": [
-            {
-              "pattern": "^#[0-9A-F]{6}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Frame Color"
-        },
-        "frame_weight": {
-          "default": "thin",
-          "enum": [
-            "thin",
-            "medium",
-            "thick"
-          ],
-          "title": "Frame Weight",
-          "type": "string"
-        },
-        "grid_color": {
-          "anyOf": [
-            {
-              "pattern": "^#[0-9A-F]{6}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Grid Color"
-        },
-        "grid_style": {
-          "default": "solid",
-          "enum": [
-            "solid",
-            "dashed",
-            "dotted"
-          ],
-          "title": "Grid Style",
-          "type": "string"
-        },
-        "grid_weight": {
-          "default": "thin",
-          "enum": [
-            "thin",
-            "medium",
-            "thick"
-          ],
-          "title": "Grid Weight",
-          "type": "string"
-        },
-        "gridlines": {
-          "default": "rows",
-          "enum": [
-            "rows",
-            "all",
-            "none"
-          ],
-          "title": "Gridlines",
-          "type": "string"
-        },
-        "groups": {
-          "default": false,
-          "title": "Groups",
-          "type": "boolean"
-        },
-        "h": {
-          "exclusiveMinimum": 0,
-          "title": "H",
-          "type": "integer"
-        },
-        "header": {
-          "default": "plain",
-          "enum": [
-            "caps",
-            "plain"
-          ],
-          "title": "Header",
-          "type": "string"
-        },
-        "header_align": {
-          "default": "auto",
-          "enum": [
-            "auto",
-            "left",
-            "center",
-            "right"
-          ],
-          "title": "Header Align",
-          "type": "string"
-        },
-        "header_bold": {
-          "default": true,
-          "title": "Header Bold",
-          "type": "boolean"
-        },
-        "header_color": {
-          "anyOf": [
-            {
-              "pattern": "^#[0-9A-F]{6}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Header Color"
-        },
-        "header_font_color": {
-          "anyOf": [
-            {
-              "pattern": "^#[0-9A-F]{6}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Header Font Color"
-        },
-        "header_font_size": {
-          "anyOf": [
-            {
-              "enum": [
-                10,
-                11,
-                12,
-                13,
-                14,
-                16,
-                18
-              ],
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Header Font Size"
-        },
-        "header_orientation": {
-          "default": "horizontal",
-          "enum": [
-            "horizontal",
-            "up",
-            "down",
-            "stacked"
-          ],
-          "title": "Header Orientation",
-          "type": "string"
-        },
-        "header_wrap": {
-          "default": false,
-          "title": "Header Wrap",
-          "type": "boolean"
-        },
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
-        "row_numbers": {
-          "default": true,
-          "title": "Row Numbers",
-          "type": "boolean"
-        },
-        "rows": {
-          "default": 3,
-          "maximum": 50,
-          "minimum": 1,
-          "title": "Rows",
-          "type": "integer"
-        },
-        "show_when": {
-          "$ref": "#/$defs/ShowWhenOutput"
-        },
-        "striped": {
-          "default": true,
-          "title": "Striped",
-          "type": "boolean"
-        },
-        "title": {
-          "default": "",
-          "title": "Title",
-          "type": "string"
-        },
-        "transposed": {
-          "default": false,
-          "title": "Transposed",
-          "type": "boolean"
-        },
-        "type": {
-          "const": "tableInput",
-          "title": "Type",
-          "type": "string"
-        },
-        "w": {
-          "exclusiveMinimum": 0,
-          "title": "W",
-          "type": "integer"
-        },
-        "x": {
-          "minimum": 0,
-          "title": "X",
-          "type": "integer"
-        },
-        "y": {
-          "minimum": 0,
-          "title": "Y",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "id",
-        "x",
-        "y",
-        "w",
-        "h",
         "type",
         "title",
         "fields",
@@ -17678,7 +15899,7 @@
         "frame_weight",
         "column_looks"
       ],
-      "title": "TableInputWidgetOutput",
+      "title": "TableInputWidget",
       "type": "object"
     },
     "TableItem": {
@@ -17832,92 +16053,6 @@
           "title": "Sheet Color"
         }
       },
-      "title": "Theme",
-      "type": "object"
-    },
-    "ThemeOutput": {
-      "additionalProperties": false,
-      "description": "The sheets' colours, wherever they show, each the editor's own while None.",
-      "properties": {
-        "background_color": {
-          "anyOf": [
-            {
-              "pattern": "^#[0-9A-F]{6}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Background Color"
-        },
-        "border_color": {
-          "anyOf": [
-            {
-              "pattern": "^#[0-9A-F]{6}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Border Color"
-        },
-        "font_color": {
-          "anyOf": [
-            {
-              "pattern": "^#[0-9A-F]{6}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Font Color"
-        },
-        "input_cell_color": {
-          "anyOf": [
-            {
-              "pattern": "^#[0-9A-F]{6}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Input Cell Color"
-        },
-        "output_cell_color": {
-          "anyOf": [
-            {
-              "pattern": "^#[0-9A-F]{6}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Output Cell Color"
-        },
-        "sheet_color": {
-          "anyOf": [
-            {
-              "pattern": "^#[0-9A-F]{6}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Sheet Color"
-        }
-      },
       "required": [
         "sheet_color",
         "background_color",
@@ -17926,7 +16061,7 @@
         "input_cell_color",
         "output_cell_color"
       ],
-      "title": "ThemeOutput",
+      "title": "Theme",
       "type": "object"
     },
     "TrainEstimateResponse": {
@@ -19718,7 +17853,7 @@
       "description": "The release's form, without its sample, with the revision a price quotes.",
       "properties": {
         "form": {
-          "$ref": "#/$defs/FormSpecOutput"
+          "$ref": "#/$defs/FormSpec"
         },
         "revision": {
           "title": "Revision",
@@ -20916,7 +19051,7 @@
       "description": "The workbench's form as its folder holds it now, with the folder's revision.",
       "properties": {
         "form": {
-          "$ref": "#/$defs/FormSpecOutput"
+          "$ref": "#/$defs/FormSpec"
         },
         "repairs": {
           "default": [],
@@ -20943,7 +19078,7 @@
       "description": "The form as written, with its new revision and the save's version capture.",
       "properties": {
         "form": {
-          "$ref": "#/$defs/FormSpecOutput"
+          "$ref": "#/$defs/FormSpec"
         },
         "git_sha": {
           "anyOf": [
@@ -21457,19 +19592,6 @@
         "after"
       ],
       "title": "WorkbenchTestQuoteMove",
-      "type": "object"
-    },
-    "WorkbenchTestQuoteOpenRequest": {
-      "description": "The form the view holds, which a test quote is opened onto.",
-      "properties": {
-        "form": {
-          "$ref": "#/$defs/FormSpec"
-        }
-      },
-      "required": [
-        "form"
-      ],
-      "title": "WorkbenchTestQuoteOpenRequest",
       "type": "object"
     },
     "WorkbenchTestQuoteOpenResponse": {
@@ -22290,9 +20412,6 @@
     "WorkbenchTablesResponse": {
       "$ref": "#/$defs/WorkbenchTablesResponse"
     },
-    "WorkbenchTestQuoteOpenRequest": {
-      "$ref": "#/$defs/WorkbenchTestQuoteOpenRequest"
-    },
     "WorkbenchTestQuoteOpenResponse": {
       "$ref": "#/$defs/WorkbenchTestQuoteOpenResponse"
     },
@@ -22335,7 +20454,6 @@
     "WorkbenchAppQuoteAmend",
     "WorkbenchAppQuoteNote",
     "WorkbenchTestQuoteSaveRequest",
-    "WorkbenchTestQuoteOpenRequest",
     "WorkbenchTestQuotesAcceptRequest",
     "UtilityListResponse",
     "UtilityReadResponse",
@@ -22469,7 +20587,6 @@
     ],
     "workbench-requests": [
       "WorkbenchTestQuoteSaveRequest",
-      "WorkbenchTestQuoteOpenRequest",
       "WorkbenchTestQuotesAcceptRequest"
     ]
   },
