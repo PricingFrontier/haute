@@ -19,7 +19,6 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 | PCFG-R16 | Decision | P3 | The `earlier` step spelling is either dropped or named as the one allowed recogniser of old generated code. |
 | PCFG-R19 | Planned | P3 | The file-to-recovery-graph pass is written once, for a pipeline file and a submodel file alike. |
 | PCFG-R21 | Planned | P1 | A parse/save round trip preserves supported keyword-only bindings or refuses an unsupported signature before losing it. |
-| PCFG-R23 | Planned | P3 | Resetting (`_reset_node`) or code-mode saving (`apply_scoped_node_save`) a stepped Polars node appends a `RepairArtifactEdit(after=None)` deletion for an exclusively owned `config/polars/<name>.json` sidecar resolved via `_resolve_config_reference`. |
 
 `PCFG-R04` to `PCFG-R09` come from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md);
@@ -275,40 +274,3 @@ unchanged. An edge-count assertion alone is insufficient.
 **Dependencies:** None.
 
 **Evidence:** `src/haute/_graph_builders.py::_extract_decorated_node_skeletons`; `src/haute/_graph_builders.py::_resolve_node_skeleton`; `src/haute/codegen.py`; `tests/test_parser_conservation.py::TestParameterBucketConservation`.
-
-### PCFG-R23 — Remove orphaned `config/polars/<name>.json` sidecars on node reset and code-mode scoped save
-**Why:** `_reset_node` and `apply_scoped_node_save` in `_pipeline_repair_actions.py`
-build `edits: list[RepairArtifactEdit]` and only append a sidecar write edit when
-`node_emits_sidecar(node)` is `True`. When a stepped `NodeType.POLARS` node with
-`config="config/polars/<name>.json"` (`target.config_reference`) is reset to code-only
-defaults via `_reset_node` (`POST /api/pipeline/repair/apply`) or saved in code mode
-(`steps: []`) via `apply_scoped_node_save` (`POST /api/pipeline/node/save`),
-`node_emits_sidecar(node)` becomes `False`: the backend rewrites the `.py` decorator
-without `config="config/polars/<name>.json"`, but appends no `RepairArtifactEdit` with
-`after=None` to delete the previously owned `config/polars/<name>.json` sidecar. The
-orphaned JSON file stays on disk and can be picked up later by
-`find_config_by_func_name` recovery.
-
-**Plan:** When `_reset_node` or `apply_scoped_node_save` transitions a node from a
-sidecar-backed `target.config_reference` (resolved relative to `root_path.parent` via
-`_resolve_config_reference(root_path=root_path, project_root=root, reference=...)`) to
-`node_emits_sidecar(node) is False`, check the existing `shared` sidecar reference
-predicate across all remaining nodes and submodels and, when the sidecar was
-exclusively owned by `target`, append a `RepairArtifactEdit` with
-`before=<existing bytes>` and `after=None` so `_commit_repair_plan` deletes the
-orphaned sidecar (and rolls back the deletion from `before` if a later edit in the
-transaction fails).
-
-**Acceptance:** Resetting a stepped Polars node or saving it in code mode (`steps: []`)
-via `POST /api/pipeline/node/save` removes its exclusively owned
-`config/polars/<name>.json` file from disk (including for a nested pipeline under a
-subdirectory `subdir/main.py`, deleting `subdir/config/polars/<name>.json` rather than
-a root-level file), preserves the file when another node still references that same
-resolved path, and restores the file if the repair transaction rolls back.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_pipeline_repair_actions.py::_reset_node`;
-`src/haute/_pipeline_repair_actions.py::apply_scoped_node_save`;
-`src/haute/_pipeline_repair.py::_resolve_config_reference`;
-`src/haute/_pipeline_repair.py::_commit_repair_plan`.

@@ -547,3 +547,130 @@ def test_scoped_save_refuses_a_config_error_as_not_loadable(
     assert "not loadable" in detail["message"]
     assert message in detail["message"]
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+
+
+def _stepped_transform(
+    root: Path,
+    folder: str = "",
+    *,
+    sharer_reference: str | None = None,
+    sharer_keywords: str = "",
+) -> Path:
+    """A degraded pipeline (broken input) whose blocked transform owns a steps sidecar.
+
+    *sharer_reference* adds a second transform naming the same sidecar in another
+    spelling, so each node's reference is unique but both resolve to one file.
+    """
+    (root / "haute.toml").write_text('[project]\nname="demo"\n')
+    pipeline_root = root / folder
+    pipeline_root.mkdir(parents=True, exist_ok=True)
+    (pipeline_root / "a.json").write_text(json.dumps(BROKEN_INPUT))
+    steps = [
+        {"id": "s", "kind": "source", "input": "source_a"},
+        {"id": "l", "kind": "limit", "n": 5},
+    ]
+    sidecar = pipeline_root / "config" / "polars" / "transform.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(json.dumps({"steps": steps}), encoding="utf-8")
+    body = "    df: pl.LazyFrame\n    df = source_a\n    df = df.head(5)\n    return df\n"
+    source = (
+        "import haute\nimport polars as pl\n"
+        'pipeline = haute.Pipeline("demo")\n'
+        '@pipeline.data_input(config="a.json")\ndef source_a():\n    return None\n'
+        '@pipeline.polars(config="config/polars/transform.json")\n'
+        f"def transform(source_a: pl.LazyFrame) -> pl.LazyFrame:\n{body}"
+    )
+    if sharer_reference is not None:
+        source += (
+            f'@pipeline.polars(config="{sharer_reference}"{sharer_keywords})\n'
+            f"def sharer(source_a: pl.LazyFrame) -> pl.LazyFrame:\n{body}"
+        )
+    (pipeline_root / "main.py").write_text(source, encoding="utf-8")
+    return sidecar
+
+
+def _save_in_code_mode(root: Path, main: Path, *, apply=None):
+    """Save ``transform`` with its steps replaced by code, as the editor's switch does."""
+    from haute._pipeline_repair_actions import apply_scoped_node_save
+    from haute.schemas import PipelineNodeSaveRequest
+
+    document = load_pipeline_editor_document(main, project_root=root)
+    target = next(node for node in document.nodes if node.authored_id == "transform")
+    assert target.scoped_editable is True
+    assert "steps" in target.config
+    config = {key: value for key, value in target.config.items() if key != "steps"}
+    request = PipelineNodeSaveRequest(
+        source_file=document.source_file,
+        source_revision=document.source_revision,
+        target_source_file=target.source_file,
+        target_recovery_id=target.recovery_id,
+        config={**config, "code": "df = source_a.head(2)"},
+    )
+    return (apply or apply_scoped_node_save)(project_root=root, request=request)
+
+
+@pytest.mark.parametrize("folder", ["", "subdir"], ids=["root-pipeline", "nested-pipeline"])
+def test_code_mode_save_deletes_the_transforms_own_sidecar(tmp_path, folder):
+    """Leaving step mode drops the decorator's sidecar reference, so the sidecar
+    it named is deleted with the rewrite, beside the pipeline that owns it."""
+    sidecar = _stepped_transform(tmp_path, folder)
+    main = tmp_path / folder / "main.py"
+
+    _save_in_code_mode(tmp_path, main)
+
+    assert not sidecar.exists()
+    saved = main.read_text(encoding="utf-8")
+    assert 'config="config/polars/transform.json"' not in saved
+    assert "df = source_a.head(2)" in saved
+    reloaded = load_pipeline_editor_document(main, project_root=tmp_path)
+    node = next(item for item in reloaded.nodes if item.authored_id == "transform")
+    assert "steps" not in node.config
+
+
+@pytest.mark.parametrize(
+    "sharer_keywords",
+    [
+        pytest.param("", id="readable-sharer"),
+        # The parse cannot evaluate COLUMNS, but the sharer still names the file.
+        pytest.param(", selected_columns=COLUMNS", id="sharer-with-an-unreadable-keyword"),
+    ],
+)
+def test_code_mode_save_keeps_a_sidecar_another_node_reads(tmp_path, sharer_keywords):
+    sidecar = _stepped_transform(
+        tmp_path,
+        sharer_reference="./config/polars/transform.json",
+        sharer_keywords=sharer_keywords,
+    )
+    before = sidecar.read_bytes()
+
+    _save_in_code_mode(tmp_path, tmp_path / "main.py")
+
+    assert sidecar.read_bytes() == before
+    assert 'config="./config/polars/transform.json"' in (tmp_path / "main.py").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_a_failed_code_mode_save_restores_the_deleted_sidecar(tmp_path, monkeypatch):
+    """The deletion is staged in the repair transaction: a failure after it puts
+    the sidecar and the pipeline file back."""
+    import haute.routes._save_pipeline as save_pipeline
+
+    sidecar = _stepped_transform(tmp_path)
+    main = tmp_path / "main.py"
+    before = {path: path.read_bytes() for path in (sidecar, main)}
+    real_delete = save_pipeline._stage_artifact_delete
+    deleted: list[Path] = []
+
+    def delete_then_fail(target: Path, touched: list) -> None:
+        real_delete(target, touched)
+        deleted.append(target)
+        raise PermissionError("the disk went away")
+
+    monkeypatch.setattr(save_pipeline, "_stage_artifact_delete", delete_then_fail)
+
+    with pytest.raises(PermissionError):
+        _save_in_code_mode(tmp_path, main)
+
+    assert deleted == [sidecar]
+    assert {path: path.read_bytes() for path in before} == before

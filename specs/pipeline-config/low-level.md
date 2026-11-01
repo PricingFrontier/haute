@@ -338,7 +338,13 @@ to `{relative_path: json_string}` through `node_config_json`: the config record'
 sorted, two-space indentation, non-ASCII text unescaped and a closing newline. Recover, Reset
 and the node-scoped save write their sidecar through the same function, so both save paths
 write byte-identical sidecars for one configuration whatever order its keys arrived in; the
-next save of an older sidecar rewrites it in that form once. Nested user mappings keep their
+next save of an older sidecar rewrites it in that form once. When one of those three rewrites a
+transform that no longer emits a sidecar (it left step mode) while its decorator named one, the
+file the reference resolves to (relative to the file holding the node) is deleted in the same
+repair transaction, so a failure later in it restores the file, unless another node's reference
+in the document resolves to the same file, which keeps it. Each node's `config=` literal is read
+on its own (`_candidate_from_ast`), so another keyword the parse cannot evaluate never hides
+which file a node names. Nested user mappings keep their
 order, since they are data. Rating-step canonicalisation always emits ordered entry rows.
 Banding canonicalisation removes transient properties from factor records and expanded rule
 records, including `_prevRules` and `_id`. Compact category maps are data and retain those

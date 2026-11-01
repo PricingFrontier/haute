@@ -22,6 +22,7 @@ from haute._pipeline_repair import (
     PipelineRepairPlan,
     RepairArtifactEdit,
     _bounded_diff,
+    _config_sharers,
     _decode_utf8_artifact,
     _document_at_revision,
     _find_target,
@@ -321,9 +322,8 @@ def _reset_node(
             f"This node cannot be generated from these settings and connections: {exc}"
         ) from exc
     edits: list[RepairArtifactEdit] = []
-    # A stepped transform owns an optional sidecar; a code-only one owns none.
-    if node_emits_sidecar(node):
-        authored_reference = next(
+    authored_reference = (
+        next(
             (
                 kw.value.value
                 for kw in (decorator_call.keywords if decorator_call else [])
@@ -333,11 +333,10 @@ def _reset_node(
             ),
             None,
         )
-        reference = (
-            authored_reference
-            or target.config_reference
-            or config_path_for_node(node_type, target.authored_id).as_posix()
-        )
+        or target.config_reference
+    )
+
+    def config_file(reference: str) -> Path:
         config_path = _resolve_config_reference(
             root_path=root_path, project_root=root, reference=reference
         )
@@ -346,17 +345,20 @@ def _reset_node(
                 "Reset config must be an ordinary JSON file, "
                 "not a managed source or canvas sidecar."
             )
-        shared = [
-            other
-            for other in _iter_recovery_nodes(document)
-            if other is not target
-            and other.config_reference
-            and _resolve_config_reference(
-                root_path=root_path, project_root=root, reference=other.config_reference
-            )
-            == config_path
-        ]
-        if shared and not shared_config_confirmed:
+        return config_path
+
+    def shared(config_path: Path) -> bool:
+        return bool(
+            _config_sharers(document, target, config_path, root_path=root_path, project_root=root)
+        )
+
+    # A stepped transform owns an optional sidecar; a code-only one owns none.
+    if node_emits_sidecar(node):
+        reference = (
+            authored_reference or config_path_for_node(node_type, target.authored_id).as_posix()
+        )
+        config_path = config_file(reference)
+        if not shared_config_confirmed and shared(config_path):
             raise _unsupported(
                 "This config is shared by another node and cannot be reset independently."
             )
@@ -383,6 +385,21 @@ def _reset_node(
                 else "Replace this node's settings with the current palette defaults.",
             )
         )
+    elif authored_reference is not None:
+        # A transform that leaves step mode no longer names its sidecar: the file
+        # it named goes with the rewrite unless another node still reads it.
+        config_path = config_file(authored_reference)
+        if config_path.is_file() and not shared(config_path):
+            edits.append(
+                RepairArtifactEdit(
+                    path=config_path,
+                    wire_path=_wire_path(config_path, root),
+                    before=config_path.read_bytes(),
+                    after=None,
+                    description=f"Delete {_wire_path(config_path, root)!r}, which "
+                    f"{target.authored_id!r} no longer names.",
+                )
+            )
     # LibCST matches the function's definition span and replaces its decorators too.
     updated = _with_polars_import(_replace_spans(before, [(function, generated.rstrip("\n"))]))
     edits.insert(

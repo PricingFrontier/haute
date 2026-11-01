@@ -305,14 +305,23 @@ def _candidate_from_ast(
         skeleton.end_line,
         skeleton.end_column,
     )
-    config_reference: str | None = None
-    try:
-        decorator_kwargs = _get_decorator_kwargs(skeleton.decorator)
-    except HauteError:
-        decorator_kwargs = {}
-    raw_reference = decorator_kwargs.get("config")
-    if isinstance(raw_reference, str) and raw_reference.strip():
-        config_reference = raw_reference.replace("\\", "/")
+    # Read on its own: an unrelated keyword the parse cannot evaluate must not
+    # hide which config file this node names, since sharing decides deletions.
+    raw_reference = next(
+        (
+            keyword.value.value
+            for keyword in (
+                skeleton.decorator.keywords if isinstance(skeleton.decorator, ast.Call) else []
+            )
+            if keyword.arg == "config"
+            and isinstance(keyword.value, ast.Constant)
+            and isinstance(keyword.value.value, str)
+        ),
+        None,
+    )
+    config_reference = (
+        raw_reference.replace("\\", "/") if raw_reference and raw_reference.strip() else None
+    )
 
     try:
         reject_removed_node_decorator(skeleton.decorator)
