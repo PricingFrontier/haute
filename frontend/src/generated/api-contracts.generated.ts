@@ -3295,8 +3295,14 @@ export interface WorkbenchStoreCatalogueResponse {
  * the quotes holding a row in it, None when the table lacks a quote identity column.
  */
 export interface WorkbenchCatalogueTable {
+  /**
+   * @maxItems 10000
+   */
   columns: WorkbenchCatalogueColumn[];
   name: string;
+  /**
+   * @maxItems 10000
+   */
   primary_key: string[];
   quotes: number | null;
   refers: boolean;

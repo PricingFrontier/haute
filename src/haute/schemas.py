@@ -264,11 +264,11 @@ class WorkbenchCatalogueColumn(BaseModel):
     the database names it, whether it takes a null, its collation where it has one, and the
     quotes holding a value in it, None when the table lacks a quote identity column."""
 
-    name: str
-    kind: str
-    type: str
+    name: BoundedName
+    kind: BoundedName
+    type: BoundedName
     nullable: bool
-    collation: str | None = None
+    collation: BoundedName | None = None
     quotes: int | None = None
 
 
@@ -277,9 +277,9 @@ class WorkbenchCatalogueTable(BaseModel):
     key's columns, whether it refers by the identity to its quote's quote_details row, and
     the quotes holding a row in it, None when the table lacks a quote identity column."""
 
-    name: str
-    columns: list[WorkbenchCatalogueColumn]
-    primary_key: list[str]
+    name: BoundedName
+    columns: list[WorkbenchCatalogueColumn] = Field(max_length=MAX_REQUEST_ITEMS)
+    primary_key: list[BoundedName] = Field(max_length=MAX_REQUEST_ITEMS)
     refers: bool
     quotes: int | None = None
 
@@ -287,7 +287,7 @@ class WorkbenchCatalogueTable(BaseModel):
 class WorkbenchStoreCatalogueRequest(BaseModel):
     """The environment whose database's tables to read, one ``haute.toml`` declares."""
 
-    environment: str
+    environment: BoundedName
 
 
 class WorkbenchStoreCatalogueResponse(BaseModel):
@@ -303,9 +303,9 @@ class WorkbenchStoreRename(BaseModel):
     """A column of the form's table ``table`` (by id), ``column`` (by id), that the database
     holds as ``was``: the analyst's pairing of the two as a rename."""
 
-    table: str
-    column: str
-    was: str
+    table: BoundedName
+    column: BoundedName
+    was: BoundedName
 
 
 class WorkbenchStoreCompareRequest(BaseModel):
@@ -314,9 +314,9 @@ class WorkbenchStoreCompareRequest(BaseModel):
     the columns the analyst paired as renames."""
 
     form: FormSpec
-    environment: str
-    tables: list[WorkbenchCatalogueTable]
-    renames: list[WorkbenchStoreRename] = []
+    environment: BoundedName
+    tables: list[WorkbenchCatalogueTable] = Field(max_length=MAX_REQUEST_ITEMS)
+    renames: list[WorkbenchStoreRename] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
 
 
 class WorkbenchStoreDifference(BaseModel):

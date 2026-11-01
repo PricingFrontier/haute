@@ -201,4 +201,53 @@ describe("Compare", () => {
 
     expect(useStoreCompareStore.getState()).toMatchObject({ environment: null, read: { status: "idle" }, compared: { status: "none" } })
   })
+
+  it("replaces conflicting pairings, drops pairings the comparison rejects, and ignores superseded reads and comparisons", async () => {
+    const store = useStoreCompareStore.getState()
+    store.pair({ table: "policy", column: "policy.state", was: "region" })
+    store.pair({ table: "equipment", column: "equipment.make", was: "brand" })
+    // Replacing by form column and by database column keeps other tables' pairings.
+    store.pair({ table: "policy", column: "policy.state", was: "territory" })
+    store.pair({ table: "policy", column: "policy.year", was: "territory" })
+    expect(useStoreCompareStore.getState().renames).toEqual([
+      { table: "equipment", column: "equipment.make", was: "brand" },
+      { table: "policy", column: "policy.year", was: "territory" },
+    ])
+    store.unpair("policy", "policy.year")
+    expect(useStoreCompareStore.getState().renames).toEqual([
+      { table: "equipment", column: "equipment.make", was: "brand" },
+    ])
+
+    // Superseded catalogue read (both success and failure) is ignored after reset.
+    let resolveRead!: (value: { environment: string; tables: WorkbenchCatalogueTable[] }) => void
+    let rejectRead!: (error: unknown) => void
+    vi.mocked(fetchStoreCatalogue)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveRead = resolve }))
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectRead = reject }))
+
+    store.choose("dev")
+    store.choose("prod")
+    resolveRead({ environment: "dev", tables: TABLES })
+    store.reset()
+    rejectRead(new ApiError("Stale failure", 503))
+    await Promise.resolve()
+    expect(useStoreCompareStore.getState().read).toEqual({ status: "idle" })
+
+    // Superseded compare failure is ignored, and a comparison that drops a pairing updates renames.
+    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", tables: TABLES })
+    let rejectCompare!: (error: unknown) => void
+    vi.mocked(fetchStoreCompare)
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectCompare = reject }))
+      .mockResolvedValueOnce({ ...COMPARED, renames: [] })
+
+    store.choose("dev")
+    await waitFor(() => expect(useStoreCompareStore.getState().read.status).toBe("read"))
+    store.pair({ table: "policy", column: "policy.state", was: "region" })
+    const form = useWorkbenchFormStore.getState().form!
+    store.compare(form)
+    store.compare(form)
+    rejectCompare(new ApiError("Stale compare error", 422))
+    await waitFor(() => expect(useStoreCompareStore.getState().compared.status).toBe("compared"))
+    expect(useStoreCompareStore.getState().renames).toEqual([])
+  })
 })

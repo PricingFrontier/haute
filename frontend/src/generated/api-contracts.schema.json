@@ -18915,6 +18915,7 @@
         "collation": {
           "anyOf": [
             {
+              "maxLength": 512,
               "type": "string"
             },
             {
@@ -18925,10 +18926,12 @@
           "title": "Collation"
         },
         "kind": {
+          "maxLength": 512,
           "title": "Kind",
           "type": "string"
         },
         "name": {
+          "maxLength": 512,
           "title": "Name",
           "type": "string"
         },
@@ -18949,6 +18952,7 @@
           "title": "Quotes"
         },
         "type": {
+          "maxLength": 512,
           "title": "Type",
           "type": "string"
         }
@@ -18971,17 +18975,21 @@
           "items": {
             "$ref": "#/$defs/WorkbenchCatalogueColumn"
           },
+          "maxItems": 10000,
           "title": "Columns",
           "type": "array"
         },
         "name": {
+          "maxLength": 512,
           "title": "Name",
           "type": "string"
         },
         "primary_key": {
           "items": {
+            "maxLength": 512,
             "type": "string"
           },
+          "maxItems": 10000,
           "title": "Primary Key",
           "type": "array"
         },
@@ -19390,14 +19398,17 @@
       "description": "A column of the form's table ``table`` (by id), ``column`` (by id), that the database\nholds as ``was``: the analyst's pairing of the two as a rename.",
       "properties": {
         "column": {
+          "maxLength": 512,
           "title": "Column",
           "type": "string"
         },
         "table": {
+          "maxLength": 512,
           "title": "Table",
           "type": "string"
         },
         "was": {
+          "maxLength": 512,
           "title": "Was",
           "type": "string"
         }
