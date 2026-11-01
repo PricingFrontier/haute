@@ -134,8 +134,11 @@ naming their flags. An automated project is never converted into a workbench pro
 serious work is done in a project before that choice, so one that should have been a
 workbench project is started again, a new project or `haute init --force` answering
 workbench, and `haute init` no longer adds the workbench to a project that has a
-`haute.toml`. Open, for the owner: whether the app image's base image and registry stay
-in `[deploy.container]` or move to `[workbench.app]`. The behaviour lives in Haute's
+`haute.toml`. The app image's settings stay in `[deploy.container]`, its base image,
+registry and port, which `haute app build`, `haute ci registry-host` and the generated
+registry login already read, while `[workbench.app]` keeps where the app runs and who may
+change quotes; a workbench project's `haute.toml` holds no `target`, `model_name`,
+`endpoint_name` or `[deploy.databricks]`. The behaviour lives in Haute's
 commands, which read the workbench settings, so the YAML stays thin and alike across
 providers, and `haute ci update` reads how the project prices from `haute.toml` and
 regenerates that set without rewriting its pipeline or form, as `haute init --force` would.
@@ -177,8 +180,10 @@ Apps first; other hosts follow with the same commands.
 project's host from a list of one, writes the one engine for dev, staging and prod in
 `haute.toml` and `connections.toml`, and writes the analyst's sign-in in `connections.toml`
 alone; its flags answer every question without a terminal, and a workbench project's
-database and sign-in, given by neither, are refused naming their flags; and `haute init`
-in a project that has a `haute.toml` adds no workbench to it. A project `haute
+database and sign-in, given by neither, are refused naming their flags; a workbench
+project's `haute.toml` holds `[deploy.container]`, its base image pinned to the project's
+Python, and no endpoint settings, so `haute app build --image` builds without an edit; and
+`haute init` in a project that has a `haute.toml` adds no workbench to it. A project `haute
 init` initialised for workbench pricing on Azure Container Apps and merged to `main` runs
 its generated workflow, which holds no endpoint deploy and no smoke or impact against an
 endpoint, to a staging app and, after approval, to production, with the digest CI tested
