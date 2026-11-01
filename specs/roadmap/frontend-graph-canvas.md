@@ -15,7 +15,6 @@ packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FGC-R05 | Planned | P1 | Finishing auto-layout changes positions without restoring older node data or replacing a different graph. |
 | FGC-R06 | Planned | P1 | A delayed drill-in cannot replace a newer graph, source path or navigation stack. |
 | FGC-R07 | Planned | P3 | Deleting selected nodes and separate selected edges performs one complete, undoable selection change. |
 | FGC-R08 | Planned | P2 | A late file read cannot replace a newer selection or discard edits made while the read was pending. |
@@ -25,33 +24,6 @@ packages come from the
 | FGC-R12 | Planned | P2 | `previewPortLabel` honours `chosenFrame` on multi-table `apiInput` and `workbenchInput` nodes, `computeStructuralFingerprint` and `computePanelContextFingerprint` include `submodels` and submodel boundary `ports`, `Ctrl+V` refuses `submodel` and `submodelPort` nodes, and `Escape` in a non-empty `SearchField` does not close an enclosing `ModalShell`. |
 
 ## Planned improvements
-
-### FGC-R05 — Auto-layout cannot overwrite edits
-**Why:** The [28 October review](codebase-review-2026-10-28.md) delayed a layout,
-edited a node's code, and completed the layout: the code reverted to its old
-value. `handleAutoLayout` captures full nodes before awaiting ELK, then replaces
-the live nodes with that returned snapshot. Only another layout is blocked;
-ordinary edits remain available. The same write can restore deleted nodes,
-remove added nodes or overwrite a newly loaded document while leaving its edges.
-Those structural variants are source-supported; the executed probe changes code.
-
-**Plan:** Apply returned geometry to current nodes by ID, preserving live data
-and other state, only while the initiating document and required topology remain
-current. Reject or explicitly recompute an outdated structural layout. Keep
-selection, undo and fit-view behaviour scoped to the accepted layout; do not
-apply an old graph merely because ELK completed successfully. Define the
-document/topology and concurrent-position policy in the canvas specification.
-
-**Acceptance:** An edit during a delayed layout survives with the new positions.
-Adding/deleting nodes or switching documents cannot resurrect/drop nodes or
-create mismatched edges; an obsolete layout reports its disposition without
-changing the new document. A normal layout and undo still work. Use a controlled
-layout promise against the real node-handler hook, asserting final graph data.
-
-**Dependencies:** None; reuse existing document/structural identity helpers.
-
-**Evidence:** `frontend/src/hooks/useNodeHandlers.ts`;
-`frontend/src/utils/layout.ts`; `frontend/src/components/Toolbar.tsx`.
 
 ### FGC-R06 — Pending submodel navigation belongs to its document
 

@@ -371,7 +371,14 @@ candidate, with the error toast.
   land. It arranges the graph left-to-right with crossing reduction and straight
   branch continuations, accounting for measured card sizes and visible connection
   points (including named frame outputs and join inputs). It changes positions
-  only. Layout before nodes mount uses estimated dimensions and unconstrained
+  only: when ELK finishes, the computed coordinates are merged onto the live
+  nodes by id (preserving any node data, config, label, selection, or measurement
+  changes made while layout ran, and replacing concurrent position changes) only
+  while the initiating document, submodel navigation scope, and graph topology
+  (node ids/origins and edge endpoints/handles) remain current; if a node or
+  edge was added, deleted, or rewired, or the document or submodel view changed,
+  the obsolete layout is rejected with an informational toast without mutating
+  the graph, pushing history, or fitting the view. Layout before nodes mount uses estimated dimensions and unconstrained
   connection points; invalid layout output fails without applying partial positions.
   Node-cache cleanup for an ordinary deleted node is deferred one task
   tick past the graph mutation so no component reads a torn state in the same
@@ -855,10 +862,6 @@ candidate, with the error toast.
 > [NAME-10](../roadmap/name-collisions.md#name-10--every-distinct-connection-has-a-distinct-identity),
 > [FGC-R06](../roadmap/frontend-graph-canvas.md#fgc-r06--pending-submodel-navigation-belongs-to-its-document) and
 > [FGC-R07](../roadmap/frontend-graph-canvas.md#fgc-r07--delete-removes-the-complete-eligible-selection) own these gaps.
-
-> NOTE: Auto-layout replaces nodes with the snapshot it started from, so edits
-> made while ELK runs can be lost. Applying only current, authorised geometry is
-> tracked in [FGC-R05](../roadmap/frontend-graph-canvas.md#fgc-r05--auto-layout-cannot-overwrite-edits).
 
 - `useGraph()` called outside a `<GraphProvider>` throws a plain `Error`
   naming `GraphProvider` in its message. `App.tsx` wraps the node panel in

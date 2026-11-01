@@ -1596,6 +1596,7 @@ function FlowEditor() {
     setLastSelectedId,
     setPreviewData, fitView, getInternalNode,
     submodels,
+    activeSubmodelIdentity,
     resolveNodeIdentities: allocateNodeIdentities,
     createWrappedNodeInstance: handleCreateNodeInstance,
     commitSharedNodeDeletion,
