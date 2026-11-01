@@ -215,8 +215,10 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
           // A result read on another branch than the list's is nobody's here.
           if (result.branch !== get().branch) {
             runAsked.bump()
-            set({ runs: {}, running: null, error: "The branch changed during the run: run again." })
-            void get().load()
+            set({ runs: {}, running: null })
+            // Listed again first, so the reason stays once the list is read.
+            await get().load()
+            set({ error: "The branch changed during the run: run again." })
             return
           }
           set((s) => ({ runs: { ...s.runs, [file]: { status: "done", ...result } } }))

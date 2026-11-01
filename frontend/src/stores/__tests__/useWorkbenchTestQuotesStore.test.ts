@@ -250,9 +250,230 @@ describe("useWorkbenchTestQuotesStore", () => {
   })
 
   it("deletes a quote at the revision listed, on the branch listed", async () => {
+    await store().run()
+    store().toggle("a.json")
+    useWorkbenchTestQuotesStore.setState({ opened: "a.json" })
+
     await store().remove("a.json")
 
     expect(deleteTestQuote).toHaveBeenCalledWith("a.json", "rev-a.json", "work")
+    expect(store().runs["a.json"]).toBeUndefined()
+    expect(store().ticked).toEqual([])
+    expect(store().opened).toBeNull()
+  })
+
+  it("says why a delete failed, and deletes nothing it has not listed", async () => {
+    vi.mocked(deleteTestQuote).mockRejectedValueOnce(new Error("changed since the panel read it"))
+
+    await store().remove("a.json")
+    await store().remove("gone.json")
+
+    expect(store().error).toBe("Not deleted: changed since the panel read it")
+    expect(deleteTestQuote).toHaveBeenCalledOnce()
+  })
+
+  it("lists the test quotes when the panel opens, and says why a list failed", async () => {
+    vi.mocked(fetchTestQuotes).mockClear()
+    store().setOpen(true)
+    await vi.waitFor(() => expect(fetchTestQuotes).toHaveBeenCalledOnce())
+
+    vi.mocked(fetchTestQuotes).mockRejectedValueOnce(new Error("no workbench"))
+    await store().load()
+    store().setOpen(false)
+
+    expect(store().error).toBe("no workbench")
+    expect(store().loading).toBe(false)
+  })
+
+  it("drops a list answered after a later one", async () => {
+    const earlier = deferred<{ branch: string; quotes: WorkbenchTestQuoteSummary[] }>()
+    vi.mocked(fetchTestQuotes).mockImplementationOnce(() => earlier.promise)
+
+    const first = store().load()
+    await store().load()
+    earlier.resolve({ branch: "work", quotes: [summary("stale.json")] })
+    await first
+
+    expect(store().quotes.map((quote) => quote.file)).toEqual(["a.json", "b.json"])
+  })
+
+  it("replaces the quote opened last at the revision listed", async () => {
+    await store().save({ replace: "b.json" })
+
+    expect(saveTestQuote).toHaveBeenCalledWith({
+      name: undefined,
+      replace: { file: "b.json", revision: "rev-b.json" },
+      branch: "work",
+      formRevision: "form-1",
+    })
+  })
+
+  it("refuses a save it cannot bind to what the panel read, and says why one failed", async () => {
+    expect(await store().save({ replace: "gone.json" })).toBe(false)
+    expect(store().error).toBe("gone.json is no longer listed: list the test quotes again.")
+
+    useWorkbenchFormStore.setState({ revision: null })
+    expect(await store().save({ name: "Fleet" })).toBe(false)
+    expect(store().error).toMatch(/Save the project first/)
+    useWorkbenchFormStore.setState({ revision: "form-1" })
+
+    useWorkbenchTestQuotesStore.setState({ branch: null })
+    expect(await store().save({ name: "Fleet" })).toBe(false)
+    expect(store().error).toBe("List the test quotes again before saving one.")
+    useWorkbenchTestQuotesStore.setState({ branch: "work" })
+
+    vi.mocked(saveTestQuote).mockRejectedValueOnce(new Error("Type the quote first."))
+    expect(await store().save({ name: "Fleet" })).toBe(false)
+    expect(store().error).toBe("Not saved: Type the quote first.")
+
+    useWorkbenchTestQuotesStore.setState({ busy: true })
+    expect(await store().save({ name: "Fleet" })).toBe(false)
+    expect(saveTestQuote).toHaveBeenCalledOnce()
+  })
+
+  it("says why an open failed, and opens nothing before the form is read", async () => {
+    vi.mocked(openTestQuote).mockRejectedValueOnce(new Error("not a test quote"))
+    await store().openQuote("a.json")
+    expect(store().error).toBe("not a test quote")
+
+    useWorkbenchFormStore.setState({ form: null })
+    await store().openQuote("a.json")
+    expect(openTestQuote).toHaveBeenCalledOnce()
+  })
+
+  it("runs the ticked quotes alone, and none while a write is under way", async () => {
+    store().toggle("b.json")
+    store().toggle("a.json")
+    store().toggle("a.json")
+    await store().run()
+    expect(vi.mocked(runTestQuote).mock.calls.map(([file]) => file)).toEqual(["b.json"])
+
+    useWorkbenchTestQuotesStore.setState({ busy: true })
+    await store().run()
+    expect(runTestQuote).toHaveBeenCalledOnce()
+  })
+
+  it("drops a run whose answer was read on another branch, and lists again", async () => {
+    vi.mocked(runTestQuote).mockResolvedValueOnce({ ...result("a.json", "moved"), branch: "elsewhere" })
+    vi.mocked(fetchTestQuotes).mockClear()
+
+    await store().run()
+
+    expect(store().runs).toEqual({})
+    expect(store().running).toBeNull()
+    expect(store().error).toBe("The branch changed during the run: run again.")
+    await vi.waitFor(() => expect(fetchTestQuotes).toHaveBeenCalled())
+  })
+
+  it("keeps running past a quote whose request failed, naming why", async () => {
+    vi.mocked(runTestQuote).mockRejectedValueOnce(new Error("a.json is no longer kept"))
+
+    await store().run()
+
+    expect(Object.keys(store().runs)).toEqual(["b.json"])
+    expect(store().error).toBe("a.json is no longer kept")
+  })
+
+  it("accepts nothing without a result to accept, and says why an accept failed", async () => {
+    await store().accept("a.json")
+    await store().acceptAll()
+    expect(acceptTestQuotes).not.toHaveBeenCalled()
+
+    await store().run()
+    vi.mocked(acceptTestQuotes).mockRejectedValueOnce(new Error("run the test quotes again"))
+    await store().accept("a.json")
+    expect(store().error).toBe("Not accepted: run the test quotes again")
+
+    useWorkbenchTestQuotesStore.setState((s) => ({
+      runs: { ...s.runs, "a.json": { status: "done", ...result("a.json", "moved"), basis: null } },
+    }))
+    await store().accept("a.json")
+    expect(acceptTestQuotes).toHaveBeenCalledOnce()
+  })
+
+  it("accepts nothing when the project's save does not complete", async () => {
+    await store().run()
+    useWorkbenchFormStore.setState({ dirty: true })
+    saveProject.mockResolvedValueOnce(false)
+
+    await store().accept("a.json")
+
+    expect(acceptTestQuotes).not.toHaveBeenCalled()
+    expect(store().busy).toBe(false)
+  })
+
+  it("says nothing of an open that failed after a later one was asked", async () => {
+    let failEarlier!: (error: Error) => void
+    vi.mocked(openTestQuote)
+      .mockImplementationOnce(() => new Promise((_, reject) => { failEarlier = reject }))
+      .mockResolvedValueOnce({ values: {}, not_opened: [] })
+
+    const first = store().openQuote("a.json")
+    await store().openQuote("b.json")
+    failEarlier(new Error("late"))
+    await first
+
+    expect(store().error).toBeNull()
+  })
+
+  it("accepts all that moved or no longer compare, and nothing that did not", async () => {
+    vi.mocked(runTestQuote)
+      .mockResolvedValueOnce(result("a.json", "no_longer_compares"))
+      .mockResolvedValueOnce(result("b.json", "unchanged"))
+    await store().run()
+
+    await store().acceptAll()
+
+    expect(vi.mocked(acceptTestQuotes).mock.calls[0][0].quotes).toEqual([{ file: "a.json", revision: "rev-a.json" }])
+  })
+
+  it("leaves a newer run's results as they are when an accept answers after it started", async () => {
+    await store().run()
+    const answer = deferred<Awaited<ReturnType<typeof acceptTestQuotes>>>()
+    vi.mocked(acceptTestQuotes).mockImplementationOnce(() => answer.promise)
+
+    const accepting = store().accept("a.json")
+    await vi.waitFor(() => expect(acceptTestQuotes).toHaveBeenCalledOnce())
+    store().forget()
+    answer.resolve({ ...written, accepted: [summary("a.json")], refused: [] })
+    await accepting
+
+    expect(store().runs).toEqual({})
+  })
+
+  it("saves nothing when the project's save does not complete", async () => {
+    useWorkbenchFormStore.setState({ dirty: true })
+    saveProject.mockResolvedValueOnce(false)
+
+    expect(await store().save({ name: "Fleet" })).toBe(false)
+    expect(saveTestQuote).not.toHaveBeenCalled()
+  })
+
+  it("accepts nothing while a write or a run is under way", async () => {
+    await store().run()
+    useWorkbenchTestQuotesStore.setState({ busy: true })
+
+    await store().accept("a.json")
+
+    expect(acceptTestQuotes).not.toHaveBeenCalled()
+  })
+
+  it("keeps its results when the document's status changes without a new adoption", async () => {
+    await store().run()
+
+    useDocumentStatusStore.setState((s) => ({ ...s }))
+
+    expect(Object.keys(store().runs)).toEqual(["a.json", "b.json"])
+  })
+
+  it("lists again when it forgets while the panel is open", async () => {
+    useWorkbenchTestQuotesStore.setState({ open: true })
+    vi.mocked(fetchTestQuotes).mockClear()
+
+    store().forget()
+
+    await vi.waitFor(() => expect(fetchTestQuotes).toHaveBeenCalledOnce())
+    useWorkbenchTestQuotesStore.setState({ open: false })
   })
 })
 

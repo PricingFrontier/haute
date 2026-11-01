@@ -214,7 +214,7 @@ def test_a_save_decided_on_another_branch_is_refused(project: Path) -> None:
 def test_replacing_is_refused_once_the_file_changed(project: Path) -> None:
     http = client()
     revision = _save(http).json()["quote"]["revision"]
-    _file(project).write_text(_file(project).read_text() + " ", encoding="utf-8")
+    (project / FOLDER / "Fleet.json").write_text(_file(project).read_text() + " ", encoding="utf-8")
     edited = _file(project).read_bytes()
 
     branch, form_revision = _state(http)
@@ -357,7 +357,7 @@ def test_keyed_rows_reordered_and_numbers_within_tolerance_are_unchanged(
     row["expected"]["pricing"][0]["premium"] = 101.0
     row["tolerance_pct"] = 0.05
     row["_note"] = "kept by hand"
-    _file(project).write_text(json.dumps([row]), encoding="utf-8")
+    (project / FOLDER / "Fleet.json").write_text(json.dumps([row]), encoding="utf-8")
 
     result = _run(http).json()
 
@@ -369,7 +369,7 @@ def test_a_column_the_form_dropped_is_a_removed_field(project: Path) -> None:
     assert _save(http).status_code == 200
     [row] = _rows(project)
     row["expected"]["pricing"][0]["discount"] = 5.0
-    _file(project).write_text(json.dumps([row]), encoding="utf-8")
+    (project / FOLDER / "Fleet.json").write_text(json.dumps([row]), encoding="utf-8")
 
     result = _run(http).json()
 
@@ -388,7 +388,7 @@ def test_a_key_held_twice_no_longer_compares(project: Path) -> None:
     assert _save(http).status_code == 200
     [row] = _rows(project)
     row["expected"]["item_prices"][1]["item_id"] = "A"
-    _file(project).write_text(json.dumps([row]), encoding="utf-8")
+    (project / FOLDER / "Fleet.json").write_text(json.dumps([row]), encoding="utf-8")
 
     result = _run(http).json()
 
@@ -497,7 +497,7 @@ def test_accepting_names_a_file_changed_since_the_run_and_leaves_it(project: Pat
     http = client()
     assert _save(http).status_code == 200
     run = _run(http).json()
-    _file(project).write_text(_file(project).read_text() + " ", encoding="utf-8")
+    (project / FOLDER / "Fleet.json").write_text(_file(project).read_text() + " ", encoding="utf-8")
     edited = _file(project).read_bytes()
 
     answered = _accept(http, run).json()
@@ -519,7 +519,9 @@ def test_an_edit_made_outside_haute_while_an_acceptance_priced_is_kept(
 
     def edited_meanwhile(release: Any, request: Any) -> Any:
         answer = real_price(release, request)
-        _file(project).write_text(_file(project).read_text() + " ", encoding="utf-8")
+        (project / FOLDER / "Fleet.json").write_text(
+            _file(project).read_text() + " ", encoding="utf-8"
+        )
         return answer
 
     monkeypatch.setattr(routes, "price_request", edited_meanwhile)
@@ -695,7 +697,7 @@ def test_a_tolerance_deploy_refuses_is_listed_and_fails_the_build(
     assert _save(http).status_code == 200
     [row] = _rows(project)
     row["tolerance_pct"] = tolerance
-    _file(project).write_text(json.dumps([row]), encoding="utf-8")
+    (project / FOLDER / "Fleet.json").write_text(json.dumps([row]), encoding="utf-8")
 
     [listed] = http.get("/api/workbench/test-quotes").json()["quotes"]
     assert says in listed["problem"]
@@ -798,7 +800,9 @@ def test_accepting_two_keeps_an_edit_made_to_the_first_while_the_second_priced(
     def second_edits_the_first(release: Any, request: Any) -> Any:
         priced.append("priced")
         if len(priced) == 2:
-            _file(project).write_text(_file(project).read_text() + " ", encoding="utf-8")
+            (project / FOLDER / "Fleet.json").write_text(
+                _file(project).read_text() + " ", encoding="utf-8"
+            )
         return real_price(release, request)
 
     monkeypatch.setattr(routes, "price_request", second_edits_the_first)
