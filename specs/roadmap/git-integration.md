@@ -8,7 +8,6 @@ the remote handling, and the git panel that drives them. Current behaviour is
 specified in [the git-integration specification](../git-integration/high-level.md)
 and [the git UI](../frontend-git-ui/high-level.md). These
 packages come from the [25 October 2026 codebase review](codebase-review-2026-10-25.md).
-`GIT-R18` comes from the [28 October functional review](codebase-review-2026-10-28.md).
 
 ## Priorities
 
@@ -16,7 +15,6 @@ packages come from the [25 October 2026 codebase review](codebase-review-2026-10
 |---|---|---:|---|
 | GIT-R05 | Planned | P3 | The git modules carry no dead symbols, one free-name finder and one compensation helper. |
 | GIT-R06 | Planned | P3 | Every save runs the project's git hooks, in a clone too, and the specification says so. |
-| GIT-R18 | Planned | P2 | A rejected push's Catch up and Spin off actions stay bound to that rejection's remote. |
 | GIT-R19 | Planned | P2 | `validate_remote_url` rejects `file://` URLs with a non-empty host and refuses `file://` bindings in hosted mode, and `set_working_branch` enforces `VERSIONED_FILE_LIMIT_BYTES` when seeding an unborn repository. |
 
 ## Planned improvements
@@ -89,32 +87,6 @@ conflict.
 `src/haute/_scaffold.py::pre_commit_hook`;
 `src/haute/cli/_init_cmd.py::handle_init`;
 `src/haute/routes/_save_pipeline.py::SavePipelineService.save`.
-
-### GIT-R18 — Recovery acts on the remote named by its dialog
-
-**Why:** While Push to origin is pending, the remote select remains editable. Switching it to
-backup before origin returns 409 produces a dialog naming origin, but its recovery callbacks
-submit backup. Actual component tests reproduce both behind and diverged cases. The wrong
-endpoint submission is measured; the resulting Git tree mutation is supported by the route
-semantics, not executed by this UI probe.
-
-**Plan:** Pass the rejection's authenticated remote into modal recovery actions; standalone
-recovery uses its own captured target. Invalidate stale dialogs when their context is no longer
-actionable and keep busy/selection rules consistent. Do not take a destructive target from a
-mutable dropdown after confirmation.
-
-**Acceptance:** Delay origin's 409, select backup, then invoke each modal action: only origin
-is submitted or the stale dialog is explicitly refused. The dialog and action always name the
-same remote. Existing dirty-document and branch protections still apply.
-
-**Dependencies:** None. Catch up and Spin off ask about unsaved edits first, naming the remote
-the action submits, so that question must follow whichever remote this package binds the
-actions to.
-
-**Evidence:** `frontend/src/components/RemotePushControl.tsx::RemotePushControl.doCatchUp`;
-`frontend/src/components/RemotePushControl.tsx::RemotePushControl.doBranchAway`;
-`frontend/src/components/RemotePushControl.tsx::RemotePushControl` (remote selector);
-`frontend/src/components/RemotePushControl.tsx::RemotePushControl` (`RejectPushDialog` callback props).
 
 ### GIT-R19 — Remote `file://` host/hosted-mode validation and unborn-repository file-size guard
 **Why:** Two validation gaps exist in git remote binding and unborn-repository seeding:

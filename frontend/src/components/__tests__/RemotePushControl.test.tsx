@@ -771,5 +771,79 @@ describe("RemotePushControl", () => {
       expect(screen.queryByTestId("git-navigation-confirm")).not.toBeInTheDocument()
       expect(mockFastForward).not.toHaveBeenCalled()
     })
+
+    describe("with the selection moved to another remote", () => {
+      const twoRemotes = (leg: typeof behind | null) =>
+        mockGetGitRemotes.mockResolvedValue({
+          remotes: [
+            remote({ working: leg, ledger: leg }),
+            remote({ name: "backup", url: "git@example.com:y.git", working: leg, ledger: leg }),
+          ],
+          working_branch: "dev",
+        })
+      const select = async (name: string) => {
+        await waitFor(() => expect(screen.getByRole("option", { name: /backup/ })).toBeInTheDocument())
+        fireEvent.change(screen.getByTestId("git-push-remote"), { target: { value: name } })
+      }
+
+      it.each([
+        { action: "Catch up", leg: behind, button: "git-push-rejected-catch-up", request: mockFastForward, question: CATCH_UP },
+        { action: "Spin off a copy", leg: diverged, button: "git-push-rejected-branch-away", request: mockBranchAway, question: SPIN_OFF },
+      ])("the rejection dialog's $action acts on the remote that refused the push", async ({ leg, button, request, question }) => {
+        twoRemotes(null)
+        let refuse: (err: unknown) => void = () => {}
+        mockGitPush.mockReturnValueOnce(new Promise((_, reject) => { refuse = reject }))
+        useGraphStore.setState({ dirty: true })
+        render(<RemotePushControl pendingSaveCount={0} onSave={vi.fn()} />)
+        await select("origin")
+        fireEvent.click(screen.getByTestId("git-push-button"))
+        await select("backup")
+        const rejection = {
+          status: "rejected_diverged",
+          remote: "origin",
+          working: leg,
+          ledger: leg,
+          message: "origin has changed - haute never force-pushes.",
+          is_rewrite: false,
+        }
+        refuse(new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }))
+
+        fireEvent.click(await screen.findByTestId(button))
+        expect(await screen.findByTestId("git-navigation-confirm")).toHaveTextContent(question)
+        fireEvent.click(screen.getByTestId("git-navigation-discard"))
+        await waitFor(() => expect(request).toHaveBeenCalledWith("origin"))
+        expect(request).toHaveBeenCalledOnce()
+      })
+
+      it("drops the question the standalone Catch up left open about the previous remote", async () => {
+        twoRemotes(behind)
+        useGraphStore.setState({ dirty: true })
+        render(<RemotePushControl pendingSaveCount={0} onSave={vi.fn()} />)
+        await select("origin")
+        fireEvent.click(await screen.findByTestId("git-catch-up-button"))
+        expect(await screen.findByTestId("git-navigation-confirm")).toHaveTextContent(CATCH_UP)
+
+        await select("backup")
+        expect(screen.queryByTestId("git-navigation-confirm")).not.toBeInTheDocument()
+        expect(mockFastForward).not.toHaveBeenCalled()
+      })
+    })
+
+    it("starts neither Push nor Catch up while the other is running", async () => {
+      ways[0].setUp()
+      let pushed: (value: unknown) => void = () => {}
+      mockGitPush.mockReturnValueOnce(new Promise((resolve) => { pushed = resolve }))
+      mockFastForward.mockReturnValueOnce(new Promise(() => {}))
+      render(<RemotePushControl pendingSaveCount={0} />)
+      await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
+
+      fireEvent.click(screen.getByTestId("git-push-button"))
+      await waitFor(() => expect(screen.getByTestId("git-catch-up-button")).toBeDisabled())
+      pushed({ remote: "origin", working_branch: "dev", ledger_branch: "dev-save", pushed_refs: [], default_branch: "main", bootstrapped_default: false })
+      await waitFor(() => expect(screen.getByTestId("git-catch-up-button")).toBeEnabled())
+
+      fireEvent.click(screen.getByTestId("git-catch-up-button"))
+      await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeDisabled())
+    })
   })
 })
