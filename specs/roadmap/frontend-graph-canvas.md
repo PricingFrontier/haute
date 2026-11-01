@@ -15,7 +15,6 @@ packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FGC-R06 | Planned | P1 | A delayed drill-in cannot replace a newer graph, source path or navigation stack. |
 | FGC-R07 | Planned | P3 | Deleting selected nodes and separate selected edges performs one complete, undoable selection change. |
 | FGC-R08 | Planned | P2 | A late file read cannot replace a newer selection or discard edits made while the read was pending. |
 | FGC-R09 | Planned | P2 | A blocked node downstream of an unavailable source opens its recovery inspector without running healthy-editor input derivation. |
@@ -24,28 +23,6 @@ packages come from the
 | FGC-R12 | Planned | P2 | `previewPortLabel` honours `chosenFrame` on multi-table `apiInput` and `workbenchInput` nodes, `computeStructuralFingerprint` and `computePanelContextFingerprint` include `submodels` and submodel boundary `ports`, `Ctrl+V` refuses `submodel` and `submodelPort` nodes, and `Escape` in a non-empty `SearchField` does not close an enclosing `ModalShell`. |
 
 ## Planned improvements
-
-### FGC-R06 — Pending submodel navigation belongs to its document
-
-**Why:** `drillInto` awaits identity resolution and layout, then installs captured child nodes
-and parent context without authenticating the document it started from. The real hook/store
-witness loads a different root while drill-in waits; completion replaces it with the old child,
-sets `modules/pricing.py`, and creates a depth-two stack mixing old nodes with the new
-document's submodels.
-
-**Plan:** Bind navigation work to the initiating document, source, occurrence and graph
-revision. Invalidate it on reload, another navigation, graph changes or lost capability;
-recheck immediately before committing nodes, path and stack together. Retain the user's current
-document when an old request finishes.
-
-**Acceptance:** Delay each await, then load another document or edit/remove the occurrence:
-resolving the old request changes no current graph/path/stack. An unchanged drill succeeds with
-one coherent parent snapshot; navigating back restores that same parent. Test the actual store
-and hook.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/hooks/useSubmodelNavigation.ts::useSubmodelNavigation.handleDrillIntoSubmodel`; its existing tests cover reload after completed navigation but not during it.
 
 ### FGC-R07 — Delete removes the complete eligible selection
 

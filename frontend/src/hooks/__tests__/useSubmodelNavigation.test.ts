@@ -1449,4 +1449,204 @@ describe("useSubmodelNavigation", () => {
       if (failure === "drilled") expect(createNodeInstance).not.toHaveBeenCalled()
     },
   )
+
+  it.each(["identity", "layout"] as const)(
+    "discards a pending drill-in when another document loads during %s await",
+    async (stage) => {
+      let resolveIdentities!: (value: { nodes: Node[]; edges: Edge[] }) => void
+      let resolveLayout!: (nodes: Node[]) => void
+      const params = makeParams({
+        sourceFileRef: { current: "pipelines/first.py" },
+        pipelineNameRef: { current: "first" },
+        setNodesRaw: vi.fn((nodes: Node[]) => {
+          params.graphRef.current = { ...params.graphRef.current, nodes }
+          useGraphStore.getState().setNodesRaw(nodes)
+        }),
+        setEdgesRaw: vi.fn((edges: Edge[]) => {
+          params.graphRef.current = { ...params.graphRef.current, edges }
+          useGraphStore.getState().setEdgesRaw(edges)
+        }),
+      })
+      seedCanonicalGraph(params)
+      if (stage === "identity") {
+        params.resolveGraphIdentities = vi.fn(
+          () =>
+            new Promise((resolve) => {
+              resolveIdentities = resolve
+            }),
+        )
+      } else {
+        mockLayout.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveLayout = resolve
+            }),
+        )
+      }
+
+      const { result } = renderHook(() => useSubmodelNavigation(params))
+      let drillPromise!: Promise<void>
+      await act(async () => {
+        drillPromise = result.current.handleDrillIntoSubmodel(INSTANCE_ID)
+      })
+
+      const nextDocNodes = [makeNode("fresh_root", "polars")]
+      const nextSubmodels = {}
+      act(() => {
+        params.graphRef.current = { nodes: nextDocNodes, edges: [] }
+        params.submodelsRef.current = nextSubmodels
+        params.sourceFileRef.current = "pipelines/second.py"
+        params.pipelineNameRef.current = "second"
+        params.sourceRevisionRef.current = "second-rev-1"
+        useGraphStore.getState().loadGraphSnapshot({
+          nodes: nextDocNodes,
+          edges: [],
+          preamble: "",
+          submodels: nextSubmodels,
+        })
+        result.current.resetToAuthoritativeRoot("pipelines/second.py", "second")
+      })
+
+      await act(async () => {
+        if (stage === "identity") {
+          resolveIdentities({ nodes: [makeNode("child1")], edges: [] })
+        } else {
+          resolveLayout([makeNode("child1")])
+        }
+        await drillPromise
+      })
+
+      expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["fresh_root"])
+      expect(params.graphRef.current.nodes.map((node) => node.id)).toEqual(["fresh_root"])
+      expect(params.sourceFileRef.current).toBe("pipelines/second.py")
+      expect(params.parentGraphRef.current).toBeNull()
+      expect(params.setActiveSubmodelIdentity).toHaveBeenLastCalledWith(null)
+      expect(result.current.viewStack).toEqual([
+        { type: "pipeline", name: "second", file: "pipelines/second.py" },
+      ])
+    },
+  )
+
+  it.each([
+    ["occurrence removed", "identity"],
+    ["occurrence edited", "layout"],
+    ["document reloaded at root", "layout"],
+    ["capability lost", "layout"],
+  ] as const)(
+    "discards a pending drill-in on %s during %s await and preserves subsequent coherent drill and return",
+    async (mutation, stage) => {
+      const { default: useDocumentStatusStore } = await import("../../stores/useDocumentStatusStore")
+      useDocumentStatusStore.getState().reset()
+      let resolveIdentities!: (value: { nodes: Node[]; edges: Edge[] }) => void
+      let resolveLayout!: (nodes: Node[]) => void
+
+      const params = makeParams({
+        sourceFileRef: { current: "pipelines/main.py" },
+        pipelineNameRef: { current: "main" },
+        setNodesRaw: vi.fn((nodes: Node[]) => {
+          params.graphRef.current = { ...params.graphRef.current, nodes }
+          useGraphStore.getState().setNodesRaw(nodes)
+        }),
+        setEdgesRaw: vi.fn((edges: Edge[]) => {
+          params.graphRef.current = { ...params.graphRef.current, edges }
+          useGraphStore.getState().setEdgesRaw(edges)
+        }),
+        setSubmodelsRaw: vi.fn((submodels: Record<string, unknown>) => {
+          params.submodelsRef.current = submodels
+          useGraphStore.getState().setSubmodelsRaw(submodels)
+        }),
+      })
+      seedCanonicalGraph(params)
+
+      if (stage === "identity") {
+        vi.mocked(params.resolveGraphIdentities).mockImplementationOnce(
+          () =>
+            new Promise<{ nodes: Node[]; edges: Edge[] }>((resolve) => {
+              resolveIdentities = resolve
+            }),
+        )
+      } else {
+        mockLayout.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveLayout = resolve
+            }),
+        )
+      }
+
+      const { result } = renderHook(() => useSubmodelNavigation(params))
+      let drillPromise!: Promise<void>
+      await act(async () => {
+        drillPromise = result.current.handleDrillIntoSubmodel(INSTANCE_ID)
+      })
+
+      act(() => {
+        if (mutation === "occurrence removed") {
+          const withoutOccurrence = params.graphRef.current.nodes.filter(
+            (node) => node.id !== INSTANCE_ID,
+          )
+          params.graphRef.current = { nodes: withoutOccurrence, edges: [] }
+          useGraphStore.getState().setNodesRaw(withoutOccurrence)
+        } else if (mutation === "occurrence edited") {
+          const editedNodes = params.graphRef.current.nodes.map((node) =>
+            node.id === "n1" ? { ...node, position: { x: 320, y: 180 } } : node,
+          )
+          params.graphRef.current = { nodes: editedNodes, edges: [] }
+          useGraphStore.getState().setNodesRaw(editedNodes)
+        } else if (mutation === "document reloaded at root") {
+          const reloadedNodes = [makeNode("reloaded_n1"), makeOccurrence()]
+          params.graphRef.current = { nodes: reloadedNodes, edges: [] }
+          useGraphStore.getState().setNodesRaw(reloadedNodes)
+          result.current.handleDocumentReload({ nodes: reloadedNodes, edges: [] })
+        } else if (mutation === "capability lost") {
+          useDocumentStatusStore.getState().setSystemFailure("transport lost")
+        }
+      })
+
+      const expectedNodesBeforeResolve = params.graphRef.current.nodes
+
+      await act(async () => {
+        if (stage === "identity") {
+          resolveIdentities({ nodes: [makeNode("child1")], edges: [] })
+        } else {
+          resolveLayout([makeNode("child1")])
+        }
+        await drillPromise
+      })
+
+      expect(params.graphRef.current.nodes).toEqual(expectedNodesBeforeResolve)
+      expect(useGraphStore.getState().nodes).toEqual(expectedNodesBeforeResolve)
+      expect(params.sourceFileRef.current).toBe("pipelines/main.py")
+      expect(params.parentGraphRef.current).toBeNull()
+      expect(result.current.viewStack).toHaveLength(1)
+
+      // Restore healthy state and verify an unchanged drill succeeds and navigates back coherently
+      useDocumentStatusStore.getState().reset()
+      const coherentParentNodes = [
+        makeNode("n1", "polars", { position: { x: 42, y: 84 } }),
+        makeOccurrence(),
+      ]
+      params.graphRef.current = { nodes: coherentParentNodes, edges: [] }
+      useGraphStore.getState().loadGraphSnapshot({
+        nodes: coherentParentNodes,
+        edges: [],
+        preamble: "",
+        submodels: params.submodelsRef.current,
+      })
+
+      await act(async () => {
+        await result.current.handleDrillIntoSubmodel(INSTANCE_ID)
+      })
+      expect(result.current.viewStack).toHaveLength(2)
+      expect(params.sourceFileRef.current).toBe("modules/pricing.py")
+      expect(params.parentGraphRef.current?.nodes).toEqual(coherentParentNodes)
+
+      act(() => {
+        result.current.handleBreadcrumbNavigate(0)
+      })
+      expect(result.current.viewStack).toHaveLength(1)
+      expect(params.sourceFileRef.current).toBe("pipelines/main.py")
+      expect(useGraphStore.getState().nodes).toEqual(coherentParentNodes)
+    },
+  )
 })

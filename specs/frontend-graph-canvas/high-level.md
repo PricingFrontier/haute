@@ -561,7 +561,15 @@ candidate, with the error toast.
   node type and `{definitionId, alias}` config, loads the shared definition by
   definition id, verifies any returned identity, and builds boundary nodes from
   that definition's structured ports and the selected occurrence's parent
-  bindings. Load, projection, and ELK layout must all finish before the view
+  bindings. Pending drill-in is bound to the initiating document, source file
+  and revision, navigation stack, occurrence identity, and graph/submodel
+  snapshot; it is invalidated by a document reload, another navigation or
+  transform request, any parent graph or submodel change, or loss of submodel
+  management capability, and rechecked after identity resolution and again
+  immediately before committing the child nodes/edges, source path, parent
+  snapshot, and view stack together. If the request has been superseded, it
+  returns without mutating the current graph, source path, or navigation stack.
+  Load, projection, and ELK layout must all finish before the view
   stack, graph, source-file refs, or selection mutate; any failure leaves the
   parent view byte-for-byte unchanged and reports one error toast. A successful
   frame records both `instanceId` and `definitionId`, so two occurrences of one
@@ -857,10 +865,8 @@ candidate, with the error toast.
 > later autosave fails, and late reads can steal a newer selection.
 > [FGC-R08](../roadmap/frontend-graph-canvas.md#fgc-r08--utility-navigation-preserves-drafts-across-pending-reads) owns draft and navigation identity.
 
-> NOTE: Distinct parsed or pasted connections can share an id; pending submodel drill-in
-> can replace a newer document; mixed node/edge Delete omits unrelated selected edges.
-> [NAME-10](../roadmap/name-collisions.md#name-10--every-distinct-connection-has-a-distinct-identity),
-> [FGC-R06](../roadmap/frontend-graph-canvas.md#fgc-r06--pending-submodel-navigation-belongs-to-its-document) and
+> NOTE: Distinct parsed or pasted connections can share an id; mixed node/edge Delete omits unrelated selected edges.
+> [NAME-10](../roadmap/name-collisions.md#name-10--every-distinct-connection-has-a-distinct-identity) and
 > [FGC-R07](../roadmap/frontend-graph-canvas.md#fgc-r07--delete-removes-the-complete-eligible-selection) own these gaps.
 
 - `useGraph()` called outside a `<GraphProvider>` throws a plain `Error`

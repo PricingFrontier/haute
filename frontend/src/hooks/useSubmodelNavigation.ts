@@ -11,6 +11,7 @@ import {
 } from "../utils/editorIdentities"
 import { createNodeInstance, createSubmodel, dissolveSubmodel } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
+import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useToastStore from "../stores/useToastStore"
 import useGraphStore from "../stores/useGraphStore"
 import {
@@ -86,6 +87,66 @@ interface TransformRequestContext {
   preservedBlocks: string[]
 }
 
+interface DrillRequestContext {
+  serial: number
+  nodeId: string
+  definitionId: string
+  alias: string
+  readOnly: boolean
+  submodelFile: string
+  parentGraphPresent: boolean
+  viewStackSnapshot: string
+  activeSubmodelIdentityKey: string
+  refSnapshot: string
+  storeSnapshot: string
+  sourceFile: string
+  pipelineName: string
+  sourceRevision: string
+  preservedBlocks: string
+  documentFence: string
+}
+
+function serializeViewStackIdentity(viewStack: readonly ViewLevel[]): string {
+  return JSON.stringify(
+    viewStack.map((level) =>
+      level.type === "submodel"
+        ? {
+            type: level.type,
+            name: level.name,
+            file: level.file,
+            instanceId: level.instanceId,
+            definitionId: level.definitionId,
+            readOnly: level.readOnly ?? false,
+          }
+        : {
+            type: level.type,
+            name: level.name,
+            file: level.file,
+          },
+    ),
+  )
+}
+
+function documentNavigationFence(): { fence: string; allowed: boolean } {
+  const status = useDocumentStatusStore.getState()
+  const allowed =
+    status.systemFailure === null
+    && (status.capabilities === null
+      || (status.capabilities.can_manage_submodels && status.graphSynchronized))
+  return {
+    fence: JSON.stringify([
+      status.executionGeneration,
+      status.sourceFile,
+      status.sourceRevision,
+      status.loadStatus,
+      status.capabilities?.can_manage_submodels ?? null,
+      status.graphSynchronized,
+      status.systemFailure,
+    ]),
+    allowed,
+  }
+}
+
 function canonicalOccurrence(
   nodeId: string,
   nodes: Node[],
@@ -136,8 +197,12 @@ export default function useSubmodelNavigation({
   const addToast = useToastStore((s) => s.addToast)
   const [viewStack, setViewStack] = useState<ViewLevel[]>([{ type: "pipeline", name: "main", file: "" }])
   const viewStackRef = useRef(viewStack)
+  const activeSubmodelIdentityRef = useRef(activeSubmodelIdentity)
   const transformRequestSerialRef = useRef(0)
   useEffect(() => { viewStackRef.current = viewStack }, [viewStack])
+  useEffect(() => {
+    activeSubmodelIdentityRef.current = activeSubmodelIdentity
+  }, [activeSubmodelIdentity])
 
   const beginTransformRequest = useCallback((): TransformRequestContext => {
     const { nodes, edges, submodels, preamble } = useGraphStore.getState()
@@ -178,6 +243,112 @@ export default function useSubmodelNavigation({
     preservedBlocksRef,
     sourceFileRef,
     sourceRevisionRef,
+  ])
+
+  const beginDrillRequest = useCallback((
+    occurrence: CanonicalOccurrence,
+    parentNodes: Node[],
+    parentEdges: Edge[],
+  ): DrillRequestContext => {
+    const storeState = useGraphStore.getState()
+    const docFence = documentNavigationFence()
+    return {
+      serial: ++transformRequestSerialRef.current,
+      nodeId: occurrence.instanceId,
+      definitionId: occurrence.definitionId,
+      alias: occurrence.alias,
+      readOnly: occurrence.readOnly,
+      submodelFile: occurrence.definition.file,
+      parentGraphPresent: parentGraphRef.current !== null,
+      viewStackSnapshot: serializeViewStackIdentity(viewStackRef.current),
+      activeSubmodelIdentityKey: JSON.stringify([
+        activeSubmodelIdentityRef.current?.instanceId ?? null,
+        activeSubmodelIdentityRef.current?.definitionId ?? null,
+      ]),
+      refSnapshot: serializeSnapshot({
+        nodes: parentNodes,
+        edges: parentEdges,
+        preamble: preambleRef.current,
+        submodels: submodelsRef.current,
+      }),
+      storeSnapshot: serializeSnapshot({
+        nodes: storeState.nodes,
+        edges: storeState.edges,
+        preamble: storeState.preamble,
+        submodels: storeState.submodels,
+      }),
+      sourceFile: sourceFileRef.current,
+      pipelineName: pipelineNameRef.current,
+      sourceRevision: sourceRevisionRef.current,
+      preservedBlocks: JSON.stringify(preservedBlocksRef.current),
+      documentFence: docFence.fence,
+    }
+  }, [
+    parentGraphRef,
+    pipelineNameRef,
+    preambleRef,
+    preservedBlocksRef,
+    sourceFileRef,
+    sourceRevisionRef,
+    submodelsRef,
+  ])
+
+  const drillRequestIsStale = useCallback((request: DrillRequestContext): boolean => {
+    const currentStore = useGraphStore.getState()
+    const currentDoc = documentNavigationFence()
+    if (
+      !currentDoc.allowed
+      || currentDoc.fence !== request.documentFence
+      || transformRequestSerialRef.current !== request.serial
+      || (parentGraphRef.current !== null) !== request.parentGraphPresent
+      || serializeViewStackIdentity(viewStackRef.current) !== request.viewStackSnapshot
+      || JSON.stringify([
+        activeSubmodelIdentityRef.current?.instanceId ?? null,
+        activeSubmodelIdentityRef.current?.definitionId ?? null,
+      ]) !== request.activeSubmodelIdentityKey
+      || sourceFileRef.current !== request.sourceFile
+      || pipelineNameRef.current !== request.pipelineName
+      || sourceRevisionRef.current !== request.sourceRevision
+      || JSON.stringify(preservedBlocksRef.current) !== request.preservedBlocks
+      || serializeSnapshot({
+        nodes: graphRef.current.nodes,
+        edges: graphRef.current.edges,
+        preamble: preambleRef.current,
+        submodels: submodelsRef.current,
+      }) !== request.refSnapshot
+      || serializeSnapshot({
+        nodes: currentStore.nodes,
+        edges: currentStore.edges,
+        preamble: currentStore.preamble,
+        submodels: currentStore.submodels,
+      }) !== request.storeSnapshot
+    ) {
+      return true
+    }
+    try {
+      const currentOccurrence = canonicalOccurrence(
+        request.nodeId,
+        graphRef.current.nodes,
+        submodelsRef.current,
+      )
+      return (
+        currentOccurrence.definitionId !== request.definitionId
+        || currentOccurrence.alias !== request.alias
+        || currentOccurrence.readOnly !== request.readOnly
+        || currentOccurrence.definition.file !== request.submodelFile
+      )
+    } catch {
+      return true
+    }
+  }, [
+    graphRef,
+    parentGraphRef,
+    pipelineNameRef,
+    preambleRef,
+    preservedBlocksRef,
+    sourceFileRef,
+    sourceRevisionRef,
+    submodelsRef,
   ])
 
   const createSubmodelTransform = useCallback(async (
@@ -262,11 +433,14 @@ export default function useSubmodelNavigation({
     createSubmodelTransform({ nodeId }), [createSubmodelTransform])
 
   const handleDrillIntoSubmodel = useCallback(async (nodeId: string) => {
-    transformRequestSerialRef.current += 1
     try {
       const parentNodes = [...graphRef.current.nodes]
       const parentEdges = [...graphRef.current.edges]
       const occurrence = canonicalOccurrence(nodeId, parentNodes, submodelsRef.current)
+      const request = beginDrillRequest(occurrence, parentNodes, parentEdges)
+      if (!documentNavigationFence().allowed) {
+        return
+      }
       const displayName = occurrence.label
       const smGraph = occurrence.definition.graph
       const parentSourceFile = sourceFileRef.current
@@ -291,7 +465,13 @@ export default function useSubmodelNavigation({
         submodels: submodelsRef.current,
         reservedApiInputFrameLabels,
       })
+      if (drillRequestIsStale(request)) {
+        return
+      }
       const layouted = await getLayoutedElements(resolved.nodes, resolved.edges)
+      if (drillRequestIsStale(request)) {
+        return
+      }
 
       // Commit navigation only after projection, identity resolution, and layout all succeed.
       setActiveSubmodelIdentity({
@@ -313,7 +493,7 @@ export default function useSubmodelNavigation({
             _savedEdges: parentEdges,
           }
         }
-        return [
+        const nextStack = [
           ...updated,
           {
             type: "submodel" as const,
@@ -324,6 +504,8 @@ export default function useSubmodelNavigation({
             readOnly: occurrence.readOnly,
           },
         ]
+        viewStackRef.current = nextStack
+        return nextStack
       })
       sourceFileRef.current = submodelSourceFile
       setLastSelectedId?.(null)
@@ -341,7 +523,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Drill-down failed: ${apiErrorMessage(err)}`)
     }
-  }, [graphRef, parentGraphRef, setActiveSubmodelIdentity, submodelsRef, setNodesRaw, setEdgesRaw, setSelectedNode, setLastSelectedId, setPreviewData, sourceFileRef, fitView, addToast, reservedApiInputFrameLabels, resolveGraphIdentities])
+  }, [graphRef, parentGraphRef, setActiveSubmodelIdentity, submodelsRef, setNodesRaw, setEdgesRaw, setSelectedNode, setLastSelectedId, setPreviewData, sourceFileRef, fitView, addToast, reservedApiInputFrameLabels, resolveGraphIdentities, beginDrillRequest, drillRequestIsStale])
 
   const handleBreadcrumbNavigate = useCallback((depth: number) => {
     const prev = viewStackRef.current
@@ -368,7 +550,9 @@ export default function useSubmodelNavigation({
     setActiveSubmodelIdentity(target.type === "submodel"
       ? { instanceId: target.instanceId, definitionId: target.definitionId }
       : null)
-    setViewStack(prev.slice(0, depth + 1))
+    const nextStack = prev.slice(0, depth + 1)
+    viewStackRef.current = nextStack
+    setViewStack(nextStack)
   }, [parentGraphRef, setActiveSubmodelIdentity, submodelsRef, sourceFileRef, setNodesRaw, setEdgesRaw, setSubmodelsRaw, setSelectedNode, setLastSelectedId, setPreviewData, fitView])
 
   const resetToAuthoritativeRoot = useCallback((sourceFile: string, pipelineName: string) => {
@@ -387,6 +571,7 @@ export default function useSubmodelNavigation({
   const handleDocumentReload = useCallback((
     reloaded: { nodes: Node[]; edges: Edge[] },
   ) => {
+    transformRequestSerialRef.current += 1
     const { nodes: reloadedNodes, edges: reloadedEdges } = reloaded
     const activeView = viewStackRef.current[viewStackRef.current.length - 1]
     const drilledInstanceId =
@@ -397,7 +582,6 @@ export default function useSubmodelNavigation({
     // The synchronizer has installed a new root snapshot. Drop every cached
     // child view, even if the occurrence survives, so breadcrumbs and canvas
     // always describe the same document.
-    transformRequestSerialRef.current += 1
     parentGraphRef.current = null
     setActiveSubmodelIdentity(null)
     const rootFile = viewStackRef.current[0]?.file || sourceFileRef.current
