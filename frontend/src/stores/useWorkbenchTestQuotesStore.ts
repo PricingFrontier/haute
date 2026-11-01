@@ -94,9 +94,6 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     }
     return true
   }
-  /** The branch, read now: the list's when it is fresh. */
-  const branchNow = async (): Promise<string> => (await fetchTestQuotes()).branch
-
   return {
     open: false,
     quotes: [],
@@ -150,7 +147,12 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
           set({ error: `${replace} is no longer listed: list the test quotes again.` })
           return false
         }
-        const branch = await branchNow()
+        // The branch the panel read on: a save decided there is refused on any other.
+        const branch = get().branch
+        if (branch === null) {
+          set({ error: "List the test quotes again before saving one." })
+          return false
+        }
         reportSaveCapture(
           await saveTestQuote({
             name,

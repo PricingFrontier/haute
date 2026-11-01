@@ -31,7 +31,6 @@ from haute.routes._error_handlers import install_exception_handlers
 from haute.routes.workbench import router
 from tests._workbench_helpers import form_files, write_files
 from tests.test_workbench_output import (
-    _ITEM_PREMIUMS,
     FORM_SAMPLE,
     FORM_TABLES,
     _priced,
@@ -661,11 +660,6 @@ def test_a_project_with_no_test_quotes_builds(project: Path) -> None:
     assert render_test_quotes_report(()) == "# Test quotes\n\nThe project keeps no test quotes.\n"
 
 
-def test_items_premium_code_is_the_pipelines(project: Path) -> None:
-    # The pipeline the fixture writes prices each item at twice its value.
-    assert "* 2" in _ITEM_PREMIUMS
-
-
 def test_a_schedule_past_the_preview_routes_rows_is_kept_and_accepted_whole(
     project: Path,
 ) -> None:
@@ -688,11 +682,49 @@ def test_a_schedule_past_the_preview_routes_rows_is_kept_and_accepted_whole(
     assert len(expected) == 10_050 and expected[-1]["premium"] == 3 * 10_049
 
 
-def test_a_tolerance_deploy_refuses_fails_the_build(project: Path) -> None:
-    assert _save(client()).status_code == 200
+@pytest.mark.parametrize(
+    ("tolerance", "says"),
+    [(True, "non-negative number"), (5, "tolerance_pct is a fraction"), (float("inf"), "finite")],
+    ids=["true", "five", "infinite"],
+)
+def test_a_tolerance_deploy_refuses_is_listed_and_fails_the_build(
+    project: Path, tolerance: Any, says: str
+) -> None:
+    http = client()
+    assert _save(http).status_code == 200
     [row] = _rows(project)
-    row["tolerance_pct"] = 5
+    row["tolerance_pct"] = tolerance
     _file(project).write_text(json.dumps([row]), encoding="utf-8")
 
-    with pytest.raises(TestQuotesFailedError, match="tolerance_pct is a fraction"):
+    [listed] = http.get("/api/workbench/test-quotes").json()["quotes"]
+    assert says in listed["problem"]
+    with pytest.raises(TestQuotesFailedError, match=says):
         build_release(project, project / "build" / "app")
+
+
+@pytest.mark.parametrize("fails", [False, True], ids=["moved", "fails"])
+def test_haute_app_build_writes_the_report_whether_it_passes_or_fails(
+    project: Path, runner: Any, fails: bool
+) -> None:
+    from haute.cli import cli
+
+    assert _save(client()).status_code == 200
+    _pipeline(
+        project,
+        FAILS_ON_THE_QUOTE
+        if fails
+        else "df = policy.with_columns(premium=pl.col('limit') / 5, referral=pl.lit('none'))",
+    )
+
+    result = runner.invoke(cli, ["app", "build"])
+
+    report = (project / "test_quotes_report.md").read_bytes().decode("utf-8")
+    if fails:
+        assert result.exit_code == 1
+        assert "Test quote Fleet.json failed" in result.output
+        assert "## Failed" in report and "`Fleet.json`" in report
+    else:
+        assert result.exit_code == 0, result.output
+        assert "Test quote Fleet.json moved: pricing.premium" in result.output
+        assert "## Moved" in report
+    assert b"\r\n" not in (project / "test_quotes_report.md").read_bytes()

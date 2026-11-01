@@ -336,7 +336,9 @@ def basis(release: ResolvedRelease) -> str:
         "artifacts": dict(sorted(resolved.artifact_digests.items())),
         "utility": _utility_digest(resolved.project_modules.utility),
     }
-    return hashlib.sha256(json.dumps(held, sort_keys=True, default=str).encode()).hexdigest()
+    from haute._cache import canonical_json
+
+    return hashlib.sha256(canonical_json(held).encode("utf-8")).hexdigest()
 
 
 def _utility_digest(utility: Path | None) -> str | None:

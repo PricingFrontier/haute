@@ -1793,6 +1793,12 @@ class TestWorkbenchCiFiles:
         assert job["steps"][-1]["run"] == "uv run haute app rollout prod --from staging"
         assert set(job["steps"][-1]["env"]) == self._SECRETS
 
+    def test_the_validate_jobs_keep_the_report_the_build_writes(self) -> None:
+        from haute._scaffold import _TEST_QUOTES_REPORT
+        from haute._workbench_test_quotes import REPORT_FILE
+
+        assert _TEST_QUOTES_REPORT == REPORT_FILE
+
     def test_gitlab_publishes_and_stages_on_main_and_promotes_by_hand(self) -> None:
         pipeline = self._parsed("gitlab")[".gitlab-ci.yml"]
         assert pipeline["stages"] == ["validate", "publish", "production"]

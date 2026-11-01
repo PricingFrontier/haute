@@ -106,6 +106,14 @@ describe("useWorkbenchTestQuotesStore", () => {
     expect(saveTestQuote).toHaveBeenCalledWith({ name: "Fleet", replace: undefined, branch: "work", formRevision: "form-2" })
   })
 
+  it("saves on the branch the panel read on, whatever the branch is now", async () => {
+    vi.mocked(fetchTestQuotes).mockResolvedValue({ branch: "elsewhere", quotes: [] })
+
+    await store().save({ name: "Fleet" })
+
+    expect(vi.mocked(saveTestQuote).mock.calls[0][0].branch).toBe("work")
+  })
+
   it("prices nothing when the project's save does not complete", async () => {
     useGraphStore.setState({ dirty: true })
     saveProject.mockResolvedValueOnce(false)
