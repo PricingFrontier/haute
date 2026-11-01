@@ -125,17 +125,24 @@ Out of scope:
   left empty for the analyst to fill in and the analyst's sign-in, each naming its own
   variables, `HAUTE_<ENVIRONMENT>_USERNAME` and the like, which `.env.example` names beside
   the host's credentials, as `haute ci update` writes it again), `haute[sqlserver,azure]` or
-  `haute[postgresql,azure]` as the project's dependency when it lists no `haute` (the release
+  `haute[postgresql,azure]` as the project's dependency when it lists no `haute`, and those
+  extras added to a `haute` it lists without them (the release
   installs the database's driver, which `haute app build` refuses to build without, and
   `haute app rollout` reaches the host through the Azure management packages), and
   the workbench's workflows. A path reached through a link or a junction refuses it,
   nothing written. A
-  project that already has a `haute.toml` is refused unless `--force` is given: an automated
-  project is never given a workbench but started again. Nothing else makes the folder. The
+  project that already has a `haute.toml` is set up again by `haute init`, its current
+  answers the defaults, the pipeline and tests left as they are: an automated project
+  answered for the workbench gets the blank form folder, `connections.toml` where it has
+  none, the extras its `haute` requirement lacks and the summary naming the Quote Input and
+  Quote Response its pipeline still has to replace by a Workbench Input and a Workbench
+  Output. Nothing else makes the folder. The
   workflows `haute init` generates for GitHub or Azure DevOps start when a file in the
-  pipeline folder changes, the form's files among them; `haute init --force` rewrites
-  `haute.toml` from its answers, while the form folder and `connections.toml` are left as
-  they are, either written only when absent. A nested `[workbench.app]` table says where
+  pipeline folder changes, the form's files among them; a re-run of `haute init` writes
+  `haute.toml` afresh from its answers, while the form folder is left as it is, written only
+  when absent, and `connections.toml` too, unless its `dev`, `staging` or `prod`
+  connection is on another database than the one answered, SQLite included, when it
+  is written afresh for the new one. A nested `[workbench.app]` table says where
   the underwriter app runs: `host` is `azure-container-apps`, and `edit_role`, when given,
   is the role the host signs underwriters in with that may change quotes, every other
   underwriter reading them; any other key, host or role that is not a name is refused by

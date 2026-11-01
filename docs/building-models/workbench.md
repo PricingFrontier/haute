@@ -16,8 +16,9 @@ versioned beside the pipeline: a file for each table and each sheet
     ([The underwriter app](#the-underwriter-app)), the blank workbench's files,
     `connections.toml`, and the workflows that check, publish and roll out the app, and
     names your sign-in variables in `.env.example`. A workbench project hosts no API: what it releases is
-    the underwriter app. A project started without a workbench is not given one later: start
-    it again with `haute init --force`.
+    the underwriter app. To give an automated project a workbench later, run `haute init`
+    again and answer **Workbench**: your pipeline is kept, and you replace its Quote Input
+    and Quote Response with a Workbench Input and a Workbench Output.
 
     ```toml
     [workbench]

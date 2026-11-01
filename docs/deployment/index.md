@@ -109,7 +109,9 @@ my-project/
 ```
 <!-- scaffold-tree-after:end -->
 
-A root `main.py` left over from `uv init` is removed; Haute uses `rating/main.py` as the project pipeline. `pyproject.toml` is updated to list `haute` as a dependency. Existing shared files such as `.gitignore` are updated in place rather than replaced. If the project is already initialised (a `haute.toml` exists), `haute init` refuses to run unless you pass `--force`.
+A root `main.py` left over from `uv init` is removed; Haute uses `rating/main.py` as the project pipeline. `pyproject.toml` is updated to list `haute` as a dependency. Existing shared files such as `.gitignore` are updated in place rather than replaced, and a starter pipeline or test is written only where the folder has none, so a `rating/main.py` already there is kept.
+
+To change your answers later (another CI provider, another deploy target, or the other kind of project), run `haute init` again. It asks the same questions with your project's current answers as the defaults, then writes `haute.toml` afresh, the workflow files for your answers (removing the previous provider's) and `.env.example`. It never changes `rating/` or `tests/`. Anything you set in `haute.toml` yourself, such as the registry or the Databricks catalog, and the MLflow settings saved from the app, goes back to its default: copy what you need back from the previous version (`git diff haute.toml`).
 
 <!-- starter-pipeline-node-count:start -->
 The starter pipeline contains **0 nodes**, giving you a blank canvas.

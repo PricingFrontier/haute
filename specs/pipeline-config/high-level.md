@@ -276,7 +276,7 @@ DevOps' `DeployProduction` stage, triggered by hand, under its `production` envi
 that rolls production to the release staging runs for the commit with `haute app rollout prod --from
 staging`. It has no endpoint deploy or smoke test, and its impact prices quotes
 production saved on both apps rather than a dataset on two endpoints
-([workbench](../workbench/high-level.md)). Re-running `haute init --force` with a different
+([workbench](../workbench/high-level.md)). Re-running `haute init` with a different
 `--ci`, or for the other kind of project, prunes every workflow file Haute generated that the
 new set does not hold before writing the new ones, so switching providers doesn't leave
 orphaned config behind.
@@ -659,9 +659,10 @@ stay stable across unrelated `haute.toml` changes: `haute ci update` regenerates
 provider's files from the installed Haute's templates and the `[ci]` table (the staging
 deploy, smoke and impact steps pass the recorded suffix), a workbench project's being the
 workbench's set for its `[workbench.app] host`, overwriting hand-edits to those files
-and pruning every other generated file; `haute init --force` is a full re-scaffold that prunes the
-previous provider's workflow files and rewrites the newly-chosen provider's from the
-templates.
+and pruning every other generated file; `haute init` in an initialised project asks its
+questions again, writes `haute.toml` afresh from the answers, prunes the previous provider's
+workflow files and rewrites the newly-chosen provider's from the templates, leaving the
+pipeline folder and the tests as they are.
 
 Sidecars are organised one type-folder per `NodeType` (`config/banding/`, `config/rating_step/`,
 etc.) rather than three alternatives considered and rejected: a single flat `config/` directory,
