@@ -30,7 +30,7 @@
 | `frontend/src/panels/explore/exploreDataView.ts` | Adapts a point's profile into what the Explore panes render, and returns nothing when the profile does not describe the data version the point currently holds. |
 | `frontend/src/stores/useNodeDataStore.ts` (`slotForConsumer`, `profileForConsumer`) | [frontend-shared](../frontend-shared/low-level.md)-owned reads of what a consumer node was last told it reads, answered only for the identity the answer was recorded under. |
 | `frontend/src/api/types.ts`, `frontend/src/types/guards.ts`, `frontend/src/stores/useNodeResultsStore.ts`, `frontend/src/stores/useNodeDataStore.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned Explore API contracts, runtime guards, node-scoped pivot job/result state, and the slot-keyed data-point/profile state consumed by the preview panes. |
-| `frontend/src/panels/UtilityPanel.tsx` | Utility-module list/read/create/delete/editor UI with debounced, flushable saves and syntax-error display. `App.tsx` loads the panel through a lazy import only after the user opens Utility, keeping its editor and API path out of startup JavaScript. |
+| `frontend/src/panels/UtilityPanel.tsx` | Utility-module list/read/create/delete/editor UI whose draft saves on close, file switch and Ctrl+S, with syntax-error display. `App.tsx` loads the panel through a lazy import only after the user opens Utility, keeping its editor and API path out of startup JavaScript. |
 | `frontend/src/panels/dataPointIdentity.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned upstream-lineage/config identity of the data a consumer reads, used to detect when the data a pane's results belong to has changed; its authored-step projection excludes the generated step code on the node and on its stepped ancestors, so a render response arriving later cannot invalidate it. |
 | `frontend/src/panels/explore/overviewCardDefinitions.ts`, `frontend/src/panels/explore/overviewConfig.ts` | Ordered overview-card registry and defensive config reader. |
 | `frontend/src/panels/explore/ExploreOverviewPane.tsx` | Enabled-card/empty-state dispatcher. |
@@ -313,24 +313,40 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
 1. `frontend/src/App.tsx` mounts `UtilityPanel` behind a local `Suspense` boundary only while
    `utilityOpen`; the bundle checker treats its chunk as lazy-only and rejects startup preload.
 2. `frontend/src/panels/UtilityPanel.tsx` loads files on mount and selects the first file when
-   none is active. Switching files first awaits `flushSave()`; a pending/in-flight failure or an
-   already-settled rejected draft stops the switch, and the draft plus inline error remain visible
-   until a later save succeeds.
-3. Edits debounce for 500ms. Unmount flushes any pending write fire-and-forget; post-await
-   state updates verify both mounted state and the module still selected, dropping stale replies.
+   none is active. An edit is the draft (`draftRef`: its module and text) and sets the UI
+   store's `utilityUnsaved`; nothing saves while typing. `saveDraft(all)` sends it through the
+   one save queue and drops it once that draft saved, unless text was typed since; with `all`
+   it saves again until no draft is left. A draft a save is already sending is waited for,
+   not sent twice. Switching files, or to the Imports entry, first awaits `saveDraft(true)`; a
+   refused save stops the switch, and the draft plus inline error remain visible until a later
+   save succeeds. Ctrl+S (`hasModifier`, on the open file's editor) runs `saveDraft(false)` and
+   prevents the key, so the pipeline's window-level Ctrl+S, which skips a prevented key, does
+   not also run; on the Imports entry the key is left to the pipeline's save, the preamble
+   being the pipeline's.
+3. Closing the panel, or any UI-store change that would hide it (another panel, a node click),
+   is held back by the store while `utilityUnsaved` (`utilityLeave`, the held changes merged).
+   The panel then runs `saveDraft(true)`: `completeUtilityLeave` applies the held change once
+   it saved, `cancelUtilityLeave` drops it when a save is refused, and the panel stays open
+   with the reason and **Discard** (`utility-discard`, beside the error or the conflict), which
+   drops the draft and closes. A save answers with the file as the save left it
+   (`UtilityWriteResponse.content`, a project hook's rewrite included, and its revision); while
+   the editor still holds what was sent it shows that content, and text typed since stays as
+   typed. Unmount by another path saves a remaining draft fire-and-forget and clears
+   `utilityUnsaved` and `utilityLeave`; `beforeunload` is prevented while a draft exists.
+   Post-await state updates verify both mounted state and the module still selected, dropping
+   stale replies.
 4. The panel keeps each file's revision as its read, create or last save returned it, and an
    update or delete sends it. A save the server refuses because the file changed outside the
    panel (412) keeps the draft and shows the server's message with **Reload** and
    **Overwrite** (`utility-conflict`); until one is chosen, edits save nothing and a switch
    stops as for any refused save. Reload reads the file as it is now and shows it, dropping
    the draft; Overwrite reads the file's current revision and saves the draft over it. One
-   runs at a time, both buttons disabled meanwhile. Each first drops the edit waiting for
-   its debounce and lets the saves already queued settle, which the conflict refuses, so
-   none lands once the file is read; a read is applied only while the panel is still on
+   runs at a time, both buttons disabled meanwhile. Each first lets the saves already queued
+   settle, which the conflict refuses, so none lands once the file is read; a read is applied only while the panel is still on
    that file's conflict. Every
    create, save and delete reports its ledger capture through `reportSaveCapture`, as the
    pipeline's save does.
-5. Delete explicitly cancels a pending save for the deleted file. Create refreshes the list,
+5. Delete drops the deleted file's draft. Create refreshes the list,
    loads the new module and passes the server-returned import line back to the preamble owner.
    The typed name stays in the create field until a create succeeds; a refused create (a
    keyword, a Windows device name, a case-variant of an existing module, a syntax error) shows
@@ -470,8 +486,9 @@ delegation, boundary/rejected execution diagnostics, the status bar naming no se
 nodes, pivot identity/result/job lifecycle,
 overview/chart card ordering and config, the data-cache state and profile lifecycle, chart
 list/configure/back/toggle behavior, chart
-visualisation empty/error states, roving-tab accessibility, utility save-flush/stale-response behaviour and
-syntax errors. The Explore suites also pin progressbar name/value semantics, TSV headers and
+visualisation empty/error states, roving-tab accessibility, utility saving (nothing while typing; on close, on
+file switch and on Ctrl+S; a held close or panel change; Discard; the content a save returns;
+text typed during a save; the unload warning; stale responses) and syntax errors. The Explore suites also pin progressbar name/value semantics, TSV headers and
 contents, RFC-4180 CSV quoting through the download blob, full filtered-schema export across
 pagination, disabled empty-table actions, and native-button accessibility.
 `frontend/src/__tests__/App.utilityPanelLazy.test.ts` and the bundle-budget tests

@@ -3,10 +3,11 @@ import { Plus, Trash2, FileCode2, ChevronDown } from "lucide-react"
 import { CodeEditor } from "./editors/CodeEditor"
 import PanelShell from "./PanelShell"
 import useClickOutside from "../hooks/useClickOutside"
-import { useDebouncedCallback } from "../hooks/useDebouncedCallback"
+import { hasModifier } from "../hooks/keyboardTargets"
 import { reportSaveCapture } from "../stores/saveCapture"
 import { confirmed } from "../stores/useQuestionStore"
 import useToastStore from "../stores/useToastStore"
+import useUIStore from "../stores/useUIStore"
 import {
   ApiError,
   listUtilityFiles,
@@ -73,10 +74,15 @@ export default function UtilityPanel({
   const [createError, setCreateError] = useState<string | null>(null)
 
   const inflightSaveRef = useRef<Promise<boolean> | null>(null)
-  // A rejected draft remains dirty after its request settles. Keep that
-  // failure separate from the in-flight queue so a later file switch cannot
-  // overwrite the only local copy of the draft.
-  const failedSaveModuleRef = useRef<string | null>(null)
+  // The edit not saved yet: its file and the editor's text. It is saved when the panel
+  // closes, when another file opens, or on Ctrl+S, never while typing, so a project hook
+  // the save runs never rewrites a file under the cursor. A refused save leaves it here.
+  const draftRef = useRef<{ module: string; value: string } | null>(null)
+  // The draft a save is sending, so a second trigger waits for that save, not another.
+  const sendingRef = useRef<{ draft: { module: string; value: string }; result: Promise<boolean> } | null>(null)
+  const unsaved = useUIStore((s) => s.utilityUnsaved)
+  const setUtilityUnsaved = useUIStore((s) => s.setUtilityUnsaved)
+  const leave = useUIStore((s) => s.utilityLeave)
   // Each file's revision as its read, create or last save returned it: a save or delete
   // sends it, so the server refuses one made against a file changed outside the panel.
   const revisionsRef = useRef(new Map<string, string>())
@@ -110,17 +116,20 @@ export default function UtilityPanel({
       const saved = await updateUtilityFile(module, value, revision)
       revisionsRef.current.set(module, saved.revision)
       reportSaveCapture(saved)
-      if (failedSaveModuleRef.current === module) {
-        failedSaveModuleRef.current = null
-      }
       if (mountedRef.current && activeModuleRef.current === module) {
         setErrorLine(null)
         setErrorMsg(null)
+        // The file as the save left it, a project hook's formatting included, replaces the
+        // text while that is still what was sent; text typed since stays as typed.
+        if (contentRef.current === value && saved.content !== value) {
+          contentRef.current = saved.content
+          setContent(saved.content)
+          setReadGeneration((generation) => generation + 1)
+        }
       }
       return true
     } catch (err) {
       if (mountedRef.current && activeModuleRef.current === module) {
-        failedSaveModuleRef.current = module
         const syntaxErr = parseSyntaxError(err)
         if (syntaxErr) {
           setErrorLine(syntaxErr.error_line)
@@ -148,24 +157,79 @@ export default function UtilityPanel({
     return queued
   }, [persistSave])
 
-  // Auto-save: debounce API calls so we don't fire on every keystroke. A file
-  // switch or unmount FLUSHES the waiting edit (persists it now) instead of
-  // discarding it; the unmount flush is fire-and-forget, and persistSave's
-  // post-await guards skip state updates once unmounted.
-  const pendingSave = useDebouncedCallback(queueSave, 500, { onUnmount: "flush" })
-  const autoSave = useCallback((module: string, value: string) => {
-    pendingSave.schedule([module, value])
-  }, [pendingSave])
+  // Send *draft*, which stops being the draft once saved unless text was typed since.
+  const sendDraft = useCallback((draft: { module: string; value: string }): Promise<boolean> => {
+    const result = queueSave(draft.module, draft.value).then((saved) => {
+      if (saved && draftRef.current === draft) {
+        draftRef.current = null
+        useUIStore.getState().setUtilityUnsaved(false)
+      }
+      return saved
+    })
+    sendingRef.current = { draft, result }
+    return result
+  }, [queueSave])
 
-  // Flush a pending debounced save synchronously (returns the persist promise so
-  // callers can await it before switching file). No-op when nothing is pending.
-  const flushSave = useCallback(async (): Promise<boolean> => {
-    const flushed = pendingSave.flush()
-    if (flushed) return flushed
-    if (inflightSaveRef.current) return inflightSaveRef.current
-    return failedSaveModuleRef.current === null
-      || failedSaveModuleRef.current !== activeModuleRef.current
-  }, [pendingSave])
+  // Save the draft: the text as it is now, or with *all* until no draft is left (text typed
+  // during a save is saved next), as leaving the file needs. False when a save is refused,
+  // the draft then kept.
+  const saveDraft = useCallback(async (all: boolean): Promise<boolean> => {
+    let draft = draftRef.current
+    while (draft !== null) {
+      const sending = sendingRef.current
+      if (!(await (sending?.draft === draft ? sending.result : sendDraft(draft)))) return false
+      if (!all) return true
+      draft = draftRef.current
+    }
+    return true
+  }, [sendDraft])
+
+  const recordEdit = (module: string, value: string) => {
+    if (draftRef.current === null) setUtilityUnsaved(true)
+    draftRef.current = { module, value }
+    contentRef.current = value
+  }
+
+  // Closing, or another panel opening in this one's place, waits (the store holds it) for
+  // the draft to save; a refused save keeps the panel open showing why.
+  const leavingRef = useRef(false)
+  useEffect(() => {
+    if (leave === null || leavingRef.current) return
+    leavingRef.current = true
+    void saveDraft(true).then((saved) => {
+      leavingRef.current = false
+      const ui = useUIStore.getState()
+      if (saved) ui.completeUtilityLeave()
+      else ui.cancelUtilityLeave()
+    })
+  }, [leave, saveDraft])
+
+  // Close without saving, after a refused save: the draft is dropped.
+  const discardDraft = () => {
+    draftRef.current = null
+    setUtilityUnsaved(false)
+    onClose()
+  }
+
+  // A panel that goes away by another path still saves what it holds, and holds nothing back.
+  const queueSaveRef = useRef(queueSave)
+  useEffect(() => { queueSaveRef.current = queueSave }, [queueSave])
+  useEffect(() => () => {
+    const draft = draftRef.current
+    if (draft !== null) void queueSaveRef.current(draft.module, draft.value)
+    const ui = useUIStore.getState()
+    ui.setUtilityUnsaved(false)
+    ui.cancelUtilityLeave()
+  }, [])
+
+  // Closing the tab with a draft asks first.
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => {
+      if (draftRef.current !== null) event.preventDefault()
+    }
+    window.addEventListener("beforeunload", warn)
+    return () => window.removeEventListener("beforeunload", warn)
+  }, [])
 
   // Load file list.  The backend returns `{files: []}` for a missing
   // utility/ dir, so anything reaching this catch is a real failure
@@ -186,9 +250,8 @@ export default function UtilityPanel({
 
   // Load file content
   const loadFile = useCallback(async (module: string) => {
-    // Flush (persist) any pending save for the previous file before switching —
-    // a bare clearTimeout here would silently discard the last edit.
-    if (!await flushSave()) return
+    // The previous file's draft saves first; a refused save keeps it open.
+    if (!await saveDraft(true)) return
     try {
       const res = await readUtilityFile(module)
       revisionsRef.current.set(module, res.revision)
@@ -202,18 +265,17 @@ export default function UtilityPanel({
       addToast("error", `Failed to load utility file "${module}": ${detail}`)
       setErrorMsg(`Failed to load ${module}`)
     }
-  }, [addToast, flushSave])
+  }, [addToast, saveDraft])
 
   // Reload drops the draft for the file as it is now; Overwrite saves the draft over it.
-  // Either first drops the edit waiting to save and lets the saves already queued
-  // settle (the conflict refuses each), so none lands on the file once it is read.
+  // Either first lets the saves already queued settle (the conflict refuses each), so none
+  // lands on the file once it is read.
   const recoverConflict = useCallback(async (choice: "reload" | "overwrite") => {
     const module = conflictModuleRef.current
     if (module === null || recoveringRef.current) return
     recoveringRef.current = true
     setRecovering(true)
     try {
-      pendingSave.cancel()
       await inflightSaveRef.current
       let read: { content: string; revision: string }
       try {
@@ -233,26 +295,32 @@ export default function UtilityPanel({
       conflictModuleRef.current = null
       setConflict(null)
       if (choice === "reload") {
-        failedSaveModuleRef.current = null
+        draftRef.current = null
+        setUtilityUnsaved(false)
         setContent(read.content)
         setReadGeneration((generation) => generation + 1)
         setErrorLine(null)
         setErrorMsg(null)
       } else {
-        await queueSave(module, contentRef.current)
+        const draft = draftRef.current?.module === module
+          ? draftRef.current
+          : { module, value: contentRef.current }
+        if (draftRef.current === null) setUtilityUnsaved(true)
+        draftRef.current = draft
+        await sendDraft(draft)
       }
     } finally {
       recoveringRef.current = false
       if (mountedRef.current) setRecovering(false)
     }
-  }, [addToast, pendingSave, queueSave])
+  }, [addToast, sendDraft, setUtilityUnsaved])
 
   const selectImports = useCallback(async () => {
-    if (!await flushSave()) return
+    if (!await saveDraft(true)) return
     setImportsSelected(true)
     setErrorLine(null)
     setErrorMsg(null)
-  }, [flushSave])
+  }, [saveDraft])
 
   // Auto-select first file
   useEffect(() => {
@@ -287,16 +355,14 @@ export default function UtilityPanel({
   const handleDelete = useCallback(async () => {
     if (!activeModule) return
     if (!(await confirmed({ title: `Delete ${activeModule}?`, confirm: "Delete", danger: true }))) return
-    // Discard any pending save — the file is being removed.
-    pendingSave.cancel()
+    // The file is being removed, its draft with it.
+    draftRef.current = null
+    setUtilityUnsaved(false)
     try {
       const revision = revisionsRef.current.get(activeModule)
       if (revision === undefined) throw new Error(`no revision of ${activeModule} was read`)
       reportSaveCapture(await deleteUtilityFile(activeModule, revision))
       revisionsRef.current.delete(activeModule)
-      if (failedSaveModuleRef.current === activeModule) {
-        failedSaveModuleRef.current = null
-      }
       setActiveModule(null)
       setContent("")
       await loadFiles()
@@ -305,7 +371,7 @@ export default function UtilityPanel({
       addToast("error", `Failed to delete utility file "${activeModule}": ${detail}`)
       setErrorMsg("Failed to delete")
     }
-  }, [activeModule, pendingSave, loadFiles, addToast])
+  }, [activeModule, setUtilityUnsaved, loadFiles, addToast])
 
   return (
     <PanelShell
@@ -435,18 +501,26 @@ export default function UtilityPanel({
             </div>
           </div>
         ) : activeModule ? (
-          <div className="h-full flex flex-col">
+          <div
+            className="h-full flex flex-col"
+            onKeyDown={(event) => {
+              // The file's own save; the pipeline's Ctrl+S skips a key handled here.
+              if (!hasModifier(event.nativeEvent) || event.key !== "s") return
+              event.preventDefault()
+              void saveDraft(false)
+            }}
+          >
             <div className="flex-1 min-h-0">
               <CodeEditor
                 key={`${activeModule}:${readGeneration}`}
                 defaultValue={content}
                 onChange={(val) => {
                   setContent(val)
-                  // A file that changed outside the panel saves nothing until Reload or Overwrite.
+                  recordEdit(activeModule, val)
+                  // A file that changed outside the panel keeps saying so until Reload or Overwrite.
                   if (conflictModuleRef.current === activeModule) return
                   setErrorLine(null)
                   setErrorMsg(null)
-                  autoSave(activeModule, val)
                 }}
                 errorLine={errorLine}
                 placeholder="# Write reusable helper functions here\n\nimport polars as pl\n\ndef my_helper(df):\n    return df"
@@ -477,10 +551,12 @@ export default function UtilityPanel({
                 >
                   Overwrite
                 </button>
+                {unsaved && <DiscardButton disabled={recovering} onClick={discardDraft} />}
               </div>
             ) : errorMsg && (
-              <div className="px-3 py-2 text-[11px] shrink-0" style={{ color: 'var(--danger)', borderTop: '1px solid var(--border)' }}>
-                {errorMsg}
+              <div className="px-3 py-2 text-[11px] shrink-0 flex items-center gap-2" style={{ color: 'var(--danger)', borderTop: '1px solid var(--border)' }}>
+                <span className="flex-1 min-w-0">{errorMsg}</span>
+                {unsaved && <DiscardButton onClick={discardDraft} />}
               </div>
             )}
           </div>
@@ -505,5 +581,21 @@ export default function UtilityPanel({
       </div>
 
     </PanelShell>
+  )
+}
+
+/** Close the panel without saving, after a refused save. */
+function DiscardButton({ onClick, disabled = false }: { onClick: () => void; disabled?: boolean }) {
+  return (
+    <button
+      type="button"
+      data-testid="utility-discard"
+      disabled={disabled}
+      onClick={onClick}
+      className="px-2 py-0.5 text-[11px] font-medium rounded-md transition-colors disabled:opacity-50 hover:bg-[var(--bg-hover)]"
+      style={{ color: 'var(--text-secondary)' }}
+    >
+      Discard
+    </button>
   )
 }

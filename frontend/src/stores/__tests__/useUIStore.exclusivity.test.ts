@@ -16,6 +16,8 @@ function reset() {
     gitOpen: false,
     assistantOpen: false,
     filesPlace: null,
+    utilityUnsaved: false,
+    utilityLeave: null,
   })
 }
 
@@ -67,5 +69,64 @@ describe("useUIStore right-panel exclusivity", () => {
     SETTERS.assistantOpen(false)
     const state = useUIStore.getState()
     for (const flag of FLAGS) expect(state[flag]).toBe(false)
+  })
+})
+
+describe("the utility panel holding an unsaved edit", () => {
+  beforeEach(() => {
+    reset()
+    useUIStore.getState().setUtilityOpen(true)
+    useUIStore.getState().setUtilityUnsaved(true)
+  })
+
+  it.each([
+    ["closing it", () => useUIStore.getState().setUtilityOpen(false)],
+    ["opening Git", () => useUIStore.getState().setGitOpen(true)],
+    ["opening Files", () => useUIStore.getState().setFilesPlace("pipeline")],
+    ["opening constants", () => useUIStore.getState().setConstantsOpen(true)],
+    ["opening the assistant", () => useUIStore.getState().setAssistantOpen(true)],
+    ["asking the assistant to fix a node", () => useUIStore.getState().askAssistantToFix("node_1")],
+  ])("holds back %s until the edit is saved", (_name, change) => {
+    change()
+
+    const held = useUIStore.getState()
+    expect(held.utilityOpen).toBe(true)
+    expect(held.gitOpen || held.constantsOpen || held.assistantOpen || held.filesPlace !== null).toBe(false)
+    expect(held.utilityLeave).not.toBeNull()
+
+    useUIStore.getState().completeUtilityLeave()
+    const done = useUIStore.getState()
+    expect(done.utilityOpen).toBe(false)
+    expect(done.utilityLeave).toBeNull()
+    expect(done.utilityUnsaved).toBe(false)
+  })
+
+  it("applies every change held back, together", () => {
+    useUIStore.getState().setUtilityOpen(false)
+    useUIStore.getState().setGitOpen(true)
+
+    useUIStore.getState().completeUtilityLeave()
+
+    expect(useUIStore.getState().gitOpen).toBe(true)
+    expect(useUIStore.getState().utilityOpen).toBe(false)
+  })
+
+  it("drops the held change when the save is refused", () => {
+    useUIStore.getState().setGitOpen(true)
+
+    useUIStore.getState().cancelUtilityLeave()
+
+    const state = useUIStore.getState()
+    expect(state.utilityLeave).toBeNull()
+    expect(state.utilityOpen).toBe(true)
+    expect(state.gitOpen).toBe(false)
+  })
+
+  it("holds nothing back once the edit is saved", () => {
+    useUIStore.getState().setUtilityUnsaved(false)
+    useUIStore.getState().setGitOpen(true)
+
+    expect(useUIStore.getState().gitOpen).toBe(true)
+    expect(useUIStore.getState().utilityLeave).toBeNull()
   })
 })

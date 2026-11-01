@@ -29,6 +29,17 @@ interface UIState {
   setPaletteOpen: (open: boolean) => void
   utilityOpen: boolean
   setUtilityOpen: (open: boolean) => void
+  /** The utility panel holds an edit it has not saved; the panel sets it. */
+  utilityUnsaved: boolean
+  setUtilityUnsaved: (unsaved: boolean) => void
+  /**
+   * A change that would hide the utility panel while it held an unsaved edit: closing it,
+   * or opening another panel in its place. It is held back until the panel saves the edit
+   * (`completeUtilityLeave` applies it) or a save is refused (`cancelUtilityLeave`).
+   */
+  utilityLeave: Partial<UIState> | null
+  completeUtilityLeave: () => void
+  cancelUtilityLeave: () => void
   constantsOpen: boolean
   setConstantsOpen: (open: boolean) => void
   assistantOpen: boolean
@@ -125,23 +136,42 @@ interface UIState {
   setNodeSearchOpen: (open: boolean | ((prev: boolean) => boolean)) => void
 }
 
+/**
+ * *next* as the store applies it: while the utility panel is open with an unsaved edit, a
+ * change that would hide it is held back, merged into `utilityLeave`, for the panel to save
+ * the edit first.
+ */
+function leavingUtility(state: UIState, next: Partial<UIState>): Partial<UIState> {
+  if (state.utilityOpen && state.utilityUnsaved && next.utilityOpen === false) {
+    return { utilityLeave: { ...state.utilityLeave, ...next } }
+  }
+  return next
+}
+
 const useUIStore = create<UIState>()((set) => ({
   // Modals / panels
   paletteOpen: true,
   setPaletteOpen: (open) => set({ paletteOpen: open }),
   utilityOpen: false,
-  setUtilityOpen: (open) => set({ utilityOpen: open, constantsOpen: false, assistantOpen: false, gitOpen: false, filesPlace: null }),
+  setUtilityOpen: (open) => set((s) => leavingUtility(s, { utilityOpen: open, constantsOpen: false, assistantOpen: false, gitOpen: false, filesPlace: null })),
+  utilityUnsaved: false,
+  setUtilityUnsaved: (unsaved) => set({ utilityUnsaved: unsaved }),
+  utilityLeave: null,
+  completeUtilityLeave: () => set((s) => (
+    s.utilityLeave === null ? {} : { ...s.utilityLeave, utilityLeave: null, utilityUnsaved: false }
+  )),
+  cancelUtilityLeave: () => set({ utilityLeave: null }),
   constantsOpen: false,
-  setConstantsOpen: (open) => set({ constantsOpen: open, utilityOpen: false, assistantOpen: false, gitOpen: false, filesPlace: null }),
+  setConstantsOpen: (open) => set((s) => leavingUtility(s, { constantsOpen: open, utilityOpen: false, assistantOpen: false, gitOpen: false, filesPlace: null })),
   assistantOpen: false,
-  setAssistantOpen: (open) => set({
+  setAssistantOpen: (open) => set((s) => leavingUtility(s, {
     assistantOpen: open,
     utilityOpen: false,
     constantsOpen: false,
     gitOpen: false,
     filesPlace: null,
     ...(open ? { assistantUnseenOutcome: false } : {}),
-  }),
+  })),
   assistantTurn: null,
   startAssistantTurn: (stop) => set({ assistantTurn: { stop } }),
   endAssistantTurn: () => set((s) => ({
@@ -150,7 +180,7 @@ const useUIStore = create<UIState>()((set) => ({
   })),
   assistantUnseenOutcome: false,
   assistantPreviewErrorNodeId: null,
-  askAssistantToFix: (nodeId) => set({
+  askAssistantToFix: (nodeId) => set((s) => leavingUtility(s, {
     assistantPreviewErrorNodeId: nodeId,
     assistantOpen: true,
     utilityOpen: false,
@@ -158,12 +188,12 @@ const useUIStore = create<UIState>()((set) => ({
     gitOpen: false,
     filesPlace: null,
     assistantUnseenOutcome: false,
-  }),
+  })),
   clearAssistantPreviewError: () => set({ assistantPreviewErrorNodeId: null }),
   gitOpen: false,
-  setGitOpen: (open) => set({ gitOpen: open, utilityOpen: false, constantsOpen: false, assistantOpen: false, filesPlace: null }),
+  setGitOpen: (open) => set((s) => leavingUtility(s, { gitOpen: open, utilityOpen: false, constantsOpen: false, assistantOpen: false, filesPlace: null })),
   filesPlace: null,
-  setFilesPlace: (place) => set({ filesPlace: place, utilityOpen: false, constantsOpen: false, assistantOpen: false, gitOpen: false }),
+  setFilesPlace: (place) => set((s) => leavingUtility(s, { filesPlace: place, utilityOpen: false, constantsOpen: false, assistantOpen: false, gitOpen: false })),
   mlflowSettingsOpen: false,
   setMlflowSettingsOpen: (open) => set({ mlflowSettingsOpen: open }),
   shortcutsOpen: false,
