@@ -28,6 +28,7 @@ from haute._git_core import (
     _is_valid_full_ref_name,
     _ledger_or_branch_sha,
     _merge_base,
+    _refuse_too_large_for_history,
     _remote_names,
     _rev_parse,
     _rewrite_tree,
@@ -51,7 +52,7 @@ from haute._git_setup import (
     set_working_branch,
 )
 from haute._logging import get_logger
-from haute._project_layout import VERSIONED_FILE_LIMIT_BYTES, versioned_name
+from haute._project_layout import versioned_name
 from haute.schemas import (
     GitCommitResponse,
     GitCreateWorkingBranchResponse,
@@ -165,32 +166,12 @@ def _pipeline_folder_new_files(pipeline_folder: str | None, cwd: Path | None = N
     ]
 
 
-def _mib(size: int) -> str:
-    return f"{size / (1024 * 1024):.4g} MiB"
-
-
 def _refuse_unversionable(paths: list[str], pipeline_folder: str, project_root: Path) -> None:
     """Refuse a sweep holding a pipeline-folder file too large for version history."""
     folder = PurePosixPath(pipeline_folder)
-    too_large: list[str] = []
-    for path in paths:
-        # not contained_path: git's repository-relative names, compared lexically
-        if not PurePosixPath(path).is_relative_to(folder):
-            continue
-        target = project_root / path
-        if not target.is_file():
-            continue  # a deletion
-        size = target.stat().st_size
-        if size > VERSIONED_FILE_LIMIT_BYTES:
-            too_large.append(f"{path} ({_mib(size)})")
-    if too_large:
-        one = len(too_large) == 1
-        raise GitDomainError(
-            f"{', '.join(too_large)} {'is' if one else 'are'} too large for version history, "
-            f"which takes files up to {_mib(VERSIONED_FILE_LIMIT_BYTES)}. Move "
-            f"{'it' if one else 'them'} to the project's data/ folder, which stays on this "
-            "machine, and commit again."
-        )
+    # not contained_path: git's repository-relative names, compared lexically
+    in_folder = [path for path in paths if PurePosixPath(path).is_relative_to(folder)]
+    _refuse_too_large_for_history(in_folder, project_root, "commit again")
 
 
 def _residual_tracked_changes(cwd: Path | None = None) -> list[str]:

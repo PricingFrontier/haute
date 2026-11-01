@@ -246,8 +246,10 @@ index, and create a permanent root commit before pair creation begins. A failure
 phase can leave those safe preparatory changes behind, although it does not deliberately
 remove working-tree files. Because the root commit is permanent, it never takes a Python
 environment below the project's top level (a folder holding a venv's `pyvenv.cfg` or a conda
-environment's `conda-meta`, whatever the folder is called), and a first version of more than
-1,000 files is refused, naming the folder most of them are in, before anything is committed.
+environment's `conda-meta`, whatever the folder is called), a first version of more than
+1,000 files is refused, naming the folder most of them are in, and so is one holding a file
+larger than version history takes (100 MiB, GitHub's limit), naming the file; both refuse
+before anything is committed.
 
 **Files another program holds open.** On Windows git cannot replace a file another program
 holds open, such as a CSV open in Excel, and it does not always say so. A checkout still

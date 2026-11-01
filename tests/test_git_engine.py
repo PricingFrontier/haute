@@ -436,7 +436,7 @@ class TestMilestoneMerge:
 
         write_working_branch(repo, WORKING)
         _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
-        monkeypatch.setattr(git_transactions, "VERSIONED_FILE_LIMIT_BYTES", 1024 * 1024)
+        monkeypatch.setattr(git_core, "VERSIONED_FILE_LIMIT_BYTES", 1024 * 1024)
         data = repo / "rating" / "files" / "data"
         data.mkdir(parents=True)
         (data / "portfolio.parquet").write_bytes(b"x" * (1024 * 1024 + 1))
@@ -1266,6 +1266,39 @@ class TestSeedGitignoreGuards:
         )
         assert _git(unborn_repo, "rev-list", "--all") == ""
         assert not (unborn_repo / ".haute" / "state.json").exists()
+
+    def test_a_first_commit_holding_a_file_too_large_to_version_is_refused(
+        self, unborn_repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GitHub refuses a file over the limit, and no later commit can take it out of the
+        root commit's history."""
+        monkeypatch.setattr(git_core, "VERSIONED_FILE_LIMIT_BYTES", 1024 * 1024)
+        (unborn_repo / "main.py").write_text("x = 1\n")
+        fixtures = unborn_repo / "tests" / "fixtures"
+        fixtures.mkdir(parents=True)
+        (fixtures / "portfolio.parquet").write_bytes(b"x" * (1024 * 1024 + 1))
+
+        with pytest.raises(
+            GitDomainError,
+            match=r"tests/fixtures/portfolio\.parquet \(1 MiB\) is too large for version "
+            r"history, which takes files up to 1 MiB",
+        ):
+            set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        assert _git(unborn_repo, "rev-list", "--all") == ""
+
+    def test_a_large_file_the_seed_leaves_out_does_not_stop_it(
+        self, unborn_repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(git_core, "VERSIONED_FILE_LIMIT_BYTES", 1024 * 1024)
+        (unborn_repo / "main.py").write_text("x = 1\n")
+        (unborn_repo / "notes.bin").write_bytes(b"x" * (1024 * 1024 + 1))
+
+        set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        committed = _git(unborn_repo, "show", "--name-only", "--format=", "main").splitlines()
+        assert "main.py" in committed
+        assert "notes.bin" not in committed
 
     def test_seed_appends_guards_to_partial_gitignore(self, unborn_repo: Path) -> None:
         """An existing .gitignore missing the guard entries gets them appended;

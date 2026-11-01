@@ -108,6 +108,7 @@ from haute._uc_transport import (
 from haute._uc_transport import (
     restore_from_uc as restore_from_uc,
 )
+from haute.hosted import databricks_app_environment
 
 if TYPE_CHECKING:
     from haute.schemas import GitFastForwardResponse, GitRemoteLeg
@@ -286,9 +287,27 @@ def validate_remote_url(url: str) -> str:
             f"app's {GIT_TOKEN_ENV} secret, so it never has to live in the URL."
         )
     if candidate.startswith("https://"):
-        # file:// has no host and carries no credential; https does both.
         _assert_credential_may_reach(host.split(":", 1)[0])
+    else:
+        _assert_local_file_url(host)
     return candidate
+
+
+def _assert_local_file_url(host: str) -> None:
+    """A ``file://`` remote is a folder on this machine: one naming another host is read as
+    a network share by Windows git and silently as a local path by Linux git, and an app
+    container's own disk does not outlive a restart."""
+    if host.lower() not in ("", "localhost"):
+        raise StorageConfigError(
+            f"A file:// URL names a folder on this machine, not on '{host}': write it as "
+            "file:///path/to/repository.git."
+        )
+    if databricks_app_environment() is not None:
+        raise StorageConfigError(
+            "A Databricks App's own disk is wiped when the app restarts, so it cannot store "
+            "the project. Use an https:// repository URL, or uc://catalog.schema.volume/path "
+            "for a Unity Catalog volume."
+        )
 
 
 # ---------------------------------------------------------------------------

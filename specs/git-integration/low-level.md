@@ -441,7 +441,12 @@ drops nothing. More than `_SEED_FILE_LIMIT` (1,000)
 files left is refused with a `GitDomainError` before staging, naming the count and the
 top-level folder holding most of them: "The first version of this project would hold <n>
 files, <m> of them in '<folder>/'. That is more than a project holds: move that folder out of
-the project or add it to .gitignore, then try again." The matched files are added with
+the project or add it to .gitignore, then try again." A file left larger than
+`VERSIONED_FILE_LIMIT_BYTES` (100 MiB) is refused next by `_refuse_too_large_for_history`
+(`_git_core`), the check the sweep before a milestone or restore applies to the pipeline
+folder (`_refuse_unversionable`): "<path> (<size>) is too large for version history, which
+takes files up to 100 MiB. Move it to the project's data/ folder, which stays on this machine,
+and try again." A larger file the pathspecs leave out is never a candidate. The matched files are added with
 `:(literal)` prefixes so a filename containing glob characters can't re-expand the pathspec.
 An empty result still commits (`--allow-empty`) to establish the root. A `git commit` failure whose
 stderr mentions missing author identity is translated to a `GitDomainError` steering the
@@ -872,8 +877,9 @@ process failures, and precise ref-movement races deterministic.
   in a project with no repository (nothing owed), the unborn-repo seed path and its
   gitignore-guard
   interaction (`TestSeedGitignoreGuards`, `TestSetWorkingBranchUnbornNonDefault`; a venv,
-  an env and a conda environment left out of the root commit whatever their names, and a
-  seed over the limit refused naming its folder), version
+  an env and a conda environment left out of the root commit whatever their names, a
+  seed over the limit refused naming its folder, and a seed holding a file too large to
+  version refused naming it while a large file outside the pathspecs is left out), version
   restore (`TestRestoreVersion`: a pending save, a milestone and a folded save restored as
   one save on the same branch with later saves kept, files changed, deleted and added since
   put back, untracked files, `.haute/` and `outputs/` untouched and caches wiped,

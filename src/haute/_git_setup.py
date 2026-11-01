@@ -20,6 +20,7 @@ from haute._git_core import (
     _is_ancestor,
     _ledger_or_branch_sha,
     _list_branches_with_tips,
+    _refuse_too_large_for_history,
     _rev_parse,
     _rewrite_tree,
     _run_git,
@@ -291,6 +292,8 @@ def set_working_branch(
             )
             seed_files = _outside_environments([f for f in listed.split("\0") if f], cwd)
             _refuse_implausible_seed(seed_files)
+            # Nothing can later take a file out of the root commit's history.
+            _refuse_too_large_for_history(seed_files, cwd or Path.cwd(), "try again")
             if seed_files:
                 # :(literal) so a filename containing glob characters cannot
                 # re-expand into a broader pathspec at add time.

@@ -15,7 +15,6 @@ packages come from the [25 October 2026 codebase review](codebase-review-2026-10
 |---|---|---:|---|
 | GIT-R05 | Planned | P3 | The git modules carry no dead symbols, one free-name finder and one compensation helper. |
 | GIT-R06 | Planned | P3 | Every save runs the project's git hooks, in a clone too, and the specification says so. |
-| GIT-R19 | Planned | P2 | `validate_remote_url` rejects `file://` URLs with a non-empty host and refuses `file://` bindings in hosted mode, and `set_working_branch` enforces `VERSIONED_FILE_LIMIT_BYTES` when seeding an unborn repository. |
 
 ## Planned improvements
 
@@ -87,37 +86,3 @@ conflict.
 `src/haute/_scaffold.py::pre_commit_hook`;
 `src/haute/cli/_init_cmd.py::handle_init`;
 `src/haute/routes/_save_pipeline.py::SavePipelineService.save`.
-
-### GIT-R19 — Remote `file://` host/hosted-mode validation and unborn-repository file-size guard
-**Why:** Two validation gaps exist in git remote binding and unborn-repository seeding:
-1. `validate_remote_url` in `_project_storage.py` accepts any `file://` URL with a
-   non-empty path, including `file://host/share/repo.git` (non-empty `host`, which on
-   Windows resolves to a remote SMB/UNC share) and local `file:///...` paths in
-   hosted mode (`is_hosted_mode()`), allowing a hosted workspace binding to clone or
-   fetch from the container's local filesystem or an SMB host.
-2. When `set_working_branch` seeds an unborn repository (`_head_oid(root) is None`),
-   it stages the allowlisted `seed_files` (`_SEED_PATHSPECS`) and commits the initial
-   seed without checking those eligible seed files against `_refuse_unversionable`
-   (`VERSIONED_FILE_LIMIT_BYTES`), whereas every subsequent `commit_save` enforces the
-   50 MB per-file limit.
-
-**Plan:** Require `parsed.hostname in (None, "", "localhost")` for `file://` URLs and
-refuse `file://` remote URLs when `is_hosted_mode()` is true in
-`validate_remote_url`; check the eligible `seed_files` (`_SEED_PATHSPECS`) against
-`VERSIONED_FILE_LIMIT_BYTES` (`_refuse_unversionable`) before committing the initial
-seed in `set_working_branch` (leaving ignored or unversioned files outside
-`seed_files` unaffected).
-
-**Acceptance:** `validate_remote_url("file://server/share/repo.git")` raises
-`HauteError`; `validate_remote_url("file:///tmp/repo.git")` raises `HauteError` when
-`is_hosted_mode()` is true; and `set_working_branch` on an unborn repository containing
-an eligible seed candidate above `VERSIONED_FILE_LIMIT_BYTES` refuses the seed naming
-the oversized file before creating a commit, while ignoring oversized files outside
-`_SEED_PATHSPECS`.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_project_storage.py::validate_remote_url`;
-`src/haute/_git_setup.py::set_working_branch`;
-`src/haute/_git_setup.py::_refuse_implausible_seed`;
-`src/haute/_git_transactions.py::_refuse_unversionable`.

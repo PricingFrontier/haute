@@ -21,6 +21,7 @@ from typing import Generic, Literal, ParamSpec, TypeVar, overload
 
 from haute._git_lock import repository_mutation
 from haute._logging import get_logger
+from haute._project_layout import VERSIONED_FILE_LIMIT_BYTES
 from haute.errors import HauteError
 from haute.schemas import (
     GitBranchItem,
@@ -752,6 +753,31 @@ def _assert_not_protected(branch: str) -> None:
 def _assert_git_repo(cwd: Path | None = None) -> None:
     if not _is_git_repo(cwd):
         raise GitDomainError("Not a git repository. Run 'git init' first.")
+
+
+def _mib(size: int) -> str:
+    return f"{size / (1024 * 1024):.4g} MiB"
+
+
+def _refuse_too_large_for_history(paths: list[str], root: Path, retry: str) -> None:
+    """Refuse *paths*, relative to *root*, when one is a file larger than version history
+    takes; *retry* ends the message ("commit again")."""
+    too_large: list[str] = []
+    for path in paths:
+        target = root / path
+        if not target.is_file():
+            continue  # a deletion
+        size = target.stat().st_size
+        if size > VERSIONED_FILE_LIMIT_BYTES:
+            too_large.append(f"{path} ({_mib(size)})")
+    if too_large:
+        one = len(too_large) == 1
+        raise GitDomainError(
+            f"{', '.join(too_large)} {'is' if one else 'are'} too large for version history, "
+            f"which takes files up to {_mib(VERSIONED_FILE_LIMIT_BYTES)}. Move "
+            f"{'it' if one else 'them'} to the project's data/ folder, which stays on this "
+            f"machine, and {retry}."
+        )
 
 
 def _is_own_branch(branch: str, user_slug: str) -> bool:
