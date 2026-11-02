@@ -507,32 +507,60 @@ def _stratified_parts(
     return output
 
 
+def _development_reserve(validation: Mapping[str, Any]) -> tuple[int, list[str]]:
+    """Rows of every class the development set keeps for the partitions after the test.
+
+    Each validation fold needs one row of every class and trains on the other folds; a
+    holdout needs one row to validate and one to train on; no validation needs one row to
+    train on. Returns the count and the partitions it serves, for refusals.
+    """
+    method = validation["method"]
+    if method == "cross_validation":
+        folds = validation["fold_count"]
+        return folds, [f"{folds} for the {folds} validation folds"]
+    if method == "single":
+        return 2, ["1 for the validation holdout", "1 to train on"]
+    return 1, ["1 to train on"]
+
+
 def _stratified_sample(
     positions: Sequence[int],
     values: Sequence[object],
     size: int,
     seed: int,
-    required_remaining: int,
+    reserve: int,
+    *,
+    partition: str,
 ) -> list[int]:
+    """Exactly *size* of *positions*, at least one of every class, *reserve* of each left.
+
+    Each class starts at its proportional share (at least one, at most its rows less the
+    reserve); the classes furthest below their share take the rows still missing, and
+    those furthest above it give up rows past the total, ties going by label. The rows
+    then come from each class's seeded shuffle, classes in label order.
+    """
     classes: dict[object, list[int]] = {}
     for position in positions:
         classes.setdefault(values[position], []).append(position)
     counts = {str(key): len(rows) for key, rows in classes.items()}
-    required = required_remaining + 1
-    if size < len(classes) or any(len(rows) < required for rows in classes.values()):
-        raise HauteValidationError(f"class counts {counts}; required minimum {required}")
+    ceiling = {key: len(rows) - reserve for key, rows in classes.items()}
+    capacity = sum(ceiling.values())
+    if min(ceiling.values()) < 1 or not len(classes) <= size <= capacity:
+        raise HauteValidationError(
+            f"class counts {counts}; a {partition} of {size} rows must hold one row of every "
+            f"class and leave {reserve} of each, so it can hold {len(classes)} to "
+            f"{capacity} rows"
+        )
     raw = {key: size * len(rows) / len(positions) for key, rows in classes.items()}
-    allocations = {key: max(1, int(math.floor(value))) for key, value in raw.items()}
+    allocations = {key: min(ceiling[key], max(1, math.floor(raw[key]))) for key in classes}
     while sum(allocations.values()) < size:
-        eligible = [
-            key
-            for key, rows in classes.items()
-            if allocations[key] < len(rows) - required_remaining
-        ]
-        if not eligible:
-            raise HauteValidationError(f"class counts {counts}; required minimum {required}")
-        key = max(eligible, key=lambda item: (raw[item] - allocations[item], str(item)))
+        short = [key for key in classes if allocations[key] < ceiling[key]]
+        key = max(short, key=lambda item: (raw[item] - allocations[item], str(item)))
         allocations[key] += 1
+    while sum(allocations.values()) > size:
+        over = [key for key in classes if allocations[key] > 1]
+        key = max(over, key=lambda item: (allocations[item] - raw[item], str(item)))
+        allocations[key] -= 1
     rng = np.random.default_rng(seed)
     selected: list[int] = []
     for key in sorted(classes, key=str):
@@ -746,26 +774,30 @@ def generate_evaluation_plan(
                 for value in target_values:
                     key = _json_key(value)
                     classes[key] = classes.get(key, 0) + 1
-                required_minimum = (1 if config.test else 0) + (
-                    config.validation["fold_count"]
-                    if method == "cross_validation"
-                    else (2 if method == "single" else 1)
-                )
+                reserve, later_partitions = _development_reserve(config.validation)
+                needs = (["1 for the final test"] if config.test else []) + later_partitions
+                required_minimum = (1 if config.test else 0) + reserve
                 if min(classes.values()) < required_minimum:
+                    named = needs[0] if len(needs) == 1 else ", ".join(needs[:-1])
+                    if len(needs) > 1:
+                        named += f" and {needs[-1]}"
                     raise HauteValidationError(
-                        f"class counts {classes}; required minimum {required_minimum}"
+                        f"class counts {classes}; required minimum {required_minimum} rows of "
+                        f"every class: {named}"
                     )
             if config.test:
                 n = _count(config.test["size"], row_count)
                 if task == "classification":
                     assert target_values is not None
-                    remaining = (
-                        config.validation["fold_count"]
-                        if method == "cross_validation"
-                        else (1 if method == "single" else 0)
-                    )
                     test = tuple(
-                        _stratified_sample(canonical, target_values, n, config.seed or 0, remaining)
+                        _stratified_sample(
+                            canonical,
+                            target_values,
+                            n,
+                            config.seed or 0,
+                            reserve,
+                            partition="final test",
+                        )
                     )
                 else:
                     test = tuple(positions[:n])
@@ -803,7 +835,12 @@ def generate_evaluation_plan(
                     assert target_values is not None
                     parts = [
                         _stratified_sample(
-                            canonical_development, target_values, n, (config.seed or 0) + 1, 1
+                            canonical_development,
+                            target_values,
+                            n,
+                            (config.seed or 0) + 1,
+                            1,
+                            partition="validation holdout",
                         )
                     ]
                 else:

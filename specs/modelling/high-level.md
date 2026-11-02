@@ -378,9 +378,13 @@ training block and the requested validation blocks; every training date is stric
 earlier than its validation dates. Rolling windows, embargoes and relative period
 boundaries are not accepted.
 
-Random classification evaluation is stratified by target. Preflight rejects a plan
-when any requested test/validation partition or fold cannot contain every class and
-reports the class counts and required minimum. Regression remains unstratified. Group
+Random classification evaluation is stratified by target. The final test takes
+exactly the rows it asks for, at least one of every class, and leaves every class
+enough rows for what follows: one to train on, two for a validation holdout (one to
+validate, one to train on), or one per fold for cross-validation. A plan that is
+possible is never refused because the test took rows a later partition needed.
+Preflight rejects an impossible plan before fitting and reports the class counts, the
+rows each class needs and what for. Regression remains unstratified. Group
 evaluation canonicalises group keys, keeps each group in exactly one partition, and
 uses a deterministic seeded row-count-balancing assignment. It fails when any
 requested partition/fold would be empty.
@@ -749,11 +753,6 @@ browser without a server or JS bundle.
 
 > NOTE: Several diagnostic labels disagree with their outputs.
 > [MOD-R05](../roadmap/modelling.md#mod-r05--diagnostics-measured-as-the-fit-was) tracks these corrections.
-
-> NOTE: Stratified test allocation can consume the class members needed for later
-> validation, rejecting an otherwise feasible evaluation plan. The reserve and
-> allocation corrections are tracked in
-> [MOD-R07](../roadmap/modelling.md#mod-r07--stratified-allocation-reserves-every-later-partition).
 
 - Configuration errors (no target, unknown algorithm, incomplete training objective,
   invalid GLM family/link combination) are rejected before any pipeline execution or

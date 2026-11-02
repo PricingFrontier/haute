@@ -263,6 +263,92 @@ def test_random_classification_is_stratified_or_rejected_with_counts() -> None:
         )
 
 
+def _stratified_plan(
+    target: list[int], *, validation: dict[str, object], test_size: float, seed: int = 42
+) -> EvaluationPlan:
+    return generate_evaluation_plan(
+        random_config(validation=validation, test={"size": test_size}, seed=seed),
+        source_sha256="b" * 64,
+        row_count=len(target),
+        row_order=range(len(target)),
+        task="classification",
+        target_values=target,
+    )
+
+
+@pytest.mark.parametrize(
+    ("negatives", "positives", "validation"),
+    [
+        (97, 3, {"method": "single", "size": 0.1}),
+        (94, 6, {"method": "cross_validation", "fold_count": 5}),
+    ],
+    ids=["single-holdout", "five-folds"],
+)
+def test_a_stratified_test_leaves_every_class_for_each_later_partition(
+    negatives: int, positives: int, validation: dict[str, object]
+) -> None:
+    target = [0] * negatives + [1] * positives
+    plan = _stratified_plan(target, validation=validation, test_size=0.5)
+
+    assert len(plan.test_positions) == 50
+    assert {target[p] for p in plan.test_positions} == {0, 1}
+    for fit in plan.validation_fits:
+        assert {target[p] for p in fit.validation_positions} == {0, 1}
+        assert {target[p] for p in fit.train_positions} == {0, 1}
+        assert not set(fit.validation_positions) & set(fit.train_positions)
+        assert not set(fit.validation_positions) & set(plan.test_positions)
+    if validation["method"] == "single":
+        assert plan.validation_fits[0].validation_rows == 10
+
+
+def test_a_stratified_plan_selects_the_same_rows_whatever_order_they_arrive_in() -> None:
+    target = [0] * 97 + [1] * 3
+    arrival = np.random.default_rng(5).permutation(len(target)).tolist()
+    plans = []
+    for order in (list(range(len(target))), arrival):
+        values = [target[row] for row in order]
+        # The canonical order lists each logical row's position in this arrival.
+        canonical = sorted(range(len(order)), key=lambda position: order[position])
+        plan = generate_evaluation_plan(
+            random_config(validation={"method": "single", "size": 0.1}, test={"size": 0.5}),
+            source_sha256="b" * 64,
+            row_count=len(values),
+            row_order=canonical,
+            task="classification",
+            target_values=values,
+        )
+        plans.append(
+            (
+                sorted(order[p] for p in plan.test_positions),
+                sorted(order[p] for p in plan.validation_fits[0].validation_positions),
+            )
+        )
+    assert plans[0] == plans[1]
+
+
+def test_a_stratified_test_takes_exactly_the_requested_rows() -> None:
+    # Proportional shares give the two rare classes a row each and the common one
+    # two, one more than the three rows asked for.
+    target = ["common"] * 96 + ["rare"] * 2 + ["scarce"] * 2
+    plan = _stratified_plan(target, validation={"method": "none"}, test_size=0.03)
+
+    assert len(plan.test_positions) == 3
+    assert {target[p] for p in plan.test_positions} == {"common", "rare", "scarce"}
+    assert {target[p] for p in plan.development_positions} == {"common", "rare", "scarce"}
+
+
+def test_an_impossible_stratified_plan_is_refused_naming_counts_and_partitions() -> None:
+    with pytest.raises(ValueError) as refused:
+        _stratified_plan(
+            [0] * 97 + [1] * 3,
+            validation={"method": "cross_validation", "fold_count": 5},
+            test_size=0.5,
+        )
+    message = str(refused.value)
+    assert "class counts {'0': 97, '1': 3}" in message
+    assert "1 for the final test and 5 for the 5 validation folds" in message
+
+
 def test_group_plan_never_splits_groups_and_balances_by_rows() -> None:
     groups = ["a"] * 13 + ["b"] * 8 + ["c"] * 7 + ["d"] * 6 + ["e"] * 5 + ["f"] * 4
     config = EvaluationConfig.from_plain_data(

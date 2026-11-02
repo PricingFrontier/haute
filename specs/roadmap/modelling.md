@@ -59,7 +59,6 @@ something this page settles.
 | MOD-R03 | Planned | P2 | Training publication validates the evaluation plan outside the job-store lock, and the plan stores memberships compactly. |
 | MOD-R05 | Planned | P3 | Diagnostics are measured as the fit was: weighted loss importance, one-based GPU iterations, no GLM `best_iteration`, a dispersion search that stops on `MemoryError`, the offset dtype in the contract, params logged whole. Model-card names, family importance labels and PDP x-values also describe what was actually scored. |
 | MOD-R06 | Planned | P3 | The training memory log is opt-in, the dead compatibility fields are gone, and the four native wrappers share one base. |
-| MOD-R07 | Planned | P2 | Stratified test allocation reserves enough of every class for all requested validation and training partitions. |
 
 ## Planned improvements
 
@@ -321,34 +320,3 @@ gone; jscpd reports no clone among the four wrappers.
 `src/haute/modelling/_algorithm_base.py`; `src/haute/modelling/_xgboost.py`;
 `src/haute/modelling/_lightgbm.py`; `src/haute/modelling/_ebm.py`;
 `src/haute/modelling/_tboost.py`.
-
-### MOD-R07 — Stratified allocation reserves every later partition
-**Why:** The [28 October review](codebase-review-2026-10-28.md) reproduced two
-feasible random classification plans rejected after the test allocation. With
-97 negative and 3 positive rows, seed 42, test 50% and single validation 10%,
-the test takes 2 positives and validation then refuses the remaining one.
-With 94 negative and 6 positive rows, test 50% and five-fold validation,
-the test takes 3 positives and the folds refuse the remaining three. Both
-can keep one positive in the test and enough in development. The single
-validation branch reserves only one later row per class instead of two;
-`_stratified_sample` also applies its reserve only when topping up allocations,
-not to the initial proportional allocation.
-
-**Plan:** Derive the per-class reserve from the remaining train/validation
-requirements. Bound every initial and subsequent allocation by that reserve,
-and allocate the exact requested total deterministically among feasible classes.
-Refuse genuinely impossible sizes with original class counts and the required
-partition counts. Specify these allocation invariants in the modelling contracts.
-
-**Acceptance:** Both fixtures above produce the requested test size and every
-requested partition/fold contains both classes, without overlapping memberships.
-The 97/3 fixture has 50 test and 10 validation rows. An actually impossible
-request is refused before fitting with actionable counts. Preserve reproducibility
-under row permutation, using the existing canonical order. Extend the existing
-evaluation-plan tests rather than fitting models to test the allocator.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/modelling/_evaluation.py::_stratified_sample`;
-`src/haute/modelling/_evaluation.py::generate_evaluation_plan`;
-`src/haute/modelling/_evaluation.py::_stratified_parts`.

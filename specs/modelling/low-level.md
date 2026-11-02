@@ -1314,9 +1314,20 @@ potentially large copy on its threadpool.
   keeps equal dates together, requires a single-validation boundary before the
   final-test boundary, and gives every expanding-window fit strictly earlier training
   dates than validation dates.
-- Random classification planning is target-stratified. It reports class counts and
-  the minimum required rows when a requested partition/fold cannot contain every
-  class; random regression remains seeded but unstratified.
+- Random classification planning is target-stratified; random regression remains seeded
+  but unstratified. `_development_reserve` gives the rows of every class the development
+  set keeps for what follows the test: `fold_count` for cross-validation, 2 for a single
+  holdout, 1 with no validation. A class with fewer than that (plus one for a final test)
+  is refused before any sampling, naming the class counts, the minimum and the
+  partitions it serves. `_stratified_sample` takes exactly the requested rows: each class
+  starts at its proportional share bounded below by one and above by its rows less the
+  reserve; the classes furthest below their share take the rows still missing and those
+  furthest above it give up rows past the total, ties by label. A size outside one row
+  per class to the classes' rows less their reserves is refused naming the counts and
+  the range. The test is drawn with the development reserve, the single holdout from the
+  development rows with a reserve of one, and cross-validation folds deal each class's
+  shuffled rows round-robin (`_stratified_parts`), so every fold's validation and
+  training rows hold every class.
 - Random planning shuffles the source's positions in canonical order, and
   stratification takes its classes in label order (`_stratified_parts`,
   `_stratified_sample`), so a permutation of the source's rows selects the same rows.

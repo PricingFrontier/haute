@@ -71,7 +71,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P1 | Cancellation of A finishes after B starts; A's reply retires B or publishes A's result under B's calculation identity. | [FSH-R11](frontend-shared.md#fsh-r11--cancellation-replies-belong-to-one-job) | Two pivot hook/store probes. Training has the same source pattern but was not separately executed. |
 | P1 | Inference for `first.json` returns after the user selected `second.json` and added a table; old path/tables are written back. | [FNED-R06](frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft) | Actual API Input editor with delayed inference response. |
 | P1 | Auto-layout finishes after a code edit and restores the old code from its node snapshot. | [FGC-R05](frontend-graph-canvas.md#fgc-r05--auto-layout-cannot-overwrite-edits) | Actual node-handler hook with delayed layout. Node addition/deletion and document-switch variants are source-supported. |
-| P2 | Stratified test allocation consumes class members needed by later validation, refusing feasible plans. | [MOD-R07](modelling.md#mod-r07--stratified-allocation-reserves-every-later-partition) | Real evaluation planner; holdout and five-fold examples below. |
 
 ### Additional full-source findings
 
@@ -121,18 +120,6 @@ Decisive sites: `PipelineApplicationService._prepare_apply`, `_commit` and
 in `src/haute/_workbench_app.py`; `handle_app_serve` in `src/haute/cli/_app.py`.
 The save service already has a conflict precondition, and
 `LocalTrustedHostMiddleware` already implements the local Host boundary.
-
-### Evaluation
-
-The evaluation witnesses use canonical row order `0..99` and seed 42:
-
-| Source classes | Requested plan | Actual refusal | Feasible allocation |
-|---|---|---|---|
-| 97 negative / 3 positive | Test 50%; single validation 10% | Development has only one positive; minimum two required. | Test: 49 negative + 1 positive; validation: 9 negative + 1 positive; training keeps the last positive. |
-| 94 negative / 6 positive | Test 50%; five-fold validation | Development has three positives; minimum five required. | Test: 49 negative + 1 positive; development: 45 negative + 5 positive, enough for every fold. |
-
-These assert allocation behaviour without fitting a model. The defect is in the
-reserve calculation and initial allocation, not an absence of enough source rows.
 
 ### Frontend races
 
@@ -304,7 +291,7 @@ The latter has since been delivered. This was same-family review, not cross-fami
 
 The subsequent **cross-family review by Claude** checked the decisive code for all
 42 finding groups and reported no false positives; it did not check MOD-R05's integer
-PDP-label item. It reproduced MOD-R07, the parser half of NAME-10 and three
+PDP-label item. It reproduced the parser half of NAME-10 and four
 findings since delivered, and supplied the hosted evidence for the core-only smoke finding, since delivered. This documentation
 follow-up incorporates its coverage qualifications, candidate dispositions, package
 splits, priorities, ownership, ordering and link corrections. Neither review approval
