@@ -150,19 +150,36 @@ class TestColumnStats:
         assert stats.mean_change_pct == pytest.approx(0.0)
         assert stats.total_premium_change_pct == pytest.approx(0.0)
 
-    def test_zero_baseline_with_nonzero_staging_fails_loudly(self) -> None:
-        prd = pl.Series("a", [0.0, 100.0])
-        stg = pl.Series("a", [5.0, 100.0])
+    def test_a_quote_priced_from_zero_is_counted_not_a_percentage(self) -> None:
+        """DEP-R16: a newly priced cover is a release event, counted beside the figures."""
+        prd = pl.Series("a", [0.0, 100.0, 100.0])
+        stg = pl.Series("a", [5.0, 110.0, 100.0])
 
-        with pytest.raises(ValueError, match="zero production baseline.*price.*1 row"):
-            _column_stats(stg, prd, "price")
+        stats = _column_stats(stg, prd, "price")
 
-    def test_zero_production_total_with_nonzero_staging_total_fails_loudly(self) -> None:
+        assert stats.n_rows == 3
+        assert stats.n_from_zero == 1
+        assert stats.n_changed == 2
+        # The percent figures cover the two quotes production prices above zero.
+        assert stats.mean_change_pct == pytest.approx(5.0)
+        assert stats.max_increase_pct == pytest.approx(10.0)
+        assert stats.total_premium_change_pct == pytest.approx(7.5)
+
+    def test_a_zero_production_total_is_priced_from_zero(self) -> None:
         prd = pl.Series("a", [100.0, -100.0])
         stg = pl.Series("a", [100.0, -90.0])
 
-        with pytest.raises(ValueError, match="zero production total.*price"):
-            _column_stats(stg, prd, "price")
+        stats = _column_stats(stg, prd, "price")
+
+        assert stats.total_premium_change_pct is None
+        assert stats.n_from_zero == 0
+
+    def test_every_quote_priced_from_zero(self) -> None:
+        stats = _column_stats(pl.Series("a", [1.0, 2.0]), pl.Series("a", [0.0, 0.0]), "price")
+
+        assert (stats.n_from_zero, stats.n_changed, stats.n_rows) == (2, 2, 2)
+        assert stats.mean_change_pct == 0.0
+        assert stats.total_premium_change_pct is None
 
     @pytest.mark.parametrize(
         ("staging_values", "production_values", "message"),
@@ -234,13 +251,19 @@ class TestSegmentBreakdown:
         assert [row.value for row in kept] == [f"r{index:02d}" for index in range(10)]
         assert kept == reordered
 
-    def test_zero_baseline_segment_change_fails_loudly(self) -> None:
-        stg_df = pl.DataFrame({"price": [1.0] * 20})
-        prd_df = pl.DataFrame({"price": [0.0] * 20})
+    def test_a_segment_s_change_leaves_out_its_quotes_priced_from_zero(self) -> None:
+        """DEP-R16: region A's mean covers its quotes production priced; B has none."""
+        stg_df = pl.DataFrame({"price": [1.0] * 5 + [110.0] * 5 + [1.0] * 10})
+        prd_df = pl.DataFrame({"price": [0.0] * 5 + [100.0] * 5 + [0.0] * 10})
         input_df = pl.DataFrame({"region": ["A"] * 10 + ["B"] * 10})
 
-        with pytest.raises(ValueError, match="zero production baseline.*price.*20 rows"):
-            _segment_breakdown(stg_df, prd_df, input_df, "price")
+        [a, b] = sorted(
+            _segment_breakdown(stg_df, prd_df, input_df, "price")["region"],
+            key=lambda row: row.value,
+        )
+
+        assert (a.value, a.n_rows, a.mean_change_pct) == ("A", 10, pytest.approx(10.0))
+        assert (b.value, b.n_rows, b.mean_change_pct) == ("B", 10, None)
 
 
 class TestBuildReport:
@@ -439,6 +462,7 @@ def _make_impact_report(**overrides) -> ImpactReport:
                 name="price",
                 n_rows=10000,
                 n_changed=8000,
+                n_from_zero=0,
                 mean_change_pct=2.3,
                 median_change_pct=1.8,
                 max_increase_pct=18.7,
@@ -485,6 +509,21 @@ class TestFormatTerminal:
         assert "First deployment" in text
         # The report says why production was not compared.
         assert _NO_RELEASE in text
+
+    def test_quotes_priced_from_zero_are_reported_beside_the_figures(self) -> None:
+        """DEP-R16: both reports count them, and a total from zero reads as such."""
+        [stats] = _make_impact_report().column_stats
+        stats.n_from_zero = 3
+        stats.total_premium_change_pct = None
+        report = _make_impact_report(column_stats=[stats])
+
+        text = format_terminal(report)
+        md = format_markdown(report)
+
+        assert "From zero:" in text and "3" in text.split("From zero:")[1].splitlines()[0]
+        assert "Premium impact:     from zero" in text
+        assert "| Priced from zero (left out of the % figures) | 3 |" in md
+        assert "| Total premium impact | from zero |" in md
 
 
 class TestFormatMarkdown:

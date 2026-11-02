@@ -128,8 +128,12 @@ reached through a link refused through `ordinary_path_problem`; the `[mlflow]` t
   `build_and_push_image`: `image_tag`, `model_name`, `model_version` (the image's tag) and
   `build_dir` (the build's directory when it was kept, else `None`).
 - **Impact dataclasses** (`src/haute/deploy/_impact.py`) — `ColumnStats` (per-output-column change
-  statistics: mean/median/p5/p25/p75/p95 percent change, staging/prod means, total
-  premium change), `SegmentRow` (per-categorical-value breakdown), `ImpactReport`
+  statistics: the rows compared and changed, `n_from_zero` (the quotes production priced at zero
+  and staging did not, counted among the changed and left out of the percent figures),
+  mean/median/p5/p25/p75/p95 percent change, staging/prod means, total premium change, `None`
+  when production's total is zero and staging's is not), `SegmentRow` (per-categorical-value
+  breakdown, its mean change over the segment's quotes production priced above zero, `None`
+  when it has none), `ImpactReport`
   (top-level result: `total_rows`, `sampled_rows`, `column_stats`, `segments`, and
   `first_deploy`, why production was not compared, `None` for a comparison);
   `ImpactEndpointError` (an endpoint that did not answer: `url`, `status`) and
@@ -918,10 +922,13 @@ JSON have separate structured payloads. A body exactly at the configured limit i
   `{"input": {...}, "expected": {...}?, "tolerance_pct": ...?}`, with only those keys
   plus `_`-prefixed metadata keys. A `tolerance_pct` without `expected` is an error
   because there is nothing to compare against tolerance.
-- **Zero-baseline percent-change is defined, not undefined**: per-row zero production
-  values are accepted only when staging equals production exactly; otherwise the change
-  raises `ValueError`. `_CHANGE_EPSILON` applies to changed-row counting and the aggregate
-  total-zero comparison, not this row-level equality test.
+- **A zero production value has no percent change, and is reported, not refused**: a row
+  production prices at zero is no change when staging equals it exactly, and otherwise is
+  priced from zero (`_from_zero`): null in the percent-change series, so it is left out of the
+  column's percent figures and a segment's mean, and counted in `n_from_zero` and among the
+  changed rows; both reports print the count when there is one, and a total from zero as
+  "from zero". `_CHANGE_EPSILON` applies to changed-row counting and the aggregate total-zero
+  comparison, not this row-level equality test.
 - **Prediction/input length mismatch in impact reports** is refused, never truncated or
   padded: rows pair by position, so a batch with a missing middle prediction, or a short batch
   and a long one whose totals match, would compare the wrong quotes.
@@ -980,7 +987,7 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 | Exception | Raised where | Propagates to |
 |---|---|---|
 | `haute.errors.DeployError` | `src/haute/deploy/_config.py` (unpinned base image, escaped pipeline, unsupported live source, invalid output projection), `_bundler.py` (escaped/malformed artefact path, invalid or unreadable retained Data Input), `_scorer.py` (unscoreable `modelScore`), `_validators.py` (aggregated validation failure), `_container.py` / `_mlflow.py` (expected target operational failure) | `deploy()` / `resolve_config()` callers; carries structured `context` kwargs (for example `node_id`, `field`, and the underlying provider/schema `error`) rendered into `str()`. The CLI formats this expected domain family concisely. |
-| `ValueError` | `_pruner.py` (missing/multiple output nodes, a configured `liveSwitch` input not connected to the graph, or a `liveSwitch` the output reaches that maps no input to `live`), `src/haute/deploy/_config.py` (zero/ambiguous fallback source nodes, unknown TOML keys, missing `from_cli_args` required fields), `src/haute/deploy/__init__.py` (unknown target), `_scorer.py` (bad `output_fields` type, negative `row_count`), `src/haute/deploy/_impact.py` (non-finite predictions, zero-baseline change) | Caller of `resolve_config`/`deploy`/scoring functions; container `/quote` endpoint catches the `BoundedMemoryUnsupportedError` subclass specially (422) but a bare `ValueError` from scoring falls into the generic 500 handler. |
+| `ValueError` | `_pruner.py` (missing/multiple output nodes, a configured `liveSwitch` input not connected to the graph, or a `liveSwitch` the output reaches that maps no input to `live`), `src/haute/deploy/_config.py` (zero/ambiguous fallback source nodes, unknown TOML keys, missing `from_cli_args` required fields), `src/haute/deploy/__init__.py` (unknown target), `_scorer.py` (bad `output_fields` type, negative `row_count`), `src/haute/deploy/_impact.py` (non-finite or missing predictions; `ImpactAlignmentError`, a count other than one prediction per quote) | Caller of `resolve_config`/`deploy`/scoring functions; container `/quote` endpoint catches the `BoundedMemoryUnsupportedError` subclass specially (422) but a bare `ValueError` from scoring falls into the generic 500 handler. |
 | `FileNotFoundError` | `_bundler.py::_check_exists` (missing artefact on disk), `_bundler.py::_download_model_artifact` (MLflow download landed but file missing) | Propagates uncaught through `resolve_config()`. |
 | `RuntimeError` | `_scorer.py` (`modelScore` contract matched but no model artefact — deliberately after the contract check), or an unexpected backend implementation defect | Uncaught to caller with its original type/traceback. Expected Docker, dependency-pinning, credential, connectivity, and backend-response failures use `DeployError` instead. |
 | `FeatureMismatchError` | `_scorer.py::_assert_runtime_contract_matches`, through `modelling/_feature_contract.py::assert_schema_matches_contract`, the check the preview runs too (live schema disagrees with bundled training contract on feature set or dtype; a categorical value the model never saw is never one, the model scores it) | Uncaught through scoring; surfaces in the container's generic 500 handler or the MLflow `pyfunc` boundary. |
@@ -1202,7 +1209,8 @@ what they cover:
 - **`test_impact.py`** — dedicated impact arithmetic, prediction-envelope
   normalization, alignment refusals (a missing middle prediction, a short and a long batch with
   matching totals, a scalar for a multi-quote batch, either side short in `build_report`), the
-  typed endpoint errors naming the address, segment selection, and
+  typed endpoint errors naming the address, quotes priced from zero counted and left out of the
+  percent figures, a segment's mean and a total, and both reports printing them, segment selection, and
   terminal/Markdown report formatting.
 - **`test_deploy_mlflow_gaps.py`**, **`test_deploy_validators_gaps.py`** — targeted
   gap-filling for branches not hit by the main suites (progress callbacks, artefact copy,

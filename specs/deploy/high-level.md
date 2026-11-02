@@ -614,10 +614,13 @@ most: a silent wrong answer here mis-prices real policies.
   `.rsglm`, XGBoost `.ubj`, LightGBM `.lgbm`, EBM `.ebm`, t-boost `.tboost`), while a discovered MLflow pyfunc
   directory cannot currently be bundled and served by this path.
 - **Impact-analysis arithmetic** raises `ValueError` rather than producing a misleading
-  percentage when predictions contain non-finite values, or when a percent-change or
-  total-percent-change calculation would divide by a zero production baseline against a
-  non-zero staging value (`src/haute/deploy/_impact.py::_raise_for_non_finite_predictions`,
-  `_zero_baseline_change_count`, `_total_percent_change`).
+  percentage when predictions contain non-finite or missing values
+  (`src/haute/deploy/_impact.py::_raise_for_non_finite_predictions`). A quote production prices
+  at zero and staging does not has no percentage either, but it is an ordinary release event (a
+  newly priced cover, a reversed decline), so it is reported, not refused (decided
+  2 November 2026): counted as priced from zero beside each output's statistics and left out of
+  its percent figures, and a zero production total beside a non-zero staging total reads
+  "from zero" (`_from_zero`, `_total_percent_change`).
 
 ## Scoring runtime
 

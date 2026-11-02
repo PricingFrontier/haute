@@ -14,7 +14,6 @@ MLflow target and the impact analysis. Current behaviour is specified in
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | DEP-R09 | Planned | P2 | The container image and the Databricks model install a recorded dependency closure resolved for their target Python and platform. |
-| DEP-R16 | Decision | P3 | A quote whose production value is zero and whose staging value is not is reported, not a failure of the whole impact analysis. |
 
 ## Planned improvements
 
@@ -84,20 +83,3 @@ in the target installation, not just identical install command text.
 `::_conda_env`.
 
 Resolver reference: [uv platform-specific resolution](https://docs.astral.sh/uv/concepts/resolution/).
-
-### DEP-R16 — Zero production baselines in the impact report
-**Why:** One quote whose production value is 0 and whose staging value is not fails the
-whole impact analysis with `ValueError`, which fails the generated CI job; the
-specification chose this over a misleading percentage. A newly priced cover or a
-reversed decline is an ordinary release event.
-
-**Plan:** Decide whether to keep the refusal or report such rows as a count beside the
-statistics; update the specification either way.
-
-**Acceptance:** The decision is recorded in the deploy specification and the behaviour
-matches it.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/deploy/_impact.py::_percent_change_series` and
-`::_total_percent_change`.
