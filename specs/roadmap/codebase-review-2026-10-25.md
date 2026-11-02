@@ -284,7 +284,6 @@ production:
 | Optimiser | OPR-2 | `OPT-R04` (Decision) |
 | Optimiser | OPR-9, OPR-10, OPR-11 | `OPT-R05` |
 | Modelling | MDL-24 | `MOD-R03` |
-| Modelling | MDL-2, MDL-18, MDL-22 | `MOD-R06` |
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
 | Tracing | TRC-8, TRC-9, TRC-10, TRC-14 | `TRACE-R03` |
 | Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |

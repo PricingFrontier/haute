@@ -6,8 +6,36 @@ to bundle diagnostic data without 25+ positional parameters.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
+
+#: The diagnostics a completed training result carries under the same names, on a
+#: scripted ``TrainResult`` and a canvas ``TrainResponse`` alike.
+_RESULT_FIELDS = (
+    "feature_importance",
+    "shap_summary",
+    "feature_importance_loss",
+    "double_lift",
+    "loss_history",
+    "ave_per_feature",
+    "residuals_histogram",
+    "residuals_stats",
+    "actual_vs_predicted",
+    "lorenz_curve",
+    "lorenz_curve_perfect",
+    "pdp_data",
+    "final_test_metrics",
+    "diagnostics_set",
+    "glm_coefficients",
+    "glm_relativities",
+    "glm_fit_statistics",
+    "glm_inference",
+    "glm_smooth_terms",
+    "glm_regularization",
+    "ebm_terms",
+    "tboost_tables",
+)
 
 
 @dataclass
@@ -31,10 +59,6 @@ class ModelDiagnostics:
     evaluation: dict[str, Any] | None = None
     tuning: dict[str, Any] | None = None
     diagnostics_set: str = "development"
-    # Retained as an internal constructor compatibility field for callers that
-    # have not yet moved to the canonical terminology. New output never labels
-    # these values as a holdout.
-    holdout_metrics: dict[str, float] = field(default_factory=dict)
     # GLM-specific
     glm_coefficients: list[dict[str, Any]] = field(default_factory=list)
     glm_relativities: list[dict[str, Any]] = field(default_factory=list)
@@ -46,6 +70,26 @@ class ModelDiagnostics:
     ebm_terms: list[dict[str, Any]] = field(default_factory=list)
     # t-boost-specific
     tboost_tables: dict[str, Any] | None = None
+
+    @classmethod
+    def from_result(
+        cls,
+        result: Any,
+        *,
+        evaluation: Mapping[str, Any],
+        tuning: Mapping[str, Any] | None,
+    ) -> ModelDiagnostics:
+        """The diagnostics of a completed training result, for its candidate run.
+
+        *result* is a scripted ``TrainResult`` or a canvas ``TrainResponse``;
+        *evaluation* and *tuning* are its evaluation and tuning reports as plain data.
+        """
+        return cls(
+            **{name: getattr(result, name) for name in _RESULT_FIELDS},
+            selection_metrics=dict(evaluation.get("selection_metrics", {})),
+            evaluation=dict(evaluation),
+            tuning=dict(tuning) if tuning is not None else None,
+        )
 
 
 @dataclass
@@ -66,12 +110,6 @@ class ModelCardMetadata:
     features: list[str] = field(default_factory=list)
     evaluation_config: dict[str, Any] = field(default_factory=dict)
     best_iteration: int | None = None
-    # Internal compatibility fields only. Model-card and MLflow output use the
-    # canonical development/final-test/evaluation labels above.
-    train_rows: int = 0
-    validation_rows: int = 0
-    holdout_rows: int = 0
-    split_config: dict[str, Any] = field(default_factory=dict)
     # Feature contract inputs for ``build_signature``.  Absent values keep
     # MLflow logging working when a training path has not populated them.
     feature_types: dict[str, str] = field(default_factory=dict)

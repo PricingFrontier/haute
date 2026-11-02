@@ -51,7 +51,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 |---|---|
 | `src/haute/modelling/__init__.py` | Public API surface: `FitResult`, `MLflowLogResult`, `TrainingJob`, `TrainResult`, `generate_training_script`, `log_experiment`. |
 | `src/haute/modelling/_descriptors.py` | `AlgorithmDescriptor` and `NativeLoss` per family, `DESCRIPTORS`, the Haute loss vocabulary `HAUTE_LOSSES`, `algorithm_descriptor()`, parameter validation, refit projection (`project_refit_params`, `refit_descriptor`, `tuning_family`, `round_ceiling`), the `training_threads()` allotment, and `capability_fixture()`. Imports no engine. |
-| `src/haute/modelling/_algorithm_base.py` | `BaseAlgorithm`, `FitResult` and `IterationCallback`, shared by every adapter without importing the registry. |
+| `src/haute/modelling/_algorithm_base.py` | `BaseAlgorithm`, `FitResult` and `IterationCallback`, shared by every adapter without importing the registry; `NativeModel`, the base of the four native wrappers (their `haute` record, scoring-facing feature names, offset baseline, served labels and class probabilities, and `record_fields`, which checks a stored record field by field), and `inverse_link`. |
 | `src/haute/modelling/_native_encoding.py` | Shared categorical encoding for the native-dataset families: `fit_categorical_levels` and `encode_frame`. |
 | `src/haute/modelling/_xgboost.py` | The XGBoost adapter: `XGBoostModel` (self-describing booster wrapper) and `XGBoostAlgorithm`. |
 | `src/haute/modelling/_gpu.py` | XGBoost GPU capability: `GpuStatus`, `xgboost_cuda_build`, `booster_device`, the once-per-process `xgboost_gpu_status` probe, `require_xgboost_gpu` and `verify_trained_on_gpu`. |
@@ -78,7 +78,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/_model_card.py` | `generate_model_card()` — self-contained HTML assembled for MLflow artifact logging; ordinary training does not persist it beside the model. It is titled with the model's name and heads a family's own importance with the importance method its descriptor names (`src/haute/modelling/_descriptors.py::AlgorithmDescriptor`): CatBoost's PredictionValuesChange, a GLM's absolute coefficient, XGBoost's and LightGBM's total gain, EBM's mean absolute term score, t-boost's variance share. |
 | `src/haute/modelling/_mlflow_log.py` | Destination-aware tracking-backend resolution wrappers over `_mlflow_settings.py` (every wrapper takes `destination`, `""` = the local folder), `log_experiment()`, flavor-aware model/signature logging, diagnostics artifacts, and best-effort model-card logging. |
 | `src/haute/modelling/_mlflow_settings.py` | The `[mlflow]` destination inventory in `haute.toml` (tracking_uri, folder): load/validate/save (tomlkit round-trip), tracking-URI form classification via `classify_tracking_uri()`, `validate_destination_key()`, the per-key resolver `resolve_destination()` (raising the `MlflowDestinationUnconfigured` marker for a merely unconfigured key), the three-entry inventory `list_destinations()`, draft resolution for the connection test (`candidate_tracking_config()`), and `node_destination_key()` — the local folder for a node or request that names no destination, so a configured remote is never chosen for it. |
-| `src/haute/modelling/_result_types.py` | `ModelDiagnostics` and `ModelCardMetadata` bundles shared by training, MLflow logging, and model-card generation. |
+| `src/haute/modelling/_result_types.py` | `ModelDiagnostics` and `ModelCardMetadata` bundles shared by training, MLflow logging, and model-card generation; `ModelDiagnostics.from_result` builds the bundle from a scripted or a canvas training result. |
 | `src/haute/modelling/_export.py` | `generate_training_script()` code generation for standalone Python training scripts. |
 | `src/haute/modelling/_model_export.py` | `MODEL_FILE_SUFFIXES` and `resolve_model_export_destination()`: the Export pane's model-file destination rules (see Save-model-after-the-fact). |
 | `src/haute/routes/_export_receipts.py` | Export receipts on training jobs: `record_receipt` (append an MLflow or model-file receipt, keeping the newest `MAX_RECEIPTS_PER_KIND`), `export_receipts` (the wire shape the status route returns), `mlflow_receipt_for_operation` (idempotent retries) and `single_flight_mlflow_log` (one MLflow log per job at a time, else a `409` in-progress refusal). |
@@ -306,7 +306,12 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   consumed by the next inside `TrainingJob.run()`.
 - **`ModelDiagnostics` / `ModelCardMetadata`** (`_result_types.py`) — shared bundling
   dataclasses consumed by both `_model_card.generate_model_card` and
-  `_mlflow_log.log_experiment`, avoiding 25+ positional parameters at either call site.
+  `_mlflow_log.log_experiment`, avoiding 25+ positional parameters at either call site. Both
+  log paths (scripted `TrainingJob._log_to_mlflow` and the canvas log route) build the bundle
+  with `ModelDiagnostics.from_result` and the final parameters with
+  `src/haute/modelling/_candidate_run.py::candidate_final_params` (a tuned run's winner; a
+  validation-weighted round family's parameters projected to the refit's tree count; else the
+  configured parameters).
 - **`MLflowLogResult`** (`_mlflow_log.py`) — `backend` (`"databricks"|"server"|"local"`),
   `experiment_name`, `run_id`, `tracking_uri`, `run_url: str | None`.
 - **`GLMInference`** (`_rustystats.py`, frozen dataclass) — `status` (RustyStats'
@@ -2212,6 +2217,21 @@ used for staged input.
   `save`, and `shap_values` when the family has SHAP) with a self-describing model wrapper. `BaseAlgorithm`, `FitResult` and
   `IterationCallback` live in `src/haute/modelling/_algorithm_base.py`, so an adapter module can
   subclass them without importing `_algorithms` (which registers every adapter).
+- The four native wrappers (`XGBoostModel`, `LightGBMModel`, `EBMModel`, `TBoostModel`) are
+  keyword-only dataclasses over `NativeModel` in the same module, which holds the record every
+  family stores (`features`, `categorical_levels`, `task`, `link`, `offset_column`,
+  `offset_link`, `class_labels`; `record()` writes it), `feature_names_`, `cat_feature_names`,
+  `baseline` (the transformed offset, named by the family), `predict` (original labels for a
+  classifier by the `> 0.5` rule) and `predict_proba`; a wrapper supplies
+  `predict_response`. `inverse_link` turns a margin into a response for LightGBM, t-boost and
+  the explanation check. `NativeModel.record_fields` (and `parse_record` for JSON text) is the
+  one check of a stored record: exactly the seven keys; a non-empty list of distinct feature
+  names; categorical levels only for those features, each a list of strings or `None`; a known
+  task; a link that is `logit` exactly for classification; an offset link among `identity`,
+  `log`, `logit` exactly when an offset column is named; two class labels exactly for
+  classification. A record that is not JSON or not an object, lacks or adds a key, or breaks a
+  rule raises `ConfigError` naming the file and the field (`GET /api/model-file` answers 400),
+  never a `KeyError` or `TypeError`.
 - `src/haute/modelling/_native_encoding.py` is the shared categorical encoding:
   `fit_categorical_levels` takes the training frame's sorted distinct non-null values,
   with `None` appended when nulls occur; the model file records them, never the feature
@@ -2339,8 +2359,11 @@ used for staged input.
   version; `features`; `categorical_features`; `task`; `link`; `offset_column`;
   `offset_link`; `class_labels`), then `joblib.dump` of the estimator. `load(path)` reads that
   line (at most `_RECORD_LIMIT` bytes) before anything is unpickled and refuses a file without
-  it (`ConfigError`, retrain it in Haute) or whose `engine_version` is not the installed
-  `interpret-core` version (`ArtifactVersionMismatchError`), unpickles the rest with
+  it (`ConfigError`, retrain it in Haute), a record whose `engine_version` is missing or not a
+  string, whose shared fields fail `NativeModel.record_fields` or whose
+  `categorical_features` is not a list of its features (`ConfigError` naming the field), or
+  whose `engine_version` is not the installed `interpret-core` version
+  (`ArtifactVersionMismatchError`), unpickles the rest with
   `restricted_joblib_load(path, offset=)`, and `validate` checks the exact class for the task,
   `feature_names_in_`, `n_features_in_`, `feature_types_in_`, finite scores and intercept, and
   0/1 classes against the record. A feature contract, when the model has one, binds it like
@@ -2433,12 +2456,9 @@ used for staged input.
   an estimator whose kind is not the record's task or whose `feature_names_in_` differ from the
   record's features, and turns a t-boost `SerializationError` (including a document from an
   earlier t-boost envelope) into a `ConfigError` naming the installed t-boost version.
-  t-boost never reads its metadata, so `load` validates the record (`_validated_record`):
-  exactly the seven keys; a non-empty list of distinct feature names; categorical levels only
-  for those features, each a list of strings or `None`; a known task; a link that is `logit`
-  exactly for classification; an offset only as a non-empty column whose offset link equals
-  the model's link, never under the logit link; and two class labels exactly for
-  classification. `validate_native` then refuses a
+  t-boost never reads its metadata, so `load` validates the record with
+  `NativeModel.record_fields` and adds t-boost's own rule: an offset's link equals the model's
+  link, and never under the logit link. `validate_native` then refuses a
   document whose `kind` is not `single` (a multiclass classifier) or whose estimator is not the
   task's, `feature_names_in_` that differ from the record's features, an objective whose
   descriptor link is not the record's link, a classifier whose classes are not `[0, 1]`, and a

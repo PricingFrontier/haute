@@ -696,16 +696,13 @@ def _execute_and_sink_training_frame(
     )
     from haute._polars_utils import _malloc_trim
     from haute.executor import _build_node_fn, _compile_preamble, _pipeline_dir, _preview_cache
-    from haute.modelling._algorithms import _mem_checkpoint, _mem_log_path
+    from haute.modelling._algorithms import _mem_checkpoint
     from haute.trace import _cache as _trace_cache
 
     graph = request.graph
     node_id = request.node_id
     tmp_parquet = request.parquet_path
 
-    mem_log = _mem_log_path()
-    mem_log.parent.mkdir(parents=True, exist_ok=True)
-    mem_log.write_text("")
     _mem_checkpoint("train_model endpoint START")
 
     # Free the preview cache to reclaim memory

@@ -62,6 +62,34 @@ _TUNING_PARAMS = (
 _GLM_METRICS = ("aic", "bic", "deviance", "null_deviance")
 
 
+def candidate_final_params(
+    algorithm: str,
+    params: Mapping[str, Any],
+    *,
+    tuned_final_params: Mapping[str, Any] | None,
+    final_tree_count: int | None,
+    refit_on_development: bool,
+) -> dict[str, Any]:
+    """The parameters a candidate run records for its final model.
+
+    A tuned run's winner; for a family that refits a validation-weighted round
+    count, the configured parameters projected to the refit's tree count; else the
+    configured parameters. The scripted and the canvas log paths both take them here.
+    """
+    from haute.modelling._descriptors import algorithm_descriptor, project_refit_params
+
+    if tuned_final_params is not None:
+        return dict(tuned_final_params)
+    descriptor = algorithm_descriptor(algorithm)
+    if (
+        final_tree_count is not None
+        and refit_on_development
+        and descriptor.refit_policy == "validation_weighted_rounds"
+    ):
+        return project_refit_params(descriptor, dict(params), final_tree_count)
+    return dict(params)
+
+
 def _canonical(value: Any) -> Any:
     to_plain = getattr(value, "to_plain_data", None)
     if callable(to_plain):

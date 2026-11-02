@@ -3070,7 +3070,6 @@ class TestTrainingProjection:
             ),
             patch("haute.executor._build_node_fn", return_value=None),
             patch("haute.modelling._algorithms._mem_checkpoint"),
-            patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
             patch("haute.executor._preview_cache", MagicMock()),
             patch("haute.trace._cache", MagicMock()),
         ):
@@ -3151,7 +3150,6 @@ class TestTrainingProjection:
             ),
             patch("haute.executor._build_node_fn", return_value=None),
             patch("haute.modelling._algorithms._mem_checkpoint"),
-            patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
             patch("haute.executor._preview_cache", MagicMock()),
             patch("haute.trace._cache", MagicMock()),
         ):
@@ -3216,7 +3214,6 @@ class TestTrainingProjection:
             ),
             patch("haute.executor._build_node_fn", return_value=None),
             patch("haute.modelling._algorithms._mem_checkpoint"),
-            patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
             patch(
                 "haute._chunked_writes.bounded_sink",
                 side_effect=BoundedMemoryUnsupportedError("Bounded streaming sink failed"),
@@ -3290,7 +3287,6 @@ class TestTrainingProjection:
             ),
             patch("haute.executor._build_node_fn", return_value=None),
             patch("haute.modelling._algorithms._mem_checkpoint"),
-            patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
         ):
             with _training_prep_context() as context:
                 outcome = prepare_training_data(request, execution_context=context)
@@ -3348,7 +3344,6 @@ class TestTrainingProjection:
             ),
             patch("haute.executor._build_node_fn", return_value=None),
             patch("haute.modelling._algorithms._mem_checkpoint"),
-            patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
         ):
             with _training_prep_context() as context:
                 outcome = prepare_training_data(request, execution_context=context)
@@ -3410,7 +3405,6 @@ class TestExecuteAndSinkPlanCleanup:
             ),
             patch("haute.executor._build_node_fn", return_value=None),
             patch("haute.modelling._algorithms._mem_checkpoint"),
-            patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
             patch("haute.executor._preview_cache", MagicMock()),
         ):
             with _training_prep_context() as context:
@@ -4064,7 +4058,6 @@ class TestTrainingSinkProjection:
     def test_catboost_training_sink_keeps_only_selected_features_and_roles(
         self, glm_collision_data, tmp_path, monkeypatch
     ):
-        monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
         captured = _spy_on_sink_projection(monkeypatch)
         from haute.schemas import TrainRequest
         from tests.test_training_worker_protocol import _SuccessfulTrainingJob
@@ -4098,7 +4091,6 @@ class TestTrainingSinkProjection:
         assert launched
 
     def test_glm_training_sink_drops_nothing(self, glm_collision_data, tmp_path, monkeypatch):
-        monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
         captured = _spy_on_sink_projection(monkeypatch)
         from haute.schemas import TrainRequest
         from tests.test_training_worker_protocol import _SuccessfulTrainingJob
@@ -4132,7 +4124,6 @@ class TestTrainingSinkProjection:
         assert launched
 
     def test_glm_dispersion_sink_drops_nothing(self, glm_collision_data, tmp_path, monkeypatch):
-        monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
         captured = _spy_on_sink_projection(monkeypatch)
         from haute.schemas import DispersionEstimateRequest
 

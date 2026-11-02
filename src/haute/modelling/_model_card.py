@@ -86,17 +86,14 @@ def generate_model_card(
     )
 
     # --- Training summary ---
-    development_rows = meta.development_rows or meta.train_rows + meta.validation_rows
-    final_test_rows = meta.final_test_rows or meta.holdout_rows
-    evaluation_config = meta.evaluation_config or meta.split_config
     evaluation_strategy = (
-        evaluation_config.get("strategy", "random") if evaluation_config else "random"
+        meta.evaluation_config.get("strategy", "random") if meta.evaluation_config else "random"
     )
     summary_rows = [
-        ["Development rows", f"{development_rows:,}"],
+        ["Development rows", f"{meta.development_rows:,}"],
     ]
-    if final_test_rows:
-        summary_rows.append(["Final test rows", f"{final_test_rows:,}"])
+    if meta.final_test_rows:
+        summary_rows.append(["Final test rows", f"{meta.final_test_rows:,}"])
     summary_rows += [
         ["Features", f"{len(meta.features):,}" if meta.features else "—"],
         ["Evaluation strategy", evaluation_strategy],
@@ -115,10 +112,10 @@ def generate_model_card(
         sections.append(_html_table(["Metric", "Value"], metric_rows, ["left", "right"]))
 
     # --- Final-test metrics (when present but diagnostics came from development) ---
-    final_test_metrics = diag.final_test_metrics or diag.holdout_metrics
-    if final_test_metrics and diag.diagnostics_set != "final_test":
+    if diag.final_test_metrics and diag.diagnostics_set != "final_test":
         ho_rows = [
-            [k, f"{v:.4f}" if math.isfinite(v) else "N/A"] for k, v in final_test_metrics.items()
+            [k, f"{v:.4f}" if math.isfinite(v) else "N/A"]
+            for k, v in diag.final_test_metrics.items()
         ]
         sections.append("<h2>Final Test Metrics</h2>")
         sections.append(_html_table(["Metric", "Value"], ho_rows, ["left", "right"]))

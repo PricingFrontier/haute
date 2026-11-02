@@ -11,10 +11,9 @@ six trained families (CatBoost, GLM through RustyStats, XGBoost, LightGBM,
 EBM and t-boost) are in scope only for what each backend exposes to a caller
 that must bound memory; their losses, tuning and evaluation are out of scope.
 The GLM distributions that `MOD-M01` names in its acceptance are the subject
-of that package, not a tuning choice. `MOD-R03` and `MOD-R06` come from
-the [25 October 2026 codebase review](codebase-review-2026-10-25.md) and are the
-exception to that scope: they cover what the review found in the contracts and the
-training lifecycle.
+of that package, not a tuning choice. `MOD-R03` comes from
+the [25 October 2026 codebase review](codebase-review-2026-10-25.md) and is the
+exception to that scope: it covers what the review found in the training lifecycle.
 
 Today a training fit that exceeds its memory budget terminates: bounded
 streaming mode is refused outright (`BoundedMemoryUnsupportedError`, shown as
@@ -57,7 +56,6 @@ something this page settles.
 | MOD-M01 | Decision | P3 | Exact chunked GLM fitting under a memory budget. |
 | MOD-M02 | Decision | P3 | A low-memory boosted-tree fitting mode under an explicit user choice. |
 | MOD-R03 | Planned | P2 | Training publication validates the evaluation plan outside the job-store lock, and the plan stores memberships compactly. |
-| MOD-R06 | Planned | P3 | The training memory log is opt-in, the dead compatibility fields are gone, and the four native wrappers share one base. |
 
 ## Planned improvements
 
@@ -235,36 +233,3 @@ publication.
 `src/haute/routes/_training_artifacts.py::_validate_evaluation_artifact_contents`;
 `src/haute/routes/_job_store.py::compare_and_publish_completion`;
 `src/haute/routes/_training_lifecycle.py`.
-
-### MOD-R06 — Hygiene: the memory log, dead fields, one wrapper base
-**Why:** Every fit writes a debug memory log unconditionally: each checkpoint
-opens, appends to and `fsync`s `.haute_cache/training_mem.log` resolved
-against the current directory of whichever process runs the fit, and the
-preparation child truncates it at every run, so a failed run's evidence is
-overwritten and a scratch project gets a `.haute_cache` created beside its
-data. Five "compatibility" fields on `ModelDiagnostics` and
-`ModelCardMetadata` are set by no constructor in `src/`, so the model card's
-fallbacks to them can never fire, and `DEFAULT_SPLIT_DICT` has no reference.
-The inverse link is written in three adapters (and as a scalar in the
-explainer), the wrapper surface (feature names, served-label `predict`,
-`predict_proba`, the metadata record) in all four native wrappers, and the
-`ModelDiagnostics` bundle and final-parameter projection in both the scripted
-and the canvas log paths.
-
-**Plan:** Make the log opt-in (`HAUTE_MEM_LOG` set) and otherwise a no-op
-without the per-line `fsync`; delete the five fields, their fallbacks and
-`DEFAULT_SPLIT_DICT`; a shared base wrapper in `_algorithm_base.py` and one
-`ModelDiagnostics.from_result(...)`.
-
-**Acceptance:** A fit without `HAUTE_MEM_LOG` writes no file; the fields are
-gone; jscpd reports no clone among the four wrappers.
-
-**Dependencies:** `ENGQ-R01` owns dead code outside this component.
-
-**Evidence:** `src/haute/modelling/_algorithms.py::_mem_checkpoint`;
-`src/haute/modelling/_result_types.py::ModelDiagnostics`;
-`src/haute/modelling/_result_types.py::ModelCardMetadata`;
-`src/haute/modelling/_split.py::DEFAULT_SPLIT_DICT`;
-`src/haute/modelling/_algorithm_base.py`; `src/haute/modelling/_xgboost.py`;
-`src/haute/modelling/_lightgbm.py`; `src/haute/modelling/_ebm.py`;
-`src/haute/modelling/_tboost.py`.

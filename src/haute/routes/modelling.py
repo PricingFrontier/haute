@@ -365,8 +365,8 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
         CandidateArtifacts,
         CandidateProvenance,
         build_candidate_run,
+        candidate_final_params,
     )
-    from haute.modelling._descriptors import algorithm_descriptor, project_refit_params
     from haute.modelling._mlflow_log import (
         log_experiment,
         resolve_experiment_name,
@@ -411,53 +411,20 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
         )
 
         try:
-            diagnostics = ModelDiagnostics(
-                feature_importance=result.feature_importance,
-                shap_summary=result.shap_summary,
-                feature_importance_loss=result.feature_importance_loss,
-                double_lift=result.double_lift,
-                loss_history=result.loss_history,
-                ave_per_feature=result.ave_per_feature,
-                residuals_histogram=result.residuals_histogram,
-                residuals_stats=result.residuals_stats,
-                actual_vs_predicted=result.actual_vs_predicted,
-                lorenz_curve=result.lorenz_curve,
-                lorenz_curve_perfect=result.lorenz_curve_perfect,
-                pdp_data=result.pdp_data,
-                final_test_metrics=result.final_test_metrics,
-                selection_metrics={
-                    name: summary.model_dump(mode="json")
-                    for name, summary in result.evaluation.selection_metrics.items()
-                },
+            diagnostics = ModelDiagnostics.from_result(
+                result,
                 evaluation=result.evaluation.model_dump(mode="json"),
-                tuning=(
-                    result.tuning.model_dump(mode="json") if result.tuning is not None else None
-                ),
-                diagnostics_set=result.diagnostics_set,
-                glm_coefficients=result.glm_coefficients,
-                glm_relativities=result.glm_relativities,
-                glm_fit_statistics=result.glm_fit_statistics,
-                glm_inference=result.glm_inference,
-                glm_smooth_terms=result.glm_smooth_terms,
-                glm_regularization=result.glm_regularization,
-                ebm_terms=result.ebm_terms,
-                tboost_tables=result.tboost_tables,
+                tuning=result.tuning.model_dump(mode="json") if result.tuning is not None else None,
             )
-            if result.tuning is not None:
-                final_params = result.tuning.final_params
-            elif (
-                result.final_tree_count is not None
-                and result.evaluation.refit_on_development
-                and algorithm_descriptor(str(config.get("algorithm", "catboost"))).refit_policy
-                == "validation_weighted_rounds"
-            ):
-                final_params = project_refit_params(
-                    algorithm_descriptor(str(config.get("algorithm", "catboost"))),
-                    dict(config.get("params") or {}),
-                    result.final_tree_count,
-                )
-            else:
-                final_params = config.get("params", {})
+            final_params = candidate_final_params(
+                str(config.get("algorithm", "catboost")),
+                config.get("params") or {},
+                tuned_final_params=(
+                    result.tuning.final_params if result.tuning is not None else None
+                ),
+                final_tree_count=result.final_tree_count,
+                refit_on_development=result.evaluation.refit_on_development,
+            )
             candidate = build_candidate_run(
                 provenance=CandidateProvenance.from_plain_data(job["provenance"]),
                 algorithm=str(config.get("algorithm", "catboost")),

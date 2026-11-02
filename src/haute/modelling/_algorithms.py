@@ -21,25 +21,15 @@ from haute.modelling._algorithm_base import BaseAlgorithm, FitResult, IterationC
 
 logger = get_logger(component="algorithms")
 
-# Explicit override for the memory-log destination; tests patch this.  When
-# None, the destination is resolved per write by _mem_log_path() so that
-# HAUTE_MEM_LOG (or a cwd change) takes effect without a re-import.
-_MEM_LOG: Path | None = None
 
-_DEFAULT_MEM_LOG = Path(".haute_cache") / "training_mem.log"
+def _mem_log_path() -> Path | None:
+    """The memory log's destination: ``HAUTE_MEM_LOG``, read at write time, or none.
 
-
-def _mem_log_path() -> Path:
-    """Resolve the memory-log destination at write time.
-
-    Precedence: the ``_MEM_LOG`` override if set, else the ``HAUTE_MEM_LOG``
-    environment variable, else ``.haute_cache/training_mem.log`` under the
-    project root (haute's runtime cwd).
+    The log is opt-in debugging evidence; without the variable a checkpoint
+    measures and writes nothing.
     """
-    if _MEM_LOG is not None:
-        return _MEM_LOG
     env = os.environ.get("HAUTE_MEM_LOG")
-    return Path(env) if env else _DEFAULT_MEM_LOG
+    return Path(env) if env else None
 
 
 def _get_rss_mb() -> float:
@@ -59,26 +49,22 @@ def _get_available_mb() -> float:
 
 
 def _mem_checkpoint(label: str) -> None:
-    """Write a memory checkpoint line to the persistent log.
+    """Append a memory checkpoint line to the opt-in ``HAUTE_MEM_LOG``.
 
-    Cross-platform: uses ``/proc`` on Linux, ``resource`` on macOS,
-    and Win32 APIs on Windows.  Flushes immediately so the line
-    survives a crash.
+    A no-op unless the variable names a file. Each line is flushed as written,
+    so it survives the process being killed for memory; runs append, so an
+    earlier failed run's lines are kept.
     """
+    log_path = _mem_log_path()
+    if log_path is None:
+        return
     rss_mb = _get_rss_mb()
     avail_mb = _get_available_mb()
-
     ts = time.strftime("%H:%M:%S")
     entry = f"[{ts}] {label:<45} RSS={rss_mb:>9.1f} MB   Avail={avail_mb:>9.1f} MB\n"
-    log_path = _mem_log_path()
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(entry)
-        f.flush()
-        try:
-            os.fsync(f.fileno())
-        except OSError:
-            pass  # exotic Windows builds may not support fsync on all handles
 
 
 # CatBoost model-metadata keys recording the offset/baseline column a model
