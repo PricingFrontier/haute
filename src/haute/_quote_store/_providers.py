@@ -39,6 +39,9 @@ SQL_COPT_SS_ACCESS_TOKEN = 1256
 ENTRA_SIGN_INS = frozenset({"managed-identity", "service-principal", "entra"})
 #: The package an Entra ID sign-in needs besides the driver.
 ENTRA_PACKAGE = "azure-identity"
+#: The most privileges one statement asks of the server: each binds its table's name and the
+#: privilege, and SQL Server binds at most 2,100 values to a statement.
+_ASKED_AT_ONCE = 500
 
 
 class TokenCredential(Protocol):
@@ -301,22 +304,38 @@ def _quoted(name: str, open_: str, close: str) -> str:
 
 def missing_privileges(connection: Connection, schema: StoreSchema) -> list[str]:
     """Each privilege the sign-in on *connection* lacks that a started app needs on *schema*'s
-    tables, as ``SELECT on policy``; none on SQLite, a file whose reader may do anything."""
+    tables, as ``SELECT on policy``; none on SQLite, a file whose reader may do anything. The
+    privileges are asked together, a statement for as many as one may bind
+    (``_ASKED_AT_ONCE``), each statement a round trip to the server."""
     dialect = connection.dialect.name
     if dialect not in ("mssql", "postgresql"):
         return []
     open_, close = ("[", "]") if dialect == "mssql" else ('"', '"')
-    probe = text(
-        "SELECT HAS_PERMS_BY_NAME(:name, 'OBJECT', :kind)"
+    probe = (
+        "HAS_PERMS_BY_NAME(:n{at}, 'OBJECT', :k{at})"
         if dialect == "mssql"
-        else "SELECT has_table_privilege(:name, :kind)"
+        else "has_table_privilege(:n{at}, :k{at})"
     )
     owner = schema.metadata.schema
-    lacking: list[str] = []
+    asked: list[tuple[str, str, str]] = []
     for table, kind in _privileges(schema):
         name = _quoted(table, open_, close)
         if owner:
             name = _quoted(owner, open_, close) + "." + name
-        if not connection.execute(probe, {"name": name, "kind": kind}).scalar():
-            lacking.append(f"{kind} on {table}")
+        asked.append((table, kind, name))
+    lacking: list[str] = []
+    for start in range(0, len(asked), _ASKED_AT_ONCE):
+        batch = asked[start : start + _ASKED_AT_ONCE]
+        statement = text("SELECT " + ", ".join(probe.format(at=at) for at in range(len(batch))))
+        params = {
+            key: value
+            for at, (_, kind, name) in enumerate(batch)
+            for key, value in ((f"n{at}", name), (f"k{at}", kind))
+        }
+        held = connection.execute(statement, params).one()
+        lacking.extend(
+            f"{kind} on {table}"
+            for (table, kind, _), has in zip(batch, held, strict=True)
+            if not has
+        )
     return lacking

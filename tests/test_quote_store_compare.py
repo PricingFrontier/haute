@@ -14,9 +14,11 @@ from typing import Any
 
 import pytest
 from sqlalchemy import event
+from sqlalchemy.dialects import mssql
 
+import haute._quote_store._catalogue as catalogue_module
 from haute._quote_store import QuoteStoreEnvironmentError, StoreLocation, open_book, render_sql
-from haute._quote_store._catalogue import Catalogue, read_catalogue
+from haute._quote_store._catalogue import IDENTITY, Catalogue, counting_statement, read_catalogue
 from haute._quote_store._compare import Comparison, Rename, compare, read_store_catalogue
 from haute._quote_store._migrate import PROVIDER_DIALECTS
 from haute._quote_store._providers import PROVIDERS
@@ -131,7 +133,7 @@ def test_a_database_made_from_the_form_s_sql_matches_it(target: Target) -> None:
 
 
 def _statements_reading(target: Target) -> int:
-    """The statements reading *target*'s catalogue, its quotes not counted, sends the server."""
+    """The statements reading *target*'s catalogue, its quotes counted, sends the server."""
     engine = make_engine(target.url, sign_in=target.sign_in)
     sent: list[str] = []
     try:
@@ -139,7 +141,7 @@ def _statements_reading(target: Target) -> int:
             event.listen(
                 connection, "before_cursor_execute", lambda *executing: sent.append(executing[2])
             )
-            read_catalogue(connection)
+            read_catalogue(connection, count=True)
     finally:
         engine.dispose()
     return len(sent)
@@ -153,9 +155,43 @@ def test_a_servers_tables_are_read_in_as_many_statements_however_many_it_holds(
     made_from_sql(server, RELEASED)
     few = _statements_reading(server)
 
-    server.run(*(f"CREATE TABLE extra_{index} (id INT PRIMARY KEY)" for index in range(5)))
+    # Each holds the quote's identity, so its quotes are counted too.
+    server.run(
+        *(
+            f"CREATE TABLE extra_{index} (quote_reference VARCHAR(80), quote_option BIGINT, v INT)"
+            for index in range(5)
+        )
+    )
 
     assert _statements_reading(server) == few
+
+
+def test_quotes_counted_a_few_tables_to_a_statement_are_those_counted_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A statement reads at most COUNTED_AT_ONCE values, under the engines' limit on a select's
+    # columns: a form wider than that is counted in as many statements as it needs.
+    target = Target("sqlite", f"sqlite:///{(tmp_path / 'store.sqlite').as_posix()}")
+    made_from_sql(target, RELEASED)
+    quote(target, RELEASED, "A-1", region="north", drivers="2")
+    quote(target, RELEASED, "A-2", region="south")
+    at_once = catalogue(target)
+
+    monkeypatch.setattr(catalogue_module, "COUNTED_AT_ONCE", 2)
+
+    assert catalogue(target) == at_once
+    policy = at_once.table("policy")
+    assert policy is not None and policy.quotes == 2
+
+
+def test_a_wide_forms_quotes_are_counted_binding_no_value() -> None:
+    # SQL Server binds at most 2,100 values to a statement, and one statement counts many
+    # tables' columns: the numbers it counts with are written into its SQL.
+    tables = [(f"t{index}", [*IDENTITY, *(f"c{at}" for at in range(30))]) for index in range(40)]
+
+    compiled = counting_statement(tables, "pricing").compile(dialect=mssql.dialect())
+
+    assert compiled.params == {}
 
 
 def test_the_quotes_holding_values_are_counted_by_table_and_column(target: Target) -> None:

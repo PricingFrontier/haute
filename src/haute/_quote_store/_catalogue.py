@@ -25,20 +25,28 @@ from sqlalchemy import (
     Float,
     Integer,
     MetaData,
+    Select,
     String,
+    Subquery,
     Table,
     case,
     func,
     inspect,
+    literal_column,
     select,
+    true,
 )
 from sqlalchemy.exc import CompileError
+from sqlalchemy.sql.elements import ColumnClause
 from sqlalchemy.types import TypeDecorator, TypeEngine
 
 from haute._workbench_form import QUOTE_DETAILS_ID
 
 #: The columns every table of the store leads with: the quote's identity.
 IDENTITY = ("quote_reference", "quote_option")
+#: The most values one statement counting quotes reads, a table's quotes and each of its
+#: columns', under the engines' limits on a select's columns: PostgreSQL's 1,664 the lowest.
+COUNTED_AT_ONCE = 1000
 #: The kinds a column's SQL type is told apart by, the first one it is wins: what the store
 #: reads and writes it as, whatever each engine names it.
 _KINDS: tuple[type[TypeEngine[Any]], ...] = (Boolean, Integer, Float, DateTime, Date, String)
@@ -129,7 +137,8 @@ def read_catalogue(
     columns = inspector.get_multi_columns(schema=sql_schema, filter_names=reading)
     keys = inspector.get_multi_pk_constraint(schema=sql_schema, filter_names=reading)
     references = inspector.get_multi_foreign_keys(schema=sql_schema, filter_names=reading)
-    tables: list[CatalogueTable] = []
+    found: list[tuple[str, list[Any], Any, bool]] = []
+    countable: dict[str, list[str]] = {}
     for name in reading:
         reflected = columns[(sql_schema, name)]
         held = {column["name"] for column in reflected}
@@ -139,11 +148,13 @@ def read_catalogue(
             and list(foreign.get("constrained_columns") or []) == list(IDENTITY)
             for foreign in references[(sql_schema, name)]
         )
-        quotes, counted = (
-            _counted(connection, name, [column["name"] for column in reflected], sql_schema)
-            if count and set(IDENTITY) <= held
-            else (None, {})
-        )
+        if count and set(IDENTITY) <= held:
+            countable[name] = [column["name"] for column in reflected]
+        found.append((name, reflected, keyed, refers))
+    counts = _counted(connection, list(countable.items()), sql_schema)
+    tables: list[CatalogueTable] = []
+    for name, reflected, keyed, refers in found:
+        quotes, counted = counts[name] if name in countable else (None, {})
         tables.append(
             CatalogueTable(
                 name=name,
@@ -166,38 +177,94 @@ def read_catalogue(
     return Catalogue(tables=tuple(tables))
 
 
-def _counted(
-    connection: Connection, name: str, columns: Sequence[str], sql_schema: str | None
-) -> tuple[int, dict[str, int]]:
-    """The quotes holding a row in the table *name*, and a value in each of its *columns*,
-    the identity's every quote's: quotes, not rows, in a many-row table, read in one
-    statement."""
+def _quote_counts(
+    index: int, name: str, columns: Sequence[str], sql_schema: str | None
+) -> Subquery:
+    """The table *name*'s quotes, and those holding a value in each of its *columns* past the
+    identity, as the one row an aggregate makes, labelled ``t<index>_q`` and
+    ``t<index>_c<column's place>``: quotes, not rows, in a many-row table, every quote's in
+    the identity's. Its numbers are written into its SQL, never bound, as one statement counts
+    many tables' columns and SQL Server binds at most 2,100 values to one."""
     held = Table(name, MetaData(schema=sql_schema), *(Column(column) for column in columns))
     counted = [column for column in columns if column not in IDENTITY]
     identity = [held.c[column] for column in IDENTITY]
+    one: ColumnClause[int] = literal_column("1")
+    none: ColumnClause[int] = literal_column("0")
     per_quote = (
         select(
             *identity,
             *(
-                func.max(case((held.c[column].is_not(None), 1), else_=0)).label(f"c{index}")
-                for index, column in enumerate(counted)
+                func.max(case((held.c[column].is_not(None), one), else_=none)).label(f"c{at}")
+                for at, column in enumerate(counted)
             ),
         )
         .group_by(*identity)
         .subquery()
     )
-    row = connection.execute(
+    return (
         select(
-            func.count(),
+            func.count().label(f"t{index}_q"),
             *(
-                func.coalesce(func.sum(per_quote.c[f"c{index}"]), 0)
-                for index in range(len(counted))
+                func.coalesce(func.sum(per_quote.c[f"c{at}"]), none).label(f"t{index}_c{at}")
+                for at in range(len(counted))
             ),
-        ).select_from(per_quote)
-    ).one()
-    quotes = int(row[0])
-    found = {column: int(row[index + 1]) for index, column in enumerate(counted)}
-    return quotes, {**dict.fromkeys(IDENTITY, quotes), **found}
+        )
+        .select_from(per_quote)
+        .subquery()
+    )
+
+
+def counting_statement(
+    tables: Sequence[tuple[str, Sequence[str]]], sql_schema: str | None
+) -> Select[Any]:
+    """One statement counting the quotes in each of *tables*, each its name and its columns,
+    as :func:`_quote_counts` labels them: the aggregates joined on nothing, each one row, so
+    the statement answers one row holding every table's counts."""
+    aggregates = [
+        _quote_counts(index, name, columns, sql_schema)
+        for index, (name, columns) in enumerate(tables)
+    ]
+    statement = select(*(column for aggregate in aggregates for column in aggregate.c))
+    statement = statement.select_from(aggregates[0])
+    for aggregate in aggregates[1:]:
+        statement = statement.join(aggregate, true())
+    return statement
+
+
+def _batches(
+    tables: Sequence[tuple[str, Sequence[str]]],
+) -> list[list[tuple[str, Sequence[str]]]]:
+    """*tables* in turn, as many to a batch as one statement may count, ``COUNTED_AT_ONCE``
+    values; a table wider than that alone."""
+    batches: list[list[tuple[str, Sequence[str]]]] = []
+    values = 0
+    for table in tables:
+        width = 1 + sum(column not in IDENTITY for column in table[1])
+        if not batches or values + width > COUNTED_AT_ONCE:
+            batches.append([])
+            values = 0
+        batches[-1].append(table)
+        values += width
+    return batches
+
+
+def _counted(
+    connection: Connection,
+    tables: Sequence[tuple[str, Sequence[str]]],
+    sql_schema: str | None,
+) -> dict[str, tuple[int, dict[str, int]]]:
+    """For each of *tables*, its name and its columns, the quotes holding a row in it and a
+    value in each of its columns, the identity's every quote's: the tables counted together,
+    a statement for as many as one may count, each statement a round trip to the server."""
+    counts: dict[str, tuple[int, dict[str, int]]] = {}
+    for batch in _batches(tables):
+        row = connection.execute(counting_statement(batch, sql_schema)).one()._mapping
+        for index, (name, columns) in enumerate(batch):
+            counted = [column for column in columns if column not in IDENTITY]
+            quotes = int(row[f"t{index}_q"])
+            found = {column: int(row[f"t{index}_c{at}"]) for at, column in enumerate(counted)}
+            counts[name] = (quotes, {**dict.fromkeys(IDENTITY, quotes), **found})
+    return counts
 
 
 def column_problems(

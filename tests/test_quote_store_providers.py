@@ -26,6 +26,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.schema import CreateTable
 
+import haute._quote_store._providers as providers_module
 from haute._credential_security import validate_credential_free_uri
 from haute._quote_store import (
     HOST_VARIABLES,
@@ -426,20 +427,31 @@ def test_a_release_image_takes_each_declared_providers_driver() -> None:
     )
 
 
-def test_a_started_app_names_each_privilege_its_sign_in_lacks() -> None:
+def test_a_started_app_names_each_privilege_its_sign_in_lacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     schema = store_schema(form(POLICY), sql_schema="pri]cing")
-    asked: list[dict[str, str]] = []
+    asked: list[list[tuple[str, str]]] = []
 
     def execute(_statement: Any, params: dict[str, str]) -> Any:
-        asked.append(params)
-        held = (params["name"], params["kind"]) != ("[pri]]cing].[policy]", "DELETE")
-        return SimpleNamespace(scalar=lambda: 1 if held else 0)
+        pairs = [(params[f"n{at}"], params[f"k{at}"]) for at in range(len(params) // 2)]
+        asked.append(pairs)
+        held = [pair != ("[pri]]cing].[policy]", "DELETE") for pair in pairs]
+        return SimpleNamespace(one=lambda: tuple(1 if each else 0 for each in held))
 
     connection = SimpleNamespace(dialect=SimpleNamespace(name="mssql"), execute=execute)
     assert missing_privileges(connection, schema) == ["DELETE on policy"]  # type: ignore[arg-type]
-    kinds = {(each["name"], each["kind"]) for each in asked}
+    # Every privilege asked in one statement, a round trip to the server.
+    assert len(asked) == 1
+    kinds = set(asked[0])
     assert ("[pri]]cing].[quote_details]", "UPDATE") in kinds
     assert ("[pri]]cing].[haute_activity]", "INSERT") in kinds
+    # More than a statement may bind are asked a few to a statement, answering the same.
+    monkeypatch.setattr(providers_module, "_ASKED_AT_ONCE", 2)
+    asked.clear()
+    assert missing_privileges(connection, schema) == ["DELETE on policy"]  # type: ignore[arg-type]
+    assert [len(each) for each in asked[:-1]] == [2] * (len(asked) - 1)
+    assert {pair for each in asked for pair in each} == kinds
     sqlite = SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
     assert missing_privileges(sqlite, schema) == []  # type: ignore[arg-type]
 
