@@ -294,7 +294,7 @@ assistant's current-directory project root (`PCFG-R04`); the assistant
 catalog's hand tables and
 key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
 (`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the pivot registry at shutdown (`ROAD-WORKER-06`); the
-browser's hand-written contract mirrors (`API-R03`), the results store's optimiser logic (`FSH-R03`) and the dead
+browser's hand-written contract mirrors (`API-R03`) and the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
 (`ENGQ-R01`); the editors' unused barrel and unlisted `@lezer/highlight`
 (`ENGQ-R01`) and the API Input label
@@ -304,8 +304,7 @@ utilities (`ENGQ-R01`); Banding's `_id` inside the config (`FNED-R07`), the edit
 barrels (`ENGQ-R01`), the pivot editor writing the
 fields the backend defaults (`EDA-R02`); a second fabricated
 train-failure sentinel (`FSH-R06`); the browser's frontier
-generation fences that only ever see generation 0 (`OPT-R04`) and
-`applyFrontierPointSummary`'s null handling (`FSH-R03`); in the workbench UI and
+generation fences that only ever see generation 0 (`OPT-R04`); in the workbench UI and
 the app shell, the
 chart theme observer written twice (`EDA-R03`), the params-folder listing in the
 Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`) and the

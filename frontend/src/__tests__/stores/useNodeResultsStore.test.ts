@@ -9,13 +9,10 @@ import useNodeResultsStore, {
   MAX_CACHED_TRAIN_RESULTS,
   MAX_CACHED_EXPLORE_PIVOT_RESULTS,
   MAX_CACHED_OPTIMISER_APPLY,
-  effectiveConstraintBounds,
-  optimiserApplyIdentityFor,
-  optimiserApplyKey,
   explorePivotResultKey,
-  hashConfig,
   resetNodeResultsDerivedCaches,
 } from "../../stores/useNodeResultsStore.ts"
+import { effectiveConstraintBounds, optimiserApplyIdentityFor, optimiserApplyKey } from "../../utils/optimiserSolveResults.ts"
 import useGraphStore from "../../stores/useGraphStore.ts"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore.ts"
 import type { PreviewData } from "../../panels/DataPreview.tsx"
@@ -710,87 +707,6 @@ describe("useNodeResultsStore", () => {
     })
   })
 
-  describe("hashConfig", () => {
-    it("returns the same hash for the same config", () => {
-      const config = { solver: "glpk", tolerance: 0.01 }
-      expect(hashConfig(config)).toBe(hashConfig({ ...config }))
-    })
-
-    it("returns different hashes for different configs", () => {
-      const a = { solver: "glpk", tolerance: 0.01 }
-      const b = { solver: "glpk", tolerance: 0.02 }
-      expect(hashConfig(a)).not.toBe(hashConfig(b))
-    })
-
-    it("hashes every key of the config, editor state having none in it", () => {
-      const base = { solver: "glpk", tolerance: 0.01 }
-      expect(hashConfig({ ...base, _columns: ["x"] })).not.toBe(hashConfig(base))
-    })
-
-    it("keeps reserved key spellings semantic below the root config", () => {
-      expect(hashConfig({
-        nested: { _columns: ["premium"] },
-      })).not.toBe(hashConfig({
-        nested: { _columns: ["discount"] },
-      }))
-    })
-
-    it("uses ordinary JSON semantics for undefined and non-finite values", () => {
-      expect(hashConfig({ optional: undefined })).toBe(hashConfig({}))
-      expect(hashConfig({ value: Number.NaN })).toBe(hashConfig({ value: null }))
-      expect(hashConfig({
-        values: [undefined, Number.POSITIVE_INFINITY],
-      })).toBe(hashConfig({
-        values: [null, null],
-      }))
-    })
-
-    it("accepts nested values with a JSON toJSON contract", () => {
-      expect(hashConfig({
-        value: { toJSON: () => ({ b: 2, a: 1 }) },
-      })).toBe(hashConfig({
-        value: { a: 1, b: 2 },
-      }))
-    })
-
-    it("still rejects genuinely cyclic configuration", () => {
-      const cyclic: Record<string, unknown> = {}
-      cyclic.self = cyclic
-
-      expect(() => hashConfig(cyclic)).toThrow()
-    })
-
-    it("normalizes nested objects inside arrays when hashing", () => {
-      const first = { constraints: [{ name: "premium", bounds: { min: 0, max: 100 } }] }
-      const second = { constraints: [{ bounds: { max: 100, min: 0 }, name: "premium" }] }
-
-      expect(hashConfig(first)).toBe(hashConfig(second))
-    })
-
-    it("returns a non-empty string", () => {
-      const hash = hashConfig({ a: 1 })
-      expect(hash.length).toBeGreaterThan(0)
-    })
-
-    it("uses the same identity for different object key orders", () => {
-      const a = { x: 1, y: 2 }
-      const b = { y: 2, x: 1 }
-
-      expect(hashConfig(a)).toBe(hashConfig(b))
-    })
-
-    it("preserves array order in the identity", () => {
-      expect(hashConfig({ columns: ["premium", "discount"] })).not.toBe(
-        hashConfig({ columns: ["discount", "premium"] }),
-      )
-    })
-
-    it("does not collide for a known DJB2 collision", () => {
-      expect(hashConfig({ value: "10ry7jgv0xesb" })).not.toBe(
-        hashConfig({ value: "n2mwwma6ztkt" }),
-      )
-    })
-  })
 
   // ────────────────────────────────────────────────────────────────
   // Preview cache / structural version
@@ -1276,30 +1192,6 @@ describe("useNodeResultsStore", () => {
       expect(currentIdentity("n1")).toEqual({ jobId: "j1", frontierGeneration: 3, target: "solved", query: QUERY })
     })
 
-    it("keys every part of the identity, the full query included", () => {
-      const base = { jobId: "j1", frontierGeneration: 0, target: "solved" as const, query: QUERY }
-      const keys = new Set([
-        optimiserApplyKey(base),
-        optimiserApplyKey({ ...base, jobId: "j2" }),
-        optimiserApplyKey({ ...base, frontierGeneration: 1 }),
-        optimiserApplyKey({ ...base, target: 0 }),
-        optimiserApplyKey({ ...base, query: { ...QUERY, offset: 100 } }),
-        optimiserApplyKey({ ...base, query: { ...QUERY, sort_by: "optimal_objective" } }),
-        optimiserApplyKey({ ...base, query: { ...QUERY, quote_id_prefix: "Q1" } }),
-        optimiserApplyKey({
-          ...base,
-          query: { ...QUERY, filters: { ...QUERY.filters, analysis_equals: { region: "North" } } },
-        }),
-      ])
-      expect(keys.size).toBe(8)
-    })
-
-    it("canonicalises the query, so key order never splits one query into two entries", () => {
-      const reordered = Object.fromEntries(Object.entries(QUERY).reverse()) as OptimiserApplyQuery
-      const base = { jobId: "j1", frontierGeneration: 0, target: "solved" as const }
-      expect(optimiserApplyKey({ ...base, query: reordered })).toBe(optimiserApplyKey({ ...base, query: QUERY }))
-    })
-
     it("stores a response for the current identity and drops one for a target no longer shown", () => {
       solve("n1", "j1", frontierResult(0))
       const s = useNodeResultsStore.getState()
@@ -1441,7 +1333,7 @@ describe("useNodeResultsStore", () => {
       const preview = useNodeResultsStore.getState().getOptimiserPreview("n1")!
       expect(preview.selectedPointIndex).toBe(0)
       expect(preview.result?.total_objective).toBe(150)
-      expect(preview.result?.history).toBeUndefined()
+      expect(preview.result?.history).toBeNull()
       expect(preview.solvedResult).toBe(result)
     })
   })
@@ -1649,12 +1541,12 @@ describe("useNodeResultsStore", () => {
       expect(selected.iterations).toBe(19)
       expect(selected.cd_iterations).toBe(4)
       expect(selected.clamp_rate).toBe(0.01)
-      expect(selected.history).toBeUndefined()
+      expect(selected.history).toBeNull()
       // The solve's report does not describe the point; the Adjustments tab loads the point's.
-      expect(selected.adjustments).toBeUndefined()
+      expect(selected.adjustments).toBeNull()
       // A point without tables has none, as the server's result reports it.
       expect(selected.factor_tables).toEqual({})
-      expect(selected.warning).toBeUndefined()
+      expect(selected.warning).toBeNull()
     })
 
     it("selectFrontierPoint uses a point-specific warning for non-converged frontier point summaries", () => {
@@ -1760,20 +1652,6 @@ describe("useNodeResultsStore", () => {
       })
     })
 
-    it("effectiveConstraintBounds throws when a constraint has no backend bound", () => {
-      expect(() => effectiveConstraintBounds(makeSolveResult({
-        constraints: { premium: 50 },
-        effective_bounds: {},
-      }))).toThrow(/premium/)
-      expect(() => effectiveConstraintBounds(makeSolveResult({
-        constraints: { premium: 50 },
-        effective_bounds: { premium: { kind: "min", bound: Number.NaN } },
-      }))).toThrow(/premium/)
-      expect(() => effectiveConstraintBounds(makeSolveResult({
-        constraints: {},
-        effective_bounds: { premium: { kind: "min", bound: 1 } },
-      }))).toThrow(/premium/)
-    })
 
     it("selectFrontierPoint noop for unknown node", () => {
       const s = useNodeResultsStore.getState()
@@ -1956,7 +1834,7 @@ describe("useNodeResultsStore", () => {
       expect(cached.frontier!.point_summaries[1]).toBe(secondSummary)
       expect(cached.result?.iterations).toBe(18)
       expect(cached.result?.history).toEqual(history)
-      expect(cached.result?.adjustments).toBeUndefined()
+      expect(cached.result?.adjustments).toBeNull()
       expect(cached.result?.factor_tables).toEqual(factor_tables)
     })
 
@@ -2103,11 +1981,11 @@ describe("useNodeResultsStore", () => {
       const cached = useNodeResultsStore.getState().solveResults["n1"]
       expect(cached.result?.total_objective).toBe(999)
       expect(cached.result?.n_quotes).toBe(5000)
-      expect(cached.result?.iterations).toBeUndefined()
-      expect(cached.result?.cd_iterations).toBeUndefined()
-      expect(cached.result?.clamp_rate).toBeUndefined()
-      expect(cached.result?.history).toBeUndefined()
-      expect(cached.result?.adjustments).toBeUndefined()
+      expect(cached.result?.iterations).toBeNull()
+      expect(cached.result?.cd_iterations).toBeNull()
+      expect(cached.result?.clamp_rate).toBeNull()
+      expect(cached.result?.history).toBeNull()
+      expect(cached.result?.adjustments).toBeNull()
       // The select response always carries its point's factor tables, empty here.
       expect(cached.result?.factor_tables).toEqual({})
     })

@@ -346,7 +346,7 @@ therefore fail at the caller, consistent with the application's fail-loud policy
 ## Design rationale
 
 - **Fail loud, not soft.** The API layer and the result-cache parsers
-  (`hashConfig`, frontier-point derivation) throw on malformed input rather
+  (frontier-point derivation in `utils/optimiserSolveResults.ts`) throw on malformed input rather
   than defaulting — per the project's error-handling policy, a wrong
   fallback is worse than a visible crash, because a silent fallback hides
   the bug that produced it.

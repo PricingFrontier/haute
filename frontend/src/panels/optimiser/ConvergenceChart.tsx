@@ -19,7 +19,7 @@ import type {
   OptimiserRatebookCdTrace,
   OptimiserSolveResult,
 } from "../../api/types"
-import { effectiveConstraintBounds } from "../../stores/useNodeResultsStore"
+import { effectiveConstraintBounds } from "../../utils/optimiserSolveResults"
 import { CHART_COLORS } from "../../theme/colors"
 import { decade, formatChartNumber } from "../../utils/chartHelpers"
 import {

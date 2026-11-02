@@ -23,10 +23,10 @@ import type {
   OptimiserQuoteFilters,
 } from "../../api/types"
 import useNodeResultsStore, {
-  optimiserApplyKey,
   type OptimiserApplyIdentity,
   type OptimiserApplyQuery,
 } from "../../stores/useNodeResultsStore"
+import { optimiserApplyKey } from "../../utils/optimiserSolveResults"
 import { formatValue } from "../../utils/formatValue"
 import { frontierGenerationMismatch } from "./optimiserHelpers"
 import {

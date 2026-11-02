@@ -14,7 +14,7 @@ import type { SimpleEdge, SimpleNode } from "../panels/editors"
 import { buildNodeDataCacheIdentity } from "../panels/dataPointIdentity"
 import useNodeDataStore, { columnsCoverDemand } from "../stores/useNodeDataStore"
 import useNodeWorkStore, { registerNodeStop } from "../stores/useNodeWorkStore"
-import { hashConfig } from "../stores/useNodeResultsStore"
+import { hashConfig } from "../utils/configHash"
 import {
   captureDocumentExecutionFence,
   isDocumentExecutionFenceCurrent,

@@ -15,7 +15,8 @@ import {
   captureDocumentExecutionFence,
   isDocumentExecutionFenceCurrent,
 } from "../../stores/useDocumentStatusStore"
-import useNodeResultsStore, { hashConfig, type SolveProgress } from "../../stores/useNodeResultsStore"
+import useNodeResultsStore, { type SolveProgress } from "../../stores/useNodeResultsStore"
+import { hashConfig } from "../../utils/configHash"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { buildGraph } from "../../utils/buildGraph"
 import {

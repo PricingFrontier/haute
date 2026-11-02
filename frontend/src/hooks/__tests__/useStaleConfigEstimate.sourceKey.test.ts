@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, waitFor, cleanup } from "@testing-library/react"
 import { useStaleConfigEstimate } from "../useStaleConfigEstimate"
-import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore"
+import useNodeResultsStore from "../../stores/useNodeResultsStore"
+import { hashConfig } from "../../utils/configHash"
 
 // Key-contract pin (Maginot: fingerprint / cache-key completeness).
 // The solve/train staleness key must cover every input that affects the

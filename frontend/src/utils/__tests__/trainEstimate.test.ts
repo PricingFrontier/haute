@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest"
 
-import {
-  nextTrainEstimate,
-  type TrainProgress,
-} from "../useNodeResultsStore"
+import type { TrainProgress } from "../../stores/useNodeResultsStore"
+import { nextTrainEstimate } from "../trainEstimate"
 
 function progress(
   iteration: number,

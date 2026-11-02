@@ -25,7 +25,11 @@
 | `frontend/src/generated/api-contracts.schema.json`, `frontend/src/generated/api-contracts.generated.ts`, `frontend/src/generated/api-contracts.constants.generated.ts`, `frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.mjs`, `frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.d.mts`, `frontend/src/generated/api-contracts.explore-charts.validators.mjs`, and `frontend/src/generated/api-contracts.explore-charts.validators.d.mts` | Committed contract source, static declarations, lazy Explore constants, and split self-contained validators owned by [engineering-quality](../engineering-quality/low-level.md) and consumed by frontend trust boundaries. The execution validator co-exports its generated schema version and is eager; the Explore chart validator and option constants stay behind its lazy panel chunk. |
 | `frontend/src/types/trainGuards.ts` | Dynamically imported runtime parsers for modelling train/status/estimate responses, outside the initial JavaScript graph. `parseTrainResponse` and `parseTrainStatusResponse` take the whole structure, including the evaluation and tuning reports and the fit evidence, from the generated `training` validators, and shape by hand only what the server model leaves open: the diagnostic row lists, loss history, GLM inference and regularisation, EBM terms and the feature-selection report. The evaluation and tuning invariants are checked once on the server, where their artifacts are produced, so the browser does not re-check them. `parseTrainEstimateResponse` takes the estimate's structure from the generated `TrainEstimateResponse` validator and applies only the cross-field rules by hand: the evaluation preview's strategy/validation consistency, and the unavailable reason's figures and blocking node (narrowed to a discriminated union). |
 | `frontend/src/types/pipelineRepair.ts` | Exact-key minimal repair apply wire types and parsers. Apply delegates its nested document to `parsePipelineEditorDocument`; no response or request type contains replacement source bytes or migration operations. |
-| `frontend/src/stores/useNodeResultsStore.ts` | Zustand store: preview, solve, train and Explore pivot result and job caches (`startTrainJob` records the `trainingLineage` of the submitted training payload that the editor passes in; a fence-current completion remembers the job in the browser handles of `utils/trainedJobHandles` and an error or failure forgets it; `restoreTrainResult` puts back a completed training result restored after a reload, never replacing an existing result or running job; `markTrainResultExpired` records, in `expiredTrainJobs`, a node whose remembered completed result the server no longer holds, unless the node has a result or running job, and starting a training job, a completed or restored result, or clearing the node drops that record), authoritative training history plus bounded ETA samples, column cache, derived-getter memoization, LRU eviction, and the atomic per-pivot start claim (one current claim per Explore node + pivot id holding the owning node id, the requested dataframe cache key, calculation identity, and a unique generation token; taking a claim before submission serialises concurrent consumers, an identical automatic target no-ops, every manual Retry and every newer automatic target atomically replaces the generation, only the current token may promote it to a job or release it — superseded outcomes are discarded — and clearing a node's results drops exactly the claims whose stored node id matches). |
+| `frontend/src/stores/useNodeResultsStore.ts` | Zustand store: preview, solve, train and Explore pivot result and job caches (`startTrainJob` records the `trainingLineage` of the submitted training payload that the editor passes in; a fence-current completion remembers the job in the browser handles of `utils/trainedJobHandles` and an error or failure forgets it; `restoreTrainResult` puts back a completed training result restored after a reload, never replacing an existing result or running job; `markTrainResultExpired` records, in `expiredTrainJobs`, a node whose remembered completed result the server no longer holds, unless the node has a result or running job, and starting a training job, a completed or restored result, or clearing the node drops that record), authoritative training history plus bounded ETA samples (computed by `utils/trainEstimate.ts`), column cache, LRU eviction, and the atomic per-pivot start claim (one current claim per Explore node + pivot id holding the owning node id, the requested dataframe cache key, calculation identity, and a unique generation token; taking a claim before submission serialises concurrent consumers, an identical automatic target no-ops, every manual Retry and every newer automatic target atomically replaces the generation, only the current token may promote it to a job or release it — superseded outcomes are discarded — and clearing a node's results drops exactly the claims whose stored node id matches). |
+| `frontend/src/stores/nodeResultsSelectors.ts` | The previews derived from the results store's records: `optimiserPreviewFor` (a solved result's preview) and `modellingPreviewFor` (a completed training result's under its node's label), memoised on the record in a `WeakMap`. |
+| `frontend/src/utils/optimiserSolveResults.ts` | The optimiser derivations the results store applies: `frontierFromSolveResult` (the frontier a completed solve carries, refusing one of another generation), `applyFrontierPointSummary`/`resultForFrontierPoint`, `assertSelectReplyForPoint`, `selectReplyIsCurrent`, `frontierPointSummaryFromSelect`, `effectiveConstraintBounds`, and the `/apply` identity (`optimiserApplyIdentityFor`, `optimiserApplyKey`, `sameApplyTarget`) and cache housekeeping. These cross-field checks stay hand-written beside the generated response validators. |
+| `frontend/src/utils/configHash.ts` | `hashConfig`, a node config's identity: its `canonicalJson`. Remembered training handles keep it, so its output must not change. |
+| `frontend/src/utils/trainEstimate.ts` | `nextTrainEstimate`, a training's remaining time from the rate between its last two progress samples (rounds, or fits while tuning). |
 | `frontend/src/stores/useNodeDataStore.ts` | Zustand store of the data every consumer of one point shares, keyed by slot (`producerNodeId|portLabel|source`): the point's kind, the generation its producer's current signature has (id, column set, rows, bytes, retention, freshness), the running build — a node-data job with its progress and whether this tab started it (`startedHere`, as a profile job also records), or a delegated build with its message, its canceller, and the token that owns it — the profile of the data version it holds and why the last profile failed — attributed to the version that profile was computed for, so a generation published while it ran is still profiled — how the point is built or cleared, and a monotonic node-data epoch. It also records, per consumer node, the slot it was last told it reads together with the identity that answer was given for, so a read for another identity returns nothing. A consumer's own availability is derived from the entry and its column demand, never stored. |
 | `frontend/src/hooks/useNodeDataCache.ts` | One consumer node's view of the data it reads: the point, its availability for that consumer's demand, and `run`, `refresh`, `cancel`, and `clear`. |
 | `frontend/src/hooks/useNodeDataProfile.ts` | The shared `profile` analysis of the data one consumer reads: asked for once per slot and data version while the point is `current`, fenced against a document that has moved on, stored per slot so every pane showing that data gets it, with `cancel` for the running job, and `error` plus `refresh` so a failed attempt is retried rather than left as an empty pane. Each request names the version it asks about, which the job it starts carries. |
@@ -343,12 +347,17 @@ A current response (1) removes the corresponding entry from the `*Jobs` in-fligh
 (2) builds the next cached record, (3) calls `trimCacheByRecency` to bound
 the record count (recency tracked in a module-level `Map`, not store state,
 so touching a cache entry for read purposes doesn't trigger a re-render),
-(4) evicts the module-level derived-getter cache
-(`_optimiserPreviewCache`/`_modellingPreviewCache`) for anything
-`trimCacheByRecency` dropped, and (5) recomputes the derived-getter cache
-entry for the just-written node. `getOptimiserPreview`/`getModellingPreview`
-are safe to call during render because they only ever read the memoized
-derived cache or recompute it inline — they never call `set()`.
+and (4) writes the new record. The store holds state and actions only: the
+previews derived from a record come from `stores/nodeResultsSelectors.ts`
+(`optimiserPreviewFor`, `modellingPreviewFor`), memoised on the record they
+read in a `WeakMap` (records are replaced, never mutated, so a render reading
+the same record gets the same preview object and an evicted record's preview
+goes with it), and the optimiser derivations — a frontier point's result from
+its summary, the frontier a completed solve carries with its generation check,
+the select reply's point check, and the `/apply` identity, key and cache
+housekeeping — come from `utils/optimiserSolveResults.ts`.
+`getOptimiserPreview`/`getModellingPreview` are safe to call during render:
+they read a record and its memoised preview and never call `set()`.
 
 **Frontier point selection** (`selectFrontierPoint`,
 `updateFrontierAfterSelect`): selecting a point applies the server's summary
@@ -390,7 +399,7 @@ eviction drop all the node's entries. `touchOptimiserApply` marks a hit most
 recently used. See the
 [optimiser UI spec](../frontend-modelling-optimiser-ui/low-level.md#edge-cases-and-invariants).
 
-**Constraint bounds** (`effectiveConstraintBounds`): the one selector the
+**Constraint bounds** (`effectiveConstraintBounds`, `utils/optimiserSolveResults.ts`): the one selector the
 optimiser Summary and frontier detail card read a result's constraint bounds
 from. It returns the displayed result's backend `effective_bounds` (the
 selected point's, else the solve's) and throws when an entry is missing,
@@ -490,10 +499,10 @@ focus nor leaves stale callbacks.
   direct cross-store read at call time, not a subscription, so a stale
   read only happens if the caller doesn't re-invoke `getColumns` after a
   structural change.
-- **`hashConfig`** hashes the whole config (editor state travels beside it on the
-  node data, never in it), applies ordinary
-  `JSON.stringify`/`JSON.parse` normalisation, recursively sorts object keys,
-  preserves array order, and returns the canonical JSON string itself.
+- **`hashConfig`** (`utils/configHash.ts`) hashes the whole config (editor state
+  travels beside it on the node data, never in it): it is the config's
+  `canonicalJson`, with JSON's own value rules, sorted object keys and array
+  order preserved.
   Nested fields with the same names remain semantic. This exact identity is
   intentionally collision-free; cycles, `BigInt`, and other genuine
   serialization failures throw rather than receiving a fallback identity.

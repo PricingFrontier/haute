@@ -42,7 +42,7 @@ import {
   type FrontierSliceChoice,
   type FrontierSlicing,
 } from "./optimiser/frontierSlices"
-import { effectiveConstraintBounds } from "../stores/useNodeResultsStore"
+import { effectiveConstraintBounds } from "../utils/optimiserSolveResults"
 import RatebookRatesTab from "./optimiser/RatebookRatesTab"
 import { hasFactorTables } from "./optimiser/ratebookFactorTables"
 import { frontierGenerationMismatch } from "./optimiser/optimiserHelpers"
