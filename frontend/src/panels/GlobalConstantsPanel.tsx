@@ -1,4 +1,4 @@
-import { useMemo, type CSSProperties } from "react"
+import { useMemo, useRef, type CSSProperties } from "react"
 import { AlertTriangle, Plus, Trash2, Variable } from "lucide-react"
 import { CommittedTextField } from "../components/form"
 import PanelShell from "./PanelShell"
@@ -76,11 +76,18 @@ interface ValueCellProps {
   label: string
   /** Shown while the cell is empty and nothing is wrong with it. */
   placeholder?: string
-  onChange: (value: string) => void
+  /** `continuing` is true for a keystroke after the first of one edit of the cell. */
+  onChange: (value: string, continuing: boolean) => void
 }
 
-/** One value as a table cell: the input that fits the type, marked when invalid or missing. */
+/**
+ * One value as a table cell: the input that fits the type, marked when invalid or missing.
+ * Every keystroke reaches the store, so the pane validates as the analyst types; an edit,
+ * from its first keystroke until the cell loses focus, is one undo step. A value changed
+ * from outside the cell (Undo) starts a new edit.
+ */
 function ValueCell({ type, value, disabled, problem, testId, label, placeholder, onChange }: ValueCellProps) {
+  const emittedRef = useRef<string | null>(null)
   const title = problem === MISSING_VALUE ? "Missing" : problem
   if (type === "boolean") {
     return (
@@ -90,7 +97,7 @@ function ValueCell({ type, value, disabled, problem, testId, label, placeholder,
         title={title}
         value={value}
         disabled={disabled}
-        onChange={(event) => onChange(event.target.value)}
+        onChange={(event) => onChange(event.target.value, false)}
         className={CELL_INPUT}
         style={cellStyle(problem)}
       >
@@ -111,7 +118,13 @@ function ValueCell({ type, value, disabled, problem, testId, label, placeholder,
       value={value}
       disabled={disabled}
       aria-invalid={problem && problem !== MISSING_VALUE ? true : undefined}
-      onChange={(event) => onChange(event.target.value)}
+      onFocus={() => { emittedRef.current = null }}
+      onBlur={() => { emittedRef.current = null }}
+      onChange={(event) => {
+        const continuing = emittedRef.current === value
+        emittedRef.current = event.target.value
+        onChange(event.target.value, continuing)
+      }}
       className={CELL_INPUT}
       style={{ ...cellStyle(problem), colorScheme: "dark" }}
     />
@@ -148,8 +161,8 @@ interface ConstantRowProps {
   sources: readonly string[]
   readers: string[]
   disabled: boolean
-  onChange: (draft: GlobalConstantDraft) => void
-  /** False when the analyst declines the rename. */
+  /** `continuing` carries on the current value edit's undo step. */
+  onChange: (draft: GlobalConstantDraft, continuing?: boolean) => void
   /** Rename the constant, asking first when it is read; resolves false when it is not renamed. */
   onRename: (name: string) => Promise<boolean>
   onDelete: () => void
@@ -227,7 +240,7 @@ function ConstantRow({ index, draft, issues, sources, readers, disabled, onChang
               problem={issues.bySource[source]}
               testId={`constant-value-${index}-${source}`}
               label={`${label} ${source} value`}
-              onChange={(value) => onChange({ ...draft, bySource: { ...draft.bySource, [source]: value } })}
+              onChange={(value, continuing) => onChange({ ...draft, bySource: { ...draft.bySource, [source]: value } }, continuing)}
             />
           </td>
         ))
@@ -241,7 +254,7 @@ function ConstantRow({ index, draft, issues, sources, readers, disabled, onChang
             testId={`constant-value-${index}`}
             label={`${label} value`}
             placeholder={sources.length > 1 ? "same value for every source" : undefined}
-            onChange={(value) => onChange({ ...draft, value })}
+            onChange={(value, continuing) => onChange({ ...draft, value }, continuing)}
           />
         </td>
       )}
@@ -322,9 +335,14 @@ export default function GlobalConstantsPanel({ onClose, readOnly = false }: Glob
   )
   const unknownSources = useMemo(() => unknownSourceKeys(drafts, sources), [drafts, sources])
 
-  const setDrafts = (next: GlobalConstantDraft[]) => useGraphStore.getState().setGlobalConstantsRaw(next)
-  const replace = (index: number, draft: GlobalConstantDraft) =>
-    setDrafts(drafts.map((current, at) => (at === index ? draft : current)))
+  // Each edit is one undo step; the later keystrokes of one value edit join its step.
+  const setDrafts = (next: GlobalConstantDraft[], continuing = false) => {
+    const graph = useGraphStore.getState()
+    if (continuing) graph.setGlobalConstantsRaw(next)
+    else graph.setGlobalConstants(next)
+  }
+  const replace = (index: number, draft: GlobalConstantDraft, continuing = false) =>
+    setDrafts(drafts.map((current, at) => (at === index ? draft : current)), continuing)
   const add = () => setDrafts([...drafts, newConstantDraft(drafts)])
   const rename = async (index: number, name: string): Promise<boolean> => {
     const draft = drafts[index]
@@ -441,7 +459,7 @@ export default function GlobalConstantsPanel({ onClose, readOnly = false }: Glob
                       sources={sources}
                       readers={readers[index]}
                       disabled={disabled}
-                      onChange={(next) => replace(index, next)}
+                      onChange={(next, continuing) => replace(index, next, continuing)}
                       onRename={(name) => rename(index, name)}
                       onDelete={() => void remove(index)}
                     />

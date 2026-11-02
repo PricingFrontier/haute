@@ -323,8 +323,13 @@ available. Save is refused while any constant is invalid.
 - When the constants file failed to load, the pane shows the load error and is read-only, and
   save sends no constants.
 
-Constants edits are not on the canvas undo stack, but they are in the dirty state, so an edit
-marks the pipeline unsaved. Every execution request (preview, training, the optimiser, Explore,
+Constants edits are on the canvas undo stack and in the dirty state. Adding, deleting, renaming,
+changing the type, switching the split and removing unknown-source values are one undo step
+each; a value edit is one step from its first keystroke until its cell loses focus, while every
+keystroke still reaches the store so the pane validates as the analyst types. Undo and Redo
+restore the constants together with the graph, and undoing back to the saved constants reports
+clean. Removing a pipeline source removes its constant values without an undo step, as the
+source removal itself has none. Every execution request (preview, training, the optimiser, Explore,
 Data Output and Output) carries the valid constants and the load error, and a save carries the
 constants.
 

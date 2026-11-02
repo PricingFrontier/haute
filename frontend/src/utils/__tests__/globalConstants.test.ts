@@ -157,6 +157,41 @@ describe("constant reads", () => {
     })).toEqual(new Set(["a", "b"]))
   })
 
+  it("reads Constant operands wherever a step's structured formula holds them", () => {
+    const constant = (name: string) => ({ kind: "constant", name })
+    expect(nodeConstantReads({
+      steps: [
+        { id: "s", kind: "source", input: "quotes" },
+        {
+          id: "f",
+          kind: "filter",
+          match: "all",
+          conditions: [{ column: "age", operator: "gt", value: constant("min_age") }],
+        },
+        {
+          id: "w",
+          kind: "with_column",
+          name: "net",
+          expr: { type: "binary", left: { kind: "column", name: "gross" }, op: "*", right: constant("ipt"), text: "gross * ipt" },
+        },
+        {
+          id: "c",
+          kind: "with_column",
+          name: "band",
+          expr: {
+            type: "conditional",
+            branches: [{
+              match: "all",
+              conditions: [{ column: "age", operator: "lt", value: constant("young") }],
+              then: { kind: "expr", expr: { type: "operand", operand: constant("young_load") } },
+            }],
+            otherwise: constant("base_load"),
+          },
+        },
+      ],
+    })).toEqual(new Set(["min_age", "ipt", "young", "young_load", "base_load"]))
+  })
+
   it("lists the nodes that read a constant by label", () => {
     const nodes = [
       { id: "n1", data: { label: "Pricing", config: { code: "x = global_constants.rate" } } },

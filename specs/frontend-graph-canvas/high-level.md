@@ -287,7 +287,7 @@ candidate, with the error toast.
   non-history path. A whole-document load is a distinct atomic transition: it
   installs all four persisted fields, establishes that exact snapshot as the
   saved baseline, clears undo and redo, and advances cache/context versions
-  monotonically. Undo/redo restores all four graph fields together and retains
+  monotonically. Undo/redo restores all four graph fields and the global constants together and retains
   transient server-owned editor identities required by the live graph; Save
   payloads and dirty fingerprints omit those identities.
 - **Save waits for committed editor work.** A blur-triggered node update or

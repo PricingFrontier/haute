@@ -15,47 +15,9 @@ packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FGC-R11 | Planned | P2 | Global Constants edits participate in Undo/Redo history and are restored by `undo()` and `redo()`, and `nodeConstantReads` scans expression strings inside structured Polars steps. |
 | FGC-R12 | Planned | P2 | `previewPortLabel` honours `chosenFrame` on multi-table `apiInput` and `workbenchInput` nodes, `computeStructuralFingerprint` and `computePanelContextFingerprint` include `submodels` and submodel boundary `ports`, `Ctrl+V` refuses `submodel` and `submodelPort` nodes, and `Escape` in a non-empty `SearchField` does not close an enclosing `ModalShell`. |
 
 ## Planned improvements
-
-### FGC-R11 — Global Constants edits participate in Undo/Redo history and `nodeConstantReads` scans structured step expressions
-**Why:** `GlobalConstantsPanel` commits every constant add, rename, value change and
-delete through `setGlobalConstantsRaw(next)`, which bypasses `pushHistory`. Even
-though `cloneGraphSnapshot` captures `globalConstants` in every `HistoryEntry`,
-`undo()` and `redo()` in `useGraphStore` read `get().globalConstants` and never
-restore `prev.globalConstants` or `next.globalConstants`. Consequently, Global
-Constants edits cannot be undone, and undoing or redoing any node or edge edit
-leaves `globalConstants` out of step with the restored snapshot. In addition,
-`stepConstantReads` and `nodeConstantReads` in `globalConstantsEditing.ts` collect
-only `{ kind: "constant", name }` operands and `codeConstantReads` on `config.code`
-and `step.kind === "free_code"`; after `authoredPolarsConfig` strips derived
-`config.code` on stepped Polars nodes, `nodeConstantReads` misses `global_constants`
-references inside `step.expression` (filter step), `value.expression` (assign and
-`case_when` steps), and `branch.when` (`case_when` branch), so the Global Constants
-panel under-counts references and skips delete confirmations for constants used in
-step expressions.
-
-**Plan:** Add a history-recording `setGlobalConstants` action to `useGraphStore`
-(used by `GlobalConstantsPanel` for user edits while keeping `setGlobalConstantsRaw`
-for document loads and resets), restore `prev.globalConstants` /
-`next.globalConstants` in `undo()` and `redo()`, and pass `step.expression`,
-`value.expression` and `branch.when` through `codeConstantReads` inside
-`stepConstantReads`.
-
-**Acceptance:** Adding, editing or deleting a Global Constant pushes an undo entry;
-pressing Undo restores the previous `globalConstants` list and updates `dirty`
-accurately; pressing Redo re-applies the constant change; and a constant referenced in
-a filter, assign or `case_when` expression is counted as used by `nodeConstantReads`.
-
-**Dependencies:** Coordinates with `FSH-R06` (`commitGraphState`).
-
-**Evidence:** `frontend/src/panels/GlobalConstantsPanel.tsx::GlobalConstantsPanel`;
-`frontend/src/stores/useGraphStore.ts::useGraphStore`;
-`frontend/src/utils/graphSnapshot.ts::cloneGraphSnapshot`;
-`frontend/src/utils/globalConstantsEditing.ts::stepConstantReads`;
-`frontend/src/utils/globalConstantsEditing.ts::nodeConstantReads`.
 
 ### FGC-R12 — Multi-frame `previewPortLabel`, submodel structural/panel fingerprints, `Ctrl+V` submodel paste guard, and `SearchField` `Escape` isolation
 **Why:** Four canvas identity, preview-routing and keyboard interaction helpers have

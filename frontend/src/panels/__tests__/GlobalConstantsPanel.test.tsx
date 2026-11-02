@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import type { Node } from "@xyflow/react"
 import GlobalConstantsPanel from "../GlobalConstantsPanel"
 import useGraphStore from "../../stores/useGraphStore"
@@ -65,7 +65,54 @@ describe("GlobalConstantsPanel", () => {
     expect(screen.getByTestId("constant-name-1")).toHaveValue("constant_2")
     expect(screen.getByTestId("constant-value-issue-1")).toHaveTextContent("Enter a value.")
     expect(useGraphStore.getState().dirty).toBe(true)
-    expect(useGraphStore.getState().undoStack).toEqual([])
+    useGraphStore.getState().undo()
+    expect(constants()).toEqual([uniform("constant_1", "1")])
+    expect(useGraphStore.getState().dirty).toBe(false)
+  })
+
+  it("makes one value edit, typed key by key until the cell loses focus, one undo step", () => {
+    load([uniform("rate", "1")])
+    render(<GlobalConstantsPanel onClose={vi.fn()} />)
+    const cell = screen.getByTestId("constant-value-0")
+
+    fireEvent.focus(cell)
+    for (const value of ["1.", "1.2", "1.25"]) fireEvent.change(cell, { target: { value } })
+    fireEvent.blur(cell)
+    fireEvent.focus(cell)
+    fireEvent.change(cell, { target: { value: "2" } })
+    expect(useGraphStore.getState().undoStack).toHaveLength(2)
+
+    act(() => useGraphStore.getState().undo())
+    expect(constants()[0].value).toBe("1.25")
+    expect(cell).toHaveValue("1.25")
+    // Typing on after Undo starts a new step rather than joining the undone one.
+    fireEvent.change(cell, { target: { value: "1.3" } })
+    expect(useGraphStore.getState().undoStack).toHaveLength(2)
+    expect(useGraphStore.getState().redoStack).toHaveLength(0)
+
+    act(() => useGraphStore.getState().undo())
+    act(() => useGraphStore.getState().undo())
+    expect(constants()[0].value).toBe("1")
+    expect(useGraphStore.getState().dirty).toBe(false)
+    act(() => useGraphStore.getState().redo())
+    expect(constants()[0].value).toBe("1.25")
+  })
+
+  it("undoes a deletion, a type change and a split, one step each", async () => {
+    load([uniform("rate", "1"), uniform("cap", "2")])
+    render(<GlobalConstantsPanel onClose={vi.fn()} />)
+
+    fireEvent.change(screen.getByTestId("constant-type-0"), { target: { value: "text" } })
+    fireEvent.click(screen.getByTestId("constant-split-0"))
+    fireEvent.click(screen.getByRole("button", { name: "Remove cap" }))
+    expect(constants()).toHaveLength(1)
+
+    act(() => useGraphStore.getState().undo())
+    expect(constants().map((draft) => draft.name)).toEqual(["rate", "cap"])
+    act(() => useGraphStore.getState().undo())
+    expect(constants()[0]).toMatchObject({ type: "text", split: false })
+    act(() => useGraphStore.getState().undo())
+    expect(constants()).toEqual([uniform("rate", "1"), uniform("cap", "2")])
   })
 
   it("edits a value and marks an invalid one with its reason", () => {

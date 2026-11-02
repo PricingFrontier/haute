@@ -645,6 +645,7 @@ describe("useGraphStore - consolidation", () => {
         edges: [],
         preamble: "",
         submodels: {},
+        globalConstants: [],
       }))
       act(() => {
         store.setState({ undoStack: snapshots })
