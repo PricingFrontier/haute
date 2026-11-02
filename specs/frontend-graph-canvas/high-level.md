@@ -576,10 +576,26 @@ candidate, with the error toast.
   parent view byte-for-byte unchanged and reports one error toast. A successful
   frame records both `instanceId` and `definitionId`, so two occurrences of one
   definition navigate and return independently, and announces when edits affect
-  more than one occurrence. Breadcrumb navigation restores the exact saved
-  node/edge state for any ancestor level rather than re-fetching it, using the
-  backend's recorded submodel file instead of reconstructing a path from a
-  display label.
+  more than one occurrence. Drilling into any occurrence, original or read-only
+  instance, and returning by breadcrumb both close the side panels (Utility,
+  Constants, Assistant, Git, Files), clear the selection, cancel any in-flight
+  preview or trace request, and clear the preview and trace on show. Returning
+  restores the source file recorded on entry, never a path reconstructed from a
+  display label. Submodels do not nest: the graph store refuses a second view
+  while one is open, so every breadcrumb below the active one is the main
+  pipeline.
+- **A submodel view has its own Undo/Redo history.** The graph store swaps the
+  canvas for the child view in one transition that sets the root's undo and redo
+  stacks aside and starts the view with empty ones, so Undo in the view never
+  reaches a root edit. The view is clean exactly when it is unchanged and the root
+  it came from was saved: a save begun at the root that lands while drilled makes
+  the view clean only if it saved the root that was entered. Returning by
+  breadcrumb restores the reconciled parent graph and submodels held for the
+  view, rather than re-fetching them, together with the root's stacks; when the
+  visit changed the document, the root as it was on entry becomes one undo entry
+  (and the redo stack is cleared), so one Undo at the root reverts the whole visit
+  and never puts `submodel_port` cards on the root canvas. A whole-document load
+  ends an open view, keeping only version-control entries from both levels.
 - **Submodel creation is a toolbar action or a keyboard shortcut, not a
   context-menu item.** Selecting two or more nodes and either pressing Ctrl+G
   or clicking the toolbar's Submodel button opens `SubmodelDialog` for the

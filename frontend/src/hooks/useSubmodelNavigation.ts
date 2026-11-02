@@ -14,6 +14,7 @@ import { apiErrorMessage } from "../api/errors"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useToastStore from "../stores/useToastStore"
 import useGraphStore from "../stores/useGraphStore"
+import useUIStore from "../stores/useUIStore"
 import {
   isSubmodelDefinition,
   isSubmodelInstanceConfig,
@@ -29,10 +30,13 @@ interface SubmodelNavParams {
   submodelsRef: React.MutableRefObject<Record<string, unknown>>
   setNodesRaw: (nodes: Node[]) => void
   setEdgesRaw: (edges: Edge[]) => void
-  setSubmodelsRaw?: (submodels: Record<string, unknown>) => void
   setSelectedNode: (node: Node | null) => void
   setLastSelectedId?: (id: string | null) => void
   setPreviewData: (data: null) => void
+  /** Abandon the in-flight preview request; its answer describes the view being left. */
+  cancelPreview: () => void
+  /** Abandon any in-flight trace and clear the trace on show. */
+  clearTrace: () => void
   preambleRef: React.MutableRefObject<string>
   sourceRevisionRef: React.MutableRefObject<string>
   preservedBlocksRef: React.MutableRefObject<string[]>
@@ -188,8 +192,8 @@ function instanceCount(nodes: Node[], definitionId: string): number {
 
 export default function useSubmodelNavigation({
   graphRef, parentGraphRef, activeSubmodelIdentity, setActiveSubmodelIdentity, submodelsRef,
-  setNodesRaw, setEdgesRaw, setSubmodelsRaw,
-  setSelectedNode, setLastSelectedId, setPreviewData,
+  setNodesRaw, setEdgesRaw,
+  setSelectedNode, setLastSelectedId, setPreviewData, cancelPreview, clearTrace,
   preambleRef, sourceRevisionRef, preservedBlocksRef, descriptionRef, sourceFileRef, pipelineNameRef,
   fitView, reservedApiInputFrameLabels, resolveGraphIdentities = resolveEditorGraphIdentities,
   resolveCanonicalIdentities = resolveCanonicalGraphIdentities,
@@ -203,6 +207,19 @@ export default function useSubmodelNavigation({
   useEffect(() => {
     activeSubmodelIdentityRef.current = activeSubmodelIdentity
   }, [activeSubmodelIdentity])
+
+  /**
+   * What belongs to the view being left ends with it: the side panels, the
+   * selection, and the preview and trace, including requests still running.
+   */
+  const leaveView = useCallback(() => {
+    useUIStore.getState().closeSidePanes()
+    setSelectedNode(null)
+    setLastSelectedId?.(null)
+    cancelPreview()
+    setPreviewData(null)
+    clearTrace()
+  }, [cancelPreview, clearTrace, setLastSelectedId, setPreviewData, setSelectedNode])
 
   const beginTransformRequest = useCallback((): TransformRequestContext => {
     const { nodes, edges, submodels, preamble } = useGraphStore.getState()
@@ -474,6 +491,10 @@ export default function useSubmodelNavigation({
       }
 
       // Commit navigation only after projection, identity resolution, and layout all succeed.
+      // The store swaps the canvas and its history first: it refuses a view
+      // that cannot open, before anything else changes.
+      useGraphStore.getState().enterSubmodelView({ nodes: layouted, edges: resolved.edges })
+      graphRef.current = { nodes: layouted, edges: resolved.edges }
       setActiveSubmodelIdentity({
         instanceId: occurrence.instanceId,
         definitionId: occurrence.definitionId,
@@ -508,11 +529,7 @@ export default function useSubmodelNavigation({
         return nextStack
       })
       sourceFileRef.current = submodelSourceFile
-      setLastSelectedId?.(null)
-      setNodesRaw(layouted)
-      setEdgesRaw(resolved.edges)
-      setSelectedNode(null)
-      setPreviewData(null)
+      leaveView()
       const count = instanceCount(parentNodes, occurrence.definitionId)
       if (occurrence.readOnly) {
         addToast("info", `Viewing read-only instance "${displayName}". Edit the original submodel to change its definition.`)
@@ -523,37 +540,36 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Drill-down failed: ${apiErrorMessage(err)}`)
     }
-  }, [graphRef, parentGraphRef, setActiveSubmodelIdentity, submodelsRef, setNodesRaw, setEdgesRaw, setSelectedNode, setLastSelectedId, setPreviewData, sourceFileRef, fitView, addToast, reservedApiInputFrameLabels, resolveGraphIdentities, beginDrillRequest, drillRequestIsStale])
+  }, [graphRef, parentGraphRef, setActiveSubmodelIdentity, submodelsRef, sourceFileRef, fitView, addToast, reservedApiInputFrameLabels, resolveGraphIdentities, beginDrillRequest, drillRequestIsStale, leaveView])
 
   const handleBreadcrumbNavigate = useCallback((depth: number) => {
     const prev = viewStackRef.current
     if (depth >= prev.length - 1) return
+    // Submodels do not nest (the store refuses a second view), so every
+    // breadcrumb below the active one is the main pipeline.
+    const root = parentGraphRef.current
+    if (depth !== 0 || !root) {
+      throw new Error(`Breadcrumb ${depth} has no root graph to return to`)
+    }
     transformRequestSerialRef.current += 1
-    const target = prev[depth]
-    const reconciledParent = depth === 0 ? parentGraphRef.current : null
-    const restoredNodes = reconciledParent?.nodes ?? target._savedNodes
-    const restoredEdges = reconciledParent?.edges ?? target._savedEdges
-    if (restoredNodes && restoredEdges) {
-      setNodesRaw(restoredNodes)
-      setEdgesRaw(normalizeEdges(restoredEdges))
-      setSelectedNode(null)
-      setLastSelectedId?.(null)
-      setPreviewData(null)
-      setTimeout(() => fitView({ padding: 0.8 }), 100)
-    }
-    if (reconciledParent) {
-      submodelsRef.current = reconciledParent.submodels
-      setSubmodelsRaw?.(reconciledParent.submodels)
-    }
-    if (depth === 0) parentGraphRef.current = null
+    const target = prev[0]
+    const rootEdges = normalizeEdges(root.edges)
+    useGraphStore.getState().exitSubmodelView({
+      nodes: root.nodes,
+      edges: rootEdges,
+      submodels: root.submodels,
+    })
+    graphRef.current = { nodes: root.nodes, edges: rootEdges }
+    submodelsRef.current = root.submodels
+    parentGraphRef.current = null
     sourceFileRef.current = target.file
-    setActiveSubmodelIdentity(target.type === "submodel"
-      ? { instanceId: target.instanceId, definitionId: target.definitionId }
-      : null)
-    const nextStack = prev.slice(0, depth + 1)
+    setActiveSubmodelIdentity(null)
+    const nextStack = prev.slice(0, 1)
     viewStackRef.current = nextStack
     setViewStack(nextStack)
-  }, [parentGraphRef, setActiveSubmodelIdentity, submodelsRef, sourceFileRef, setNodesRaw, setEdgesRaw, setSubmodelsRaw, setSelectedNode, setLastSelectedId, setPreviewData, fitView])
+    leaveView()
+    setTimeout(() => fitView({ padding: 0.8 }), 100)
+  }, [graphRef, parentGraphRef, setActiveSubmodelIdentity, submodelsRef, sourceFileRef, fitView, leaveView])
 
   const resetToAuthoritativeRoot = useCallback((sourceFile: string, pipelineName: string) => {
     transformRequestSerialRef.current += 1

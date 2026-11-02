@@ -292,6 +292,17 @@ describe("useGraphStore - consolidation", () => {
         persistedFingerprint: "dirty-persisted",
         savedPersistedFingerprint: "dirty-saved",
         dirty: true,
+        submodelView: {
+          entrySnapshot: dirtySnapshot,
+          entryPersistedFingerprint: "dirty-entry",
+          entryViewSnapshot: dirtySnapshot,
+          entryViewPersistedFingerprint: "dirty-entry-view",
+          parentUndoStack: [dirtySnapshot],
+          parentRedoStack: [dirtySnapshot],
+          parentSavedSnapshot: dirtySnapshot,
+          parentSavedPersistedFingerprint: "dirty-parent-saved",
+          savedViewPersistedFingerprint: null,
+        },
       }
       expect(new Set(Object.keys(dirtied))).toEqual(new Set(Object.keys(pristine)))
 

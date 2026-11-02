@@ -15,52 +15,10 @@ packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FGC-R10 | Planned | P1 | Submodel drill-in and breadcrumb exit isolate or reset Undo/Redo history and dirty baselines per navigation level, and close side panels and stale traces on entry and exit. |
 | FGC-R11 | Planned | P2 | Global Constants edits participate in Undo/Redo history and are restored by `undo()` and `redo()`, and `nodeConstantReads` scans expression strings inside structured Polars steps. |
 | FGC-R12 | Planned | P2 | `previewPortLabel` honours `chosenFrame` on multi-table `apiInput` and `workbenchInput` nodes, `computeStructuralFingerprint` and `computePanelContextFingerprint` include `submodels` and submodel boundary `ports`, `Ctrl+V` refuses `submodel` and `submodelPort` nodes, and `Escape` in a non-empty `SearchField` does not close an enclosing `ModalShell`. |
 
 ## Planned improvements
-
-### FGC-R10 — Submodel navigation isolates Undo/Redo history, dirty baselines, side panels and trace state
-**Why:** `handleDrillIntoSubmodel` and `handleBreadcrumbNavigate` in
-`useSubmodelNavigation` swap `nodes` and `edges` via `setNodesRaw` / `setEdgesRaw`
-while leaving `undoStack`, `redoStack`, `lastSavedSnapshot` and
-`savedPersistedFingerprint` in `useGraphStore` untouched:
-1. Pressing Undo while drilled into a submodel pops a root-graph `HistoryEntry`
-   onto the child canvas while `activeSubmodelIdentity` and `parentGraphRef` remain
-   set, and breadcrumb exit then reconciles those root nodes into the child
-   submodel definition; conversely, editing inside a submodel, returning to the
-   root and pressing Undo replaces the root canvas with the child submodel's
-   projected nodes and `submodel_port` cards.
-2. `setNodesRaw` and `setEdgesRaw` during drill-in recompute `persistedFingerprint`
-   from the child submodel's projected nodes against `savedPersistedFingerprint`
-   (captured from the root graph), flipping `dirty` to `true` on an unmodified
-   pipeline as soon as the user drills into a submodel.
-3. Double-clicking an original submodel (`instanceOf === undefined`) in `App.tsx`
-   calls `handleDrillIntoSubmodel` without closing Utility, Constants or Assistant
-   side panels, and neither drill-in nor breadcrumb exit clears active trace state
-   (`clearTrace`) or invalidates in-flight preview requests.
-
-**Plan:** Scope Undo/Redo history to the root document (reconciling submodel edits
-into `submodels` on the root snapshot or maintaining per-level history stacks that
-cannot pop across navigation boundaries), compute `dirty` against the root
-document's persisted snapshot even while viewing a child submodel, and close side
-panels and clear trace/preview state on both submodel drill-in and breadcrumb
-navigation.
-
-**Acceptance:** Editing the root graph, drilling into a submodel and pressing Undo
-does not inject root nodes into the submodel; editing inside a submodel, returning
-to the root and pressing Undo reverts the submodel edit on the root graph without
-replacing the root canvas with `submodel_port` nodes; drilling into a clean
-submodel leaves `dirty === false`; and drilling into an original submodel closes
-open side panels and clears any active trace.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/hooks/useSubmodelNavigation.ts::useSubmodelNavigation`;
-`frontend/src/stores/useGraphStore.ts::useGraphStore`;
-`frontend/src/utils/submodelViewGraph.ts::buildSubmodelViewGraph`;
-`frontend/src/App.tsx`.
 
 ### FGC-R11 — Global Constants edits participate in Undo/Redo history and `nodeConstantReads` scans structured step expressions
 **Why:** `GlobalConstantsPanel` commits every constant add, rename, value change and

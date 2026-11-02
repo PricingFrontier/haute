@@ -62,6 +62,8 @@ function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[
     setEdgesRaw: vi.fn(),
     setSelectedNode: vi.fn(),
     setPreviewData: vi.fn(),
+    cancelPreview: vi.fn(),
+    clearTrace: vi.fn(),
     setPreamble: vi.fn(),
     preambleRef: { current: "" },
     descriptionRef: { current: "" },
@@ -78,7 +80,7 @@ function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[
 
 describe("useSubmodelNavigation - canonical port building & branch gaps", () => {
   beforeEach(() => {
-    useGraphStore.setState({ lastSavedSnapshot: null })
+    useGraphStore.getState().resetForTests()
     mockLoad.mockReset()
   })
 
@@ -105,7 +107,7 @@ describe("useSubmodelNavigation - canonical port building & branch gaps", () => 
     })
 
     expect(mockLoad).not.toHaveBeenCalled()
-    const lastNodes: Node[] = (params.setNodesRaw as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0]
+    const lastNodes: Node[] = useGraphStore.getState().nodes
     const boundaries = lastNodes.filter((node) => node.type === "submodelPort")
     expect(boundaries).toHaveLength(2)
     const input = boundaries.find((node) => node.data.portDirection === "input")
@@ -116,7 +118,7 @@ describe("useSubmodelNavigation - canonical port building & branch gaps", () => 
     })
     expect(output?.data).toMatchObject({ label: "OUTPUT", ports: [] })
 
-    const lastEdges: Edge[] = (params.setEdgesRaw as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0]
+    const lastEdges: Edge[] = useGraphStore.getState().edges
     expect(lastEdges).toEqual(expect.arrayContaining([
       expect.objectContaining({ source: input?.id, sourceHandle: "claims", target: "child1", targetHandle: "join" }),
       expect.objectContaining({ source: input?.id, sourceHandle: "quote", target: "child2", targetHandle: null }),
@@ -141,7 +143,7 @@ describe("useSubmodelNavigation - canonical port building & branch gaps", () => 
     })
 
     expect(result.current.viewStack).toHaveLength(1)
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(useGraphStore.getState().submodelView).toBeNull()
     expect(useToastStore.getState().toasts).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "error", text: expect.stringContaining("undeclared") }),
     ]))
@@ -183,6 +185,6 @@ describe("useSubmodelNavigation - canonical port building & branch gaps", () => 
     })
     expect(mockLoad).not.toHaveBeenCalled()
     expect(result.current.viewStack).toHaveLength(1)
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(useGraphStore.getState().submodelView).toBeNull()
   })
 })

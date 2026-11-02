@@ -38,6 +38,9 @@
  * The 100-entry MAX_HISTORY cap prevents unbounded growth on long editing
  * sessions.
  *
+ * A drilled submodel view (`enterSubmodelView` / `exitSubmodelView`) gets its
+ * own stacks and saved baseline; the root's wait in `submodelView` until exit.
+ *
  * ── Dirty derivation ──────────────────────────────────────────────────
  *
  * Dirty is maintained as a primitive boolean plus persisted-state
@@ -95,6 +98,31 @@ export type HistoryEntry = GraphSnapshot | VcHistoryEntry
 export const isVcEntry = (e: HistoryEntry): e is VcHistoryEntry =>
   "kind" in e && e.kind === "vc"
 
+/**
+ * The root document's state while a submodel definition is on the canvas.
+ *
+ * Drilling in swaps the canvas for the child view, so the live `nodes`,
+ * `edges`, history stacks and saved baseline all describe that view. The
+ * root's own history and saved baseline wait here until the view is left.
+ */
+export interface SubmodelViewContext {
+  /** The root document on entry; leaving after a change records it as one undo step. */
+  entrySnapshot: GraphSnapshot
+  entryPersistedFingerprint: string
+  /** The view on entry: the clean baseline while the root it came from is saved. */
+  entryViewSnapshot: GraphSnapshot
+  entryViewPersistedFingerprint: string
+  parentUndoStack: HistoryEntry[]
+  parentRedoStack: HistoryEntry[]
+  parentSavedSnapshot: GraphSnapshot | null
+  parentSavedPersistedFingerprint: string | null
+  /**
+   * The whole document was marked saved while drilled, with the view at this
+   * fingerprint: leaving from that view makes the root on exit the baseline.
+   */
+  savedViewPersistedFingerprint: string | null
+}
+
 export interface GraphStore {
   // State
   nodes: Node[]
@@ -121,6 +149,8 @@ export interface GraphStore {
   persistedFingerprint: string
   savedPersistedFingerprint: string | null
   dirty: boolean
+  /** Set while a submodel definition is on the canvas instead of the root. */
+  submodelView: SubmodelViewContext | null
 
   // History-aware actions
   setNodes: (updater: Node[] | ((nds: Node[]) => Node[])) => void
@@ -158,6 +188,25 @@ export interface GraphStore {
   setPreambleRaw: (value: string) => void
   /** Replace the global constants without an undo entry. */
   setGlobalConstantsRaw: (constants: GlobalConstantDraft[]) => void
+
+  // Submodel navigation
+  /**
+   * Put a submodel's view on the canvas with history of its own: Undo and
+   * Redo cannot reach the root's entries, and the view is clean exactly when
+   * it is unchanged and the root it came from was clean. Throws while a view
+   * is already open or a version-control step is running.
+   */
+  enterSubmodelView: (view: { nodes: Node[]; edges: PipelineEdge[] }) => void
+  /**
+   * Return to the root document, reconciled with the view's edits. The root's
+   * history comes back; a changed document gains one undo step to the root as
+   * it was on entry.
+   */
+  exitSubmodelView: (root: {
+    nodes: Node[]
+    edges: PipelineEdge[]
+    submodels: Record<string, unknown>
+  }) => void
 
   /**
    * Replace the complete persisted document and make it the clean saved
@@ -532,6 +581,7 @@ function createInitialGraphState(): GraphStoreData {
     persistedFingerprint: computePersistedFingerprint([], [], "", {}, []),
     savedPersistedFingerprint: null,
     dirty: false,
+    submodelView: null,
   }
 }
 
@@ -593,6 +643,54 @@ const useGraphStore = create<GraphStore>()((set, get) => {
             structuralVersion: state.structuralVersion + 1,
           }),
     }
+  }
+
+  /**
+   * `markSaved` while a submodel view is open. A snapshot is a root document
+   * (saving is refused while drilled, so it is a save begun before entry):
+   * it becomes the root's baseline, and the view is clean against it only if
+   * the root on entry was that document. Without a snapshot the whole current
+   * document counts as saved, so leaving from this same view makes the root on
+   * exit the baseline.
+   */
+  function markSavedInSubmodelView(context: SubmodelViewContext, snapshot: GraphSnapshot | undefined) {
+    set((state) => {
+      if (snapshot === undefined) {
+        return {
+          lastSavedSnapshot: captureGraphSnapshot(state),
+          savedPersistedFingerprint: state.persistedFingerprint,
+          dirty: false,
+          submodelView: { ...context, savedViewPersistedFingerprint: state.persistedFingerprint },
+        }
+      }
+      const parentSavedSnapshot = captureGraphSnapshot({
+        ...snapshot,
+        globalConstants: snapshot.globalConstants ?? state.globalConstants,
+      })
+      const parentSavedPersistedFingerprint = computePersistedFingerprint(
+        parentSavedSnapshot.nodes,
+        parentSavedSnapshot.edges,
+        parentSavedSnapshot.preamble,
+        parentSavedSnapshot.submodels,
+        parentSavedSnapshot.globalConstants ?? [],
+      )
+      const entryWasSaved = parentSavedPersistedFingerprint === context.entryPersistedFingerprint
+      const lastSavedSnapshot = entryWasSaved ? context.entryViewSnapshot : parentSavedSnapshot
+      const savedPersistedFingerprint = entryWasSaved
+        ? context.entryViewPersistedFingerprint
+        : parentSavedPersistedFingerprint
+      return {
+        lastSavedSnapshot,
+        savedPersistedFingerprint,
+        dirty: computeDirty(lastSavedSnapshot, savedPersistedFingerprint, state.persistedFingerprint),
+        submodelView: {
+          ...context,
+          parentSavedSnapshot,
+          parentSavedPersistedFingerprint,
+          savedViewPersistedFingerprint: null,
+        },
+      }
+    })
   }
 
   return {
@@ -920,6 +1018,122 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       })
     },
 
+    // ── Submodel navigation ─────────────────────────────────────────────
+
+    enterSubmodelView: (view) => {
+      const state = get()
+      if (state.submodelView !== null) {
+        throw new Error("A submodel is already open. Return to the main pipeline first.")
+      }
+      if (state.vcBusy) {
+        throw new Error("A version-control undo or redo is still running.")
+      }
+      const entrySnapshot = captureGraphSnapshot(state)
+      const entryViewSnapshot = captureGraphSnapshot({ ...state, nodes: view.nodes, edges: view.edges })
+      const entryViewPersistedFingerprint = computePersistedFingerprint(
+        view.nodes,
+        view.edges,
+        state.preamble,
+        state.submodels,
+        state.globalConstants,
+      )
+      // A view entered from a clean root is clean until it changes. From a
+      // dirty root the root's own baseline stays, which no view matches.
+      const lastSavedSnapshot = state.dirty ? state.lastSavedSnapshot : entryViewSnapshot
+      const savedPersistedFingerprint = state.dirty
+        ? state.savedPersistedFingerprint
+        : entryViewPersistedFingerprint
+      const nextFingerprint = computeStructuralFingerprint(
+        view.nodes,
+        view.edges,
+        state.preamble,
+        state.globalConstants,
+      )
+      set({
+        nodes: view.nodes,
+        edges: view.edges,
+        undoStack: [],
+        redoStack: [],
+        lastSavedSnapshot,
+        savedPersistedFingerprint,
+        persistedFingerprint: entryViewPersistedFingerprint,
+        dirty: computeDirty(
+          lastSavedSnapshot,
+          savedPersistedFingerprint,
+          entryViewPersistedFingerprint,
+        ),
+        ...computePanelContextPatch(state, view.nodes, view.edges),
+        ...(nextFingerprint === state.structuralFingerprint
+          ? {}
+          : {
+              structuralFingerprint: nextFingerprint,
+              structuralVersion: state.structuralVersion + 1,
+            }),
+        submodelView: {
+          entrySnapshot,
+          entryPersistedFingerprint: state.persistedFingerprint,
+          entryViewSnapshot,
+          entryViewPersistedFingerprint,
+          parentUndoStack: state.undoStack,
+          parentRedoStack: state.redoStack,
+          parentSavedSnapshot: state.lastSavedSnapshot,
+          parentSavedPersistedFingerprint: state.savedPersistedFingerprint,
+          savedViewPersistedFingerprint: null,
+        },
+      })
+    },
+
+    exitSubmodelView: (root) => {
+      const state = get()
+      const context = state.submodelView
+      if (context === null) {
+        throw new Error("No submodel is open.")
+      }
+      const persistedFingerprint = computePersistedFingerprint(
+        root.nodes,
+        root.edges,
+        state.preamble,
+        root.submodels,
+        state.globalConstants,
+      )
+      const changed = persistedFingerprint !== context.entryPersistedFingerprint
+      const leavingSavedView = context.savedViewPersistedFingerprint === state.persistedFingerprint
+      const lastSavedSnapshot = leavingSavedView
+        ? captureGraphSnapshot({ ...state, ...root })
+        : context.parentSavedSnapshot
+      const savedPersistedFingerprint = leavingSavedView
+        ? persistedFingerprint
+        : context.parentSavedPersistedFingerprint
+      const nextFingerprint = computeStructuralFingerprint(
+        root.nodes,
+        root.edges,
+        state.preamble,
+        state.globalConstants,
+      )
+      set({
+        nodes: root.nodes,
+        edges: root.edges,
+        submodels: root.submodels,
+        // The view's own steps end with it: one step undoes the whole visit.
+        undoStack: changed
+          ? appendHistoryEntry(context.parentUndoStack, context.entrySnapshot)
+          : context.parentUndoStack,
+        redoStack: changed ? [] : context.parentRedoStack,
+        lastSavedSnapshot,
+        savedPersistedFingerprint,
+        persistedFingerprint,
+        dirty: computeDirty(lastSavedSnapshot, savedPersistedFingerprint, persistedFingerprint),
+        ...computePanelContextPatch(state, root.nodes, root.edges),
+        ...(nextFingerprint === state.structuralFingerprint
+          ? {}
+          : {
+              structuralFingerprint: nextFingerprint,
+              structuralVersion: state.structuralVersion + 1,
+            }),
+        submodelView: null,
+      })
+    },
+
     // ── Explicit history operations ─────────────────────────────────────
 
     loadGraphSnapshot: (snapshot) => {
@@ -960,9 +1174,13 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           lastSavedSnapshot,
           // Graph snapshots from before the load would bring back the old
           // document; a version-control entry is an API inverse, still valid
-          // (a switch's own document arrives through this load).
-          undoStack: state.undoStack.filter(isVcEntry),
-          redoStack: state.redoStack.filter(isVcEntry),
+          // (a switch's own document arrives through this load). A load is
+          // always a root document, so an open submodel view ends here.
+          undoStack: [...(state.submodelView?.parentUndoStack ?? []), ...state.undoStack]
+            .filter(isVcEntry),
+          redoStack: [...(state.submodelView?.parentRedoStack ?? []), ...state.redoStack]
+            .filter(isVcEntry),
+          submodelView: null,
           structuralFingerprint,
           structuralVersion: state.structuralVersion + 1,
           panelContextFingerprint,
@@ -1104,6 +1322,11 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     // ── Dirty tracking ──────────────────────────────────────────────────
 
     markSaved: (snapshot?: GraphSnapshot) => {
+      const context = get().submodelView
+      if (context !== null) {
+        markSavedInSubmodelView(context, snapshot)
+        return
+      }
       set((state) => {
         const lastSavedSnapshot = snapshot === undefined
           ? captureGraphSnapshot(state)

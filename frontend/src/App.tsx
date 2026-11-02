@@ -1130,8 +1130,9 @@ function FlowEditor() {
     handleCreateSubmodel, handleCreateNodeInstance, handleDissolveSubmodel,
   } = useSubmodelNavigation({
     graphRef, parentGraphRef, activeSubmodelIdentity, setActiveSubmodelIdentity, submodelsRef,
-    setNodesRaw, setEdgesRaw, setSubmodelsRaw,
+    setNodesRaw, setEdgesRaw,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
+    cancelPreview, clearTrace,
     setLastSelectedId,
     preambleRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef,
     fitView,
@@ -2136,13 +2137,9 @@ function FlowEditor() {
                 onNodeContextMenu={editingReadOnly ? undefined : onNodeContextMenu}
                 onNodeDoubleClick={(_event, node) => {
                   if (nodeData(node).nodeType === NODE_TYPES.SUBMODEL) {
-                    const config = nodeData(node).config
-                    if (isSubmodelInstanceConfig(config) && config.instanceOf !== undefined) {
-                      closeSidePanes()
-                      setContextMenu(null)
-                      setRenameDialog(null)
-                      setSubmodelDialog(null)
-                    }
+                    setContextMenu(null)
+                    setRenameDialog(null)
+                    setSubmodelDialog(null)
                     handleDrillIntoSubmodel(node.id)
                   }
                 }}
