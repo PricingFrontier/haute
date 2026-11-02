@@ -17723,6 +17723,10 @@
     "UtilityWriteResponse": {
       "description": "A written utility file, with its new revision and its save-ledger capture.",
       "properties": {
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
         "git_sha": {
           "anyOf": [
             {
@@ -17788,6 +17792,7 @@
         "name",
         "module",
         "import_line",
+        "content",
         "revision"
       ],
       "title": "UtilityWriteResponse",

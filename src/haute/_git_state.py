@@ -103,6 +103,15 @@ def clear_working_branch(project_root: Path) -> None:
             logger.info("git_state_cleared")
 
 
+def restore_working_branch(project_root: Path, previous: str | None) -> None:
+    """Record *previous* as the clone's working branch again, or none when it is ``None``:
+    a rolled-back mutation's undo of the record it changed."""
+    if previous is None:
+        clear_working_branch(project_root)
+    else:
+        write_working_branch(project_root, previous)
+
+
 # ---------------------------------------------------------------------------
 # Local preferences — per-clone UI settings (e.g. "don't ask again" toggles).
 # Kept in a sibling, also-untracked file so working-branch churn never disturbs

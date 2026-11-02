@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 import haute._git_archive as git_archive
-import haute._git_core as git_core
 import haute._git_remote as git_remote
 from haute._git import (
     GitError,
@@ -71,7 +70,6 @@ def _advance_remote_pair(repo: Path, tmp_path: Path) -> None:
     assert commit_save(["rating.py"], WORKING, cwd=other) is not None
     commit_milestone("remote milestone", other, cwd=other)
     push_working_pair("origin", other, cwd=other)
-    git_core._fetch_cooldowns.clear()
 
 
 def test_adopting_existing_branch_restores_head_ledger_and_prior_state_on_failure(

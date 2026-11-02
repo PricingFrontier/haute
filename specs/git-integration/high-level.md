@@ -94,6 +94,16 @@ The working
 branch's first-parent chain therefore reads as a clean sequence of deliberate milestones,
 while every individual save remains reachable through each merge's second parent.
 
+**The project's git hooks.** A save is a `git commit`, so it runs the project's hooks as any
+commit does; a hook that rewrites what the save wrote (the formatter `haute init` scaffolds)
+is answered with what it left, so the editor's next save is made against the file on disk. A
+milestone is the commit a person makes, so Commit runs the `pre-commit` and `commit-msg`
+hooks a `git commit` of it would: the pre-commit hook sees the milestone's changes staged on
+the working branch, what it rewrites is recorded as one more save before the milestone, and a
+hook that fails refuses the Commit with what it printed. A clone carries no installed hooks,
+so choosing its working branch installs the project's tracked `.githooks/pre-commit` where
+none is set up.
+
 **Guardrails.** The default-branch and a fixed set of protected names (`main`, `master`,
 `develop`, `production`, or an operator-configured override) can never be written to
 directly — any attempt raises a guardrail error, distinguished from an ordinary domain
@@ -246,8 +256,10 @@ index, and create a permanent root commit before pair creation begins. A failure
 phase can leave those safe preparatory changes behind, although it does not deliberately
 remove working-tree files. Because the root commit is permanent, it never takes a Python
 environment below the project's top level (a folder holding a venv's `pyvenv.cfg` or a conda
-environment's `conda-meta`, whatever the folder is called), and a first version of more than
-1,000 files is refused, naming the folder most of them are in, before anything is committed.
+environment's `conda-meta`, whatever the folder is called), a first version of more than
+1,000 files is refused, naming the folder most of them are in, and so is one holding a file
+larger than version history takes (100 MiB, GitHub's limit), naming the file; both refuse
+before anything is committed.
 
 **Files another program holds open.** On Windows git cannot replace a file another program
 holds open, such as a CSV open in Excel, and it does not always say so. A checkout still

@@ -128,9 +128,13 @@ Modelling and optimiser result presentation belongs to
 - The Explore run indicator exposes determinate `progressbar` semantics while a run is active,
   including a stable accessible name and a clamped percentage value from 0 through 100.
 - Utility manages reusable utility Python modules, including parsed syntax failure locations.
-  A failed autosave or flush preserves the dirty draft and blocks file switching until a later
-  save succeeds. Shared preview chrome supports resizing, collapse and keyboard-accessible
-  roving tabs.
+  An edit is a draft, saved when the panel closes, when another utility file opens, or on
+  Ctrl+S in it, never while typing, so a project hook the save runs never rewrites the file
+  being typed in; a save shows the file as the save left it while nothing was typed since.
+  Closing the panel, or another panel opening in its place, waits for the draft's save; a
+  refused save keeps the panel open with the reason and a Discard that closes it unsaved, and
+  blocks file switching until a later save succeeds. Closing the tab with a draft asks first.
+  Shared preview chrome supports resizing, collapse and keyboard-accessible roving tabs.
 - Preview places actionable projection-boundary, rejected-strategy, or memory
   pressure detail behind an accessible status icon beside the row/column summary.
   There are no cache quota refusals or quota-remediation messages.

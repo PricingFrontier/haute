@@ -240,11 +240,10 @@ export default function RemotePushControl({
 
   // D1/D2: a conflict-free catch-up (fast-forward only). Used by the standalone
   // "Catch up" button and the rejection modal's behind-only path.
-  const doCatchUp = useCallback(async () => {
-    if (!selected) return
+  const doCatchUp = useCallback(async (target: string) => {
     setCatchingUp(true)
     try {
-      const res = await gitFastForward(selected)
+      const res = await gitFastForward(target)
       // The files are the remote's now: edits chosen over them go, as after a switch.
       discardCanvasEdits()
       await discardFormEdits()
@@ -259,7 +258,7 @@ export default function RemotePushControl({
     } finally {
       setCatchingUp(false)
     }
-  }, [selected, addToast, reloadAfterTreeChange])
+  }, [addToast, reloadAfterTreeChange])
 
   // A clean catch-up is offered only when a leg is behind and NO leg has local
   // work the remote lacks (ahead/diverged) — matches the engine's ff precondition.
@@ -271,11 +270,10 @@ export default function RemotePushControl({
 
   // M3: set the local fork aside and adopt the remote. The never-merge-locally
   // escape for a genuinely diverged fork.
-  const doBranchAway = useCallback(async () => {
-    if (!selected) return
+  const doBranchAway = useCallback(async (target: string) => {
     setBranchingAway(true)
     try {
-      const res = await gitBranchAway(selected)
+      const res = await gitBranchAway(target)
       discardCanvasEdits()
       await discardFormEdits()
       addToast(
@@ -291,26 +289,37 @@ export default function RemotePushControl({
     } finally {
       setBranchingAway(false)
     }
-  }, [selected, addToast, reloadAfterTreeChange])
+  }, [addToast, reloadAfterTreeChange])
 
   // Both rewrite the project's files from the remote, so unsaved edits in the canvas or
-  // the workbench's form are asked about first; each runs bound to the remote selected
-  // at the click, which its question names.
-  const catchUp = () =>
+  // the workbench's form are asked about first. Each acts on the remote it is given, which
+  // its question names: the standalone Catch up passes the remote selected at the click,
+  // the rejection dialog the remote that refused the push, whatever the dropdown shows by
+  // then.
+  const catchUp = (target: string) =>
     navigation.guard(
-      () => void doCatchUp(),
-      `Save them before catching up? Catching up replaces the project's files with ${selected}'s.`,
+      () => void doCatchUp(target),
+      `Save them before catching up? Catching up replaces the project's files with ${target}'s.`,
     )
-  const branchAway = () =>
+  const branchAway = (target: string) =>
     navigation.guard(
-      () => void doBranchAway(),
-      `Save them before spinning off a copy? Spinning off sets your version aside and replaces the project's files with ${selected}'s.`,
+      () => void doBranchAway(target),
+      `Save them before spinning off a copy? Spinning off sets your version aside and replaces the project's files with ${target}'s.`,
     )
+
+  // Push, Catch up and Spin off all move the branch: none starts while another runs.
+  const busy = pushing || catchingUp || branchingAway
 
   // Closing the rejection dialog drops a question open in it, so it never runs later.
   const closeRejection = () => {
     navigation.confirm?.onCancel()
     setRejection(null)
+  }
+
+  // A question the standalone Catch up left on the row is about the remote selected then.
+  const selectRemote = (name: string) => {
+    if (!rejection) navigation.confirm?.onCancel()
+    setSelected(name)
   }
 
   // Fully offline (no remotes): say so plainly rather than show an empty dropdown.
@@ -352,7 +361,7 @@ export default function RemotePushControl({
         data-testid="git-push-remote"
         aria-label="Remote to push to"
         value={selected}
-        onChange={(e) => setSelected(e.target.value)}
+        onChange={(e) => selectRemote(e.target.value)}
         className="flex-1 min-w-0 text-[12px] rounded-md px-2 py-1 focus:outline-none focus:ring-2"
         style={{
           background: "var(--bg-input)",
@@ -375,8 +384,8 @@ export default function RemotePushControl({
         <Tooltip label="Fast-forward your branch to the latest on the remote" side="bottom">
           <button
             data-testid="git-catch-up-button"
-            onClick={catchUp}
-            disabled={catchingUp}
+            onClick={() => catchUp(selected)}
+            disabled={busy}
             className="shrink-0 inline-flex items-center gap-1 text-[11px] font-medium rounded-md px-2 py-1 transition-colors disabled:opacity-40"
             style={{ border: "1px solid var(--border)", color: "var(--text-secondary)" }}
           >
@@ -392,7 +401,7 @@ export default function RemotePushControl({
         <button
           data-testid="git-push-button"
           onClick={onPushClick}
-          disabled={!selected || pushing}
+          disabled={!selected || busy}
           className="shrink-0 inline-flex items-center gap-1 text-[12px] font-medium rounded-md px-2.5 py-1 transition-colors disabled:opacity-40"
           style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
         >
@@ -421,8 +430,8 @@ export default function RemotePushControl({
           catchingUp={catchingUp}
           branchingAway={branchingAway}
           confirm={navigation.confirm}
-          onCatchUp={catchUp}
-          onBranchAway={branchAway}
+          onCatchUp={() => catchUp(rejection.remote)}
+          onBranchAway={() => branchAway(rejection.remote)}
           onClose={closeRejection}
         />
       )}
