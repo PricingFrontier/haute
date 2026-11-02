@@ -18,7 +18,6 @@ from haute._worker_isolation import (
     IsolatedWorkerCrashedError,
     IsolatedWorkerError,
     IsolatedWorkerRemoteError,
-    run_isolated_worker,
 )
 from haute._worker_protocol import (
     WORKER_USER_MESSAGE_FIELD,
@@ -320,28 +319,6 @@ class IsolatedJobSupervisor:
     ) -> None:
         self._lifecycle = lifecycle
         self._protocol_runner = protocol_runner
-
-    def launch(
-        self,
-        job_id: str,
-        function: Any,
-        *args: Any,
-        config: IsolatedWorkerConfig | None = None,
-        completed_message: str = "Completed",
-        **kwargs: Any,
-    ) -> IsolatedSupervisorThread:
-        return self._launch_callable(
-            job_id,
-            execute=lambda: run_isolated_worker(
-                function,
-                *args,
-                config=config,
-                **kwargs,
-            ),
-            completed_fields=lambda result: {"result": result},
-            completed_message=completed_message,
-            start_time=time.monotonic(),
-        )
 
     def launch_protocol(
         self,

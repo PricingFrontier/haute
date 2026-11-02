@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import pickle
 import subprocess
 import sys
 import textwrap
@@ -25,6 +26,7 @@ from haute._execution_context import ExecutionCancellationToken
 from haute._interactive_workers import (
     InteractiveWorkerCrashedError,
     InteractiveWorkerError,
+    InteractiveWorkerProtocolError,
     InteractiveWorkerRemoteError,
     InteractiveWorkerStartError,
     InteractiveWorkerStoppedError,
@@ -441,6 +443,17 @@ def test_a_result_over_the_owner_bound_fails_the_command_not_the_worker(
     assert raised.value.remote_type == "WorkerResultTooLargeError"
     assert worker.alive
     assert _run(worker, remember, 3) == 3
+
+
+def test_malformed_failure_evidence_is_a_protocol_failure_that_ends_the_worker() -> None:
+    created = DedicatedWorker(owner="test", polars_threads=2, process_name="haute-test-evidence")
+    malformed = pickle.dumps(("result", "c" * 32, "error", ("only", "three", "fields"), None))
+
+    with pytest.raises(InteractiveWorkerProtocolError, match="malformed error evidence"):
+        created._interpret_result("c" * 32, malformed, evidence_before=None)
+
+    assert created.death is not None
+    assert created.death.kind == "crashed"
 
 
 def test_a_worker_terminated_before_it_starts_never_spawns() -> None:

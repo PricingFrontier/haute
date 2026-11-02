@@ -29,7 +29,6 @@ from haute._worker_isolation import (
     IsolatedWorkerTimeoutError,
     _create_worker_rss_watchdog,
     _terminate_process,
-    address_space_caps_supported,
     create_worker_queue,
     ensure_spawnable_interpreter,
     isolated_worker_failure_is_memory,
@@ -79,6 +78,37 @@ def _allocate_native_column(size_bytes: int) -> int:
 
 def _read_environment(name: str) -> str | None:
     return os.environ.get(name)
+
+
+def _sum_protocol_worker(runtime, request):
+    del runtime
+    payload = request.payload
+    return WorkerResultManifest(metadata={"sum": payload["left"] + payload["right"]})
+
+
+def _failing_protocol_worker(runtime, request):
+    del runtime
+    raise ValueError(request.payload["message"])
+
+
+def _launch(
+    supervisor: IsolatedJobSupervisor,
+    job_id: str,
+    artifact_root: Path,
+    function=_sum_protocol_worker,
+    payload: object = None,
+    **kwargs: object,
+):
+    """Launch *function* as the job's protocol worker, with no artifacts."""
+    return supervisor.launch_protocol(
+        job_id,
+        function,
+        WorkerRequest(job_id, "test", {"left": 2, "right": 4} if payload is None else payload),
+        artifact_root=artifact_root,
+        artifact_kinds=frozenset(),
+        max_artifact_size_bytes=0,
+        **kwargs,
+    )
 
 
 def _sleeping_protocol_worker(runtime, request):
@@ -623,7 +653,7 @@ def test_isolated_worker_drains_large_result_before_joining_child() -> None:
     assert result[:1] == b"x"
 
 
-def test_unexpected_parent_failure_terminates_child_and_runs_cleanup(
+def test_unexpected_parent_failure_terminates_child(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeQueue:
@@ -667,7 +697,6 @@ def test_unexpected_parent_failure_terminates_child_and_runs_cleanup(
             return self.process
 
     context = FakeContext()
-    cleaned: list[str] = []
     monkeypatch.setattr("haute._worker_isolation.mp.get_context", lambda _method: context)
     monkeypatch.setattr(
         "haute._worker_isolation.await_worker_ready", lambda *_a, **_k: ("ready", None)
@@ -678,20 +707,14 @@ def test_unexpected_parent_failure_terminates_child_and_runs_cleanup(
     )
 
     with pytest.raises(RuntimeError, match="parent polling failed"):
-        run_isolated_worker(
-            _return_payload,
-            1,
-            2,
-            config=IsolatedWorkerConfig(cleanup_callbacks=(lambda: cleaned.append("done"),)),
-        )
+        run_isolated_worker(_return_payload, 1, 2)
 
     assert context.process is not None
     assert context.process.terminated
     assert not context.process.is_alive()
-    assert cleaned == ["done"]
 
 
-def test_start_failure_preserves_typed_error_and_runs_cleanup(
+def test_start_failure_preserves_typed_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeQueue:
@@ -723,21 +746,13 @@ def test_start_failure_preserves_typed_error_and_runs_cleanup(
         def Process(self, **kwargs: object) -> UnstartedProcess:  # noqa: N802
             return UnstartedProcess()
 
-    cleaned: list[str] = []
     monkeypatch.setattr(
         "haute._worker_isolation.mp.get_context",
         lambda _method: FakeContext(),
     )
 
     with pytest.raises(IsolatedWorkerStartError, match="spawn unavailable"):
-        run_isolated_worker(
-            _return_payload,
-            1,
-            2,
-            config=IsolatedWorkerConfig(cleanup_callbacks=(lambda: cleaned.append("done"),)),
-        )
-
-    assert cleaned == ["done"]
+        run_isolated_worker(_return_payload, 1, 2)
 
 
 def test_one_shot_join_cleans_exact_dead_worker_native_resources(
@@ -925,65 +940,36 @@ def test_isolated_worker_reports_crash_without_killing_parent() -> None:
     assert 1 + 1 == 2
 
 
-def test_cleanup_runs_when_worker_fails(tmp_path: Path) -> None:
-    temp_dir = tmp_path / "owned"
-    temp_dir.mkdir()
-    cleaned: list[str] = []
+def _live_workers(process_name: str) -> list[object]:
+    import multiprocessing
 
-    def cleanup() -> None:
-        cleaned.append("yes")
-        shutil.rmtree(temp_dir)
-
-    with pytest.raises(IsolatedWorkerRemoteError):
-        run_isolated_worker(
-            _raise_value_error,
-            "primary failure",
-            config=IsolatedWorkerConfig(cleanup_callbacks=(cleanup,)),
-        )
-
-    assert cleaned == ["yes"]
-    assert not temp_dir.exists()
+    return [child for child in multiprocessing.active_children() if child.name == process_name]
 
 
-def test_timeout_terminates_worker_and_runs_cleanup(tmp_path: Path) -> None:
-    temp_dir = tmp_path / "owned"
-    temp_dir.mkdir()
-
-    def cleanup() -> None:
-        shutil.rmtree(temp_dir)
-
+def test_timeout_terminates_worker() -> None:
+    name = "haute-test-timed-out-worker"
     with pytest.raises(IsolatedWorkerTimeoutError) as exc_info:
         run_isolated_worker(
             _sleep_for,
             5.0,
-            config=IsolatedWorkerConfig(timeout_seconds=0.1, cleanup_callbacks=(cleanup,)),
+            config=IsolatedWorkerConfig(timeout_seconds=0.1, process_name=name),
         )
 
     assert exc_info.value.terminal_reason == "timed_out"
-    assert not temp_dir.exists()
+    assert _live_workers(name) == []
 
 
-def test_stop_reason_terminates_worker_preserves_reason_and_runs_cleanup(
-    tmp_path: Path,
-) -> None:
-    temp_dir = tmp_path / "owned"
-    temp_dir.mkdir()
-
-    def cleanup() -> None:
-        shutil.rmtree(temp_dir)
-
+def test_stop_reason_terminates_worker_and_preserves_reason() -> None:
+    name = "haute-test-stopped-worker"
     with pytest.raises(IsolatedWorkerStoppedError) as exc_info:
         run_isolated_worker(
             _sleep_for,
             5.0,
-            config=IsolatedWorkerConfig(
-                cleanup_callbacks=(cleanup,),
-                stop_reason=lambda: "cancelled",
-            ),
+            config=IsolatedWorkerConfig(stop_reason=lambda: "cancelled", process_name=name),
         )
 
     assert exc_info.value.terminal_reason == "cancelled"
-    assert not temp_dir.exists()
+    assert _live_workers(name) == []
 
 
 def test_required_memory_cap_fails_loudly_when_unsupported(
@@ -1004,7 +990,7 @@ def test_required_memory_cap_fails_loudly_when_unsupported(
 
 
 @pytest.mark.skipif(
-    not address_space_caps_supported(),
+    not sys.platform.startswith("linux"),
     reason="worker address-space caps are only available on platforms with resource.RLIMIT_AS",
 )
 def test_native_memory_cap_is_active_inside_child_process() -> None:
@@ -1049,7 +1035,6 @@ def test_cross_platform_worker_rss_watchdog_enforces_growth_budget(
 
     samples = iter([1_000, 1_051])
     monkeypatch.setattr(isolation_mod, "process_rss_bytes", lambda _pid: next(samples))
-    monkeypatch.setattr(isolation_mod, "address_space_caps_supported", lambda: False)
 
     watchdog = _create_worker_rss_watchdog(
         _Process(),  # type: ignore[arg-type]
@@ -1196,7 +1181,6 @@ def test_isolated_entrypoint_serialises_child_failure(monkeypatch: pytest.Monkey
     import haute._worker_isolation as isolation_mod
 
     results = _EntrypointQueue()
-    monkeypatch.setattr(isolation_mod, "address_space_caps_supported", lambda: False)
     monkeypatch.setattr(
         isolation_mod,
         "NativeMemoryLease",
@@ -1404,28 +1388,32 @@ def test_unknown_worker_memory_enforcement_fails_loudly(
         resolve_worker_memory_enforcement()
 
 
-def test_isolated_job_supervisor_records_completed_result() -> None:
+def test_isolated_job_supervisor_records_completed_result(tmp_path: Path) -> None:
     store = JobStore()
     job_id = store.create_job({"status": "running"})
     supervisor = IsolatedJobSupervisor(JobLifecycle(store))
 
-    thread = supervisor.launch(job_id, _return_payload, 2, 4)
-    thread.join(timeout=10)
+    thread = _launch(
+        supervisor, job_id, tmp_path, completed_fields=lambda result: dict(result.metadata)
+    )
+    thread.join(timeout=60)
 
     assert not thread.is_alive()
     job = store.require_job(job_id)
     assert job["status"] == "completed"
     assert job["terminal_reason"] == "completed"
-    assert job["result"]["sum"] == 6
+    assert job["sum"] == 6
 
 
-def test_isolated_job_supervisor_records_remote_failure() -> None:
+def test_isolated_job_supervisor_records_remote_failure(tmp_path: Path) -> None:
     store = JobStore()
     job_id = store.create_job({"status": "running"})
     supervisor = IsolatedJobSupervisor(JobLifecycle(store))
 
-    thread = supervisor.launch(job_id, _raise_value_error, "bad input")
-    thread.join(timeout=10)
+    thread = _launch(
+        supervisor, job_id, tmp_path, _failing_protocol_worker, {"message": "bad input"}
+    )
+    thread.join(timeout=60)
 
     assert not thread.is_alive()
     job = store.require_job(job_id)
@@ -1436,20 +1424,19 @@ def test_isolated_job_supervisor_records_remote_failure() -> None:
 
 
 def test_isolated_job_supervisor_terminalizes_unexpected_parent_error(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     store = JobStore()
     job_id = store.create_job({"status": "running"})
-    supervisor = IsolatedJobSupervisor(JobLifecycle(store))
     parent_error = RuntimeError("parent isolation bug")
     reported: list[threading.ExceptHookArgs] = []
 
     def raise_parent_error(*args: object, **kwargs: object) -> object:
         raise parent_error
 
+    supervisor = IsolatedJobSupervisor(JobLifecycle(store), protocol_runner=raise_parent_error)
     monkeypatch.setattr(threading, "excepthook", reported.append)
-    monkeypatch.setattr("haute.routes._background_jobs.run_isolated_worker", raise_parent_error)
-    thread = supervisor.launch(job_id, _return_payload, 2, 4)
+    thread = _launch(supervisor, job_id, tmp_path)
     thread.join_and_raise(timeout=10)
 
     assert not thread.is_alive()
@@ -1476,16 +1463,16 @@ def test_isolated_job_supervisor_records_stopped_reason_and_runs_cleanup(
     def cleanup() -> None:
         shutil.rmtree(temp_dir)
 
-    thread = supervisor.launch(
+    thread = _launch(
+        supervisor,
         job_id,
-        _sleep_for,
-        5.0,
-        config=IsolatedWorkerConfig(
-            cleanup_callbacks=(cleanup,),
-            stop_reason=lambda: "cancelled",
-        ),
+        tmp_path / "artifacts",
+        _sleeping_protocol_worker,
+        {},
+        config=IsolatedWorkerConfig(stop_reason=lambda: "cancelled"),
+        on_finished=cleanup,
     )
-    thread.join(timeout=10)
+    thread.join(timeout=60)
 
     assert not thread.is_alive()
     job = store.require_job(job_id)
@@ -1495,22 +1482,21 @@ def test_isolated_job_supervisor_records_stopped_reason_and_runs_cleanup(
 
 
 def test_isolated_job_supervisor_preserves_higher_precedence_terminal_state(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     store = JobStore()
     job_id = store.create_job({"status": "running"})
     lifecycle = JobLifecycle(store)
     assert lifecycle.transition(job_id, to="timed_out") is not None
-    supervisor = IsolatedJobSupervisor(lifecycle)
     reported: list[threading.ExceptHookArgs] = []
 
     def fail_late(*_args, **_kwargs):
         raise RuntimeError("late parent failure")
 
+    supervisor = IsolatedJobSupervisor(lifecycle, protocol_runner=fail_late)
     monkeypatch.setattr(threading, "excepthook", reported.append)
-    monkeypatch.setattr("haute.routes._background_jobs.run_isolated_worker", fail_late)
 
-    thread = supervisor.launch(job_id, _return_payload, 1, 2)
+    thread = _launch(supervisor, job_id, tmp_path)
     thread.join_and_raise(timeout=10)
 
     job = store.require_job(job_id)
@@ -1522,19 +1508,18 @@ def test_isolated_job_supervisor_preserves_higher_precedence_terminal_state(
 
 
 def test_isolated_job_supervisor_rejects_incoherent_existing_terminal_state(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     store = JobStore()
     job_id = store.create_job({"status": "running"})
     with store._write_lock:  # noqa: SLF001 - deliberate corrupt-state boundary test
         store._jobs[job_id]["status"] = "cancelled"  # noqa: SLF001
-    supervisor = IsolatedJobSupervisor(JobLifecycle(store))
-    monkeypatch.setattr(
-        "haute.routes._background_jobs.run_isolated_worker",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("late")),
+    supervisor = IsolatedJobSupervisor(
+        JobLifecycle(store),
+        protocol_runner=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("late")),
     )
 
-    thread = supervisor.launch(job_id, _return_payload, 1, 2)
+    thread = _launch(supervisor, job_id, tmp_path)
     thread.join(timeout=10)
 
     assert isinstance(thread.infrastructure_failure, SupervisorInfrastructureError)
@@ -1546,24 +1531,23 @@ def test_isolated_job_supervisor_rejects_incoherent_existing_terminal_state(
 
 
 def test_isolated_job_supervisor_exposes_terminal_persistence_failure(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     store = JobStore()
     job_id = store.create_job({"status": "running"})
     lifecycle = JobLifecycle(store)
-    supervisor = IsolatedJobSupervisor(lifecycle)
-
-    monkeypatch.setattr(
-        "haute.routes._background_jobs.run_isolated_worker",
-        lambda *_args, **_kwargs: {"ok": True},
+    supervisor = IsolatedJobSupervisor(
+        lifecycle,
+        protocol_runner=lambda *_args, **_kwargs: WorkerResultManifest(metadata={"ok": True}),
     )
+
     monkeypatch.setattr(
         JobLifecycle,
         "transition",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("store unavailable")),
     )
 
-    thread = supervisor.launch(job_id, _return_payload, 1, 2)
+    thread = _launch(supervisor, job_id, tmp_path)
     thread.join(timeout=10)
 
     assert not thread.is_alive()
@@ -1798,26 +1782,11 @@ class TestDeadResourceTrackerRecovery:
         assert "rlimit_nofile" not in info
 
 
-def test_worker_isolation_support_payload_and_cleanup_edges(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setitem(sys.modules, "resource", SimpleNamespace())
-    assert not address_space_caps_supported()
-    monkeypatch.setitem(
-        sys.modules,
-        "resource",
-        SimpleNamespace(RLIMIT_AS=1, setrlimit=lambda *_args: None),
-    )
-    monkeypatch.setattr(sys, "platform", "darwin")
-    assert not address_space_caps_supported()
-    monkeypatch.setattr(sys, "platform", "linux")
-    assert address_space_caps_supported()
+def test_worker_payload_decoding_refuses_malformed_payloads() -> None:
     with pytest.raises(IsolatedWorkerCrashedError):
         isolation._decode_worker_payload(b"not pickle")
     with pytest.raises(IsolatedWorkerCrashedError):
         isolation._decode_worker_payload(pickle.dumps(("wrong", 1)))
-    errors = isolation._run_cleanup_callbacks((lambda: (_ for _ in ()).throw(OSError("one")),))
-    assert errors is not None and len(errors.errors) == 1
 
 
 def test_worker_entrypoint_reports_native_setup_failure(monkeypatch: pytest.MonkeyPatch) -> None:

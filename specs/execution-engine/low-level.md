@@ -168,7 +168,7 @@
   `syntax_error`, or the walk's rejection reason), `blocking_operator`, and the 1-based
   `line`/`column` of the construct that stopped the walk.
 - **`IsolatedWorkerConfig`** (frozen dataclass) — `timeout_seconds`,
-  `memory_limit_bytes`, `require_memory_limit`, `cleanup_callbacks`, `stop_reason`
+  `memory_limit_bytes`, `require_memory_limit`, `stop_reason`
   (polled callback returning a `WorkerTerminalReason | None`),
   `stop_poll_interval_seconds`, `process_name`, `address_space_allowance_bytes`,
   `preload_modules` (module names the protocol worker imports before installing its cap;
@@ -248,7 +248,8 @@
   cgroup v2 `memory.max - memory.current`, else the v1
   `memory.limit_in_bytes - memory.usage_in_bytes` pair. The controller files
   are read at the process's **own** cgroup, resolved from `/proc/self/cgroup`
-  and `/proc/self/mountinfo` (v2 unified and v1 hybrid), not just the mount
+  and `/proc/self/mountinfo` (v2 unified and v1 hybrid; the v2 resolution,
+  `own_unified_cgroup`, is the one the native lease uses), not just the mount
   root — a systemd service slice or a container sharing the host cgroup
   namespace keeps its binding limits below `/sys/fs/cgroup`. Headroom is the
   **minimum** across the process's cgroup and its ancestors up to the mount
@@ -1150,7 +1151,11 @@ scopes one sink.
 **Worker isolation (`run_isolated_worker`).** Starts a `spawn`-context child process
 running `_isolated_worker_entrypoint`. Before user work begins, Linux prefers a
 delegated cgroup-v2 child with a finite `memory.max` and otherwise applies
-`RLIMIT_AS`; Windows assigns the child to a Job Object with a finite aggregate
+`RLIMIT_AS`. The worker's own v2 cgroup is found as the headroom probe finds it
+(`_host_memory.own_unified_cgroup`: `/proc/self/cgroup` mapped through the cgroup2 mount
+`/proc/self/mountinfo` names, so cgroup2 at a hybrid host's `/sys/fs/cgroup/unified`
+counts) and must resolve inside that mount; a cgroup that cannot be found leaves the
+cgroup backend unavailable rather than guessed at `/sys/fs/cgroup`; Windows assigns the child to a Job Object with a finite aggregate
 job-memory commit limit, so descendants cannot each consume the complete admitted
 budget. Limits are growth budgets: the native baseline is measured before the
 hard ceiling is installed. The `RLIMIT_AS` fallback first runs
@@ -1244,10 +1249,12 @@ child remains alive, the parent opportunistically drains and retains the single
 result envelope from the maxsize-1 queue; this lets the multiprocessing feeder finish
 even when a serialized result exceeds the pipe buffer. The envelope is interpreted
 only after the child has stopped, preserving exit/crash classification. A stop or
-deadline terminates the process and raises a typed stopped/timeout error. Cleanup
-callbacks always run (via `_run_cleanup_callbacks`), even when the primary path
-already failed — a cleanup failure is attached to the primary error via `add_note()`
-rather than replacing it.
+deadline terminates the process and raises a typed stopped/timeout error. Teardown
+(terminating and joining the child, removing its private cgroup and spill directory,
+closing the queue) always runs, even when the primary path already failed; a teardown
+failure is attached to the primary error via `add_note()` rather than replacing it, and
+is the error when there was none. Work the caller owns (staged files, admission) is
+released by the caller, not through the worker's configuration.
 
 `HAUTE_WORKER_MEMORY_ENFORCEMENT` has only `best_effort|required` and defaults to
 `required`. Configuration is
@@ -1437,8 +1444,10 @@ file is fixed, and the first read of the fixed file applies its chunk rows.
 
 `DedicatedWorker` (`src/haute/_dedicated_workers.py`) is one long-lived `spawn` worker pinned
 to a single owner — the optimiser's solver session (OPT-W01) — that keeps state between
-requests. It reuses the warm pool's error family (`InteractiveWorker*Error`), exit-code
-memory heuristic, `ProgressCell` and termination helpers, and differs from a pool slot in five
+requests. It reuses the warm pool's error family (`InteractiveWorker*Error`), its failure
+evidence (`failure_evidence` builds it in the child, `remote_error_from_evidence` reads it in
+the parent, a malformed one being a protocol failure), exit-code memory heuristic,
+`ProgressCell` and termination helpers, and differs from a pool slot in five
 ways:
 
 - **The cap is re-applied per command and never lifted.** Each `run` request carries the
@@ -2917,9 +2926,7 @@ present a structural or schema result as execution evidence.
   `IsolatedWorkerMemoryLimitUnsupportedError` (neither a usable address-space cap nor
   observable child RSS is available for a required limit),
   `IsolatedWorkerTerminationError` (the child remained alive after terminate
-  and kill attempts), `IsolatedWorkerCleanupError` (one or more cleanup callbacks raised; attached
-  via `add_note()` to a primary error rather than replacing it, or raised alone if
-  the worker itself succeeded).
+  and kill attempts).
 - Other generic `ValueError`/`TypeError`/`RuntimeError` are used for internal-invariant
   violations that should never occur given the calling contract (e.g. a node
   returning a non-Polars-frame type, a seed plan resolved for a different execution, a

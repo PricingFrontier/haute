@@ -75,15 +75,6 @@ _TERMINAL_REASON_PRECEDENCE: Mapping[TerminalReason, int] = {
 _LIFECYCLE_KEYS = frozenset({"status", "terminal_reason", "created_at", "ended_at", "completed_at"})
 
 
-class JobCommonFields(TypedDict):
-    status: JobStatus
-    created_at: float
-    message: NotRequired[str]
-    terminal_reason: NotRequired[TerminalReason]
-    ended_at: NotRequired[float]
-    completed_at: NotRequired[float]
-
-
 class RunningJobFields(TypedDict):
     status: Literal["running"]
     created_at: NotRequired[float]

@@ -244,6 +244,45 @@ def _resolve_cgroup_directory(cgroup_path: str, mount_root: str, mount_point: st
     return f"{mount}/{suffix}" if mount != "/" else f"/{suffix}"
 
 
+def _mapped_cgroup_location(
+    cgroup_path: str, mounts: list[tuple[str, str]]
+) -> _CgroupLocation | None:
+    """The process's directory through the mount whose root most specifically contains it.
+
+    With several mounts of the hierarchy (user namespaces, nspawn) the binding limit may
+    only be reachable through a subtree mount a broader first match would shadow.
+    ``None`` when no mount maps the cgroup path.
+    """
+    best: _CgroupLocation | None = None
+    best_root_depth = -1
+    for mount_root, mount_point in mounts:
+        directory = _resolve_cgroup_directory(cgroup_path, mount_root, mount_point)
+        if directory is None:
+            continue
+        root_depth = len((mount_root.rstrip("/") or "/").split("/"))
+        if root_depth > best_root_depth:
+            best = _CgroupLocation(directory, mount_point)
+            best_root_depth = root_depth
+    return best
+
+
+def own_unified_cgroup() -> _CgroupLocation | None:
+    """This process's cgroup v2 directory and the cgroup2 mount it is reached through.
+
+    The same resolution the headroom probe walks from, wherever cgroup2 is mounted (a
+    hybrid host mounts it at ``/sys/fs/cgroup/unified``). ``None`` when the proc files
+    are unreadable, the process has no v2 membership or no cgroup2 mount maps it; the
+    caller decides what that means: the probe reads the mount root, a native cap refuses.
+    """
+    cgroup_text = _read_cgroup_memory_file(_PROC_SELF_CGROUP)
+    mountinfo_text = _read_cgroup_memory_file(_PROC_SELF_MOUNTINFO)
+    if cgroup_text is None or mountinfo_text is None:
+        return None
+    v2_path, _v1_path = _parse_proc_self_cgroup(cgroup_text)
+    v2_mounts, _v1_mounts = _parse_proc_self_mountinfo(mountinfo_text)
+    return None if v2_path is None else _mapped_cgroup_location(v2_path, v2_mounts)
+
+
 def _resolve_hierarchy_location(
     version: str,
     default_mount: str,
@@ -255,24 +294,12 @@ def _resolve_hierarchy_location(
     A parsed mount always beats the compiled-in default mount point (the
     hierarchy may be mounted elsewhere, e.g. ``/sys/fs/cgroup/unified``);
     the process's own directory then refines it when the cgroup path maps
-    under a mount's root.  With several mounts of the hierarchy (user
-    namespaces, nspawn), the one whose root most specifically contains the
-    cgroup path wins — the binding limit may only be reachable through a
-    subtree mount a broader first-match would shadow.
+    under a mount's root (``_mapped_cgroup_location``).
     """
     if not mounts:
         return _CgroupLocation(default_mount, default_mount)
-    best: _CgroupLocation | None = None
-    best_root_depth = -1
     if cgroup_path is not None:
-        for mount_root, mount_point in mounts:
-            directory = _resolve_cgroup_directory(cgroup_path, mount_root, mount_point)
-            if directory is None:
-                continue
-            root_depth = len((mount_root.rstrip("/") or "/").split("/"))
-            if root_depth > best_root_depth:
-                best = _CgroupLocation(directory, mount_point)
-                best_root_depth = root_depth
+        best = _mapped_cgroup_location(cgroup_path, mounts)
         if best is not None:
             return best
         logger.warning(

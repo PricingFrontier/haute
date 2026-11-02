@@ -70,7 +70,6 @@ class IsolatedWorkerConfig:
     timeout_seconds: float | None = None
     memory_limit_bytes: int | None = None
     require_memory_limit: bool = False
-    cleanup_callbacks: tuple[Callable[[], None], ...] = field(default_factory=tuple)
     stop_reason: Callable[[], WorkerTerminalReason | None] | None = None
     stop_poll_interval_seconds: float = 0.1
     process_name: str = "haute-isolated-worker"
@@ -117,7 +116,6 @@ def worker_config_for_memory_policy(
     *,
     memory_limit_bytes: int | None,
     timeout_seconds: float | None = None,
-    cleanup_callbacks: tuple[Callable[[], None], ...] = (),
     stop_reason: Callable[[], WorkerTerminalReason | None] | None = None,
     stop_poll_interval_seconds: float = 0.1,
     process_name: str = "haute-isolated-worker",
@@ -135,7 +133,6 @@ def worker_config_for_memory_policy(
         timeout_seconds=timeout_seconds,
         memory_limit_bytes=memory_limit_bytes,
         require_memory_limit=enforcement == "required",
-        cleanup_callbacks=cleanup_callbacks,
         stop_reason=stop_reason,
         stop_poll_interval_seconds=stop_poll_interval_seconds,
         process_name=process_name,
@@ -286,17 +283,6 @@ class IsolatedWorkerMemoryLimitExceededError(IsolatedWorkerError, MemoryError):
         self.rss_limit_bytes = rss_limit_bytes
 
 
-class IsolatedWorkerCleanupError(IsolatedWorkerError):
-    """Raised when parent-owned cleanup fails after a worker finishes."""
-
-    def __init__(self, errors: list[BaseException]) -> None:
-        super().__init__(
-            f"Isolated worker cleanup failed in {len(errors)} callback(s)",
-            terminal_reason="error",
-        )
-        self.errors = tuple(errors)
-
-
 class IsolatedWorkerTerminationError(IsolatedWorkerError):
     """Raised when a child remains alive after terminate and kill attempts."""
 
@@ -380,29 +366,6 @@ def isolated_worker_memory_detail(
     elif isinstance(exc, IsolatedWorkerCrashedError):
         payload["reason"] = "worker_may_have_exceeded_memory_limit"
     return payload
-
-
-def address_space_caps_supported() -> bool:
-    """Return whether this platform can enforce child address-space limits.
-
-    macOS exposes ``resource.RLIMIT_AS`` and ``resource.setrlimit`` but
-    the kernel does NOT actually enforce process address-space limits —
-    any call to ``setrlimit(RLIMIT_AS, ...)`` with a finite value raises
-    ``ValueError: current limit exceeds maximum limit`` even when the
-    current limit is ``RLIM_INFINITY``. Treat macOS as unsupported so
-    the dependent code path falls back to soft enforcement (best-effort
-    only, with an explicit ``IsolatedWorkerMemoryLimitUnsupportedError``
-    when the caller requires it).
-    """
-    try:
-        import resource
-    except ImportError:
-        return False
-    if not (hasattr(resource, "RLIMIT_AS") and hasattr(resource, "setrlimit")):
-        return False
-    if sys.platform == "darwin":
-        return False
-    return True
 
 
 def process_memory_caps_supported() -> bool:
@@ -812,10 +775,8 @@ def run_isolated_worker(
 ) -> T:
     """Run ``function`` in a child process and return its pickled result.
 
-    The parent owns cleanup callbacks and always runs them after the child
-    reaches a terminal state. The child process is deliberately started via the
-    ``spawn`` context so the worker does not inherit the host interpreter's
-    large native heaps.
+    The child process is deliberately started via the ``spawn`` context so the
+    worker does not inherit the host interpreter's large native heaps.
     """
     worker_config = config or IsolatedWorkerConfig()
     if (
@@ -967,13 +928,8 @@ def run_isolated_worker(
         except BaseException as exc:
             record_finalization_error(exc, step="result queue feeder join")
 
-    cleanup_error = _run_cleanup_callbacks(worker_config.cleanup_callbacks)
     if primary_error is not None:
-        if cleanup_error is not None:
-            primary_error.add_note(str(cleanup_error))
         raise primary_error
-    if cleanup_error is not None:
-        raise cleanup_error
     if has_result:
         return cast(T, result)
     raise IsolatedWorkerCrashedError(
@@ -1136,18 +1092,6 @@ def _decode_worker_payload(raw_payload: Any) -> tuple[str, Any]:
     if not isinstance(payload, tuple) or len(payload) != 2 or payload[0] not in {"ok", "error"}:
         raise IsolatedWorkerCrashedError(exitcode=None, memory_limit_bytes=None)
     return cast(tuple[str, Any], payload)
-
-
-def _run_cleanup_callbacks(
-    cleanup_callbacks: tuple[Callable[[], None], ...],
-) -> IsolatedWorkerCleanupError | None:
-    errors: list[BaseException] = []
-    for callback in cleanup_callbacks:
-        try:
-            callback()
-        except BaseException as exc:
-            errors.append(exc)
-    return IsolatedWorkerCleanupError(errors) if errors else None
 
 
 # ``STATUS_STACK_BUFFER_OVERRUN``: the exit status of a Windows fail-fast abort.

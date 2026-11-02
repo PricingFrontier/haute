@@ -44,7 +44,6 @@ from haute._worker_isolation import (
     IsolatedWorkerTimeoutError,
     WorkerTerminalReason,
     _create_worker_rss_watchdog,
-    _run_cleanup_callbacks,
     _terminate_process,
     _WorkerRssWatchdog,
     await_worker_ready,
@@ -502,13 +501,8 @@ def run_worker_protocol(
                 primary_error = exc
             else:
                 primary_error.add_note(f"native memory resource cleanup failed: {exc}")
-    cleanup_error = _run_cleanup_callbacks(worker_config.cleanup_callbacks)
     if primary_error is not None:
-        if cleanup_error is not None:
-            primary_error.add_note(str(cleanup_error))
         raise primary_error
-    if cleanup_error is not None:
-        raise cleanup_error
     if result is None:
         raise IsolatedWorkerCrashedError(
             exitcode=process.exitcode, memory_limit_bytes=worker_config.memory_limit_bytes

@@ -15,10 +15,10 @@
 
 ### `_job_store.py`
 
-- **`JobCommonFields`** — the typed common record envelope: a closed `JobStatus`,
-  numeric `created_at`, optional message, and lifecycle-owned
-  `terminal_reason`/`ended_at`/`completed_at`. Production creators seed only
-  `status="running"`; unknown statuses and pre-terminalised initial records fail at
+- **Common record fields** — every record carries a closed `JobStatus`, numeric
+  `created_at`, an optional message, and the lifecycle-owned
+  `terminal_reason`/`ended_at`/`completed_at`, which the store validates on every
+  write. Production creators seed only `status="running"` (`RunningJobFields`); unknown statuses and pre-terminalised initial records fail at
   the store boundary. Training, dispersion, optimiser solve, optimiser frontier,
   Explore, pivot, and input-cache owners define typed payload records for their own
   non-common fields rather than extending one catch-all store dictionary type.
@@ -113,10 +113,9 @@
   `active_kind` for the caller to build a specific conflict message/response.
 - **`SingleFlightCoordinator`** — `_active_by_key: dict[Hashable, SingleFlightHandle]`
   guarded by one `RLock`.
-- **`IsolatedJobSupervisor`** — wraps one `JobLifecycle`. `launch_protocol()` is the
-  production entry point for the bounded version-1 worker transport; `launch()` keeps
-  the legacy single-result isolation primitive available and tested. Both return a
-  started daemon `IsolatedSupervisorThread`.
+- **`IsolatedJobSupervisor`** — wraps one `JobLifecycle`. `launch_protocol()` runs one
+  bounded version-1 protocol worker under lifecycle supervision and returns a started
+  daemon `IsolatedSupervisorThread`; it is the supervisor's only launch.
 - **`BackgroundJobStoppedError(RuntimeError)`** — carries `job_id` and the canonical
   `terminal_reason`; it does not duplicate that value under a second status attribute.
 
@@ -400,14 +399,13 @@ released/repaired before create/register/acquire, so two builders cannot start f
 one identity. Its `finally` releases registry/coordinator ownership without deleting
 the published generation.
 
-### `IsolatedJobSupervisor.launch(...)` / `launch_protocol(...)`
+### `IsolatedJobSupervisor.launch_protocol(...)`
 
-`launch_protocol()` is the production path: it runs a versioned `WorkerRequest`
-through `run_worker_protocol`, drains bounded progress events, validates the result
-and artifact manifests, and maps the validated result through the caller's
-`completed_fields`. `launch()` retains the smaller `run_isolated_worker` single-result
-primitive for supported direct callers and its focused tests. Both delegate to
-`_launch_callable` and return an `IsolatedSupervisorThread`.
+`launch_protocol()` runs a versioned `WorkerRequest` through `run_worker_protocol`
+(or the `protocol_runner` a test substitutes), drains bounded progress events,
+validates the result and artifact manifests, and maps the validated result through
+the caller's `completed_fields`. It delegates to `_launch_callable` and returns an
+`IsolatedSupervisorThread`.
 
 The thread executes one total outcome pipeline:
 

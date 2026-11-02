@@ -122,8 +122,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the fifty packages delivered or settled since (thirteen by 28
-October 2026, twenty-five more on 29 October, two on 1 November, ten more by 2 November) have been removed from the sections below; the coverage table keeps the
+The findings of the fifty-one packages delivered or settled since (thirteen by 28
+October 2026, twenty-five more on 29 October, two on 1 November, eleven more by 2 November) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -238,7 +238,6 @@ production:
 | CLI | PM-29 (templates), PM-30 | `CLI-R06` |
 | IO layer | CIO-5, CIO-11 | `IO-R06` |
 | Background jobs | WRK-5, WRK-6, WRK-11, WRK-14 | `ROAD-WORKER-07` |
-| Background jobs | WRK-8, WRK-9, WRK-10 | `ROAD-WORKER-08` |
 | Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
 | Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |
@@ -351,8 +350,8 @@ All probes live outside the repository and wrote nothing into it.
 | Tool | Result |
 |---|---|
 | radon | 285 functions with cyclomatic complexity ≥ 20; 27 ≥ 50 (the largest in the optimiser service, the save service, the assistant tools and the RAM estimate). |
-| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `ROAD-WORKER-08`, `DEP-R13`, `CLI-R05` and `ENGQ-R01`. |
-| jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13` and `ROAD-WORKER-08`. |
+| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `DEP-R13`, `CLI-R05` and `ENGQ-R01`. |
+| jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13`. |
 | jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `FMOU-R05` and `EDA-R03`. |
 | knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted (since declared); every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
 | sweeps | 35 campaign-named test modules (`ENGQ-R05`). |

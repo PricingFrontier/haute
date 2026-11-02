@@ -249,8 +249,8 @@ Depended on:
   `CancellableJobRegistry` wraps, and `ExecutionMemoryPressureEvent` drives the
   running-job metrics publisher.
 - [execution-engine](../execution-engine/high-level.md) (worker isolation) —
-  `run_isolated_worker`, `IsolatedWorkerConfig`, and the `IsolatedWorkerError` family
-  are what `IsolatedJobSupervisor` adapts into job-lifecycle transitions.
+  `IsolatedWorkerConfig` and the `IsolatedWorkerError` family, carried by the version-1
+  transport, are what `IsolatedJobSupervisor` adapts into job-lifecycle transitions.
 - [tracing](../tracing/high-level.md) — execution metrics published onto running jobs
   feed the same metrics surfaces documented there.
 

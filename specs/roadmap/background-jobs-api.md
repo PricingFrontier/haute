@@ -16,7 +16,6 @@ specifications and their ordinary regression tests.
 |---|---|---|---|
 | `ROAD-WORKER-05` | Planned | P3 | One worker primitive and one worker-failure taxonomy serve one-shot, pooled and job workers. |
 | `ROAD-WORKER-07` | Planned | P3 | The three parents classify a memory failure the same way, a supervisor's persistence failure reaches the status route, a worker's own `TimeoutError` is not reported as a response timeout, and teardown failures are recorded. |
-| `ROAD-WORKER-08` | Planned | P3 | The worker modules carry one error envelope, one cgroup resolver and no dead feature. |
 
 ## Planned improvements
 
@@ -91,39 +90,3 @@ queue close appears as a note on the primary error.
 `src/haute/routes/_background_jobs.py::IsolatedSupervisorThread`;
 `src/haute/routes/_timeouts.py::run_blocking_with_response_timeout`;
 `src/haute/_dedicated_workers.py::DedicatedWorker`.
-
-### ROAD-WORKER-08 — One envelope, one resolver, no dead feature
-**Why:** The remote-error 5-tuple is unpacked into an
-`InteractiveWorkerRemoteError` three times and the child-side error envelope is
-built four times in the pool entrypoint and once more in the dedicated worker.
-Two resolvers find "this process's cgroup v2 directory": the lease hard-codes
-`/sys/fs/cgroup` and reads only the `0::` line, the headroom probe parses
-`/proc/self/mountinfo` and handles a relocated mount, so on a hybrid host the
-lease silently falls back to `RLIMIT_AS` while the headroom clamp works. No
-production caller passes `cleanup_callbacks`, so `_run_cleanup_callbacks` and
-`IsolatedWorkerCleanupError` never act; `address_space_caps_supported`,
-`process_rss_sampling_supported` and `JobCommonFields` are referenced only by
-tests or by nothing; `IsolatedJobSupervisor.launch` is never called
-(`launch_protocol` is). This package comes from the
-[25 October 2026 codebase review](codebase-review-2026-10-25.md).
-
-**Plan:** One `_remote_error_from_evidence` and one child-side
-`_error_envelope` imported by the dedicated worker; one mountinfo-aware cgroup
-resolver used by both the lease and the headroom probe; delete the dead
-features or wire a real caller.
-
-**Acceptance:** jscpd reports no clone between the pool and the dedicated
-worker; the lease resolves its cgroup on a hybrid mount layout in a test with
-a fake `mountinfo`; the named symbols are gone or called from production.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_interactive_workers.py`;
-`src/haute/_dedicated_workers.py::_error_envelope`;
-`src/haute/_native_memory_limit.py::_current_cgroup_path`;
-`src/haute/_host_memory.py::_resolve_cgroup_locations`;
-`src/haute/_worker_isolation.py::_run_cleanup_callbacks`;
-`src/haute/_worker_isolation.py::address_space_caps_supported`;
-`src/haute/routes/_background_jobs.py::IsolatedJobSupervisor`;
-`src/haute/_process_memory.py::process_rss_sampling_supported`;
-`src/haute/routes/_job_store.py::JobCommonFields`.
