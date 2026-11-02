@@ -877,6 +877,34 @@ class TestLimitedPreviewTrace:
         assert steps["policies"] == {"id": 1, "premium": 30}
         assert steps["rates"] == {"id": 1, "premium": 20}
 
+    def test_a_column_a_later_join_brings_in_identifies_the_joined_row(self, tmp_path):
+        frames = {
+            "policies": pl.DataFrame({"id": [1], "region": ["n"]}),
+            "rates": pl.DataFrame({"id": [1, 1], "rate": [7, 8]}),
+        }
+        nodes = []
+        for name, frame in frames.items():
+            path = tmp_path / f"{name}.parquet"
+            frame.write_parquet(path)
+            nodes.append(_source_node(name, str(path)))
+        code = "df = policies.select('id').join(rates, on='id')"
+        graph = _g(
+            {
+                "nodes": [*nodes, _transform_node("priced", code)],
+                "edges": [_edge(name, "priced") for name in frames],
+            }
+        )
+        preview = [self._limited_preview_row(graph, "priced", index, 5) for index in (0, 1)]
+        row_index = next(index for index, row in enumerate(preview) if row["rate"] == 7)
+
+        row, result = self._trace(graph, "priced", row_index, row_limit=5, column=None)
+
+        # The select narrows only policies' columns; ``rate`` picks the rates row.
+        assert row == {"id": 1, "rate": 7}
+        steps = {step.node_id: step.output_values for step in result.steps}
+        assert steps["rates"] == {"id": 1, "rate": 7}
+        assert steps["policies"] == {"id": 1, "region": "n"}
+
     @staticmethod
     def _premium_join_graph(tmp_path, code: str):
         from haute._types import GraphNode, NodeData, NodeType

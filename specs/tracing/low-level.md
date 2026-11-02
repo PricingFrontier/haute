@@ -457,16 +457,19 @@ the limited preview shows rather than independent source samples.
    - `filter`, `sort`, `head`, `tail`, `limit`, `slice`, `unique`, `drop_nulls`, and
      `lazy` keep values;
    - a literal `drop(...)` (names, or lists of names, with an optional literal `strict`)
-     records its columns as `dropped`; a selector or non-literal drop fails the proof;
+     drops its columns from the inputs in the frame; a selector or non-literal drop fails
+     the proof;
    - `with_columns` and `select` assign every keyword output and every output that is not a
      bare column; a pure column selection (a literal selector or a literal name list)
      assigns nothing. A `select` also carries only the bare columns it keeps
-     (`carried_only`, intersected with any earlier restriction) and keeps only those of
-     each joined input's same-name keys; `pl.all()` keeps the restriction, and
-     `pl.exclude(<names>)` records its names as `dropped`. A `select` keeping columns a
-     selector chooses fails the proof, since the syntax does not name them. A column the
-     program dropped is never carried, so one a later join brings in under that name is not
-     read as the root input's; an expression rooted at a literal selector whose only naming step is
+     (`restricted_to`, intersected with any earlier restriction) and keeps only those of
+     each joined input's same-name keys; `pl.all()` and a `'*'` in a name list keep every
+     column, and `pl.exclude(<names>)` drops its names unless the selection names them
+     again. A `select` keeping or excluding columns a selector or regex chooses fails the
+     proof, since the syntax does not name them. A restriction or drop applies to the
+     inputs already in the frame (`dropped_from`), never to one a later join brings in, so
+     a column such a join adds under a dropped name is that input's value, not the root
+     input's; an expression rooted at a literal selector whose only naming step is
      its outermost call assigns that call's `alias`, or the selector's expansion (renamed
      by a trailing `.name.suffix`/`.name.prefix`) over the program's proven column superset
      — every input's columns, every column assigned so far, and for each join every
@@ -487,7 +490,7 @@ the limited preview shows rather than independent source samples.
      assigned) with `how` of `inner`, `left`, `semi`, `anti`, or `cross` records its literal
      `on` keys as the same-name keys of that joined input; a non-root input joined twice
      fails the proof;
-   - a literal `group_by(...).agg(...)` carries only its keys; a literal boolean
+   - a literal `group_by(...).agg(...)` carries only its keys of the inputs in the frame; a literal boolean
      `maintain_order` keyword is allowed, and any other keyword (a named computed key)
      fails the proof. The proof reports `whole_groups` when it is the program's only
      grouping and nothing before it filters, slices, deduplicates, selects, or joins rows,
@@ -496,8 +499,10 @@ the limited preview shows rather than independent source samples.
      selector computation, a non-literal selector, `.name` or `.struct` rewrites, `pipe`,
      or an unaliased `when`/`then` — and every other method or statement fail the proof.
 
-   The proven assignments and dropped columns are removed from the carried columns, and a
-   `carried_only` restriction keeps only its columns (`CarriedColumnProof.carries`). A column several inputs
+   The proven assignments and the port's input's dropped columns are removed from the
+   carried columns, and its restriction keeps only its columns
+   (`CarriedColumnProof.carries(column, input)`; code other than Polars and external-file
+   nodes reads its one parent as the root input). A column several inputs
    share identifies only the program's root input, unless the join that brought in this
    port's input proves it a same-name key of that input, and a non-root input's null value
    is not carried because it may be an outer fill. Every remaining shared column is a

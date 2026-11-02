@@ -3031,7 +3031,48 @@ def test_carried_proof_keeps_only_the_columns_a_select_or_drop_leaves(
     assert proof.dropped == dropped
     assert proof.join_keys == {name: frozenset(keys) for name, keys in join_keys.items()}
     for column in dropped:
-        assert not proof.carries(column)
+        assert not proof.carries(column, inputs[0])
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = src.select('id').join(other, on='id')",
+        "df = src.drop('c').join(other, on='id')",
+        "df = src.group_by('id').agg(pl.len()).join(other, on='id')",
+    ],
+)
+def test_carried_proof_restricts_only_the_inputs_in_the_frame_when_it_runs(code: str) -> None:
+    from haute._column_lineage import carried_column_proof
+
+    proof = carried_column_proof(code, ("src", "other"))
+
+    assert proof is not None
+    # A column the later join brings in is the joined input's own value.
+    assert proof.carries("rate", "other")
+    assert proof.carries("c", "other")
+    assert not proof.carries("c", "src")
+
+
+@pytest.mark.parametrize(
+    ("code", "carried", "not_carried"),
+    [
+        # The selection names the excluded column again, so it is kept unchanged.
+        ("df = src.select(pl.exclude('x'), 'x').sort('x')", {"id", "x"}, set()),
+        ("df = src.select(pl.exclude(['x', 'y']), 'x')", {"id", "x"}, {"y"}),
+        # ``'*'`` in a name list keeps every column.
+        ("df = src.select(['*']).sort('id', descending=True)", {"id", "x"}, set()),
+    ],
+)
+def test_carried_proof_reads_a_selection_as_polars_keeps_it(
+    code: str, carried: set[str], not_carried: set[str]
+) -> None:
+    from haute._column_lineage import carried_column_proof
+
+    proof = carried_column_proof(code, ("src",))
+
+    assert proof is not None
+    assert {column for column in carried | not_carried if proof.carries(column, "src")} == carried
 
 
 @pytest.mark.parametrize(
@@ -3040,6 +3081,8 @@ def test_carried_proof_keeps_only_the_columns_a_select_or_drop_leaves(
         # The columns a selector keeps are not named in the syntax.
         "df = src.select(cs.numeric())",
         "df = src.select(pl.col('^a.*$'))",
+        "df = src.select(['^a.*$'])",
+        "df = src.select(pl.exclude('^a.*$'))",
         "df = src.drop(cs.numeric())",
         "df = src.drop(names)",
         "df = src.drop()",

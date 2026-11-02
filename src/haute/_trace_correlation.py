@@ -2255,8 +2255,12 @@ class RowScopeResolver:
         )
         if proof is None:
             return None
-        carried = {name: value for name, value in carried.items() if proof.carries(name)}
         edge_input = self.input_names.get((parent_id, child_id, source_handle, target_role))
+        # The proof names explicit inputs; other code reads its one parent as ``df``.
+        proof_input = edge_input if explicit_inputs and edge_input is not None else proof.root_input
+        carried = {
+            name: value for name, value in carried.items() if proof.carries(name, proof_input)
+        }
         if len(input_names) > 1 and proof.root_input != edge_input:
             # A column several inputs share keeps the root input's value (or the
             # value of a key this input was joined on); it identifies no other
@@ -2282,8 +2286,8 @@ class RowScopeResolver:
         # sharing all its keys — provided every key is carried unchanged.
         aggregated = (
             proof.whole_groups
-            and proof.carried_only is not None
-            and proof.carried_only == frozenset(carried)
+            and proof.restricted_to.get(proof_input) is not None
+            and proof.restricted_to.get(proof_input) == frozenset(carried)
         )
         return _CarriedValues(carried, {}, aggregated=aggregated)
 

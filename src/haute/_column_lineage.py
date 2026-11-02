@@ -3276,27 +3276,40 @@ class CarriedColumnProof:
     another input's columns collide. ``assigned`` are output columns the program
     may rewrite, ``join_keys`` maps each joined input to the literal same-name
     ``on`` keys of the join that brought it in (an output key column holds that
-    input's matching value), and ``carried_only`` (when set) is the only set of
-    columns carried at all — a grouping carries just its keys, a ``select`` the
-    columns it keeps unchanged. ``dropped`` are columns a ``drop`` or
-    ``pl.exclude`` removed: an output column of that name came from elsewhere.
+    input's matching value). A restriction applies to the inputs in the frame
+    when it runs, not to one a later join brings in: ``restricted_to`` maps an
+    input to the only columns of it still carried (a grouping carries just its
+    keys, a ``select`` the columns it keeps unchanged), and ``dropped_from`` to
+    the columns a ``drop`` or ``pl.exclude`` removed from it, so an output column
+    of that name came from elsewhere.
     """
 
     root_input: str
     assigned: frozenset[str]
     join_keys: Mapping[str, frozenset[str]]
-    carried_only: frozenset[str] | None = None
+    restricted_to: Mapping[str, frozenset[str]] = field(default_factory=dict)
     whole_groups: bool = False
     """The program's one grouping reads every root-input row: each output row
     aggregates exactly the input rows sharing all its keys."""
-    dropped: frozenset[str] = frozenset()
+    dropped_from: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
-    def carries(self, column: str) -> bool:
-        """Whether an output column of this name holds an input's unchanged value."""
+    @property
+    def carried_only(self) -> frozenset[str] | None:
+        """The root input's restriction: its only columns still carried, if any."""
+        return self.restricted_to.get(self.root_input)
+
+    @property
+    def dropped(self) -> frozenset[str]:
+        """The root input's columns a ``drop`` or ``pl.exclude`` removed."""
+        return self.dropped_from.get(self.root_input, frozenset())
+
+    def carries(self, column: str, input_name: str) -> bool:
+        """Whether an output column of this name holds *input_name*'s unchanged value."""
+        restriction = self.restricted_to.get(input_name)
         return (
             column not in self.assigned
-            and column not in self.dropped
-            and (self.carried_only is None or column in self.carried_only)
+            and column not in self.dropped_from.get(input_name, frozenset())
+            and (restriction is None or column in restriction)
         )
 
 
@@ -3640,8 +3653,20 @@ def carried_column_proof(
     root_input: str | None = None
     assigned: set[str] = set()
     join_keys: dict[str, frozenset[str]] = {}
-    carried_only: set[str] | None = None
-    dropped: set[str] = set()
+    # The inputs in the frame so far: a restriction applies to these only.
+    present: list[str] = []
+    restricted_to: dict[str, frozenset[str]] = {}
+    dropped_from: dict[str, frozenset[str]] = {}
+
+    def restrict(kept: set[str]) -> None:
+        for name in present:
+            earlier = restricted_to.get(name)
+            restricted_to[name] = frozenset(kept if earlier is None else earlier & kept)
+
+    def drop(removed: Iterable[str]) -> None:
+        for name in present:
+            dropped_from[name] = dropped_from.get(name, frozenset()) | frozenset(removed)
+
     superset: set[str] | None = (
         None
         if input_columns is None
@@ -3676,6 +3701,7 @@ def carried_column_proof(
             if root not in names or root_input is not None:
                 return None
             root_input = aliases.get(root, root)
+            present.append(root_input)
         calls = _frame_chain_calls(statement.value) if isinstance(statement.value, ast.Call) else []
         index = 0
         while index < len(calls):
@@ -3690,7 +3716,7 @@ def carried_column_proof(
                 removed = _dropped_columns(call)
                 if removed is None:
                     return None
-                dropped.update(removed)
+                drop(removed)
             elif method in _ASSIGNING_FRAME_METHODS or method == "select":
                 selecting = method == "select"
                 outputs: list[tuple[str, bool]] = []
@@ -3700,11 +3726,22 @@ def carried_column_proof(
                 excluded: set[str] = set()
                 for argument in call.args:
                     if _selects_unchanged_columns(argument):
-                        if isinstance(argument, (ast.List, ast.Tuple)):
-                            outputs.extend((name, True) for name in _literal_names(argument) or ())
+                        listed_names = (
+                            _literal_names(argument) or []
+                            if isinstance(argument, (ast.List, ast.Tuple))
+                            else _excluded_names(argument)
+                        )
+                        if "*" in listed_names and isinstance(argument, (ast.List, ast.Tuple)):
+                            keeps_all = True
+                        elif not all(_plain_column_name(name) for name in listed_names):
+                            if selecting:
+                                # A regex keeps or excludes columns the syntax does not name.
+                                return None
+                        elif isinstance(argument, (ast.List, ast.Tuple)):
+                            outputs.extend((name, True) for name in listed_names)
                         else:
                             keeps_all = True
-                            excluded.update(_excluded_names(argument))
+                            excluded.update(listed_names)
                         continue
                     if _selector_nodes(argument, selector_aliases):
                         root_name = root_input or (
@@ -3749,10 +3786,11 @@ def carried_column_proof(
                 frame_changed = frame_changed or bool(written_names)
                 if selecting:
                     if keeps_all:
-                        dropped.update(excluded)
+                        # A column the selection also names is kept after all.
+                        drop(excluded - {name for name, bare in outputs if bare})
                     else:
                         kept = {name for name, bare in outputs if bare}
-                        carried_only = kept if carried_only is None else carried_only & kept
+                        restrict(kept)
                         join_keys = {key: keys & kept for key, keys in join_keys.items()}
             elif method == "with_row_index":
                 index_name = call.args[0] if call.args else None
@@ -3792,6 +3830,7 @@ def carried_column_proof(
                         return None
                     right_input = aliases.get(right.id, right.id)
                     join_keys[right_input] = frozenset()
+                    present.append(right_input)
                     right_columns = (
                         None
                         if input_columns is None or right_input not in input_columns
@@ -3850,9 +3889,7 @@ def carried_column_proof(
                     for keyword in call.keywords
                 ):
                     return None
-                carried_only = (
-                    set(group_keys) if carried_only is None else carried_only & set(group_keys)
-                )
+                restrict(set(group_keys))
                 whole_groups = rows_intact and not grouped
                 grouped = True
                 rows_intact = False
@@ -3868,10 +3905,12 @@ def carried_column_proof(
     return CarriedColumnProof(
         root_input,
         frozenset(assigned),
-        MappingProxyType({key: keys - dropped for key, keys in join_keys.items()}),
-        None if carried_only is None else frozenset(carried_only),
+        MappingProxyType(
+            {key: keys - dropped_from.get(key, frozenset()) for key, keys in join_keys.items()}
+        ),
+        MappingProxyType(restricted_to),
         whole_groups,
-        frozenset(dropped),
+        MappingProxyType(dropped_from),
     )
 
 
