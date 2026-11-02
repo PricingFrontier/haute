@@ -819,7 +819,7 @@ describe("BandingEditor", () => {
     renderEditor(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
-    expect(screen.getByText('Duplicate value "London" in rules 1, 3')).toBeInTheDocument()
+    expect(screen.getByRole("img", { name: 'Rule 3 repeats the value "London" of rule 1.' })).toBeInTheDocument()
   })
 
 

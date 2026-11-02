@@ -1619,19 +1619,23 @@ def test_validate_banding_config_rejects_unusable_authored_factor(factor) -> Non
 
 
 @pytest.mark.parametrize(
-    "rules",
+    ("rules", "message"),
     [
-        [{"boundary": "10", "label": ""}],
-        [{"boundary": "2024-03-31", "label": ""}, {"boundary": "", "label": ""}],
+        ([{"boundary": "10", "label": ""}], "breakpoint rule '10' requires label (rules[0])"),
+        (
+            [{"boundary": "2024-03-31", "label": ""}, {"boundary": "", "label": ""}],
+            "breakpoint rule '2024-03-31' requires label (rules[0])",
+        ),
+        ([{"boundary": "", "label": "all"}], "only an open-ended boundary"),
     ],
 )
-def test_validate_banding_config_rejects_breakpoints_that_band_nothing(rules) -> None:
+def test_validate_banding_config_rejects_breakpoints_that_band_nothing(rules, message) -> None:
     factor = {"banding": "breakpoints", "column": "x", "outputColumn": "x_band", "rules": rules}
-    with pytest.raises(ValueError, match="Banding output 'x_band' has no usable breakpoints rule"):
+    with pytest.raises(ValueError, match=re.escape(message)):
         validate_banding_config({"factors": [factor]})
 
 
-def test_validate_banding_config_rejects_categorical_rules_that_band_nothing() -> None:
+def test_validate_banding_config_names_the_categorical_rule_the_writer_refuses() -> None:
     factor = {
         "banding": "categorical",
         "column": "region",
@@ -1643,5 +1647,5 @@ def test_validate_banding_config_rejects_categorical_rules_that_band_nothing() -
     with pytest.raises(ConfigSettingError) as caught:
         validate_banding_config({"factors": [factor]})
 
-    assert str(caught.value) == "Banding output 'region_band' has no usable categorical rule"
+    assert str(caught.value) == "categorical rule 'north' requires assignment (rules[0])"
     assert caught.value.setting == "factors"

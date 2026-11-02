@@ -45,25 +45,42 @@ export function bandingOutputCollisionMessage(others: number[], outputColumn: st
 }
 
 // ---------------------------------------------------------------------------
-// Categorical duplicate detection
+// What the save refuses in a rule row
 // ---------------------------------------------------------------------------
 
-export function detectDuplicateCategorical(
+/**
+ * What the save refuses in each categorical rule (the sidecar writer's checks):
+ * a blank value, a blank mapping, or a value an earlier rule already has. Keyed
+ * by rule index; each message names the rule by its number.
+ */
+export function categoricalRuleIssues(
   rules: CategoricalRule[],
-): { indices: number[]; value: string }[] {
-  const byValue = new Map<string, number[]>()
-  rules.forEach((r, i) => {
-    const v = r.value ?? ""
-    if (!v) return
-    const arr = byValue.get(v)
-    if (arr) arr.push(i)
-    else byValue.set(v, [i])
+): Map<number, { value?: string; assignment?: string }> {
+  const issues = new Map<number, { value?: string; assignment?: string }>()
+  const firstByValue = new Map<string, number>()
+  rules.forEach((rule, index) => {
+    const issue: { value?: string; assignment?: string } = {}
+    const value = String(rule.value ?? "")
+    if (value === "") {
+      issue.value = `Rule ${index + 1} needs a value.`
+    } else if (firstByValue.has(value)) {
+      issue.value = `Rule ${index + 1} repeats the value "${value}" of rule ${firstByValue.get(value)! + 1}.`
+    } else {
+      firstByValue.set(value, index)
+    }
+    if (String(rule.assignment ?? "") === "") issue.assignment = `Rule ${index + 1} needs what it maps to.`
+    if (issue.value || issue.assignment) issues.set(index, issue)
   })
-  const result: { indices: number[]; value: string }[] = []
-  for (const [value, indices] of byValue) {
-    if (indices.length > 1) result.push({ indices, value })
-  }
-  return result
+  return issues
+}
+
+/** The breakpoints the save refuses for want of a band name, keyed by index. */
+export function breakpointLabelIssues(breakpoints: ReadonlyArray<{ boundary: string; label: string }>): Map<number, string> {
+  const issues = new Map<number, string>()
+  breakpoints.forEach((breakpoint, index) => {
+    if ((breakpoint.label ?? "") === "") issues.set(index, `Breakpoint ${index + 1} needs a band name.`)
+  })
+  return issues
 }
 
 /**

@@ -30,6 +30,24 @@ describe("TwoWayGrid", () => {
     vi.restoreAllMocks()
   })
 
+  it("refuses a typed relativity that is not a number, marking the cell and writing nothing", () => {
+    const onUpdateEntries = vi.fn()
+    render(<TwoWayGrid table={makeTable()} bandingLevels={bandingLevels} onUpdateEntries={onUpdateEntries} />)
+    const cell = screen.getByLabelText("Relativity for age_band young and region north")
+    fireEvent.change(cell, { target: { value: "1,5" } })
+    fireEvent.blur(cell)
+
+    expect(onUpdateEntries).not.toHaveBeenCalled()
+    expect(cell).toHaveValue("1,5")
+    expect(cell).toHaveAttribute("aria-invalid", "true")
+
+    fireEvent.change(cell, { target: { value: "1.5" } })
+    fireEvent.blur(cell)
+    expect(onUpdateEntries).toHaveBeenCalledWith(
+      expect.arrayContaining([{ age_band: "young", region: "north", value: 1.5 }]),
+    )
+  })
+
   it("renders row and column factor headers", () => {
     render(
       <TwoWayGrid

@@ -1,21 +1,59 @@
-import { useState, useEffect } from "react"
+import { useId, useState } from "react"
+import { CellIssueMark } from "../shared/CellIssueMark"
+import { cellIssueStyle } from "../shared/cellIssueStyle"
+import { parseRelativity } from "./ratingTableUtils"
 
-/** Controlled number input that syncs from prop and commits on blur. */
-export function ControlledNumberCell({ val, onCommit, ...rest }: {
+const INVALID_MESSAGE = "Enter a number, such as 1.25."
+
+/**
+ * A relativity cell: the typed text stays local until blur, and an outside change
+ * of the value (undo, redo, a paste) replaces it. A blur commits a number, or
+ * `null` for a cleared cell; text that is not a number is kept, marked and not
+ * committed.
+ */
+export function ControlledNumberCell({ val, onCommit, style, className, ...rest }: {
   val: number
-  onCommit: (v: string) => void
+  onCommit: (value: number | null) => void
 } & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "onBlur" | "type" | "inputMode" | "step">) {
-  const [local, setLocal] = useState(String(val))
-  // eslint-disable-next-line react-hooks/set-state-in-effect -- sync controlled value from prop
-  useEffect(() => setLocal(String(val)), [val])
+  const committed = String(val)
+  const [draft, setDraft] = useState<string | null>(null)
+  const [lastCommitted, setLastCommitted] = useState(committed)
+  if (lastCommitted !== committed) {
+    setLastCommitted(committed)
+    setDraft(null)
+  }
+  const shown = draft ?? committed
+  const parsed = parseRelativity(shown)
+  const invalid = parsed.kind === "invalid"
+  const issueId = useId()
+
+  const commit = () => {
+    if (draft === null) return
+    if (draft === committed) {
+      setDraft(null)
+      return
+    }
+    if (parsed.kind === "invalid") return
+    onCommit(parsed.kind === "blank" ? null : parsed.value)
+    setDraft(null)
+  }
+
   return (
-    <input
-      type="text"
-      inputMode="decimal"
-      value={local}
-      onChange={(e) => setLocal(e.target.value)}
-      onBlur={() => onCommit(local)}
-      {...rest}
-    />
+    <div className="relative">
+      <input
+        {...rest}
+        type="text"
+        inputMode="decimal"
+        value={shown}
+        aria-invalid={invalid ? true : undefined}
+        aria-describedby={invalid ? issueId : undefined}
+        title={invalid ? INVALID_MESSAGE : rest.title}
+        className={`${className ?? ""}${invalid ? " pr-5" : ""}`}
+        style={invalid ? cellIssueStyle(style ?? {}, "error") : style}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+      />
+      {invalid && <CellIssueMark id={issueId} message={INVALID_MESSAGE} severity="error" />}
+    </div>
   )
 }

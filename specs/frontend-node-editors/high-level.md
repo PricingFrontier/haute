@@ -649,7 +649,15 @@ category, a duration a number, binary data text, text anything but true/false, a
 number or date becomes a category directly), the same table the renderer holds
 (`CAST_REFUSALS`, checked against Polars by a test); a formula casting a known text
 column to a date, or a category to anything but text, is refused with the function to
-use instead; std and var are not offered for a duration, and log, exp and divide only
+use instead; a whole-number argument is refused as the renderer refuses it, in a formula
+(`round(x, -1)` or `round(x, 1.5)`: "expects a whole number of zero or more here";
+`slice(x, 0.5, 2)`: "expects a whole number here") and in its box (decimal places, a
+group: "Enter a value of at least 0."); a date format typed without a `%` directive is
+refused under its box ("Enter a date format such as %d/%m/%Y.") with the typed text kept,
+and a quantile outside 0 to 1 is refused, not clamped ("Enter a value of at most 1.");
+a Change types entry whose saved format no longer fits its column (the column is no
+longer text) keeps showing its Format box, saying the column takes no format, so the
+format can be cleared rather than failing the run out of sight; std and var are not offered for a duration, and log, exp and divide only
 for numbers and true/false. A numeric "is one of" records the kind of number its column
 holds, from the column's type: `integer` renders its values as whole numbers
 (`[100, 300]`), `float` as floats (`[100.0, 300.0]`), and `decimal` as exact decimals

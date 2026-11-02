@@ -370,6 +370,20 @@ export function extractTableEntryFactorLevels(
   return levels
 }
 
+/**
+ * A relativity as typed or pasted: a number written as JavaScript reads one
+ * (`1.25`, `-0.5`, `1e-3`), blank, or anything else, which is refused rather
+ * than replaced (`1,5` is not one and a half).
+ */
+export type TypedRelativity = { kind: "value"; value: number } | { kind: "blank" } | { kind: "invalid" }
+
+export function parseRelativity(text: string): TypedRelativity {
+  const trimmed = text.trim()
+  if (!trimmed) return { kind: "blank" }
+  const parsed = Number(trimmed)
+  return Number.isFinite(parsed) ? { kind: "value", value: parsed } : { kind: "invalid" }
+}
+
 /** Resolve the table's defaultValue to a safe numeric fallback. */
 export function resolveDefault(defaultValue: string | number | null | undefined): number {
   const raw = typeof defaultValue === "number" ? defaultValue

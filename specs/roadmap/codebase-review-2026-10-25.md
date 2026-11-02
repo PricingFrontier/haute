@@ -201,10 +201,6 @@ these are the Majors still open.
   and the undo history** (Major, `FSH-R05`): the save stores no document
   fingerprint, so the resync is answered with a full document the client takes
   for an external change.
-- **A banding rule the grid leaves unmarked fails the save with a 500** (Major,
-  `FNED-R04`): the save validator accepts a blank band name, a blank categorical
-  value or a repeated value, the sidecar writer refuses them, and the writer's
-  error has no HTTP handler.
 - **Saving the pipeline cancels an auto-range run in flight, and a percentage
   constraint is shown as "at least 0" and rewritten as an absolute bound on
   edit** (two Majors, `FMOU-R04`).
@@ -271,7 +267,6 @@ production:
 | Frontend shared | FSB-1, FSB-2, FSB-10, FSB-12, FSB-15 | `FSH-R07` |
 | Frontend shared | FSB-3, FSB-4, FSB-5, FSB-6, FSB-9, FSB-13, FSB-14, FSB-16, FSB-17, FSB-18 | `FSH-R08` |
 | Frontend shared | FSB-7, FSB-8, FSB-11 | `FSH-R09` |
-| Frontend node editors | FNB-1, FNB-2, FNB-3, FNB-5, FNB-13 | `FNED-R04` |
 | Frontend node editors | FNB-4, FNB-6, FNB-7, FNB-8, FNB-9, FNB-10, FNB-11, FNB-12, FNB-14, FNB-15 | `FNED-R05` |
 | Frontend modelling | FMD-7, FMD-8, FMD-9, FMD-10, FMD-11, FMD-13, FMD-14, FMD-15 | `FMOU-R03` |
 | Frontend optimiser | FOX-1, FOX-2, FOX-3 | `FMOU-R04` |

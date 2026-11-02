@@ -26,7 +26,7 @@ import {
 } from "lucide-react"
 import { useId, useState, type ReactNode } from "react"
 
-import { CommittedTextField, IconSelect, QuietAction } from "../../../components/form"
+import { CommittedTextField, IconSelect, QuietAction, ValidatedTextField } from "../../../components/form"
 import { getDtypeColor } from "../../../utils/dtypeColors"
 import { INPUT_STYLE } from "../_shared"
 import type { GlobalConstantType } from "../../../utils/globalConstants"
@@ -201,6 +201,7 @@ export function TextField({
   mono = false,
   id,
   autoFocus,
+  validate,
 }: {
   value: string
   onCommit: (next: string) => void
@@ -209,7 +210,26 @@ export function TextField({
   mono?: boolean
   id?: string
   autoFocus?: boolean
+  /** The refusal of a value the step cannot take, shown under the box; the draft is kept. */
+  validate?: (candidate: string) => string | null
 }) {
+  const fallbackId = useId()
+  if (validate) {
+    return (
+      <ValidatedTextField
+        id={id}
+        dataTestId={`text-field-${id ?? fallbackId}`}
+        ariaLabel={ariaLabel}
+        value={value}
+        validate={validate}
+        onCommit={onCommit}
+        placeholder={placeholder}
+        containerClassName=""
+        className={`${CONTROL_CLASS} ${mono ? "font-mono" : ""}`}
+        style={INPUT_STYLE}
+      />
+    )
+  }
   return (
     <CommittedTextField
       id={id}
@@ -231,6 +251,7 @@ export function NumberField({
   ariaLabel,
   integer = false,
   min,
+  max,
   id,
 }: {
   value: number
@@ -238,6 +259,7 @@ export function NumberField({
   ariaLabel: string
   integer?: boolean
   min?: number
+  max?: number
   id?: string
 }) {
   const [error, setError] = useState<string | null>(null)
@@ -255,6 +277,7 @@ export function NumberField({
         inputMode={integer ? "numeric" : "decimal"}
         step={integer ? 1 : "any"}
         min={min}
+        max={max}
         aria-label={ariaLabel}
         aria-invalid={error !== null ? true : undefined}
         aria-describedby={error === null ? undefined : errorId}
@@ -268,6 +291,8 @@ export function NumberField({
             nextError = "Enter a whole number."
           } else if (min !== undefined && parsed < min) {
             nextError = `Enter a value of at least ${min}.`
+          } else if (max !== undefined && parsed > max) {
+            nextError = `Enter a value of at most ${max}.`
           }
           if (nextError !== null) {
             setError(nextError)
@@ -313,11 +338,11 @@ export function DirectionSelect({
   )
 }
 
-/** The quantile of a `quantile` aggregate, clamped to [0, 1]. */
+/** The quantile of a `quantile` aggregate, from 0 to 1; another value is refused, not clamped. */
 export function QuantileField({ value, onChange, ariaLabel }: { value: number | undefined; onChange: (quantile: number) => void; ariaLabel: string }) {
   return (
     <Field label="Quantile (0 to 1)">
-      <NumberField value={value ?? 0.5} min={0} onCommit={(quantile) => onChange(Math.min(1, Math.max(0, quantile)))} ariaLabel={ariaLabel} />
+      <NumberField value={value ?? 0.5} min={0} max={1} onCommit={onChange} ariaLabel={ariaLabel} />
     </Field>
   )
 }
@@ -770,11 +795,14 @@ export function LiteralValueInput({
   onChange,
   ariaLabel,
   integer = false,
+  min,
 }: {
   value: LiteralOperand
   onChange: (next: LiteralOperand) => void
   ariaLabel: string
   integer?: boolean
+  /** The least number the slot takes, such as 0 for decimal places. */
+  min?: number
 }) {
   switch (value.type) {
     case "number":
@@ -782,6 +810,7 @@ export function LiteralValueInput({
         <NumberField
           value={typeof value.value === "number" ? value.value : 0}
           integer={integer}
+          min={min}
           onCommit={(n) => onChange(literal("number", n))}
           ariaLabel={ariaLabel}
         />

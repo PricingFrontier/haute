@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Plus, AlertTriangle } from "lucide-react"
+import { Plus } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import { CommittedTextField, SavedValueOption, ValidatedTextField } from "../../components/form"
 import type { InputSource, OnUpdateConfig, SimpleNode } from "./_shared"
@@ -9,7 +9,6 @@ import {
   inferBandingType,
   isNumericDtype,
   suggestOutputColumn,
-  detectDuplicateCategorical,
   bandingOutputCollisions,
   bandingOutputCollisionMessage,
   categoricalRuleCounts,
@@ -249,14 +248,6 @@ export default function BandingEditor({
   const unmatchedCount =
     (statsCurrent ? stats?.unmatched_count : null) ??
     (knownCounts ? Math.max(totalRows - knownCounts.reduce((a, b) => a + b, 0), 0) : null)
-
-  // ─── Validation warnings ──────────────────────────────────────
-  const warnings =
-    factor.banding === "categorical"
-      ? detectDuplicateCategorical((factor.rules || []) as CategoricalRule[]).map(
-          (d) => `Duplicate value "${d.value}" in rules ${d.indices.map(i => i + 1).join(", ")}`,
-        )
-      : []
 
   // ─── Histogram data ───────────────────────────────────────────
   const histogramData = (() => {
@@ -662,19 +653,6 @@ export default function BandingEditor({
             matchCounts={matchCounts}
             onAddRule={handleAddRule}
           />
-        </div>
-      )}
-
-      {/* Validation warnings */}
-      {warnings.length > 0 && (
-        <div className="space-y-1">
-          {warnings.map((w, i) => (
-            <div key={i} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-[11px]"
-              style={{ background: 'var(--warning-soft-strong)', border: '1px solid var(--warning-border-emphasis)', color: 'var(--warning-strong)' }}>
-              <AlertTriangle size={12} />
-              <span>{w}</span>
-            </div>
-          ))}
         </div>
       )}
 

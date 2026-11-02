@@ -4,6 +4,9 @@ import { CHART_COLORS } from "../../../theme/colors"
 import useToastStore from "../../../stores/useToastStore"
 import { buildTsv, parsePastedGrid, writeClipboardText } from "../shared/tableClipboard"
 import type { BandingFactor, CategoricalRule } from "../../../types/banding"
+import { categoricalRuleIssues } from "./bandingUtils"
+import { CellIssueMark } from "../shared/CellIssueMark"
+import { cellIssueStyle } from "../shared/cellIssueStyle"
 import { apiErrorMessage } from "../../../api/errors"
 
 const CATEGORICAL_FIELDS = ["value", "assignment"] as const
@@ -203,6 +206,7 @@ export function BandingRulesGrid({
   }, [rules.length, onAddRule])
 
   const showMatchCounts = !!matchCounts
+  const issues = categoricalRuleIssues(rules)
 
   return (
     <div className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--border)', background: 'var(--bg-input)' }}>
@@ -227,24 +231,32 @@ export function BandingRulesGrid({
             ) : rules.map((rule, i) => (
               <tr key={ruleKey(rule, i)}>
                 {COLUMNS.map((column, fieldIndex) => {
+                  const issue = issues.get(i)?.[column.field]
+                  const issueId = `rule-${i + 1}-${column.field}-issue`
                   const common = {
                     value: String(rule[column.field] ?? ""),
                     onChange: (e: React.ChangeEvent<HTMLInputElement>) => updateRule(i, column.field, e.target.value),
                     onPaste: (e: React.ClipboardEvent<HTMLInputElement>) => handleCellPaste(e, i, fieldIndex),
                     "aria-label": column.ariaLabel(i + 1),
+                    "aria-invalid": issue ? true : undefined,
+                    "aria-describedby": issue ? issueId : undefined,
+                    title: issue,
                   }
+                  const baseStyle = column.cell === "value" ? BOXED_CELL_STYLE : { ...BOXED_CELL_STYLE, color: accentColor }
+                  const style = issue ? cellIssueStyle(baseStyle, "error") : baseStyle
+                  const className = `${column.cell === "value" ? BOXED_INPUT_CLASS : BOXED_LABEL_INPUT_CLASS}${issue ? " pr-5" : ""}`
                   return (
                     <td key={column.field} className={CELL_CLASS}>
-                      {column.cell === "value" ? (
-                        <input type="text" {...common}
-                          className={BOXED_INPUT_CLASS}
-                          style={BOXED_CELL_STYLE} placeholder="" />
-                      ) : (
-                        <input type="text" {...common}
-                          onKeyDown={(e) => handleKeyDown(e, i)}
-                          className={BOXED_LABEL_INPUT_CLASS}
-                          style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', color: accentColor }} placeholder="" />
-                      )}
+                      <div className="relative">
+                        {column.cell === "value" ? (
+                          <input type="text" {...common} className={className} style={style} placeholder="" />
+                        ) : (
+                          <input type="text" {...common}
+                            onKeyDown={(e) => handleKeyDown(e, i)}
+                            className={className} style={style} placeholder="" />
+                        )}
+                        {issue && <CellIssueMark id={issueId} message={issue} severity="error" />}
+                      </div>
                     </td>
                   )
                 })}

@@ -14,60 +14,11 @@ These packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FNED-R04 | Planned | P2 | A banding rule the sidecar writer refuses is marked in the grid and refused by the save validator with a 400, a typed relativity that does not parse is refused rather than replaced, and the step builder's argument controls refuse what the renderer refuses with a visible message. |
 | FNED-R05 | Planned | P3 | The step builder's open card follows its step through undo, the pivot editor carries no unknown keys the backend refuses, the two banding grids, the two rating grids, the params pickers and the zone cards exist once, and the internal-only exports are un-exported. |
 | FNED-R06 | Planned | P1 | A schema inference reply cannot replace a newer input file, table configuration or document. |
 | FNED-R07 | Planned | P2 | `OptimiserApplyEditor` cancels stale `readJson` calls, `OutputEditor` invalidates `outputDoc` on mapping edits, `ColumnsTab` handles stale column selections cleanly, `IoArgumentsEditor` flags blank or unbacked invalid JSON arguments, `BandingRulesGrid` strips internal `_id` keys before persisting, `PivotFormulaSection` resets `onFormulaEditorChange` on unmount and Undo, and `CodeMirrorEditor` re-syncs `errorLine` diagnostics on same-line repeats. |
 
 ## Planned improvements
-
-### FNED-R04 — What the grids let through, the save refuses with a reason
-**Why:** The banding grids leave three rule states unmarked that the save
-validator accepts but the sidecar writer refuses: a breakpoint row with a blank
-Band name (what "Add" creates), a categorical row with a blank Value or Maps To
-(what "Add manually" creates), and a repeated categorical Value. The writer's
-`ConfigSettingError` is a `HauteValidationError` with no HTTP handler, and the
-save's only enclosing handler rolls back and re-raises, so Save fails with a 500
-whose reason reaches only the server log, against the specification's "refused
-with a 400 naming the node and the setting, before anything is written"
-(validator-versus-writer split probed; the 500 traced statically). A typed
-rating relativity is parsed with `parseFloat` and anything unparseable is
-silently replaced by the table default (`1,5` writes 1, `abc` writes 1.0) while
-the paste path uses strict `Number` and refuses with a toast. The step builder's
-`integer` arguments have no minimum, so `-1` is committed and refused only by the
-render; the formula parser accepts negative and fractional integers the same
-way; a date `format` typed without `%` is thrown away with no message; a
-quantile above 1 is clamped to 1 silently; and a Change-types entry keeps a
-`format` the form then hides when the column's type stops being text, so the run
-fails with "remove the format" while the control to remove it is not shown.
-
-**Plan:** Have `validate_banding_config` run the writer's row checks so the
-refusal is the documented 400, mark the offending row inline in both grids, and
-give `HauteValidationError` a 400 handler so a writer refusal can never be a
-500; parse typed relativities with the paste path's strict parser and mark the
-cell invalid; `min={0}` on integer arguments and a `FormulaError` for a negative
-or fractional integer literal; a visible refusal for a `%`-less format and a
-`max` on the quantile field; show the Format field whenever a format is set or
-strip it when the schema says the column is not text.
-
-**Acceptance:** Saving a banding node with a blank Band name is answered 400
-naming the node and the row, and the row is marked before the save; typing
-`1,5` into a relativity cell shows an invalid mark and writes nothing; `-1`
-decimal places, a `%`-less format and a quantile of 1.5 each show a message;
-a Change-types entry with a stale format shows its Format field.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/editors/banding/BreakpointGrid.tsx`;
-`frontend/src/panels/editors/banding/BandingRulesGrid.tsx`;
-`src/haute/_rating.py::validate_banding_config`;
-`src/haute/_banding_config.py::compact_banding_config_for_sidecar`;
-`src/haute/_validation_error.py::ConfigSettingError`;
-`frontend/src/panels/editors/rating/TwoWayGrid.tsx`;
-`frontend/src/panels/editors/rating/OneWayEditor.tsx`;
-`frontend/src/panels/editors/polarsSteps/forms.tsx`;
-`frontend/src/panels/editors/polarsSteps/fields.tsx`;
-`frontend/src/panels/editors/polarsSteps/formula.ts`.
 
 ### FNED-R05 — Positions, passthroughs and copies in the editor subdirectories
 **Why:** The step builder holds its open card and pointed step as positions,
@@ -221,9 +172,7 @@ warns on a non-empty non-numeric boundary; unmounting or undoing an open formula
 delegates to `writeClipboardText`; and a repeat error on the same line in
 `CodeMirrorEditor` re-highlights that line.
 
-**Dependencies:** Coordinates with `FNED-R04` (which owns strict parsing
-and invalid-cell marking for `ControlledNumberCell`); the node data carries editor
-state beside `node.data.config`.
+**Dependencies:** None; the node data carries editor state beside `node.data.config`.
 
 **Evidence:** `frontend/src/panels/editors/OptimiserApplyEditor.tsx::OptimiserApplyEditor`;
 `frontend/src/panels/editors/OutputEditor.tsx::OutputEditor`;

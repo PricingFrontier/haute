@@ -287,6 +287,24 @@ describe("BreakpointGrid", () => {
     expect(screen.getByLabelText("Breakpoint 3 boundary")).not.toHaveAttribute("aria-invalid")
   })
 
+  it("marks a band without a name, which the save refuses, and only that one", () => {
+    render(
+      <BreakpointGrid
+        breakpoints={[
+          { boundary: "10", label: "Low" },
+          { boundary: "", label: "" },
+        ]}
+        onUpdate={vi.fn()}
+        accentColor={ACCENT}
+      />,
+    )
+
+    expect(screen.getByLabelText("Breakpoint 1 label")).not.toHaveAttribute("aria-invalid")
+    const blank = screen.getByLabelText("Breakpoint 2 label")
+    expect(blank).toHaveAttribute("aria-invalid", "true")
+    expect(screen.getByRole("img", { name: "Breakpoint 2 needs a band name." })).toBeInTheDocument()
+  })
+
   describe("on a date column", () => {
     const renderDates = (boundaries: string[]) =>
       render(

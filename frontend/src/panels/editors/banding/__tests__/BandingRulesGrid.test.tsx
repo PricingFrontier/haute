@@ -37,6 +37,33 @@ describe("BandingRulesGrid", () => {
     expect(screen.getByText("No rules yet")).toBeInTheDocument()
   })
 
+  it("marks a rule without a value or a mapping, and a value given twice, which the save refuses", () => {
+    render(
+      <BandingRulesGrid
+        factor={makeFactor({
+          rules: [
+            { value: "car", assignment: "Small" },
+            { value: "", assignment: "Large" },
+            { value: "van", assignment: "" },
+            { value: "car", assignment: "Other" },
+          ],
+        })}
+        onUpdateFactor={vi.fn()}
+      />,
+    )
+
+    // The first "car" is the value; the later one repeats it.
+    expect(screen.getByLabelText("Rule 1 match value")).not.toHaveAttribute("aria-invalid")
+    expect(screen.getByLabelText("Rule 1 group name")).not.toHaveAttribute("aria-invalid")
+    expect(screen.getByLabelText("Rule 2 match value")).toHaveAttribute("aria-invalid", "true")
+    expect(screen.getByLabelText("Rule 3 match value")).not.toHaveAttribute("aria-invalid")
+    expect(screen.getByLabelText("Rule 3 group name")).toHaveAttribute("aria-invalid", "true")
+    expect(screen.getByLabelText("Rule 4 match value")).toHaveAttribute("aria-invalid", "true")
+    expect(screen.getByRole("img", { name: "Rule 2 needs a value." })).toBeInTheDocument()
+    expect(screen.getByRole("img", { name: "Rule 3 needs what it maps to." })).toBeInTheDocument()
+    expect(screen.getByRole("img", { name: 'Rule 4 repeats the value "car" of rule 1.' })).toBeInTheDocument()
+  })
+
   it("renders categorical rule rows", () => {
     const rules: CategoricalRule[] = [
       { value: "Semi-detached", assignment: "House" },

@@ -1,22 +1,13 @@
 import { useMemo, useRef, useState } from "react"
 import { Copy } from "lucide-react"
 import type { RatingTable } from "./ratingTableUtils"
-import { tableStats, resolveDefault } from "./ratingTableUtils"
+import { parseRelativity, tableStats, resolveDefault } from "./ratingTableUtils"
 import { ControlledNumberCell } from "./ControlledNumberCell"
 import { StatsFooter } from "./StatsFooter"
 import { EDITABLE_RELATIVITY_INPUT_STYLE, NON_EDITABLE_LABEL_CELL_STYLE } from "./cellStyles"
 import useToastStore from "../../../stores/useToastStore"
 import { parsePastedGrid } from "../shared/tableClipboard"
 import { apiErrorMessage } from "../../../api/errors"
-
-type PastedNumber = { kind: "value"; value: number } | { kind: "blank" } | { kind: "invalid" }
-
-function parsePastedNumber(value: string): PastedNumber {
-  const trimmed = value.trim()
-  if (!trimmed) return { kind: "blank" }
-  const parsed = Number(trimmed)
-  return Number.isFinite(parsed) ? { kind: "value", value: parsed } : { kind: "invalid" }
-}
 
 function buildTableTsv(
   rowFactor: string,
@@ -144,7 +135,7 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
       pastedRowIndex: number,
       pastedColIndex: number,
     ): boolean => {
-      const parsed = parsePastedNumber(rawValue)
+      const parsed = parseRelativity(rawValue)
       if (parsed.kind === "blank") return true
       if (parsed.kind === "invalid") {
         addToast("error", `Could not paste rating table TSV: invalid number at ${formatInvalidPasteLocation(
@@ -189,9 +180,9 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
     if (updates.size > 0) applyCellUpdates(updates)
   }
 
-  const updateCell = (row: string, col: string, val: string) => {
-    const parsed = parseFloat(val)
-    const numVal = val === "" ? safeDefault : (Number.isNaN(parsed) ? safeDefault : parsed)
+  /** A cell's committed relativity; a cleared cell takes the table's default. */
+  const updateCell = (row: string, col: string, value: number | null) => {
+    const numVal = value ?? safeDefault
     const matchRow = (e: Record<string, string | number>) =>
       String(e[rowFactor]) === row && String(e[colFactor]) === col &&
       Object.entries(sliceKey).every(([k, v]) => String(e[k]) === v)

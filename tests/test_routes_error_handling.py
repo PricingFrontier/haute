@@ -577,7 +577,7 @@ def _handlers_app(*, raise_server_exceptions: bool = False) -> TestClient:
     from haute._execution_admission import ExecutionAdmissionError
     from haute._execution_context import ExecutionProfile
     from haute._git import GitDomainError, GitError, GitGuardrailError
-    from haute.errors import PreambleError
+    from haute.errors import ConfigSettingError, PreambleError
     from haute.routes._error_handlers import install_exception_handlers
     from haute.server import _RequestIdMiddleware
 
@@ -596,6 +596,9 @@ def _handlers_app(*, raise_server_exceptions: bool = False) -> TestClient:
         "guardrail": GitGuardrailError("protected branch"),
         "domain": GitDomainError("nothing to save"),
         "git": GitError("fatal: /home/admin/.ssh/id_rsa"),
+        "setting": ConfigSettingError(
+            "breakpoint rule '40' requires label (rules[0])", setting="factors"
+        ),
         "unexpected": RuntimeError("/home/secretuser/pipelines/main.py"),
     }
 
@@ -646,6 +649,13 @@ class TestApplicationExceptionHandlers:
         resp = _handlers_app().get(f"/raise/{kind}")
         assert resp.status_code == status
         assert resp.json() == {"detail": detail}
+
+    def test_a_haute_validation_refusal_is_a_400_with_its_message(self) -> None:
+        """A message Haute wrote for the user (a sidecar writer's refusal of a setting)
+        is a refusal of what was sent, never a 500."""
+        resp = _handlers_app().get("/raise/setting")
+        assert resp.status_code == 400
+        assert resp.json() == {"detail": "breakpoint rule '40' requires label (rules[0])"}
 
     def test_unclaimed_exception_is_a_sanitized_500_with_request_id(self) -> None:
         import structlog.testing

@@ -62,12 +62,12 @@ export function OneWayEditor({ table, bandingLevels, onUpdateEntries }: {
     e.clipboardData.setData("text/plain", text)
   }
 
-  const updateCell = (level: string, val: string) => {
-    const parsed = parseFloat(val)
-    const num = val === "" ? safeDefault : (Number.isNaN(parsed) ? safeDefault : parsed)
+  /** A level's committed relativity; a cleared cell takes the table's default. */
+  const updateCell = (level: string, value: number | null) => {
+    const num = value ?? safeDefault
     const next = entries.map(e => String(e[factor]) === level ? { ...e, value: num } : e)
     if (!next.some(e => String(e[factor]) === level)) {
-      next.push({ [factor]: level, value: Number.isNaN(num) ? 0 : num })
+      next.push({ [factor]: level, value: num })
     }
     onUpdateEntries(next)
   }

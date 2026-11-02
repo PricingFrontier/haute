@@ -1,8 +1,10 @@
-import { AlertTriangle, Copy, Plus, Trash } from "lucide-react"
+import { Copy, Plus, Trash } from "lucide-react"
 import { withAlpha } from "../../../utils/color"
 import useToastStore from "../../../stores/useToastStore"
 import { buildTsv, parsePastedGrid, writeClipboardText } from "../shared/tableClipboard"
-import { boundaryDayNumber, boundaryKind } from "./bandingUtils"
+import { boundaryDayNumber, boundaryKind, breakpointLabelIssues } from "./bandingUtils"
+import { CellIssueMark } from "../shared/CellIssueMark"
+import { cellIssueStyle } from "../shared/cellIssueStyle"
 import { apiErrorMessage } from "../../../api/errors"
 
 type Breakpoint = { boundary: string; label: string }
@@ -29,7 +31,6 @@ const MATCH_CELL_CLASS = `${CELL_CLASS} text-right`
 const BOXED_INPUT_CLASS = "w-full px-1 py-0.5 rounded text-[11px] font-mono focus:outline-none"
 const BOXED_LABEL_INPUT_CLASS = `${BOXED_INPUT_CLASS} font-semibold`
 const BOXED_CELL_STYLE = { background: "var(--bg-panel)", border: "1px solid var(--border)", color: "var(--text-primary)" }
-const WARNING_BOUNDARY_STYLE = { ...BOXED_CELL_STYLE, background: "var(--warning-soft)", border: "1px solid var(--warning-border-emphasis)" }
 const DELETE_BUTTON_CLASS = "p-0.5 rounded transition-colors hover:text-[var(--danger)] focus-visible:text-[var(--danger)]"
 const ACTION_BUTTON_CLASS = "accent-hover-btn flex size-6 items-center justify-center rounded"
 
@@ -158,6 +159,7 @@ export function BreakpointGrid({
   const addToast = useToastStore(s => s.addToast)
   const showMatches = matchCounts != null
   const boundaryWarnings = temporal ? dateBoundaryWarnings(breakpoints) : boundaryOrderWarnings(breakpoints)
+  const labelIssues = breakpointLabelIssues(breakpoints)
 
   const updateBreakpoint = (index: number, field: "boundary" | "label", value: string) => {
     const next = breakpoints.map((bp, i) =>
@@ -248,6 +250,9 @@ export function BreakpointGrid({
                 breakpoints.map((bp, i) => {
                   const boundaryWarning = boundaryWarnings.get(i)
                   const boundaryWarningId = `breakpoint-${i + 1}-boundary-warning`
+                  const labelIssue = labelIssues.get(i)
+                  const labelIssueId = `breakpoint-${i + 1}-label-issue`
+                  const labelStyle = { ...BOXED_CELL_STYLE, color: accentColor }
 
                   return (
                     <tr key={i}>
@@ -263,39 +268,32 @@ export function BreakpointGrid({
                             onChange={(e) => updateBreakpoint(i, "boundary", e.target.value)}
                             onPaste={(e) => handleCellPaste(e, i, 0)}
                             className={`${BOXED_INPUT_CLASS}${boundaryWarning ? " pr-5" : ""}`}
-                            style={boundaryWarning ? WARNING_BOUNDARY_STYLE : BOXED_CELL_STYLE}
+                            style={boundaryWarning ? cellIssueStyle(BOXED_CELL_STYLE, "warning") : BOXED_CELL_STYLE}
                             placeholder={temporal ? "YYYY-MM-DD" : ""}
                             spellCheck={temporal ? false : undefined}
                           />
                           {boundaryWarning && (
-                            <span
-                              id={boundaryWarningId}
-                              role="img"
-                              aria-label={boundaryWarning}
-                              title={boundaryWarning}
-                              className="absolute right-1 top-1/2 -translate-y-1/2"
-                              style={{ color: "var(--warning-strong)" }}
-                            >
-                              <AlertTriangle size={12} aria-hidden="true" />
-                            </span>
+                            <CellIssueMark id={boundaryWarningId} message={boundaryWarning} severity="warning" />
                           )}
                         </div>
                     </td>
                     <td className={CELL_CLASS}>
-                      <input
-                        type="text"
-                        aria-label={`Breakpoint ${i + 1} label`}
-                        value={bp.label}
-                        onChange={(e) => updateBreakpoint(i, "label", e.target.value)}
-                        onPaste={(e) => handleCellPaste(e, i, 1)}
-                        className={BOXED_LABEL_INPUT_CLASS}
-                        style={{
-                          background: "var(--bg-panel)",
-                          border: "1px solid var(--border)",
-                          color: accentColor,
-                        }}
-                        placeholder=""
-                      />
+                      <div className="relative">
+                        <input
+                          type="text"
+                          aria-label={`Breakpoint ${i + 1} label`}
+                          aria-invalid={labelIssue ? true : undefined}
+                          aria-describedby={labelIssue ? labelIssueId : undefined}
+                          title={labelIssue}
+                          value={bp.label}
+                          onChange={(e) => updateBreakpoint(i, "label", e.target.value)}
+                          onPaste={(e) => handleCellPaste(e, i, 1)}
+                          className={`${BOXED_LABEL_INPUT_CLASS}${labelIssue ? " pr-5" : ""}`}
+                          style={labelIssue ? cellIssueStyle(labelStyle, "error") : labelStyle}
+                          placeholder=""
+                        />
+                        {labelIssue && <CellIssueMark id={labelIssueId} message={labelIssue} severity="error" />}
+                      </div>
                     </td>
                     {showMatches && (
                       <td className={MATCH_CELL_CLASS}>
