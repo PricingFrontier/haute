@@ -64,7 +64,8 @@ class DeployResult:
     """Returned by deploy_to_mlflow()."""
 
     model_name: str
-    model_version: int
+    model_version: str
+    """The registered model version (Databricks), or the image's tag (a container)."""
     model_uri: str
     endpoint_url: str | None
     manifest_path: Path
@@ -228,7 +229,7 @@ def _deploy_to_mlflow(
         )
         return DeployResult(
             model_name=model_name,
-            model_version=model_version,
+            model_version=str(model_version),
             model_uri=model_uri,
             endpoint_url=endpoint_url,
             manifest_path=manifest_path,

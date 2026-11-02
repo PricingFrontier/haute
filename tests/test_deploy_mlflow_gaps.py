@@ -203,7 +203,7 @@ class TestVersionSelection:
             mocks.log_model.return_value.registered_model_version = 7
             result = deploy_to_mlflow(resolved)
 
-        assert result.model_version == 7
+        assert result.model_version == "7"
         assert result.model_uri.endswith("/7")
         assert mocks.create_or_update_endpoint.call_args.kwargs["model_version"] == 7
         search.assert_not_called()

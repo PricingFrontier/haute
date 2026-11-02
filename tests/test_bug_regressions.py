@@ -284,7 +284,7 @@ class TestBugB5PrunerLiveBranchSelection:
     def test_live_branch_from_scenario_map_not_position(self) -> None:
         """Pruner should use input_scenario_map, not hardcode inputs[0] as live."""
         from haute._types import PipelineGraph
-        from haute.deploy._pruner import _live_only_edges
+        from haute.deploy._pruner import prune_for_deploy
 
         def _node(nid, ntype="polars", config=None, *, label=None):
             return {
@@ -320,8 +320,8 @@ class TestBugB5PrunerLiveBranchSelection:
                 ],
             }
         )
-        result = _live_only_edges(graph.nodes, graph.edges)
-        result_pairs = {(e.source, e.target) for e in result}
+        pruned, _kept, _removed = prune_for_deploy(graph, "sw")
+        result_pairs = {(e.source, e.target) for e in pruned.edges}
         # Matching is by sanitised display label, not the unrelated node ids.
         assert ("live_parent", "sw") in result_pairs
         assert ("batch_parent", "sw") not in result_pairs

@@ -357,7 +357,7 @@ class TestDeploy:
         resolved.config.target = "container"
         deploy_result = MagicMock()
         deploy_result.model_name = "test-model"
-        deploy_result.model_version = 2
+        deploy_result.model_version = "abc"
         deploy_result.endpoint_url = None
         deploy_result.model_uri = "test-model:abc"
 
@@ -369,7 +369,7 @@ class TestDeploy:
             result = runner.invoke(cli, ["deploy"])
 
         assert result.exit_code == 0, result.output
-        assert "Deployed: test-model v2" in result.output
+        assert "Deployed: test-model at abc" in result.output
         assert "Image: test-model:abc" in result.output
         assert "mlflow models serve" not in result.output
 

@@ -74,7 +74,7 @@ the canonical project resolver and rejects a configured-project pipeline that re
 outside that project (including through a symlink). It then parses the pipeline into the graph that runs, each
 submodel occurrence expanded into its own nodes as `haute run` and the editor expand it,
 finds the single node marked as output, prunes the graph to that node's ancestors (keeping only the live
-branch of any `liveSwitch`), identifies the API input node(s), collects supported artefacts
+branch of any `liveSwitch` it reaches; a switch it does not reach is never inspected), identifies the API input node(s), collects supported artefacts
 the pruned path references, and dry-runs the graph once to infer input and output
 schemas. The result is a `ResolvedDeploy` — the single handoff object every backend
 target consumes. Snapshot-backed Data Inputs hold a cache-generation lease from
@@ -540,7 +540,8 @@ most: a silent wrong answer here mis-prices real policies.
   `FeatureMismatchError` when a live request schema disagrees with a bundled training-time
   feature contract).
 - **Structural graph errors** split across the two stages: no/multiple output nodes and an
-  explicitly mapped `liveSwitch` whose live input matches no connected node raise
+  explicitly mapped `liveSwitch` whose live input matches no connected node, or one the
+  output reaches that maps no input to `live`, raise
   `ValueError` from `_pruner.py`; zero or ambiguous fallback source nodes raise
   `ValueError` from `_config.resolve_config()`. An input node with incoming edges is a
   validation finding aggregated into `DeployError`, not a resolution-time `ValueError`.

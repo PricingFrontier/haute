@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import os
 import re
+from collections.abc import Collection, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -620,6 +621,18 @@ def _apply_env_overrides(config: DeployConfig) -> DeployConfig:
     return config
 
 
+def output_fields_are_valid(fields: Sequence[object], available: Collection[str]) -> bool:
+    """Whether *fields* is a non-empty, duplicate-free list of non-empty column names, each
+    one of *available*: the ``[deploy] output_fields`` rule resolution and validation share."""
+    names = [field for field in fields if isinstance(field, str) and field]
+    return (
+        bool(names)
+        and len(names) == len(fields)
+        and len(set(names)) == len(names)
+        and all(name in available for name in names)
+    )
+
+
 @dataclass
 class ResolvedDeploy:
     """Computed state after resolving a DeployConfig against a parsed pipeline.
@@ -753,6 +766,7 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
         collect_artifacts,
         prepare_shipped_snapshots,
         refuse_data_outside_pipeline_folder,
+        with_served_configs,
     )
     from haute.deploy._request_frame import request_frame_schema
     from haute.deploy._request_rows import record_digests, request_rows
@@ -895,6 +909,7 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
         refuse_data_outside_pipeline_folder(pruned_graph, deploy_inputs, pipeline_dir, project_root)
         with runtime_project_root_scope(pipeline_file, project_root=project_root):
             prepare_shipped_snapshots(pruned_graph, deploy_inputs, pipeline_dir, project_root)
+        served_configs: dict[str, dict[str, Any]] = {}
         artifacts = collect_artifacts(
             pruned_graph,
             deploy_inputs,
@@ -903,7 +918,11 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
             resources=resources,
             snapshot_provenance=snapshot_provenance,
             model_sources=model_sources,
+            served_configs=served_configs,
         )
+        # The graph that ships names each MLflow model's bundled file; the parsed graph,
+        # whose nodes it shared, keeps the configs the pipeline file gave.
+        pruned_graph = with_served_configs(pruned_graph, served_configs)
         # Before anything below reads an artefact: every copy into a bundle is checked
         # against these, so it carries the bytes this resolution checked.
         artifact_digests = record_digests(artifacts)
@@ -951,16 +970,7 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
         if config.output_fields is not None:
             fields = config.output_fields
             available = list(output_schema)
-            invalid = (
-                not fields
-                or any(not isinstance(field, str) or not field for field in fields)
-                or (
-                    all(isinstance(field, str) for field in fields)
-                    and len(fields) != len(set(fields))
-                )
-                or any(isinstance(field, str) and field not in output_schema for field in fields)
-            )
-            if invalid:
+            if not output_fields_are_valid(fields, output_schema):
                 raise DeployError(
                     "[deploy].output_fields must be a non-empty, duplicate-free list "
                     "of non-empty output column names present in the inferred schema. "

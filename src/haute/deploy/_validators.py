@@ -21,7 +21,7 @@ from haute._types import GLOBAL_CONSTANTS_FILE, NodeType, PipelineGraph
 from haute._workbench_config import read_workbench_config
 from haute._workbench_folder import unresolved_references
 from haute._workbench_form import identity_clashes
-from haute.deploy._config import ResolvedDeploy, test_quote_files
+from haute.deploy._config import ResolvedDeploy, output_fields_are_valid, test_quote_files
 from haute.deploy._scorer import (
     DeployInput,
     QuoteRequest,
@@ -615,12 +615,7 @@ def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> li
 
     output_fields = resolved.config.output_fields
     if output_fields is not None and (
-        not output_fields
-        or any(not isinstance(field, str) or not field for field in output_fields)
-        or (
-            all(isinstance(field, str) for field in output_fields)
-            and len(output_fields) != len(set(output_fields))
-        )
+        not output_fields_are_valid(output_fields, resolved.output_schema)
         or list(resolved.output_schema) != output_fields
     ):
         errors.append(

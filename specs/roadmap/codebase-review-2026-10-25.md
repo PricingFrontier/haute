@@ -225,7 +225,6 @@ production:
 | Deploy | PM-16 | `DEP-R09` |
 | Deploy | PM-37, PM-38 | `DEP-R11` |
 | Deploy | PM-7, PM-15, PM-25 | `DEP-R12A`, `DEP-R12B` |
-| Deploy | PM-3, PM-4, PM-8, PM-9, PM-10, PM-11, PM-17, PM-19, PM-20, PM-21 | `DEP-R13` |
 | Deploy | PM-6 | `DEP-R14` |
 | Deploy | PM-18 | `DEP-R15` |
 | Deploy | PM-39 | `DEP-R16` (Decision) |

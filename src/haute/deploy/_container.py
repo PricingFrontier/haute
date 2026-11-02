@@ -83,7 +83,8 @@ class ContainerBuildResult:
     manifest_path: Path
     build_dir: Path
     model_name: str
-    model_version: int
+    model_version: str
+    """The image's tag (the commit it was built from), the version a container carries."""
 
 
 def write_bundle(
@@ -280,7 +281,6 @@ def build_and_push_image(
 
         # 6. Determine image tag
         git_sha = _git_sha_short()
-        version = _next_version()
         if ct.registry:
             image_tag = f"{ct.registry.rstrip('/')}/{model_name}:{git_sha}"
         else:
@@ -305,7 +305,7 @@ def build_and_push_image(
             manifest_path=manifest_path,
             build_dir=build_dir,
             model_name=model_name,
-            model_version=version,
+            model_version=git_sha,
         )
     except BaseException:
         shutil.rmtree(build_dir, ignore_errors=True)
@@ -1185,11 +1185,6 @@ def _extra_deps_by_artifact(resolved: ResolvedDeploy) -> dict[str, list[str]]:
     return dict(sorted(needed.items()))
 
 
-def _detect_extra_deps(resolved: ResolvedDeploy) -> list[str]:
-    """Detect extra Python packages needed based on artifact file extensions."""
-    return list(_extra_deps_by_artifact(resolved))
-
-
 # ── Docker build / push ─────────────────────────────────────────────
 
 
@@ -1265,12 +1260,3 @@ def _git_sha_short() -> str:
         return "local"
     ok, sha = _run_git_ok("rev-parse", "--short", "HEAD")
     return sha if ok else "local"
-
-
-def _next_version() -> int:
-    """Simple version counter based on existing local images.
-
-    Returns 1 if no previous images exist. In production, the
-    registry or git tags are the real version source.
-    """
-    return 1

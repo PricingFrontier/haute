@@ -25,12 +25,11 @@ from haute.deploy._container import (
     DEFAULT_QUOTE_RESPONSE_ROW_LIMIT,
     ContainerBuildResult,
     _check_docker_available,
-    _detect_extra_deps,
     _docker_push,
+    _extra_deps_by_artifact,
     _generate_app_source,
     _generate_dockerfile,
     _git_sha_short,
-    _next_version,
     _validate_base_image,
     _validate_model_name,
     build_and_push_image,
@@ -1156,11 +1155,11 @@ class TestGenerateDockerfile:
 class TestDetectExtraDeps:
     def test_empty_artifacts(self) -> None:
         resolved = _make_resolved(artifacts={})
-        assert _detect_extra_deps(resolved) == []
+        assert list(_extra_deps_by_artifact(resolved)) == []
 
     def test_cbm_maps_to_catboost(self) -> None:
         resolved = _make_resolved(artifacts={"m.cbm": Path("m.cbm")})
-        assert _detect_extra_deps(resolved) == ["catboost"]
+        assert list(_extra_deps_by_artifact(resolved)) == ["catboost"]
 
     @pytest.mark.parametrize("artifact", ["m.pkl", "m.pickle", "m.joblib"])
     def test_a_pickle_brings_every_package_the_restricted_unpickler_allows(
@@ -1182,15 +1181,15 @@ class TestDetectExtraDeps:
 
         assert allowed - in_runtime_or_stdlib == set(importable_from)
         resolved = _make_resolved(artifacts={artifact: Path(artifact)})
-        assert _detect_extra_deps(resolved) == sorted(importable_from.values())
+        assert list(_extra_deps_by_artifact(resolved)) == sorted(importable_from.values())
 
     def test_lgb_maps_to_lightgbm(self) -> None:
         resolved = _make_resolved(artifacts={"m.lgb": Path("m.lgb")})
-        assert _detect_extra_deps(resolved) == ["lightgbm"]
+        assert list(_extra_deps_by_artifact(resolved)) == ["lightgbm"]
 
     def test_xgb_maps_to_the_installed_xgboost_distribution(self) -> None:
         resolved = _make_resolved(artifacts={"m.xgb": Path("m.xgb")})
-        assert _detect_extra_deps(resolved) == [_EXPECTED_XGBOOST]
+        assert list(_extra_deps_by_artifact(resolved)) == [_EXPECTED_XGBOOST]
 
     def test_an_xgboost_model_pins_the_distribution_installed_here(self) -> None:
         # haute depends on xgboost-cpu except on macOS; pinning reads installed
@@ -1220,19 +1219,19 @@ class TestDetectExtraDeps:
         # haute is installed --no-deps, so every exported model format must name
         # the engine that loads it (and pandas where haute's encoding needs it).
         resolved = _make_resolved(artifacts={artifact: Path(artifact)})
-        assert _detect_extra_deps(resolved) == expected
+        assert list(_extra_deps_by_artifact(resolved)) == expected
 
     def test_onnx_maps_to_onnxruntime(self) -> None:
         resolved = _make_resolved(artifacts={"m.onnx": Path("m.onnx")})
-        assert _detect_extra_deps(resolved) == ["onnxruntime"]
+        assert list(_extra_deps_by_artifact(resolved)) == ["onnxruntime"]
 
     def test_txt_does_not_match(self) -> None:
         resolved = _make_resolved(artifacts={"readme.txt": Path("readme.txt")})
-        assert _detect_extra_deps(resolved) == []
+        assert list(_extra_deps_by_artifact(resolved)) == []
 
     def test_json_does_not_match(self) -> None:
         resolved = _make_resolved(artifacts={"config.json": Path("config.json")})
-        assert _detect_extra_deps(resolved) == []
+        assert list(_extra_deps_by_artifact(resolved)) == []
 
     def test_multiple_artifacts_deduped_and_sorted(self) -> None:
         resolved = _make_resolved(
@@ -1242,11 +1241,11 @@ class TestDetectExtraDeps:
                 "glm.rsglm": Path("glm.rsglm"),
             }
         )
-        assert _detect_extra_deps(resolved) == ["catboost", "rustystats"]
+        assert list(_extra_deps_by_artifact(resolved)) == ["catboost", "rustystats"]
 
     def test_case_insensitive(self) -> None:
         resolved = _make_resolved(artifacts={"Model.CBM": Path("Model.CBM")})
-        assert _detect_extra_deps(resolved) == ["catboost"]
+        assert list(_extra_deps_by_artifact(resolved)) == ["catboost"]
 
 
 # ---------------------------------------------------------------------------
@@ -1362,16 +1361,6 @@ class TestDockerPush:
 
 
 # ---------------------------------------------------------------------------
-# _next_version
-# ---------------------------------------------------------------------------
-
-
-class TestNextVersion:
-    def test_returns_one(self) -> None:
-        assert _next_version() == 1
-
-
-# ---------------------------------------------------------------------------
 # _check_docker_available (additional: FileNotFoundError path)
 # ---------------------------------------------------------------------------
 
@@ -1440,10 +1429,8 @@ class TestBuildAndPushImage:
     @patch("haute.deploy._container._docker_build")
     @patch("haute.deploy._container._check_docker_available")
     @patch("haute.deploy._container._git_sha_short", return_value="abc1234")
-    @patch("haute.deploy._container._next_version", return_value=1)
     def test_full_build_no_registry(
         self,
-        mock_version: MagicMock,
         mock_sha: MagicMock,
         mock_check: MagicMock,
         mock_build: MagicMock,
@@ -1461,7 +1448,8 @@ class TestBuildAndPushImage:
         assert isinstance(result, ContainerBuildResult)
         assert result.image_tag == "test-model:abc1234"
         assert result.model_name == "test-model"
-        assert result.model_version == 1
+        # A container's version is its image's tag, the commit it was built from.
+        assert result.model_version == "abc1234"
         assert result.manifest_path.exists()
         mock_build.assert_called_once()
         mock_push.assert_not_called()
@@ -1472,10 +1460,8 @@ class TestBuildAndPushImage:
     @patch("haute.deploy._container._docker_build")
     @patch("haute.deploy._container._check_docker_available")
     @patch("haute.deploy._container._git_sha_short", return_value="def5678")
-    @patch("haute.deploy._container._next_version", return_value=1)
     def test_full_build_with_registry(
         self,
-        mock_version: MagicMock,
         mock_sha: MagicMock,
         mock_check: MagicMock,
         mock_build: MagicMock,
@@ -1499,10 +1485,8 @@ class TestBuildAndPushImage:
     @patch("haute.deploy._container._docker_build")
     @patch("haute.deploy._container._check_docker_available")
     @patch("haute.deploy._container._git_sha_short", return_value="abc1234")
-    @patch("haute.deploy._container._next_version", return_value=1)
     def test_artifacts_copied_to_build_dir(
         self,
-        mock_version: MagicMock,
         mock_sha: MagicMock,
         mock_check: MagicMock,
         mock_build: MagicMock,
@@ -1527,10 +1511,8 @@ class TestBuildAndPushImage:
     @patch("haute.deploy._container._docker_build")
     @patch("haute.deploy._container._check_docker_available")
     @patch("haute.deploy._container._git_sha_short", return_value="abc1234")
-    @patch("haute.deploy._container._next_version", return_value=1)
     def test_dockerfile_and_app_generated(
         self,
-        mock_version: MagicMock,
         mock_sha: MagicMock,
         mock_check: MagicMock,
         mock_build: MagicMock,
@@ -1555,10 +1537,8 @@ class TestBuildAndPushImage:
     @patch("haute.deploy._container._docker_build")
     @patch("haute.deploy._container._check_docker_available")
     @patch("haute.deploy._container._git_sha_short", return_value="abc1234")
-    @patch("haute.deploy._container._next_version", return_value=1)
     def test_manifest_records_the_pinned_container_dependencies(
         self,
-        mock_version: MagicMock,
         mock_sha: MagicMock,
         mock_check: MagicMock,
         mock_build: MagicMock,
@@ -1588,10 +1568,8 @@ class TestBuildAndPushImage:
     @patch("haute.deploy._container._docker_build")
     @patch("haute.deploy._container._check_docker_available")
     @patch("haute.deploy._container._git_sha_short", return_value="abc1234")
-    @patch("haute.deploy._container._next_version", return_value=1)
     def test_cleanup_on_exception(
         self,
-        mock_version: MagicMock,
         mock_sha: MagicMock,
         mock_check: MagicMock,
         mock_build: MagicMock,
@@ -1616,10 +1594,8 @@ class TestBuildAndPushImage:
     @patch("haute.deploy._container._docker_build")
     @patch("haute.deploy._container._check_docker_available")
     @patch("haute.deploy._container._git_sha_short", return_value="abc1234")
-    @patch("haute.deploy._container._next_version", return_value=1)
     def test_progress_callback_called(
         self,
-        mock_version: MagicMock,
         mock_sha: MagicMock,
         mock_check: MagicMock,
         mock_build: MagicMock,
@@ -1644,10 +1620,8 @@ class TestBuildAndPushImage:
     @patch("haute.deploy._container._docker_build")
     @patch("haute.deploy._container._check_docker_available")
     @patch("haute.deploy._container._git_sha_short", return_value="abc1234")
-    @patch("haute.deploy._container._next_version", return_value=1)
     def test_registry_trailing_slash_stripped(
         self,
-        mock_version: MagicMock,
         mock_sha: MagicMock,
         mock_check: MagicMock,
         mock_build: MagicMock,
@@ -1682,14 +1656,14 @@ class TestDeployToContainer:
             manifest_path=tmp_path / "deploy_manifest.json",
             build_dir=tmp_path,
             model_name="test-model",
-            model_version=1,
+            model_version="abc1234",
         )
         resolved = _make_resolved()
         result = deploy_to_container(resolved)
 
         assert isinstance(result, DeployResult)
         assert result.model_name == "test-model"
-        assert result.model_version == 1
+        assert result.model_version == "abc1234"
         assert result.model_uri == "test-model:abc1234"
         assert result.endpoint_url is None
         assert result.manifest_path == tmp_path / "deploy_manifest.json"
@@ -1701,7 +1675,7 @@ class TestDeployToContainer:
             manifest_path=Path("m.json"),
             build_dir=Path(),
             model_name="m",
-            model_version=1,
+            model_version="abc1234",
         )
         progress_fn = MagicMock()
         deploy_to_container(_make_resolved(), progress=progress_fn)
@@ -1723,7 +1697,7 @@ class TestDeployToPlatformContainer:
             manifest_path=tmp_path / "manifest.json",
             build_dir=tmp_path,
             model_name="test-model",
-            model_version=1,
+            model_version="abc1234",
         )
 
     @pytest.mark.parametrize("target", ["azure-container-apps", "aws-ecs", "gcp-run"])

@@ -2308,7 +2308,7 @@ class TestScoreGraphExternalFileRemap:
 
         mock_obj = MagicMock()
 
-        with patch("haute.deploy._scorer.load_external_object", return_value=mock_obj):
+        with patch("haute._io.load_external_object", return_value=mock_obj):
             result = score_graph(
                 graph=graph,
                 input_df=input_df,

@@ -257,6 +257,40 @@ class TestStaticDataSourceSchemaDrift:
         assert "static_ds" in message
         assert "ready, valid matching snapshot" in message
 
+    def test_a_lease_failure_keeps_its_own_type_and_a_bad_config_names_its_fault(
+        self, tmp_path: Path
+    ) -> None:
+        # DEP-R13: only a missing or unverifiable snapshot is the project's to rebuild; a
+        # lease that fails another way is never reported as an invalid configuration.
+        from contextlib import ExitStack
+
+        from haute.deploy._bundler import collect_artifacts
+
+        source_path = tmp_path / "static.json"
+        source_path.write_text(json.dumps([{"quote_id": "001"}]), encoding="utf-8")
+        config = {
+            "inputType": "file",
+            "format": "json",
+            "mode": "read",
+            "path": str(source_path),
+            "arguments": {},
+        }
+
+        def graph(node_config: dict[str, Any]) -> PipelineGraph:
+            node = {"id": "static_ds", "data": {"nodeType": "dataInput", "config": node_config}}
+            return PipelineGraph.model_validate({"nodes": [node], "edges": []})
+
+        lock_held = TimeoutError("the source cache lock is held by another process")
+        with (
+            ExitStack() as stack,
+            patch("haute._source_cache.SourceCacheStore.lease", side_effect=lock_held),
+            pytest.raises(TimeoutError, match="lock is held"),
+        ):
+            collect_artifacts(graph(config), [], tmp_path, resources=stack)
+
+        with pytest.raises(DeployError, match="invalid Data Input configuration: .*inputType"):
+            collect_artifacts(graph({**config, "inputType": "carrier-pigeon"}), [], tmp_path)
+
 
 # ===========================================================================
 # Item #16 — validate_deploy must fail on test-quote errors

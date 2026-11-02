@@ -11,7 +11,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import ANY, MagicMock, patch
 
 import polars as pl
@@ -381,6 +381,69 @@ class TestPruner:
         ]
         assert kept == ["out", "request", "switch"]
         assert removed == []
+
+    @staticmethod
+    def _switch_graph(*, inner_map: dict[str, str], outer_map: dict[str, str]) -> Any:
+        """``live_src`` and ``inner`` (a switch over ``a``/``b``) feed ``outer``, a switch
+        feeding ``out``; ``stray`` is a switch with no path to ``out``."""
+
+        def node(nid: str, node_type: str, config: dict[str, Any] | None = None) -> dict:
+            return {"id": nid, "data": {"label": nid, "nodeType": node_type, "config": config}}
+
+        def edge(source: str, target: str) -> dict[str, str]:
+            return {"id": f"{source}__{target}", "source": source, "target": target}
+
+        return _g(
+            {
+                "nodes": [
+                    node("live_src", "polars", {}),
+                    node("a", "polars", {}),
+                    node("b", "polars", {}),
+                    node("inner", "liveSwitch", {"input_scenario_map": inner_map}),
+                    node("outer", "liveSwitch", {"input_scenario_map": outer_map}),
+                    node("stray", "liveSwitch", {"input_scenario_map": {"a": "batch"}}),
+                    node("out", "output", make_output_config([])),
+                ],
+                "edges": [
+                    edge("a", "inner"),
+                    edge("b", "inner"),
+                    edge("live_src", "outer"),
+                    edge("inner", "outer"),
+                    edge("outer", "out"),
+                    edge("a", "stray"),
+                ],
+            }
+        )
+
+    def test_prune_ignores_a_switch_the_output_does_not_reach_through_live_branches(
+        self,
+    ) -> None:
+        # DEP-R13: `stray` reaches nothing and `inner` sits on outer's non-live branch, so
+        # neither is inspected: their missing "live" entries are not the deployment's.
+        from haute.deploy._pruner import prune_for_deploy
+
+        graph = self._switch_graph(
+            inner_map={"a": "batch", "b": "batch"},
+            outer_map={"live_src": "live", "inner": "batch"},
+        )
+
+        pruned, kept, removed = prune_for_deploy(graph, "out")
+
+        assert kept == ["live_src", "out", "outer"]
+        assert removed == ["a", "b", "inner", "stray"]
+        assert [edge.id for edge in pruned.edges] == ["live_src__outer", "outer__out"]
+
+    def test_prune_refuses_a_reachable_switch_with_no_live_input(self) -> None:
+        # DEP-R13: a descriptive ValueError, never a bare StopIteration.
+        from haute.deploy._pruner import prune_for_deploy
+
+        graph = self._switch_graph(
+            inner_map={"a": "batch", "b": "batch"},
+            outer_map={"live_src": "batch", "inner": "live"},
+        )
+
+        with pytest.raises(ValueError, match="'inner' maps no input to the 'live' scenario"):
+            prune_for_deploy(graph, "out")
 
     def test_prune_missing_output_raises(self, full_graph: dict) -> None:
         from haute.deploy._pruner import prune_for_deploy
@@ -1625,7 +1688,7 @@ class TestDatabricksTracking:
             second.join(30)
 
         assert not errors
-        assert results == {"first": 1, "second": 2}
+        assert results == {"first": "1", "second": "2"}
         assert events == ["first:register", "second:register"]
 
     def test_deploy_sets_tracking_uri(self, deploy_pipeline_file: Path) -> None:
@@ -1647,7 +1710,7 @@ class TestDatabricksTracking:
             # Behavioral: result is a well-formed DeployResult
             assert isinstance(result, DeployResult)
             assert result.model_name == "test-model"
-            assert result.model_version >= 1
+            assert result.model_version == "1"
             assert result.manifest_path.name == "deploy_manifest.json"
             assert result.manifest_path.parent == deploy_pipeline_file.parent / ".haute_build"
 

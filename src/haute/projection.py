@@ -34,6 +34,7 @@ from haute._estimate_calibration import (
 )
 from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name, build_parents_of, edge_input_name
+from haute._model_source import model_score_output_column
 from haute._polars_call_shapes import (
     replace_call_has_literal_mapping,
     replace_strict_call_has_literal_mapping,
@@ -3517,7 +3518,7 @@ def _pre_post_code_contract(
                 outputs=scorer.outputs,
                 optional_inputs=scorer.optional_inputs,
             )
-        output_column = node.data.config.get("output_column", "prediction") or "prediction"
+        output_column = model_score_output_column(node.data.config)
         probability = f"{output_column}_proba"
         if (
             node.data.config.get("task") == "classification"

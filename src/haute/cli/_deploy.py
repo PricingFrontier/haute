@@ -251,7 +251,11 @@ def handle_deploy(config: DeployCliConfig) -> None:
                 f"implemented yet.\nPoint the service at {result.model_uri}"
             )
         else:
-            click.echo(f"  \u2713 Deployed: {result.model_name} v{result.model_version}")
+            if target == "container":
+                # A container's version is its image's tag, the commit it was built from.
+                click.echo(f"  \u2713 Deployed: {result.model_name} at {result.model_version}")
+            else:
+                click.echo(f"  \u2713 Deployed: {result.model_name} v{result.model_version}")
             if result.endpoint_url:
                 click.echo(f"\nEndpoint ready:\n  POST {result.endpoint_url}")
             elif target == "container":

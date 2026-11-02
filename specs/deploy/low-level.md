@@ -9,7 +9,7 @@
 `get`/`optional`/`array` refuse a value of another type than its key takes, and a table that
 is not one, naming `[section] key`; the test quotes' folder, `_test_quotes_dir`: `[test_quotes] dir` or `DEFAULT_TEST_QUOTES_DIR`, `tests/quotes`, when it names none, that default only while it holds test quotes (`test_quote_files`, its `*.json` files by name), a `dir` that is empty refused rather than read as none, a folder outside the project or
 reached through a link refused through `ordinary_path_problem`; the `[mlflow]` table, owned by the MLflow settings endpoint, is accepted with exactly the tracking-uri and folder keys; the retired single-mode key is an unknown key), base-image pinning validation, `.env` loading, `resolve_config()` producing `ResolvedDeploy`, the bundled artefacts' digests and the `RequestRows` record among it. |
-| `src/haute/deploy/_pruner.py` | Graph pruning to the output node's ancestors; `liveSwitch` live-branch collapsing; output/input/source node discovery. |
+| `src/haute/deploy/_pruner.py` | Graph pruning to the output node's ancestors, walked backward from it (`_live_ancestry`) following only the live input's edges at each `liveSwitch` it reaches; output/input/source node discovery. |
 | `src/haute/deploy/_bundler.py` | Artefact discovery and collection (`collect_artifacts`): external files, file-backed optimiser artefacts, supported MLflow-sourced local models + feature contracts (each model-score node's stored mlflow_destination key, absent = the local folder, is resolved once through `resolve_backend` and that backend drives both the registry lookup and the download), and retained Data Inputs; path resolution plus canonical provider/schema validation and a bounded one-row readability probe. MLflow-sourced optimiser applies are deliberately not bundled. |
 | `src/haute/deploy/_schema.py` | Input schema inference (read source file schema), output schema inference (dry-run scoring with the bundled artefacts) with a graph-and-artefact-fingerprint-keyed on-disk cache, and bundle-time, target-aware batch strategy planning (`infer_deploy_execution_policy`) over the shared one-quote sample (`_read_sample_row`: a Quote Input with tables its sample file's first quote as a `QuoteRequest`, planned on its shredded tables), with a hard-capped-worker dry-run fallback (`_capped_worker_output_schema`) for an unprovable group-by. |
 | `src/haute/deploy/_batch_scoring.py` | Multi-row `/quote` scoring in a hard-capped spawn worker: the picklable `BatchScoreRequest`/`BatchScoreOutcome` pair, the child entrypoint `score_batch_worker`, and the parent supervisor helpers `prepare_batch_scoring` (which admits the batch and stages its request) / `accept_batch_outcome` / `deploy_batch_timeout_seconds`; the child scores the batch as one frame, counting the rows it sank against the request's, or quote by quote as the deployment's `RequestRows` says. |
@@ -82,8 +82,9 @@ reached through a link refused through `ordinary_path_problem`; the `[mlflow]` t
   quote; `one`: exactly one row; `other`), `from_request`, `carried` (built only from
   bundled artefacts, Constants and the preamble, so the build can read it).
 - **`DeployResult`** (`_mlflow.py`) — returned by every backend: `model_name`,
-  `model_version`, `model_uri`, `endpoint_url` (`None` if no endpoint configured/created),
-  `manifest_path`.
+  `model_version` (text: the registered version for Databricks, the image's tag, the commit
+  it was built from, for a container), `model_uri`, `endpoint_url` (`None` if no endpoint
+  configured/created), `manifest_path`.
 - **`_TestQuoteCase`** (`_validators.py`, frozen dataclass) — `input` (dict),
   `expected` (dict or `None`), `tolerance_pct` (float fraction, e.g. `0.01` == 1%).
   Distinguishes plain quote rows from "golden" rows (any row containing `expected` or
@@ -123,7 +124,7 @@ reached through a link refused through `ordinary_path_problem`; the `[mlflow]` t
   `blocking_node_id`, `blocking_operator`, `remediation`.
 - **`ContainerBuildResult`** (`_container.py`) — intermediate result of
   `build_and_push_image`: `image_tag`, `manifest_path`, `build_dir`, `model_name`,
-  `model_version`.
+  `model_version` (the image's tag).
 - **Impact dataclasses** (`src/haute/deploy/_impact.py`) — `ColumnStats` (per-output-column change
   statistics: mean/median/p5/p25/p75/p95 percent change, staging/prod means, total
   premium change), `SegmentRow` (per-categorical-value breakdown), `ImpactReport`
@@ -176,12 +177,15 @@ reached through a link refused through `ordinary_path_problem`; the `[mlflow]` t
    `"workbenchOutput"`, `RESPONSE_NODE_TYPES`) or node with `config.output=True`, else
    `ValueError`.
 5. `prune_for_deploy(full_graph, output_node_id)` → `pruned_graph`, kept ids, removed ids.
-   Internally: `_live_only_edges()` first drops every non-live input edge into each
-   `liveSwitch` node — selection is **per edge**, matching `input_scenario_map`'s
+   Internally `_live_ancestry()` walks backward from the output node; at each
+   `liveSwitch` it reaches it follows only the edges of the live input
+   (`_live_input_edges`) — selection is **per edge**, matching `input_scenario_map`'s
    `"live"`-valued key against each edge's input name
    (`haute._graph_utils.edge_input_name`), never per source node, so two frames from
-   one apiInput mapped `quotes=live, drivers=batch` keep exactly the `quotes` edge —
-   then `ancestors()` walks backward from the output node over the filtered edge set.
+   one apiInput mapped `quotes=live, drivers=batch` keep exactly the `quotes` edge. A
+   switch the output does not reach, or reaches only through another switch's non-live
+   branch, is never inspected; one it reaches that maps no input to `live` raises a
+   `ValueError` naming it, as does a live input matching no connected edge.
 6. `find_deploy_input_nodes(pruned_graph)` — the request inputs, nodes whose type is in
    `REQUEST_INPUT_NODE_TYPES`. If none, accept a single `dataInput` source as the live-input
    form. Zero/multiple sources, or a sole `constant`/other unsupported source, fail with a
@@ -228,6 +232,11 @@ reached through a link refused through `ordinary_path_problem`; the `[mlflow]` t
    mid-bundle cannot split lookup and download across backends; the download lands in the
    shared model disk cache under that backend's digest partition, and an unconfigured
    explicit destination fails with `MlflowConfigError` rather than resolving another backend.
+   The downloaded model is bundled under `<node>__<its file name>`, and the node's config as
+   it is served, `artifact_path` naming that file, is handed back through `served_configs`;
+   `resolve_config` builds the shipped graph from it with `GraphNode.with_config`
+   (`with_served_configs`), so the parsed graph, whose nodes the pruned graph shares, keeps
+   the configs the pipeline file gave.
    Each registered model-score node's resolution is recorded in `model_sources`, written to
    the manifest, and printed by both deploy targets as `Model <node>: <model> @<alias> ->
    version <n> (run <id>)` (`model_source_line`), so the deployed version behind an alias is
@@ -253,7 +262,10 @@ reached through a link refused through `ordinary_path_problem`; the `[mlflow]` t
    bundles its validated source file; for a direct path naming several files (a folder or a
    glob pattern, `named_source_files`) the configuration with mode `"read"`, whose snapshot
    reads every file with a folder's partition columns; otherwise the configuration itself.
-   Every snapshot it names acquires a `SourceCacheStore.lease()` that
+   A Data Input whose configuration `validate_data_input_config` refuses raises a
+   `DeployError` naming the node and the refusal. Every snapshot it names acquires a
+   `SourceCacheStore.lease()` (a snapshot that is missing or does not verify a `DeployError`
+   asking for a ready one; any other lease failure keeps its own type) that
    is retained by `ResolvedDeploy` until dispatch completes, and records provider,
    identity, generation, signature, checksum, row/column counts, and creation time as
    manifest provenance. Then, before anything below reads an artefact, `record_digests`
@@ -745,18 +757,25 @@ not exist, listing the catalogs the token can see (many workspaces have no `main
    generation; scan them in part order through a deploy-only interception
    path while retaining the canonical config unchanged, user code,
    preamble namespace, and executor post-processing);
-   `externalFile` with a remapped bundled path (run its user code against the
-   loaded object, or passthrough if no code). The hook forwards the logical
-   source names supplied by the shared `resolve_orig_source_names` builder
-   context and the node's `inputMapping` to `_exec_user_code`, exactly as the
-   editor's Load File builder does. These shared bindings apply to an owner or
+   `externalFile` with a remapped bundled path (the body every Load File runs,
+   `_builders.external_file_node_fn`, its object read from the bundled copy by the node's
+   `fileType` through `_node_apply.load_external_file_at`, the loader the builder's own
+   path reads through: its steps or code, or a passthrough without either). The body
+   takes the logical source names supplied by the shared `resolve_orig_source_names`
+   builder context and the node's `inputMapping`, exactly as the editor's Load File
+   builder does. These shared bindings apply to an owner or
    instance of any submodel, including a one-node wrapper; no deploy-specific
-   logical-name binding is permitted. `optimiserApply` either file-based-remapped
-   or MLflow-sourced (`run`/`registered`, downloaded at request time from the node's
+   logical-name binding is permitted. A file-sourced `optimiserApply` with a remapped
+   bundled artifact loads it and applies it through `_node_apply.apply_optimiser_artifact`,
+   the body every Optimiser Apply runs (its version column, `optimiser_apply_version_column`,
+   read once); an MLflow-sourced one (`run`/`registered`) is not intercepted: the builder
+   downloads it at request time from the node's
    `mlflow_destination` — absent = the local folder of the deployed environment — through
    `load_mlflow_optimiser_artifact(destination=...)`, so a Local artifact is served from Local
    even when the deployed environment configures a remote, and an explicit destination
-   that is not configured there fails without consulting another backend); `modelScore` in three sub-cases (remapped
+   that is not configured there fails without consulting another backend; `modelScore`, its
+   task and output column read by `_model_source.model_score_task` and
+   `model_score_output_column` as the builder reads them, in three sub-cases (remapped
    model artefact present, found by the basename of `model_path` for a file source and of
    `artifact_path` otherwise (`_remap_artifact` takes the basename with `artifact_basename`,
    so a path saved with backslashes on Windows is found on Linux) → score, loaded and bound to its bundled contract through
@@ -862,7 +881,8 @@ JSON have separate structured payloads. A body exactly at the configured limit i
   (`haute._graph_utils.edge_input_name` — the frame label for an apiInput-frame edge,
   the sanitised source label otherwise; the same derivation the executor, projection,
   and codegen use, so two frames from one apiInput are individually routable). The
-  configured live input must match a connected edge.
+  configured live input must match a connected edge, and a switch the output reaches must
+  map an input to `live`.
 - **`tolerance_pct` is a raw fraction, not a percentage.** `_validators.py::_parse_tolerance_pct`
   rejects any value `> 1` with a message suggesting the likely intended value divided by
   100 — guards against an operator writing `tolerance_pct: 5` meaning "5%" and
@@ -884,13 +904,12 @@ JSON have separate structured payloads. A body exactly at the configured limit i
   as `_local_model_cache`), so concurrent `/quote` requests on container start
   perform exactly one disk load per artefact and later requests short-circuit on the
   file's freshness token (its native revision; see [caching](../caching/low-level.md));
-  failed loads are never cached.
+  failed loads are never cached. A resolution loads each bundled model once too: the
+  omittable-input read, the policy and schema dry runs and the lookup checks share the
+  slot `load_local_model_cached` keys on the model, its task and its contract.
 - **Empty artefact set produces an empty fingerprint string** (`artifact_identity_fingerprint`
   returns `""` when `artifact_paths` is empty/`None`) specifically so graphs bundling no
   artefacts keep byte-identical cache keys across runs.
-- **`_next_version()` is a stub** (`_container.py`) — always returns `1`; the design doc
-  notes the registry or git tags are the real version source in production. Callers must
-  not treat the container-target `model_version` as authoritative.
 - **Container `output_fields` type check**: `score_graph_lazy` explicitly rejects
   `output_fields` passed as a bare `str`/`bytes` (which would otherwise silently iterate
   per-character) with `ValueError`.
@@ -935,7 +954,7 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 | Exception | Raised where | Propagates to |
 |---|---|---|
 | `haute.errors.DeployError` | `src/haute/deploy/_config.py` (unpinned base image, escaped pipeline, unsupported live source, invalid output projection), `_bundler.py` (escaped/malformed artefact path, invalid or unreadable retained Data Input), `_scorer.py` (unscoreable `modelScore`), `_validators.py` (aggregated validation failure), `_container.py` / `_mlflow.py` (expected target operational failure) | `deploy()` / `resolve_config()` callers; carries structured `context` kwargs (for example `node_id`, `field`, and the underlying provider/schema `error`) rendered into `str()`. The CLI formats this expected domain family concisely. |
-| `ValueError` | `_pruner.py` (missing/multiple output nodes or a configured `liveSwitch` input not connected to the graph), `src/haute/deploy/_config.py` (zero/ambiguous fallback source nodes, unknown TOML keys, missing `from_cli_args` required fields), `src/haute/deploy/__init__.py` (unknown target), `_scorer.py` (bad `output_fields` type, negative `row_count`), `src/haute/deploy/_impact.py` (non-finite predictions, zero-baseline change) | Caller of `resolve_config`/`deploy`/scoring functions; container `/quote` endpoint catches the `BoundedMemoryUnsupportedError` subclass specially (422) but a bare `ValueError` from scoring falls into the generic 500 handler. |
+| `ValueError` | `_pruner.py` (missing/multiple output nodes, a configured `liveSwitch` input not connected to the graph, or a `liveSwitch` the output reaches that maps no input to `live`), `src/haute/deploy/_config.py` (zero/ambiguous fallback source nodes, unknown TOML keys, missing `from_cli_args` required fields), `src/haute/deploy/__init__.py` (unknown target), `_scorer.py` (bad `output_fields` type, negative `row_count`), `src/haute/deploy/_impact.py` (non-finite predictions, zero-baseline change) | Caller of `resolve_config`/`deploy`/scoring functions; container `/quote` endpoint catches the `BoundedMemoryUnsupportedError` subclass specially (422) but a bare `ValueError` from scoring falls into the generic 500 handler. |
 | `FileNotFoundError` | `_bundler.py::_check_exists` (missing artefact on disk), `_bundler.py::_download_model_artifact` (MLflow download landed but file missing) | Propagates uncaught through `resolve_config()`. |
 | `RuntimeError` | `_scorer.py` (`modelScore` contract matched but no model artefact — deliberately after the contract check), or an unexpected backend implementation defect | Uncaught to caller with its original type/traceback. Expected Docker, dependency-pinning, credential, connectivity, and backend-response failures use `DeployError` instead. |
 | `FeatureMismatchError` | `_scorer.py::_assert_runtime_contract_matches`, through `modelling/_feature_contract.py::assert_schema_matches_contract`, the check the preview runs too (live schema disagrees with bundled training contract on feature set or dtype; a categorical value the model never saw is never one, the model scores it) | Uncaught through scoring; surfaces in the container's generic 500 handler or the MLflow `pyfunc` boundary. |
@@ -993,7 +1012,9 @@ what they cover:
   no tag; several tags compressed into the wheel's name; the served environment's pins (that
   haute, `mlflow`, Polars).
 - **`test_deploy.py`** — broad unit coverage
-  across nearly every module: `TestPruner` (ancestor walking, `liveSwitch` collapsing),
+  across nearly every module: `TestPruner` (ancestor walking, `liveSwitch` collapsing, a
+  switch the output does not reach or reaches only through a non-live branch never
+  inspected, a reachable one without a `live` input refused by name),
   `TestBundler` (artefact discovery per node type, path resolution precedence),
   `TestResolveRegisteredModel`, `TestScorer`, `TestSchema`, `TestValidators`,
   `TestConfig`, MLflow helpers (`TestBuildUcModelName`, `TestBuildExperimentName`,
@@ -1107,7 +1128,9 @@ what they cover:
   deployment whose answer has another row count fails the request with both counts; the
   manifest record reads back strictly.
 - **`test_deploy_contract_integrity.py`** — static-data-source schema drift detection,
-  `validate_deploy` failing on bad test quotes, feature-contract bundling end-to-end.
+  `validate_deploy` failing on bad test quotes, feature-contract bundling end-to-end, a
+  snapshot lease failing for another reason than a missing snapshot keeping its own type
+  and a refused Data Input configuration named.
 - **`test_deploy_dispatch.py`** — `_dispatch_resolved` routing for every target family
   (Databricks, container, platform-container, planned/`NotImplementedError`,
   unknown/`ValueError`) and `DeployResult` field population.
@@ -1157,7 +1180,12 @@ what they cover:
 - **`test_deploy_scorer_artifact_cache.py`** — `StatGatedCache` behaviour specific to
   deploy: model loaded once per artefact across repeated scoring calls, cache
   invalidation on stat-gate (mtime/size) change, deploy artefact-path fingerprint
-  determinism, byte-for-byte response equality across cache hits.
+  determinism, byte-for-byte response equality across cache hits, and one load of a bundled
+  CatBoost model with its contract in a whole `resolve_config`.
+- **`test_mlflow_registered_alias.py`** (deploy part) — a registered model deployed by
+  alias: the bundle records the alias's version and run, and resolution ships the graph
+  naming the downloaded file while the parsed graph keeps the pipeline file's config, the
+  shipped graph scoring the bundled model.
 - **`test_deploy_scorer_coverage.py`** — canonical dtype mapping, runtime-vs-training
   contract matching (`_assert_runtime_contract_matches`), contract-only (no model
   artefact) scoring rejection, static-data-source remap edge cases.
