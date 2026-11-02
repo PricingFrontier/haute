@@ -132,6 +132,36 @@ describe("buildNodeDataCacheIdentity for a consumer that reads its input", () =>
     expect(consumerIdentity(otherColumn)).not.toEqual(base)
   })
 
+  it("reads a consumer not yet configured as demanding no columns", () => {
+    const unconfigured: SimpleNode = { ...banding, data: { label: "Banding", description: "", nodeType: "banding" } }
+    const noFactors = consumerIdentity(withConfig(banding, { factors: [] }))
+    expect(consumerIdentity(unconfigured)).toEqual(noFactors)
+    // A factors value that is not a list, as a half-written config holds, demands nothing either.
+    expect(consumerIdentity(withConfig(banding, { factors: null }))).toEqual(noFactors)
+  })
+
+  it("reads a Rating Step table with no factor list as demanding none", () => {
+    const rating: SimpleNode = {
+      id: "rating_1", type: "ratingStep",
+      data: { label: "Rating", description: "", nodeType: "ratingStep", config: {} },
+    }
+    expect(consumerIdentity(withConfig(rating, { tables: [{ outputColumn: "rate", entries: [] }] })))
+      .toEqual(consumerIdentity(withConfig(rating, { tables: [{ factors: [], outputColumn: "rate", entries: [] }] })))
+  })
+
+  it("hashes an upstream node not yet configured as one with an empty configuration", () => {
+    const bare: SimpleNode = { ...source, data: { label: "Source", description: "", nodeType: "dataInput" } }
+    const empty: SimpleNode = { ...source, data: { ...source.data, config: {} } }
+    const consumer = withConfig(banding, { factors: [] })
+    const at = (upstream: SimpleNode) => buildNodeDataCacheIdentity({
+      node: consumer,
+      allNodes: [upstream, consumer],
+      edges: [{ id: "source-consumer", source: "source_1", target: consumer.id }],
+    })
+    expect(at(bare)).toEqual(at(empty))
+    expect(at(bare)).not.toEqual(at(source))
+  })
+
   it("keeps a Rating Step node's identity through edits to its entries, but not its factors", () => {
     const rating: SimpleNode = {
       id: "rating_1", type: "ratingStep",
