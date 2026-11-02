@@ -389,24 +389,20 @@ export default function useWebSocketSync({
             && frame.documentFingerprint === acceptedDocumentFingerprintFor(frame.sourceFile)
           )
           if (showsFrame()) return
-          // A resync answered while this tab's save is in flight may carry the
-          // document that save wrote: its answer decides, so the frame waits for it.
-          // A frame of the document shown before the save was dropped above, so a
-          // held one can never put the pre-save document back.
+          // A frame that arrives while this tab's save is in flight was read at an
+          // unknown point of it: before it, from what it wrote, or from what a
+          // formatting hook left after (which may even be the document shown
+          // before). It is never adopted: once the saves settle it is dropped if it
+          // is the document shown, and otherwise the document on disk is asked for
+          // again, with the fingerprint the saves left accepted, so the server
+          // answers nothing while the file is that one. A frame of the document
+          // shown was dropped above, so a held one never puts it back either.
           const saves = pendingSavesSettled(currentDocumentSource() ?? frame.sourceFile)
           if (saves) {
-            const acceptedBefore = acceptedDocumentFingerprintFor(frame.sourceFile)
             await saves
             if (!mounted || !isCurrentSourceFile(frame.sourceFile, currentDocumentSource())) return
-            if (showsFrame()) return
-            // The save answered with a newer document than this frame may hold: a
-            // resync can read what the save wrote before a formatting hook rewrote
-            // it. Ask for the document on disk instead; the server answers nothing
-            // while it is the one the save acknowledged.
-            if (acceptedDocumentFingerprintFor(frame.sourceFile) !== acceptedBefore) {
-              sendResync(true)
-              return
-            }
+            if (!showsFrame()) sendResync(true)
+            return
           }
           const updateSeq = ++graphUpdateSeq
           const graphState = useGraphStore.getState()

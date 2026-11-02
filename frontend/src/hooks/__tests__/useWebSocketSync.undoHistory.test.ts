@@ -442,25 +442,62 @@ describe("useWebSocketSync - WS sync must not corrupt undo history (#8)", () => 
       })
     })
 
-    it("applies a held frame when the save fails", async () => {
+    it("asks for the document on disk when the hook put back the document shown before the save", async () => {
       const { document, saved } = loadSavedCanvas()
       await act(async () => {
         latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(document, "fingerprint-as-loaded")) }))
       })
       vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockClear()
+      latestWS().send.mockClear()
+      let answer!: () => void
+      const saving = new Promise<void>((resolve) => { answer = resolve })
+      trackPendingSave(SOURCE_FILE, saving)
+
+      // A resync read what the save wrote before the formatting hook put the
+      // file back as it was; the save answers with the document as loaded.
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(saved, "fingerprint-before-hook")) }))
+      })
+      await act(async () => {
+        useDocumentStatusStore.getState().acknowledgeSave("revision-test", "fingerprint-as-loaded")
+        answer()
+        await saving
+      })
+
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      expect(useDocumentStatusStore.getState().documentFingerprint).toBe("fingerprint-as-loaded")
+      expect(latestWS().send).toHaveBeenCalledTimes(1)
+      expect(JSON.parse(latestWS().send.mock.calls[0][0] as string)).toMatchObject({
+        type: "resync",
+        document_fingerprint: "fingerprint-as-loaded",
+      })
+    })
+
+    it("asks for the document on disk when the save fails, and applies the answer", async () => {
+      const { document, saved } = loadSavedCanvas()
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(document, "fingerprint-as-loaded")) }))
+      })
+      vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockClear()
+      latestWS().send.mockClear()
       let refuse!: (error: Error) => void
       const saving = new Promise<void>((_, reject) => { refuse = reject })
       trackPendingSave(SOURCE_FILE, saving)
 
-      await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(saved, "fingerprint-other-writer")) }))
-      })
-      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      const otherWriter = JSON.stringify(pipelineDocumentFrame(saved, "fingerprint-other-writer"))
+      await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: otherWriter })) })
       await act(async () => {
         refuse(new Error("Save rejected"))
         await saving.catch(() => undefined)
       })
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      expect(JSON.parse(latestWS().send.mock.calls[0][0] as string)).toMatchObject({
+        type: "resync",
+        document_fingerprint: "fingerprint-as-loaded",
+      })
 
+      // The resync's answer, with no save in flight, is another writer's document.
+      await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: otherWriter })) })
       expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
         expect.objectContaining({ nodes: [expect.objectContaining({ id: "n1" })] }),
       )
