@@ -469,10 +469,6 @@ def price_test_quotes_live(
     return LiveTestQuotes(priced, checked, errors)
 
 
-def _project_root(resolved: ResolvedDeploy) -> Path:
-    return (resolved.config.project_dir or resolved.config.pipeline_file.parent).resolve()
-
-
 def _workbench_form_errors(resolved: ResolvedDeploy) -> list[str]:
     """Whether the form the workbench nodes took their tables from fits the pipeline.
 
@@ -484,7 +480,7 @@ def _workbench_form_errors(resolved: ResolvedDeploy) -> list[str]:
     document = resolved.workbench_form
     if document is None:
         return []
-    form = read_workbench_config(_project_root(resolved)).form
+    form = read_workbench_config(resolved.project_root).form
     errors = [f"{form}: {clash}." for clash in identity_clashes(document.spec)]
     return errors + [f"{form}/{found}." for found in unresolved_references(document.spec)]
 
@@ -570,21 +566,18 @@ def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> li
                 shipped_snapshot_config,
             )
 
-            project_root = (
-                resolved.config.project_dir or resolved.config.pipeline_file.parent
-            ).resolve()
             snapshot_config = shipped_snapshot_config(
                 node.id,
                 validate_data_input_config(node.data.config),
-                resolved.config.pipeline_file.parent,
-                project_root,
+                resolved.pipeline_file.parent,
+                resolved.project_root,
             )
             if snapshot_config is None:
                 _resolve_direct_parquet_source(
                     node.id,
                     node.data.config,
-                    resolved.config.pipeline_file.parent,
-                    project_root,
+                    resolved.pipeline_file.parent,
+                    resolved.project_root,
                 )
                 continue
 
@@ -592,7 +585,7 @@ def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> li
             from haute._source_cache import SourceCacheStore
 
             identity = source_cache_identity(
-                snapshot_config, base_dir=resolved.config.pipeline_file.parent
+                snapshot_config, base_dir=resolved.pipeline_file.parent
             )
             SourceCacheStore(_get_project_root()).open_generation(identity)
         except Exception as exc:

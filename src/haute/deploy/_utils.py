@@ -101,7 +101,7 @@ def build_manifest(resolved: ResolvedDeploy) -> dict[str, Any]:
         # A served model runs only under the Polars it was deployed with.
         "polars_version": polars.__version__,
         "pipeline_name": resolved.pruned_graph.pipeline_name or config.model_name,
-        "pipeline_file": config.pipeline_file.as_posix(),
+        "pipeline_file": resolved.pipeline_file.as_posix(),
         "target": config.target,
         "created_at": datetime.now(UTC).isoformat(),
         "created_by": get_user(),

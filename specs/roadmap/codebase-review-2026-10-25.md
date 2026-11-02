@@ -223,7 +223,6 @@ production:
 | Area | Findings | Package |
 |---|---|---|
 | Deploy | PM-16 | `DEP-R09` |
-| Deploy | PM-1, PM-2, PM-5 | `DEP-R10` |
 | Deploy | PM-37, PM-38 | `DEP-R11` |
 | Deploy | PM-7, PM-15, PM-25 | `DEP-R12A`, `DEP-R12B` |
 | Deploy | PM-3, PM-4, PM-8, PM-9, PM-10, PM-11, PM-17, PM-19, PM-20, PM-21 | `DEP-R13` |

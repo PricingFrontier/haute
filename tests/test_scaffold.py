@@ -995,10 +995,12 @@ class TestDockerfileStructure:
         from haute.deploy._project_modules import ProjectModules
         from haute.deploy._request_rows import RequestRows
         from haute.graph_utils import PipelineGraph
-        from tests._deploy_helpers import artifact_digests
+        from tests._deploy_helpers import artifact_digests, resolved_paths
 
+        config = DeployConfig(pipeline_file=Path("main.py"), model_name="test")
         resolved = ResolvedDeploy(
-            config=DeployConfig(pipeline_file=Path("main.py"), model_name="test"),
+            config=config,
+            **resolved_paths(config),
             full_graph=PipelineGraph(),
             pruned_graph=PipelineGraph(),
             input_node_ids=[],

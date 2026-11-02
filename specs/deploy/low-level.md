@@ -5,7 +5,10 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/deploy/__init__.py` | Public API surface (`deploy`, `deploy_resolved`, config/result re-exports); the up-front credential check (`check_credentials`, which `haute deploy` runs before parsing: a Databricks target's `_mlflow.check_databricks_credentials`); target validation (`_validate_target`) and dispatch (`_dispatch_resolved`) by `config.target`. |
-| `src/haute/deploy/_config.py` | `DeployConfig` (user input), target sub-configs (`DatabricksConfig`, `ContainerConfig`, `AzureContainerAppsConfig`, `AwsEcsConfig`, `GcpRunConfig`, `SafetyConfig`, `CIConfig`), `haute.toml` loading + schema validation (the test quotes' folder, `_test_quotes_dir`: `[test_quotes] dir` or `DEFAULT_TEST_QUOTES_DIR`, `tests/quotes`, when it names none, that default only while it holds test quotes (`test_quote_files`, its `*.json` files by name), a folder outside the project or reached through a link refused through `ordinary_path_problem`; the `[mlflow]` table, owned by the MLflow settings endpoint, is accepted with exactly the tracking-uri and folder keys; the retired single-mode key is an unknown key), base-image pinning validation, `.env` loading, `resolve_config()` producing `ResolvedDeploy`, the bundled artefacts' digests and the `RequestRows` record among it. |
+| `src/haute/deploy/_config.py` | `DeployConfig` (user input), target sub-configs (`DatabricksConfig`, `ContainerConfig`, `AzureContainerAppsConfig`, `AwsEcsConfig`, `GcpRunConfig`, `SafetyConfig`, `CIConfig`), `haute.toml` loading + schema validation (each table read through `_TomlTable`, whose
+`get`/`optional`/`array` refuse a value of another type than its key takes, and a table that
+is not one, naming `[section] key`; the test quotes' folder, `_test_quotes_dir`: `[test_quotes] dir` or `DEFAULT_TEST_QUOTES_DIR`, `tests/quotes`, when it names none, that default only while it holds test quotes (`test_quote_files`, its `*.json` files by name), a `dir` that is empty refused rather than read as none, a folder outside the project or
+reached through a link refused through `ordinary_path_problem`; the `[mlflow]` table, owned by the MLflow settings endpoint, is accepted with exactly the tracking-uri and folder keys; the retired single-mode key is an unknown key), base-image pinning validation, `.env` loading, `resolve_config()` producing `ResolvedDeploy`, the bundled artefacts' digests and the `RequestRows` record among it. |
 | `src/haute/deploy/_pruner.py` | Graph pruning to the output node's ancestors; `liveSwitch` live-branch collapsing; output/input/source node discovery. |
 | `src/haute/deploy/_bundler.py` | Artefact discovery and collection (`collect_artifacts`): external files, file-backed optimiser artefacts, supported MLflow-sourced local models + feature contracts (each model-score node's stored mlflow_destination key, absent = the local folder, is resolved once through `resolve_backend` and that backend drives both the registry lookup and the download), and retained Data Inputs; path resolution plus canonical provider/schema validation and a bounded one-row readability probe. MLflow-sourced optimiser applies are deliberately not bundled. |
 | `src/haute/deploy/_schema.py` | Input schema inference (read source file schema), output schema inference (dry-run scoring with the bundled artefacts) with a graph-and-artefact-fingerprint-keyed on-disk cache, and bundle-time, target-aware batch strategy planning (`infer_deploy_execution_policy`) over the shared one-quote sample (`_read_sample_row`: a Quote Input with tables its sample file's first quote as a `QuoteRequest`, planned on its shredded tables), with a hard-capped-worker dry-run fallback (`_capped_worker_output_schema`) for an unprovable group-by. |
@@ -37,12 +40,17 @@
   pinning whenever `target` is one of the container-based targets. `effective_endpoint_name`
   is a computed property: `None` when no endpoint name or suffix was set (meaning "create
   no serving endpoint"), otherwise `(endpoint_name or model_name) + endpoint_suffix`.
-  Constructed via `from_toml()` (parses + validates `haute.toml`, applies `.env` and
-  `HAUTE_*` env-var overrides), `from_cli_args()` (no-TOML path, requires `pipeline_file`
-  + `model_name`), or `override()` (returns a deep copy with non-`None` CLI kwargs
-  applied — highest-priority layer).
+  Constructed via `from_toml()` (parses + validates `haute.toml`, every value typed by
+  key; applies `.env` and the `HAUTE_*` env-var overrides of `_ENV_OVERRIDES`, a boolean
+  one read by `_env_bool` from `true`/`false`, `1`/`0` or `yes`/`no` in any case and any
+  other value a `ValueError` naming the variable), `from_cli_args()` (no-TOML path,
+  requires `pipeline_file` + `model_name`), or `override()` (returns a deep copy with
+  non-`None` CLI kwargs applied — highest-priority layer; a key that is not a field raises
+  `TypeError` naming it). Resolution never writes to it: the caller's config is the same
+  after `resolve_config` as before.
 - **`ResolvedDeploy`** (`src/haute/deploy/_config.py`) — the target-agnostic handoff object, created only
-  by `resolve_config()`: `config`, `full_graph`, `pruned_graph`, `input_node_ids`,
+  by `resolve_config()`: `config`, `pipeline_file` (the pipeline as resolved: canonical,
+  inside the project), `project_root` (the resolved project root), `full_graph`, `pruned_graph`, `input_node_ids`,
   `output_node_id`, `artifacts` (`dict[str, Path]`), `input_schema`/`output_schema`
   (`dict[str, str]` of column name → Polars dtype string), `execution_policy` (the
   bundle-time batch strategy record from `deploy/_schema.py::infer_deploy_execution_policy`),
@@ -149,7 +157,9 @@
    the deployed model run one Python. An unreadable `.python-version` or `requires-python`,
    or a pin `requires-python` excludes, raises `ProjectPythonError` before anything else.
    An image whose tag names no Python version is the project's to keep in step.
-3. `parse_pipeline_file(config.pipeline_file, flatten=True)` → `full_graph`, the graph that
+   The canonical pipeline path is resolution's own (`ResolvedDeploy.pipeline_file`); the
+   caller's `DeployConfig` keeps the path it gave.
+3. `parse_pipeline_file(pipeline_file, flatten=True)` → `full_graph`, the graph that
    runs: each submodel occurrence expanded into its own nodes, with runtime ids
    `submodel_runtime/<occurrence>/<node>`, as `haute run` and the editor execute it, so a
    response, a request input or an artefact inside a submodel is found, bundled and scored
@@ -225,7 +235,7 @@
    Before collection, `refuse_data_outside_pipeline_folder` resolves the path of every
    retained file or lakehouse Data Input that is not a request input (`_resolve_path`, as
    bundling resolves it) and raises a `DeployError` naming the node, the configured path and
-   the pipeline folder (`config.pipeline_file.parent`, shown relative to the project root)
+   the pipeline folder (`pipeline_file.parent`, shown relative to the project root)
    for one outside that folder, with the remedy `<folder>/files/data`. The path counts as
    outside when, followed through links, it or any file it names (`named_source_files`,
    resolved) lies outside the resolved folder. Then
@@ -990,9 +1000,13 @@ what they cover:
   `TestDatabricksTracking`, `TestServingEndpoint`, `TestModelsFromCode`,
   `TestHauteModel`).
 - **`test_deploy_config.py`** — `DeployConfig.from_toml` behaviour, `effective_endpoint_name`,
-  env-var override precedence, TOML-schema-vs-dataclass-field sync (guards against a
-  dataclass field silently missing from the TOML allowlist or vice versa), unknown-key
-  rejection, `validate_deploy` structural checks, `override()` semantics, the test quotes'
+  env-var override precedence and the boolean vocabulary (`ture` refused),
+  TOML-schema-vs-dataclass-field sync (guards against a dataclass field silently missing
+  from the TOML allowlist or vice versa), unknown-key rejection, every wrong-typed value
+  (`port = "x"`, `serving_scale_to_zero = "yes"`, `[test_quotes] dir = 5` or `""`, a
+  section that is not a table) refused naming its key, `validate_deploy` structural checks,
+  `override()` semantics (an unknown key a `TypeError`), a resolution leaving the caller's
+  config unchanged, the test quotes'
   folder (`tests/quotes` once it holds a JSON quote when `haute.toml` names no folder, a
   folder outside the project refused).
 - **`test_deploy_config_and_bundle.py`** — `TestBaseImageMustBePinned` (every accepted/

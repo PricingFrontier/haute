@@ -17,7 +17,7 @@ from haute.deploy._scorer import QuoteRequest
 from haute.deploy._validators import load_test_quote_file, score_test_quotes, validate_deploy
 from haute.errors import DeployError
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
-from tests._deploy_helpers import artifact_digests
+from tests._deploy_helpers import artifact_digests, resolved_paths
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -43,12 +43,14 @@ def _resolved_with_quotes(
         nodes=[inp, out],
         edges=[GraphEdge(id="e1", source="api_in", target="output")],
     )
+    config = DeployConfig(
+        pipeline_file=Path("main.py"),
+        model_name="pricing-model",
+        test_quotes_dir=test_quotes_dir,
+    )
     return ResolvedDeploy(
-        config=DeployConfig(
-            pipeline_file=Path("main.py"),
-            model_name="pricing-model",
-            test_quotes_dir=test_quotes_dir,
-        ),
+        config=config,
+        **resolved_paths(config),
         full_graph=graph,
         pruned_graph=graph,
         input_node_ids=["api_in"],

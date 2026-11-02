@@ -35,7 +35,7 @@ from haute.modelling._feature_contract import (
     save_contract,
 )
 from haute.modelling._training_job import model_contract_filename
-from tests._deploy_helpers import artifact_digests
+from tests._deploy_helpers import artifact_digests, resolved_paths
 from tests.conftest import make_output_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
@@ -98,12 +98,10 @@ def _make_resolved(
     config: DeployConfig | None = None,
 ) -> ResolvedDeploy:
     graph = PipelineGraph(nodes=nodes or [], edges=edges or [])
+    config = config or DeployConfig(pipeline_file=PIPELINE_FILE, model_name="test-model")
     return ResolvedDeploy(
-        config=config
-        or DeployConfig(
-            pipeline_file=PIPELINE_FILE,
-            model_name="test-model",
-        ),
+        config=config,
+        **resolved_paths(config),
         full_graph=graph,
         pruned_graph=graph,
         input_node_ids=input_node_ids or ["api_in"],

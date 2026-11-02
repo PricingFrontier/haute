@@ -4445,7 +4445,8 @@ class TestResolveConfigEdgeCases:
         ):
             resolved = resolve_config(config)
 
-        assert config.pipeline_file == pipeline.resolve()
+        assert resolved.pipeline_file == pipeline.resolve()
+        assert config.pipeline_file == configured
         # Parsed as it runs, every submodel occurrence expanded (BUG-18).
         parse.assert_called_once_with(pipeline.resolve(), flatten=True)
         resolved.close()

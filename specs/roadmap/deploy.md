@@ -14,7 +14,6 @@ MLflow target and the impact analysis. Current behaviour is specified in
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | DEP-R09 | Planned | P2 | The container image and the Databricks model install a recorded dependency closure resolved for their target Python and platform. |
-| DEP-R10 | Planned | P2 | `haute.toml` values are typed at load, a malformed `[test_quotes] dir` is refused, and an unknown override key raises. |
 | DEP-R11 | Planned | P2 | Impact analysis fails on a row-count mismatch instead of pairing the wrong quotes, and a mistyped production URL is not a first deploy. |
 | DEP-R12A | Planned | P2 | Each build owns a fresh directory under the project and ships only its own artefacts. |
 | DEP-R12B | Planned | P3 | The output-schema cache lives under the project root with one entry per fingerprint. |
@@ -93,31 +92,6 @@ in the target installation, not just identical install command text.
 `::_conda_env`.
 
 Resolver reference: [uv platform-specific resolution](https://docs.astral.sh/uv/concepts/resolution/).
-
-### DEP-R10 — Typed configuration, refused rather than defaulted
-**Why:** `haute.toml` is checked for unknown keys but never for value types: `port =
-"x"`, `serving_scale_to_zero = "yes"` or `[test_quotes] dir = 5` all load, and a
-non-string or empty `dir` silently falls back to `tests/quotes` (and to no gate when
-that folder is empty), which the specification says must fail rather than disable the
-gate. A boolean environment override treats any value other than `true`/`1`/`yes` as
-`False`, so a typo disables scale-to-zero. `DeployConfig.override` ignores a key the
-class does not have, so a misspelt override is dropped without error, and
-`resolve_config` assigns the canonical pipeline path into the caller's config.
-
-**Plan:** Load the TOML tables through typed models (pydantic or dataclass validators)
-that refuse a wrong type by key; refuse a `[test_quotes] dir` that is not a non-empty
-string; accept an explicit true/false vocabulary for boolean overrides and raise
-otherwise; raise `TypeError` in `override` for an unknown key; resolve the pipeline path
-into a local and store it on `ResolvedDeploy`.
-
-**Acceptance:** Each wrong-typed value above fails `from_toml` naming the key; `dir = ""`
-fails; `HAUTE_SERVING_SCALE_TO_ZERO=ture` fails; the caller's `DeployConfig` is unchanged
-after `resolve_config`.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/deploy/_config.py::DeployConfig`, `::_test_quotes_dir`,
-`::_apply_env_overrides`, `::_validate_toml_keys` and `::resolve_config`.
 
 ### DEP-R11 — Impact analysis compares the right quotes
 **Why:** `build_report` pairs staging and production predictions by position and

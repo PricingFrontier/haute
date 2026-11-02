@@ -1342,7 +1342,7 @@ class TestValidators:
         from haute.deploy._request_rows import RequestRows
         from haute.deploy._schema import infer_input_schema, infer_output_schema
         from haute.deploy._validators import validate_deploy
-        from tests._deploy_helpers import artifact_digests
+        from tests._deploy_helpers import artifact_digests, resolved_paths
 
         output_id = find_output_node(full_graph)
         pruned, _kept, removed = prune_for_deploy(full_graph, output_id)
@@ -1356,6 +1356,7 @@ class TestValidators:
         )
         resolved = ResolvedDeploy(
             config=config,
+            **resolved_paths(config),
             full_graph=full_graph,
             pruned_graph=pruned,
             input_node_ids=["quotes"],
@@ -1379,7 +1380,7 @@ class TestValidators:
         from haute.deploy._request_rows import RequestRows
         from haute.deploy._schema import infer_input_schema, infer_output_schema
         from haute.deploy._validators import score_test_quotes
-        from tests._deploy_helpers import artifact_digests
+        from tests._deploy_helpers import artifact_digests, resolved_paths
 
         output_id = find_output_node(full_graph)
         pruned, _kept, removed = prune_for_deploy(full_graph, output_id)
@@ -1394,6 +1395,7 @@ class TestValidators:
         )
         resolved = ResolvedDeploy(
             config=config,
+            **resolved_paths(config),
             full_graph=full_graph,
             pruned_graph=pruned,
             input_node_ids=["quotes"],

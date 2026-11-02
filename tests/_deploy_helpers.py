@@ -70,6 +70,7 @@ def make_resolved_deploy(
 
     defaults: dict[str, object] = {
         "config": config,
+        **resolved_paths(config),
         "full_graph": PipelineGraph(),
         "pruned_graph": PipelineGraph(),
         "input_node_ids": ["policies"],
@@ -86,6 +87,15 @@ def make_resolved_deploy(
         assert isinstance(artifacts, dict)
         defaults["artifact_digests"] = artifact_digests(artifacts)
     return ResolvedDeploy(**defaults)
+
+
+def resolved_paths(config: DeployConfig) -> dict[str, Path]:
+    """The pipeline and project root a resolution of *config* records, as ``resolve_config``
+    takes them: the configured project directory, else the pipeline's own."""
+    return {
+        "pipeline_file": config.pipeline_file,
+        "project_root": (config.project_dir or config.pipeline_file.parent).resolve(),
+    }
 
 
 def artifact_digests(artifacts: dict[str, Path]) -> dict[str, str]:

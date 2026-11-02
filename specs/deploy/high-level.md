@@ -179,7 +179,8 @@ than silently disabling the gate. Every quote is scored through the resolved gra
 test-quote row wraps its request as `input`, with an optional `expected` output and
 `tolerance_pct` and any `_`-prefixed notes; a row without `input`, or with any other
 top-level key, is refused naming the row, and any row whose actual output falls outside
-tolerance fails the deploy. The starter JSON quote `haute init` writes takes the row shape,
+tolerance fails the deploy. A `test_quotes.dir` that is not a string, or is an empty one,
+is refused when `haute.toml` loads, never read as the default folder. The starter JSON quote `haute init` writes takes the row shape,
 so a new project's test quotes parse before the analyst replaces them. A workbench
 project, which `haute deploy` refuses, checks its test quotes in `haute app build`:
 the test quotes saved from Preview by the workbench's comparison, a moved output
@@ -522,11 +523,13 @@ approving it.
 This codebase prefers loud failure over silent fallback, and deploy is where that matters
 most: a silent wrong answer here mis-prices real policies.
 
-- **Configuration errors** (unknown `haute.toml` keys, missing required CLI fields, an
+- **Configuration errors** (unknown `haute.toml` keys, a value of the wrong type, a
+  `[test_quotes] dir` that is empty, an environment override that is not a boolean where
+  one is read, an override key `DeployConfig` does not have, missing required CLI fields, an
   unpinned `container.base_image`, an unknown or not-yet-implemented deploy target) raise
   `ValueError`, `TypeError`, or `haute.errors.DeployError` at config-construction or
   resolve time — before any expensive work (pipeline parsing, artefact download, Docker
-  build) starts. `deploy()` explicitly validates the target *before* resolving the config,
+  build) starts. Each names the key or variable at fault; none is defaulted away. `deploy()` explicitly validates the target *before* resolving the config,
   so an unknown target never gets misreported as "no output node found".
 - **Missing, escaped, or drifted artefacts** raise `FileNotFoundError` (bundler: an
   in-project artefact file is absent on disk) or `haute.errors.DeployError` (a pipeline,

@@ -149,7 +149,7 @@ def _deploy_to_mlflow(
     manifest = build_manifest(resolved)
 
     # 2. Write manifest to a persistent location (not a temp dir that gets deleted)
-    build_dir = config.pipeline_file.resolve().parent / ".haute_build"
+    build_dir = resolved.pipeline_file.parent / ".haute_build"
     build_dir.mkdir(exist_ok=True)
 
     try:
@@ -323,9 +323,7 @@ def _pyfunc_model_arguments(
         "code_paths": code_paths or None,
         "signature": _build_signature(resolved),
         "conda_env": _conda_env(
-            deployed_python_version(
-                resolved.config.project_dir or resolved.config.pipeline_file.parent
-            ),
+            deployed_python_version(resolved.project_root),
             haute.requirement,
             resolved,
         ),

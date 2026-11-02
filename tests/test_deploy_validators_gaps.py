@@ -27,7 +27,7 @@ from haute.deploy._project_modules import ProjectModules
 from haute.deploy._request_rows import RequestRows
 from haute.errors import DeployError
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
-from tests._deploy_helpers import artifact_digests
+from tests._deploy_helpers import artifact_digests, resolved_paths
 
 FIXTURE_DIR = Path("tests/fixtures")
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
@@ -62,12 +62,10 @@ def _make_resolved(
     config: DeployConfig | None = None,
 ) -> ResolvedDeploy:
     graph = PipelineGraph(nodes=nodes or [], edges=edges or [])
+    config = config or DeployConfig(pipeline_file=PIPELINE_FILE, model_name="test-model")
     return ResolvedDeploy(
-        config=config
-        or DeployConfig(
-            pipeline_file=PIPELINE_FILE,
-            model_name="test-model",
-        ),
+        config=config,
+        **resolved_paths(config),
         full_graph=graph,
         pruned_graph=graph,
         input_node_ids=input_node_ids or ["api_in"],

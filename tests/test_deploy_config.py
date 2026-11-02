@@ -27,7 +27,17 @@ from haute.deploy._config import (
 from haute.deploy._project_modules import ProjectModules
 from haute.deploy._request_rows import RequestRows
 from haute.deploy._validators import validate_deploy
-from tests._deploy_helpers import artifact_digests
+from tests._deploy_helpers import artifact_digests, resolved_paths
+
+_MINIMAL_LIVE_QUOTE = (
+    Path(__file__).resolve().parents[1]
+    / "src"
+    / "haute"
+    / "assistant"
+    / "assets"
+    / "examples"
+    / "minimal_live_quote"
+)
 
 
 @pytest.fixture()
@@ -148,6 +158,27 @@ model_name = "simple"
         config = DeployConfig.from_toml(tmp_path / "haute.toml")
         assert config.pipeline_file == Path("configured.py")
 
+    def test_resolution_leaves_the_callers_config_unchanged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # DEP-R10: the canonical pipeline path lives on the resolution, not the caller's
+        # config, which a second resolution (a staging then production deploy) reuses.
+        import shutil
+
+        from haute.deploy import resolve_config
+
+        project = tmp_path / "project"
+        shutil.copytree(_MINIMAL_LIVE_QUOTE, project)
+        monkeypatch.chdir(tmp_path)
+        config = DeployConfig.from_toml(project / "haute.toml")
+        before = dataclasses.replace(config)
+
+        with resolve_config(config) as resolved:
+            assert resolved.pipeline_file == (project / "pipeline.py").resolve()
+            assert resolved.project_root == project.resolve()
+        assert config == before
+        assert config.pipeline_file == Path("pipeline.py")
+
     @pytest.mark.parametrize("value", ["[]", '["premium", "age"]'])
     def test_output_fields_toml_preserves_explicit_arrays(self, tmp_path: Path, value: str) -> None:
         path = tmp_path / "haute.toml"
@@ -177,6 +208,34 @@ model_name = "simple"
         path = tmp_path / "haute.toml"
         path.write_text('[project]\nname = "x"\n[deploy]\noutput_fields = "premium"\n')
         with pytest.raises(ValueError, match="output_fields.*array"):
+            DeployConfig.from_toml(path)
+
+    @pytest.mark.parametrize(
+        ("toml", "key"),
+        [
+            ('[deploy.container]\nport = "x"\n', r"\[deploy.container\] port"),
+            ("[deploy.container]\nport = true\n", r"\[deploy.container\] port"),
+            (
+                '[deploy.databricks]\nserving_scale_to_zero = "yes"\n',
+                r"\[deploy.databricks\] serving_scale_to_zero",
+            ),
+            ("[deploy]\ntarget = 5\n", r"\[deploy\] target"),
+            ("[ci.staging]\nendpoint_url = 8080\n", r"\[ci.staging\] endpoint_url"),
+            ('[safety.approval]\nmin_approvers = "2"\n', r"\[safety.approval\] min_approvers"),
+            ("[test_quotes]\ndir = 5\n", r"\[test_quotes\] dir"),
+            ('[test_quotes]\ndir = ""\n', r"\[test_quotes\] dir"),
+            ("deploy = 5\n", r"\[deploy\] must be a table"),
+            ("[deploy]\ncontainer = 5\n", r"\[deploy.container\] must be a table"),
+        ],
+    )
+    def test_a_value_of_the_wrong_type_is_refused_naming_its_key(
+        self, tmp_path: Path, toml: str, key: str
+    ) -> None:
+        # DEP-R10: a wrong type never loads, and a malformed test-quotes folder never falls
+        # back to tests/quotes (and so to no gate at all).
+        path = tmp_path / "haute.toml"
+        path.write_text(f'{toml}[project]\nname = "x"\n', encoding="utf-8")
+        with pytest.raises(ValueError, match=key):
             DeployConfig.from_toml(path)
 
 
@@ -448,8 +507,10 @@ def _make_resolved(
     output_schema: dict[str, str] | None = None,
 ) -> ResolvedDeploy:
     graph = PipelineGraph(nodes=nodes, edges=edges)
+    config = DeployConfig(pipeline_file=Path("main.py"), model_name="test")
     return ResolvedDeploy(
-        config=DeployConfig(pipeline_file=Path("main.py"), model_name="test"),
+        config=config,
+        **resolved_paths(config),
         full_graph=graph,
         pruned_graph=graph,
         input_node_ids=input_node_ids,
@@ -687,6 +748,21 @@ class TestApplyEnvOverridesEdgeCases:
         config = _apply_env_overrides(self._make_config())
         assert config.databricks.serving_scale_to_zero is False
 
+    @pytest.mark.parametrize(("raw", "expected"), [("yes", True), ("No", False), ("1", True)])
+    def test_scale_to_zero_vocabulary(
+        self, monkeypatch: pytest.MonkeyPatch, raw: str, expected: bool
+    ) -> None:
+        monkeypatch.setenv("HAUTE_SERVING_SCALE_TO_ZERO", raw)
+        config = _apply_env_overrides(self._make_config())
+        assert config.databricks.serving_scale_to_zero is expected
+
+    @pytest.mark.parametrize("raw", ["ture", "", "on"])
+    def test_scale_to_zero_typo_is_refused(self, monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+        # DEP-R10: a typo never reads as False and silently turns scale-to-zero off.
+        monkeypatch.setenv("HAUTE_SERVING_SCALE_TO_ZERO", raw)
+        with pytest.raises(ValueError, match="HAUTE_SERVING_SCALE_TO_ZERO"):
+            _apply_env_overrides(self._make_config())
+
     def test_empty_string_env_var_still_applied(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HAUTE_MODEL_NAME", "")
         config = _apply_env_overrides(self._make_config())
@@ -726,10 +802,11 @@ class TestDeployConfigOverride:
         overridden = config.override(model_name=None)
         assert overridden.model_name == "original"
 
-    def test_override_nonexistent_attribute_is_skipped(self) -> None:
+    def test_override_of_an_unknown_key_raises(self) -> None:
+        # DEP-R10: a misspelt override is never dropped without a word.
         config = self._make_config()
-        overridden = config.override(nonexistent_field="value")
-        assert not hasattr(overridden, "nonexistent_field")
+        with pytest.raises(TypeError, match="endpoint_sufix"):
+            config.override(endpoint_sufix="-staging")
 
     def test_multiple_overrides_in_single_call(self) -> None:
         config = self._make_config()
