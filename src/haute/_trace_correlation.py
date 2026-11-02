@@ -564,17 +564,16 @@ def _match_rows_vectorized(
 
     indexed = frame.with_row_index("__trace_row_index")
     strict_predicate = pl.all_horizontal(expressions)
-    try:
-        strict_indices = (
-            indexed.select(
-                pl.col("__trace_row_index"),
-                strict_predicate.alias("__trace_matches"),
-            )
-            .filter(pl.col("__trace_matches"))
-            .select("__trace_row_index")
+    # Every incompatible value, nested ones included, was refused by its typed
+    # expression above, so a failure here is a defect and propagates.
+    strict_indices = (
+        indexed.select(
+            pl.col("__trace_row_index"),
+            strict_predicate.alias("__trace_matches"),
         )
-    except pl.exceptions.PolarsError:
-        return _unsupported_match_result(keys, dtypes, "incompatible_nested_schema")
+        .filter(pl.col("__trace_matches"))
+        .select("__trace_row_index")
+    )
     strict_count, strict_candidates, strict_state = _candidate_payload(strict_indices)
     if strict_count:
         status = _RowMatchStatus.UNIQUE_STRICT if strict_count == 1 else _RowMatchStatus.AMBIGUOUS
@@ -1261,8 +1260,12 @@ def _match_parent_row(
     target_role: str | None = None,
     diagnostics: list[dict[str, Any]] | None,
     work: CorrelationWork | None = None,
+    proven: bool = False,
 ) -> tuple[dict[str, Any] | None, int, int]:
     """Correlate one parent FRAME against the resolved child row.
+
+    *proven* says *child_row* holds only values the child provably carried
+    unchanged: each is a strict constraint, so a miss is never relaxed.
 
     Returns ``(row_dict, positional_index, match_width)`` where
     ``match_width`` is the number of child columns projected onto this
@@ -1335,7 +1338,7 @@ def _match_parent_row(
         diagnostics=diagnostics,
         node_id=parent_id,
         child_node_id=child_id,
-        allow_relaxed=_allows_relaxed_parent_match(child_node, target_role),
+        allow_relaxed=not proven and _allows_relaxed_parent_match(child_node, target_role),
         work=work,
     )
     return row_dict, idx, len(match_row)
@@ -2246,13 +2249,12 @@ class RowScopeResolver:
         )
         if proof is None:
             return None
-        carried = {
-            name: value
-            for name, value in carried.items()
-            if name not in proof.assigned
-            and (proof.carried_only is None or name in proof.carried_only)
-        }
         edge_input = self.input_names.get((parent_id, child_id, source_handle, target_role))
+        # The proof names explicit inputs; other code reads its one parent as ``df``.
+        proof_input = edge_input if explicit_inputs and edge_input is not None else proof.root_input
+        carried = {
+            name: value for name, value in carried.items() if proof.carries(name, proof_input)
+        }
         if len(input_names) > 1 and proof.root_input != edge_input:
             # A column several inputs share keeps the root input's value (or the
             # value of a key this input was joined on); it identifies no other
@@ -2278,8 +2280,8 @@ class RowScopeResolver:
         # sharing all its keys — provided every key is carried unchanged.
         aggregated = (
             proof.whole_groups
-            and proof.carried_only is not None
-            and proof.carried_only == frozenset(carried)
+            and proof.restricted_to.get(proof_input) is not None
+            and proof.restricted_to.get(proof_input) == frozenset(carried)
         )
         return _CarriedValues(carried, {}, aggregated=aggregated)
 
@@ -2367,10 +2369,9 @@ class RowScopeResolver:
                     target_role=target_role,
                     child_row=child_row,
                 )
+                proven = carried is not None and not carried.casts
                 match_row = (
-                    dict(carried.values)
-                    if carried is not None and not carried.casts
-                    else dict(child_row)
+                    dict(carried.values) if carried is not None and proven else dict(child_row)
                 )
                 row, index, width = _match_parent_row(
                     frame,
@@ -2385,6 +2386,7 @@ class RowScopeResolver:
                     target_role=target_role,
                     diagnostics=port_diagnostics,
                     work=work,
+                    proven=proven,
                 )
                 if row is not None:
                     matches.append(

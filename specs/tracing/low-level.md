@@ -361,8 +361,10 @@ the limited preview shows rather than independent source samples.
    the child's row came from the child's own head frame; the clicked target row starts
    head-resolved. A head-frame match compares the child's carried values (item 4) when
    they carry no cast, so a column the child's code rewrote is left out rather than
-   relaxed around; a child whose code the proof cannot read keeps name-based matching,
-   whose relaxed match is reported low-confidence. `schema_for` reads a node's schema from
+   relaxed around; each carried value is a strict constraint (`_match_parent_row`'s
+   `proven`), so a parent row absent from the head frame is omitted, never relaxed onto
+   another. A child whose code the proof cannot read keeps name-based matching, whose
+   relaxed match is reported low-confidence. `schema_for` reads a node's schema from
    the frame this click already holds for it (its head frame or looked-up rows, both read
    from its plan) before building the uncapped plans, so head-frame matching never builds
    them. Every other port correlates in a row-scoped frame (`lookup`): the
@@ -452,11 +454,22 @@ the limited preview shows rather than independent source samples.
      annotated or augmented) rewrites no frame and is skipped; binding `df` or an input, or
      reading a frame (`n = src.height`), fails the proof, and a later use of the bound name
      as a frame fails it on its own;
-   - `filter`, `sort`, `head`, `tail`, `limit`, `slice`, `unique`, `drop`, `drop_nulls`,
-     and `lazy` keep values;
+   - `filter`, `sort`, `head`, `tail`, `limit`, `slice`, `unique`, `drop_nulls`, and
+     `lazy` keep values;
+   - a literal `drop(...)` (names, or lists of names, with an optional literal `strict`)
+     drops its columns from the inputs in the frame; a selector or non-literal drop fails
+     the proof;
    - `with_columns` and `select` assign every keyword output and every output that is not a
      bare column; a pure column selection (a literal selector or a literal name list)
-     assigns nothing; an expression rooted at a literal selector whose only naming step is
+     assigns nothing. A `select` also carries only the bare columns it keeps
+     (`restricted_to`, intersected with any earlier restriction) and keeps only those of
+     each joined input's same-name keys; `pl.all()` and a `'*'` in a name list keep every
+     column, and `pl.exclude(<names>)` drops its names unless the selection names them
+     again. A `select` keeping or excluding columns a selector or regex chooses fails the
+     proof, since the syntax does not name them. A restriction or drop applies to the
+     inputs already in the frame (`dropped_from`), never to one a later join brings in, so
+     a column such a join adds under a dropped name is that input's value, not the root
+     input's; an expression rooted at a literal selector whose only naming step is
      its outermost call assigns that call's `alias`, or the selector's expansion (renamed
      by a trailing `.name.suffix`/`.name.prefix`) over the program's proven column superset
      — every input's columns, every column assigned so far, and for each join every
@@ -477,7 +490,9 @@ the limited preview shows rather than independent source samples.
      assigned) with `how` of `inner`, `left`, `semi`, `anti`, or `cross` records its literal
      `on` keys as the same-name keys of that joined input; a non-root input joined twice
      fails the proof;
-   - a literal `group_by(...).agg(...)` carries only its keys; a literal boolean
+   - a literal `group_by(...).agg(...)` carries only its keys of the inputs in the frame and
+     assigns each aggregate's output name; an aggregate whose name the syntax does not fix
+     (`pl.len()` unaliased) fails the proof if a named input is joined after it; a literal boolean
      `maintain_order` keyword is allowed, and any other keyword (a named computed key)
      fails the proof. The proof reports `whole_groups` when it is the program's only
      grouping and nothing before it filters, slices, deduplicates, selects, or joins rows,
@@ -486,7 +501,10 @@ the limited preview shows rather than independent source samples.
      selector computation, a non-literal selector, `.name` or `.struct` rewrites, `pipe`,
      or an unaliased `when`/`then` — and every other method or statement fail the proof.
 
-   The proven assignments are removed from the carried columns. A column several inputs
+   The proven assignments and the port's input's dropped columns are removed from the
+   carried columns, and its restriction keeps only its columns
+   (`CarriedColumnProof.carries(column, input)`; code other than Polars and external-file
+   nodes reads its one parent as the root input). A column several inputs
    share identifies only the program's root input, unless the join that brought in this
    port's input proves it a same-name key of that input, and a non-root input's null value
    is not carried because it may be an outer fill. Every remaining shared column is a
@@ -692,7 +710,13 @@ its public facade.
    runtime skipped for having no usable operator/value pair cannot be selected
    by enrichment. A traced value is compared in the kind its breakpoints share
    (`_match_interval_rule` reads a date or date-and-time input as the runtime's
-   `banding_comparison_expr` does), so a date band the engine chose is credited.
+   `banding_comparison_expr` does), so a date band the engine chose is credited. A number
+   is compared in the precision the engine compares it in: Polars types a rule's float
+   threshold as a float column's own dtype, so a `Float32` (or `Float16`) value and
+   threshold are both rounded through that dtype, and every other numeric column compares
+   in `Float64`, the supertype of an integer and a float
+   (`_coerce_pair_through_dtype`). Nothing is caught there: a failure reaches
+   `enrich_banding`'s error boundary as an `error` with its `error_type`.
 6. Classifies `step.row_lineage_type` via `detect_row_lineage_type()`, using the
    node type first (source nodes and constants → `"created"`, `liveSwitch` →
    `"selected"`, `edgeJoin` → `"joined"`, `scenarioExpander` → `"expanded"`,
@@ -804,7 +828,9 @@ snapshot deterministically.
   representations with timezone-awareness preserved; Decimal uses exact
   lossless rescaling and never floats; Categorical/Enum compares normalised
   string values; compatible List/Array/Struct uses a typed one-row Polars
-  literal. Object and incompatible nested schemas are unsupported.
+  literal. Object and incompatible nested schemas are unsupported, refused by
+  the typed expression before the predicate runs; a Polars failure evaluating
+  the strict predicate is therefore a defect and propagates.
 - **Ambiguity and relaxation are explicit.** Multiple candidates never select
   the first row. Relaxation is attempted only after zero strict candidates,
   may omit keys but cannot weaken a retained key's value contract, and emits a

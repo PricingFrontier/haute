@@ -340,6 +340,14 @@ def test_multi_port_with_null_source_handle_raises(isolated_root) -> None:
     # The error names the available ports so the user can pick.
     assert "policies" in error_msg or "drivers" in error_msg
 
+    # Trace reports the same refusal rather than correlating without the edge.
+    from haute.trace import execute_trace
+
+    with pytest.raises(
+        ValueError, match=r"no sourceHandle\. Expected one of: \['drivers', 'policies'\]"
+    ):
+        execute_trace(graph, row_index=0, target_node_id="downstream")
+
 
 # ─── 6. multi-port edge with unknown sourceHandle: loud error ─────
 
