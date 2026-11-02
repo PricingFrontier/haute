@@ -17,7 +17,7 @@ import {
   updateUtilityFile,
   deleteUtilityFile,
 } from "../api/client"
-import { apiErrorMessage, apiErrorStatus } from "../api/errors"
+import { apiErrorMessage, apiErrorRawDetail, apiErrorStatus } from "../api/errors"
 import type { UtilityFile } from "../api/types"
 
 /**
@@ -29,15 +29,18 @@ import type { UtilityFile } from "../api/types"
  */
 function parseSyntaxError(err: unknown): { error: string; error_line: number | null } | null {
   if (!(err instanceof ApiError) || err.status !== 400) return null
-  const raw = err.detail
-  if (!raw) return null
-
-  const message = String(raw)
-  const match = /\bline\s+(\d+)\b/i.exec(message)
-  return {
-    error: message,
-    error_line: match ? Number.parseInt(match[1], 10) : null,
+  // A refused save names its line and message (`{line, message}`); other refusals are text.
+  const record = apiErrorRawDetail(err)
+  if (record && typeof record.message === "string" && record.message.trim()) {
+    return {
+      error: record.message,
+      error_line: typeof record.line === "number" ? record.line : null,
+    }
   }
+  if (typeof err.detail === "string" && err.detail.trim()) {
+    return { error: err.detail, error_line: null }
+  }
+  return null
 }
 
 interface UtilityPanelProps {
@@ -283,21 +286,27 @@ export default function UtilityPanel({
     const current = () => mountedRef.current && selectionSerialRef.current === serial
     // The previous file's draft saves first; a refused save keeps it open.
     if (!await saveDraft(true) || !current()) return
+    let res: Awaited<ReturnType<typeof readUtilityFile>>
     try {
-      const res = await readUtilityFile(module)
-      // Text typed in the previous file while the read waited saves too before it goes.
-      if (!await saveDraft(true) || !current()) return
-      revisionsRef.current.set(module, res.revision)
-      setContent(res.content)
-      setActiveModule(module)
-      setImportsSelected(false)
-      setErrorLine(null)
-      setErrorMsg(null)
+      res = await readUtilityFile(module)
     } catch (err) {
+      // A read a newer selection overtook reports nothing over the file now open.
+      if (!current()) return
       const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Failed to load utility file "${module}": ${detail}`)
       setErrorMsg(`Failed to load ${module}`)
+      return
     }
+    // A read a newer selection overtook saves nothing either: that file's draft is its own.
+    if (!current()) return
+    // Text typed in the previous file while the read waited saves too before it goes.
+    if (!await saveDraft(true) || !current()) return
+    revisionsRef.current.set(module, res.revision)
+    setContent(res.content)
+    setActiveModule(module)
+    setImportsSelected(false)
+    setErrorLine(null)
+    setErrorMsg(null)
   }, [addToast, saveDraft])
 
   // Reload drops the draft for the file as it is now; Overwrite saves the draft over it.

@@ -21,14 +21,17 @@ vi.mock("../editors/CodeEditor", () => ({
 
 // Mock API client — vi.hoisted runs before vi.mock hoisting
 const { mockListFiles, mockReadFile, mockCreateFile, mockUpdateFile, mockDeleteFile, MockApiError } = vi.hoisted(() => {
+  // Built as the API client builds an error: the body's detail raw, and as text.
   class MockApiError extends Error {
     status: number
     detail?: string
-    constructor(message: string, status: number, detail?: string) {
+    rawDetail?: unknown
+    constructor(message: string, status: number, detail?: unknown) {
       super(message)
       this.name = "ApiError"
       this.status = status
-      this.detail = detail
+      this.rawDetail = detail
+      this.detail = detail === undefined || typeof detail === "string" ? detail : JSON.stringify(detail)
     }
   }
   return {
@@ -336,7 +339,7 @@ describe("UtilityPanel saving", () => {
 
   it("stays open showing why when the save is refused, and Discard closes without saving", async () => {
     mockUpdateFile.mockRejectedValue(
-      new MockApiError("HTTP 400", 400, "Syntax error on line 1: invalid draft"),
+      new MockApiError("HTTP 400", 400, { line: 1, message: "Syntax error on line 1: invalid draft" }),
     )
     render(<RightPanel />)
     await waitFor(() => expect(editor()).toBeInTheDocument())
@@ -457,7 +460,7 @@ describe("UtilityPanel saving", () => {
   it("does not open another file while the draft's save is refused", async () => {
     twoFiles()
     mockUpdateFile
-      .mockRejectedValueOnce(new MockApiError("HTTP 400", 400, "Syntax error on line 1: invalid draft"))
+      .mockRejectedValueOnce(new MockApiError("HTTP 400", 400, { line: 1, message: "Syntax error on line 1: invalid draft" }))
       .mockResolvedValueOnce(saved("fixed = True\n", "2-2"))
     render(<UtilityPanel {...defaultProps} />)
     await waitFor(() => expect(editor()).toHaveValue("# features\n"))
@@ -485,7 +488,7 @@ describe("UtilityPanel saving", () => {
       : Promise.resolve({ name: `${module}.py`, module, content: `# ${module}\n`, revision: "1-1" }))
     mockUpdateFile
       .mockResolvedValueOnce(saved("a = 1\n", "2-2"))
-      .mockRejectedValueOnce(new MockApiError("HTTP 400", 400, "Syntax error on line 1: invalid draft"))
+      .mockRejectedValueOnce(new MockApiError("HTTP 400", 400, { line: 1, message: "Syntax error on line 1: invalid draft" }))
     render(<UtilityPanel {...defaultProps} />)
     await waitFor(() => expect(editor()).toHaveValue("# features\n"))
 
@@ -501,6 +504,37 @@ describe("UtilityPanel saving", () => {
     expect(editor()).toHaveValue("a = (\n")
     expect(screen.getByTestId("utility-file-selector")).toHaveTextContent("features")
   })
+
+  it.each(["resolves", "fails"] as const)(
+    "lets a file read a newer file choice overtook do nothing when it %s",
+    async (outcome) => {
+      mockListFiles.mockResolvedValue({
+        files: ["features", "helpers", "rates"].map((module) => ({ name: `${module}.py`, module })),
+      })
+      let settleHelpers: () => void = () => {}
+      mockReadFile.mockImplementation((module: string) => module === "helpers"
+        ? new Promise((resolve, reject) => {
+            settleHelpers = outcome === "resolves"
+              ? () => resolve({ name: "helpers.py", module, content: "# helpers\n", revision: "1-1" })
+              : () => reject(new MockApiError("HTTP 404", 404, "Utility file not found"))
+          })
+        : Promise.resolve({ name: `${module}.py`, module, content: `# ${module}\n`, revision: "1-1" }))
+      render(<UtilityPanel {...defaultProps} />)
+      await waitFor(() => expect(editor()).toHaveValue("# features\n"))
+
+      await switchTo("helpers")
+      await waitFor(() => expect(mockReadFile).toHaveBeenCalledWith("helpers"))
+      await switchTo("rates")
+      await waitFor(() => expect(editor()).toHaveValue("# rates\n"))
+      type("r = 2\n")
+      await act(async () => { settleHelpers() })
+
+      expect(mockUpdateFile).not.toHaveBeenCalled()
+      expect(useUIStore.getState().utilityUnsaved).toBe(true)
+      expect(editor()).toHaveValue("r = 2\n")
+      expect(screen.queryByText("Failed to load helpers")).toBeNull()
+    },
+  )
 
   it("drops a file read that a newer choice of the Imports entry overtook", async () => {
     twoFiles()
@@ -536,7 +570,7 @@ describe("UtilityPanel saving", () => {
     await switchTo("helpers")
     expect(mockReadFile).not.toHaveBeenCalledWith("helpers")
     await act(async () => {
-      refuse(new MockApiError("HTTP 400", 400, "Syntax error on line 1: invalid draft"))
+      refuse(new MockApiError("HTTP 400", 400, { line: 1, message: "Syntax error on line 1: invalid draft" }))
     })
 
     expect(await screen.findByText("Syntax error on line 1: invalid draft")).toBeInTheDocument()
@@ -576,7 +610,7 @@ describe("UtilityPanel saving", () => {
 
   it("keeps a refused draft when the delete fails, and opens no other file over it", async () => {
     twoFiles()
-    mockUpdateFile.mockRejectedValue(new MockApiError("HTTP 400", 400, "Syntax error on line 1: bad"))
+    mockUpdateFile.mockRejectedValue(new MockApiError("HTTP 400", 400, { line: 1, message: "Syntax error on line 1: bad" }))
     mockDeleteFile.mockRejectedValue(new Error("file in use"))
     render(<RightPanel />)
     await waitFor(() => expect(editor()).toBeInTheDocument())
@@ -611,9 +645,9 @@ describe("UtilityPanel saving", () => {
   })
 
   it("shows a refused save's syntax error and marks its line, until the next edit", async () => {
-    // The backend's flat string detail "Syntax error on line N: <msg>".
+    // The utility route's refusal: {line, message}.
     mockUpdateFile.mockRejectedValue(
-      new MockApiError("HTTP 400", 400, "Syntax error on line 3: unexpected EOF"),
+      new MockApiError("HTTP 400", 400, { line: 3, message: "Syntax error on line 3: unexpected EOF" }),
     )
     render(<UtilityPanel {...defaultProps} />)
     await waitFor(() => expect(editor()).toBeInTheDocument())
