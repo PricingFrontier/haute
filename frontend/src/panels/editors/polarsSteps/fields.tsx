@@ -32,7 +32,7 @@ import { INPUT_STYLE } from "../_shared"
 import type { GlobalConstantType } from "../../../utils/globalConstants"
 import { ALL_CONSTANT_TYPES, useFittingConstants } from "./useFittingConstants"
 import { CONDITION_OPERATORS, LIST_LITERAL_TYPES, LITERAL_TYPES, NUMBER_TYPES, defaultCondition, defaultExpr, defaultLiteral, literal, numberTypeOf } from "./catalogue"
-import { decimalScale } from "../../../utils/polarsDtypes"
+import { castFamily, decimalScale } from "../../../utils/polarsDtypes"
 import { completionMatches } from "./completion"
 import { useStepSchema } from "./stepSchema"
 import { namesAsCompletions, useCompletionList, type Completion } from "./useCompletionList"
@@ -1074,7 +1074,7 @@ function decimalPlaces(value: number): number {
  * kind can never match (a fraction for whole numbers, more decimal places than
  * a Decimal column's scale) is refused.
  */
-export function LiteralListField({
+function LiteralListField({
   values,
   onChange,
   ariaLabel,
@@ -1165,11 +1165,18 @@ const isStringOperator = (operator: Condition["operator"]) => STRING_OPERATORS.h
 
 /** The value a condition on a column of `dtype` starts from; null leaves the value as it is. */
 function valueForType(dtype: string | null): LiteralOperand | null {
-  if (dtype === null) return null
-  if (/^(String|Utf8|Categorical|Enum)/.test(dtype)) return defaultLiteral("text")
-  if (/^(Date|Datetime)/.test(dtype)) return defaultLiteral("date")
-  if (dtype === "Boolean") return defaultLiteral("boolean")
-  return null
+  switch (castFamily(dtype)) {
+    case "text":
+    case "category":
+      return defaultLiteral("text")
+    case "date":
+    case "datetime":
+      return defaultLiteral("date")
+    case "boolean":
+      return defaultLiteral("boolean")
+    default:
+      return null
+  }
 }
 
 /** A condition value nobody has touched: the number 0 a new condition starts with. */

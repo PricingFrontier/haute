@@ -39,7 +39,7 @@ With the data counted, a **Numeric** factor shows a histogram of the whole datas
 
 A **Numeric** factor with no breakpoints offers two ways to start:
 
-- **Generate even bands** asks for a **Start**, **End** and **Step** and fills in evenly spaced breakpoints, each labelled by its range (such as `18–25`); the last band ends at **End**, so it may be shorter. On a date column, **Start** and **End** are dates and **Step** is a number of days, weeks, months or years. The fields start from the data's lowest and highest values when they are known. Mistakes are reported in the box, such as "End must be greater than start".
+- **Generate even bands** asks for a **Start**, **End** and **Step** and fills in evenly spaced breakpoints, each labelled by its range (such as `18–25`); the last band ends at **End**, so it may be shorter. On a date column, **Start** and **End** are dates and **Step** is a number of days, weeks, months or years. The fields start from the data's lowest and highest values when they are known, with a **Step** of about ten bands at the range's own scale (0.1 for values from 0.2 to 0.9, 1000 for 4000 to 13600). Mistakes are reported in the box, such as "End must be greater than start".
 - **Add manually** adds one empty breakpoint.
 
 After that, **BREAKPOINTS (N)** lists them, with **Generate** to replace them with generated ones (its fields start from the settings the current breakpoints imply). Each row has:

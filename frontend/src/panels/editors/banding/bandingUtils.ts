@@ -19,7 +19,7 @@ export function inferBandingType(colName: string, colMap: Record<string, string>
 
 /** Whether execution applies the factor rather than skipping it as a draft
  *  (the backend's `banding_factor_is_active`). */
-export function bandingFactorIsActive(factor: BandingFactor): boolean {
+function bandingFactorIsActive(factor: BandingFactor): boolean {
   return Boolean(factor.column && factor.outputColumn && (factor.rules ?? []).length > 0)
 }
 
@@ -129,6 +129,19 @@ export interface GenerateSettings {
 
 /** Drop binary noise such as 0.30000000000000004, as the generator does. */
 const tidy = (value: number) => +value.toFixed(10)
+
+/**
+ * The step Generate suggests for a range: about ten bands, on a round number at the
+ * range's own scale (1, 2, 2.5 or 5 times a power of ten), so 0.2 to 0.9 gets 0.1 and
+ * 4,000 to 13,600 gets 1,000, rather than a whole-number step that would give a
+ * small range a single band.
+ */
+export function suggestedBandStep(range: number): number {
+  const target = range / 10
+  const magnitude = 10 ** Math.floor(Math.log10(target))
+  const multiple = [1, 2, 2.5, 5, 10].find((candidate) => tidy(candidate * magnitude) >= target) ?? 10
+  return tidy(multiple * magnitude)
+}
 
 /**
  * Upper-bound boundaries from `start + step` up to `end`, always ending at
@@ -330,7 +343,7 @@ export interface CalendarGenerateSettings {
 }
 
 /** The most bands Generate makes on a date column. */
-export const MAX_CALENDAR_BANDS = 10000
+const MAX_CALENDAR_BANDS = 10000
 
 /**
  * The day `count` units after `start`. Months and years count from `start`

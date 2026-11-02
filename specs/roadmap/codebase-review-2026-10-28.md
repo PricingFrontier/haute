@@ -203,7 +203,6 @@ adds a finding group or changes the 42-group count.
 | save flush, coarse graph creation fence, scoped edited marker | Duplicate **FSH-R07**. |
 | saved-document sync | Duplicate **FSH-R05**. |
 | utility error wording | Duplicate **FGC-R04**; distinct accepted read/draft race remains FGC-R08. |
-| rating grid/helper duplication | Duplicate **FNED-R05**. |
 | assistant undo/state fencing | Duplicate **ASSIST-60**. |
 | typed allowed-values onto older form | Duplicate **WB-38**. |
 | non-SQLite form insertion | Duplicate **WB-43** for non-SQLite form insertion (the scratch spelling WB-R10 is not another package). The note gives no additional concrete database defect. |

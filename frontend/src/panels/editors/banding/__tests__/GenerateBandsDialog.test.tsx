@@ -39,6 +39,17 @@ describe("GenerateBandsDialog", () => {
     expect(screen.getByLabelText("Step")).toHaveValue(10)
   })
 
+  it.each([
+    { dataMin: 0.2, dataMax: 0.9, step: 0.1 },
+    { dataMin: 0, dataMax: 3, step: 0.5 },
+    { dataMin: 4000, dataMax: 13600, step: 1000 },
+  ])("suggests a step of about ten bands at the range's own scale ($dataMin to $dataMax)", ({ dataMin, dataMax, step }) => {
+    render(
+      <GenerateBandsDialog onGenerate={vi.fn()} onClose={vi.fn()} accentColor="#22d3ee" dataMin={dataMin} dataMax={dataMax} />,
+    )
+    expect(screen.getByLabelText("Step")).toHaveValue(step)
+  })
+
   describe("on a date column", () => {
     it("asks for Start and End dates and a Step of whole units, starting from the data's dates in months", () => {
       render(

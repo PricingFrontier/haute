@@ -54,6 +54,7 @@ export type PivotFilterPlacement = {
 export type PivotAxisPlacement = {
   id: string
   field: string
+  /** A Row's direction; a Column carries none. */
   sort?: "ascending" | "descending"
   number_format: PivotNumberFormat
   decimal_places: PivotDecimalPlaces
@@ -67,8 +68,8 @@ export type PivotValuePlacement = {
   aggregation: PivotAggregation
   reference: string
   display_name: string
-  sort_rows?: "none" | "ascending" | "descending"
-  color_scale?: "none" | "low_red_high_green" | "low_green_high_red"
+  sort_rows: "none" | "ascending" | "descending"
+  color_scale: "none" | "low_red_high_green" | "low_green_high_red"
   color_scale_split_by: string | null
   number_format: PivotNumberFormat
   decimal_places: PivotDecimalPlaces
@@ -419,14 +420,15 @@ function parseAxisZone(
     } else if (zone === "rows") {
       const formatting = parseNumberFormatting(entry, position, `${zone} placement`)
       if (typeof formatting === "string") return formatting
-      if (entry.sort !== undefined && (typeof entry.sort !== "string" || !AXIS_SORTS.has(entry.sort as PivotAxisPlacement["sort"]))) {
+      if (entry.sort === undefined) return `Pivot ${position} ${zone} placement sort is required.`
+      if (typeof entry.sort !== "string" || !AXIS_SORTS.has(entry.sort as PivotAxisPlacement["sort"])) {
         return `Pivot ${position} ${zone} placement has an unsupported sort.`
       }
       placements.push({
         ...cloneLiteral(entry),
         id: entry.id,
         field: entry.field,
-        sort: (entry.sort ?? "ascending") as PivotAxisPlacement["sort"],
+        sort: entry.sort as PivotAxisPlacement["sort"],
         ...formatting,
       })
     } else {
@@ -490,10 +492,12 @@ function parseValues(
       return `Pivot ${position} has duplicate output reference "${reference}".`
     }
     if (!nonEmptyString(entry.display_name)) return `Pivot ${position} value display name must be non-empty.`
-    if (entry.sort_rows !== undefined && (typeof entry.sort_rows !== "string" || !VALUE_SORTS.has(entry.sort_rows as PivotValuePlacement["sort_rows"]))) {
+    if (entry.sort_rows === undefined) return `Pivot ${position} value row sort is required.`
+    if (typeof entry.sort_rows !== "string" || !VALUE_SORTS.has(entry.sort_rows as PivotValuePlacement["sort_rows"])) {
       return `Pivot ${position} value has an unsupported row sort.`
     }
-    if (entry.color_scale !== undefined && (typeof entry.color_scale !== "string" || !COLOR_SCALES.has(entry.color_scale as PivotValuePlacement["color_scale"]))) {
+    if (entry.color_scale === undefined) return `Pivot ${position} value color scale is required.`
+    if (typeof entry.color_scale !== "string" || !COLOR_SCALES.has(entry.color_scale as PivotValuePlacement["color_scale"])) {
       return `Pivot ${position} value has an unsupported color scale.`
     }
     if (entry.color_scale_split_by === undefined) {
@@ -516,8 +520,8 @@ function parseValues(
       aggregation,
       reference,
       display_name: entry.display_name,
-      sort_rows: (entry.sort_rows ?? "none") as PivotValuePlacement["sort_rows"],
-      color_scale: (entry.color_scale ?? "none") as PivotValuePlacement["color_scale"],
+      sort_rows: entry.sort_rows as PivotValuePlacement["sort_rows"],
+      color_scale: entry.color_scale as PivotValuePlacement["color_scale"],
       color_scale_split_by: entry.color_scale_split_by,
       ...formatting,
     })
@@ -992,7 +996,7 @@ export function pivotCalculationIdentity(pivot: ExplorePivotConfig): string {
       field: value.field,
       aggregation: value.aggregation,
       reference: pivotValueReference(value),
-      sort_rows: pivot.options.sort_by === value.id ? value.sort_rows ?? "none" : "none",
+      sort_rows: pivot.options.sort_by === value.id ? value.sort_rows : "none",
     })),
     formulas: pivotFormulas(pivot).map((formula) => ({
       id: formula.id,

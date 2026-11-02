@@ -49,7 +49,7 @@ function makePivot(
     name: `Pivot ${id}`,
     enabled: true,
     filters: [],
-    rows: [{ id: `${id}-row`, field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
+    rows: [{ sort: "ascending", id: `${id}-row`, field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
     columns: [],
     values: [
       {
@@ -58,6 +58,8 @@ function makePivot(
         aggregation: "sum",
         reference: "paid_sum",
         display_name: "Paid",
+        sort_rows: "none",
+        color_scale: "none",
         color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
       },
     ],
@@ -295,7 +297,7 @@ describe("ExplorePivotsPane", () => {
 
   it("waits for cached Explore data without a report or retained result", () => {
     const pivot = makePivot("average-claims", {
-      rows: [{ id: "cover-type", field: "cover_type", number_format: "general", decimal_places: null, use_grouping: true }],
+      rows: [{ sort: "ascending", id: "cover-type", field: "cover_type", number_format: "general", decimal_places: null, use_grouping: true }],
       values: [
         {
           id: "total-claims",
@@ -303,6 +305,8 @@ describe("ExplorePivotsPane", () => {
           aggregation: "average",
           reference: "total_claims_mean",
           display_name: "Average total claims",
+          sort_rows: "none",
+          color_scale: "none",
           color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
         },
       ],
@@ -720,11 +724,11 @@ describe("ExplorePivotsPane", () => {
     view.rerender(
       <ExplorePivotsPane
         node={makeNode([
-          { ...renamed, rows: [{ ...renamed.rows[0], field: "territory" }] },
+          { ...renamed, rows: [{ sort: "ascending", ...renamed.rows[0], field: "territory" }] },
         ])}
         allNodes={[
           makeNode([
-            { ...renamed, rows: [{ ...renamed.rows[0], field: "territory" }] },
+            { ...renamed, rows: [{ sort: "ascending", ...renamed.rows[0], field: "territory" }] },
           ]),
         ]}
         edges={[]}

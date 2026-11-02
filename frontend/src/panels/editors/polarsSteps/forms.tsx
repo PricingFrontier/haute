@@ -1206,9 +1206,11 @@ function renamed(previous: ColumnAggregation, next: ColumnAggregation): ColumnAg
 }
 
 /** The common column types an aggregation can take every column of, offered after the column names. */
-const TYPE_WIDE_ENTRIES: Completion[] = DTYPE_OPTIONS.slice(0, 7).map((option) => ({
-  value: `dtype:${option.value}`,
-  label: `every ${option.value} column`,
+/** The column types an aggregation can take every column of: one list for the column box and the type select. */
+const TYPE_WIDE_TARGETS = DTYPE_OPTIONS.map((option) => ({ dtype: option.value, label: `every ${option.value} column` }))
+const TYPE_WIDE_ENTRIES: Completion[] = TYPE_WIDE_TARGETS.map(({ dtype, label }) => ({
+  value: `dtype:${dtype}`,
+  label,
   note: "type",
 }))
 
@@ -1273,7 +1275,7 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx, boxed, showFilt
 const DTYPE_AGGREGATIONS = AGGREGATION_OPTIONS.filter((a) => a.value !== "len") as Array<{ value: DtypeAggregation["agg"]; label: string }>
 /** One column again, or every column of one type. */
 const ONE_COLUMN = "column"
-const TYPE_TARGETS = [...DTYPE_OPTIONS.map((option) => ({ value: option.value, label: `every ${option.value} column` })), { value: ONE_COLUMN, label: "one column…" }]
+const TYPE_TARGETS = [...TYPE_WIDE_TARGETS.map(({ dtype, label }) => ({ value: dtype, label })), { value: ONE_COLUMN, label: "one column…" }]
 
 /** `*_suffix = function of every <type> column`: one output per column of the type. */
 function DtypeAggregationRow({ entry, index, onChange, onRemove, boxed }: {

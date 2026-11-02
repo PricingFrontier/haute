@@ -49,7 +49,7 @@ export class FormulaError extends Error {
 }
 
 /** The catalogue function a name refers to, whatever its case. */
-export function functionNamed(name: string): (typeof FUNCTIONS)[number] | undefined {
+function functionNamed(name: string): (typeof FUNCTIONS)[number] | undefined {
   const lower = name.toLowerCase()
   return FUNCTIONS.find((f) => f.value === lower)
 }

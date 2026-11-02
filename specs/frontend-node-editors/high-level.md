@@ -557,7 +557,7 @@ chips that exclude them, name and value column fields, and a note that row order
 not guaranteed: ordering an unpivot's rows costs three times its time and memory, so a sort
 step after it orders them where that matters). Select and drop take column types beside named columns, and an
 aggregation row can target every column of a type through an `every <type> column` entry
-after the names in its column box, which turns the row into `*<suffix> = <function> of
+after the names in its column box (the same list of types its type select offers), which turns the row into `*<suffix> = <function> of
 every <type> column` with the suffix `_<function>` to start (row count and row filters are
 withheld there; its "one column…" choice turns it back). Column suggestions treat a dtype
 selection as unresolved: a typed select keeps every upstream column suggested, a

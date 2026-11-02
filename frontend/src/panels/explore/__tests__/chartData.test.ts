@@ -93,6 +93,8 @@ function pivot(overrides: FixturePivotOverrides = {}): ExplorePivotConfig {
       aggregation: "sum",
       reference: "paid_sum",
       display_name: "Paid",
+      sort_rows: "none",
+      color_scale: "none",
       color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
     },
     {
@@ -101,10 +103,14 @@ function pivot(overrides: FixturePivotOverrides = {}): ExplorePivotConfig {
       aggregation: "count",
       reference: "claim_id_count",
       display_name: "Claims",
+      sort_rows: "none",
+      color_scale: "none",
       color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
     },
   ]).map((value): PivotValuePlacement => ({
     ...value,
+    sort_rows: value.sort_rows ?? "none",
+    color_scale: value.color_scale ?? "none",
     color_scale_split_by: value.color_scale_split_by ?? null,
     number_format: value.number_format ?? "general",
     decimal_places: value.decimal_places ?? null,
@@ -561,8 +567,8 @@ describe("pivot chart data adapter", () => {
   it("excludes subtotal-shaped paths and includes grand totals only on request", () => {
     const sourcePivot = pivot({
       rows: [
-        { id: "row_region", field: "region" },
-        { id: "row_team", field: "team" },
+        { sort: "ascending", id: "row_region", field: "region" },
+        { sort: "ascending", id: "row_team", field: "team" },
       ],
       columns: [],
       values: [pivot().values[0]],

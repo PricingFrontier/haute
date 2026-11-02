@@ -216,6 +216,38 @@ describe("PolarsStepsEditor", () => {
     expect(screen.getByTestId("polars-generated-code")).toHaveTextContent("df = df.step_1()")
   })
 
+  it("keeps the open card on its step when an undo puts an earlier step back", async () => {
+    function Undoable() {
+      const [config, setConfig] = useState<Record<string, unknown>>({ steps: [source, limit] })
+      return (
+        <>
+          <button type="button" onClick={() => setConfig({ steps: [source, filter, limit] })}>undo</button>
+          <PolarsStepsEditor
+          nodeId="rated"
+          start="input"
+          inputNames={["quotes"]}
+          config={config}
+          onUpdate={(keyOrUpdates, value) => {
+            setConfig((c) => (typeof keyOrUpdates === "string" ? { ...c, [keyOrUpdates]: value } : { ...c, ...keyOrUpdates }))
+            return { ok: true }
+          }}
+          inputSources={[quotes]}
+          frameColumns={COLUMNS}
+          />
+        </>
+      )
+    }
+    render(<Undoable />)
+    fireEvent.click(screen.getByRole("button", { name: "Step 1: Limit rows" }))
+    expect(screen.getByLabelText("Row limit")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "undo" }))
+
+    expect(screen.getByRole("button", { name: "Step 2: Limit rows" })).toHaveAttribute("aria-expanded", "true")
+    expect(screen.getByRole("button", { name: "Step 1: Filter rows" })).toHaveAttribute("aria-expanded", "false")
+    expect(screen.getByLabelText("Row limit")).toBeInTheDocument()
+  })
+
   it("opens one card at a time through the disclosure, collapses on Escape, deletes and reorders", async () => {
     const spy = vi.fn()
     render(<Harness initial={{ steps: [source, filter, limit] }} inputSources={[quotes]} spy={spy} />)
