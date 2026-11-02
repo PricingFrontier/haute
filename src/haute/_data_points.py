@@ -266,11 +266,11 @@ class DataPointResolver:
     ) -> None:
         from haute.execution import canonical_dataframe_execution_graph
 
-        self.graph = canonical_dataframe_execution_graph(graph)
+        self._memo = GraphFingerprintMemo()
+        self.graph = canonical_dataframe_execution_graph(graph, memo=self._memo)
         self.source = source
         self.store = store if store is not None else _default_store()
         self._building = building
-        self._memo = GraphFingerprintMemo()
 
     def _is_building(self, kind: PointKind, key: str) -> bool:
         return self._building is not None and self._building(kind, key)

@@ -547,13 +547,15 @@ def node_snapshot_signature(
     """
     from haute.execution import (
         canonical_dataframe_execution_graph,
-        dataframe_graph_input_fingerprint,
+        canonical_graph_input_identity,
         source_lineage_graph,
     )
 
     if type(enforce_contracts) is not bool:
         raise TypeError("enforce_contracts must be a bool")
-    canonical = canonical_dataframe_execution_graph(graph)
+    # A resolution signs every node of a lineage with one memo, so the graph is
+    # canonicalised, and each input's entry read, once for all of them.
+    canonical = canonical_dataframe_execution_graph(graph, memo=memo)
     if node_id not in canonical.node_map:
         raise ValueError(f"Cannot sign the output of unknown node {node_id!r}")
     lineage = source_lineage_graph(canonical, node_id, source=source)
@@ -561,12 +563,13 @@ def node_snapshot_signature(
         CacheConsumer.NODE_SNAPSHOT_SIGNATURE,
         {
             "lineage_fingerprint": graph_fingerprint(lineage, memo=memo),
-            "runtime_input_fingerprint": dataframe_graph_input_fingerprint(
+            "runtime_input_fingerprint": canonical_graph_input_identity(
                 lineage,
                 target_node_id=node_id,
                 source=source,
                 memo=memo,
-            ),
+                reuse_entries=True,
+            ).fingerprint(),
             "source": source,
             "semantics_class": semantics_class,
             "enforce_contracts": enforce_contracts,
