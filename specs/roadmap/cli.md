@@ -14,7 +14,6 @@ packages come from the [25 October 2026 codebase review](codebase-review-2026-10
 | CLI-R02 | Planned | P2 | `haute run` walks the pipeline lazily to its output node under the batch profile, with a named source, instead of materialising every node in memory. |
 | CLI-R03 | Planned | P2 | `haute lint` applies the editor's save-time validation, so CI's lint step refuses what the editor would refuse. |
 | CLI-R05 | Planned | P3 | Unexpected errors keep their tracebacks, the transport helper raises instead of exiting, and `haute serve` opens the browser when the server is ready. |
-| CLI-R07 | Planned | P2 | `haute impact` confines `impact_dataset` to the project root and preserves non-string scalar fields from `test_quotes_dir`, and `haute lint` and `haute run` catch `ConfigError` from `resolve_pipeline_file`. |
 
 ## Planned improvements
 
@@ -86,37 +85,3 @@ traceback; `haute serve` opens the browser only once the port accepts connection
 `src/haute/cli/_helpers.py::resolve_transport` and `::resolve_model_name`;
 `src/haute/cli/_serve.py::_run_prod_mode`, `::_schedule_browser_open` and
 `::_open_browser_after_backend_ready`.
-
-### CLI-R07 — `impact` dataset confinement and non-string scalar fields, and `lint`/`run` pipeline resolution errors
-**Why:** Two CLI defects affect `haute impact`, `haute lint` and `haute run`:
-1. `_impact_records` resolves `config.safety.impact.dataset_path` with
-   `(project_root / impact_path).resolve()` without `contained_path(project_root, impact_path)`,
-   allowing a relative `../` or absolute `impact_dataset` in `haute.toml` to read
-   outside the project root. When `impact_dataset` is unset and `haute impact`
-   falls back to `test_quotes_dir`, `_impact_records` builds `records_df` with
-   `[{k: v for k, v in r.items() if isinstance(v, str)} for r in records]`, which
-   drops non-string scalar fields (numeric and boolean policy attributes and
-   identifiers) from `records_df`.
-2. `lint` (`src/haute/cli/_lint.py`) and `run` (`src/haute/cli/_run.py`) catch only
-   `FileNotFoundError` around `resolve_pipeline_file(pipeline_file)`, whereas
-   `resolve_pipeline_file` also raises `ConfigError` when `[project].pipeline` in
-   `haute.toml` escapes the project root or `haute.toml` is malformed, producing an
-   unhandled traceback instead of a clean CLI error exit.
-
-**Plan:** Validate `impact_dataset` with `contained_path(project_root, impact_path)`
-and preserve scalar top-level fields (`str`, `int`, `float`, `bool`) in
-`_impact_records`; catch `(FileNotFoundError, ConfigError)` around
-`resolve_pipeline_file` in `lint` and `run`.
-
-**Acceptance:** An `impact_dataset` outside `project_root` is refused before reading;
-`haute impact` with `test_quotes_dir` quotes containing numeric and boolean scalar
-fields preserves those columns in `records_df`; and `haute lint` / `haute run`
-exit with code 1 and the error message when `[project].pipeline` in `haute.toml` is
-out of bounds or `haute.toml` is malformed.
-
-**Dependencies:** Coordinates with `CLI-R05`.
-
-**Evidence:** `src/haute/cli/_impact.py::_impact_records`;
-`src/haute/cli/_lint.py::lint`;
-`src/haute/cli/_run.py::run`;
-`src/haute/_project.py::resolve_pipeline_file`.

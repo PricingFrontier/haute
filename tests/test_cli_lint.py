@@ -74,3 +74,38 @@ class TestLintEdgeCases:
         result = runner.invoke(cli, ["lint"])
         assert result.exit_code == 1
         assert "main.py" in result.output
+
+
+class TestPipelineResolutionErrors:
+    """``haute.toml``'s pipeline that cannot be resolved is a clean CLI error for both
+    ``lint`` and ``run``: exit 1 naming the problem, no traceback."""
+
+    @pytest.mark.parametrize("command", ["lint", "run"])
+    @pytest.mark.parametrize(
+        ("toml", "named"),
+        [
+            ('[project]\npipeline = "../elsewhere/main.py"\n', "../elsewhere/main.py"),
+            ("[project\npipeline = \n", "haute.toml"),
+        ],
+        ids=["outside-the-project", "malformed"],
+    )
+    def test_exits_1_naming_the_problem(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        command: str,
+        toml: str,
+        named: str,
+    ) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "haute.toml").write_text(toml, encoding="utf-8")
+        monkeypatch.chdir(project)
+
+        result = runner.invoke(cli, [command])
+
+        assert result.exit_code == 1, result.output
+        assert isinstance(result.exception, SystemExit)
+        assert "Error: " in result.output
+        assert named in result.output

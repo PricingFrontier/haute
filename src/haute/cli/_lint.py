@@ -17,6 +17,7 @@ from pathlib import Path
 import click
 
 from haute._project import resolve_pipeline_file
+from haute.errors import ConfigError
 
 
 @dataclass
@@ -95,7 +96,7 @@ def lint(pipeline_file: str | None) -> None:
         resolved = resolve_pipeline_file(
             Path(pipeline_file) if pipeline_file else None,
         )
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ConfigError) as exc:
         click.echo(f"Error: {exc}", err=True)
         raise SystemExit(1) from exc
     config = LintConfig(pipeline_file=resolved)
