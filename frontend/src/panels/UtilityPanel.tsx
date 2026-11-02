@@ -368,7 +368,6 @@ export default function UtilityPanel({
   // Auto-select first file
   useEffect(() => {
     if (!importsSelected && files.length > 0 && activeModule === null) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- auto-select on initial load
       loadFile(files[0].module)
     }
   }, [files, activeModule, importsSelected, loadFile])
