@@ -1015,6 +1015,36 @@ def test_a_failing_queue_close_is_a_note_on_the_primary_error(
     assert "result queue close failed: queue close failed" in notes
 
 
+def test_a_failed_process_cleanup_is_a_note_on_the_primary_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute._worker_protocol as protocol
+
+    real_terminate = protocol._terminate_and_confirm
+
+    def terminate_then_fail(process: Any) -> None:
+        real_terminate(process)
+        raise OSError("termination unconfirmed")
+
+    monkeypatch.setattr(protocol, "_terminate_and_confirm", terminate_then_fail)
+
+    def reject_progress(event: WorkerProgressEvent) -> None:
+        del event
+        raise RuntimeError("callback failed")
+
+    with pytest.raises(RuntimeError, match="callback failed") as raised:
+        run_worker_protocol(
+            _slow_worker,
+            _request(),
+            artifact_root=tmp_path / "artifacts",
+            artifact_kinds=frozenset({"model"}),
+            max_artifact_size_bytes=100,
+            on_progress=reject_progress,
+        )
+
+    assert "process cleanup failed: termination unconfirmed" in raised.value.__notes__
+
+
 def test_child_failure_is_typed(tmp_path: Path) -> None:
     with pytest.raises(IsolatedWorkerRemoteError, match="child failed"):
         run_worker_protocol(

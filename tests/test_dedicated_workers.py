@@ -477,6 +477,39 @@ def test_a_sampled_checkpoint_over_budget_ends_the_worker_on_watchdog_evidence()
     assert (created.death.kind, created.death.memory_evidence) == ("remote_memory", "watchdog")
 
 
+def test_a_command_failure_is_sent_as_the_pools_failure_evidence() -> None:
+    from haute._dedicated_workers import _error_envelope
+
+    try:
+        raise MemoryError("refused")
+    except MemoryError as exc:
+        envelope = _error_envelope("c" * 32, exc, None)
+
+    kind, command_id, status, evidence, cap = envelope
+    assert (kind, command_id, status, cap) == ("result", "c" * 32, "error", None)
+    assert evidence[:3] == ("MemoryError", "builtins", "refused")
+    assert evidence[5] is True
+
+
+def test_a_queue_that_will_not_close_is_logged_as_the_worker_ends() -> None:
+    import structlog.testing
+
+    class UnclosableQueue:
+        def close(self) -> None:
+            raise OSError("pipe already gone")
+
+        def join_thread(self) -> None:
+            raise AssertionError("never reached")
+
+    created = DedicatedWorker(owner="test", polars_threads=2, process_name="haute-test-queue")
+    created._request_queue = UnclosableQueue()
+    with structlog.testing.capture_logs() as logs:
+        created.terminate("cancelled")
+
+    (record,) = [r for r in logs if r["event"] == "dedicated_worker_queue_close_failed"]
+    assert (record["queue"], record["error"]) == ("request", "pipe already gone")
+
+
 def test_a_worker_terminated_before_it_starts_never_spawns() -> None:
     open_dedicated_workers()
     created = DedicatedWorker(owner="test", polars_threads=2, process_name="haute-test-early")

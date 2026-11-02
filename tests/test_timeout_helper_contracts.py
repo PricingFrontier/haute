@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -115,6 +116,29 @@ async def test_a_worker_timeout_error_reaches_the_caller_as_itself() -> None:
     assert not any(record.get("event") == "route_work_response_timeout" for record in logs)
     (measurement,) = _work_measurements(logs)
     assert measurement["outcome"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_a_deadline_that_meets_finished_work_answers_with_its_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The deadline passing as the work finishes is no timeout: the work answers."""
+    import haute.routes._timeouts as timeouts
+
+    async def deadline_as_the_work_finishes(awaitable: Any, timeout: float) -> Any:
+        del timeout
+        await awaitable
+        raise TimeoutError
+
+    monkeypatch.setattr(timeouts.asyncio, "wait_for", deadline_as_the_work_finishes)
+    with structlog.testing.capture_logs() as logs:
+        result = await run_blocking_with_response_timeout(
+            lambda: "finished", timeout=1, operation="unit_deadline"
+        )
+
+    assert result == "finished"
+    (measurement,) = _work_measurements(logs)
+    assert measurement["outcome"] == "completed"
 
 
 @pytest.mark.asyncio

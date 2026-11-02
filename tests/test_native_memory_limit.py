@@ -584,6 +584,9 @@ def test_native_linux_path_and_measurement_failures(
         _fake_proc_cgroup(monkeypatch, cgroup=cgroup, mountinfo=mountinfo)
         with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="cannot locate"):
             native._current_cgroup_path()
+    monkeypatch.setattr(host_memory, "_read_cgroup_memory_file", lambda _path: None)
+    with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="cannot locate"):
+        native._current_cgroup_path()
     (tmp_path / "inside").mkdir()
     _fake_proc_cgroup(monkeypatch, cgroup="0::/inside\n", mountinfo=mountinfo)
     monkeypatch.setattr(

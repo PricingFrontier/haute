@@ -265,6 +265,24 @@ def test_job_shutdown_stops_other_jobs_while_one_holds_its_registry() -> None:
     assert held_token.cancelled
 
 
+def test_the_lifespan_logs_the_jobs_that_outlive_its_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import structlog.testing
+
+    import haute.server as server
+
+    monkeypatch.setattr(
+        server, "stop_background_jobs", lambda *, timeout_seconds: ("haute-test-stuck-job",)
+    )
+    with structlog.testing.capture_logs() as logs:
+        asyncio.run(server._stop_background_jobs())
+
+    (record,) = [r for r in logs if r["event"] == "background_jobs_outlived_shutdown"]
+    assert record["threads"] == ["haute-test-stuck-job"]
+    assert record["timeout_s"] == server._JOB_SHUTDOWN_TIMEOUT_SECONDS
+
+
 def test_job_shutdown_returns_at_its_bound_naming_the_jobs_still_running() -> None:
     release = threading.Event()
     thread = threading.Thread(
@@ -1681,6 +1699,10 @@ def test_an_unrecorded_outcome_is_settled_as_an_error(tmp_path: Path) -> None:
 
     assert isinstance(thread.infrastructure_failure, SupervisorInfrastructureError)
     assert store.require_job(job_id)["status"] == "running"
+    with patch.object(JobLifecycle, "transition", side_effect=OSError("store unavailable")):
+        with pytest.raises(OSError, match="store unavailable"):
+            supervisor.settle_unrecorded_outcome(job_id)
+    # The failed settling write kept the outcome for the next poll.
     settled = supervisor.settle_unrecorded_outcome(job_id)
     assert settled is not None
     assert settled["status"] == "error"
