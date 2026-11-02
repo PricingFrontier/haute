@@ -1738,6 +1738,14 @@ rows/features) and retry.
   Fortran-versus-C CatBoost handoff evidence and enforces layout, allocation, and
   result-equivalence facts; it is opt-in under the `perf` marker.
 - `tests/performance/test_training_scoring_wide_perf.py` covers wide training/scoring performance.
+- `tests/performance/test_training_family_memory_perf.py` (with
+  `tests/performance/_training_family_memory_probe.py`) records, marked `perf` and
+  `perf_evidence`, the peak resident memory of a canonical Haute training job per family
+  (CatBoost, XGBoost, LightGBM, EBM, t-boost, GLM) in fresh processes at three row counts,
+  against what the training RAM estimate predicts for the same source, and XGBoost's
+  iterator-fed and external-memory matrices against its in-memory fit (peak memory, time,
+  predictions and objective history). It asserts none of its figures; the MOD-M02 and
+  PL2-17 roadmap entries record the results.
 - `tests/test_ave.py` verifies AVE numeric/categorical binning, weights, NaN/null/constant/missing/empty inputs, category limits, and feature limits.
 - `tests/test_gpu_fit_cancel.py` verifies algorithm-level cancellation and metric-polling cancellation behavior.
 - `tests/test_mem_helpers.py` verifies RSS/available-memory helpers and checkpoint behavior.

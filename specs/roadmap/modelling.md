@@ -17,9 +17,10 @@ Today a training fit that exceeds its memory budget terminates: bounded
 streaming mode is refused outright (`BoundedMemoryUnsupportedError`, shown as
 "Training cannot run in bounded streaming mode"), and a budget overrun
 surfaces `memory_limited` with reduce-your-data guidance. `MOD-M01` and
-`MOD-M02` add a degrade-gracefully path. Both are `Decision` packages: each needs an explicit
-engagement and product choice before implementation, and the design decisions
-belong to that implementation cycle, not to this page. Where this page names
+`MOD-M02` add a degrade-gracefully path. `MOD-M01`'s engagement and home were decided on
+2 November 2026 and it waits on RustyStats; `MOD-M02` is a `Decision` package that needs an
+explicit product choice before implementation. The design decisions belong to each
+implementation cycle, not to this page. Where this page names
 a tolerance, a bound or a cap, the decision sets its value and the modelling
 low-level specification records it before implementation starts.
 
@@ -42,16 +43,15 @@ but not adapted mid-fit.
 **Worker death is not a resumption point.** A dead worker cannot resume a
 partial fit, and a non-zero exit or `SIGKILL` does not reliably identify a
 memory failure. Because the training parquet is already on disk before
-fitting, a restart from it is possible; whether an explicitly identified
-memory failure permits a bounded restart, or every such death terminates the
-job as it does today, is an input to the engagement decision below, not
-something this page settles.
+fitting, a restart from it is possible; the 2 November 2026 decision below
+keeps every such death terminal, as it is today: chunked fitting engages from
+the up-front estimate, never as a restart.
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| MOD-M01 | Decision | P3 | Exact chunked GLM fitting under a memory budget. |
+| MOD-M01 | Deferred | P3 | Exact chunked GLM fitting under a memory budget, once RustyStats fits out of core. |
 | MOD-M02 | Decision | P3 | A low-memory boosted-tree fitting mode under an explicit user choice. |
 
 ## Planned improvements
@@ -86,17 +86,26 @@ step-halving does not cure separation, so a finite pass budget exists only
 once the iteration and halving caps are set. Under those caps this turns a
 memory-limited GLM fit from a terminal failure into a slower exact fit.
 
-**Plan:** Decision first: whether chunked fitting engages automatically from
-the up-front estimate, adaptively on a checkpoint signal at a chunk
-boundary, or only as an explicit user mode; how it composes with the
-RustyStats backend (`GLMAlgorithm`), which currently receives a materialised
-frame; and the iteration and halving caps that make the pass budget finite,
-since that budget sets the I/O cost the mode is chosen against. One further
-input: at a fixed Tweedie variance power the estimating equations stay
-chunk-accumulable, but estimating the power is an outer search that repeats
-passes and possibly whole fits, so the decision states whether the chunked
-path estimates the power or takes a user-supplied one. Then implement
-chunk-accumulated IRLS over streaming reads of the sunk training parquet,
+**Decision (2 November 2026):** the chunk-accumulated IRLS belongs in
+RustyStats, not in Haute. RustyStats builds the design (splines, target and
+frequency encoding, interactions) and runs the solver (ridge, lasso and
+elastic net, monotone constraints, automatic smoothing), so only the same code
+can credibly reproduce the in-memory fit; a second solver in Haute would have
+to be kept equivalent to it. The package is deferred until RustyStats offers an
+out-of-core fit: a design frozen from a first pass over the data (knots,
+levels, encodings) and a fused evaluate-and-accumulate IRLS over row batches.
+Once it does, chunked fitting engages automatically when the up-front estimate
+says the in-memory GLM fit will not fit, and is stamped in the result metadata;
+an in-memory fit that overruns at a checkpoint, or a worker that dies, still
+ends `memory_limited`, with no restart. A Tweedie or Negative Binomial fit
+takes its configured dispersion parameter (Haute already requires one, set by
+the user or by the explicit profile-likelihood estimate on a bounded sample),
+so the chunked path never searches it. The iteration and halving caps and the
+coefficient tolerance are set with the RustyStats implementation and recorded
+in the modelling low-level specification then.
+
+**Plan:** Once RustyStats fits out of core,
+stream the sunk training parquet into it in batches,
 reusing the existing chunk-sizing primitives (`src/haute/chunking.py`,
 `src/haute/_ram_estimate.py`). The convergence statistic and the deviance
 come from the candidate pass that accepted the final coefficients; the
@@ -122,7 +131,9 @@ curated message. The chosen engagement mode and caps are specified in the
 modelling low-level specification and visible in the training result
 metadata.
 
-**Dependencies:** The recoverable-checkpoint contract (execution-engine); the
+**Dependencies:** An out-of-core fit in RustyStats (its own roadmap); the
+recoverable-checkpoint contract (execution-engine, delivered:
+`ExecutionContext.checkpoint` raising `ExecutionMemoryLimitExceededError`); the
 existing chunk planning and admission budgets.
 
 **Evidence:** `src/haute/modelling/_rustystats.py`;
@@ -157,6 +168,28 @@ agreement before counting it as the exact path. An approximate fit is still
 useful for analysis and proximal simulation when the data does not fit the
 budget, provided its quality against the full-data fit is bounded rather
 than merely recorded.
+
+**Measurement (2 November 2026):** `tests/performance/test_training_family_memory_perf.py`
+ran a canonical Haute job per family (30 numeric and 5 categorical features, a Poisson
+frequency target with an exposure weight, a 20% holdout, 200 rounds of depth 6 or the
+family's equivalent, 8 threads, a fresh process per fit, peak read from `VmHWM`). At
+1.6M rows (a 436 MiB frame) the peaks were CatBoost 4,299 MiB, GLM 6,299, t-boost 3,050,
+LightGBM 2,351, XGBoost 2,301 and EBM 1,959, against 1,355 MiB the training RAM estimate
+predicts, so the estimate under-admits every family (`PL2-17` holds the per-family
+figures). Before any fit, Haute's own evaluation planning and split raised the peak by
+about 1.0 GB at 1.6M rows, about 2.2 times the frame, in every family.
+
+XGBoost 3.2's external memory is an exact path. `ExtMemQuantileDMatrix` fed by a
+`DataIter` that reads one 200,000-row parquet row group per batch (`cache_prefix` on
+disk, `release_data=True`, `max_bin=256`, `enable_categorical=True`), trained with
+`tree_method="hist"` on the CPU, gave bit-identical predictions and an identical
+200-round objective history to the in-memory `QuantileDMatrix` at 1.6M and 6.4M rows.
+At 6.4M rows (a 1,746 MiB frame) the peak was 1,017 MiB against 3,927 in memory; an
+iterator-fed `QuantileDMatrix` alone reached 1,495, so most of the saving comes from
+never holding the whole frame. Resident memory still grew by about 40 bytes per row, the
+on-disk cache took about 83 bytes per row, `on_host=True` behaved as `on_host=False` on
+the CPU, and the fit took 1.16 to 1.42 times as long. External memory therefore lowers
+XGBoost's peak about fourfold without changing the model, but does not bound it.
 
 **Plan:** Decision first, and it is a product choice as much as an
 architectural one. The first call, per family, is whether an exact chunked
