@@ -295,8 +295,7 @@ three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
 the hand-maintained
 browser contract (`API-R03`); the cwd-dependent resolvers in the routes and the
 parser (`PCFG-R04`), the per-type
-validators and branches (`PCFG-R07`, `PCFG-R09`); name-violation reporting
-(`NAME-09`); the test-only config helpers and
+validators and branches (`PCFG-R07`, `PCFG-R09`); the test-only config helpers and
 event-bus hooks (`ENGQ-R01`); the optimiser's unshown solve-memory forecast (`OPT-W02`) and its frontier
 points without convergence traces (`OPT-PC04`); the optimiser's job registries
 not cancelled at shutdown (`ROAD-WORKER-06`); the test-only
@@ -310,8 +309,7 @@ key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
 browser's hand-written contract mirrors (`API-R03`), the results store's optimiser logic (`FSH-R03`) and the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
 (`ENGQ-R01`); the editors' unused barrel and unlisted `@lezer/highlight`
-(`ENGQ-R01`) and the API Input label
-rule (`NAME-09`); the dead
+(`ENGQ-R01`); the dead
 `submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
 utilities (`ENGQ-R01`); Banding's `_id` inside the config (`FNED-R07`), the editors'
 barrels (`ENGQ-R01`), the pivot editor writing the
