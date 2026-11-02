@@ -10,7 +10,7 @@ import type { SimpleNode as GraphNodeInput } from "../editors/_shared"
 import { GraphProvider } from "../GraphContext"
 import useGraphStore from "../../stores/useGraphStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
-import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore"
+import useNodeResultsStore, { hashConfig, trainFailureResult } from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useToastStore from "../../stores/useToastStore"
 import type { ModellingPane } from "../../stores/useUIStore"
@@ -1206,6 +1206,63 @@ describe("ModellingConfig", () => {
         expect(cached.result.status).toBe("error")
         expect(cached.result.error).toBe("Network fail")
       })
+    })
+
+    describe("a request refused before any job exists", () => {
+      const handle = { jobId: "job_kept", configHash: "h", source: "live", lineage: "l" }
+
+      async function rememberEarlierModel() {
+        useDocumentStatusStore.setState({ sourceFile: "rating/main.py" })
+        const trainedJobHandles = await import("../../utils/trainedJobHandles")
+        trainedJobHandles.writeTrainedJobHandle("rating/main.py", "node_1", handle)
+        // The node already shows that model, so nothing restores it meanwhile.
+        useNodeResultsStore.getState().restoreTrainResult("node_1", {
+          result: makeTrainResult(),
+          terminalStatus: null,
+          jobId: "job_kept",
+          configHash: "h",
+          source: "live",
+          structuralVersion: 0,
+        })
+        return trainedJobHandles
+      }
+
+      it("keeps the handle to the last completed model when the request fails", async () => {
+        const { readTrainedJobHandle } = await rememberEarlierModel()
+        mockTrainModel.mockRejectedValue(new Error("Network fail"))
+        renderConfig()
+        fireEvent.click(screen.getByRole("button", { name: "Re-train" }))
+
+        await waitFor(() => expect(useNodeResultsStore.getState().trainResults.node_1?.result.error).toBe("Network fail"))
+        expect(readTrainedJobHandle("rating/main.py", "node_1")).toEqual(handle)
+      })
+
+      it("keeps the handle when the server answers the request with an error", async () => {
+        const { readTrainedJobHandle } = await rememberEarlierModel()
+        mockTrainModel.mockResolvedValue(trainFailureResult("Training is already running for this node"))
+        renderConfig()
+        fireEvent.click(screen.getByRole("button", { name: "Re-train" }))
+
+        await waitFor(() => expect(useNodeResultsStore.getState().trainResults.node_1?.result.error)
+          .toBe("Training is already running for this node"))
+        expect(readTrainedJobHandle("rating/main.py", "node_1")).toEqual(handle)
+      })
+    })
+
+    it("records the edited config's hash when Train follows an edit at once", async () => {
+      mockTrainModel.mockResolvedValue({ status: "started", job_id: "job_after_edit" })
+      const { rerender, props } = renderConfig()
+      const edited = { ...props.config, target: "claim_count" }
+      rerender(
+        <GraphProvider allNodes={[]} edges={[]}>
+          <ModellingConfig {...props} config={edited} />
+        </GraphProvider>,
+      )
+      fireEvent.click(screen.getByRole("button", { name: /Train Model/ }))
+
+      await waitFor(() => expect(useNodeResultsStore.getState().trainJobs.node_1?.jobId).toBe("job_after_edit"))
+      expect(useNodeResultsStore.getState().trainJobs.node_1?.configHash)
+        .toBe(hashConfig(trainingIdentityConfig(edited)))
     })
 
     it("preserves structured execution metrics when trainModel admission fails", async () => {

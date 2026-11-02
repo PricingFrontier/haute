@@ -257,6 +257,22 @@ describe("useConstraintHandlers", () => {
     })
   })
 
+  describe("handleAddConstraint without a free column", () => {
+    it("never reuses the placeholder name of a constraint already there", () => {
+      const onUpdate = vi.fn()
+      // constraint_1 was removed, leaving constraint_2 as the only one.
+      const existing = { constraint_2: { max: 5 } }
+      const { result } = renderHook(() => useConstraintHandlers(existing, "premium", [], onUpdate))
+
+      act(() => result.current.handleAddConstraint())
+
+      expect(onUpdate).toHaveBeenCalledWith("constraints", {
+        constraint_2: { max: 5 },
+        constraint_3: { min: 0 },
+      })
+    })
+  })
+
   // ─── handleConstraintKindChange ─────────────────────────────────
 
   describe("handleConstraintKindChange", () => {

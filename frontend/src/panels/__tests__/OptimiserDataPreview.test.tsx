@@ -171,6 +171,23 @@ describe("OptimiserDataPreview", () => {
   })
 
   describe("Quote navigation", () => {
+    it("starts again at the first quote when another quote set of the same size arrives", () => {
+      const view = renderComponent()
+      const next = screen.getByText("1/2").parentElement!.querySelectorAll("button")[1]
+      fireEvent.click(next)
+      expect(screen.getByText("2/2")).toBeInTheDocument()
+
+      const renamed = makePreviewData().preview.map((row) => ({
+        ...row,
+        quote_id: row.quote_id === "Q001" ? "R001" : "R002",
+      }))
+      view.rerender(
+        <OptimiserDataPreview data={makePreviewData({ preview: renamed })} config={makeConfig()} />,
+      )
+      expect(screen.getByText("1/2")).toBeInTheDocument()
+      expect(screen.getAllByText("R001").length).toBeGreaterThanOrEqual(1)
+    })
+
     it("navigates to next quote on right arrow click", () => {
       renderComponent()
       // Find the nav container by the position indicator
@@ -304,6 +321,22 @@ describe("OptimiserDataPreview", () => {
     it("shows 'scenario index' x-axis label", () => {
       renderComponent()
       expect(screen.getByText("scenario index")).toBeInTheDocument()
+    })
+
+    it("draws a constant series mid-plot and reads rounding noise as flat", () => {
+      const preview = [
+        { quote_id: "Q001", scenario_index: 0, scenario_value: 0.9, margin: 500, volume: 1 },
+        { quote_id: "Q001", scenario_index: 1, scenario_value: 1.0, margin: 500, volume: 1 + 1e-12 },
+        { quote_id: "Q001", scenario_index: 2, scenario_value: 1.1, margin: 500, volume: 1 - 1e-12 },
+      ]
+
+      const { container } = renderComponent({ preview, row_count: 3 })
+      const paths = container.querySelector('svg[style*="background"]')!.querySelectorAll("path")
+      const ys = (path: SVGPathElement) => path.getAttribute("d")!.match(/,(-?\d+(?:\.\d+)?)/g)!.map((match) => Number(match.slice(1)))
+
+      // The 220 px chart plots between 14 px and 198 px, so its middle is 106 px.
+      for (const y of ys(paths[0])) expect(y).toBeCloseTo(106, 0)
+      expect(yRangeFromPath(paths[1])).toBeLessThan(1)
     })
 
     it("scales each visible series independently so small-range lines are not flattened", () => {

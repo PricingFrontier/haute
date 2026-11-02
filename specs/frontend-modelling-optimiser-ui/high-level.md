@@ -380,7 +380,8 @@ fixed-budget family (EBM), and "published the winning trial's fit" for a validat
 family (t-boost), which is never refit. **Use best as fixed
 parameters** asks for confirmation, atomically writes the reported fixed-parameter
 projection and disables tuning; an asynchronous result never mutates node config
-automatically.
+automatically. In a read-only document it asks nothing and says why, and an answer given after
+the document changed or became read-only writes nothing.
 
 **Non-goals.** No GLM structural-model tuning; no multi-objective, parallel,
 distributed or nested-CV tuning; no parameter-specific form builder; no run
@@ -465,7 +466,9 @@ Pane ownership:
   mode lists the frame's columns. The Ratebook box is enabled only in ratebook mode and only for
   the source's factors; the Validation box only for a column of the validation frame, and not
   for a new choice once twelve are chosen. Switching the validation input removes the chosen
-  validation factors the newly selected frame does not have, once its columns are known; a
+  validation factors the newly selected frame does not have, once its columns are known (a
+  frame with the same columns as the last settles the switch, so a later schema change never
+  prunes); a
   configured validation factor the frame does not have, or a configured validation input that is
   no longer connected, is flagged in the pane and blocks the solve. Until the validation
   frame's columns are known, the saved validation factors are still listed, ticked, and can be
@@ -516,11 +519,14 @@ Pane ownership:
   graph structure), never on objective, constraint, solver or export edits; an estimate the server
   cannot size reads "Size unknown". While the configuration cannot be solved the Optimise action
   stays disabled and one alert beneath it lists every blocking issue, each with a **Go to** link
-  that opens the pane that fixes it: no resolvable Objectives & Constraints input; no objective; a
+  that opens the pane that fixes it: no resolvable Objectives & Constraints input; no objective,
+  or an objective or constraint column the input does not have (checked once the input's columns
+  are known); a
   mapped Row ID, Scenario Index or Scenario Value column that the input does not have (checked
   once the input's columns are known); a Validation input that is not connected, more than twelve
   validation factors, or a validation factor the validation input does not have (checked once its
-  columns are known); in ratebook mode no connected Rating Factor Source or no
+  columns are known); in ratebook mode a Rating Factor Source that is not an input name, one no
+  longer connected, none connected or chosen (each named as such), or no
   selected factor; a constraint without exactly one bound, or a fixed one without a value; and a
   swept constraint whose range is missing an end or whose minimum is not
   below its maximum, or more than 10,000 frontier solves in total over the swept constraints. Warnings
@@ -534,7 +540,7 @@ Pane ownership:
   (`optimiser_<label>_<id>.json`, a bare filename the server places in the pipeline folder's
   `files/models/`), an optional version label, **Save to file** and **Log
   to MLflow**. Saving never silently replaces a file: an existing destination shows the server's
-  message with a **Replace existing file** confirmation that retries exactly the refused request with overwrite; the confirmation is withdrawn while the path or target no longer match it. A successful
+  message with a **Replace existing file** confirmation that retries exactly the refused request with overwrite; the confirmation is withdrawn while the path, target, version label or staleness no longer match it. A successful
   save shows the written project-relative path and a **Use in Apply node** choice listing the
   graph's Apply Optimisation nodes, which points the chosen node's file source at that path. A
   successful log shows the run id and link, as modelling's Export pane does. A ratebook result

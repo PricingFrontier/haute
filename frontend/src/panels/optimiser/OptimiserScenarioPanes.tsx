@@ -8,7 +8,7 @@
 import { memo, useMemo } from "react"
 import { ChevronLeft, ChevronRight, Search } from "lucide-react"
 import { CHART_COLORS } from "../../theme/colors"
-import { chartTicks, formatChartTicks } from "../../utils/chartHelpers"
+import { chartDomain, chartTickSpan, chartTicks, formatChartTicks } from "../../utils/chartHelpers"
 import type { ScenarioStats } from "../optimiserScenarioStats"
 import type { OptimiserScenarioData, QuoteRow } from "./useOptimiserScenarioData"
 
@@ -52,21 +52,16 @@ function buildSeriesScale(
 ): SeriesScaleContext {
   const chartH = h - CHART_PY - CHART_PY_BOTTOM
 
-  let vMin = Infinity
-  let vMax = -Infinity
-  for (const r of rows) {
-    const v = r.values[column] ?? 0
-    if (v < vMin) vMin = v
-    if (v > vMax) vMax = v
-  }
-  if (!Number.isFinite(vMin)) vMin = 0
-  if (!Number.isFinite(vMax)) vMax = 1
-  const rawRange = vMax - vMin || 1
-  const ticks = chartTicks(vMin, vMax, 5)
+  // The shared padded domain: a constant series sits mid-axis, and a spread
+  // that is only rounding noise reads as flat rather than filling the axis.
+  const values = rows.length > 0 ? rows.map((r) => r.values[column] ?? 0) : [0]
+  const [low, high] = chartDomain(values)
+  const [tickLow, tickHigh] = chartTickSpan(values)
+  const ticks = chartTicks(tickLow, tickHigh, 5)
 
-  const pad = rawRange * yPadFraction
-  const adjMin = vMin - pad
-  const adjRange = rawRange + pad * 2 || 1
+  const pad = (high - low) * yPadFraction
+  const adjMin = low - pad
+  const adjRange = high - low + pad * 2
 
   return {
     yScale: (v: number) => CHART_PY + chartH - ((v - adjMin) / adjRange) * chartH,

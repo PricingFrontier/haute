@@ -212,6 +212,11 @@ export function documentReadOnlyReason(): string {
   return "This pipeline is read-only until its load diagnostics are resolved."
 }
 
+/** Whether the editor may change the document now: it may mutate it and its graph is in step. */
+export function isDocumentEditable(state: DocumentStatusState): boolean {
+  return state.capabilities?.can_mutate === true && state.graphSynchronized
+}
+
 function executionFence(state: DocumentStatusState): DocumentExecutionFence {
   return {
     sourceFile: state.sourceFile,

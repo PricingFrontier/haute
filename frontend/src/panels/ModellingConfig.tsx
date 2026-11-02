@@ -11,7 +11,7 @@ import {
   type UseStaleConfigEstimateResult,
 } from "../hooks/useStaleConfigEstimate"
 import useGraphStore from "../stores/useGraphStore"
-import useNodeResultsStore, { hashConfig, type TrainProgress, type TrainResult } from "../stores/useNodeResultsStore"
+import useNodeResultsStore, { hashConfig, trainFailureResult, type TrainProgress } from "../stores/useNodeResultsStore"
 import useDocumentStatusStore, {
   captureDocumentExecutionFence,
   documentExecutionKey,
@@ -385,6 +385,7 @@ export default function ModellingConfig({
   const updateTrainProgress = useNodeResultsStore((state) => state.updateTrainProgress)
   const completeTrainJob = useNodeResultsStore((state) => state.completeTrainJob)
   const failTrainJob = useNodeResultsStore((state) => state.failTrainJob)
+  const failTrainStart = useNodeResultsStore((state) => state.failTrainStart)
   const addToast = useToastStore((state) => state.addToast)
   const activeSource = useSettingsStore((state) => state.activeSource)
   const structuralVersion = useGraphStore((state) => state.structuralVersion)
@@ -567,9 +568,11 @@ export default function ModellingConfig({
     if (!isDocumentExecutionFenceCurrent(documentFence)) return
     setSubmitting(true)
     // The lineage is taken from the exact payload submitted, before awaiting, so
-    // an edit made while the request is pending never relabels this job.
+    // an edit made while the request is pending never relabels this job; the
+    // config hash is this render's training identity for the same reason.
     const submittedGraph = graph()
     const lineage = trainingLineage(submittedGraph)
+    const configHash = trainingHash
     try {
       const result = await trainModel({
         graph: submittedGraph,
@@ -582,71 +585,24 @@ export default function ModellingConfig({
           nodeId,
           result.job_id,
           allNodes.find((node) => node.id === nodeId)?.data.label ?? "Model Training",
-          estimate.configHash,
+          configHash,
           activeSource,
           structuralVersion,
           lineage,
         )
+      } else if (result.status === "error") {
+        failTrainStart(nodeId, result)
       } else {
-        completeTrainJob(nodeId, result as unknown as TrainResult)
+        completeTrainJob(nodeId, result)
       }
     } catch (error) {
       if (!isDocumentExecutionFenceCurrent(documentFence)) return
       const message = apiErrorMessage(error)
-      completeTrainJob(
-        nodeId,
-        {
-          status: "error",
-          job_id: null,
-          diagnostic_metrics: {},
-          final_test_metrics: {},
-          feature_importance: [],
-          model_path: "",
-          development_rows: 0,
-          final_test_rows: 0,
-          diagnostics_set: "development",
-          features: [],
-          cat_features: [],
-          error: message,
-          best_iteration: null,
-          loss_history: [],
-          loss_history_truncated: false,
-          validation_loss_history: [],
-          validation_loss_history_truncated: false,
-          double_lift: [],
-          shap_summary: [],
-          shap_beeswarm: [],
-          shap_curves: [],
-          shap_link: null,
-          feature_importance_loss: [],
-          ave_per_feature: [],
-          residuals_histogram: [],
-          residuals_stats: {},
-          actual_vs_predicted: [],
-          lorenz_curve: [],
-          lorenz_curve_perfect: [],
-          pdp_data: [],
-          warning: null,
-          total_source_rows: null,
-          glm_coefficients: [],
-          glm_relativities: [],
-          glm_fit_statistics: {},
-          glm_inference: null,
-          glm_smooth_terms: [],
-          glm_regularization: null,
-          ebm_terms: [],
-          tboost_tables: null,
-          diagnostics_errors: [],
-          feature_selection: null,
-          final_tree_count: null,
-          fit_evidence: null,
-        },
-        failureStatus(error, message),
-      )
+      failTrainStart(nodeId, trainFailureResult(message), failureStatus(error, message))
     } finally {
       setSubmitting(false)
     }
-  }, [activeSource, allNodes, completeTrainJob, estimate.configHash, graph, hasTrainingConfigurationIssues, nodeId, startTrainJob, structuralVersion])
+  }, [activeSource, allNodes, completeTrainJob, failTrainStart, graph, hasTrainingConfigurationIssues, nodeId, startTrainJob, structuralVersion, trainingHash])
   const onCancel = useCallback(async () => {
     const job = useNodeResultsStore.getState().trainJobs[nodeId]
     if (!job || cancelling) return

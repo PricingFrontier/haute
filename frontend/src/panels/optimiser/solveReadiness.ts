@@ -148,9 +148,10 @@ export function sweptConstraintNames(
 }
 
 /**
- * Every reason the node cannot be solved. Mapped columns are checked only once
- * the input's columns are known (`dataInputColumns` non-empty), and analysis
- * columns once the analysis frame's are (`analysisFrameColumns` non-empty).
+ * Every reason the node cannot be solved. Mapped, objective and constraint
+ * columns are checked only once the input's columns are known
+ * (`dataInputColumns` non-empty), and analysis columns once the analysis
+ * frame's are (`analysisFrameColumns` non-empty).
  */
 export function optimiserSolveReadiness(
   config: Record<string, unknown>,
@@ -187,9 +188,13 @@ export function optimiserSolveReadiness(
       issues.push({
         pane: "factors",
         label: "Factors",
-        message: inputs.bandingNodes.length === 0
-          ? "Connect a Banding node to define the rating factors."
-          : "Select a connected Rating Factor Source.",
+        message: inputs.malformedBandingSource
+          ? "The Rating Factor Source must be an input name."
+          : inputs.missingExplicitBandingSource
+            ? "The selected Rating Factor Source is not connected."
+            : inputs.bandingNodes.length === 0
+              ? "Connect a Banding node to define the rating factors."
+              : "Select a connected Rating Factor Source.",
       })
     } else if (factorColumns.length === 0) {
       issues.push({ pane: "factors", label: "Factors", message: "Select at least one rating factor." })
@@ -209,6 +214,14 @@ export function optimiserSolveReadiness(
           label: "Data",
           message: `${mapping.label} uses "${column}", which the input does not have.`,
         })
+      }
+    }
+    if (objective && !inputColumnNames.has(objective)) {
+      issues.push({ pane: "data", label: "Data", message: `The objective “${objective}” is not a column of the input.` })
+    }
+    for (const name of Object.keys(constraints)) {
+      if (!inputColumnNames.has(name)) {
+        issues.push({ pane: "constraints", label: "Constraints", message: `Constraint “${name}” is not a column of the input.` })
       }
     }
   }

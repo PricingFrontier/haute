@@ -172,10 +172,13 @@ export default function OptimiserPublishSection({
       stale: isStale,
     })
     // The confirmation belongs to the refused request: it applies only while the
-    // form still names the same file and result, and Replace resends exactly that.
+    // form still names the same file, result, version label and staleness, and
+    // Replace resends exactly that.
     const overwritePrompt = publish?.overwritePrompt
       && publish.overwritePrompt.request.outputPath === (outputPath || defaultPath)
       && publish.overwritePrompt.request.pointIndex === target
+      && publish.overwritePrompt.request.version === version.trim()
+      && publish.overwritePrompt.request.stale === isStale
       ? publish.overwritePrompt
       : null
     const runLog = () => log({

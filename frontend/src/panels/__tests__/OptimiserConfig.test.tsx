@@ -712,7 +712,7 @@ describe("OptimiserConfig", () => {
       )
       showPane("solve")
       expect(screen.getByRole("button", { name: /Optimise/ })).toBeDisabled()
-      expect(screen.getByRole("alert")).toHaveTextContent("Select a connected Rating Factor Source.")
+      expect(screen.getByRole("alert")).toHaveTextContent("The Rating Factor Source must be an input name.")
     })
 
     it("warns for zero-level outputs while keeping healthy factor controls", () => {
@@ -1049,6 +1049,15 @@ describe("OptimiserConfig", () => {
 
     it("blocks a constraint without one bound, or a fixed one without a value", () => {
       renderConfig(makeProps({
+        upstreamColumns: [
+          { name: "premium", dtype: "Float64" },
+          { name: "loss_ratio", dtype: "Float64" },
+          { name: "volume", dtype: "Float64" },
+          { name: "premium_share", dtype: "Float64" },
+          { name: "quote_id", dtype: "String" },
+          { name: "scenario_index", dtype: "Int64" },
+          { name: "scenario_value", dtype: "Float64" },
+        ],
         config: {
           mode: "online",
           objective: "premium",
@@ -1065,6 +1074,29 @@ describe("OptimiserConfig", () => {
         "Choose a bound for the loss_ratio constraint.Go to Constraints",
         "Set a value for the volume constraint.Go to Constraints",
       ])
+    })
+
+    it("blocks an objective or a constraint the input does not have, once its columns are known", () => {
+      renderConfig(makeProps({
+        config: {
+          mode: "online",
+          objective: "profit",
+          constraints: { volume: { min: 10 }, retention: { min: 0.9 } },
+        },
+      }))
+      const alert = screen.getByRole("alert")
+      expect(within(alert).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+        "The objective “profit” is not a column of the input.Go to Data",
+        "Constraint “retention” is not a column of the input.Go to Constraints",
+      ])
+      expect(screen.getByRole("button", { name: /Optimise/ })).toBeDisabled()
+    })
+
+    it("names a Rating Factor Source that is no longer connected", () => {
+      renderConfig(makeProps({
+        config: { mode: "ratebook", objective: "premium", constraints: {}, banding_source: "old_bands" },
+      }))
+      expect(screen.getByRole("alert")).toHaveTextContent("The selected Rating Factor Source is not connected.")
     })
 
     it("needs no range for a constraint that is not swept", () => {
@@ -3009,6 +3041,22 @@ describe("OptimiserConfig", () => {
       })))
     })
 
+    it("withdraws Replace once the version label differs from the refused request's", async () => {
+      const config = seedSolve()
+      const { ApiError } = await vi.importActual<typeof import("../../api/client")>("../../api/client")
+      mockSaveOptimiser.mockRejectedValueOnce(new ApiError("HTTP 409", 409, undefined, undefined, {
+        error_code: "optimiser_result_exists",
+        message: "Optimiser result already exists: output/a.json",
+      }))
+      renderStatefulConfig(makeProps({ config: { ...config, result_export_path: "output/a.json" } }))
+
+      fireEvent.click(screen.getByRole("button", { name: "Save to file" }))
+      expect(await screen.findByRole("button", { name: "Replace existing file" })).toBeInTheDocument()
+
+      fireEvent.change(screen.getByLabelText(/Version/), { target: { value: "v2" } })
+      expect(screen.queryByRole("button", { name: "Replace existing file" })).not.toBeInTheDocument()
+    })
+
     it("loads a ratebook frontier point's factor tables for the CSV", async () => {
       const ratebook = makeSolveResult({ mode: "ratebook", factor_tables: {}, combined_factor_bounds: { min: 0.9, max: 1.1 } })
       const summary = (total_objective: number) => ({
@@ -3474,6 +3522,27 @@ describe("OptimiserConfig factors table", () => {
     })
     expect(onUpdate).toHaveBeenCalledWith("analysis_input", "regions")
     expect(screen.getByRole("checkbox", { name: "Use region for validation" })).toBeChecked()
+  })
+
+  it("settles a switch to an identically structured frame, so a later schema edit prunes nothing", async () => {
+    mockUseDataInputColumns.mockImplementation(() => DATA_COLUMNS)
+    const onUpdate = vi.fn()
+    const view = renderStatefulConfig(analysisProps({ analysis_columns: ["region", "premium"] }), onUpdate)
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Validation input" }), {
+      target: { value: "regions" },
+    })
+    expect(onUpdate).toHaveBeenCalledWith("analysis_input", "regions")
+
+    // The validation frame later loses a column through an unrelated upstream edit.
+    mockUseDataInputColumns.mockImplementation((nodeId: string) =>
+      nodeId === "regions_node" ? DATA_COLUMNS.filter((column) => column.name !== "premium") : DATA_COLUMNS,
+    )
+    fireEvent.click(screen.getByRole("checkbox", { name: "Use volume for validation" }))
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith("analysis_columns", ["region", "premium", "volume"]))
+    expect(onUpdate).not.toHaveBeenCalledWith("analysis_columns", ["region"])
+    expect(onUpdate).not.toHaveBeenCalledWith("analysis_columns", ["region", "volume"])
+    expect(view.container).toHaveTextContent(/“premium” is not a column of the validation input/)
   })
 
   it("flags a configured column the frame lacks without rewriting the configuration", () => {

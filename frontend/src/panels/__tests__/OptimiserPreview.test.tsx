@@ -1339,9 +1339,22 @@ describe("OptimiserPreview", () => {
 
     it("keeps Re-run disabled with the reason while the Solve pane would refuse", () => {
       mockSolveState.results = { opt_1: { configHash: "an-older-config", source: "live", structuralVersion: 0 } }
+      const withVolume = {
+        ...QUOTES_NODE,
+        data: {
+          ...QUOTES_NODE.data,
+          _columns: [
+            { name: "profit", dtype: "Float64" },
+            { name: "volume", dtype: "Float64" },
+            { name: "quote_id", dtype: "String" },
+            { name: "scenario_index", dtype: "Int64" },
+            { name: "scenario_value", dtype: "Float64" },
+          ],
+        },
+      }
       renderPreview({
         allNodes: [
-          QUOTES_NODE,
+          withVolume,
           optimiserNode({
             objective: "profit",
             constraints: { volume: { min: 1 } },

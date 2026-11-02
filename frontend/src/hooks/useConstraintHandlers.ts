@@ -24,7 +24,11 @@ export function useConstraintHandlers(
   const handleAddConstraint = useCallback(() => {
     const usedCols = new Set(Object.keys(constraints))
     const available = dataInputColumns.find(c => !usedCols.has(c.name) && c.name !== objective)
-    const colName = available ? available.name : `constraint_${Object.keys(constraints).length + 1}`
+    // Without a free column the placeholder takes the first unused number, so
+    // it never replaces a constraint already named that way.
+    let fallbackNumber = Object.keys(constraints).length + 1
+    while (Object.hasOwn(constraints, `constraint_${fallbackNumber}`)) fallbackNumber += 1
+    const colName = available ? available.name : `constraint_${fallbackNumber}`
     const newConstraints = { ...constraints, [colName]: { min: 0 } }
     onUpdate("constraints", newConstraints)
   }, [constraints, dataInputColumns, objective, onUpdate])

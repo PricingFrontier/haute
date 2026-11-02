@@ -35,13 +35,13 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/optimiser/solveReadiness.ts` | The one set of solve-readiness rules: `resolveOptimiserInputs` (selectors against the connected inputs) and `optimiserSolveReadiness` (blocking issues, `canSolve`, `canAutoRange`), used by the Solve pane, Ctrl+Enter and the preview's Re-run. |
 | `frontend/src/panels/optimiser/useOptimiserReadiness.ts` | Wraps those rules with the one data-input column path (known single-input columns, else the source-aware column cache and preview fetch) and the analysis frame's columns (the data-input columns when the analysis input is the data input, else a preview of the selected analysis input's source node), so the editor and Re-run judge the same columns; the preview fetches only while its stale strip is shown. |
 | `frontend/src/panels/optimiser/OptimiserPublishSection.tsx` | The Export pane's Publish section: target choice bound to the result store's selected point, `result_export_path`, version label, Save/Log with the overwrite confirmation, receipts, Use in Apply node, the ratebook factor-table CSV and the combined-factor collar statement (read from the solve's `originalResult.combined_factor_bounds`). |
-| `frontend/src/stores/useOptimiserPublishStore.ts` | Per-node publish state keyed by solve job (busy flags, receipts, errors, overwrite prompt) owned by the Export pane. |
+| `frontend/src/stores/useOptimiserPublishStore.ts` | Per-node publish state keyed by solve job (busy flags, receipts, errors, overwrite prompt) owned by the Export pane. It belongs to the document: a change of the document's execution generation (another document, a change on disk) forgets every node's state, and a save or log reply is applied only while the document fence it started under is current. |
 | `frontend/src/panels/optimiser/QuotesTab.tsx`, `frontend/src/panels/optimiser/lambdaCopy.ts` | The Quotes explorer (both modes) for the publish target: a server-sorted, searched and filtered page of the chosen scenarios in `SortableValuesTable`, with the presets, the pager and the analysis-value filters, read through the result store's identity-keyed `/apply` cache (the full canonical query in the identity) with Retry on failure; and the shared λ label and explanation. |
 | `frontend/src/panels/SortableValuesTable.tsx`, `frontend/src/panels/valuesSort.ts` | The shared sortable values table (extracted from the GLM coefficients): column headers as sort buttons with `aria-sort` and a ▲/▼ indicator on the sorted column (a disabled button for a column that cannot be sorted now, plain text for one that never can), the caller's cells and an empty-state `role="status"` message; `ValuesTableSearch`, its labelled search input; and `nextSort` (`valuesSort.ts`, with `SortState`), the one sort cycle (a new column sorts ascending, the sorted column reverses). Sorting itself is the caller's: GLM sorts in the browser, Quotes asks the server. |
-| `frontend/src/panels/OptimiserDataPreview.tsx`, `frontend/src/panels/optimiser/useOptimiserScenarioData.ts`, `frontend/src/panels/optimiser/OptimiserScenarioPanes.tsx` | The pre-solve scenario view: the hook groups the bounded preview rows by quote and owns series visibility, quote navigation (reset during render when the series list or quote count changes) and on-demand statistics; the panes (quote navigation, Curves, Statistics, the no-objective/no-data notice) render in the data preview's frame and as the result workspace's Curves and Statistics tabs. |
+| `frontend/src/panels/OptimiserDataPreview.tsx`, `frontend/src/panels/optimiser/useOptimiserScenarioData.ts`, `frontend/src/panels/optimiser/OptimiserScenarioPanes.tsx` | The pre-solve scenario view: the hook groups the bounded preview rows by quote and owns series visibility, quote navigation (reset during render when the series list or the quote ids, in order, change, so another quote-id column or another quote set of the same size starts at the first quote) and on-demand statistics; each series' y scale is the shared `chartDomain` with `chartTickSpan` ticks, so a constant series sits mid-plot and rounding noise reads as flat; the panes (quote navigation, Curves, Statistics, the no-objective/no-data notice) render in the data preview's frame and as the result workspace's Curves and Statistics tabs. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-memory and rejected-strategy banner shared with modelling progress, optimiser actions, and Explore. |
 | `frontend/src/panels/optimiserScenarioStats.ts` | Strict finite-number parsing and per-scenario statistical aggregation used by the optimiser data preview. |
-| `frontend/src/hooks/useConstraintHandlers.ts`, `frontend/src/hooks/useDataInputColumns.ts` | Constraint mutation handlers (add, remove, rename, a bound's value, and its kind: between at least and at most the value stays, between an absolute and a percentage bound it restarts at `startingBoundValue`, with a swept constraint's range in the same update) and stale-aware data-input column fetching. |
+| `frontend/src/hooks/useConstraintHandlers.ts`, `frontend/src/hooks/useDataInputColumns.ts` | Constraint mutation handlers (add, on the first free column or else the first unused `constraint_<n>` name, remove, rename, a bound's value, and its kind: between at least and at most the value stays, between an absolute and a percentage bound it restarts at `startingBoundValue`, with a swept constraint's range in the same update) and stale-aware data-input column fetching, which returns only the current input's columns: after a switch, that input's cached (else fallback) columns until its fetch answers, never the previous input's. |
 | `frontend/src/api/types.ts`, `frontend/src/types/trainGuards.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned API types and dynamically loaded strict JSON response parsing consumed by modelling progress/results. |
 | `frontend/src/stores/useNodeResultsStore.ts`, `frontend/src/stores/useUIStore.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned result/job state and per-node modelling-pane memory consumed by the modelling workflow. |
 | `frontend/src/utils/configField.ts`, `frontend/src/utils/trainingObjective.ts`, `frontend/src/utils/executionDiagnostics.ts` | Typed config reads/parsing, training-configuration issue derivation with click-time presentation, and structured execution-error/metric display helpers. |
@@ -844,7 +844,9 @@ The behavioural contract is defined in
   newest of each kind down. With an MLflow receipt the section shows "Last logged to <destination
   label> · <experiment> · Open run" (or the run ID when there is no link) and its button reads "Log
   again"; pressing it first asks "This result is already logged to <experiment>. Logging again
-  creates a new run." with "Log as a new run" and Cancel. Every attempt sends a fresh
+  creates a new run." with "Log as a new run" and Cancel; the question belongs to the job,
+  destination, experiment and availability it was asked under, so changing any withdraws it,
+  and "Log as a new run" is disabled whenever the log could not run. Every attempt sends a fresh
   `operation_id` (`newOperationId`) and re-reads the receipts afterwards (`onLogAttempted`). A
   failure without an HTTP response keeps that operation ID and offers Retry, which resends it — a
   log whose response was lost returns its recorded run instead of creating another; a failure the
@@ -860,8 +862,14 @@ The behavioural contract is defined in
   lineage to `startTrainJob`, so an edit made while the request is pending never relabels the job.
   A fence-current `completeTrainJob` writes the handle — job ID, config hash, source and that
   lineage — under the job's document (`documentFence.sourceFile`); a job started without a lineage
-  is never remembered; a fence-current error result, failure (`failTrainJob`) or direct completion
-  without a job forgets the node's handle, and a job whose document changed touches no handle.
+  is never remembered; a fence-current error result of a job, a job failure (`failTrainJob`) or a
+  synchronous completion without a job forgets the node's handle, and a job whose document
+  changed touches no handle. A request refused before any job existed (a rejected request or an
+  `error` response) is recorded by `failTrainStart` as the node's error result, the job-free
+  identity reading as stale, and keeps the handle: the last completed job is still the server's.
+  Both failure paths record the one error result `trainFailureResult` builds. The job's config
+  hash is the hash of the training identity `ModellingConfig` renders with
+  (`hashConfig(trainingIdentityConfig(config))`), taken with the lineage before awaiting.
   `ModellingConfig`, through `useTrainedJobRestore`, reads the handle when the node has neither a
   result nor a running job: a completed result is put back with `restoreTrainResult`, keeping the
   stored config hash and source, with the current structural version when the `trainingLineage`
@@ -885,7 +893,8 @@ The behavioural contract is defined in
   backslashes to forward slashes). It shows a
   "The destination extension does not match the model format ({ext})." alert for
   `suffix_mismatch`, or "Could not resolve destination: {detail}"; a result is shown only for the
-  path it was resolved for. **Save model to file** is disabled without an exportable job id, with
+  path and model format it was resolved for, so a format change shows none until its own
+  answer arrives. **Save model to file** is disabled without an exportable job id, with
   an empty path, while saving, or while the resolved destination reports a suffix mismatch; it
   calls `saveTrainedModel({job_id, output_path, overwrite: false})` and reads "Saving..." while
   pending. A failure whose `apiErrorCode` is `model_file_exists` (dispatched on the code, never the
@@ -997,9 +1006,12 @@ The behavioural contract is defined in
   `analysisUsesDataInput` when it is unset or names the data input), and
   `optimiserSolveReadiness` adds the Factors-pane issues for a disconnected or malformed analysis
   input, more than `MAX_ANALYSIS_COLUMNS` (12) columns, and a column the analysis frame's known
-  columns lack. `OptimiserFactorsTable` prunes columns only in response to a user switch of
-  the analysis input (a pending prune applied once the new frame's columns arrive), never on
-  load, so a temporarily unavailable schema never rewrites the configuration.
+  columns lack, and the Data and Constraints issues for an objective or constraint column the
+  data input's known columns lack. `OptimiserFactorsTable` prunes columns only in response to a
+  user switch of the analysis input (a pending prune applied, and disarmed, once the chosen
+  frame's columns are known, which the column hook guarantees are that frame's own, so an
+  identically structured frame settles it at once), never on load, so a temporarily unavailable
+  schema never rewrites the configuration.
 - `useUIStore.ts` remembers `optimiserPanes` per node. `NodePanel.tsx` selects only the Boolean
   presence of `solveJobs[node.id]` for the Solve tab's active indicator and derives no
   configuration warning descriptors.
@@ -1007,6 +1019,23 @@ The behavioural contract is defined in
 Verification: `frontend/src/panels/__tests__/OptimiserConfig.test.tsx` covers each pane's
 content, the Factors table in both modes (ratebook choices greyed out online), the constraint cards for both result types, the solve-blocking
 alert and its navigation, and the factor table (only connected inputs listed, rating factors first with both choices, the
-validation choices following the chosen frame's schema, search, switch-time pruning, the cap); `frontend/src/panels/optimiser/__tests__/optimiserPanes.test.ts` covers
+validation choices following the chosen frame's schema, search, switch-time pruning and a switch
+to an identical frame leaving nothing armed, the cap), the Solve issues for an objective or
+constraint column the input lacks and for a disconnected or malformed Rating Factor Source, and
+the Replace confirmation withdrawn by a changed version label;
+`frontend/src/hooks/__tests__/useDataInputColumns.test.ts` covers a switch never showing the
+previous input's columns; `frontend/src/stores/__tests__/useOptimiserPublishStore.test.ts` the
+publish state forgotten on a document load with a late reply dropped;
+`frontend/src/panels/__tests__/OptimiserDataPreview.test.tsx` the navigation reset for a
+same-size quote set and a constant or rounding-noise series' scale;
+`frontend/src/__tests__/hooks/useConstraintHandlers.test.ts` the non-colliding placeholder name;
+`frontend/src/panels/__tests__/ModellingConfig.test.tsx` a pre-job failure or `error` response
+keeping the remembered handle and Train right after an edit recording the edited hash;
+`frontend/src/panels/__tests__/ModellingPreview.test.tsx` Use best refused in a read-only
+document and writing nothing once the document went read-only;
+`frontend/src/panels/modelling/__tests__/MlflowExportSection.test.tsx` the Log again
+confirmation withdrawn by an experiment or availability change; and
+`frontend/src/panels/modelling/__tests__/ModelFileExportSection.test.tsx` the destination check
+keyed by path and model format; `frontend/src/panels/optimiser/__tests__/optimiserPanes.test.ts` covers
 the pane list and resolution; `NodePanel.test.tsx` and `useUIStore.test.ts` cover strip gating,
 per-node memory and the active-solve indicator.
