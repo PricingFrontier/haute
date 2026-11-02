@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sqlalchemy import event
 
 from haute._quote_store import QuoteStoreEnvironmentError, StoreLocation, open_book, render_sql
 from haute._quote_store._catalogue import Catalogue, read_catalogue
@@ -21,7 +22,7 @@ from haute._quote_store._migrate import PROVIDER_DIALECTS
 from haute._quote_store._providers import PROVIDERS
 from haute._quote_store._store import make_engine
 from haute._workbench_form import FormSpec, with_quote_details
-from tests._store_servers import Target, backends, database
+from tests._store_servers import Target, backends, configured, database
 
 ENVIRONMENT = "dev"
 
@@ -60,6 +61,15 @@ RELEASED = form(table("policy", column("region"), column("drivers"), column("val
 
 @pytest.fixture(params=backends())
 def target(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Target]:
+    with database(request.param, tmp_path) as made:
+        yield made
+
+
+@pytest.fixture(
+    params=[pytest.param(name, marks=pytest.mark.store_servers) for name in configured()]
+)
+def server(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Target]:
+    """A database of the test's own on each server the run has."""
     with database(request.param, tmp_path) as made:
         yield made
 
@@ -118,6 +128,34 @@ def test_a_database_made_from_the_form_s_sql_matches_it(target: Target) -> None:
     assert comparison.matches
     assert comparison.extras == ()
     assert "nothing to change" in sql(target, RELEASED, comparison)
+
+
+def _statements_reading(target: Target) -> int:
+    """The statements reading *target*'s catalogue, its quotes not counted, sends the server."""
+    engine = make_engine(target.url, sign_in=target.sign_in)
+    sent: list[str] = []
+    try:
+        with engine.connect() as connection:
+            event.listen(
+                connection, "before_cursor_execute", lambda *executing: sent.append(executing[2])
+            )
+            read_catalogue(connection)
+    finally:
+        engine.dispose()
+    return len(sent)
+
+
+def test_a_servers_tables_are_read_in_as_many_statements_however_many_it_holds(
+    server: Target,
+) -> None:
+    # Each statement is a round trip to the server, and the Compare waits on every one: read
+    # table by table, a store of fifteen tables took seconds on a database across a network.
+    made_from_sql(server, RELEASED)
+    few = _statements_reading(server)
+
+    server.run(*(f"CREATE TABLE extra_{index} (id INT PRIMARY KEY)" for index in range(5)))
+
+    assert _statements_reading(server) == few
 
 
 def test_the_quotes_holding_values_are_counted_by_table_and_column(target: Target) -> None:

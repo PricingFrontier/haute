@@ -119,17 +119,25 @@ def read_catalogue(
     inspector = inspect(connection)
     present = inspector.get_table_names(schema=sql_schema)
     wanted = None if names is None else set(names)
+    reading = [name for name in present if wanted is None or name in wanted]
+    if not reading:
+        # The multi-table reads take no names to mean every table.
+        return Catalogue(tables=())
+    # Every table's columns, key and references read together, a statement or a few for the
+    # schema on a server rather than several for each table, each a round trip across the
+    # network; keyed by the schema as given, None for the connection's default.
+    columns = inspector.get_multi_columns(schema=sql_schema, filter_names=reading)
+    keys = inspector.get_multi_pk_constraint(schema=sql_schema, filter_names=reading)
+    references = inspector.get_multi_foreign_keys(schema=sql_schema, filter_names=reading)
     tables: list[CatalogueTable] = []
-    for name in present:
-        if wanted is not None and name not in wanted:
-            continue
-        reflected = inspector.get_columns(name, schema=sql_schema)
+    for name in reading:
+        reflected = columns[(sql_schema, name)]
         held = {column["name"] for column in reflected}
-        keyed = inspector.get_pk_constraint(name, schema=sql_schema)
+        keyed = keys[(sql_schema, name)]
         refers = any(
             foreign.get("referred_table") == QUOTE_DETAILS_ID
             and list(foreign.get("constrained_columns") or []) == list(IDENTITY)
-            for foreign in inspector.get_foreign_keys(name, schema=sql_schema)
+            for foreign in references[(sql_schema, name)]
         )
         quotes, counted = (
             _counted(connection, name, [column["name"] for column in reflected], sql_schema)
