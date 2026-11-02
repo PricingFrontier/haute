@@ -85,6 +85,16 @@ class _Queue:
         self.joined += 1
 
 
+def _recording(replaced: list[object]) -> Any:
+    """A ``_replace_slot`` stub that records each slot and returns the failure to raise."""
+
+    def replace(slot: object, failure: BaseException) -> BaseException:
+        replaced.append(slot)
+        return failure
+
+    return replace
+
+
 def _returns(value: Any) -> Any:
     return value
 
@@ -320,19 +330,22 @@ def test_parent_rss_watchdog_applies_limit_to_per_request_growth(
     assert exc_info.value.limit_bytes == 1_050
 
 
-def test_remote_error_is_structured_and_worker_remains_usable() -> None:
+def test_remote_error_is_structured_and_the_same_worker_stays_warm() -> None:
+    """An ordinary error in the job (a bad expression) is the job's: the worker that
+    answered it, acknowledged and released, serves the next request."""
     pool = InteractiveWorkerPool(size=1, polars_threads=2)
     try:
+        before, _ = pool.run(_worker_identity, affinity_key="lineage", timeout_seconds=30)
         with pytest.raises(InteractiveWorkerRemoteError) as exc_info:
             pool.run(
                 _worker_fail,
                 affinity_key="lineage",
-                timeout_seconds=5,
+                timeout_seconds=30,
             )
-        worker_pid, _ = pool.run(
+        after, _ = pool.run(
             _worker_identity,
             affinity_key="lineage",
-            timeout_seconds=5,
+            timeout_seconds=30,
         )
     finally:
         pool.close()
@@ -341,7 +354,89 @@ def test_remote_error_is_structured_and_worker_remains_usable() -> None:
     assert exc_info.value.remote_module == "builtins"
     assert exc_info.value.remote_message == "child failed"
     assert "ValueError: child failed" in exc_info.value.remote_traceback
-    assert worker_pid != os.getpid()
+    assert after == before != os.getpid()
+
+
+def _worker_allocate(megabytes: int) -> int:
+    held = bytearray(megabytes * 1024 * 1024)
+    for offset in range(0, len(held), 4096):
+        held[offset] = 1
+    time.sleep(5.0)
+    return len(held)
+
+
+def test_a_worker_breaching_its_growth_cap_is_replaced_and_the_next_request_served() -> None:
+    """A real child grows past its growth allowance: its native cap refuses the
+    allocation or the parent's watchdog stops it, either way the worker is replaced, and
+    the replacement answers the next request."""
+    pool = InteractiveWorkerPool(size=1, polars_threads=2, poll_interval_seconds=0.02)
+    try:
+        before, _ = pool.run(_worker_identity, affinity_key="lineage", timeout_seconds=60)
+        with pytest.raises(
+            (InteractiveWorkerMemoryLimitError, InteractiveWorkerRemoteError)
+        ) as breached:
+            pool.run(
+                _worker_allocate,
+                256,
+                affinity_key="lineage",
+                timeout_seconds=60,
+                memory_growth_limit_bytes=64 * 1024 * 1024,
+                require_memory_limit=False,
+            )
+        after, value = pool.run(_worker_identity, 7, affinity_key="lineage", timeout_seconds=60)
+    finally:
+        pool.close()
+
+    assert breached.value.terminal_reason == "memory_limited"
+    assert after != before
+    assert value == 7
+
+
+def test_a_failed_replacement_is_started_again_by_the_next_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One replacement that fails to start (a readiness timeout under load) leaves the
+    slot needing a start, not closed for the server's life; the original failure carries
+    the start error as a note."""
+    pool = InteractiveWorkerPool(size=1, polars_threads=2, poll_interval_seconds=0.01)
+    real_start = pool._start_slot
+    failures = iter([True])
+
+    def start_failing_once(*, index: int, generation: int):
+        if next(failures, False):
+            raise worker_mod.InteractiveWorkerStartError(
+                "replacement did not become ready", terminal_reason="error"
+            )
+        return real_start(index=index, generation=generation)
+
+    try:
+        before, _ = pool.run(_worker_identity, affinity_key="lineage", timeout_seconds=30)
+        monkeypatch.setattr(pool, "_start_slot", start_failing_once)
+        with pytest.raises(InteractiveWorkerTimeoutError) as timed_out:
+            pool.run(_worker_sleep, 5.0, affinity_key="lineage", timeout_seconds=0.05)
+        after, value = pool.run(_worker_identity, 3, affinity_key="lineage", timeout_seconds=30)
+    finally:
+        pool.close()
+
+    assert any("replacement did not become ready" in note for note in timed_out.value.__notes__)
+    assert after != before
+    assert value == 3
+
+
+def test_a_wait_for_a_busy_slot_ends_at_the_request_deadline() -> None:
+    """A request with no stop reason (the optimiser estimate) waits for its slot only as
+    long as its own deadline allows."""
+    pool = InteractiveWorkerPool(size=1, polars_threads=2, poll_interval_seconds=0.01)
+    try:
+        pool.start()
+        pool._scheduling_locks[0].acquire()
+        started = time.monotonic()
+        with pytest.raises(InteractiveWorkerTimeoutError):
+            pool.run(_worker_identity, affinity_key="lineage", timeout_seconds=0.2)
+        assert time.monotonic() - started < 5
+    finally:
+        pool._scheduling_locks[0].release()
+        pool.close()
 
 
 def test_close_is_idempotent_and_rejects_new_work() -> None:
@@ -480,7 +575,7 @@ def test_wait_for_result_defensive_paths(monkeypatch: pytest.MonkeyPatch) -> Non
     pool = InteractiveWorkerPool(size=1, polars_threads=2, poll_interval_seconds=0.01)
     process = SimpleNamespace(pid=1, exitcode=9, is_alive=lambda: False)
     slot = SimpleNamespace(index=0, process=process, result_queue=_Queue(), closed=False)
-    monkeypatch.setattr(pool, "_replace_slot", lambda _slot: None)
+    monkeypatch.setattr(pool, "_replace_slot", lambda _slot, failure: failure)
     with pytest.raises(InteractiveWorkerCrashedError):
         pool._wait_for_result(
             slot,
@@ -531,7 +626,7 @@ def test_crashed_worker_memory_classification_follows_the_one_shot_heuristic(
     pool = InteractiveWorkerPool(size=1, polars_threads=2, poll_interval_seconds=0.01)
     process = SimpleNamespace(pid=1, exitcode=exitcode, is_alive=lambda: False)
     slot = SimpleNamespace(index=0, process=process, result_queue=_Queue(), closed=False)
-    monkeypatch.setattr(pool, "_replace_slot", lambda _slot: None)
+    monkeypatch.setattr(pool, "_replace_slot", lambda _slot, failure: failure)
     with pytest.raises(InteractiveWorkerCrashedError) as exc_info:
         pool._wait_for_result(
             slot,
@@ -556,7 +651,7 @@ def test_worker_death_during_required_rss_sampling_classifies_the_crash(
     liveness = iter((True, False, False))
     process = SimpleNamespace(pid=1, exitcode=-9, is_alive=lambda: next(liveness))
     slot = SimpleNamespace(index=0, process=process, result_queue=_Queue(), closed=False)
-    monkeypatch.setattr(pool, "_replace_slot", lambda _slot: None)
+    monkeypatch.setattr(pool, "_replace_slot", lambda _slot, failure: failure)
     monkeypatch.setattr(worker_mod, "process_rss_bytes", lambda _pid: None)
     with pytest.raises(InteractiveWorkerCrashedError) as exc_info:
         pool._wait_for_result(
@@ -593,8 +688,7 @@ def test_worker_teardown_without_rss_waits_briefly_for_exit(
     process.join = join
     slot = SimpleNamespace(index=0, process=process, result_queue=_Queue(), closed=False)
     replaced: list[object] = []
-    monkeypatch.setattr(pool, "_replace_slot", replaced.append)
-    monkeypatch.setattr(pool, "_stop_and_replace", replaced.append)
+    monkeypatch.setattr(pool, "_replace_slot", _recording(replaced))
     monkeypatch.setattr(worker_mod, "process_rss_bytes", lambda _pid: None)
     kwargs = {
         "job_id": "x",
@@ -739,7 +833,7 @@ def test_wait_for_result_acknowledges_before_returning_and_requires_release(
         result_queue=results,
         closed=False,
     )
-    monkeypatch.setattr(pool, "_replace_slot", lambda _slot: None)
+    monkeypatch.setattr(pool, "_replace_slot", lambda _slot, failure: failure)
 
     assert (
         pool._wait_for_result(
@@ -773,7 +867,7 @@ def test_remote_result_keeps_primary_error_when_release_is_invalid(
         closed=False,
     )
     replacements: list[object] = []
-    monkeypatch.setattr(pool, "_replace_slot", replacements.append)
+    monkeypatch.setattr(pool, "_replace_slot", _recording(replacements))
 
     with pytest.raises(InteractiveWorkerRemoteError) as exc_info:
         pool._wait_for_result(
@@ -1008,7 +1102,7 @@ def test_growth_limit_required_mode_uses_native_cap_when_baseline_is_unobservabl
     replaced: list[object] = []
     monkeypatch.setattr(pool, "start", lambda: None)
     monkeypatch.setattr(pool, "_current_slot", lambda _index: slot)
-    monkeypatch.setattr(pool, "_stop_and_replace", replaced.append)
+    monkeypatch.setattr(pool, "_replace_slot", _recording(replaced))
     monkeypatch.setattr(worker_mod, "native_memory_caps_supported", lambda: True)
     monkeypatch.setattr(pool, "_wait_for_result", lambda *_args, **_kwargs: 7)
     monkeypatch.setattr(worker_mod, "process_rss_bytes", lambda _pid: None)
@@ -1076,7 +1170,9 @@ def test_unserialisable_worker_request_fails_before_queue_submission(
     assert slot.request_queue.values == []
 
 
-def test_slot_lookup_fails_loudly_for_closed_unstarted_or_unreplaced_slot() -> None:
+def test_slot_lookup_fails_loudly_for_a_closed_or_unstarted_pool_and_restarts_a_retired_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     pool = InteractiveWorkerPool(size=1, polars_threads=2)
     pool._closed = True
     with pytest.raises(RuntimeError, match="closed"):
@@ -1086,10 +1182,25 @@ def test_slot_lookup_fails_loudly_for_closed_unstarted_or_unreplaced_slot() -> N
     with pytest.raises(RuntimeError, match="did not start"):
         pool._current_slot(0)
 
-    # A replacement that failed to start leaves the retired slot behind.
-    pool._slots = [SimpleNamespace(closed=True)]  # type: ignore[list-item]
-    with pytest.raises(worker_mod.InteractiveWorkerStartError, match="replacement did not start"):
+    # A replacement that failed to start leaves the retired slot behind, which the
+    # next lookup starts again: refused while the start fails, served once it does.
+    retired = SimpleNamespace(index=0, generation=2, closed=True)
+    pool._slots = [retired]  # type: ignore[list-item]
+    starts: list[tuple[int, int]] = []
+
+    def start(*, index: int, generation: int):
+        starts.append((index, generation))
+        if len(starts) == 1:
+            raise worker_mod.InteractiveWorkerStartError("not ready", terminal_reason="error")
+        return SimpleNamespace(index=index, generation=generation, closed=False)
+
+    monkeypatch.setattr(pool, "_start_slot", start)
+    with pytest.raises(worker_mod.InteractiveWorkerStartError, match="not ready"):
         pool._current_slot(0)
+    started = pool._current_slot(0)
+
+    assert starts == [(0, 3), (0, 3)]
+    assert started.generation == 3 and pool._slots == [started]
 
 
 def _start_slot_test_pool(monkeypatch: pytest.MonkeyPatch, process):
@@ -1190,7 +1301,7 @@ def test_slot_replacement_rejects_close_race_and_generation_race(
         monkeypatch.setattr(pool, "_start_slot", lambda **_kwargs: replacement)
 
         with pytest.raises(expected):
-            pool._replace_slot(original)
+            pool._replace_slot(original, RuntimeError("the request's own failure"))
 
         assert closed_slots == [(original, False), (replacement, False)]
 
@@ -1493,7 +1604,7 @@ def test_wait_for_result_preserves_remote_error_when_ack_or_release_fails(
         request_queue=SimpleNamespace(put=lambda *_a: (_ for _ in ()).throw(OSError("ack"))),
     )
     replaced: list[object] = []
-    monkeypatch.setattr(pool, "_stop_and_replace", replaced.append)
+    monkeypatch.setattr(pool, "_replace_slot", _recording(replaced))
     with pytest.raises(InteractiveWorkerRemoteError) as exc_info:
         pool._wait_for_result(
             slot,
@@ -1519,7 +1630,7 @@ def test_wait_and_protocol_error_boundaries(monkeypatch: pytest.MonkeyPatch) -> 
         request_queue=_Queue(),
     )
     replaced: list[object] = []
-    monkeypatch.setattr(pool, "_stop_and_replace", replaced.append)
+    monkeypatch.setattr(pool, "_replace_slot", _recording(replaced))
     monkeypatch.setattr(worker_mod, "process_rss_bytes", lambda _pid: None)
     with pytest.raises(RuntimeError, match="could not sample"):
         pool._wait_for_result(
@@ -1611,7 +1722,7 @@ def test_wait_for_result_surfaces_ack_and_release_errors_without_user_error(
         result_queue=_ScriptedResultQueue(pickle.dumps(("result", "job", "ok", 1))),
         request_queue=SimpleNamespace(put=lambda *_args: (_ for _ in ()).throw(OSError("ack"))),
     )
-    monkeypatch.setattr(pool, "_stop_and_replace", lambda _slot: None)
+    monkeypatch.setattr(pool, "_replace_slot", lambda _slot, failure: failure)
     with pytest.raises(worker_mod.InteractiveWorkerProtocolError, match="acknowledgement"):
         pool._wait_for_result(
             slot,

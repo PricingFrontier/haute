@@ -515,7 +515,11 @@ class InteractiveWorkerPool:
         )
         self.start()
         index = self._index_for_affinity(affinity_key)
-        self._wait_for_scheduling_lock(index, stop_reason)
+        # The wait for the slot and the job share the request's one deadline.
+        deadline = time.monotonic() + timeout_seconds
+        self._wait_for_scheduling_lock(
+            index, stop_reason, deadline=deadline, timeout_seconds=timeout_seconds
+        )
         try:
             slot = self._current_slot(index)
             job_id = uuid.uuid4().hex
@@ -539,6 +543,7 @@ class InteractiveWorkerPool:
                 self._wait_for_result(
                     slot,
                     job_id=job_id,
+                    deadline=deadline,
                     timeout_seconds=timeout_seconds,
                     stop_reason=stop_reason,
                     absolute_rss_limit_bytes=absolute_rss_limit_bytes,
@@ -629,12 +634,16 @@ class InteractiveWorkerPool:
         self,
         index: int,
         stop_reason: Callable[[], WorkerTerminalReason | None] | None,
+        *,
+        deadline: float,
+        timeout_seconds: float,
     ) -> None:
         """Wait for *index*'s scheduling lock, counted as pending until it is held.
 
         Arriving marks a pre-emptible job running on the index, and the count
         refuses any pre-emptible request until this one holds the lock, so it
-        runs next on the replacement worker.
+        runs next on the replacement worker. The wait ends at the request's
+        *deadline* (``time.monotonic()``), at its stop reason, or at shutdown.
         """
         lock = self._scheduling_locks[index]
         with self._state_lock:
@@ -644,10 +653,14 @@ class InteractiveWorkerPool:
                 running.preempted = True
         try:
             while not lock.acquire(timeout=self._poll_interval_seconds):
+                if self._shutdown_event.is_set():
+                    raise InteractiveWorkerStoppedError("cancelled")
                 if stop_reason is not None:
                     reason = stop_reason()
                     if reason is not None:
                         raise InteractiveWorkerStoppedError(reason)
+                if time.monotonic() >= deadline:
+                    raise InteractiveWorkerTimeoutError(timeout_seconds)
         finally:
             with self._state_lock:
                 self._pending[index] -= 1
@@ -678,19 +691,36 @@ class InteractiveWorkerPool:
         return index, slot, job
 
     def _current_slot(self, index: int) -> _WorkerSlot:
-        """The open slot at *index*, read once its scheduling lock is held."""
+        """The open slot at *index*, read once its scheduling lock is held.
+
+        A slot whose replacement failed to start is started again here, under
+        the lock, so one failed start costs one request rather than the slot.
+        """
         with self._state_lock:
             if self._closed:
                 raise RuntimeError("interactive worker pool is closed")
             if not self._slots:
                 raise RuntimeError("interactive worker pool did not start")
             slot = self._slots[index]
-            if slot.closed:
-                raise InteractiveWorkerStartError(
-                    f"Interactive worker {index} is not running: its replacement did not start",
-                    terminal_reason="error",
+            if not slot.closed:
+                return slot
+        replacement = self._start_slot(index=index, generation=slot.generation + 1)
+        self._install(slot, replacement)
+        return replacement
+
+    def _install(self, slot: _WorkerSlot, replacement: _WorkerSlot) -> None:
+        """Put *replacement* in *slot*'s place, unless the pool closed meanwhile."""
+        with self._state_lock:
+            if self._closed:
+                self._close_slot(replacement, graceful=False)
+                raise RuntimeError("interactive worker pool closed during replacement")
+            if self._slots[slot.index] is not slot:
+                self._close_slot(replacement, graceful=False)
+                raise InteractiveWorkerProtocolError(
+                    "Interactive worker slot generation changed unexpectedly",
+                    terminal_reason="contract_error",
                 )
-            return slot
+            self._slots[slot.index] = replacement
 
     @staticmethod
     def _absolute_rss_limit(
@@ -753,21 +783,24 @@ class InteractiveWorkerPool:
         try:
             slot.request_queue.put(serialised, timeout=max(deadline - time.monotonic(), 0.0))
         except queue.Full:
-            self._stop_and_replace(slot)
-            raise InteractiveWorkerTimeoutError(timeout_seconds) from None
+            raise self._replace_slot(slot, InteractiveWorkerTimeoutError(timeout_seconds)) from None
 
     def _start_slot(self, *, index: int, generation: int) -> _WorkerSlot:
-        request_queue = create_worker_queue(self._ctx, 1)
-        result_queue = create_worker_queue(self._ctx, 1)
-        # A replaced slot gets a fresh progress cell: a worker killed while
-        # holding the old cell's lock leaves it behind with the old process.
-        progress = ProgressCell(self._ctx)
-        process = self._ctx.Process(
-            target=_interactive_worker_entrypoint,
-            name=f"haute-interactive-{index}-{generation}",
-            args=(request_queue, result_queue, self._preload_modules, progress),
-        )
+        queues: list[Any] = []
+        process: BaseProcess | None = None
         try:
+            request_queue = create_worker_queue(self._ctx, 1)
+            queues.append(request_queue)
+            result_queue = create_worker_queue(self._ctx, 1)
+            queues.append(result_queue)
+            # A replaced slot gets a fresh progress cell: a worker killed while
+            # holding the old cell's lock leaves it behind with the old process.
+            progress = ProgressCell(self._ctx)
+            process = self._ctx.Process(
+                target=_interactive_worker_entrypoint,
+                name=f"haute-interactive-{index}-{generation}",
+                args=(request_queue, result_queue, self._preload_modules, progress),
+            )
             # Polars reads POLARS_MAX_THREADS only at import, which happens
             # during the child's module import — before its entrypoint runs —
             # so the cap has to be in the environment the child inherits.
@@ -777,15 +810,15 @@ class InteractiveWorkerPool:
             )
             self._wait_for_ready(process, result_queue)
         except IsolatedWorkerHostError:
-            self._close_unstarted_queues(request_queue, result_queue)
+            self._close_unstarted_queues(*queues)
             raise
         except BaseException as exc:
-            if process.pid is not None:
+            if process is not None and process.pid is not None:
                 try:
                     _terminate_process(process)
                 except BaseException as termination_exc:
                     exc.add_note(f"worker termination failed: {termination_exc}")
-            self._close_unstarted_queues(request_queue, result_queue)
+            self._close_unstarted_queues(*queues)
             raise InteractiveWorkerStartError(
                 f"Failed to start interactive worker {index}: {exc}",
                 terminal_reason="error",
@@ -830,24 +863,26 @@ class InteractiveWorkerPool:
             finally:
                 work_queue.join_thread()
 
-    def _replace_slot(self, slot: _WorkerSlot) -> None:
-        self._close_slot(slot, graceful=False)
-        replacement = self._start_slot(index=slot.index, generation=slot.generation + 1)
-        with self._state_lock:
-            if self._closed:
-                self._close_slot(replacement, graceful=False)
-                raise RuntimeError("interactive worker pool closed during replacement")
-            current = self._slots[slot.index]
-            if current is not slot:
-                self._close_slot(replacement, graceful=False)
-                raise InteractiveWorkerProtocolError(
-                    "Interactive worker slot generation changed unexpectedly",
-                    terminal_reason="contract_error",
-                )
-            self._slots[slot.index] = replacement
+    def _replace_slot(self, slot: _WorkerSlot, failure: BaseException) -> BaseException:
+        """Stop *slot*'s worker and start its replacement; return *failure* to raise.
 
-    def _stop_and_replace(self, slot: _WorkerSlot) -> None:
-        self._replace_slot(slot)
+        A replacement that fails to start leaves the closed slot in place for the
+        next request on the index to start again (``_current_slot``), and its
+        error becomes a note on *failure*, the error the request ends with.
+        """
+        self._close_slot(slot, graceful=False)
+        try:
+            replacement = self._start_slot(index=slot.index, generation=slot.generation + 1)
+        except InteractiveWorkerStartError as start_error:
+            logger.warning(
+                "interactive_worker_replacement_failed",
+                worker_index=slot.index,
+                error=str(start_error),
+            )
+            failure.add_note(f"Its replacement worker did not start: {start_error}")
+            return failure
+        self._install(slot, replacement)
+        return failure
 
     def _wait_for_result(
         self,
@@ -879,8 +914,7 @@ class InteractiveWorkerPool:
                 raise InteractiveWorkerStoppedError("cancelled")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                self._stop_and_replace(slot)
-                raise InteractiveWorkerTimeoutError(timeout_seconds)
+                raise self._replace_slot(slot, InteractiveWorkerTimeoutError(timeout_seconds))
             try:
                 raw_result = slot.result_queue.get(
                     timeout=min(self._poll_interval_seconds, remaining)
@@ -897,10 +931,10 @@ class InteractiveWorkerPool:
                     on_progress(update[1])
 
             if raw_result is not None:
+                result: Any = None
+                user_error: InteractiveWorkerRemoteError | None = None
                 try:
                     envelope = pickle.loads(raw_result)
-                    result: Any = None
-                    user_error: InteractiveWorkerRemoteError | None = None
                     try:
                         result = self._interpret_result(slot, job_id=job_id, envelope=envelope)
                     except InteractiveWorkerRemoteError as exc:
@@ -948,33 +982,39 @@ class InteractiveWorkerPool:
                             )
                             raise user_error
                         raise
-                    if user_error is not None:
-                        raise user_error
-                    return result
-                except BaseException:
-                    self._stop_and_replace(slot)
+                except BaseException as failure:
+                    # A protocol, acknowledgement or release failure: the worker's
+                    # state is unknown.
+                    self._replace_slot(slot, failure)
                     raise
+                if user_error is None:
+                    return result
+                # The worker answered, was acknowledged and released, so it stays
+                # warm, unless the job's failure was its memory's.
+                if user_error.terminal_reason == "memory_limited":
+                    raise self._replace_slot(slot, user_error)
+                raise user_error
 
             if not slot.process.is_alive():
                 exitcode = slot.process.exitcode
-                self._replace_slot(slot)
-                raise InteractiveWorkerCrashedError(
-                    exitcode,
-                    memory_limited=_exitcode_looks_memory_limited(
+                raise self._replace_slot(
+                    slot,
+                    InteractiveWorkerCrashedError(
                         exitcode,
-                        memory_growth_limit_bytes,
+                        memory_limited=_exitcode_looks_memory_limited(
+                            exitcode,
+                            memory_growth_limit_bytes,
+                        ),
                     ),
                 )
 
             if stop_reason is not None:
                 reason = stop_reason()
                 if reason is not None:
-                    self._stop_and_replace(slot)
-                    raise InteractiveWorkerStoppedError(reason)
+                    raise self._replace_slot(slot, InteractiveWorkerStoppedError(reason))
 
             if preempted is not None and preempted():
-                self._stop_and_replace(slot)
-                raise InteractiveWorkerPreemptedError()
+                raise self._replace_slot(slot, InteractiveWorkerPreemptedError())
 
             try:
                 sampler_unavailable_logged = self._enforce_rss_watchdog(
@@ -983,8 +1023,8 @@ class InteractiveWorkerPool:
                     require_memory_limit=require_memory_limit,
                     sampler_unavailable_logged=sampler_unavailable_logged,
                 )
-            except BaseException:
-                self._stop_and_replace(slot)
+            except BaseException as failure:
+                self._replace_slot(slot, failure)
                 raise
 
     def _wait_for_release(

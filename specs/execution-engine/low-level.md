@@ -1231,7 +1231,22 @@ bounded result queue. Each slot index has one scheduling lock, created with the 
 kept across worker generations: `run` takes its index's lock (counting itself as pending
 while it waits, under the pool's state lock) and then submits to the index's current
 slot, so a request that waited through a replacement submits to the replacement, which is
-installed while the job that ended the old worker still holds the lock.
+installed while the job that ended the old worker still holds the lock. A request's
+`timeout_seconds` sets one deadline for its wait for the lock and its job alike: a wait
+still held at the deadline raises `InteractiveWorkerTimeoutError`, and the wait also ends
+at the request's stop reason or the pool's shutdown, so a caller with no stop reason (the
+optimiser estimate) never waits unbounded. A worker is replaced only when its state is
+unknown or its memory was the failure: a timeout, a stop, a crash, a pre-emption, an RSS
+breach, a protocol, acknowledgement or release failure, or a remote error whose terminal
+reason is `memory_limited`. An ordinary remote error (a bad expression) is the job's: the
+worker answered it and was acknowledged and released, so it stays warm for the next
+request. A replacement that fails to start leaves the closed slot in place and its error
+as a note on the error the request ends with; the next request on the index starts the
+slot again under its lock (`_current_slot`), so one failed start costs one request, not
+the slot for the server's life. `_start_slot` creates its queues and progress cell inside
+the guard that closes what it opened on any failure, an `IsolatedWorkerHostError`
+included. The optimiser estimate route answers a worker that could not start, or a host
+that cannot start one, 503 with the reason, and a protocol failure an internal 500.
 `run_preemptible` (the assistant's data check) never waits and never starts the pool: it
 is refused at once (`InteractiveWorkerBusyError`) when the pool has not started, the lock
 is held or any interactive request is pending for the index, so a pre-empting request's
@@ -2972,7 +2987,7 @@ present a structural or schema result as execution evidence.
 - `tests/test_polars_operations.py` — the operation registry against the installed Polars: every registered operation exists on it (a `then`, `otherwise` or `agg` on the chain object Polars returns), an entry naming a removed operation is reported, every public expression method, frame method, `pl` function and namespace method is registered or recorded in the reviewed `tests/polars_unregistered_operations.json`, so an upgrade that adds or removes one fails until it is reviewed, and Polars' own `Expr.meta.is_row_separable()` agrees with every row-local entry and with no fan-in or order-dependent one, each built from its admitted shape (`tests/_polars_operation_samples.py`; five entries Polars builds from the column's dtype are recorded as unjudged); and the operation registry's invariants (frozen, unique receiver-aware keys, import-time validation of class/policy/expansion, a boundary without a memory factor, and a streaming policy carrying one), the consistency of every analyser's derived vocabulary with the registry, the derived boundary sets (`materialising_frame_methods`, `materialising_expression_methods`), and representative snippets per class proving the chunk classifier and the lineage/cardinality analyser agree with the registered class.
 - `tests/test_polars_compatibility_corpus.py` — the version-pinned compatibility corpus: `tests/polars_compatibility_corpus.json` records, for representative shapes across every maintained namespace, the classification they receive today (lineage support, cardinality availability, chunk eligibility, and the planner strategy under an admitted context) together with the pinned Polars version; the test fails on any difference, so a Polars upgrade or analyser change cannot silently turn a working shape into a rejection, and every change to the corpus is a reviewed edit of that file. A registry policy change regenerates the corpus, and only the operators whose evidence changed may move.
 - `tests/test_interactive_route_isolation.py` — preview and trace routes execute serialisable production targets through the spawn-worker boundary.
-- `tests/test_interactive_worker_pool.py` — warm interactive-worker pool readiness, protocol, timeout, cancellation, RSS-limit, replacement, and execution-mode contracts.
+- `tests/test_interactive_worker_pool.py` — warm interactive-worker pool readiness, protocol, timeout, cancellation, RSS-limit, replacement, and execution-mode contracts, including with real workers that a remote `ValueError` leaves the same worker pid, that a child growing past its growth cap is replaced and the next request served, that the next request after one failed replacement starts the slot again, and that a wait for a held slot ends at the request's deadline; `tests/test_optimiser_routes.py` that the estimate route answers start and host failures 503 and a protocol failure 500.
 - `tests/test_native_memory_limit.py` — native-backend selection, strict-policy
   rejection, Linux/Windows aggregate enforcement, active-backend scoping, lease
   cleanup, and fork-safe ownership contracts, and the model-thread allowance's fixed
