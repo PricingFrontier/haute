@@ -631,7 +631,10 @@ def save_model(body: SaveModelRequest) -> SaveModelResponse:
 @router.post("/export", response_model=ExportScriptResponse)
 async def export_script(body: ExportScriptRequest) -> ExportScriptResponse:
     """Generate a standalone training script from a modelling node's config."""
-    node = _find_modelling_node(body.graph, body.node_id)
+    # Prepared as /train prepares it, so a node inside a submodel is found by its
+    # flattened id.
+    graph = await run_in_threadpool(_prepare_runtime_graph, body.graph)
+    node = _find_modelling_node(graph, body.node_id)
     config = dict(node.data.config)
 
     # Script and live training share the executable node name, never an editor/runtime id.

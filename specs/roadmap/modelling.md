@@ -62,7 +62,6 @@ something this page settles.
 | MOD-R07 | Planned | P2 | Stratified test allocation reserves enough of every class for all requested validation and training partitions. |
 | MOD-R08 | Planned | P2 | Training polling and cancellation preserve tuning phase, trial, fold, fit-count and best-score progress. |
 | MOD-R09 | Planned | P2 | MLflow output signatures declare the dtype the pyfunc actually predicts, including floating regression predictions from an integer target. |
-| MOD-R10 | Planned | P2 | `training_identity_sha256` and `TrainingJob` agree on `id_columns` and `refit_on_development`, `export_script` flattens submodels, `save_mlflow_settings` and `save_contract` write atomically and handle malformed `haute.toml`, `_evaluation_preview_payload` sorts arbitrary string dates safely, and `TrainResponse.warning` preserves combined GPU and RAM warnings. |
 
 ## Planned improvements
 
@@ -401,74 +400,3 @@ not just signature-object construction.
 
 **Evidence:** `src/haute/modelling/_signature.py::build_signature`;
 `src/haute/modelling/_native_pyfunc.py::NativePyfuncModel.predict`.
-
-### MOD-R10 — Training identity agreement, submodel script export, MLflow/contract persistence safety, evaluation date sorting, and GPU warning propagation
-**Why:** Five defects affect training identity, script export, MLflow settings and
-contract persistence, evaluation preview and training warnings:
-1. `_TRAINING_IDENTITY_KEYS` in `_candidate_run.py` omits `refit_on_development` and
-   `TrainingJob.training_identity_sha256` (`_training_job.py`) does not pass
-   `"refit_on_development": self.refit_on_development` in the dict handed to
-   `training_identity_sha256(...)`, so toggling `refit_on_development` produces the
-   same `training_identity_sha256`. In addition, `TrainingJob.__init__` mutates
-   `self.id_columns` in place by appending `evaluation_key` (`group_column` for group
-   evaluation or `date_column` for temporal evaluation), so
-   `TrainingJob.training_identity_sha256` computes a different digest from
-   `training_identity_sha256(config)` whenever `group_column` or `date_column` is not
-   already in `id_columns`.
-2. `export_script` (`POST /api/modelling/export-script`) calls
-   `_find_modelling_node(body.graph, body.node_id)` on the unflattened graph without
-   running `_prepare_runtime_graph(body.graph)` (`flatten_executable_graph`), returning
-   HTTP 404 when exporting a training script for a modelling node inside a submodel.
-3. `save_mlflow_settings` in `_mlflow_settings.py` catches `TOMLKitError` when
-   `settings.folder == ""` but calls `tomlkit.parse` outside any `try` when
-   `settings.folder` is non-empty, and writes `haute.toml` via non-atomic
-   `write_target.write_text(...)` instead of `atomic_write_text`. Similarly,
-   `save_contract` in `_feature_contract.py` writes `feature_contract.json` via
-   `path.write_text(...)` without `path.parent.mkdir(parents=True, exist_ok=True)` or
-   `atomic_write_text`.
-4. `_evaluation_preview_payload` in `_training_evaluation.py` sorts string `date_values`
-   with `datetime.fromisoformat(value.replace("Z", "+00:00"))`, raising `ValueError`
-   on non-ISO string dates (e.g. `"2024/01/15"`, `"2024-Q1"`) or `TypeError` when
-   comparing mixed naive and timezone-aware ISO strings that `generate_evaluation_plan`
-   accepted.
-5. In `TrainService._prepare_and_launch_training`, `ram_warning` and `gpu_warning` are
-   combined on `job["warning"]`, but only `ram_warning` is passed to
-   `self._launch_background(...)` and `_launch_training_protocol(...)`, so
-   `TrainResponse.warning` (`TrainStatusResponse.result.warning`) drops `gpu_warning`
-   when a GPU training job completes with a GPU fallback or memory warning.
-
-**Plan:** Add `"refit_on_development"` to `_TRAINING_IDENTITY_KEYS`, pass
-`"refit_on_development": self.refit_on_development` in
-`TrainingJob.training_identity_sha256`, and keep `TrainingJob`'s configured
-`id_columns` distinct from the internal evaluation key list; prepare the graph with
-`_prepare_runtime_graph(body.graph)` in `export_script`; catch `TOMLKitError` in both
-branches of `save_mlflow_settings` and write both `haute.toml` and
-`feature_contract.json` (`save_contract`, after ensuring `path.parent` exists) via
-`atomic_write_text`; sort string `date_values` in `_evaluation_preview_payload` with
-the same order `generate_evaluation_plan` uses without requiring
-`datetime.fromisoformat`; and pass the combined warning string into
-`_launch_background` / `_launch_training_protocol` so `TrainResponse.warning` matches
-`TrainStatusResponse.warning`.
-
-**Acceptance:** `training_identity_sha256(config)` changes when `refit_on_development`
-toggles and equals `job.training_identity_sha256` for both `refit_on_development=True`
-and `False` as well as group and temporal evaluation plans; `POST /api/modelling/export-script`
-exports a script for a modelling node inside a submodel; `PUT /api/mlflow/settings`
-handles a malformed `haute.toml` without a 500 when `settings.folder` is non-empty and
-writes atomically alongside `save_contract` (which creates missing parent directories);
-evaluation preview succeeds on non-ISO or mixed-offset string date columns; and a
-completed training job with `gpu_warning` retains that warning in
-`TrainResponse.warning`.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/modelling/_candidate_run.py::_TRAINING_IDENTITY_KEYS`;
-`src/haute/modelling/_candidate_run.py::training_identity_sha256`;
-`src/haute/modelling/_training_job.py::TrainingJob.__init__`;
-`src/haute/modelling/_training_job.py::TrainingJob.training_identity_sha256`;
-`src/haute/routes/modelling.py::export_script`;
-`src/haute/modelling/_mlflow_settings.py::save_mlflow_settings`;
-`src/haute/modelling/_feature_contract.py::save_contract`;
-`src/haute/routes/_training_evaluation.py::_evaluation_preview_payload`;
-`src/haute/routes/_training_lifecycle.py::TrainService._prepare_and_launch_training`;
-`src/haute/routes/_training_lifecycle.py::TrainService._launch_training_protocol`.

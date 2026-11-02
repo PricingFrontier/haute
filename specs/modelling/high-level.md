@@ -212,8 +212,8 @@ compatibility facade and route own no duplicate state or worker implementation.
   config or parse, any Polars planning or collection failure raised by the pipeline's own
   code and data), or a bounded-mode refusal; the endpoint never surfaces one as a 500.
 - `POST /api/modelling/export` returns a standalone Python script that trains the
-  identical model the "Train" button would, using the same config → kwargs builder as
-  live training.
+  identical model the "Train" button would, using the same graph preparation and config →
+  kwargs builder as live training, so a modelling node inside a submodel exports too.
 - `POST /api/modelling/mlflow/log` logs an already-completed job's results to MLflow
   after the fact (the "Log to MLflow" button), reusing the persisted feature contract
   so the logged model's signature matches what was actually trained. Haute never
@@ -390,7 +390,8 @@ A selection that depends on position (a random split or random evaluation plan, 
 most recent rows' share of a temporal holdout, the SHAP and partial-dependence
 samples) is taken over the rows' canonical order, not the order the pipeline
 delivered them in. The canonical order sorts the rows by the identity columns
-(`id_columns`), then by every other column in the frame's order, ascending with
+(`id_columns`, then a group or temporal evaluation's key), then by every other column
+in the frame's order, ascending with
 nulls last; text and categorical values sort by their characters and an Enum by its
 declared levels. Rows equal in every column keep their arrival order, and no
 selection can tell them apart. The order is built one column at a time, most

@@ -1685,7 +1685,7 @@ class TestLaunchBackgroundWorker:
                 _launch_config(),
                 {"iterations": 1},
                 tmp_parquet,
-                ram_warning=None,
+                warning=None,
                 total_source_rows=100,
                 execution_context=context,
             )
@@ -1732,7 +1732,7 @@ class TestLaunchBackgroundWorker:
                 _launch_config(),
                 {"iterations": 1},
                 tmp_parquet,
-                ram_warning=None,
+                warning=None,
                 total_source_rows=None,
                 execution_context=context,
             )
@@ -1772,7 +1772,7 @@ class TestLaunchBackgroundWorker:
                 _launch_config(),
                 {"iterations": 1},
                 tmp_parquet,
-                ram_warning=None,
+                warning=None,
                 total_source_rows=None,
                 execution_context=context,
             )
@@ -1822,7 +1822,7 @@ class TestLaunchBackgroundWorker:
                 _launch_config(),
                 {"iterations": 1},
                 tmp_parquet,
-                ram_warning=None,
+                warning=None,
                 total_source_rows=None,
                 execution_context=context,
             )

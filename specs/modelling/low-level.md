@@ -169,7 +169,8 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   for a model that applies its own offset (a pyfunc, or a family whose file records
   the link); binding refuses it for a model whose offset only the contract declares.
   `build_contract` and `load_contract` refuse a link without a column and a link
-  outside `log`/`identity`. `CONTRACT_FILENAME = "feature_contract.json"`;
+  outside `log`/`identity`. `save_contract` creates the file's folder and replaces the
+  file in one rename (`atomic_write_text`). `CONTRACT_FILENAME = "feature_contract.json"`;
   per-model files are named via `_training_job.model_contract_filename(name)` →
   `"{name}.feature_contract.json"`.
   Feature types are named by `_polars_dtypes.contract_dtype_name`, the
@@ -678,7 +679,9 @@ omit it retain the constructor-only internal/test-seam split pipeline described 
 
 ### Script export
 
-`POST /api/modelling/export` → `_export.generate_training_script(config, data_path)` →
+`POST /api/modelling/export` prepares the graph as `/train` does (`_prepare_runtime_graph`), so
+a node inside a submodel is found by its flattened id, then →
+`_export.generate_training_script(config, data_path)` →
 `build_training_job_kwargs` (identical builder to live training) → renders a
 `TrainingJob(...)` constructor call as source text, omitting any kwarg equal to
 `TrainingJob`'s own default (so the script stays readable), plus a `__main__` block
@@ -950,7 +953,9 @@ would produce.
 `load_mlflow_settings()` reads the stored section (tomllib);
 `save_mlflow_settings()` validates the same rules and rewrites only the
 `[mlflow]` table via tomlkit, preserving every other section, comment, and
-layout byte-for-byte. `tracking_uri` and `folder` are saved independently:
+layout byte-for-byte, and replaces the file in one rename (`atomic_write_text`). A
+`haute.toml` that is not valid TOML is refused with `MlflowConfigError` (the route's 400)
+and left as it is. `tracking_uri` and `folder` are saved independently:
 an empty `tracking_uri` clears the server key, and an empty `folder`
 persists the currently *resolved* local folder (a stored folder keeps its
 spelling, an env-derived folder is persisted as its absolute path, else the
@@ -1138,10 +1143,14 @@ optional node id, project-relative pipeline, git commit and dirty flag) is captu
 completes: the canvas lifecycle captures it outside the store lock just before publishing
 completion and stores its plain data on the job record as `provenance`; `TrainingJob` captures it
 when it logs. `training_identity_sha256(kwargs)` is the SHA-256 of the canonical JSON of the
-TrainingJob training inputs (target, weight, exclusions and feature selection, algorithm, task,
-params, evaluation, tuning, metrics, loss, variance power, offset, monotone constraints, feature
-weights, categorical levels) — the same kwargs the canvas worker and a script pass to
-`TrainingJob` — and raises on values with no canonical JSON form. Git state comes from the project
+TrainingJob training inputs (target, weight, exclusions and feature selection, identifier
+columns, algorithm, task, params, evaluation, tuning, whether the final model is refit on the
+development rows, metrics, loss, variance power, offset, monotone constraints, feature weights,
+positive class, device) — the same kwargs the canvas worker and a script pass to `TrainingJob`
+— and raises on values with no canonical JSON form. `TrainingJob.training_identity_sha256`
+hashes the job's own values of those inputs and equals `training_identity_sha256` of the kwargs
+built for it: the job keeps its configured `id_columns` as given, and orders rows by them plus
+the group or temporal evaluation key in a separate internal list. Git state comes from the project
 root and is omitted (never guessed) outside a repository. `build_candidate_run` loads the feature
 contract from the artifact set; it is the only source of the signature metadata (features, types,
 categorical features, target, task, offset column) and a contract without complete feature types
@@ -1967,7 +1976,9 @@ The implementation seams are:
   count: only when the RAM limit, not the user's `row_limit`, was binding and the file holds
   that many rows does the job record the downsampling warning, which names the joins for an
   unproven bound instead of claiming a source row count (a frame of exactly the limit's rows
-  is indistinguishable and is reported as sampled).
+  is indistinguishable and is reported as sampled). The job's `warning` is that warning and
+  the pre-launch VRAM check's `gpu_warning`, one per line, and the completed
+  `TrainResponse.warning` carries the same text.
 
 Focused evidence lives in `tests/test_evaluation.py`,
 `tests/test_train_evaluation_config.py`, `tests/test_training_evaluation.py`,

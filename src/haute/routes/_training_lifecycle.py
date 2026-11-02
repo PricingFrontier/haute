@@ -650,20 +650,23 @@ class TrainService:
                 if ram_limit_binds
                 else None
             )
+            stored_job = self._store.require_job(job_id)
+            # The VRAM check recorded its advisory before the run; the result carries
+            # it beside any downsampling warning, as the job does.
+            warning = (
+                "\n".join(part for part in (ram_warning, stored_job.get("gpu_warning")) if part)
+                or None
+            )
             if ram_warning:
-                gpu_warning = self._store.require_job(job_id).get("gpu_warning")
-                self._store.update_job(
-                    job_id,
-                    warning=f"{ram_warning}\n{gpu_warning}" if gpu_warning else ram_warning,
-                )
-            feature_selection = self._store.require_job(job_id).get("feature_selection")
+                self._store.update_job(job_id, warning=warning)
+            feature_selection = stored_job.get("feature_selection")
             self._launch_background(
                 job_id,
                 node_id,
                 config,
                 train_params,
                 tmp_parquet,
-                ram_warning,
+                warning,
                 total_source_rows,
                 feature_selection=feature_selection,
                 execution_context=execution_context,
@@ -1779,7 +1782,7 @@ class TrainService:
         config: dict[str, Any],
         train_params: dict[str, Any],
         tmp_parquet: str,
-        ram_warning: str | None,
+        warning: str | None,
         total_source_rows: int | None,
         *,
         execution_context: ExecutionContext,
@@ -2003,7 +2006,7 @@ class TrainService:
             response_fields = dict(raw_response)
             response_fields.update(
                 {
-                    "warning": ram_warning,
+                    "warning": warning,
                     "total_source_rows": total_source_rows,
                     "feature_selection": (
                         feature_selection.model_dump(mode="json")
@@ -2163,7 +2166,7 @@ class TrainService:
         config: dict[str, Any],
         train_params: dict[str, Any],
         tmp_parquet: str,
-        ram_warning: str | None,
+        warning: str | None,
         total_source_rows: int | None,
         *,
         execution_context: ExecutionContext,
@@ -2176,7 +2179,7 @@ class TrainService:
             config,
             train_params,
             tmp_parquet,
-            ram_warning,
+            warning,
             total_source_rows,
             execution_context=execution_context,
             feature_selection=feature_selection,

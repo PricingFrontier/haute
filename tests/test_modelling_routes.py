@@ -557,6 +557,39 @@ class TestTrainEndpoint:
         assert status["result"]["warning"] is None
         assert status["result"]["development_rows"] == 200
 
+    @pytest.mark.parametrize("downsampled", [False, True], ids=["gpu-only", "ram-and-gpu"])
+    def test_a_gpu_advisory_reaches_the_completed_result(
+        self, client, tmp_path, monkeypatch, downsampled: bool
+    ) -> None:
+        rng = np.random.RandomState(3)
+        rows = 800
+        data = tmp_path / "rows.parquet"
+        pl.DataFrame(
+            {"x1": rng.randn(rows), "x2": rng.randn(rows), "y": rng.rand(rows) * 3}
+        ).write_parquet(data)
+        advisory = "GPU VRAM could not be detected (no NVIDIA GPU found)."
+
+        def advise(service, train_params, row_limit, total_source_rows, probe_columns, job_id, **_):
+            # What the VRAM check records for an unknown GPU; the fit itself runs on CPU.
+            service._store.update_job(job_id, gpu_warning=advisory, warning=advisory)
+
+        monkeypatch.setattr(TrainService, "_check_gpu_vram_before_launch", advise)
+        if downsampled:
+            # Too little RAM for 800 rows: the limit floors at 500 and samples the input.
+            monkeypatch.setattr("haute._ram_estimate.available_ram_bytes", lambda: 1)
+
+        resp = client.post(
+            "/api/modelling/train",
+            json={"graph": _make_modelling_graph(str(data)), "node_id": "train"},
+        )
+
+        assert resp.status_code == 200, resp.text
+        status = _poll_until_done(client, resp.json()["job_id"])
+        assert status["status"] == "completed", status
+        assert status["result"]["warning"] == status["warning"]
+        assert status["warning"].endswith(advisory)
+        assert status["warning"].startswith("Dataset downsampled to 500") is downsampled
+
     def test_train_reports_progress(self, client, training_data):
         """Training should report iteration progress via the status endpoint."""
         graph = _make_modelling_graph(training_data, params=_fast_training_params(iterations=8))
@@ -1011,6 +1044,39 @@ class TestExportEndpoint:
         assert "feature_columns=['x1', 'x2']," in data["script"]
         assert "exclude=" not in data["script"]
         assert data["filename"].endswith(".py")
+
+    def test_export_reaches_a_modelling_node_inside_a_submodel(self, client, training_data):
+        inner = _make_modelling_graph(training_data)
+        graph = {
+            "source_file": inner.get("source_file", "main.py"),
+            "nodes": [
+                {
+                    "id": "rating",
+                    "data": {
+                        "label": "rating",
+                        "nodeType": "submodel",
+                        "config": {"definitionId": "rating", "alias": "rating"},
+                    },
+                }
+            ],
+            "edges": [],
+            "submodels": {
+                "rating": {
+                    "definition_id": "rating",
+                    "file": "modules/rating.py",
+                    "graph": {"nodes": inner["nodes"], "edges": inner["edges"]},
+                    "input_ports": [],
+                    "output_ports": [],
+                }
+            },
+        }
+        resp = client.post(
+            "/api/modelling/export",
+            json={"graph": graph, "node_id": "submodel_runtime/rating/train"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert "TrainingJob" in resp.json()["script"]
+        assert "feature_columns=['x1', 'x2']," in resp.json()["script"]
 
     def test_export_missing_node(self, client, training_data):
         graph = _make_modelling_graph(training_data)

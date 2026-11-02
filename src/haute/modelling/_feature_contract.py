@@ -38,6 +38,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from haute._file_ops import atomic_write_text
 from haute._stat_gated_cache import StatGatedCache, artifact_cache_key, resolve_artifact_path
 from haute.errors import FeatureMismatchError
 
@@ -316,10 +317,8 @@ def save_contract(contract: FeatureContract, path: Path | str) -> None:
         "contract_version": contract.contract_version,
         "model": contract.model.to_plain_data() if contract.model is not None else None,
     }
-    path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True))
 
 
 def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContract:

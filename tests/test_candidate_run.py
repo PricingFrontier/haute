@@ -237,6 +237,47 @@ class TestTrainingIdentity:
         with pytest.raises(TypeError, match="no canonical JSON form"):
             training_identity_sha256({"params": {"depth": object()}})
 
+    @pytest.mark.parametrize(
+        "evaluation",
+        [
+            {"strategy": "random", "seed": 1, "validation": {"method": "single", "size": 0.25}},
+            {
+                "strategy": "group",
+                "seed": 1,
+                "group_column": "policy",
+                "validation": {"method": "single", "size": 0.25},
+            },
+            {
+                "strategy": "temporal",
+                "date_column": "period",
+                "validation": {"method": "single", "start": "2024-01-01"},
+            },
+        ],
+        ids=["random", "group", "temporal"],
+    )
+    def test_config_and_job_agree_and_the_final_refit_is_part_of_it(
+        self, evaluation: dict[str, object]
+    ) -> None:
+        from haute.modelling._train_config import build_training_job_kwargs
+        from haute.modelling._training_job import TrainingJob
+
+        identities = []
+        for refit in (True, False):
+            config = {
+                "target": "y",
+                "feature_columns": ["x"],
+                "loss_function": "RMSE",
+                "params": {"iterations": 5},
+                "evaluation": {"schema_version": 1, **evaluation},
+                "refit_on_development": refit,
+            }
+            kwargs = build_training_job_kwargs(config, data="d.parquet")
+            job = TrainingJob(**kwargs)
+            assert job.id_columns == []
+            assert job.training_identity_sha256 == training_identity_sha256(kwargs)
+            identities.append(job.training_identity_sha256)
+        assert identities[0] != identities[1]
+
 
 class TestProvenance:
     def test_round_trips_through_plain_data(self) -> None:

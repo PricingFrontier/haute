@@ -799,8 +799,12 @@ class TrainingJob:
                 )
                 if evaluation_key in glm_columns:
                     raise HauteValidationError("evaluation key cannot be a GLM term")
-            if evaluation_key not in self.id_columns:
-                self.id_columns.append(evaluation_key)
+        # The configured identifiers stay as given: they are part of the training
+        # identity. The evaluation key joins them only where rows are ordered
+        # canonically and where it is kept out of the features.
+        self._row_key_columns = list(self.id_columns)
+        if evaluation_key and evaluation_key not in self._row_key_columns:
+            self._row_key_columns.append(evaluation_key)
         # Parse split config
         if isinstance(split, SplitConfig):
             self.split_config = split
@@ -1065,7 +1069,7 @@ class TrainingJob:
             _training_row_order(
                 pl.scan_parquet(prepared.data_path),
                 prepared.total_rows,
-                self.id_columns,
+                self._row_key_columns,
                 stage_name="evaluation_plan_row_order",
                 execution_context=execution_context,
             )
@@ -2358,7 +2362,7 @@ class TrainingJob:
                 _training_row_order(
                     split_lf,
                     total_rows,
-                    self.id_columns,
+                    self._row_key_columns,
                     stage_name="training_split_row_order",
                     execution_context=execution_context,
                 )
@@ -2911,7 +2915,7 @@ class TrainingJob:
         if hasattr(algo, "shap_values"):
             _report("Computing SHAP values", 0.85)
             try:
-                diag_row_order = frame_row_order(diag_df, self.id_columns)
+                diag_row_order = frame_row_order(diag_df, self._row_key_columns)
                 # One bounded sample for every family; every view or none.
                 shap_rows = shap_sample(diag_df, diag_row_order)
                 views = shap_diagnostics(
@@ -3177,7 +3181,7 @@ class TrainingJob:
             non_features.add(self.offset)
         if self.fold_column:
             non_features.add(self.fold_column)
-        non_features.update(self.id_columns)
+        non_features.update(self._row_key_columns)
         if self.split_config.strategy == "temporal" and self.split_config.date_column:
             non_features.add(self.split_config.date_column)
         if self.split_config.strategy == "group" and self.split_config.group_column:
@@ -3292,6 +3296,7 @@ class TrainingJob:
                 "feature_columns": list(self.feature_columns) or None,
                 "fold_column": self.fold_column,
                 "id_columns": list(self.id_columns) or None,
+                "refit_on_development": self.refit_on_development,
                 "algorithm": self.algorithm,
                 "task": self.task,
                 "params": self.params,

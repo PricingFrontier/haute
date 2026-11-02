@@ -35,6 +35,7 @@ _TRAINING_IDENTITY_KEYS = (
     "params",
     "evaluation",
     "tuning",
+    "refit_on_development",
     "metrics",
     "loss_function",
     "variance_power",

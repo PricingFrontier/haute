@@ -38,7 +38,7 @@ records corrections to that audit's claims and proposed remedies.
 | [Frontend shared](frontend-shared.md) | A save that keeps the browser in step after a reconnect, surfaced completion errors, aborted fetches, a bootstrap deadline; Ctrl+S saving what is being typed and creation fenced on structure; one copy of each store derivation and helper; the specification as the code is; the results store; independent edits during input resolution, job-bound cancellation replies, failed solves retaining the identity of prior successful results, and store-backed node-data job ownership | `FSH-R05` |
 | [IO layer](io-layer.md) | Lock holds and usage cost; memory admission and isolated worker execution for explicit Data Input cache builds | `IO-R07` |
 | [Model scoring](model-scoring.md) | Generic model-file suffixes, pyfunc files, loader errors that keep their meaning; pyfunc classifiers preserving separate labels and positive-class probabilities, and native metadata record validation in `EBMModel.load`, `XGBoostModel.load` and `LightGBMModel.load` | `MSC-06` |
-| [Modelling](modelling.md) | Publication outside the lock, diagnostics measured as the fit was; adaptive low-memory fitting: exact chunked GLM, a low-memory boosted-tree mode (both awaiting a decision); feasible stratified allocation, recorded tuning progress reaching the browser, prediction-based MLflow signatures, accurate model-card and PDP labels, and training identity agreement with submodel script export and MLflow/contract persistence safety | `MOD-R03` |
+| [Modelling](modelling.md) | Publication outside the lock, diagnostics measured as the fit was; adaptive low-memory fitting: exact chunked GLM, a low-memory boosted-tree mode (both awaiting a decision); feasible stratified allocation, recorded tuning progress reaching the browser, prediction-based MLflow signatures, accurate model-card and PDP labels | `MOD-R03` |
 | [Name collisions](name-collisions.md) | Input-binding editors showing their name violations inline; distinct parsed, recovered and pasted connections retaining distinct identities | `NAME-09` |
 | [Optimiser validation](optimiser-validation.md) | Per-point convergence traces from price_contour's frontier sweep; a calibrated solve-memory forecast in the Solve panel; the optimiser result workspace's open robustness and CSV questions; one gate for every persisted optimiser artifact, setup files under a reaped root, failures classified once, the frontier recompute sweep as a decision, `select_point` serialized under `parent_lock`, and sandboxed `artifact_path` resolution in Optimiser Apply | `OPT-R06` |
 | [Pipeline config](pipeline-config.md) | Project context, typed configs, node specification | `PCFG-R04` |
@@ -117,7 +117,7 @@ with a systematic batch-by-batch pass over all 961 authored production source fi
 inventory ledger with `0` unread files remaining). It maps the verified findings to
 new component packages (`ASSIST-62`, `CLI-R07`, `EXEC-R19`,
 `EDA-R04`, `FGC-R10` to `FGC-R12`, `FMOU-R07`, `FNED-R07`, `FSH-R13`,
-`GIT-R19`, `IO-R07`, `MSC-12`, `MOD-R10`, `OPT-R06`,
+`GIT-R19`, `IO-R07`, `MSC-12`, `OPT-R06`,
 `API-R04`, `TBOOST-11`, `TRACE-R04`, `WB-41`) and extensions of `DEP-R12B`,
 `DEP-R13` and `MOD-R05`; findings whose packages were delivered have been removed.
 It is a supporting report and owns no work; the packages in the component roadmaps
