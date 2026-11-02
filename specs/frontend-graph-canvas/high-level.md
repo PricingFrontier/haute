@@ -342,8 +342,10 @@ candidate, with the error toast.
   no-op for singleton node types (the request inputs, Quote Input and Workbench Input,
   which share one slot, and the response nodes, Quote Response and Workbench Output, which
   share another). Generic Duplicate is unavailable for a submodel occurrence,
-  and the handler directs callers to Create Instance. The palette, duplicate,
-  paste, instance, and context-menu paths consume the same singleton metadata,
+  and the handler directs callers to Create Instance; paste skips a copied
+  occurrence with the same direction, and skips submodel boundary cards. The
+  palette, duplicate, paste, instance, and context-menu paths consume the same
+  singleton metadata,
   matching the backend save invariant. Create Instance also refuses a Data Output (two writers to one destination) and a Source
   Switch, which routes by its own input names; the instance guard lives in the shared
   handler rather than in each caller's enabled-state check, so a new entry

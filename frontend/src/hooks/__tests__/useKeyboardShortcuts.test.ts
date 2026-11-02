@@ -388,6 +388,25 @@ describe("useKeyboardShortcuts", () => {
     expect(result.some((n: Node) => n.data.label === "Transform copy")).toBe(true)
   })
 
+  it("Ctrl+V pastes neither a submodel occurrence nor a boundary card, and says how to reuse a submodel", async () => {
+    params.clipboard.current = {
+      nodes: [
+        { id: "pricing", position: { x: 0, y: 0 }, type: "submodel", data: { label: "pricing", nodeType: "submodel", config: { definitionId: "pricing", alias: "pricing" } } } as unknown as Node,
+        { id: "input", position: { x: 0, y: 0 }, type: "submodelPort", data: { label: "INPUT", nodeType: "submodelPort", portDirection: "input", ports: [] } } as unknown as Node,
+        { id: "n2", position: { x: 0, y: 0 }, data: { label: "Transform", nodeType: "polars" }, type: "pipelineNode" } as unknown as Node,
+      ],
+      edges: [{ id: "e1", source: "pricing", target: "n2" }],
+    }
+    fireKey("v", { ctrlKey: true })
+    await waitFor(() => expect(params.setNodesAndEdges).toHaveBeenCalledOnce())
+    const [nodes, edges] = vi.mocked(params.setNodesAndEdges).mock.calls[0] as [Node[], Edge[]]
+    expect(nodes.map((n) => n.data.label)).toEqual(["Transform copy"])
+    expect(edges).toEqual([])
+    expect(useToastStore.getState().toasts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "error", text: "Use Create Instance to duplicate a reusable submodel" }),
+    ]))
+  })
+
   it("Ctrl+V does nothing when all copied nodes are existing singletons", () => {
     params.graphRef.current.nodes = [
       { id: "api1", position: { x: 0, y: 0 }, data: { label: "Quote Input", nodeType: "apiInput" } } as unknown as Node,

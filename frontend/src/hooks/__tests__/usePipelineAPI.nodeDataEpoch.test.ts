@@ -346,6 +346,61 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     expect(result.current.previewData?.selected_frame).toBe("layers")
   })
 
+  it.each([
+    [
+      "an API Input",
+      () => makeNode("quote", "apiInput", {
+        data: {
+          label: "quote",
+          nodeType: "apiInput",
+          config: { path: "quotes.jsonl", tables: [] },
+          _sourceHandleInputNames: { quotes: "quotes", claims: "claims" },
+        },
+      }),
+    ],
+    [
+      "a Workbench Input",
+      () => {
+        useWorkbenchStore.setState({
+          tables: {
+            tables: [
+              { name: "quotes", rows: "one", columns: [{ name: "premium", type: "float" }] },
+              { name: "claims", rows: "many", columns: [{ name: "premium", type: "float" }] },
+            ],
+            sample: {},
+            responseTables: [],
+            fetch: 1,
+          },
+        })
+        return makeNode("quote", "workbenchInput", {
+          data: { label: "quote", nodeType: "workbenchInput", config: {}, _sourceHandleInputNames: {} },
+        })
+      },
+    ],
+  ] as const)("previews the table chosen in %s's preview on Refresh and selecting it again", async (_label, make) => {
+    mockPreview.mockImplementation(async ({ nodeId }) => envelope(nodeId))
+    const quote = make()
+    const other = makeNode("other")
+    const { result } = await renderLoaded([quote, other])
+
+    act(() => result.current.previewNodeFrame("quote", "claims"))
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1), { timeout: STEP_TIMEOUT_MS })
+    expect(mockPreview.mock.calls[0][0]).toMatchObject({ nodeId: "quote", portLabel: "claims" })
+    await settle(result)
+
+    act(() => result.current.refreshPreview(quote))
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2), { timeout: STEP_TIMEOUT_MS })
+    expect(mockPreview.mock.calls[1][0]).toMatchObject({ nodeId: "quote", portLabel: "claims" })
+    await settle(result)
+
+    act(() => result.current.fetchPreview(other, { debounceMs: 0 }))
+    await waitFor(() => expect(result.current.previewData?.nodeId).toBe("other"))
+    await settle(result)
+    act(() => result.current.fetchPreview(quote, { debounceMs: 0 }))
+    expect(result.current.previewData).toMatchObject({ nodeId: "quote", selected_frame: "claims" })
+    await settle(result)
+  })
+
   it("previews a Workbench Output's first table once the table chosen in it is gone", async () => {
     mockPreview.mockResolvedValue(envelope("response"))
     const { result } = await renderLoaded([workbenchOutput()])

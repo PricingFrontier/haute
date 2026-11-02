@@ -69,7 +69,7 @@ describe("useGraphStore loadGraphSnapshot", () => {
     expect(state.persistedFingerprint).toBe(serializeSnapshot(loaded))
     expect(state.savedPersistedFingerprint).toBe(state.persistedFingerprint)
     expect(state.structuralFingerprint).toBe(
-      computeStructuralFingerprint(loaded.nodes, loaded.edges, loaded.preamble),
+      computeStructuralFingerprint(loaded.nodes, loaded.edges, loaded.preamble, [], loaded.submodels),
     )
     expect(state.panelContextFingerprint).toBe(
       computePanelContextFingerprint(loaded.nodes, loaded.edges),
@@ -104,7 +104,7 @@ describe("useGraphStore loadGraphSnapshot", () => {
     })
 
     const state = useGraphStore.getState()
-    expect(state.structuralFingerprint).toBe(before.structuralFingerprint)
+    expect(state.structuralFingerprint).not.toBe(before.structuralFingerprint)
     expect(state.panelContextFingerprint).toBe(before.panelContextFingerprint)
     expect(state.structuralVersion).toBe(before.structuralVersion + 1)
     expect(state.panelContextVersion).toBe(before.panelContextVersion + 1)

@@ -17,7 +17,8 @@
 import { exportConfigKeysFor } from "./modellingExportConfig"
 import { authoredPolarsConfig, steppedSurfaceFor } from "./polarsStepInputs"
 
-const INPUT_KEYS = ["nodeType", "label", "description", "config", "code", "func_name"] as const
+// `ports` is a submodel boundary card's public ports, the definition's inputs and outputs.
+const INPUT_KEYS = ["nodeType", "label", "description", "config", "code", "func_name", "ports"] as const
 type InputKey = (typeof INPUT_KEYS)[number]
 const EXPLORE_NODE_TYPE = "explore"
 

@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { useState } from "react"
 import ModalShell from "../ModalShell"
+import SearchField from "../form/SearchField"
 
 afterEach(cleanup)
 
@@ -14,7 +16,39 @@ function renderShell(overrides: Partial<Parameters<typeof ModalShell>[0]> = {}) 
   return { ...render(<ModalShell {...props} />), props }
 }
 
+function SearchDialog({ onClose }: { onClose: () => void }) {
+  const [query, setQuery] = useState("lim")
+  return (
+    <ModalShell ariaLabel="Search dialog" onClose={onClose}>
+      <SearchField value={query} onChange={setQuery} label="Search fields" />
+    </ModalShell>
+  )
+}
+
 describe("ModalShell", () => {
+  it("lets Escape clear a search field inside it, and closes on the next Escape", () => {
+    const onClose = vi.fn()
+    render(<SearchDialog onClose={onClose} />)
+    const search = screen.getByRole("textbox", { name: "Search fields" })
+
+    fireEvent.keyDown(search, { key: "Escape" })
+    expect(search).toHaveValue("")
+    expect(onClose).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(search, { key: "Escape" })
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it("stays open for an Escape a field inside has already consumed", () => {
+    const { props } = renderShell({ children: <input aria-label="Consumer" /> })
+    const consumer = screen.getByRole("textbox", { name: "Consumer" })
+    consumer.addEventListener("keydown", (event) => event.preventDefault())
+
+    fireEvent.keyDown(consumer, { key: "Escape" })
+
+    expect(props.onClose).not.toHaveBeenCalled()
+  })
+
   it("renders children", () => {
     renderShell()
     expect(screen.getByText("Modal content")).toBeInTheDocument()

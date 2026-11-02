@@ -5,7 +5,7 @@ import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { isProtectedSubmodelNodeData, nodeData } from "../types/node"
-import { isSingletonType, singletonTypesOccupiedBy, type NodeTypeValue } from "../utils/nodeTypes"
+import { NODE_TYPES, isSingletonType, singletonTypesOccupiedBy, type NodeTypeValue } from "../utils/nodeTypes"
 import { requestSubmodelCreation } from "../utils/submodelCreation"
 import { hasModifier, inModalDialog, isTypingTarget, saveCommittingField } from "./keyboardTargets"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
@@ -253,8 +253,13 @@ export default function useKeyboardShortcuts({
         for (const n of capturedGraph.nodes) {
           for (const occupied of singletonTypesOccupiedBy(nodeData(n).nodeType)) occupiedSingletonTypes.add(occupied)
         }
+        // A copy of a submodel occurrence would carry the original's alias under
+        // a new id, and a boundary card belongs to its view: neither pastes.
+        const copiedOccurrence = copiedNodes.some((n) => nodeData(n).nodeType === NODE_TYPES.SUBMODEL)
+        if (copiedOccurrence) addToast("error", "Use Create Instance to duplicate a reusable submodel")
         const pasteable = copiedNodes.filter((n) => {
           const nt = nodeData(n).nodeType
+          if (nt === NODE_TYPES.SUBMODEL || nt === NODE_TYPES.SUBMODEL_PORT) return false
           if (!isSingletonType(nt)) return true
           if (occupiedSingletonTypes.has(nt!)) return false
           for (const occupied of singletonTypesOccupiedBy(nt)) occupiedSingletonTypes.add(occupied)

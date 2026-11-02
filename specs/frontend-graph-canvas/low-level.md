@@ -169,8 +169,8 @@ the stale-response identity, and capture the source file, pipeline name, source
 revision, preserved blocks, and a monotonically increasing transform request
 serial. Their responses commit only when that complete request context is
 still current and the store serialises identically. This catches position-only
-and submodel-only edits that deliberately do not increment
-`structuralVersion`, while excluding transient React Flow presentation
+edits, which deliberately do not increment `structuralVersion`, while excluding
+transient React Flow presentation
 fields. A local edit, pipeline/revision change, navigation action, or older
 overlapping transform response therefore causes the stale response to be
 rejected visibly without touching graph state.
@@ -453,10 +453,15 @@ reconciliation rather than dropping them or committing a second mutation.
    `panelContextFingerprint`/`Version` only if `computePanelContextFingerprint`
    (hashed over `PANEL_CONTEXT_NODE_DATA_KEYS`: label, description,
    nodeType, config, code, func_name, `_columns`, `_availableColumns`,
-   `_schemaWarnings`, `_notes`) changed, and recomputes `structuralFingerprint`/
-   `Version` only if `computeStructuralFingerprint` (sorted `id:hash` pairs
-   via `shallowNodeDataHash`, plus sorted edge endpoint/handle keys, plus
-   preamble) changed.
+   `_schemaWarnings`, `_notes`, and a boundary card's `ports`) changed, and
+   recomputes `structuralFingerprint`/`Version` only if
+   `computeStructuralFingerprint` (sorted `id:hash` pairs via
+   `shallowNodeDataHash`, whose input keys include a boundary card's `ports`,
+   plus sorted edge endpoint/handle keys, the preamble, the global constants,
+   and each submodel definition's ports and file with its child graph hashed
+   the same way) changed. So a submodel-only change, such as Undo at the root
+   reverting a drilled visit, advances `structuralVersion`, while preview
+   results written into a definition's child nodes do not.
 7. **Store internals, raw path (`setNodesRaw`/`setEdgesRaw`).** Three
    fast-path tiers, cheapest first: (a) `hasOnlyNodeUiFieldChanges` /
    `hasOnlyEdgeUiFieldChanges` (selection-only, comparing a fixed
@@ -737,12 +742,13 @@ reconciliation rather than dropping them or committing a second mutation.
     whose seeds did not change is a backend cache hit, and one that fails
     shows the preview error. Other nodes' stored previews are fetched again
     when next displayed.
-    The frame a node previews (`previewPortLabel`): a Workbench Output's is the
-    table last chosen in its preview's frame select (`previewNodeFrame` records
-    each node's choice for the hook's lifetime) while that table is still one of
-    its ports (`workbenchTablePorts`), else its first; a request input's is its
-    first emitting table. So a Workbench Output's Refresh, an automatic
-    recalculation and selecting the node again keep the table chosen. A stored
+    The frame a node previews (`previewPortLabel`): a Workbench Output's, a
+    Quote Input's and a Workbench Input's is the table last chosen in its
+    preview's frame select (`previewNodeFrame` records each node's choice for
+    the hook's lifetime) while that table is still one of its ports (the
+    workbench's tables, or the request input's emitting tables), else its first.
+    So Refresh, an automatic recalculation and selecting the node again keep the
+    table chosen. A stored
     preview is shown by `fetchPreview`, the cache-first check and a stop's
     restore only when its `selected_frame` is that frame, and a preview's
     requested columns are the frame's (`_frameColumns`) where the node has them,
@@ -1225,7 +1231,11 @@ array-only payload or omitted-edge compatibility branch is supported.
   a pair disables both), while the drop handler repeats
   the check at commit time so stale or synthetic drag data cannot bypass it.
   Duplicating a singleton remains a silent no-op and paste filters occupied
-  singleton types against the same document-wide set. Generic duplication of
+  singleton types against the same document-wide set. Paste never copies a
+  `SUBMODEL` occurrence (its copy would carry the original's alias under a new
+  id) or a `SUBMODEL_PORT` boundary card; a copied occurrence is reported with
+  the same direction to use Create Instance, and edges to a skipped node are
+  dropped with it. Generic duplication of
   a `SUBMODEL` is absent from its context menu and rejected visibly by the
   handler with direction to use Create Instance; a definition that contains a
   singleton cannot be instantiated because that would create a second

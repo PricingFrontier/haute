@@ -228,7 +228,8 @@ after ~3 seconds (enforced by `Toast.tsx`, not the store).
 **Chrome widgets.** `ErrorBoundary` wraps the root and each independently
 recoverable panel in `App.tsx`, so one feature's crash doesn't take down the
 whole editor. `ModalShell` is the shared dialog primitive — backdrop click,
-Escape-to-close, and a full focus trap (Tab wraps inside the dialog, focus
+Escape-to-close (except an Escape a field inside has consumed, such as a search
+box clearing its text), and a full focus trap (Tab wraps inside the dialog, focus
 returns to the triggering element on close) — used by `KeyboardShortcuts`
 and by every git dialog. The focus trap is installed for the modal lifetime;
 parent re-renders update callback refs without refocusing the dialog or
