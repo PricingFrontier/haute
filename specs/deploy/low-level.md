@@ -28,6 +28,7 @@ reached through a link refused through `ordinary_path_problem`; the `[mlflow]` t
 | `src/haute/deploy/_impact.py` | Impact analysis: batched endpoint scoring (Databricks SDK or HTTP `/quote`), quote-envelope normalisation, a response's one-row tables flattened into `<table>.<column>` columns so they are compared (`_flatten_structs`, the schema inferred from every answer so a field first answered late is never dropped), an output left empty refused by name, percent-change statistics, categorical segment breakdown, terminal/Markdown report formatting. |
 | `src/haute/deploy/_request_frame.py` | A flat Quote Input's served request framed by the manifest's `input_schema`: `request_frame_schema` (the rendered dtypes parsed by `parse_rendered_dtype`, an unsupported one refused as a `DeployError` naming the column), `frame_rows(rows, schema, *, omittable)` (each value through `_json_values.json_value`, an explicit null a typed null, an unknown key ignored, and a missing key refused as a `QuoteInputError` naming the quote and the column unless the column is in *omittable*, the manifest's omittable inputs, where it is a typed null) and `QuoteInputError` (error code quote_input_invalid, a public contract error naming the column, the quote and the value). |
 | `src/haute/_json_values.py` | JSON values checked against a declared Polars dtype, shared by the flat Quote Input's framing and the Workbench Input's reader: `json_value(value, dtype)` returns the value as the dtype holds it or raises `JsonValueError`; `REQUEST_DTYPES` names the supported dtype classes. |
+| `src/haute/deploy/_response_json.py` | A deployed response's rows as JSON, one encoding for both response modes: `response_json` (compact UTF-8, a date, date-time or time as its ISO 8601 text, a NaN or infinity refused) and `ndjson_rows` (a frame's `render_output_document` rows, one line each). The generated app's JSON envelope and its NDJSON spools both encode through it. |
 | `src/haute/deploy/_request_limits.py` | Deployed-container request-body size limiting: environment resolution, `Content-Length` and streamed-byte enforcement before JSON materialisation, and structured limit/header/parse errors. |
 
 ## Key types and data structures
@@ -564,7 +565,8 @@ searches the working directory too. Spawned batch workers inherit the parent's `
    with tables, read their records instead (`QuoteRequest`). Admission occurs before Polars
    materialisation of the score; `score_graph` releases the context in its `finally`, so a
    failure after admission leaves none held. Normal JSON requests call
-   `score_graph()` and return an object containing rendered `rows`, the full
+   `score_graph()` and return an object containing rendered `rows`
+   (`render_output_document`, encoded by `_response_json.response_json`), the full
    `row_count`, `returned_rows`, `truncated`, `limit`, and execution metrics. At most
    1,000 rows are returned in that envelope even though `row_count` records the full
    result.
@@ -614,8 +616,10 @@ searches the working directory too. Spawned batch workers inherit the parent's `
    504 `{"error_code": "deploy_batch_timeout", "operation": "deploy_quote",
    "timeout_seconds": ...}`; every other worker death → logged 500.
 6. An `Accept` header containing `application/x-ndjson` or `application/ndjson` selects
-   `score_graph_lazy()` and ordered, bounded collection in 50,000-row chunks. Rows are
-   encoded into a `SpooledTemporaryFile` from Starlette's worker threadpool before
+   `score_graph_lazy()` and ordered, bounded collection in 50,000-row chunks. Each chunk's
+   rows are rendered and encoded as the JSON envelope's are (`_response_json.ndjson_rows`:
+   `render_output_document`, then `response_json` per line), and written into a
+   `SpooledTemporaryFile` from Starlette's worker threadpool before
    response headers are committed; the spool spills to disk above its memory threshold
    and is then streamed to the client. A late scoring error is therefore logged and
    returned as HTTP 500, never HTTP 200 with a truncated NDJSON body, while `/health`
@@ -1114,7 +1118,9 @@ what they cover:
   other's drivers, and a key a node's own column step rewrites the other quote's
   drivers; the dry run reads the sample's first quote into the tables; `/quote` answers
   one quote, three, and two sharing a key, each with its own drivers, through the
-  tables, and refuses a misfit with `api_input_schema_invalid`; the Databricks model
+  tables, and refuses a misfit with `api_input_schema_invalid`; a single quote and a batch
+  answered as JSON and as NDJSON give the same rows (a null premium's pricing object and a
+  driverless quote's drivers left out, a date as ISO text); the Databricks model
   hands the input the records.
 - **`test_deploy_request_rows.py`** — the proof and its enforcement (PL2-04): ordered left
   joins against a bundled lookup with unique keys and no `validate`, an Edge Join and a

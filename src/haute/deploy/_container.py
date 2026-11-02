@@ -421,6 +421,7 @@ from haute.deploy._batch_scoring import (
 )
 from haute.deploy._request_frame import frame_rows, request_frame_schema
 from haute.deploy._request_rows import RequestRows
+from haute.deploy._response_json import ndjson_rows, response_json
 from haute.deploy._scorer import (
     QuoteRequest,
     admit_deploy_execution,
@@ -538,6 +539,13 @@ def health() -> dict:
     }}
 
 
+class _DocumentResponse(JSONResponse):
+    """The JSON envelope, its rows encoded as NDJSON encodes them (``response_json``)."""
+
+    def render(self, content) -> bytes:
+        return response_json(content)
+
+
 def _quote_response_content(result: pl.DataFrame, execution_context):
     row_count = result.height
     returned_rows = min(row_count, _QUOTE_RESPONSE_ROW_LIMIT)
@@ -574,12 +582,9 @@ def _materialize_quote_ndjson(plan):
             stage_name="deploy_stream_batch",
             node_id=_output_node_id,
         ):
-            if batch.height == 0:
-                continue
-            text = batch.write_ndjson()
-            if text and not text.endswith("\\n"):
-                text += "\\n"
-            spool.write(text.encode("utf-8"))
+            # The rows the JSON envelope renders, one line each: the same document
+            # whichever the client asks for.
+            spool.write(ndjson_rows(batch))
         spool.seek(0)
         return spool
     except BaseException:
@@ -626,12 +631,9 @@ def _materialize_batch_ndjson(plan, result):
             stage_name="deploy_batch_stream",
             node_id=_output_node_id,
         ):
-            if batch.height == 0:
-                continue
-            text = batch.write_ndjson()
-            if text and not text.endswith("\\n"):
-                text += "\\n"
-            spool.write(text.encode("utf-8"))
+            # The rows the JSON envelope renders, one line each: the same document
+            # whichever the client asks for.
+            spool.write(ndjson_rows(batch))
         spool.seek(0)
         return spool
     except BaseException:
@@ -707,7 +709,7 @@ async def _quote_batch(request: Request, rows: list):
                 media_type="application/x-ndjson",
             )
         else:
-            response = JSONResponse(
+            response = _DocumentResponse(
                 content=await run_in_threadpool(_batch_response_content, result)
             )
     except ExecutionAdmissionError as exc:
@@ -901,7 +903,7 @@ async def quote(request: Request) -> JSONResponse:
             execution_context=execution_context,
             request_rows=_request_rows,
         )
-        return JSONResponse(content=_quote_response_content(result, execution_context))
+        return _DocumentResponse(content=_quote_response_content(result, execution_context))
     except ExecutionAdmissionError as exc:
         return JSONResponse(status_code=507, content=exc.to_payload())
     except ExecutionCancelledError as exc:

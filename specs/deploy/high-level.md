@@ -345,7 +345,10 @@ definition file's own preamble, would be refused like any other unbundled projec
   it carries no assistant, tuning or editor package. `/quote` accepts a single JSON
   object or an array, enforces a byte limit before materialisation, and either returns a
   stable JSON envelope capped at 1,000 returned rows or streams all rows as ordered NDJSON
-  when requested through `Accept`. NDJSON is collected into a bounded-memory spooled
+  when requested through `Accept`. Either way the rows are the OUTPUT document as
+  `render_output_document` renders it (a null field and an empty collection left out, a
+  null inside an array kept) and encoded alike, a date or time as its ISO 8601 text, so
+  `Accept` changes the framing and the row limit, never a row. NDJSON is collected into a bounded-memory spooled
   temporary file in Starlette's worker threadpool before response headers are sent, so
   the event loop remains responsive during scoring and a scoring failure produces the
   same logged HTTP 500 contract as ordinary JSON instead of a misleading 200 with a
@@ -526,10 +529,6 @@ approving it.
   independently once shipped.
 
 ## Failure model
-
-> NOTE: Generated NDJSON responses currently bypass OUTPUT document pruning used by
-> JSON, so the same request can have a different nested response shape.
-> [DEP-R17](../roadmap/deploy.md#dep-r17--json-and-ndjson-preserve-the-same-output-document) owns response-mode parity.
 
 This codebase prefers loud failure over silent fallback, and deploy is where that matters
 most: a silent wrong answer here mis-prices real policies.
