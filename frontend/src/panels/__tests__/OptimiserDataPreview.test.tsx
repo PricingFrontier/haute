@@ -625,6 +625,24 @@ describe("OptimiserDataPreview", () => {
       expect(cellTexts).toContain("150")
     })
 
+    it("formats the statistics with the shared number formatter, which carries into the next unit", () => {
+      const preview = ["Q001", "Q002"].flatMap((quoteId) => [0, 1, 2].map((index) => ({
+        quote_id: quoteId,
+        scenario_index: index,
+        scenario_value: [0.9, 1.0, 1.1][index],
+        margin: 999_999,
+        volume: 5_000,
+      })))
+      const { container } = renderComponent({ preview, row_count: preview.length })
+      fireEvent.click(screen.getByText("Statistics"))
+
+      const cellTexts = Array.from(container.querySelectorAll("td")).map((c) => c.textContent)
+      // 999,999 is 999.999K, which prints as 1000.0K, so it carries into M.
+      expect(cellTexts).toContain("1.00M")
+      expect(cellTexts).not.toContain("1000.0K")
+      expect(cellTexts).toContain("5.0K")
+    })
+
     it("hides quote navigation and search on Statistics tab", () => {
       renderComponent()
       fireEvent.click(screen.getByText("Statistics"))

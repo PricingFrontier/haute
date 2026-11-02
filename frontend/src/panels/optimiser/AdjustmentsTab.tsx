@@ -8,19 +8,16 @@
  *
  * The solved result carries its report. A selected point's report is loaded
  * only while this view is open, through frontier select with
- * `include_adjustments`, in the Rates flow's pattern: one AbortController per
- * request and a request sequence, so a reply for a point or job the view has
- * moved past is dropped. A browser abort only discards the reply; a 409 replaced by another point's
+ * `include_adjustments` and `useLatestRequest`: a reply for a point or job the
+ * view has moved past is aborted and dropped; a 409 replaced by another point's
  * apply is reissued, not shown; a 410 says the point is gone, with no Retry;
- * anything else offers Retry. Loaded reports
- * belong to the preview's review (`pointReports`), so stepping back to a point
- * already loaded makes no request.
+ * anything else offers Retry. Loaded reports belong to the preview's review
+ * (`pointReports`), so stepping back to a point already loaded makes no request.
  */
 
-import { useEffect, useId, useRef, useState } from "react"
+import { useId, useState } from "react"
 import { AlertCircle, Loader2 } from "lucide-react"
 import { selectFrontierPoint } from "../../api/client"
-import { apiErrorCode, apiErrorMessage, apiErrorStatus } from "../../api/errors"
 import type {
   OptimiserAdjustmentBar,
   OptimiserAdjustmentReport,
@@ -41,17 +38,16 @@ import {
   pointAdjustmentKey,
   rangeEdgeShare,
 } from "./adjustments"
+import RequestFailureNotice from "./RequestFailureNotice"
+import { useLatestRequest } from "./useLatestRequest"
 
 /** Loaded frontier point reports, keyed by `pointAdjustmentKey`. */
 export type PointAdjustmentReports = Readonly<Record<string, OptimiserAdjustmentReport>>
 
 const QUOTES_WEIGHT = "quotes"
 const BASE_PRICE = 1
-const APPLY_REPLACED = "frontier_point_apply_replaced"
 const BAR_COLOR = CHART_COLORS.predicted
 const BASE_PRICE_COLOR = CHART_COLORS.residualZero
-
-type PointLoadFailure = { key: string; gone: boolean; message: string }
 
 interface AdjustmentsTabProps {
   jobId: string
@@ -72,59 +68,32 @@ export default function AdjustmentsTab({
   onPointReport,
   width,
 }: AdjustmentsTabProps) {
-  const pointKey = pointIndex === null ? null : pointAdjustmentKey(jobId, pointIndex)
-  const pointReport = pointKey === null ? undefined : pointReports[pointKey]
-  const [failure, setFailure] = useState<PointLoadFailure | null>(null)
-  // A replaced request is reissued by bumping the attempt.
-  const [attempt, setAttempt] = useState(0)
-  const requestSeqRef = useRef(0)
-  const onPointReportRef = useRef(onPointReport)
-  useEffect(() => {
-    onPointReportRef.current = onPointReport
-  })
-  const failed = failure !== null && failure.key === pointKey
-  const needsLoad = pointKey !== null && pointReport === undefined && !failed
-
-  useEffect(() => {
-    if (!needsLoad || pointIndex === null || pointKey === null) return
-    const requestId = requestSeqRef.current + 1
-    requestSeqRef.current = requestId
-    const controller = new AbortController()
-    const isCurrent = () => !controller.signal.aborted && requestSeqRef.current === requestId
-    selectFrontierPoint(
-      { job_id: jobId, point_index: pointIndex, include_adjustments: true },
-      { signal: controller.signal },
-    )
-      .then((response) => {
-        if (!isCurrent()) return
-        if (response.adjustments === null) {
-          setFailure({
-            key: pointKey,
-            gone: false,
-            message: `The server sent no adjustment report for frontier point ${pointIndex + 1}.`,
-          })
-          return
-        }
-        onPointReportRef.current(pointKey, response.adjustments)
-      })
-      .catch((error: unknown) => {
-        if (!isCurrent()) return
-        if (apiErrorStatus(error) === 409 && apiErrorCode(error) === APPLY_REPLACED) {
-          setAttempt((current) => current + 1)
-          return
-        }
-        setFailure({
-          key: pointKey,
-          gone: apiErrorStatus(error) === 410,
-          message: apiErrorMessage(error, "The request failed."),
-        })
-      })
-    return () => controller.abort()
-  }, [needsLoad, pointIndex, pointKey, jobId, attempt])
+  const pointReport = pointIndex === null ? undefined : pointReports[pointAdjustmentKey(jobId, pointIndex)]
+  const request = useLatestRequest(
+    pointIndex !== null && pointReport === undefined
+      ? { key: pointAdjustmentKey(jobId, pointIndex), jobId, pointIndex }
+      : null,
+    (wanted, signal) => selectFrontierPoint(
+      { job_id: wanted.jobId, point_index: wanted.pointIndex, include_adjustments: true },
+      { signal },
+    ),
+    (wanted, response) => {
+      if (response.adjustments === null) {
+        throw new Error(`The server sent no adjustment report for frontier point ${wanted.pointIndex + 1}.`)
+      }
+      onPointReport(wanted.key, response.adjustments)
+    },
+  )
 
   if (pointIndex !== null) {
-    if (failed) {
-      return <LoadFailure failure={failure} onRetry={() => setFailure(null)} />
+    if (request.failure) {
+      return (
+        <RequestFailureNotice
+          what="Adjustments could not be loaded"
+          failure={request.failure}
+          onRetry={request.retry}
+        />
+      )
     }
     if (pointReport === undefined) {
       return (
@@ -151,25 +120,6 @@ export default function AdjustmentsTab({
     )
   }
   return <AdjustmentsReport report={report} caption="As solved" width={width} />
-}
-
-function LoadFailure({ failure, onRetry }: { failure: PointLoadFailure; onRetry: () => void }) {
-  return (
-    <div role="alert" className="flex items-start gap-2 text-xs px-3 py-2 rounded" style={{ background: "var(--danger-soft)", color: "var(--danger)" }}>
-      <AlertCircle size={14} className="mt-0.5 shrink-0" />
-      <span className="flex-1">Adjustments could not be loaded: {failure.message}</span>
-      {!failure.gone && (
-        <button
-          type="button"
-          onClick={onRetry}
-          className="shrink-0 rounded px-2 py-0.5 text-[11px] font-medium"
-          style={{ border: "1px solid var(--danger-border-strong)", color: "var(--danger)" }}
-        >
-          Retry
-        </button>
-      )}
-    </div>
-  )
 }
 
 /** Where 1.0 sits among the grid's bars: its own bar, between two, or off the grid. */

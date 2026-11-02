@@ -546,9 +546,11 @@ Pane ownership:
   successful log shows the run id and link, as modelling's Export pane does. A ratebook result
   also offers **Download factor tables (CSV)** and states its combined-factor collar,
   "Combined factor collar [min, max] — apply it in your rating engine", from the solve's
-  `combined_factor_bounds` (every frontier point shares its solve's collar). The CSV repeats the
-  collar on every row as `combined_factor_min` and `combined_factor_max`, so the file stays one
-  rectangular table. A ratebook result without a collar shows an alert asking for a re-run and
+  `combined_factor_bounds` (every frontier point shares its solve's collar), printed as the grid
+  values the solve scored (`0.8`, never the widened `0.800000011920929`). The CSV repeats the
+  exact collar on every row as `combined_factor_min` and `combined_factor_max`, so the file stays one
+  rectangular table. A ratebook frontier point whose tables are not loaded yet offers **Load
+  factor tables for CSV** instead. A ratebook result without a collar shows an alert asking for a re-run and
   offers no CSV. Before any solve the section explains that there
   is nothing to publish yet; while a solve runs the actions are disabled. When the configuration
   has changed since the solve, a warning says so, the actions read **Save outdated result** and
@@ -596,8 +598,12 @@ server over every quote: sortable headers, presets ("Highest adjustment", "Lowes
 analysis value, the scenario value marked up or down against 1.0 by a glyph and words as well
 as colour, and a pager stating "Showing a–b of M matching (of N)"; columns are named in
 neutral scenario terms; reopening Quotes for the same target shows the loaded detail again
-without a new request, and a new solve loads it afresh. Quotes and Rates
-failures offer **Retry**. Rates lays out like AvE: factors ranked by rate spread (how far their rates move from 1.0, weighted by quotes) with search, beside the selected factor's rate bars in banding order with an aligned quote-count strip, a focusable detail line per level, and a values table of Level | Rate | vs neutral 1.0 (%) | Quotes | Share; the chosen factor survives tab switches. Summary's ratebook beeswarm fits the pane's width, says when it shows only the top 8 of N factors (with a Top 8 / All toggle), names categorical levels in words as well as colour, and has a values table. Adjustments shows how the optimiser adjusted the book relative to the base price, for the
+without a new request, and a new solve loads it afresh. Rates, Adjustments, Segments, Quotes
+and the Export pane's factor-table load treat a frontier-point request alike: one the view has
+moved past (another point, key, weighting or query, or the view closed) is abandoned silently;
+one the server dropped because another point was requested is sent again, never shown as a
+failure; a point or result that is no longer available says so with no **Retry**, since only a
+new solve helps; any other failure states the server's message with **Retry**. Rates lays out like AvE: factors ranked by rate spread (how far their rates move from 1.0, weighted by quotes) with search, beside the selected factor's rate bars in banding order with an aligned quote-count strip, a focusable detail line per level, and a values table of Level | Rate | vs neutral 1.0 (%) | Quotes | Share; the chosen factor survives tab switches. Summary's ratebook beeswarm fits the pane's width, says when it shows only the top 8 of N factors (with a Top 8 / All toggle), names categorical levels in words as well as colour, and has a values table. Adjustments shows how the optimiser adjusted the book relative to the base price, for the
 solved result or the selected frontier point: one bar per scenario value of the solve's grid
 (values nobody chose included, as empty bars), labelled by the value, on an axis named
 "Scenario value (1.0 = base price)", with a dashed line at 1.0 = base price (no adjustment).
@@ -611,8 +617,10 @@ only while the view is open, with a loading state; a failure offers **Retry**, a
 choices are no longer available says so. It describes the solution, not an impact: nothing is
 compared with current pricing. For a ratebook result it describes the grid step the solver
 evaluated for each quote, and states how many quotes' deployed factor differs from that step
-(the within-range rounding the deployed, unsnapped factor keeps). Summary shows the shares
-compactly, with that count for a ratebook result, and a link to the view.
+(the within-range rounding the deployed, unsnapped factor keeps). Summary shows the solved
+result's shares compactly, with that count for a ratebook result, and a link to the view; with a
+frontier point selected Summary shows no adjustments (the point's summary carries no report),
+and the point's adjustments are in the Adjustments view.
 Segments shows where the optimiser adjusted, for the solved result or the selected point: its
 keys (the analysis columns, and a ratebook result's rating factors) in a searchable list ranked by
 how differently the optimiser adjusted each key's levels (named above the list, and listed unranked
@@ -621,7 +629,7 @@ the 1.0 base line, with an aligned quote strip, a detail line for the hovered or
 values table. A **Weight by** switch weighs the means and shares as Adjustments does; a level
 whose weight totals 0 shows "—" for its weighted figures and says why. The key chosen here and
 on Rates is the same choice. A key with too many levels says why it cannot be broken down; a
-result with no keys says "Add analysis columns in the optimiser config".
+result with no keys says "Tick validation factors in the optimiser's Factors pane".
 Selecting a frontier point never removes a view: Convergence stays available and, for a selected point, says "History is recorded for the solved result; frontier point N: converged
 (or not converged), K iterations", and the frontier chart's as-solved marker stays at the solve's
 position. The Frontier chart fits the pane, names its axes (the objective

@@ -3091,11 +3091,10 @@ describe("OptimiserConfig", () => {
 
       expect(screen.queryByRole("button", { name: "Download factor tables (CSV)" })).not.toBeInTheDocument()
       fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
-      await waitFor(() => expect(mockSelectFrontierPoint).toHaveBeenCalledWith({
-        job_id: "job_pub",
-        point_index: 0,
-        include_ratebook_tables: true,
-      }))
+      await waitFor(() => expect(mockSelectFrontierPoint).toHaveBeenCalledWith(
+        { job_id: "job_pub", point_index: 0, include_ratebook_tables: true },
+        { signal: expect.any(AbortSignal) },
+      ))
       expect(await screen.findByRole("button", { name: "Download factor tables (CSV)" })).toBeInTheDocument()
     })
 
@@ -3131,21 +3130,82 @@ describe("OptimiserConfig", () => {
       }
       let resolveReply: (value: unknown) => void = () => {}
       mockSelectFrontierPoint.mockReturnValue(new Promise((resolve) => { resolveReply = resolve }))
-      return { config, deliver: () => act(async () => { resolveReply(reply) }) }
+      return { config, reply, deliver: () => act(async () => { resolveReply(reply) }) }
     }
 
-    it("keeps the chosen target when a factor-table reply arrives after the choice changed", async () => {
+    /** The Export pane's alert that starts with `text`. */
+    async function findAlert(text: string): Promise<HTMLElement> {
+      const alert = (await screen.findByText(new RegExp(`^${text}`))).closest<HTMLElement>("[role=alert]")
+      if (!alert) throw new Error(`"${text}" is not in an alert`)
+      return alert
+    }
+
+    it("aborts a factor-table load the target moved past, and keeps the chosen target", async () => {
       const { config, deliver } = seedRatebookFrontier()
       renderConfig(makeProps({ config }))
       fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
+      const signal = mockSelectFrontierPoint.mock.calls[0][1].signal as AbortSignal
+      expect(signal.aborted).toBe(false)
       fireEvent.change(screen.getByRole("combobox", { name: "Result to publish" }), { target: { value: "" } })
+      expect(signal.aborted).toBe(true)
 
       await deliver()
       const cached = useNodeResultsStore.getState().solveResults.opt_1
       expect(cached?.selectedPointIndex).toBeNull()
-      expect(cached?.frontier?.point_summaries[0].factor_tables).toEqual({
-        age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }],
-      })
+      expect(cached?.frontier?.point_summaries[0].factor_tables).toBeNull()
+    })
+
+    it("says a frontier point that is gone cannot load its factor tables, with no Retry", async () => {
+      const { config } = seedRatebookFrontier()
+      const { ApiError } = await vi.importActual<typeof import("../../api/client")>("../../api/client")
+      mockSelectFrontierPoint.mockReset()
+      mockSelectFrontierPoint.mockRejectedValueOnce(new ApiError("HTTP 410", 410, "gone", undefined, {
+        error_code: "frontier_point_unavailable",
+        message: "Frontier point 1 is no longer available. Re-run the solve to inspect it.",
+      }))
+      renderConfig(makeProps({ config }))
+      fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
+
+      const alert = await findAlert("Factor tables could not be loaded")
+      expect(alert).toHaveTextContent("Frontier point 1 is no longer available. Re-run the solve to inspect it.")
+      expect(within(alert).queryByRole("button", { name: "Retry" })).toBeNull()
+      expect(screen.queryByRole("button", { name: "Load factor tables for CSV" })).toBeNull()
+      expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(1)
+    })
+
+    it("offers Retry after any other factor-table failure, and Retry loads them", async () => {
+      const { config, reply } = seedRatebookFrontier()
+      mockSelectFrontierPoint.mockReset()
+      mockSelectFrontierPoint
+        .mockRejectedValueOnce(Object.assign(new Error("HTTP 500"), { detail: "Rates unavailable." }))
+        .mockResolvedValueOnce(reply)
+      renderConfig(makeProps({ config }))
+      fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
+
+      const alert = await findAlert("Factor tables could not be loaded")
+      expect(alert).toHaveTextContent("Rates unavailable.")
+      fireEvent.click(within(alert).getByRole("button", { name: "Retry" }))
+
+      expect(await screen.findByRole("button", { name: "Download factor tables (CSV)" })).toBeInTheDocument()
+      expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(2)
+    })
+
+    it("reissues a factor-table load another point's apply replaced, without an error", async () => {
+      const { config, reply } = seedRatebookFrontier()
+      const { ApiError } = await vi.importActual<typeof import("../../api/client")>("../../api/client")
+      mockSelectFrontierPoint.mockReset()
+      mockSelectFrontierPoint
+        .mockRejectedValueOnce(new ApiError("HTTP 409", 409, "replaced", undefined, {
+          error_code: "frontier_point_apply_replaced",
+          message: "Another frontier point was requested while this one waited.",
+        }))
+        .mockResolvedValueOnce(reply)
+      renderConfig(makeProps({ config }))
+      fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
+
+      expect(await screen.findByRole("button", { name: "Download factor tables (CSV)" })).toBeInTheDocument()
+      expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(2)
+      expect(screen.queryByText(/Factor tables could not be loaded/)).toBeNull()
     })
 
     it("drops a factor-table reply for a job the node has moved past", async () => {
@@ -3288,13 +3348,14 @@ describe("OptimiserConfig", () => {
       const ratebook = makeSolveResult({
         mode: "ratebook",
         factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
-        combined_factor_bounds: { min: 0.8999999761581421, max: 1.100000023841858 },
+        // The solver's Float32 grid ends, widened to float64.
+        combined_factor_bounds: { min: 0.800000011920929, max: 1.2000000476837158 },
       })
       const config = seedSolve({ result: ratebook, originalResult: ratebook })
       renderConfig(makeProps({ config }))
       expect(screen.getByRole("button", { name: "Download factor tables (CSV)" })).toBeInTheDocument()
       expect(screen.getByTestId("optimiser-combined-factor-collar")).toHaveTextContent(
-        "Combined factor collar [0.8999999761581421, 1.100000023841858] — apply it in your rating engine.",
+        "Combined factor collar [0.8, 1.2] — apply it in your rating engine.",
       )
     })
 

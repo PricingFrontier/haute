@@ -14,22 +14,22 @@ import type { SolveIssue } from "./OptimiserSolveStatus"
 import { constraintBoundKind, constraintBoundValue } from "./constraintBounds"
 
 /** The solver's frontier workload cap: steps ** constraints solves (mirrors the backend). */
-export const FRONTIER_COMPUTE_LIMIT = 10_000
+const FRONTIER_COMPUTE_LIMIT = 10_000
 
 /** The most analysis columns a solve keeps for result breakdowns (mirrors the backend). */
 export const MAX_ANALYSIS_COLUMNS = 12
 
-export const COLUMN_MAPPINGS = [
+const COLUMN_MAPPINGS = [
   { key: "quote_id", label: "Row ID" },
   { key: "scenario_index", label: "Scenario Index" },
   { key: "scenario_value", label: "Scenario Value" },
 ] as const
 
 /** One connected incoming edge, identified by its exact executable input name. */
-export type InputNodeInfo = { name: string; label: string; nodeType: string; sourceNodeId: string }
+type InputNodeInfo = { name: string; label: string; nodeType: string; sourceNodeId: string }
 
 /** Every node directly feeding the optimiser, by executable input name. */
-export function findInputNodes(
+function findInputNodes(
   nodeId: string,
   allNodes: SimpleNode[],
   edges: SimpleEdge[],
@@ -132,7 +132,7 @@ export function resolveOptimiserInputs(
   }
 }
 
-export type SolveReadiness = {
+type SolveReadiness = {
   issues: SolveIssue[]
   canSolve: boolean
   /** The setup is solvable apart from the frontier ranges Auto range fills. */

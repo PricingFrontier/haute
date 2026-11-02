@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { useState } from "react"
+import { useState, type ComponentProps } from "react"
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
-import RatebookRatesTab, { type RatesFactorSelection } from "../RatebookRatesTab"
+import RatebookRatesTab from "../RatebookRatesTab"
 import type { FactorTables } from "../ratebookFactorTables"
+
+type RatesFactorSelection = NonNullable<ComponentProps<typeof RatebookRatesTab>["selection"]>
 
 afterEach(cleanup)
 

@@ -11,7 +11,6 @@
 import { useId, useState, useMemo, useCallback, useEffect, useRef } from "react"
 import { AlertCircle, ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react"
 import { selectFrontierPoint as selectFrontierPointApi } from "../api/client"
-import { apiErrorMessage } from "../api/errors"
 import { formatNumber, fractionToPercent } from "../utils/formatValue"
 import useGraphStore from "../stores/useGraphStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
@@ -49,8 +48,10 @@ import { hasFactorTables } from "./optimiser/ratebookFactorTables"
 import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
 import QuotesTab from "./optimiser/QuotesTab"
 import AdjustmentsTab, { type PointAdjustmentReports } from "./optimiser/AdjustmentsTab"
+import RequestFailureNotice from "./optimiser/RequestFailureNotice"
 import SegmentsTab, { type SegmentResults } from "./optimiser/SegmentsTab"
 import { isSolveResultStale, startOptimiserSolve } from "./optimiser/solveActions"
+import { useLatestRequest, type RequestFailure } from "./optimiser/useLatestRequest"
 import { useOptimiserReadiness } from "./optimiser/useOptimiserReadiness"
 import {
   OPTIMISER_VIEW_LABELS,
@@ -67,8 +68,7 @@ import {
   useOptimiserScenarioData,
 } from "./optimiser/useOptimiserScenarioData"
 
-// ─── Types (shared with OptimiserConfig) ─────────────────────────
-export type { FrontierData }
+// ─── Types ───────────────────────────────────────────────────────
 
 export type OptimiserPreviewData = {
   /** The displayed result: the selected frontier point's, else the solve's. */
@@ -94,11 +94,6 @@ interface OptimiserPreviewProps {
   /** The node's preview rows, which the Curves and Statistics panes chart; null while unavailable. */
   scenarioData?: PreviewData | null
 }
-
-type RatesDetailState =
-  | { status: "idle" }
-  | { status: "loading"; key: string }
-  | { status: "error"; key: string; error: string }
 
 /** What one review of one node's solve job remembers across tabs and point steps. */
 type OptimiserReview = {
@@ -129,8 +124,6 @@ const NO_SCENARIO_DATA: PreviewData = {
   preview: [],
   error: null,
 }
-
-const REQUEST_FAILED = "The request failed."
 
 const OPTIMISER_ACCENT = {
   color: OPTIMISER_COLORS.accent,
@@ -338,15 +331,6 @@ export default function OptimiserPreview({
     }
   }, [allNodes, edges, nodeConfig, nodeId, rerunReadiness.canSolve, submodels])
 
-  const [ratesDetail, setRatesDetail] = useState<RatesDetailState>({ status: "idle" })
-  // Retry reissues a failed materialisation: the failed key is already released.
-  const [ratesAttempt, setRatesAttempt] = useState(0)
-  const retryRates = useCallback(() => {
-    setRatesDetail({ status: "idle" })
-    setRatesAttempt((current) => current + 1)
-  }, [])
-  const requestedRatesRef = useRef<Map<string, number>>(new Map())
-  const ratesRequestSeqRef = useRef(0)
   const factorLevelOrder = useMemo(
     () => bandingLevelOrderForOptimiser(nodeId, allNodes, edges),
     [nodeId, allNodes, edges],
@@ -355,15 +339,6 @@ export default function OptimiserPreview({
   // ── Frontier point selection ──
   const frontier = displayData.frontier
   const selectedIdx = displayData.selectedPointIndex
-
-  // The rates effect's cleanup already releases its in-flight key when its
-  // identity changes or on unmount; the whole map is also cleared when the
-  // job changes, so keys for a solve the node no longer shows
-  // do not accumulate across long-lived sessions.
-  useEffect(() => {
-    requestedRatesRef.current.clear()
-    setRatesDetail({ status: "idle" })
-  }, [jobId])
 
   const selectedRatebookRatesMissing = (
     result.mode === "ratebook"
@@ -376,54 +351,25 @@ export default function OptimiserPreview({
     // Rates draws them; Summary, and the Frontier pane that carries it, plots them.
     && (tab === "rates" || tab === "summary" || tab === "frontier")
   )
-  useEffect(() => {
-    if (!shouldMaterialiseSelectedRates || selectedIdx == null) return
-    const key = `${jobId}:${selectedIdx}`
-    const requestedRates = requestedRatesRef.current
-    if (requestedRates.has(key)) return
-    const requestId = ratesRequestSeqRef.current + 1
-    ratesRequestSeqRef.current = requestId
-    requestedRates.set(key, requestId)
-
-    const controller = new AbortController()
-    setRatesDetail({ status: "loading", key })
-    selectFrontierPointApi(
-      {
-        job_id: jobId,
-        point_index: selectedIdx,
-        include_ratebook_tables: true,
-      },
-      { signal: controller.signal },
-    )
-      .then((res) => {
-        if (requestedRates.get(key) !== requestId) return
-        storeUpdateAfterSelect(nodeId, jobId, selectedIdx, res)
-        requestedRates.delete(key)
-        setRatesDetail((current) => {
-          if (current.status !== "loading" || current.key !== key) return current
-          return hasFactorTables(res.factor_tables)
-            ? { status: "idle" }
-            : {
-                status: "error",
-                key,
-                error: "No rate tables were returned for this selected point.",
-              }
-        })
-      })
-      .catch((e) => {
-        if (requestedRates.get(key) !== requestId) return
-        requestedRates.delete(key)
-        if (controller.signal.aborted) return
-        setRatesDetail({ status: "error", key, error: apiErrorMessage(e, REQUEST_FAILED) })
-      })
-
-    return () => {
-      if (requestedRates.get(key) === requestId) {
-        requestedRates.delete(key)
+  // A request's identity is (job, point); a reply the view moved past is aborted and dropped.
+  const ratesRequest = useLatestRequest(
+    shouldMaterialiseSelectedRates && selectedIdx != null
+      ? { key: `${jobId}:${selectedIdx}`, nodeId, jobId, pointIndex: selectedIdx }
+      : null,
+    (wanted, signal) => selectFrontierPointApi(
+      { job_id: wanted.jobId, point_index: wanted.pointIndex, include_ratebook_tables: true },
+      { signal },
+    ),
+    (wanted, response) => {
+      storeUpdateAfterSelect(wanted.nodeId, wanted.jobId, wanted.pointIndex, response)
+      if (!hasFactorTables(response.factor_tables)) {
+        throw new Error("No rate tables were returned for this selected point.")
       }
-      controller.abort()
-    }
-  }, [shouldMaterialiseSelectedRates, selectedIdx, jobId, nodeId, storeUpdateAfterSelect, ratesAttempt])
+    },
+  )
+  const ratesDetail = ratesRequest.failure
+    ? { status: "error" as const, error: ratesRequest.failure.message }
+    : { status: "loading" as const }
 
   // A click selects a point as the publish target; the selected point stays
   // selected (the Export pane's target choice returns to the solved result).
@@ -636,7 +582,7 @@ export default function OptimiserPreview({
             }}
           />
         ) : (
-          <RatebookRatesPending detail={ratesDetail} onRetry={retryRates} />
+          <RatebookRatesPending failure={ratesRequest.failure} onRetry={ratesRequest.retry} />
         )
       )}
 
@@ -902,26 +848,9 @@ function FrontierTab({
   )
 }
 
-function RatebookRatesPending({ detail, onRetry }: { detail: RatesDetailState; onRetry: () => void }) {
-  if (detail.status === "error") {
-    return (
-      <div
-        role="alert"
-        className="flex items-start gap-2 text-xs px-3 py-2 rounded"
-        style={{ background: "var(--danger-soft)", color: "var(--danger)" }}
-      >
-        <AlertCircle size={14} className="mt-0.5 shrink-0" />
-        <span className="flex-1">Rate table load failed: {detail.error}</span>
-        <button
-          type="button"
-          onClick={onRetry}
-          className="shrink-0 rounded px-2 py-0.5 text-[11px] font-medium"
-          style={{ border: "1px solid var(--danger-border-strong)", color: "var(--danger)" }}
-        >
-          Retry
-        </button>
-      </div>
-    )
+function RatebookRatesPending({ failure, onRetry }: { failure: RequestFailure | null; onRetry: () => void }) {
+  if (failure) {
+    return <RequestFailureNotice what="Rate table load failed" failure={failure} onRetry={onRetry} />
   }
 
   return (

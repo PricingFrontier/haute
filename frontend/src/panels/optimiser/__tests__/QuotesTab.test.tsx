@@ -283,6 +283,29 @@ describe("QuotesTab", () => {
     expect(screen.getByText("HIGHEST")).toBeInTheDocument()
   })
 
+  it("reissues a page another point's apply replaced, without showing an error", async () => {
+    mockApply
+      .mockRejectedValueOnce(new ApiError("HTTP 409", 409, "replaced", undefined, {
+        error_code: "frontier_point_apply_replaced",
+        message: "Another frontier point was requested while this one waited.",
+      }))
+      .mockResolvedValueOnce(page(ROWS))
+    renderTab()
+
+    expect(await screen.findByText("Q001")).toBeInTheDocument()
+    expect(queries()).toEqual([DEFAULT_QUERY, DEFAULT_QUERY])
+    expect(screen.queryByRole("alert")).toBeNull()
+  })
+
+  it("shows any other 409 as a failure with Retry", async () => {
+    mockApply.mockRejectedValueOnce(new ApiError("HTTP 409", 409, "Optimiser job state changed."))
+    renderTab()
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Optimiser job state changed.")
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument()
+    expect(queries()).toHaveLength(1)
+  })
+
   it("offers Retry after a failure, and none when the result is gone", async () => {
     mockApply
       .mockRejectedValueOnce(new ApiError("HTTP 507", 507, "The optimiser choice query needs more memory."))

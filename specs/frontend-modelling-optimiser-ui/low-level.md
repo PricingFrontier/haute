@@ -34,11 +34,12 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/optimiser/solveActions.ts` | The one solve entry point (`startOptimiserSolve`) used by the Solve pane, Ctrl+Enter and the preview's Re-run; `stopOptimiserSolve`; and the solve-identity hash and staleness check (`solveConfigHash`, `isSolveResultStale`) that exclude the export settings. |
 | `frontend/src/panels/optimiser/solveReadiness.ts` | The one set of solve-readiness rules: `resolveOptimiserInputs` (selectors against the connected inputs) and `optimiserSolveReadiness` (blocking issues, `canSolve`, `canAutoRange`), used by the Solve pane, Ctrl+Enter and the preview's Re-run. |
 | `frontend/src/panels/optimiser/useOptimiserReadiness.ts` | Wraps those rules with the one data-input column path (known single-input columns, else the source-aware column cache and preview fetch) and the analysis frame's columns (the data-input columns when the analysis input is the data input, else a preview of the selected analysis input's source node), so the editor and Re-run judge the same columns; the preview fetches only while its stale strip is shown. |
-| `frontend/src/panels/optimiser/OptimiserPublishSection.tsx` | The Export pane's Publish section: target choice bound to the result store's selected point, `result_export_path`, version label, Save/Log with the overwrite confirmation, receipts, Use in Apply node, the ratebook factor-table CSV and the combined-factor collar statement (read from the solve's `originalResult.combined_factor_bounds`). |
+| `frontend/src/panels/optimiser/OptimiserPublishSection.tsx` | The Export pane's Publish section: target choice bound to the result store's selected point, `result_export_path`, version label, Save/Log with the overwrite confirmation, receipts, Use in Apply node, the ratebook factor-table CSV with its on-request load of a frontier point's tables (the shared point-request lifecycle) and the combined-factor collar statement (read from the solve's `originalResult.combined_factor_bounds`, printed through `frontend/src/panels/optimiser/adjustments.ts::formatScenarioValue`). |
 | `frontend/src/stores/useOptimiserPublishStore.ts` | Per-node publish state keyed by solve job (busy flags, receipts, errors, overwrite prompt) owned by the Export pane. It belongs to the document: a change of the document's execution generation (another document, a change on disk) forgets every node's state, and a save or log reply is applied only while the document fence it started under is current. |
-| `frontend/src/panels/optimiser/QuotesTab.tsx`, `frontend/src/panels/optimiser/lambdaCopy.ts` | The Quotes explorer (both modes) for the publish target: a server-sorted, searched and filtered page of the chosen scenarios in `SortableValuesTable`, with the presets, the pager and the analysis-value filters, read through the result store's identity-keyed `/apply` cache (the full canonical query in the identity) with Retry on failure; and the shared λ label and explanation. |
+| `frontend/src/panels/optimiser/QuotesTab.tsx`, `frontend/src/panels/optimiser/lambdaCopy.ts` | The Quotes explorer (both modes) for the publish target: a server-sorted, searched and filtered page of the chosen scenarios in `SortableValuesTable`, with the presets, the pager and the analysis-value filters, read through the result store's identity-keyed `/apply` cache (the full canonical query in the identity), a missing page requested through the shared point-request lifecycle; and the shared λ label and explanation. |
+| `frontend/src/panels/optimiser/useLatestRequest.ts`, `frontend/src/panels/optimiser/RequestFailureNotice.tsx` | The one frontier-point request lifecycle (see Control flow) that Rates, Adjustments, Segments, Quotes and the Export pane's factor-table load share: the hook sends the request a view names by its key while it is wanted and has not failed, aborts it on a new key, none or unmount and discards the aborted reply, reissues a 409 `frontier_point_apply_replaced`, and keeps a failure for its key (`RequestFailure`, gone for a 410) until Retry; `RequestFailureNotice` states the failure with Retry unless it is gone. |
 | `frontend/src/panels/SortableValuesTable.tsx`, `frontend/src/panels/valuesSort.ts` | The shared sortable values table (extracted from the GLM coefficients): column headers as sort buttons with `aria-sort` and a ▲/▼ indicator on the sorted column (a disabled button for a column that cannot be sorted now, plain text for one that never can), the caller's cells and an empty-state `role="status"` message; `ValuesTableSearch`, its labelled search input; and `nextSort` (`valuesSort.ts`, with `SortState`), the one sort cycle (a new column sorts ascending, the sorted column reverses). Sorting itself is the caller's: GLM sorts in the browser, Quotes asks the server. |
-| `frontend/src/panels/OptimiserDataPreview.tsx`, `frontend/src/panels/optimiser/useOptimiserScenarioData.ts`, `frontend/src/panels/optimiser/OptimiserScenarioPanes.tsx` | The pre-solve scenario view: the hook groups the bounded preview rows by quote and owns series visibility, quote navigation (reset during render when the series list or the quote ids, in order, change, so another quote-id column or another quote set of the same size starts at the first quote) and on-demand statistics; each series' y scale is the shared `chartDomain` with `chartTickSpan` ticks, so a constant series sits mid-plot and rounding noise reads as flat; the panes (quote navigation, Curves, Statistics, the no-objective/no-data notice) render in the data preview's frame and as the result workspace's Curves and Statistics tabs. |
+| `frontend/src/panels/OptimiserDataPreview.tsx`, `frontend/src/panels/optimiser/useOptimiserScenarioData.ts`, `frontend/src/panels/optimiser/OptimiserScenarioPanes.tsx` | The pre-solve scenario view: the hook groups the bounded preview rows by quote and owns series visibility, quote navigation (reset during render when the series list or the quote ids, in order, change, so another quote-id column or another quote set of the same size starts at the first quote) and on-demand statistics; each series' y scale is the shared `chartDomain` with `chartTickSpan` ticks, so a constant series sits mid-plot and rounding noise reads as flat; the panes (quote navigation, Curves, Statistics, the no-objective/no-data notice) render in the data preview's frame and as the result workspace's Curves and Statistics tabs. The Statistics tables print their numbers through `frontend/src/utils/formatValue.ts::formatNumber`. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-memory and rejected-strategy banner shared with modelling progress, optimiser actions, and Explore. |
 | `frontend/src/panels/optimiserScenarioStats.ts` | Strict finite-number parsing and per-scenario statistical aggregation used by the optimiser data preview. |
 | `frontend/src/hooks/useConstraintHandlers.ts`, `frontend/src/hooks/useDataInputColumns.ts` | Constraint mutation handlers (add, on the first free column or else the first unused `constraint_<n>` name, remove, rename, a bound's value, and its kind: between at least and at most the value stays, between an absolute and a percentage bound it restarts at `startingBoundValue`, with a swept constraint's range in the same update) and stale-aware data-input column fetching, which returns only the current input's columns: after a switch, that input's cached (else fallback) columns until its fetch answers, never the previous input's. |
@@ -290,9 +291,21 @@ Only a current, accepted save response may acknowledge this revision transition.
    error area.
 4. `frontend/src/panels/OptimiserPreview.tsx` picks the available result tabs and the selected
    frontier point, which is also the publish target (`selectedPointIndex`, `null` = the solved
-   result). In ratebook mode a selected point without tables is materialised only on Rates/Summary;
-   a request's identity is `(jobId, point)`, request sequence bookkeeping drops stale replies,
-   and accepted tables persist in the result store. Save and MLflow requests always send the target explicitly (`point_index` omitted for the
+   result). Every frontier-point request in the workspace — the Rates materialisation, the
+   Adjustments point report, the Segments index and breakdowns, the Quotes pages and the Export
+   pane's factor-table load — goes through `useLatestRequest` with one policy. The view names the
+   request it wants by an identity key, or none; a request is sent while it is wanted and has not
+   failed. A new identity, none, or unmount aborts the request in flight, and a browser abort
+   discards its reply or error silently (the server cancels a point apply no request waits for
+   any more, OPT-PC02). A 409 whose `error_code` is `frontier_point_apply_replaced` (another
+   point's apply took the job's queue) is not an error: the request is reissued while the view
+   still wants that identity. A 410 shows the server's message with no Retry (only a new solve
+   helps). Any other failure, including a reply the view cannot use, shows the message with
+   **Retry**, which reissues the request; a failure is remembered for its identity until Retry.
+   In ratebook mode a selected point without tables is materialised only on Rates, Summary and
+   the Frontier pane that carries Summary; the request's identity is `(jobId, point)`, accepted
+   tables persist in the result store, and a reply without tables is a failure ("No rate tables
+   were returned for this selected point."). Save and MLflow requests always send the target explicitly (`point_index` omitted for the
    solved result) and never consume the server-side result, so they and the Quotes view may run
    in any order. `OptimiserPreviewData` carries `solvedResult` (the store's as-solved
    `originalResult`) beside the displayed `result`: Convergence (offered for every result) draws
@@ -305,24 +318,20 @@ Only a current, accepted save response may acknowledge this revision transition.
    render so a stale tab never paints; it does not reset when only `result` changes, because
    every stepper press builds a new displayed result. The X-axis constraint and slice choices
    reset with it. `result.warning` renders as an amber `role="status"` strip in the workspace notices slot.
-   Rates, Quotes and Adjustments error states offer **Retry**, which reissues the failed
-   request. Summary shows the displayed result's adjustments compactly ("Adjusted up", "Adjusted
+   Summary shows the solved result's adjustments compactly ("Adjusted up", "Adjusted
    down", "Unadjusted" only when the grid has 1.0, and "At the range edge", by quote count; the
    edge share is the union of the minimum and maximum steps, so on a one-step grid, whose only
    step is both, it is that step's share, never their sum) with
-   a **View adjustments** button that opens the Adjustments tab; with a frontier point selected
-   (whose summary carries no report) it says the point's adjustments load in the Adjustments tab,
-   with the same button.
+   a **View adjustments** button that opens the Adjustments tab. With a frontier point selected
+   (whose summary carries no report) Summary shows no adjustments block and no button; the
+   point's report loads in the Adjustments tab.
    **Adjustments** (every result, online and ratebook; a ratebook report describes the step
    price-contour evaluated for each quote) shows the as-solved report
    (`solvedResult.adjustments`) when no point is selected. With a point selected it loads that
    point's report through `POST /frontier/select` with `include_adjustments: true`, only while
-   the tab is open, in the Rates flow's pattern: one `AbortController` per request and a
-   request sequence, so a reply for a point or job the tab has moved past is
-   dropped; a browser abort (a new point, closing the tab) discards the reply, and the server cancels a point apply no request waits for any more (OPT-PC02); a 409 whose
-   `error_code` is `frontier_point_apply_replaced` is not an error, and the tab reissues the
-   request while it still shows that point; a 410 shows the server's message with no Retry
-   (only a new solve helps); any other failure shows the message with **Retry**. A loaded point
+   the tab is open, under the shared point-request policy with identity `(job, point)`: a new
+   point or closing the tab aborts it, a replaced 409 is reissued, a 410 has no Retry, and a
+   reply without a report is a failure with **Retry**. A loaded point
    report is kept for the tab's review (node, job, point), so stepping
    back to a point already loaded makes no request. An as-solved result without a report
    shows the result's `"adjustments"` diagnostic message; one with neither throws. A ratebook
@@ -345,7 +354,7 @@ Only a current, accepted save response may acknowledge this revision transition.
    weighting and its share when one is chosen).
    **Segments** (every result) breaks the chosen scenarios down by the result's
    `segment_keys` (analysis columns, and a ratebook result's rating factors). With no key it
-   shows "Add analysis columns in the optimiser config". Otherwise it uses
+   shows "Tick validation factors in the optimiser's Factors pane". Otherwise it uses
    `FeatureDiagnosticLayout`: the keys in a searchable browser ranked by the index statistic,
    named in the browser's header ("Adjustment spread", the quote-weighted standard deviation of
    the levels' mean scenario values), from `GET /segments/index` for the target; until the index
@@ -354,11 +363,10 @@ Only a current, accepted save response may acknowledge this revision transition.
    Rates tab's (`OptimiserPreview`'s review state), so choosing a factor in one selects it in the
    other; a selection that is not a key here shows the first ranked key. An unavailable key shows
    its reason and makes no request. An available key loads `POST /segments` for the target (the
-   selected point, else the solved result) and the chosen weighting, with one `AbortController`
-   per request: switching key, weighting or point aborts the request in flight, and a reply for a
-   key, weighting, point or job the view has moved past is dropped. A 409
-   `frontier_point_apply_replaced` is reissued, a 410 shows the message with no Retry, anything
-   else offers **Retry**. Loaded breakdowns and indexes are kept for the review, by
+   selected point, else the solved result) and the chosen weighting. The index and each
+   breakdown follow the shared point-request policy: switching key, weighting or point aborts the
+   request in flight, a replaced 409 is reissued, a 410 has no Retry and anything else offers
+   **Retry**. Loaded breakdowns and indexes are kept for the review, by
    `(job, target, key, weight)` and `(job, target)`, so returning to one
    makes no request. The chart is `RelativityBars` of each level's mean chosen scenario value
    under the weighting (the unweighted mean for Quotes) around the 1.0 base line, in the
@@ -390,14 +398,22 @@ Only a current, accepted save response may acknowledge this revision transition.
    sends `quote_id_prefix` 300 ms after typing stops (an empty box sends none) and resets the
    offset. The **pager** states "Showing a–b of M matching (of N)" (or "No quotes match (of
    N)"), with Previous and Next moving by the limit; Next is disabled at the last matching row
-   and at the depth limit (10,000 rows), where a note asks to narrow the filter or search. A
-   refusal (400, 422, 507) shows the server's message with **Retry**; a 410 shows it without.
-   Quotes reads `/apply` through the result store's apply cache (see Edge cases). The MLflow log request carries the node's current `mlflow_destination` (found
+   and at the depth limit (10,000 rows), where a note asks to narrow the filter or search.
+   Quotes reads `/apply` through the result store's apply cache (see Edge cases); a page the cache
+   lacks is requested under the shared point-request policy, identified by its cache key: a page
+   the query or target moved past is aborted, a replaced 409 is reissued, a refusal (400, 422,
+   507, or any other 409) shows the server's message with **Retry**, and a 410 shows it without. The MLflow log request carries the node's current `mlflow_destination` (found
    through `allNodes` by `nodeId`; `""` for Auto) and the Export pane derives availability from
    that destination alone. It publishes through `useOptimiserPublishStore`, whose state belongs to
-   one solve job. Export's factor-table load stores its
-   reply through `recordFrontierPointSummary`, which drops a reply for a job the node does not
-   hold and never changes the selection; its load is identified by `(jobId, target)`.
+   one solve job. For a ratebook frontier point without tables, Export offers **Load factor
+   tables for CSV**; the load follows the shared point-request policy with identity
+   `(jobId, point)`, so changing the target or the job aborts it, and while its failure shows
+   (with Retry, or none for a 410) the button is not offered. Its reply is stored through
+   `recordFrontierPointSummary`, which drops a reply for a job the node does not hold and never
+   changes the selection; a reply without factor tables is a failure. The combined-factor collar
+   sentence prints the solve's `combined_factor_bounds` through `formatScenarioValue`, so the
+   Float32-widened grid ends read as the grid's values (`0.8`, not `0.800000011920929`); the CSV
+   repeats the exact bounds.
 5. `useOptimiserScenarioData` caps rows at 5,000 before grouping by quote, orders scenario rows,
    and calculates full-preview statistics only while a Statistics pane is open (the data preview's
    tab, or the result workspace's). `App` passes `OptimiserPreview` the active node's `ok`
@@ -594,9 +610,9 @@ without broadening the exactly-one-direct fallback.
 
 Action errors prefer structured API/execution details. Training/solve errors are retained in the
 result store and shown locally; estimate/MLflow/export/materialisation actions show their own
-messages. A rejected frontier point-index contract clears the in-flight request marker and
-surfaces the error instead of leaving Rates loading. AbortError and recognised supersession do
-not flash a failure. Render-time numeric contract violations in strict frontier/statistics
+messages. A rejected frontier point-index contract fails the Rates request and surfaces the
+error instead of leaving Rates loading. An aborted point request and a replaced point apply
+(409 `frontier_point_apply_replaced`) do not flash a failure. Render-time numeric contract violations in strict frontier/statistics
 helpers are intentionally not coerced.
 
 ## Testing
@@ -622,13 +638,21 @@ totals; typed online frontier points with `thresholds`, `bounds`, `totals` and `
 formatted columns and the up/down glyph with its label, `aria-sort` cycling ascending and
 descending with the matching request, each preset's request and pressed state (ratebook's
 only for ratebook), the analysis-value filter and its chip, the debounced search, the pager text
-and Previous/Next offsets, the depth note, a response for an earlier query dropped, Retry, and
-a ratebook page's factor product and flag. `frontend/src/panels/__tests__/GLMComponents.test.tsx` stays green over the
+and Previous/Next offsets, the depth note, a response for an earlier query dropped, a replaced
+409 reissued without an error, any other 409 shown with Retry, Retry, the 410 state without it,
+and a ratebook page's factor product and flag. `frontend/src/panels/__tests__/GLMComponents.test.tsx` stays green over the
 extracted `SortableValuesTable`.
 Store-integration tests cover the apply cache (no second request on reopening Quotes, late
 responses from an earlier job discarded, the 16-entry bound), the tab kept across stepper presses and reset on a new job or node, Convergence
-kept after point select, the fixed as-solved marker, the warning strip and
-Retry. `frontend/src/panels/__tests__/IterationLinesChart.test.tsx` covers the shared chart's
+kept after point select, the fixed as-solved marker, the warning strip,
+Retry, and on Rates a replaced 409 reissued without an error and a 410 without Retry.
+`frontend/src/panels/__tests__/OptimiserConfig.test.tsx`'s Publish section covers the Export
+pane's factor-table load (the request, a load aborted when the target moves on with the target
+kept, a 410 with no Retry and no Load button, Retry after another failure, a replaced 409
+reissued) and the collar sentence printing Float32-widened bounds as `0.8` and `1.2`;
+`frontend/src/panels/__tests__/OptimiserDataPreview.test.tsx` covers the Statistics tables'
+shared number formatter carrying 999,999 into `1.00M`.
+`frontend/src/panels/__tests__/IterationLinesChart.test.tsx` covers the shared chart's
 real tick values, distinct labels on a narrow value range, log axis, reference lines, marker,
 gaps and loud failures, and
 `frontend/src/panels/optimiser/__tests__/AdjustmentsTab.test.tsx` covers the Adjustments view:
@@ -640,7 +664,7 @@ a replaced 409 reissued without an error, Retry, and the 410 state;
 empty state, the keys unranked while the index loads and then ranked with the statistic named,
 search and select, the shared selection, an unavailable key's reason with no request, the chart
 and detail line, the values table with "—" for a zero-weight level, the Weight by switch, abort
-on key switch, a point target and Retry;
+on key switch, a point target, Retry and the 410 state without it;
 `frontend/src/panels/modelling/__tests__/ValidationDistributionTabs.test.tsx` keeps Residuals on
 the extracted `HistogramChart` unchanged, and
 `frontend/src/panels/optimiser/__tests__/ConvergenceChart.test.tsx` the online small multiples

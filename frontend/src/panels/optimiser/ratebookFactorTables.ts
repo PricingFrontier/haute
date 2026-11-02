@@ -28,7 +28,7 @@ function byOrderIndex<T extends { orderIndex: number | undefined; originalIndex:
   return a.originalIndex - b.originalIndex
 }
 
-export function orderFactorTableRows(
+function orderFactorTableRows(
   rows: FactorTableRow[],
   levelOrder: readonly string[] | undefined,
 ): FactorTableRow[] {
@@ -123,10 +123,10 @@ export function formatRate(rate: number): string {
 }
 
 /** The scenario range a ratebook solve scored; the deployed combined factor is clipped to it. */
-export type CombinedFactorCollar = { min: number; max: number }
+type CombinedFactorCollar = { min: number; max: number }
 
-export const COLLAR_MIN_COLUMN = "combined_factor_min"
-export const COLLAR_MAX_COLUMN = "combined_factor_max"
+const COLLAR_MIN_COLUMN = "combined_factor_min"
+const COLLAR_MAX_COLUMN = "combined_factor_max"
 
 /**
  * One CSV of every factor table: the table name, then each row's level, rate

@@ -15,7 +15,6 @@ These packages come from the
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | FMOU-R03 | Planned | P3 | The frontend modelling specification describes the editor that exists; the dead sidebar component, the duplicated GLM conflict derivations and view switches, the message-prefix matching and the family-blind tune copy are gone. |
-| FMOU-R05 | Planned | P3 | The optimiser workspace has one fenced point-request lifecycle, one formatter, no raw Float32 collar, a specification that matches its Summary, and no dead exports. |
 
 ## Planned improvements
 
@@ -55,39 +54,3 @@ previews.
 `frontend/src/panels/modelling/TermTableView.tsx`;
 `frontend/src/panels/ModellingConfig.tsx`;
 `frontend/src/panels/modelling/HyperparametersConfig.tsx`.
-
-### FMOU-R05 — One point-request lifecycle and one formatter
-**Why:** The fenced frontier-point request (abort on identity change, request
-sequence, generation check, the 409 `frontier_point_apply_replaced` and the 410)
-is implemented five times in four shapes that disagree: only Adjustments and
-Segments reissue the 409, Quotes shows it as a failure with Retry, the Export
-pane's load has no abort and no 409 or 410 handling, and Rates keys a map by
-request id. `formatStat` is another private number formatter with the no-carry
-rounding `FSH-R08` records. The combined-factor collar sentence prints the
-Float32-widened grid ends raw (`0.800000011920929`) while the Adjustments and
-Segments tabs strip the widening. The specification says a selected point's
-Summary offers the Adjustments button; the code renders nothing and its test
-agrees with the code. Five exports in the optimiser panels are referenced only
-at their definitions, and a dozen more only inside their own module.
-
-**Plan:** Lift `useLatestRequest` into the optimiser panels and use it from
-Rates, Adjustments, Quotes and the Export load with one policy for 409 and 410;
-replace `formatStat` with the shared formatter; format the collar with
-`formatScenarioValue`; correct the specification; delete the dead exports and
-un-export the internal ones.
-
-**Acceptance:** One fenced-request hook; jscpd reports none of the pairs; the
-collar sentence shows `0.8`; knip reports none of the exports.
-
-**Dependencies:** `FSH-R08` for the shared formatter.
-
-**Evidence:** `frontend/src/panels/optimiser/SegmentsTab.tsx`;
-`frontend/src/panels/optimiser/AdjustmentsTab.tsx`;
-`frontend/src/panels/optimiser/QuotesTab.tsx`;
-`frontend/src/panels/optimiser/OptimiserPublishSection.tsx`;
-`frontend/src/panels/OptimiserPreview.tsx`;
-`frontend/src/panels/optimiser/OptimiserScenarioPanes.tsx`;
-`frontend/src/panels/optimiser/adjustments.ts::formatScenarioValue`;
-`frontend/src/panels/optimiser/SummaryTab.tsx`;
-`frontend/src/panels/optimiser/solveReadiness.ts`;
-`frontend/src/panels/optimiser/ratebookFactorTables.ts`.
