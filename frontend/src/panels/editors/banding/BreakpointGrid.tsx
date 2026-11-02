@@ -94,7 +94,13 @@ function boundaryOrderWarnings(breakpoints: Breakpoint[]): Map<number, string> {
 
   for (let index = 0; index < breakpoints.length; index++) {
     const boundary = parseBoundaryValue(breakpoints[index].boundary)
-    if (boundary === null) continue
+    if (boundary === null) {
+      // A blank boundary is the open-ended band; anything else must be a number.
+      if ((breakpoints[index].boundary ?? "").trim() !== "") {
+        warnings.set(index, `Breakpoint ${index + 1} is not a number; enter a number such as 25.`)
+      }
+      continue
+    }
 
     if (highestEarlierBoundary !== null && boundary <= highestEarlierBoundary) {
       warnings.set(index, `Breakpoint ${index + 1} is out of order; enter a value greater than ${highestEarlierBoundary}.`)

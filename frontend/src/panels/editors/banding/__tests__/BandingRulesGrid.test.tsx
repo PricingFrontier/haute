@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
+import { useState } from "react"
 import { BandingRulesGrid } from "../BandingRulesGrid"
 import type { BandingFactor, CategoricalRule } from "../../../../types/banding"
 import { CHART_COLORS } from "../../../../theme/colors"
@@ -62,6 +63,34 @@ describe("BandingRulesGrid", () => {
     expect(screen.getByRole("img", { name: "Rule 2 needs a value." })).toBeInTheDocument()
     expect(screen.getByRole("img", { name: "Rule 3 needs what it maps to." })).toBeInTheDocument()
     expect(screen.getByRole("img", { name: 'Rule 4 repeats the value "car" of rule 1.' })).toBeInTheDocument()
+  })
+
+  it("writes only each rule's value and mapping into the config, keeping focus through typing", () => {
+    const written: BandingFactor[] = []
+    function Stored() {
+      const [factor, setFactor] = useState(makeFactor({ rules: [{ value: "car", assignment: "Small" }] }))
+      return (
+        <BandingRulesGrid
+          factor={factor}
+          onUpdateFactor={(patch) => {
+            const next = { ...factor, ...patch }
+            written.push(next)
+            setFactor(next)
+          }}
+        />
+      )
+    }
+    render(<Stored />)
+    const value = screen.getByLabelText("Rule 1 match value")
+    value.focus()
+    fireEvent.change(value, { target: { value: "van" } })
+    fireEvent.change(screen.getByLabelText("Rule 1 match value"), { target: { value: "vans" } })
+
+    expect(written.at(-1)?.rules).toEqual([{ value: "vans", assignment: "Small" }])
+    for (const factor of written) {
+      for (const rule of factor.rules ?? []) expect(Object.keys(rule).sort()).toEqual(["assignment", "value"])
+    }
+    expect(document.activeElement).toBe(screen.getByLabelText("Rule 1 match value"))
   })
 
   it("renders categorical rule rows", () => {
@@ -132,10 +161,8 @@ describe("BandingRulesGrid", () => {
 
     fireEvent.change(textbox, { target: { value: "Van" } })
     expect(onUpdate).toHaveBeenCalledOnce()
-    const assignedRules = onUpdate.mock.calls[0][0].rules
-    expect(assignedRules[0]._id).toBeDefined()
-    expect(typeof assignedRules[0]._id).toBe("string")
-    expect(assignedRules[0]._id.length).toBeGreaterThan(0)
+    // The row keys never reach the config.
+    expect(onUpdate.mock.calls[0][0].rules).toEqual([{ value: "Van", assignment: "Vehicle" }])
   })
 
   it("keeps row identity when the parent recreates an id-less rules array", () => {
@@ -156,28 +183,18 @@ describe("BandingRulesGrid", () => {
     expect(document.activeElement).toBe(textbox)
   })
 
-  it("rules with existing _id are not reassigned", () => {
+  it("drops an _id an earlier editor left in the config when it writes the rules", () => {
     const onUpdate = vi.fn()
     const rules = [
-      { value: "Car", assignment: "Vehicle", _id: "existing_id" },
+      { value: "Car", assignment: "Vehicle", _id: "a" },
+      { value: "Bike", assignment: "Cycle", _id: "b" },
     ] as unknown as CategoricalRule[]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
-    expect(onUpdate).not.toHaveBeenCalled()
-    fireEvent.change(screen.getByLabelText("Rule 1 match value"), { target: { value: "Van" } })
-    expect(onUpdate.mock.calls[0][0].rules[0]._id).toBe("existing_id")
-  })
-
-  it("each rule gets a unique _id", () => {
-    const onUpdate = vi.fn()
-    const rules: CategoricalRule[] = [
+    fireEvent.change(screen.getByLabelText("Rule 2 group name"), { target: { value: "Pedal" } })
+    expect(onUpdate.mock.calls[0][0].rules).toEqual([
       { value: "Car", assignment: "Vehicle" },
-      { value: "Bike", assignment: "Cycle" },
-    ]
-    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
-    fireEvent.change(screen.getByLabelText("Rule 1 match value"), { target: { value: "Van" } })
-    expect(onUpdate).toHaveBeenCalledOnce()
-    const assignedRules = onUpdate.mock.calls[0][0].rules
-    expect(assignedRules[0]._id).not.toBe(assignedRules[1]._id)
+      { value: "Bike", assignment: "Pedal" },
+    ])
   })
 
   it("delete button removes the correct rule from the middle", () => {
@@ -193,20 +210,6 @@ describe("BandingRulesGrid", () => {
     expect(lastCall.rules).toHaveLength(2)
     expect(lastCall.rules[0].assignment).toBe("Vehicle")
     expect(lastCall.rules[1].assignment).toBe("Coach")
-  })
-
-  it("rules with _id are preserved across re-render", () => {
-    const onUpdate = vi.fn()
-    const rules = [
-      { value: "Car", assignment: "Vehicle", _id: "stable1" },
-      { value: "Bike", assignment: "Cycle", _id: "stable2" },
-    ] as unknown as CategoricalRule[]
-    const { rerender } = render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
-    rerender(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
-    fireEvent.change(screen.getByLabelText("Rule 2 group name"), { target: { value: "Pedal" } })
-    const edited = onUpdate.mock.calls[0][0].rules
-    expect(edited[0]._id).toBe("stable1")
-    expect(edited[1]._id).toBe("stable2")
   })
 
   // --- Scrollable container & sticky headers ---

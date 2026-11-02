@@ -15,7 +15,6 @@ These packages come from the
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | FNED-R05 | Planned | P3 | The step builder's open card follows its step through undo, the pivot editor carries no unknown keys the backend refuses, the two banding grids, the two rating grids, the params pickers and the zone cards exist once, and the internal-only exports are un-exported. |
-| FNED-R07 | Planned | P2 | `OptimiserApplyEditor` cancels stale `readJson` calls, `OutputEditor` invalidates `outputDoc` on mapping edits, `ColumnsTab` handles stale column selections cleanly, `IoArgumentsEditor` flags blank or unbacked invalid JSON arguments, `BandingRulesGrid` strips internal `_id` keys before persisting, `PivotFormulaSection` resets `onFormulaEditorChange` on unmount and Undo, and `CodeMirrorEditor` re-syncs `errorLine` diagnostics on same-line repeats. |
 
 ## Planned improvements
 
@@ -61,87 +60,3 @@ about ten bands.
 `frontend/src/panels/editors/explorePivots/ZoneSection.tsx`;
 `frontend/src/panels/editors/banding/GenerateBandsDialog.tsx`;
 `frontend/src/utils/polarsDtypes.ts`.
-
-### FNED-R07 — `OptimiserApplyEditor` artifact read cleanup, `OutputEditor` preview invalidation, and `ColumnsTab`, `IoArgumentsEditor`, banding/rating grid, `PivotFormulaSection`, and `CodeMirrorEditor` state sync
-**Why:** Eight node-editor state defects affect Optimiser Apply,
-Data Output, ColumnsTab, IoArgumentsEditor, banding and rating grids, pivot formulas
-and CodeMirror:
-3. In `OptimiserApplyEditor`, the `useEffect` that calls
-   `readJson<ArtifactMeta>(artifactPath)` has no cleanup flag or abort guard: when a
-   slow `readJson` for artifact A resolves after artifact B has already resolved, the
-   stale callback calls `setMeta({ artifactPath: A, data })`, causing
-   `loadedMeta = meta?.artifactPath === artifactPath ? meta.data : null` to become
-   `null` and clearing artifact B's displayed metadata.
-4. In `OutputEditor`, `outputDoc` (`useState<unknown>(null)`) is populated only when
-   the user clicks **Preview output** and is never invalidated when `fields`,
-   `outputFormat` or `activeSource` change, leaving the stale assembled JSON preview
-   displayed alongside the updated mapping rows.
-5. In `ColumnsTab`, when `selected_columns` contains only a stale column
-   `["stale_col"]` and the user unchecks it, `next` becomes `[]` and `toggleColumn`
-   hits `if (next.length === 0) { setDraft([]); return }`, refusing to commit the
-   removal of `"stale_col"`. Conversely, when `selected_columns` is
-   `[...allAvailableExceptOne, "stale_col"]` and the user checks the last available
-   column, `selectsEveryAvailableColumn` (`allColumns.every((column) => next.includes(column.name))`)
-   becomes `true` and `commit` normalizes `selected_columns` to `[]`, silently
-   wiping `"stale_col"`.
-6. In `IoArgumentsEditor` (`_IoFormatEditor.tsx`), adding a new argument row, entering
-   a name and leaving `valueText === ""` silently drops the argument on commit with
-   no validation message (`invalidValue` only checks `row.valueText !== ""`), and
-   when a new or renamed argument has non-empty invalid JSON without a prior saved
-   key (`!Object.hasOwn(args, name)`), the error banner claims
-   `"Invalid JSON. The previous value is kept until this parses."` even though no
-   value is kept.
-7. In `BandingRulesGrid`, `ensureRuleIds` attaches `_id: "rule_..."` to rule objects
-   in place and `setRules` passes them directly to `onUpdateFactor({ rules: r })`,
-   leaking internal UI `_id` properties into in-memory `node.data.config.factors[i].rules`
-   (even though `compact_banding_config_for_sidecar` strips `_id` on sidecar save);
-   and in `BreakpointGrid`, `boundaryOrderWarnings` calls
-   `parseBoundaryValue(breakpoints[index].boundary)` and silently skips
-   `boundary === null` without warning on non-empty non-numeric boundary strings
-   (unlike `dateBoundaryWarnings`).
-8. In `PivotFormulaSection`, `onFormulaEditorChange(null)` is never called on unmount
-   and `editor` is not closed when `editingFormula` disappears via Undo/Redo while
-   `editor.mode === "edit"`, leaving `PivotFieldWell` stuck in `Add to: Formula`
-   mode.
-9. `TwoWayGrid.copyVisibleTable` calls `navigator.clipboard.writeText(text)`
-   directly instead of `writeClipboardText(text)` from `shared/tableClipboard.ts`.
-10. In `CodeMirrorEditor`, editing code clears lint diagnostics via
-    `diagnosticsClearRef`, and if the next run fails on the exact same line number
-    (`errorLine` stays $L \to L$), `useEffect([errorLine])` does not re-run and the
-    error line highlight does not reappear.
-
-**Plan:** Add a `cancelled` cleanup guard to the `readJson` effect in
-`OptimiserApplyEditor`; clear `outputDoc` in `OutputEditor` when the mapping
-configuration or `activeSource` changes; allow `ColumnsTab` to commit `[]` when
-removing the last stale column and require `next.length === allColumns.length` before
-normalizing `selectsEveryAvailableColumn` to `[]`; flag blank `valueText` on named
-rows and state when an invalid JSON row has no previous value to keep in
-`IoArgumentsEditor`; strip `_id` before calling `onUpdateFactor` in `BandingRulesGrid`
-and warn on non-empty non-numeric boundaries in `BreakpointGrid`; reset
-`onFormulaEditorChange(null)` on unmount and when `editingFormula === null` in
-`PivotFormulaSection`; use `writeClipboardText` in `TwoWayGrid`; and re-apply
-`errorLine` diagnostics on each execution result in `CodeMirrorEditor`.
-
-**Acceptance:** A slow
-`readJson` for artifact A resolving after artifact B does not clear B's displayed
-`loadedMeta`; editing a mapping row in `OutputEditor` clears the stale `outputDoc`
-preview; unchecking a sole stale column in `ColumnsTab` commits `[]`; in
-`IoArgumentsEditor`, a named row with a blank value shows a validation message and a
-new or renamed row with invalid JSON does not claim a previous value is kept;
-`BandingRulesGrid` writes no `_id` key into `node.data.config` and `BreakpointGrid`
-warns on a non-empty non-numeric boundary; unmounting or undoing an open formula in
-`PivotFormulaSection` exits `Add to: Formula` mode; `TwoWayGrid.copyVisibleTable`
-delegates to `writeClipboardText`; and a repeat error on the same line in
-`CodeMirrorEditor` re-highlights that line.
-
-**Dependencies:** None; the node data carries editor state beside `node.data.config`.
-
-**Evidence:** `frontend/src/panels/editors/OptimiserApplyEditor.tsx::OptimiserApplyEditor`;
-`frontend/src/panels/editors/OutputEditor.tsx::OutputEditor`;
-`frontend/src/panels/editors/ColumnsTab.tsx::ColumnsTab`;
-`frontend/src/panels/editors/_IoFormatEditor.tsx::IoArgumentsEditor`;
-`frontend/src/panels/editors/banding/BandingRulesGrid.tsx::BandingRulesGrid`;
-`frontend/src/panels/editors/banding/BreakpointGrid.tsx::BreakpointGrid`;
-`frontend/src/panels/editors/explorePivots/PivotFormulaSection.tsx::PivotFormulaSection`;
-`frontend/src/panels/editors/rating/TwoWayGrid.tsx::TwoWayGrid`;
-`frontend/src/panels/editors/CodeMirrorEditor.tsx::CodeMirrorEditor`.

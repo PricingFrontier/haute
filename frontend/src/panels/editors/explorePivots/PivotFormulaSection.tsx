@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { EditorLabel } from "../../../components/form"
 import { confirmed } from "../../../stores/useQuestionStore"
@@ -53,13 +53,15 @@ export default function PivotFormulaSection({
   const editingFormula = editor?.mode === "edit"
     ? formulas.find((formula) => formula.id === editor.formulaId)
     : undefined
+  // An edit whose formula is gone (an undo, a redo) is closed.
+  const openEditor = editor?.mode === "edit" && editingFormula === undefined ? null : editor
+  const editorOpen = openEditor !== null
 
   const openNewEditor = () => {
     setEditor({ mode: "new" })
     setNameDraft("")
     setExpressionDraft("")
     setError(null)
-    onFormulaEditorChange(insertReference)
   }
 
   const openEditEditor = (formula: PivotFormulaPlacement) => {
@@ -67,13 +69,11 @@ export default function PivotFormulaSection({
     setNameDraft(formula.display_name)
     setExpressionDraft(formula.expression)
     setError(null)
-    onFormulaEditorChange(insertReference)
   }
 
   const closeEditor = () => {
     setEditor(null)
     setError(null)
-    onFormulaEditorChange(null)
   }
 
   const saveFormula = () => {
@@ -103,7 +103,7 @@ export default function PivotFormulaSection({
     closeEditor()
   }
 
-  const insertReference = (reference: string) => {
+  const insertReference = useCallback((reference: string) => {
     const textarea = expressionRef.current
     const insertion = `pl.col(${JSON.stringify(reference)})`
     const selectionStart = textarea?.selectionStart
@@ -118,7 +118,20 @@ export default function PivotFormulaSection({
       })
       return next
     })
-  }
+  }, [])
+
+  // The field well adds fields to the formula while an editor is open, and
+  // returns to adding them to the pivot when it closes, is closed by an undo,
+  // or leaves the page.
+  const latestOnChange = useRef(onFormulaEditorChange)
+  useEffect(() => {
+    latestOnChange.current = onFormulaEditorChange
+  })
+  useEffect(() => {
+    if (!editorOpen) return
+    latestOnChange.current(insertReference)
+    return () => latestOnChange.current(null)
+  }, [editorOpen, insertReference])
 
   return (
     <section data-testid="pivot-formula-section">
@@ -214,10 +227,10 @@ export default function PivotFormulaSection({
         )}
       </div>
 
-      {editor && (
+      {openEditor && (
         <div
           role="group"
-          aria-label={editor.mode === "new" ? "New formula" : `Edit ${editingFormula?.display_name ?? "formula"}`}
+          aria-label={openEditor.mode === "new" ? "New formula" : `Edit ${editingFormula?.display_name ?? "formula"}`}
           className="mt-2 rounded-md border p-2"
           style={{ borderColor: "var(--border)", background: "var(--bg-panel)" }}
         >
@@ -298,7 +311,7 @@ export default function PivotFormulaSection({
         <button
           type="button"
           aria-label="Add formula"
-          disabled={editor !== null}
+          disabled={openEditor !== null}
           onClick={openNewEditor}
           className="focus-ring rounded px-2 py-1 text-[10px] font-semibold disabled:cursor-not-allowed disabled:opacity-40"
           style={{ border: "1px solid var(--border)" }}

@@ -6,7 +6,7 @@ import { ControlledNumberCell } from "./ControlledNumberCell"
 import { StatsFooter } from "./StatsFooter"
 import { EDITABLE_RELATIVITY_INPUT_STYLE, NON_EDITABLE_LABEL_CELL_STYLE } from "./cellStyles"
 import useToastStore from "../../../stores/useToastStore"
-import { parsePastedGrid } from "../shared/tableClipboard"
+import { parsePastedGrid, writeClipboardText } from "../shared/tableClipboard"
 import { apiErrorMessage } from "../../../api/errors"
 
 function buildTableTsv(
@@ -200,7 +200,7 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
 
   const copyVisibleTable = () => {
     const text = buildTableTsv(rowFactor, colFactor, rowLabels, colLabels, valueFor)
-    void navigator.clipboard.writeText(text).catch((error: unknown) => {
+    void writeClipboardText(text).catch((error: unknown) => {
       const detail = apiErrorMessage(error)
       addToast("error", `Could not copy rating table TSV: ${detail}`)
     })

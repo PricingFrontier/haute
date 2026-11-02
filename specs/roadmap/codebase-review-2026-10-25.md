@@ -302,7 +302,7 @@ browser's hand-written contract mirrors (`API-R03`), the results store's optimis
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
 (`ENGQ-R01`); the dead
 `submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
-utilities (`ENGQ-R01`); Banding's `_id` inside the config (`FNED-R07`), the pivot editor writing the
+utilities (`ENGQ-R01`); the pivot editor writing the
 fields the backend defaults (`EDA-R02`); a second fabricated
 train-failure sentinel (`FSH-R06`); the browser's frontier
 generation fences that only ever see generation 0 (`OPT-R04`), the optimiser

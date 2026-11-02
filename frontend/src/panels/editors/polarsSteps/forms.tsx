@@ -82,7 +82,7 @@ import {
 } from "./fields"
 import { StepSchemaContext, UNKNOWN_SCHEMA, schemaFor, useStepSchema, type StepSchema } from "./stepSchema"
 import { useCompletionList, type Completion } from "./useCompletionList"
-import { useRowKeys } from "./useRowKeys"
+import { useRowKeys } from "../shared/useRowKeys"
 import { CALCULATIONS, calculationEntry, calculationExpr, calculationLabel, calculationOf, computedValue, stepSection, type CalculationId, type FunctionSection } from "./calculations"
 import type {
   AggregationSpec,
@@ -139,6 +139,8 @@ export type StepFormContext = {
   firstFieldId: string
   /** Snippet-relative runtime error line for an authored free-code step. */
   errorLine?: number | null
+  /** Changes with each run's result, so a repeat error line is marked again. */
+  errorRevision?: unknown
 }
 
 type FormProps<S extends Step> = { step: S; onChange: (next: S) => void; ctx: StepFormContext }
@@ -1653,6 +1655,7 @@ function FreeCodeForm({ step, onChange, ctx }: FormProps<FreeCodeStep>) {
         defaultValue={step.code}
         onChange={(code) => onChange({ ...step, code })}
         errorLine={ctx.errorLine}
+        errorRevision={ctx.errorRevision}
         availableColumns={ctx.columns}
         placeholder={'df = df.with_columns(pl.col("premium") * 2)'}
       />

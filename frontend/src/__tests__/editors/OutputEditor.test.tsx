@@ -15,9 +15,10 @@
  * multi-step interactions accumulate.
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render as rtlRender, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
+import { act, render as rtlRender, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import { useState } from "react"
 import OutputEditor from "../../panels/editors/OutputEditor"
+import useSettingsStore from "../../stores/useSettingsStore"
 import { GraphProvider } from "../../panels/GraphContext"
 import type { SimpleNode, SimpleEdge } from "../../panels/editors/_shared"
 
@@ -49,6 +50,7 @@ afterEach(cleanup)
 beforeEach(() => {
   mockOutputAssembleDryRun.mockReset()
   mockPreviewNode.mockReset()
+  useSettingsStore.setState({ activeSource: "live" })
 })
 
 // ─── Graph fixtures ───────────────────────────────────────────────
@@ -1236,6 +1238,31 @@ describe("OutputEditor - assembled-output preview", () => {
     const json = screen.getByTestId("output-preview-json").textContent ?? ""
     expect(json).toBe(JSON.stringify(doc, null, 2))
     expect(mockOutputAssembleDryRun).toHaveBeenCalledTimes(1)
+  })
+
+  it("drops an assembled document once the mapping or the data source it was assembled from changes", async () => {
+    const doc = [{ premium: 100 }]
+    mockOutputAssembleDryRun.mockResolvedValue(makeOutputDryRun({ status: "ok", document: doc, row_count: 1 }))
+    const editor = (config: Record<string, unknown>) => (
+      <GraphProvider allNodes={SINGLE_PORT_NODES} edges={SINGLE_PORT_EDGES}>
+        <OutputEditor {...DEFAULT_PROPS} config={config} />
+      </GraphProvider>
+    )
+    const view = rtlRender(editor(SINGLE_PORT_CONFIG))
+    fireEvent.click(screen.getByTestId("output-preview-toggle"))
+    await waitFor(() => expect(screen.getByTestId("output-preview-json")).toBeTruthy())
+
+    view.rerender(editor({
+      outputMapping: [{ ...SINGLE_PORT_CONFIG.outputMapping[0], output_path: "$[:].total" }],
+    }))
+    expect(screen.queryByTestId("output-preview-json")).toBeNull()
+    expect(screen.getByText("Refresh to assemble the response from the current mapping.")).toBeTruthy()
+
+    view.rerender(editor(SINGLE_PORT_CONFIG))
+    fireEvent.click(screen.getByTestId("output-preview-refresh"))
+    await waitFor(() => expect(screen.getByTestId("output-preview-json")).toBeTruthy())
+    act(() => useSettingsStore.setState({ activeSource: "batch" }))
+    expect(screen.queryByTestId("output-preview-json")).toBeNull()
   })
 
   it("sends the CURRENT (unsaved) mapping + node id to the dry-run route", async () => {

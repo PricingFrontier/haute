@@ -61,6 +61,8 @@ type NodePanelProps = {
   dimmed?: boolean
   /** 1-based line number of the error in user code, if any */
   errorLine?: number | null
+  /** Changes with each run's result, so a repeat error line is marked again. */
+  errorRevision?: unknown
   /** The last run's error message for this node, if it failed */
   runError?: string | null
   /** Preview rows from the current node's preview data (input columns pass through) */
@@ -981,6 +983,8 @@ type NodeEditorBodyProps = {
   inputSources: InputSource[]
   onDeleteEdge?: (edgeId: string) => void
   errorLine?: number | null
+  /** Changes with each run's result, so a repeat error line is marked again. */
+  errorRevision?: unknown
   /** The last run's error message for this node, if it failed. */
   runError?: string | null
   upstreamColumns: { name: string; dtype: string }[]
@@ -1006,6 +1010,7 @@ function NodeEditorBody({
   inputSources,
   onDeleteEdge,
   errorLine,
+  errorRevision,
   runError,
   upstreamColumns,
   nodeColumns,
@@ -1033,6 +1038,7 @@ function NodeEditorBody({
         inputNames={stepInputNames(nodeType, inputSources.map((source) => source.name))}
         onDeleteInput={onDeleteEdge}
         errorLine={errorLine}
+        errorRevision={errorRevision}
         runError={runError}
         upstreamColumns={upstreamColumns}
         nodeColumns={nodeColumns}
@@ -1153,6 +1159,7 @@ function NodePanelContent({
   onRefreshPreview,
   dimmed,
   errorLine,
+  errorRevision,
   runError,
   previewRows,
   selectedPreviewLoading = false,
@@ -1418,6 +1425,7 @@ function NodePanelContent({
       onSwapEdgeJoinInputs={onSwapEdgeJoinInputs}
       onShowPivots={() => setExplorePane(node.id, "pivots")}
       errorLine={errorLine}
+      errorRevision={errorRevision}
       runError={runError}
       previewRows={previewRows}
       selectedPreviewLoading={selectedPreviewLoading}
@@ -1526,6 +1534,7 @@ function NodePanelContent({
         inputSources={inputSources}
         onDeleteEdge={onDeleteEdge}
         errorLine={errorLine}
+        errorRevision={errorRevision}
         runError={runError}
         upstreamColumns={upstreamColumns}
         nodeColumns={nodeColumns}

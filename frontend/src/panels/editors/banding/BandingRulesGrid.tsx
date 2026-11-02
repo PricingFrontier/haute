@@ -1,49 +1,17 @@
-import { useMemo, useCallback, useState } from "react"
+import { useMemo, useCallback } from "react"
 import { Copy, Trash } from "lucide-react"
 import { CHART_COLORS } from "../../../theme/colors"
 import useToastStore from "../../../stores/useToastStore"
 import { buildTsv, parsePastedGrid, writeClipboardText } from "../shared/tableClipboard"
 import type { BandingFactor, CategoricalRule } from "../../../types/banding"
 import { categoricalRuleIssues } from "./bandingUtils"
+import { useRowKeys } from "../shared/useRowKeys"
 import { CellIssueMark } from "../shared/CellIssueMark"
 import { cellIssueStyle } from "../shared/cellIssueStyle"
 import { apiErrorMessage } from "../../../api/errors"
 
 const CATEGORICAL_FIELDS = ["value", "assignment"] as const
 const CATEGORICAL_COPY_HEADERS = ["Value", "Maps To"] as const
-
-/** Generate a short unique key for a rule row. */
-let _ruleIdSeq = 0
-// eslint-disable-next-line react-refresh/only-export-components
-export function nextRuleId(): string {
-  return `rule_${++_ruleIdSeq}_${Date.now().toString(36)}`
-}
-
-/** Ensure every rule has a stable `_id` key. Ids generated for id-less rules
- *  are remembered per rule object, so a parent that recreates the rules array
- *  without an edit keeps the same row identity (and the user's focus). */
-function ensureRuleIds(
-  rules: CategoricalRule[],
-  generatedIds: WeakMap<object, string>,
-): CategoricalRule[] {
-  let changed = false
-  const result = rules.map((r) => {
-    if ((r as Record<string, unknown>)._id) return r
-    changed = true
-    let id = generatedIds.get(r)
-    if (!id) {
-      id = nextRuleId()
-      generatedIds.set(r, id)
-    }
-    return { ...r, _id: id }
-  })
-  return changed ? result : rules
-}
-
-/** Extract the stable key from a rule (falls back to index). */
-function ruleKey(rule: CategoricalRule, index: number): string {
-  return (rule as Record<string, unknown>)._id as string || `fallback_${index}`
-}
 
 function isHeaderRow(cols: string[], expected: readonly string[]): boolean {
   if (cols.length < expected.length) return false
@@ -152,16 +120,22 @@ export function BandingRulesGrid({
   onAddRule?: () => void
 }) {
   const addToast = useToastStore(s => s.addToast)
-  const rawRules = useMemo(() => (factor.rules || []) as CategoricalRule[], [factor.rules])
+  const rules = useMemo(() => (factor.rules || []) as CategoricalRule[], [factor.rules])
+  // Each row's key lives here, never in the config: an edit keeps every key, so
+  // focus stays in the cell being typed in.
+  const rowKeys = useRowKeys(rules)
 
-  const [generatedRuleIds] = useState(() => new WeakMap<object, string>())
-  const rules = useMemo(() => ensureRuleIds(rawRules, generatedRuleIds), [rawRules, generatedRuleIds])
-
-  const setRules = (r: CategoricalRule[]) => onUpdateFactor({ rules: r })
+  // A rule is its value and mapping: any editor-only key (an `_id` an earlier
+  // editor kept on the rule) is dropped from what is written.
+  const setRules = (r: CategoricalRule[]) =>
+    onUpdateFactor({ rules: r.map(({ value, assignment }) => ({ value, assignment })) })
   const updateRule = (idx: number, field: string, value: string) => {
     const next = [...rules]; next[idx] = { ...next[idx], [field]: value }; setRules(next)
   }
-  const removeRule = (idx: number) => setRules(rules.filter((_, i) => i !== idx))
+  const removeRule = (idx: number) => {
+    rowKeys.remove(idx)
+    setRules(rules.filter((_, i) => i !== idx))
+  }
 
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLDivElement>) => {
     const text = e.clipboardData.getData("text/plain")
@@ -201,9 +175,10 @@ export function BandingRulesGrid({
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>, ruleIndex: number) => {
     if (e.key === "Enter" && ruleIndex === rules.length - 1 && onAddRule) {
+      rowKeys.add()
       onAddRule()
     }
-  }, [rules.length, onAddRule])
+  }, [rules.length, onAddRule, rowKeys])
 
   const showMatchCounts = !!matchCounts
   const issues = categoricalRuleIssues(rules)
@@ -229,7 +204,7 @@ export function BandingRulesGrid({
             {rules.length === 0 ? (
               <tr><td colSpan={COLUMNS.length + (showMatchCounts ? 2 : 1)} className="px-2 py-3 text-center" style={{ color: 'var(--text-muted)' }}>No rules yet</td></tr>
             ) : rules.map((rule, i) => (
-              <tr key={ruleKey(rule, i)}>
+              <tr key={rowKeys.keys[i]}>
                 {COLUMNS.map((column, fieldIndex) => {
                   const issue = issues.get(i)?.[column.field]
                   const issueId = `rule-${i + 1}-${column.field}-issue`

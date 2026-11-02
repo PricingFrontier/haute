@@ -112,6 +112,7 @@ export default function PolarsStepsEditor({
   inputNames,
   onDeleteInput,
   errorLine,
+  errorRevision,
   runError,
   frameColumns,
   start,
@@ -127,6 +128,8 @@ export default function PolarsStepsEditor({
   inputNames: string[]
   onDeleteInput?: (edgeId: string) => void
   errorLine?: number | null
+  /** Changes with each run's result, so a repeat error line is marked again. */
+  errorRevision?: unknown
   /** The last run's error message for this node; render errors stay quiet until a run has failed. */
   runError?: string | null
   /** The columns a frame-mode list starts its suggestions from: the pane's code columns. */
@@ -511,6 +514,7 @@ export default function PolarsStepsEditor({
                           inputNames,
                           firstFieldId: `${step.id}-first`,
                           errorLine: step.kind === "free_code" ? runtimeErrorLineFor(index) : null,
+                          errorRevision,
                         }}
                       />}
                     </StepCard>

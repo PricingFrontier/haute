@@ -36,7 +36,7 @@ import { decimalScale } from "../../../utils/polarsDtypes"
 import { completionMatches } from "./completion"
 import { useStepSchema } from "./stepSchema"
 import { namesAsCompletions, useCompletionList, type Completion } from "./useCompletionList"
-import { useRowKeys } from "./useRowKeys"
+import { useRowKeys } from "../shared/useRowKeys"
 import type { Condition, ConstantOperand, Expr, LiteralOperand, LiteralType, MatchMode, NumberType, Operand } from "./types"
 
 export const CONTROL_CLASS = "focus-ring w-full min-w-0 px-2 py-1.5 text-xs rounded-md"

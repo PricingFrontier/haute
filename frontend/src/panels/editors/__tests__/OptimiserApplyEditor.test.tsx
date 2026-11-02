@@ -235,6 +235,35 @@ describe("OptimiserApplyEditor", () => {
     expect(screen.getByText("loss_ratio")).toBeInTheDocument()
   })
 
+  it("keeps B's metadata when A's slower read lands after it", async () => {
+    const meta = (version: string) => ({
+      version, created_at: "2026-01-15T10:00:00Z", mode: "online", objective: "loss_ratio", lambdas: {}, constraints: {},
+    })
+    // The reads answer in the order they were asked: a.json first, then b.json.
+    const asked = ["a.json", "b.json"]
+    const replies = new Map<string, (value: unknown) => void>()
+    ;(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      const path = asked[replies.size]
+      return new Promise((resolve) => {
+        replies.set(path, (data) => resolve({ ok: true, statusText: "OK", json: async () => data }))
+      })
+    })
+    const props = defaultProps()
+    props.config = { artifact_path: "a.json" }
+    const { rerender } = render(<OptimiserApplyEditor {...props} />)
+    await waitFor(() => expect(replies.has("a.json")).toBe(true))
+    rerender(<OptimiserApplyEditor {...props} config={{ artifact_path: "b.json" }} />)
+    await waitFor(() => expect(replies.has("b.json")).toBe(true))
+
+    replies.get("b.json")!(meta("version-b"))
+    expect(await screen.findByText("version-b")).toBeInTheDocument()
+    replies.get("a.json")!(meta("version-a"))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(screen.getByText("version-b")).toBeInTheDocument()
+    expect(screen.queryByText("version-a")).not.toBeInTheDocument()
+  })
+
   // 6. File mode: shows ArtifactMetaPanel with online mode lambdas
   it("shows lambdas in online mode ArtifactMetaPanel", async () => {
     const meta = {

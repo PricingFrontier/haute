@@ -48,6 +48,26 @@ describe("TwoWayGrid", () => {
     )
   })
 
+  it("says so when the clipboard is unavailable rather than failing the copy", async () => {
+    const original = Object.getOwnPropertyDescriptor(navigator, "clipboard")
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true })
+    try {
+      render(<TwoWayGrid table={makeTable()} bandingLevels={bandingLevels} onUpdateEntries={vi.fn()} />)
+      fireEvent.click(screen.getByRole("button", { name: "Copy visible table as TSV" }))
+      await waitFor(() => {
+        expect(useToastStore.getState().toasts).toContainEqual(
+          expect.objectContaining({
+            type: "error",
+            text: "Could not copy rating table TSV: Clipboard API is not available",
+          }),
+        )
+      })
+    } finally {
+      if (original) Object.defineProperty(navigator, "clipboard", original)
+      else Reflect.deleteProperty(navigator, "clipboard")
+    }
+  })
+
   it("renders row and column factor headers", () => {
     render(
       <TwoWayGrid

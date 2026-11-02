@@ -20,6 +20,8 @@ export type SteppedCodePaneProps = {
   inputNames: string[]
   onDeleteInput?: (edgeId: string) => void
   errorLine?: number | null
+  /** Changes with each run's result, so a repeat error line is marked again. */
+  errorRevision?: unknown
   /** The last run's error message for this node, if it failed. */
   runError?: string | null
   /** The node's input columns, as the previews of its inputs recorded them. */
@@ -51,6 +53,7 @@ export default function SteppedCodePane({
   inputNames,
   onDeleteInput,
   errorLine,
+  errorRevision,
   runError,
   upstreamColumns,
   nodeColumns,
@@ -72,6 +75,7 @@ export default function SteppedCodePane({
         inputNames={inputNames}
         onDeleteInput={onDeleteInput}
         errorLine={errorLine}
+        errorRevision={errorRevision}
         runError={runError}
         frameColumns={codeColumns}
         start={start}
@@ -102,6 +106,7 @@ export default function SteppedCodePane({
         inputSources={inputSources}
         onDeleteInput={onDeleteInput}
         errorLine={errorLine}
+        errorRevision={errorRevision}
         codeColumns={codeColumns}
         hint={codeHint}
         starterCode={starterCode}

@@ -141,16 +141,22 @@ export default function OptimiserApplyEditor({
     if (sourceType !== "file" || !artifactPath) {
       return
     }
-    readJson<ArtifactMeta>(artifactPath)
+    // A read for a path no longer chosen is cancelled, and a late answer to it
+    // never replaces the current artifact's metadata.
+    const controller = new AbortController()
+    readJson<ArtifactMeta>(artifactPath, { signal: controller.signal })
       .then((data) => {
+        if (controller.signal.aborted) return
         setMeta({ artifactPath, data })
         setLoadError(null)
       })
       .catch((e: unknown) => {
+        if (controller.signal.aborted) return
         console.warn("Artifact load failed:", e)
         setLoadError({ artifactPath, message: "Could not load artifact file" })
         setMeta(null)
       })
+    return () => controller.abort()
   }, [artifactPath, sourceType])
 
   return (

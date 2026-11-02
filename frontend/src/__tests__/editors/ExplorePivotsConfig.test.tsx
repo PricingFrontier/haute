@@ -1591,6 +1591,31 @@ describe("ExplorePivotsConfig", () => {
     ).toBe("Pivot 1")
   })
 
+  it("leaves Add to: Formula when an undo removes the formula being edited", () => {
+    const formula = {
+      id: "formula_1", reference: "double_claims", display_name: "Double claims",
+      expression: 'pl.col("claims").sum() * 2', number_format: "general" as const, decimal_places: null, use_grouping: true,
+    }
+    const props = (withFormula: boolean) => ({
+      config: withFormula
+        ? { pivot_formulas: [formula], pivots: [{ ...fullPivot({ value_order: ["formula_1"] }), formulas: [formula.id] }] }
+        : { pivot_formulas: [], pivots: [fullPivot()] },
+      onUpdate: vi.fn<OnUpdateConfig>(() => ({ ok: true })),
+      nodeId: "explore_1",
+      upstreamColumns,
+      currentConfigHash: "hash",
+    })
+    const view = render(<ExplorePivotsConfig {...props(true)} />)
+    fireEvent.click(screen.getByRole("button", { name: "Configure Pivot 1" }))
+    fireEvent.click(screen.getByRole("button", { name: "Edit formula Double claims" }))
+    expect(screen.getByRole("button", { name: "Add region to Formula" })).toBeVisible()
+
+    view.rerender(<ExplorePivotsConfig {...props(false)} />)
+
+    expect(screen.queryByRole("button", { name: "Add region to Formula" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("textbox", { name: "Polars expression" })).not.toBeInTheDocument()
+  })
+
   it("shows the pivot name an undo leaves, and a blur then commits nothing", () => {
     const onUpdate = vi.fn<OnUpdateConfig>(() => ({ ok: true }))
     const props = (name: string) => ({
