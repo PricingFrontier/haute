@@ -12,8 +12,8 @@
  * real-shaped data rather than nulls.
  */
 
-import type { FrontierData } from "../../OptimiserPreview"
 import type {
+  FrontierData,
   FrontierPointSummary,
   OptimiserHistoryEntry,
   OptimiserOnlineFrontierPoint,

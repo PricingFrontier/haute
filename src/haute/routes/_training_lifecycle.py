@@ -191,6 +191,11 @@ _EVALUATION_PREVIEW_HOLDERS = frozenset({"training_prep:training_evaluation_prev
 _EVALUATION_PREVIEW_WAIT_SECONDS = 30.0
 
 
+def _evaluation_preview_refusal(message: str) -> UnprocessableError:
+    """A failed evaluation preview, coded so the editor tells it from a failed memory estimate."""
+    return UnprocessableError({"error_code": "evaluation_preview_failed", "message": message})
+
+
 def _engine_module(config: Mapping[str, Any]) -> str:
     """The model library a fit imports, loaded before its worker's memory cap."""
     return algorithm_descriptor(str(config.get("algorithm", "catboost"))).engine_module
@@ -550,11 +555,11 @@ class TrainService:
             # First: a node config the builder rejects is also a ValueError.
             raise contract_error_refusal(exc) from None
         except (TypeError, ValueError) as exc:
-            raise UnprocessableError(f"Evaluation preview failed: {exc}") from exc
+            raise _evaluation_preview_refusal(f"Evaluation preview failed: {exc}") from exc
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
             raise _memory_limit_refusal(exc) from None
         except BoundedMemoryUnsupportedError as exc:
-            raise UnprocessableError(
+            raise _evaluation_preview_refusal(
                 f"Evaluation preview cannot run in bounded mode: {exc}"
             ) from exc
         except (
@@ -570,7 +575,7 @@ class TrainService:
             # Polars failure here comes from planning or collecting the
             # pipeline's own code and data — the preview shows the same
             # failure as a node error — so it is reported, never a 500.
-            raise UnprocessableError(f"Evaluation preview failed: {exc}") from exc
+            raise _evaluation_preview_refusal(f"Evaluation preview failed: {exc}") from exc
         finally:
             if execution_context is not None:
                 execution_context.release_admission(preserve_primary_error=True)

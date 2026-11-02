@@ -25,6 +25,7 @@ import {
   logRate,
   type FactorTables,
 } from "./ratebookFactorTables"
+import { ViewSwitch } from "../ViewSwitch"
 
 interface RatebookImpactBeeswarmProps {
   factorTables: FactorTables | null | undefined
@@ -74,6 +75,10 @@ const STACK_PATTERN = [0, -1, 1, -2, 2, -3, 3, -4, 4]
 
 // ── Data caps ────────────────────────────────────────────────────
 const TOP_FACTORS = 8
+const FACTORS_SHOWN = [
+  { key: "top", label: `Top ${TOP_FACTORS}` },
+  { key: "all", label: "All" },
+] as const
 
 // ── Theme tokens (resolved from CSS variables) ───────────────────
 const PLOT_BG = "var(--chart-impact-plot-bg)"
@@ -207,23 +212,12 @@ export default function RatebookImpactBeeswarm({ factorTables, width }: Ratebook
                 ? `Showing all ${allFactors.length} factors`
                 : `Showing top ${TOP_FACTORS} of ${allFactors.length} factors`}
             </span>
-            <div className="flex gap-1" role="group" aria-label="Factors shown">
-              {([["Top 8", false], ["All", true]] as const).map(([label, value]) => (
-                <button
-                  key={label}
-                  type="button"
-                  aria-pressed={showAll === value}
-                  onClick={() => setShowAll(value)}
-                  className="px-2 py-0.5 rounded font-medium focus-ring"
-                  style={{
-                    background: showAll === value ? "var(--accent-soft)" : "var(--chrome-hover)",
-                    color: showAll === value ? "var(--accent)" : "var(--text-muted)",
-                  }}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+            <ViewSwitch
+              label="Factors shown"
+              options={FACTORS_SHOWN}
+              value={showAll ? "all" : "top"}
+              onChange={(shown) => setShowAll(shown === "all")}
+            />
           </div>
         ) : (
           <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>

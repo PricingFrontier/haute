@@ -19,7 +19,7 @@ to `FSH-R09` from the
 | FSH-R05 | Planned | P2 | A save stores the saved document's fingerprint, so a WebSocket reconnect after a save discards no running job and no undo history; a completion callback that throws is reported; a timed-out fetch is aborted; the session bootstrap has a deadline. |
 | FSH-R06 | Planned | P3 | The stores carry one copy of each derivation and validator, no test-only action, no fabricated result sentinel, and their specification names the actions that exist. |
 | FSH-R07 | Planned | P2 | Ctrl+S saves what is being typed in a code box, node creation is fenced on the graph's structure rather than on object identity, a refused scoped update marks nothing edited, a copied node carries no other node's transient metadata, and a save whose answer was lost is reconciled instead of reported failed. |
-| FSH-R08 | Planned | P3 | One helper per concern in the hooks and utilities: unit formatting that carries, one canonical JSON, one date validator, one job-status vocabulary, one locale, one node-creation block, one polling configuration, selector subscriptions. |
+| FSH-R08 | Planned | P3 | One helper per concern in the hooks and utilities: one canonical JSON, one date validator, one job-status vocabulary, one locale, one node-creation block, one polling configuration, selector subscriptions. |
 | FSH-R09 | Planned | P3 | The frontend-shared specification describes the formatter, the pollers and the store shape that exist, and preview supersession is recognised by a structured code rather than by its message text. |
 | FSH-R10 | Planned | P2 | Independent request-input edits made while identity resolution is pending are retained together. |
 | FSH-R11 | Planned | P1 | A cancellation reply can update only the job and document it was sent for, never relabel an old result as a newer calculation. |
@@ -194,10 +194,7 @@ or replace a newer save. Layout-only and preserved-code changes participate in e
 `frontend/src/hooks/usePipelineAPI.ts`.
 
 ### FSH-R08 — One helper per concern
-**Why:** `formatNumber` and `formatBytes` round a value up to its unit boundary
-without carrying into the next unit ("1000.0K" for 999,999; "1024.0 KB" for
-1,048,575) while the sibling `formatByteSize` carries. Sorted-key canonical JSON
-is implemented five times in five shapes, so two values can canonicalise
+**Why:** Sorted-key canonical JSON is implemented five times in five shapes, so two values can canonicalise
 differently depending on the helper a surface reached. Two YYYY-MM-DD
 validators exist, and the global-constants one goes through `Date.UTC`, which
 the workbench one's own comment says reads years before 100 as the 1900s. The
@@ -212,24 +209,19 @@ rules; two hooks subscribe whole stores against the selector contract; the
 context-menu delete defers `clearNode` by a timer while the keyboard delete
 clears synchronously, and a test pins the timer.
 
-**Plan:** Carry at the unit boundary in both formatters (or build `formatBytes`
-on `formatByteSize`); keep `utils/canonicalJson.ts` as the one helper; replace
+**Plan:** Keep `utils/canonicalJson.ts` as the one helper; replace
 `isRealDate` with `isDay`; import `JOB_STATUS_VALUES`; pin one locale constant
 or decide every surface follows the browser; one `createAfterIdentity` helper;
 `formatFixed` in the Summary tab; a `jobPollingDefaults` spread; selector
 subscriptions; one deletion order.
 
-**Acceptance:** `formatNumber(999999)` is "1.0M" and `formatBytes(1048575)` is
-"1.0 MB"; one canonical-JSON implementation with the `undefined`, `bigint` and
+**Acceptance:** One canonical-JSON implementation with the `undefined`, `bigint` and
 nested-array cases tested once; jscpd reports none of the pairs; the lint that
 rejects local copies of a helper covers the cases above.
 
 **Dependencies:** None.
 
-**Evidence:** `frontend/src/utils/formatValue.ts::formatNumber`;
-`frontend/src/utils/formatBytes.ts::formatBytes`;
-`frontend/src/utils/formatBytes.ts::formatByteSize`;
-`frontend/src/utils/canonicalJson.ts::canonicalJson`;
+**Evidence:** `frontend/src/utils/canonicalJson.ts::canonicalJson`;
 `frontend/src/utils/graphSnapshot.ts`; `frontend/src/hooks/useTracing.ts`;
 `frontend/src/utils/trainedJobHandles.ts`; `frontend/src/utils/globalConstants.ts`;
 `frontend/src/utils/sheetValues.ts::isDay`;

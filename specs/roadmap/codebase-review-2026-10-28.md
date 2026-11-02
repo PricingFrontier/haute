@@ -78,7 +78,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P2 | Haute classifier pyfunc's label/probability table is flattened to 40 values for 20 input rows. | [MSC-11](model-scoring.md#msc-11--pyfunc-classification-outputs-have-an-explicit-scoring-shape) | Real saved/loaded CatBoost pyfunc, feature contract and scoring adapter. Explicit pyfunc selection is affected; automatic native selection may avoid it. |
 | P3 | Relationships target `__w=[10,20]` is overwritten by internal weight alias: means become `[1,1]`, strength 0. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual Parquet, data-point resolver and relationship service; ordinary-name equivalent requires means `[10,20]`, strength 1. |
 | P3 | Copied Explore node B receives cached result.node_id A for the same producer/card. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual pivot service/cache. Numbers are correct; browser stores them under B, so no numerical cross-node corruption claim. |
-| P2 | Late GLM dispersion estimate for A overwrites manually chosen theta 7 in newer target B with 3. | [FMOU-R06](frontend-modelling-optimiser-ui.md#fmou-r06--dispersion-estimates-belong-to-the-initiating-training-draft) | Actual GLMTargetConfig, only the estimate promise substituted. |
 | P2 | JSON omits an all-null nested pricing object while NDJSON returns pricing:null for the same quote. | [DEP-R17](deploy.md#dep-r17--json-and-ndjson-preserve-the-same-output-document) | Real generated FastAPI app, request shredder, scorer, assembler and materializer; no scorer mock. Batch variant is source-supported. |
 
 The first implementation pass should address the P1 packages before opportunistic
@@ -196,7 +195,6 @@ adds a finding group or changes the 42-group count.
 
 | Candidate scope | Disposition |
 |---|---|
-| percentages and auto-range | Duplicate **FMOU-R04**. |
 | save flush, coarse graph creation fence, scoped edited marker | Duplicate **FSH-R07**. |
 | saved-document sync | Duplicate **FSH-R05**. |
 | utility error wording | Duplicate **FGC-R04**; distinct accepted read/draft race remains FGC-R08. |
@@ -217,7 +215,7 @@ scratch notes. Package splits use the new owners without adding finding groups.
 
 | Earlier candidate note | Accepted owner |
 |---|---|
-| dispersion caller ownership / estimate queued | **FMOU-R06** for same-mounted draft identity; separate helper error-contract wording is **FSH-R06**. |
+| dispersion caller ownership / estimate queued | The helper's error-contract wording is **FSH-R06**. |
 | cancellation caller / result consumer identity | **FSH-R11**. Native polling's captured-job guard is not itself a new defect. |
 | request-input edits / explicit Auto Layout | **FSH-R10**, **FGC-R05**; mixed Delete **FGC-R07**. |
 | delayed drill-in | **FGC-R06**. |

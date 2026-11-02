@@ -22,7 +22,7 @@ import {
 } from "./ratebookFactorTables"
 
 /** The factor choice and search, owned by the result workspace so they outlive the tab. */
-export type RatesFactorSelection = Omit<SharedFeatureBrowser, "features">
+type RatesFactorSelection = Omit<SharedFeatureBrowser, "features">
 
 interface RatebookRatesTabProps {
   factorTables: FactorTables

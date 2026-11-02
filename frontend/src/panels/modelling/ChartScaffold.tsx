@@ -380,3 +380,28 @@ export function ChartValueGrid({
     </>
   )
 }
+
+/** A chart's value-axis title, turned upright beside the plot and centred on its height. */
+export function ChartYAxisTitle({
+  plotTop,
+  plotHeight,
+  children,
+}: {
+  plotTop: number
+  plotHeight: number
+  children: ReactNode
+}) {
+  const middle = plotTop + plotHeight / 2
+  return (
+    <text
+      x={12}
+      y={middle}
+      textAnchor="middle"
+      fontSize={MODELLING_CHART_AXIS_FONT_SIZE}
+      fill={MODELLING_CHART_AXIS_TEXT_COLOR}
+      transform={`rotate(-90,12,${middle})`}
+    >
+      {children}
+    </text>
+  )
+}

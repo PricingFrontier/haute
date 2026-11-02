@@ -2001,7 +2001,9 @@ class TestEstimateEndpoint:
         resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
 
         assert resp.status_code == 422
-        detail = resp.json()["detail"]
+        refusal = resp.json()["detail"]
+        assert refusal["error_code"] == "evaluation_preview_failed"
+        detail = refusal["message"]
         assert detail.startswith("Evaluation preview failed: ")
         assert "only null values" in detail
 
@@ -2049,7 +2051,9 @@ class TestEstimateEndpoint:
         resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
 
         assert resp.status_code == 422
-        detail = resp.json()["detail"]
+        refusal = resp.json()["detail"]
+        assert refusal["error_code"] == "evaluation_preview_failed"
+        detail = refusal["message"]
         assert detail.startswith("Evaluation preview failed: ")
         # Its contract claims it reads no input, so the source is scanned without the
         # target; the declared output the run reads ('y') is the one it did not create.
@@ -2064,7 +2068,9 @@ class TestEstimateEndpoint:
         resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
 
         assert resp.status_code == 422
-        detail = resp.json()["detail"]
+        refusal = resp.json()["detail"]
+        assert refusal["error_code"] == "evaluation_preview_failed"
+        detail = refusal["message"]
         assert detail.startswith("Evaluation preview failed: ")
         assert "missing" in detail
 

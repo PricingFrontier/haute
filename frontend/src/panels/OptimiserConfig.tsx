@@ -227,6 +227,7 @@ export default function OptimiserConfig({
     handleRemoveConstraint,
     handleConstraintColumnChange,
     handleConstraintValueChange,
+    handleConstraintKindChange,
   } = useConstraintHandlers(
     constraints,
     objective,
@@ -604,6 +605,7 @@ export default function OptimiserConfig({
           onRemoveConstraint={handleRemoveConstraint}
           onConstraintColumnChange={handleConstraintColumnChange}
           onConstraintValueChange={handleConstraintValueChange}
+          onConstraintKindChange={handleConstraintKindChange}
         />
       </div>
     )

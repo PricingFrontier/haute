@@ -374,8 +374,9 @@ refit) and shows:
 
 - A note saying whether a test set is held out during tuning (**No test set is reserved.
   Reserve one in Split for an independent evaluation.** otherwise), with **Review split →**,
-  and the fit budget, for example **101 total fits: 20 trials × 5 validation fits + 1 final
-  fit.**
+  and the fit budget in the **TRAIN** pane's words, for example **101 total fits: 100 tuning
+  fits + 1 final fit** for 20 trials over 5 cross-validation folds (t-boost's last fit is
+  **1 winning validation fit**, since it is never refit).
 - **Trial count**: how many trials to run, from 5 to 50 (20 to start). Trial zero is always
   your current fixed parameters, so the search must beat the model you would otherwise
   train.

@@ -1510,14 +1510,16 @@ class TestEvaluationPreviewFailures:
             )
 
         assert exc_info.value.status_code == 422
-        assert message in str(exc_info.value.detail)
+        assert exc_info.value.detail["error_code"] == "evaluation_preview_failed"
+        assert message in exc_info.value.detail["message"]
 
     @pytest.mark.parametrize(
-        ("error", "message"),
+        ("error", "code", "message"),
         [
-            (PreambleError("bad preamble", source_line=2), "bad preamble"),
+            (PreambleError("bad preamble", source_line=2), "preamble_failed", "bad preamble"),
             (
                 BoundedMemoryUnsupportedError("unsafe lazy plan"),
+                "evaluation_preview_failed",
                 "cannot run in bounded mode",
             ),
         ],
@@ -1525,6 +1527,7 @@ class TestEvaluationPreviewFailures:
     def test_preview_maps_public_and_bounded_execution_errors(
         self,
         error: BaseException,
+        code: str,
         message: str,
     ) -> None:
         from haute.routes import _training_lifecycle as _train_service
@@ -1546,7 +1549,8 @@ class TestEvaluationPreviewFailures:
             )
 
         assert exc_info.value.status_code == 422
-        assert message in str(exc_info.value.detail)
+        assert exc_info.value.detail["error_code"] == code
+        assert message in exc_info.value.detail["message"]
 
 
 class TestPreparationTerminalPaths:

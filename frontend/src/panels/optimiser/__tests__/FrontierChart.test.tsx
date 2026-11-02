@@ -69,7 +69,7 @@ describe("FrontierChart", () => {
     expect(onPointClick).toHaveBeenLastCalledWith(1)
   })
 
-  it("highlights the aggregate marker when a duplicate coordinate is selected", () => {
+  it("shows the selected point on the shared marker when a duplicate coordinate is selected", () => {
     renderChart({
       points: slicePoints([
         [0, 0.55, 100],
@@ -80,14 +80,14 @@ describe("FrontierChart", () => {
       selectedIdx: 3,
     })
 
-    const aggregatePoint = screen.getByRole("button", { name: /Select frontier point 2/ })
-    expect(aggregatePoint).toHaveAccessibleName("Select frontier point 2 (2 overlapping frontier points)")
+    const aggregatePoint = screen.getByRole("button", { name: /Select frontier point 4/ })
+    expect(aggregatePoint).toHaveAccessibleName("Select frontier point 4 (2 overlapping frontier points)")
     expect(aggregatePoint).toHaveAttribute("r", "6")
-    expect(screen.queryByRole("button", { name: "Select frontier point 4" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /Select frontier point 2/ })).not.toBeInTheDocument()
     expect(screen.getAllByRole("button")).toHaveLength(3)
   })
 
-  it("keeps point 2 as the visible aggregate target when the first overlapping row is selected", () => {
+  it("keeps the selection when the marker drawn as selected is clicked", () => {
     const { onPointClick } = renderChart({
       points: slicePoints([
         [0, 0.55, 100],
@@ -97,13 +97,13 @@ describe("FrontierChart", () => {
       selectedIdx: 0,
     })
 
-    const pointTwo = screen.getByRole("button", { name: /Select frontier point 2/ })
-    expect(pointTwo).toHaveAccessibleName("Select frontier point 2 (2 overlapping frontier points)")
-    expect(pointTwo).toHaveAttribute("r", "6")
-    expect(screen.queryByRole("button", { name: "Select frontier point 1" })).not.toBeInTheDocument()
+    const selectedMarker = screen.getByRole("button", { name: /Select frontier point 1/ })
+    expect(selectedMarker).toHaveAccessibleName("Select frontier point 1 (2 overlapping frontier points)")
+    expect(selectedMarker).toHaveAttribute("r", "6")
+    expect(screen.queryByRole("button", { name: /Select frontier point 2/ })).not.toBeInTheDocument()
 
-    fireEvent.click(pointTwo)
-    expect(onPointClick).toHaveBeenCalledWith(1)
+    fireEvent.click(selectedMarker)
+    expect(onPointClick).toHaveBeenCalledWith(0)
   })
 
   it("names the points by their global index, not their place in the slice", () => {

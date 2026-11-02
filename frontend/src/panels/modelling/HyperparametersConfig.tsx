@@ -4,7 +4,7 @@ import { MODEL_COLORS } from "../../theme/colors"
 import type { OnUpdateConfig } from "../editors/_shared"
 import { NumberField } from "./NumberField"
 import { MODELLING_INPUT_STYLE } from "./styles"
-import { trainingFitBudget } from "./trainingFitBudget"
+import { fitBudgetLabel } from "./trainingFitBudget"
 import {
   formatHyperparameters,
   formatTuningSearchSpace,
@@ -31,6 +31,8 @@ type Props = {
   starterSearchSpace?: Record<string, unknown>
   /** The family publishes its winning validation fit (t-boost): tuning needs no refit. */
   publishesValidationFit?: boolean
+  /** The node's `refit_on_development` is not `false`, for the fit budget. */
+  refitOnDevelopment: boolean
 }
 
 const CATBOOST_STARTER_SEARCH_SPACE: Record<string, unknown> = {
@@ -42,6 +44,7 @@ const CATBOOST_STARTER_SEARCH_SPACE: Record<string, unknown> = {
 export function HyperparametersConfig({
   starterSearchSpace = CATBOOST_STARTER_SEARCH_SPACE,
   publishesValidationFit = false,
+  refitOnDevelopment,
   algorithmLabel,
   params,
   reservedKeys = [],
@@ -83,7 +86,8 @@ export function HyperparametersConfig({
       searchError = cause instanceof Error ? cause.message : "Invalid JSON"
     }
   }
-  const budget = trainingFitBudget(evaluation, tuning)
+  // The Train pane's run summary words the same budget.
+  const fitBudget = fitBudgetLabel(evaluation, tuning, { publishesValidationFit, refitOnDevelopment })
   const updateFixedDraft = (nextDraft: string) => {
     setDraft(nextDraft)
     try {
@@ -192,12 +196,7 @@ export function HyperparametersConfig({
                 Review split →
               </button>
             )}
-            {budget && (
-              <p className="mt-2 font-medium">
-                {budget.total} total fits: {budget.trials} trials ×{" "}
-                {budget.folds} validation fits + 1 final fit.
-              </p>
-            )}
+            {fitBudget && <p className="mt-2 font-medium">{fitBudget}</p>}
           </div>
           <div className="grid grid-cols-2 gap-3">
             <label className="text-[13px]">
@@ -257,7 +256,7 @@ export function HyperparametersConfig({
           <label className="block text-[13px]">
             Search space JSON
             <textarea
-              aria-label="CatBoost search space JSON"
+              aria-label={`${algorithmLabel} search space JSON`}
               aria-invalid={Boolean(searchError)}
               value={searchSpaceDraft}
               onChange={(event) => {

@@ -83,9 +83,9 @@ function requireFinite(value: number, what: string): number {
 type Bucket = FrontierChartPoint & { cx: number; cy: number; isSelected: boolean; overlapCount: number }
 
 /**
- * One marker per pixel coordinate. The visible member prefers global point 2
- * (the point the canvas-assurance walk selects), then the selected point, then
- * any later point, so a selected duplicate still lights its shared marker.
+ * One marker per pixel coordinate. The visible member is the selected point
+ * when it is one of them, so the marker drawn as selected is the point it
+ * selects; otherwise the first in bound order.
  */
 function bucketPoints(
   points: FrontierChartPoint[],
@@ -104,7 +104,7 @@ function bucketPoints(
   }
   return Array.from(buckets.values()).map((bucket) => {
     const selected = selectedIdx == null ? undefined : bucket.find((p) => p.index === selectedIdx)
-    const visible = bucket.find((p) => p.index === 1) ?? selected ?? bucket.find((p) => p.index > 0) ?? bucket[0]
+    const visible = selected ?? bucket[0]
     return { ...visible, isSelected: selected != null, overlapCount: bucket.length }
   })
 }

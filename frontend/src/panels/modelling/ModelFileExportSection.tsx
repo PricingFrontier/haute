@@ -23,6 +23,7 @@ import { modelFileExtension, type ExportableAlgorithm } from "./modelExport"
 
 type DestinationState = {
   path: string
+  algorithm: ExportableAlgorithm
   response?: ModelSaveDestinationResponse
   error?: string
 }
@@ -64,17 +65,21 @@ export function ModelFileExportSection({
     const controller = new AbortController()
     resolveModelSaveDestination({ output_path: path, algorithm }, { signal: controller.signal }).then(
       (response) => {
-        if (!controller.signal.aborted) setDestinationState({ path, response })
+        if (!controller.signal.aborted) setDestinationState({ path, algorithm, response })
       },
       (caught: unknown) => {
         if (controller.signal.aborted) return
-        setDestinationState({ path, error: apiErrorMessage(caught, "Could not resolve destination.") })
+        setDestinationState({ path, algorithm, error: apiErrorMessage(caught, "Could not resolve destination.") })
       },
     )
     return () => controller.abort()
   }, [algorithm, path])
 
-  const destination = path && destinationState?.path === path ? destinationState : undefined
+  // A resolution answers for the path and the model format it was asked
+  // about; until the current pair's arrives, none is shown.
+  const destination = path && destinationState?.path === path && destinationState.algorithm === algorithm
+    ? destinationState
+    : undefined
   const saving = saveState?.phase === "saving"
   const visibleSave = saveState && (saving || saveState.path === path) ? saveState : undefined
   const suffixMismatch = destination?.response?.suffix_mismatch === true

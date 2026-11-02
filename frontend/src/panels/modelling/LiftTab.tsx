@@ -1,12 +1,14 @@
 import { useState } from "react"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
-import { CHART_COLORS, MODEL_COLORS } from "../../theme/colors"
+import { CHART_COLORS } from "../../theme/colors"
+import { ViewSwitch } from "../ViewSwitch"
 import {
   ChartEmptyState,
   ChartLegend,
   ChartSvg,
   ChartValueGrid,
   ChartValuesTable,
+  ChartYAxisTitle,
   MODELLING_CHART_AXIS_FONT_SIZE as axisFontSize,
   MODELLING_CHART_AXIS_TEXT_COLOR as axisTextColor,
   MODELLING_CHART_GRID_COLOR as gridColor,
@@ -30,6 +32,10 @@ type LorenzPoint = { cum_weight_frac: number; cum_actual_frac: number }
 const actualColor = CHART_COLORS.actual
 const predictedColor = CHART_COLORS.predicted
 const referenceColor = "var(--text-muted)"
+const LIFT_VIEWS = [
+  { key: "lift", label: "Double lift" },
+  { key: "lorenz", label: "Lorenz curve" },
+] as const
 
 export function LiftTab({ result, width, height = 280 }: LiftTabProps) {
   const [view, setView] = useState<"lift" | "lorenz">("lift")
@@ -47,7 +53,9 @@ export function LiftTab({ result, width, height = 280 }: LiftTabProps) {
       sideBySideFrom={900}
       minChartWidth={260}
       header={(sideBySide) =>
-        !sideBySide && bothCharts ? <ViewSwitch view={selectedView} onChange={setView} /> : null
+        !sideBySide && bothCharts
+          ? <ViewSwitch label="Lift chart view" options={LIFT_VIEWS} value={selectedView} onChange={setView} />
+          : null
       }
     >
       {({ sideBySide, chartWidth }) => (
@@ -67,41 +75,6 @@ export function LiftTab({ result, width, height = 280 }: LiftTabProps) {
         </>
       )}
     </TwoChartLayout>
-  )
-}
-
-function ViewSwitch({
-  view,
-  onChange,
-}: {
-  view: "lift" | "lorenz"
-  onChange: (view: "lift" | "lorenz") => void
-}) {
-  const buttonStyle = (active: boolean) => ({
-    background: active ? MODEL_COLORS.accentSoft : "var(--chrome-hover)",
-    color: active ? MODEL_COLORS.accent : "var(--text-muted)",
-  })
-  return (
-    <div className="flex gap-1" role="group" aria-label="Lift chart view">
-      <button
-        type="button"
-        aria-pressed={view === "lift"}
-        onClick={() => onChange("lift")}
-        className="rounded px-2 py-0.5 text-[12px] font-medium"
-        style={buttonStyle(view === "lift")}
-      >
-        Double lift
-      </button>
-      <button
-        type="button"
-        aria-pressed={view === "lorenz"}
-        onClick={() => onChange("lorenz")}
-        className="rounded px-2 py-0.5 text-[12px] font-medium"
-        style={buttonStyle(view === "lorenz")}
-      >
-        Lorenz curve
-      </button>
-    </div>
   )
 }
 
@@ -222,16 +195,9 @@ function DoubleLiftChart({
         >
           Prediction decile (low to high)
         </text>
-        <text
-          x={12}
-          y={marginTop + plotHeight / 2}
-          textAnchor="middle"
-          fontSize={axisFontSize}
-          fill={axisTextColor}
-          transform={`rotate(-90,12,${marginTop + plotHeight / 2})`}
-        >
+        <ChartYAxisTitle plotTop={marginTop} plotHeight={plotHeight}>
           Average value
-        </text>
+        </ChartYAxisTitle>
       </ChartSvg>
       <ChartLegend
         items={[
@@ -366,16 +332,9 @@ function LorenzChart({
         >
           Cumulative weight fraction
         </text>
-        <text
-          x={12}
-          y={marginTop + plotHeight / 2}
-          textAnchor="middle"
-          fontSize={axisFontSize}
-          fill={axisTextColor}
-          transform={`rotate(-90,12,${marginTop + plotHeight / 2})`}
-        >
+        <ChartYAxisTitle plotTop={marginTop} plotHeight={plotHeight}>
           Cumulative actual fraction
-        </text>
+        </ChartYAxisTitle>
       </ChartSvg>
       <ChartLegend
         items={[
