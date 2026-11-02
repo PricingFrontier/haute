@@ -29,7 +29,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/panels/GraphContext.tsx` | `GraphProvider` component; memoises the context value on `{allNodes, edges, submodels, preamble, openNode}` identity. |
 | `frontend/src/stores/useGraphStore.ts` | Zustand store owning `nodes`/`edges`/`preamble`/`submodels`, undo/redo history (four-field graph snapshots interleaved with VC entries; every history-aware setter, the raw preamble/submodel/constant setters and undo/redo commit through one `commitGraphChange`, which records an undo step only when the authored fingerprint changed), and three derived fingerprints (`structuralFingerprint`, `panelContextFingerprint`, `persistedFingerprint`) plus the `dirty` boolean derived from them. It exports the production `computeStructuralFingerprint` for direct contract tests; tests must not maintain a copied fingerprint implementation. |
 | `frontend/src/types/node.ts` | Shared node-data and persisted node-type contract owned by [frontend-shared](../frontend-shared/low-level.md) and consumed by the canvas. |
-| `frontend/src/hooks/createAfterIdentity.ts` | `createAfterIdentity`, the one resolve-then-commit path of every canvas creation (Duplicate, Create Instance, palette and connection drops, Edge Join insertion, paste): fenced on the kind's request serial, the graph's `structuralFingerprint` and the authored data of the nodes the creation depends on, applying onto the live graph; and `authoredNodeData`, a node's data without its underscore-prefixed fields, which a copy is built from. |
+| `frontend/src/hooks/createAfterIdentity.ts` | `createAfterIdentity`, the one resolve-then-commit path of every canvas creation (Duplicate, Create Instance, palette and connection drops, Edge Join insertion, paste): fenced on the kind's request serial, the document and view on the canvas (source file, execution generation and the submodel view's entry), the graph's `structuralFingerprint`, every node's name and the authored data of the nodes the creation depends on, applying onto the live graph; and `authoredNodeData`, a node's data without its underscore-prefixed fields, which a copy is built from. |
 | `frontend/src/hooks/useNodeHandlers.ts` | Node CRUD handlers: ordinary atomic delete, guarded submodel deletion, duplicate and instance creation that resolve authoritative identities before commit, reusable-submodel occurrence creation with deterministic fresh id/alias allocation, rename dialog, and in-flight-guarded ELK auto-layout fenced on the initiating document, navigation scope, and graph topology (merging returned positions by node id onto live nodes while preserving live data and selection, or rejecting an obsolete layout with a toast). Resolver rejection, malformed output, or graph replacement leaves state untouched. |
 | `frontend/src/hooks/useEdgeHandlers.ts` | Connection/gesture handlers: `onConnectStart` plus pointer movement maintain the transient compatible edge-join candidate; `commitConnection`/`onConnectEnd` interpret React Flow handle-drag endings into a normal edge or a revalidated edge-join insertion; palette and edge-join nodes resolve identities before any graph/history mutation, with downstream join mappings finalized only from the server result. The hook also owns `openNode`, `onNodeClick` (closes side panes via `closeSidePanes` and opens the node, leaving the click's selection, a Ctrl/Cmd-click toggle included, to React Flow) and `activateNode` (the same for an activation from outside the canvas, which keeps a selection that already holds the node and otherwise makes it the only selected node; both update `selectedNode`/`lastSelectedNodeRef`, clear trace, and run the preview decision), edge deletion, context menus, and drag/drop. |
 | `frontend/src/components/InitialViewFit.tsx` | Renderless child of the editor's `<ReactFlow>` that fits the graph into view (padding 0.15) once per canvas mount, the first time every node is measured. |
@@ -403,13 +403,19 @@ reconciliation rather than dropping them or committing a second mutation.
    Every creation that resolves server-owned identities before committing —
    Duplicate, Create Instance, palette drop, connection drop, Edge Join
    insertion and paste — goes through `createAfterIdentity`: it captures the
-   graph's `structuralFingerprint` and the authored data (every field but the
-   underscore-prefixed ones, compared by reference) of the nodes the creation
-   was computed from, takes the kind's request serial, resolves, and then
-   applies the creation to the graph as it is now, or refuses it with one error
-   toast when a newer request of the kind started, the structure changed, or a
-   node it depends on was edited. A selection, drag, measurement or preview
-   column stash replaces the graph object but changes neither, so it no longer
+   document and view on the canvas (the source file and execution generation,
+   which a reload or an adopted live update advances, and the submodel view's
+   entry, null at the root), the graph's `structuralFingerprint`, every node's
+   name, and the authored data (every field but the underscore-prefixed ones,
+   compared by reference) of the nodes the creation was computed from, takes
+   the kind's request serial, resolves, and then applies the creation to the
+   graph as it is now, or refuses it with one error toast when a newer request
+   of the kind started, another document or view replaced the canvas (even one
+   with the same structure), the structure changed, a node was renamed (the
+   creation's name was allocated against the names, and an edge's input name
+   copies its source's), or a node it depends on was edited. A selection, drag,
+   measurement or preview column stash replaces the graph object but changes
+   none of these, so it no longer
    refuses a creation; every apply adds to the live graph rather than replacing
    it with the captured one, so such a change is kept. Edge Join insertion
    depends on the split edge's target, whose input mapping it rewrites; its
@@ -1645,6 +1651,10 @@ again through the editor and save paths.
     re-renders `Toolbar`, `NodePanel`, and `DataPreview` at most once across the
     drag sequence.
 - **Node/edge handlers — `frontend/src/hooks/__tests__/`:**
+  - `frontend/src/hooks/__tests__/createAfterIdentity.test.ts` — a creation
+    applied onto the live graph after a selection or drag, and refused after a
+    reload with the same structure, an entry into a submodel view, or a rename
+    of any node while its identities resolve.
   - `frontend/src/hooks/__tests__/useGraphCommitController.pending.test.ts` —
     the commit fence and request-input pending drafts. With identity replies
     held, edits to two columns and to two top-level fields, each built on the
