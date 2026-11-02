@@ -334,16 +334,20 @@ paths described above, not deploy or scoring successes.
 Exceptions are handled with narrow, explicit catches rather than blanket `except Exception` used as
 a fallback mechanism: transport-classification helpers (`_is_databricks_not_found`,
 `_is_http_not_found` in `src/haute/cli/_impact.py`) exist specifically so that only the exact "not found" shape is
-swallowed and reclassified — everything else re-raises. Where `except Exception` does appear (e.g.
-around `resolve_config` or script execution in `train`), it is used to convert an
-internal exception into a formatted CLI error message and `SystemExit(1)`, not to continue past the
-failure.
+swallowed and reclassified — everything else re-raises. Where a command turns a failure into
+one line and `SystemExit(1)` (around `resolve_config` in `deploy`, parsing and execution in
+`run` and `lint`, the script and `job.run` in `train`), it catches only the expected ones,
+`EXPECTED_FAILURES` in `src/haute/cli/_helpers.py`: Haute's own errors (`HauteError`:
+`DeployError`, `ConfigError`, `ParseError` and the rest), `ValueError` and `OSError`
+(`FileNotFoundError` among them). Anything else, a `TypeError` say, is a defect and reaches
+the terminal with its traceback. Helpers raise rather than exit: `resolve_transport` raises a
+`ClickException` for a container target without a staging endpoint URL.
 
 The Databricks smoke readiness loop retries only the SDK's explicit not-found response while an
 endpoint is being created. Authentication, permission, transport, and other SDK failures stop
 immediately with the original exception chained. Training execution and result rendering are
 separate failure boundaries: once `job.run()` has returned successfully, a formatting problem is
-reported as a result-reporting failure and never as “Training failed”.
+reported as a result-reporting failure, with its traceback, and never as “Training failed”.
 
 `handle_deploy` renders `DeployError` as an expected target/configuration failure and keeps
 the explicit missing-dependency and not-implemented messages. It does not catch the

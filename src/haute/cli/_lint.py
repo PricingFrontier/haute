@@ -17,6 +17,7 @@ from pathlib import Path
 import click
 
 from haute._project import resolve_pipeline_file
+from haute.cli._helpers import EXPECTED_FAILURES
 from haute.errors import ConfigError
 
 
@@ -42,7 +43,7 @@ def handle_lint(config: LintConfig) -> None:
 
     try:
         graph = parse_pipeline_file(filepath)
-    except Exception as e:
+    except EXPECTED_FAILURES as e:
         click.echo(f"  \u2717 Parse error: {e}", err=True)
         raise SystemExit(1)
 

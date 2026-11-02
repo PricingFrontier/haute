@@ -511,3 +511,42 @@ class TestDeploy:
 
         assert result.exit_code == 0, result.output
         assert "-staging" in result.output
+
+
+class TestResolutionFailures:
+    """Resolution's expected failures are one line and exit 1; a defect keeps its traceback."""
+
+    @pytest.mark.parametrize(
+        "failure",
+        [DeployError("no output node"), ValueError("no output node"), FileNotFoundError("x")],
+    )
+    def test_an_expected_failure_is_one_line(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        failure: Exception,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        _make_toml(tmp_path)
+        with patch("haute.deploy._config.resolve_config", side_effect=failure):
+            result = runner.invoke(cli, ["deploy", "--dry-run"])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert f"Resolution failed: {failure}" in result.output
+
+    def test_a_type_error_reaches_the_terminal_with_its_traceback(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        _make_toml(tmp_path)
+        with patch(
+            "haute.deploy._config.resolve_config",
+            side_effect=TypeError("unsupported operand"),
+        ):
+            result = runner.invoke(cli, ["deploy", "--dry-run"])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, TypeError)
+        assert "Resolution failed" not in result.output

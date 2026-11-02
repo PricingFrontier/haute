@@ -76,7 +76,18 @@ class TestTrain:
 
         result = runner.invoke(cli, ["train", str(script)])
         assert result.exit_code == 1
-        assert "error" in result.output.lower()
+        assert isinstance(result.exception, SystemExit)
+        assert "Error executing script: boom" in result.output
+
+    def test_a_defect_in_the_script_keeps_its_traceback(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        script = tmp_path / "bad.py"
+        script.write_text("len(None)\n")
+
+        result = runner.invoke(cli, ["train", str(script)])
+        assert result.exit_code == 1
+        assert isinstance(result.exception, TypeError)
 
     def test_no_job_variable(self, runner: CliRunner, tmp_path: Path) -> None:
         script = tmp_path / "no_job.py"
@@ -119,12 +130,27 @@ class TestTrain:
         script.write_text(
             "from unittest.mock import MagicMock\n"
             "job = MagicMock()\n"
+            "job.run.side_effect = ValueError('no rows left after the holdout')\n"
+        )
+
+        result = runner.invoke(cli, ["train", str(script)])
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert "Training failed: no rows left after the holdout" in result.output
+
+    def test_an_unexpected_training_error_keeps_its_traceback(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        script = tmp_path / "fail_train.py"
+        script.write_text(
+            "from unittest.mock import MagicMock\n"
+            "job = MagicMock()\n"
             "job.run.side_effect = RuntimeError('CUDA out of memory')\n"
         )
 
         result = runner.invoke(cli, ["train", str(script)])
         assert result.exit_code == 1
-        assert "failed" in result.output.lower() or "CUDA" in result.output
+        assert isinstance(result.exception, RuntimeError)
 
     def test_result_formatting_failure_does_not_relabel_training(
         self, runner: CliRunner, tmp_path: Path
@@ -150,6 +176,8 @@ class TestTrain:
         assert "training succeeded" in result.output.lower()
         assert "reporting failed" in result.output.lower()
         assert "training failed" not in result.output.lower()
+        # The formatting defect keeps its traceback.
+        assert isinstance(result.exception, TypeError)
 
     def test_progress_callback_output(self, runner: CliRunner, tmp_path: Path) -> None:
         """Progress callback should produce bar output with percentage."""

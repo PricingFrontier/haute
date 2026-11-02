@@ -13,7 +13,6 @@ packages come from the [25 October 2026 codebase review](codebase-review-2026-10
 |---|---|---:|---|
 | CLI-R02 | Planned | P2 | `haute run` walks the pipeline lazily to its output node under the batch profile, with a named source, instead of materialising every node in memory. |
 | CLI-R03 | Planned | P2 | `haute lint` applies the editor's save-time validation, so CI's lint step refuses what the editor would refuse. |
-| CLI-R05 | Planned | P3 | Unexpected errors keep their tracebacks, the transport helper raises instead of exiting, and `haute serve` opens the browser when the server is ready. |
 
 ## Planned improvements
 
@@ -59,29 +58,3 @@ lint` with the same message.
 
 **Evidence:** `src/haute/cli/_lint.py::handle_lint`; `src/haute/routes/_save_pipeline.py`
 (the save-time validation).
-
-### CLI-R05 — Error reporting and helpers
-**Why:** `deploy`, `run`, `lint` and `train` catch `Exception` around resolution, parsing
-and execution and exit 1 with one line, so a programmer error loses its traceback, which
-the deploy specification reserves for expected errors. `resolve_transport` raises
-`SystemExit` from a helper. `resolve_model_name`'s docstring omits the environment step
-it implements. In production mode `haute serve` opens the browser after a fixed 1.5 s
-while dev mode waits for the sockets; the readiness helpers written for production mode
-have no caller. `_helpers.py` keeps an unused `subprocess` import so a test can patch it.
-
-**Plan:** Catch the expected types (`DeployError`, `ValueError`, `FileNotFoundError`,
-`ConfigError`) and let the rest propagate; raise a `ClickException` from the transport
-helper; correct the docstring; use the readiness wait in production mode and delete the
-fixed delay or the unused helpers; have the test assert on `webbrowser` and drop the
-import.
-
-**Acceptance:** A `TypeError` raised inside resolution reaches the terminal with its
-traceback; `haute serve` opens the browser only once the port accepts connections.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/cli/_deploy.py::handle_deploy`; `src/haute/cli/_run.py::handle_run`;
-`src/haute/cli/_lint.py::handle_lint`; `src/haute/cli/_train.py::handle_train`;
-`src/haute/cli/_helpers.py::resolve_transport` and `::resolve_model_name`;
-`src/haute/cli/_serve.py::_run_prod_mode`, `::_schedule_browser_open` and
-`::_open_browser_after_backend_ready`.

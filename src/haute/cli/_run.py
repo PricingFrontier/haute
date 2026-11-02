@@ -15,6 +15,7 @@ from pathlib import Path
 import click
 
 from haute._project import resolve_pipeline_file
+from haute.cli._helpers import EXPECTED_FAILURES
 from haute.errors import ConfigError
 
 
@@ -42,7 +43,7 @@ def handle_run(config: RunConfig) -> None:
 
     try:
         graph = parse_pipeline_file(filepath, flatten=True)
-    except Exception as e:
+    except EXPECTED_FAILURES as e:
         click.echo(f"Error parsing pipeline: {e}", err=True)
         raise SystemExit(1)
 
@@ -51,7 +52,7 @@ def handle_run(config: RunConfig) -> None:
         try:
             project_root = get_project_root(filepath.resolve().parent)
             graph = with_form_tables(graph, project_root=project_root)
-        except Exception as e:
+        except EXPECTED_FAILURES as e:
             click.echo(f"Error reading the workbench's form: {e}", err=True)
             raise SystemExit(1)
 
@@ -65,7 +66,7 @@ def handle_run(config: RunConfig) -> None:
 
     try:
         results = execute_graph(graph)
-    except Exception as e:
+    except EXPECTED_FAILURES as e:
         click.echo(f"Error executing pipeline: {e}", err=True)
         raise SystemExit(1)
 

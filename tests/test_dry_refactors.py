@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import click
 import pytest
 
 from haute.errors import HauteError, RequestRefusedError
@@ -197,7 +198,7 @@ class TestResolveTransport:
         from haute.cli._helpers import resolve_transport
 
         config = self._make_config(target="container", staging_url="")
-        with pytest.raises(SystemExit):
+        with pytest.raises(click.ClickException, match="Set \\[ci.staging\\] endpoint_url"):
             resolve_transport(config)
 
     def test_unsupported_target(self) -> None:

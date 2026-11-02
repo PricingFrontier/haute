@@ -18,7 +18,7 @@ import click
 
 from haute._project import resolve_pipeline_file
 from haute._scaffold import BUILD_AND_PUSH_ONLY_TARGETS
-from haute.cli._helpers import ENDPOINT_SUFFIX_HELP
+from haute.cli._helpers import ENDPOINT_SUFFIX_HELP, EXPECTED_FAILURES
 from haute.errors import DeployError
 
 # Map of provider-name → env var set by that provider when a job is running.
@@ -165,7 +165,7 @@ def handle_deploy(config: DeployCliConfig) -> None:
     # 2. Resolve (parse, prune, detect I/O, collect artifacts, infer schemas)
     try:
         resolved_deploy = resolve_config(deploy_config)
-    except Exception as e:
+    except EXPECTED_FAILURES as e:
         click.echo(f"  \u2717 Resolution failed: {e}", err=True)
         raise SystemExit(1)
 

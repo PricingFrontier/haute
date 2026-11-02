@@ -7,7 +7,7 @@
 | `src/haute/__main__.py` | Package-module entry point; imports and invokes the canonical `haute.cli:cli` group for `python -m haute`. |
 | `src/haute/cli/__init__.py` | Builds the Click command group (`cli`), registers all thirteen commands and command groups, exposes `--version`; the group's callback sets the process's output streams through `utf8_output` before any command prints. Its first import is the Polars startup module below, before anything imports Polars. |
 | `src/haute/cli/_polars_startup.py` | Applies Haute's Polars settings (spilling off, its folder in the working directory's `.haute_cache/polars-spill`, unknown extension columns as storage; [execution engine](../execution-engine/low-level.md)) and reaps ended processes' spill folders; `SPILL_ROOT` and `POLARS_SETTINGS`, which `haute serve` logs. |
-| `src/haute/cli/_helpers.py` | Cross-command utilities: `resolve_model_name`, `_open_browser`, `_node_env`, `_npm`, `_find_frontend_dir`, the `TransportInfo`/`resolve_transport` transport-dispatch helper, and the shared `ENDPOINT_SUFFIX_HELP` string. |
+| `src/haute/cli/_helpers.py` | Cross-command utilities: `resolve_model_name`, `_open_browser`, `_node_env`, `_npm`, `_find_frontend_dir`, the `TransportInfo`/`resolve_transport` transport-dispatch helper, the shared `ENDPOINT_SUFFIX_HELP` string, and `EXPECTED_FAILURES`, the failures a command reports as one line (`HauteError`, `ValueError`, `OSError`). |
 | `src/haute/cli/_output.py` | `utf8_output`: the process's own stdout and stderr, when not UTF-8, written in UTF-8, or, when PYTHONIOENCODING chose the encoding or the stream is a terminal, kept with a mark it cannot hold replaced; a stream a caller put in the process's place left alone. |
 | `src/haute/cli/_init_cmd.py` | `haute init` — project scaffolding, or an existing project set up again (a workbench project given no starter test quote, an automated one its example in tests/quotes, each starter file written only where none is there and none on a re-run): `InitConfig`, the questions (`_answers`, which takes each answer its flags give and, through `_pick`, asks a numbered list for the rest while `InitConfig.interactive` says the command runs at a terminal, `_at_terminal`, each question's default from `_Defaults`, a new project's `NEW_PROJECT_DEFAULTS` or the project's current answers, `_current_answers`; without one a question with a default takes it and one without, the workbench's database and sign-in on a new project, is a usage error naming its flag, as is a flag of the other kind of project; the sign-in asked only when `connections.toml` is to be written, `_writes_connections`; the answers as `_Answers`), `handle_init`, TOML-aware `pyproject.toml` dependency injection (and the extras a workbench needs added to a `haute` requirement already listed), CI-provider file generation (`haute._scaffold.ci_files` for an automated project, `haute._scaffold.workbench_ci_files` for a workbench one, written by `write_generated_files`, which `haute ci update` shares) and pruning (`_prune_stale_ci_files`, every file Haute generates, `GENERATED_CI_FILES`, that the set written does not hold), a workbench project's `haute.toml` (`haute._scaffold.workbench_haute_toml`), form (written only when absent) and `connections.toml` (written when absent or when the `dev`, `staging` or `prod` connection in it is on another database than the one answered, SQLite included, since the quote store refuses a connection of another provider than its environment's, and only to an ordinary file's path, `_root_file_problem`; a `connections.toml` already there read first, `ConnectionsError` refused before anything is written) ([workbench](../workbench/low-level.md)) and `.env.example` (`haute._scaffold.app_env_example`), and next steps that name the CI secrets the first deploy or publication needs (`ci_secret_names`, of the target or of the app's host), with `haute ci secrets` on GitHub. |
 | `src/haute/cli/_run.py` | `haute run` — `RunConfig`, `handle_run`, parses + executes a pipeline and prints per-node results; a pipeline with a Workbench node is given its tables from the form folder of the project the file is in (`haute._workbench_nodes.with_form_tables`), a form that cannot be read reported as "Error reading the workbench's form: ...". |
@@ -49,7 +49,8 @@ Every command uses a plain mutable `@dataclass` as a configuration value bag con
 Other notable types:
 - `TransportInfo` (`src/haute/cli/_helpers.py`) — `__slots__`-based result of `resolve_transport(config)`. Fields:
   `kind` (`"databricks" | "http" | "unsupported"`), `staging_url`, `prod_url`. `smoke` and `impact`
-  both switch on `.kind` to pick a backend.
+  both switch on `.kind` to pick a backend. A container-based target without
+  `[ci.staging] endpoint_url` raises `click.ClickException` naming the setting (exit 1).
 - `_Closable` (`_serve.py`) — a `typing.Protocol` describing the socket-like object the TCP
   readiness probe needs (`close()` only), used to type `_wait_for_tcp_ready`'s injectable `connect`
   callable for testability.
@@ -200,8 +201,11 @@ mode rather than serving source through an unrelated generated bundle.
     terminated in a `finally` block on every uvicorn exit path.
   - **Prod mode** (`_run_prod_mode`): checks `static_build_ready(STATIC_DIR)`, fails loudly with a
     build-hint message (`_missing_static_message`, which distinguishes a source checkout — "run npm
-    build" — from an installed wheel — "reinstall haute") if not ready, schedules a delayed browser
-    open, and runs plain `uvicorn.run(...)` with no autoreload.
+    build" — from an installed wheel — "reinstall haute") if not ready, starts a background wait
+    that opens the browser once the backend accepts connections
+    (`_open_browser_after_backend_ready` → `_wait_for_backend_then_open_browser` →
+    `_wait_for_tcp_ready`, which on a timeout prints the URL to open instead), and runs plain
+    `uvicorn.run(...)` with no autoreload.
   - Host resolution precedence (in the Click wrapper, before `ServeConfig` is built): `--host` flag
     → `[server] host` in `haute.toml` (`_load_toml_server_host`) → `"localhost"`. Therefore plain
     `haute serve` binds and opens `http://localhost:8000` without requiring project configuration.
@@ -420,11 +424,6 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
 - **`status --version-only`** distinguishes "no version" from a genuine version `0` by raising
   instead of printing — printing `0` unconditionally would be indistinguishable from a real version
   number to a scripted caller checking stdout.
-- **`subprocess` imported but unused at runtime in `src/haute/cli/_helpers.py`.** The module-level `import
-  subprocess  # noqa: F401` exists solely so tests can patch `subprocess.call`/`subprocess.Popen` and
-  assert they are never invoked from this module (`_open_browser` uses `webbrowser` exclusively) —
-  documented in a comment referencing "codebase-review #79".
-
 ## Error handling
 
 - Explicitly handled operational failures use `SystemExit(1)` (normally after
@@ -433,8 +432,10 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
   warns then returns 0 when the configured target has no transport implementation.
   `status --version-only` deliberately converts its not-found/no-version case to
   `click.ClickException` (exit 1) so scripts cannot mistake absence for version `0`.
-  Several configuration, SDK, I/O, scoring, and programming errors are outside these
-  formatting catches and propagate with their original exception/traceback (still exit 1).
+  The formatting catches take only `EXPECTED_FAILURES` (`HauteError`, `ValueError`,
+  `OSError`); SDK, scoring and programming errors outside them propagate with their
+  original exception and traceback (still exit 1). `train` prints that training succeeded
+  before a result-reporting failure's traceback.
 - `_serve._load_toml_server_host` distinguishes `OSError` (logged as a warning, treated as "no
   override so fall back to default") from `tomllib.TOMLDecodeError` (raised as `haute.errors.ConfigError`
   — a malformed `haute.toml` must not silently resolve to the loopback default, since that could mask
