@@ -47,8 +47,11 @@ from haute._worker_protocol import (
     WorkerResultManifest,
 )
 from haute.routes._background_jobs import (
+    CancellableJobRegistry,
     IsolatedJobSupervisor,
     SupervisorInfrastructureError,
+    start_job_thread,
+    stop_background_jobs,
 )
 from haute.routes._isolated_worker_async import (
     WorkerCancellationGate,
@@ -76,6 +79,112 @@ def _allocate_native_column(size_bytes: int) -> int:
 
 def _read_environment(name: str) -> str | None:
     return os.environ.get(name)
+
+
+def _sleeping_protocol_worker(runtime, request):
+    del request
+    runtime.emit_progress(progress=0.0, message="Sleeping", kind="phase")
+    time.sleep(120)
+    return WorkerResultManifest(metadata={})
+
+
+def _quiet_lifespan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run the server lifespan without its project, pool, watcher or reaper work."""
+    import haute.deploy._config as deploy_config
+    import haute.server as server
+
+    for name in (
+        "configure_logging",
+        "configure_execution_telemetry",
+        "recover_json_runtime_storage",
+        "_ensure_pipeline_index",
+        "_follow_pipeline_settings_chunk_rows",
+        "start_interactive_worker_pool",
+    ):
+        monkeypatch.setattr(server, name, lambda: None)
+    monkeypatch.setattr(deploy_config, "_load_env", lambda _path: None)
+    monkeypatch.setattr(server, "_artifact_stale_seconds", lambda: 86_400)
+
+    async def idle(*_args: object) -> None:
+        await asyncio.Event().wait()
+
+    async def no_reap(_stale_after_seconds: int) -> None:
+        return None
+
+    monkeypatch.setattr(server, "_watcher_forever", idle)
+    monkeypatch.setattr(server, "_reap_stale_job_artifacts_in_background", no_reap)
+
+
+def test_server_shutdown_cancels_a_running_job_and_leaves_no_worker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """ROAD-WORKER-06: shutdown stops a sleeping protocol worker instead of joining it."""
+    import multiprocessing
+
+    import haute.server as server
+
+    _quiet_lifespan(monkeypatch)
+    store = JobStore()
+    registry = CancellableJobRegistry()
+    job_id = store.create_job({"status": "running"})
+    registry.register_latest("shutdown", job_id)
+    sleeping = threading.Event()
+    supervisor = IsolatedJobSupervisor(JobLifecycle(store))
+    process_name = f"haute-shutdown-test-{job_id}"
+
+    async def run_and_shut_down() -> float:
+        async with server._lifespan(server.app):
+            supervisor.launch_protocol(
+                job_id,
+                _sleeping_protocol_worker,
+                WorkerRequest(job_id, "sleep", {}),
+                artifact_root=tmp_path,
+                artifact_kinds=frozenset(),
+                max_artifact_size_bytes=0,
+                config=IsolatedWorkerConfig(
+                    stop_reason=lambda: registry.cancellation_reason(job_id),
+                    process_name=process_name,
+                ),
+                on_progress=lambda _event: sleeping.set(),
+                on_finished=lambda: registry.release(job_id),
+            )
+            assert await asyncio.to_thread(sleeping.wait, 120)
+            shutdown_started = time.monotonic()
+        return time.monotonic() - shutdown_started
+
+    try:
+        elapsed = asyncio.run(run_and_shut_down())
+        workers_left = [
+            child for child in multiprocessing.active_children() if child.name == process_name
+        ]
+        job = store.require_job(job_id)
+
+        assert elapsed < server._JOB_SHUTDOWN_TIMEOUT_SECONDS
+        assert workers_left == []
+        assert job["status"] == "cancelled"
+        assert job["worker_error_class"] == "IsolatedWorkerStoppedError"
+    finally:
+        # Without the shutdown under test, the worker would sleep on past this test.
+        registry.cancel(job_id)
+        stop_background_jobs(timeout_seconds=10)
+
+
+def test_job_shutdown_returns_at_its_bound_naming_the_jobs_still_running() -> None:
+    release = threading.Event()
+    thread = threading.Thread(
+        target=release.wait, args=(30,), name="haute-test-unstoppable-job", daemon=True
+    )
+    start_job_thread(thread)
+    try:
+        started = time.monotonic()
+        still_running = stop_background_jobs(timeout_seconds=0.2)
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        thread.join(10)
+
+    assert "haute-test-unstoppable-job" in still_running
+    assert 0.2 <= elapsed < 5
 
 
 def _raise_value_error(message: str) -> None:

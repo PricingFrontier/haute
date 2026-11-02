@@ -98,6 +98,7 @@ from haute.routes._background_jobs import (
     CancellableJobRegistry,
     SingleFlightCoordinator,
     SingleFlightHandle,
+    start_job_thread,
 )
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
@@ -1249,7 +1250,7 @@ class OptimiserSolveService:
 
         thread = threading.Thread(target=_setup_background, daemon=True)
         try:
-            thread.start()
+            start_job_thread(thread)
         except Exception as exc:
             logger.error(
                 "solve_setup_worker_start_failed",
@@ -2844,7 +2845,7 @@ class OptimiserSolveService:
 
         thread = threading.Thread(target=_auto_range_background, daemon=True)
         try:
-            thread.start()
+            start_job_thread(thread)
         except Exception as exc:
             logger.error(
                 "frontier_auto_range_worker_start_failed",
@@ -3679,7 +3680,7 @@ class OptimiserSolveService:
 
         thread = threading.Thread(target=_solve_background_in_worker_context, daemon=True)
         try:
-            thread.start()
+            start_job_thread(thread)
         except Exception as exc:
             logger.error(
                 "solve_worker_start_failed",

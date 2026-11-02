@@ -33,6 +33,7 @@ In scope:
   a transition is rejected (`_job_lifecycle.py`).
 - Latest-job-wins supersession and cooperative cancellation tokens per logical key
   (`_background_jobs.py::CancellableJobRegistry`).
+- Stopping every job when the server shuts down (`_background_jobs.py::stop_background_jobs`).
 - Single-flight mutual exclusion per logical key (`_background_jobs.py::SingleFlightCoordinator`).
 - The parent-side adapter that turns an isolated worker process's outcome into a job
   lifecycle transition (`_background_jobs.py::IsolatedJobSupervisor`).
@@ -143,6 +144,13 @@ Out of scope (owned elsewhere):
   `HAUTE_ARTIFACT_STALE_SECONDS` is a non-negative integer (default 86,400).
   Startup validates it synchronously, schedules one tracked lifespan reaper without
   delaying readiness, and observes the task at shutdown.
+- **Shutdown stops every job.** When the server shuts down, every job still registered in
+  any `CancellableJobRegistry` (training and dispersion, Explore pivots, node data, the
+  optimiser and input-cache builds) is cancelled, so each supervised worker sees its stop
+  reason, is terminated and joined, runs its cleanup, and its job is recorded `cancelled`.
+  The server waits at most 10 seconds for the job threads, then logs the ones still
+  running and goes on. A one-shot or protocol worker is a non-daemon child, which the
+  interpreter's exit would otherwise join for as long as its job runs.
 - **Bounded HTTP response latency for explicitly thread-backed work.** A blocking call started on a
   worker thread can be capped so the HTTP response returns (504) within a timeout,
   but the underlying work is *not* aborted — it keeps running. On completion the task is
@@ -190,6 +198,14 @@ Out of scope (owned elsewhere):
   lets a UI keep polling a finished job's summary long after the expensive payload
   has been released, bounding peak memory without shortening the useful life of job
   metadata.
+- **Shutdown cancels rather than kills.** Making the one-shot and protocol workers daemonic
+  would let the interpreter's exit terminate them instead of joining them, but a daemonic
+  process cannot start the children a cgroup or Job Object lease allows. Cancelling every
+  job at shutdown stops the same workers through the path a user's cancel takes, and lets
+  each job remove its staged artifacts instead of leaving them to the 24-hour reaper.
+  The 10-second bound covers a supervised worker's stop: its stop reason within 0.1 s,
+  termination and join within 2 s, a kill and join within 2 s more, then the job's cleanup;
+  it fits inside the 30-second grace period hosts usually give.
 - **Cooperative cancellation for thread-backed work.** Because Python cannot forcibly stop a
   running thread, cancellation here is always a signal (an `Event` plus a shared
   `ExecutionCancellationToken`) that a worker must poll at safe checkpoints. This

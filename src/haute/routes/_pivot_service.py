@@ -51,7 +51,11 @@ from haute._types import (
     ExplorePivotValuePlacement,
 )
 from haute.errors import InvalidRequestError, NotFoundError
-from haute.routes._background_jobs import CancellableJobRegistry, JobCancellation
+from haute.routes._background_jobs import (
+    CancellableJobRegistry,
+    JobCancellation,
+    start_job_thread,
+)
 from haute.routes._job_lifecycle import JobLifecycle, bind_running_execution_metrics_publisher
 from haute.routes._job_store import JobStore, RunningJobFields
 from haute.routes._node_data_service import node_data_project_root
@@ -729,11 +733,13 @@ class PivotService:
                 message="Superseded by a newer pivot request.",
                 expected_status="running",
             )
-        threading.Thread(
-            target=self._run,
-            args=(job_id, spec, token, predecessor_finished, completion_event),
-            daemon=True,
-        ).start()
+        start_job_thread(
+            threading.Thread(
+                target=self._run,
+                args=(job_id, spec, token, predecessor_finished, completion_event),
+                daemon=True,
+            )
+        )
         return ExplorePivotRunResponse(
             status="started",
             job_id=job_id,

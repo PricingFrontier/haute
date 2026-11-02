@@ -367,7 +367,9 @@ execution-telemetry and optimiser-housekeeping configuration →
 spawn `_watcher_forever()` and a tracked worker-thread optimiser-reaper task. The lifespan yields
 without awaiting filesystem housekeeping, so temp-directory population cannot delay server
 readiness. Shutdown cancels and awaits the watcher and observes the reaper task; reaper failures
-are logged rather than silently discarded. A partial startup failure after the interactive pool
+are logged rather than silently discarded. It then cancels every background job and waits up to
+10 seconds for them (`stop_background_jobs`, background-jobs), then ends the dedicated workers
+and closes the interactive pool, each step in a `finally` so a failed one does not skip the next. A partial startup failure after the interactive pool
 has opened still cancels every task already created, clears the exported task handles, and closes
 the pool; no startup exception may strand a worker process or watcher.
 

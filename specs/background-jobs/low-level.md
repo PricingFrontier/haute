@@ -8,7 +8,7 @@
 | `src/haute/_worker_protocol.py` | Owns the bounded version-1 spawn request, progress, result, failure, and artifact-manifest transport plus parent-side validation and cleanup. |
 | `src/haute/routes/_job_store.py` | Thread-safe, TTL-evicting `JobStore`; immutable `JobSnapshot` records; public atomic update, terminal-transition, completion-publication, query, and cleanup operations; per-prefix singleton factory `get_job_store`; artifact-cleanup hook registry. |
 | `src/haute/routes/_job_lifecycle.py` | Typed lifecycle facade over the store-owned terminal-transition and completion-publication operations; `require_job_status`; `bind_running_execution_metrics_publisher`. |
-| `src/haute/routes/_background_jobs.py` | `CancellableJobRegistry` (latest-wins supersession + cooperative cancellation), `SingleFlightCoordinator` (mutual exclusion per key), `IsolatedJobSupervisor` (isolated-worker → lifecycle adapter), `BackgroundJobStoppedError`. |
+| `src/haute/routes/_background_jobs.py` | `CancellableJobRegistry` (latest-wins supersession + cooperative cancellation), `SingleFlightCoordinator` (mutual exclusion per key), `IsolatedJobSupervisor` (isolated-worker → lifecycle adapter), `BackgroundJobStoppedError`, and the shutdown of every job (`start_job_thread`, `stop_background_jobs`). |
 | `src/haute/routes/_timeouts.py` | `run_blocking_with_response_timeout` / `BlockingWorkTimeoutError` — bounds HTTP response latency for thread-backed blocking work without abandoning it. |
 
 ## Key types and data structures
@@ -100,7 +100,13 @@
   job id) and `_tokens_by_job_id: dict[str, JobCancellation]`, both guarded by one
   `RLock`. Deliberately owns *only* runtime coordination state — job status/result
   metadata stays in `JobStore` so there is one source of truth for what a job's
-  observable state is.
+  observable state is. Every registry adds itself, on construction, to the module's
+  weak `_REGISTRIES` set, which is how a shutdown finds it.
+- **`_JOB_THREADS`** — a weak set of the threads that run jobs, filled by
+  `start_job_thread(thread)`, which every job owner (training preparation and the
+  `IsolatedJobSupervisor` thread, node data and profiles, the optimiser's setup,
+  auto-range and solve, Explore pivots, input-cache builds) uses instead of
+  `thread.start()`. A thread is added before it starts; until then it is not alive.
 - **`SingleFlightHandle`** (frozen slotted dataclass) — `key`, `job_id`, `kind`, the
   value type returned by `SingleFlightCoordinator.acquire`/`.active`.
 - **`SingleFlightConflictError(RuntimeError)`** — carries `key`, `active_job_id`,
@@ -345,10 +351,23 @@ therefore cannot be bypassed by test or shutdown reset code.
   still the uncancelled latest owner for its key while holding the registry `RLock`
   across the caller's block, serialising the check and publication indivisibly
   relative to concurrent `register_latest` and `cancel`.
+- `cancel_all(reason)` — cancels every active token not already cancelled, keeping an
+  earlier reason such as `superseded`.
 - `release(job_id)` — pops the token; if `_latest_by_key[token.key]` still points at
   this `job_id`, removes that mapping too (so a *stale* `job_id` being released after
   a newer one has already superseded it does not accidentally clear the newer job's
   "latest" registration).
+
+### `stop_background_jobs(timeout_seconds)`
+
+The server's lifespan calls it at shutdown (through `asyncio.to_thread`, with a 10-second
+bound) before it ends the dedicated workers and the interactive pool. Until the bound it
+repeats: snapshot `_REGISTRIES` and the live `_JOB_THREADS`; call each registry's
+`cancel_all(reason="cancelled")`; return if no job thread is alive; otherwise join each
+for what remains of the bound. Repeating catches a job registered, or a thread started
+(a training preparation launching its supervisor), while it waits. It returns the names
+of the job threads still alive at the bound, which the lifespan logs as
+`background_jobs_outlived_shutdown`; it never kills a thread or a process itself.
 
 ### `SingleFlightCoordinator`
 
@@ -624,7 +643,10 @@ is only warranted for a concrete thread callable that can honour such a signal.
 - `tests/test_worker_isolation.py` — `IsolatedJobSupervisor` end-to-end: completed
   result recording, typed remote/stopped/crashed outcomes, totalisation of unexpected
   parent errors, cleanup behavior, coherent terminal precedence, and observable
-  terminal-persistence infrastructure failure.
+  terminal-persistence infrastructure failure. The server lifespan's shutdown with a
+  real sleeping protocol worker returns within the bound, leaves no worker process and
+  records the job `cancelled`; `stop_background_jobs` returns at its bound naming a job
+  thread that does not stop.
 - `tests/test_worker_protocol.py` — the bounded version-1 transport: spawn-safe
   request/result payloads, progress ordering and drops, validation limits,
   cancellation/timeout/crash cleanup, and artifact containment/integrity.

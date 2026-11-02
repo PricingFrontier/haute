@@ -96,6 +96,7 @@ from haute.routes._background_jobs import (
     CancellableJobRegistry,
     IsolatedJobSupervisor,
     IsolatedSupervisorThread,
+    start_job_thread,
 )
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
@@ -394,7 +395,7 @@ class TrainService:
         with self._preparation_threads_lock:
             self._preparation_threads[job_id] = thread
         try:
-            thread.start()
+            start_job_thread(thread)
         except Exception as exc:
             with self._preparation_threads_lock:
                 self._preparation_threads.pop(job_id, None)

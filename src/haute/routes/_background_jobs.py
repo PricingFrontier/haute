@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+import weakref
 from collections.abc import Callable, Hashable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -35,6 +36,44 @@ from haute.routes._job_lifecycle import (
 )
 
 logger = get_logger(component="server.background_jobs")
+
+# Every job registry and job thread alive in this process, so a server shutdown can
+# stop every job (``stop_background_jobs``). Weak: a registry or a finished thread
+# nothing else holds is gone from here too.
+_LIVE_LOCK = threading.Lock()
+_REGISTRIES: weakref.WeakSet[CancellableJobRegistry] = weakref.WeakSet()
+_JOB_THREADS: weakref.WeakSet[threading.Thread] = weakref.WeakSet()
+
+
+def start_job_thread(thread: threading.Thread) -> None:
+    """Start the thread that runs one job, where a server shutdown waits for it.
+
+    Tracked before it starts: until then it is not alive, so a shutdown passes over it.
+    """
+    with _LIVE_LOCK:
+        _JOB_THREADS.add(thread)
+    thread.start()
+
+
+def stop_background_jobs(*, timeout_seconds: float) -> tuple[str, ...]:
+    """Cancel every registered job and wait for every job thread, for at most the timeout.
+
+    Cancellation fires each job's stop reason, so a supervised worker is terminated and
+    joined, its cleanup runs and the job is recorded ``cancelled``. A job registered or a
+    thread started while this waits is cancelled and waited for too. Returns the names of
+    the job threads still running at the timeout.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        with _LIVE_LOCK:
+            registries = tuple(_REGISTRIES)
+            running = [thread for thread in _JOB_THREADS if thread.is_alive()]
+        for registry in registries:
+            registry.cancel_all(reason="cancelled")
+        if not running or time.monotonic() >= deadline:
+            return tuple(thread.name for thread in running)
+        for thread in running:
+            thread.join(max(0.0, deadline - time.monotonic()))
 
 
 class BackgroundJobStoppedError(RuntimeError):
@@ -78,6 +117,8 @@ class CancellableJobRegistry:
         self._lock = threading.RLock()
         self._latest_by_key: dict[Hashable, str] = {}
         self._tokens_by_job_id: dict[str, JobCancellation] = {}
+        with _LIVE_LOCK:
+            _REGISTRIES.add(self)
 
     def register_latest(
         self,
@@ -111,6 +152,13 @@ class CancellableJobRegistry:
                 return False
             token.cancel(reason)
             return True
+
+    def cancel_all(self, *, reason: TerminalReason) -> None:
+        """Request cancellation for every active job not already asked to stop."""
+        with self._lock:
+            for token in self._tokens_by_job_id.values():
+                if not token.cancelled:
+                    token.cancel(reason)
 
     def is_cancelled(self, job_id: str) -> bool:
         with self._lock:
@@ -383,7 +431,7 @@ class IsolatedJobSupervisor:
 
         thread = IsolatedSupervisorThread(target=run)
         try:
-            thread.start()
+            start_job_thread(thread)
         except BaseException as exc:
             outcome = _unexpected_supervisor_outcome(
                 exc,

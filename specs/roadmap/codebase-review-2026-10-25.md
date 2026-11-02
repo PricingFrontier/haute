@@ -122,8 +122,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the forty-nine packages delivered or settled since (thirteen by 28
-October 2026, twenty-five more on 29 October, two on 1 November, nine more by 2 November) have been removed from the sections below; the coverage table keeps the
+The findings of the fifty packages delivered or settled since (thirteen by 28
+October 2026, twenty-five more on 29 October, two on 1 November, ten more by 2 November) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -182,9 +182,6 @@ these are the Majors still open.
   did not write.
 - **`haute run` is a full eager preview** (Major, `CLI-R02`): every node is
   collected into memory at once under the preview profile.
-- **A graceful server exit joins every in-flight worker** (Major,
-  `ROAD-WORKER-06`): a 6 s child in flight at a 2 s exit ends the process at
-  7.6 s; no job registry is cancelled at shutdown.
 - **The assistant's SDK clients are built without the validated endpoint**
   (Major, `ASSIST-54`): `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` in the
   server's environment redirects the key, the prompt and project material to a
@@ -240,7 +237,6 @@ production:
 | CLI | PM-27, PM-31, PM-32, PM-33 | `CLI-R05` |
 | CLI | PM-29 (templates), PM-30 | `CLI-R06` |
 | IO layer | CIO-5, CIO-11 | `IO-R06` |
-| Background jobs | WRK-2 | `ROAD-WORKER-06` |
 | Background jobs | WRK-5, WRK-6, WRK-11, WRK-14 | `ROAD-WORKER-07` |
 | Background jobs | WRK-8, WRK-9, WRK-10 | `ROAD-WORKER-08` |
 | Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
@@ -278,15 +274,14 @@ browser contract (`API-R03`); the cwd-dependent resolvers in the routes and the
 parser (`PCFG-R04`), the per-type
 validators and branches (`PCFG-R07`, `PCFG-R09`); the test-only config helpers and
 event-bus hooks (`ENGQ-R01`); the optimiser's unshown solve-memory forecast (`OPT-W02`) and its frontier
-points without convergence traces (`OPT-PC04`); the optimiser's job registries
-not cancelled at shutdown (`ROAD-WORKER-06`); the test-only
+points without convergence traces (`OPT-PC04`); the test-only
 `_compute_schema_hash` and the training facade (`ENGQ-R01`); fits that exceed
 their budget
 (`MOD-M01`, `MOD-M02`); the git routes' and the
 assistant's current-directory project root (`PCFG-R04`); the assistant
 catalog's hand tables and
 key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
-(`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the pivot registry at shutdown (`ROAD-WORKER-06`); the
+(`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the
 browser's hand-written contract mirrors (`API-R03`), the results store's optimiser logic (`FSH-R03`) and the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
 (`ENGQ-R01`); the dead
