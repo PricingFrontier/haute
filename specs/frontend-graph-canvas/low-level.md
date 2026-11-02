@@ -611,9 +611,9 @@ reconciliation rather than dropping them or committing a second mutation.
 12. **Node delete (`useNodeHandlers.handleDeleteNode`).** Calls
     `setNodesAndEdges` once (node filter + edge filter closed over the same
     call, one undo entry), nulls `selectedNode`/`previewData` if they
-    referenced the deleted node, and defers `clearNode(id)` via
-    `setTimeout(..., 0)` so the cache eviction lands only after the
-    node-removal render has committed. Also clears `renameDialog`/
+    referenced the deleted node, and then calls `clearNode(id)` in the same
+    task, as the keyboard delete does: React renders both store updates
+    together, so no render shows the node without its cached result. Also clears `renameDialog`/
     `submodelDialog` if either referenced the deleted node.
 13. **Connection candidate and commit (`useEdgeHandlers`).**
     `onConnectStart` records an active endpoint only when the gesture begins
@@ -1616,10 +1616,9 @@ again through the editor and save paths.
     label); `lastSelectedNodeRef` clearing scoped to the deleted node only;
     `renameDialog`/`submodelDialog` cleared only when they reference the
     deleted node, including a null-dialog no-op case.
-  - `frontend/src/hooks/__tests__/useNodeHandlers.deferCleanup.test.ts` (#32) — `setNodes` commits
-    synchronously before `clearNode`; `clearNode` is deferred past the
-    current microtask; multiple rapid deletes each defer their own
-    `clearNode` independently (no missed nodes).
+  - `frontend/src/hooks/__tests__/useNodeHandlers.deleteCleanup.test.ts` — the graph mutation runs
+    while the node's result is still cached, `clearNode` follows in the same
+    task, and multiple rapid deletes each clear their own cache.
   - `frontend/src/hooks/__tests__/useEdgeHandlers.test.ts` (largest suite) — `onConnect` is a no-op
     (commit happens in `onConnectEnd`); source→target and target→source
     edge creation with authoritative default/labelled-handle `_inputName`

@@ -17,7 +17,6 @@ to `FSH-R09` from the
 |---|---|---:|---|
 | FSH-R03 | Planned | P3 | The results store holds results; validation and optimiser logic move out. |
 | FSH-R06 | Planned | P3 | The stores carry one copy of each derivation and validator, no test-only action, no fabricated result sentinel, and their specification names the actions that exist. |
-| FSH-R08 | Planned | P3 | One helper per concern in the hooks and utilities: unit formatting that carries, one canonical JSON, one date validator, one job-status vocabulary, one locale, one node-creation block, one polling configuration, selector subscriptions. |
 | FSH-R09 | Planned | P3 | The frontend-shared specification describes the formatter, the pollers and the store shape that exist, and preview supersession is recognised by a structured code rather than by its message text. |
 | FSH-R10 | Planned | P2 | Independent request-input edits made while identity resolution is pending are retained together. |
 | FSH-R13 | Planned | P2 | `useNodeDataCache` persists job ownership (`startedHere`) in `useNodeDataStore` so Stop/Cancel works across tab and node switches, `loadPipelineSettings` checks staleness before overwriting `_confirmedPipelineSettings`, and `UtilityPanel` syncs the `Imports` editor buffer with external `preamble` changes. |
@@ -43,8 +42,7 @@ derivation; its tests cover state transitions only.
 `frontend/src/stores/useNodeResultsStore.ts::hashConfig`.
 
 ### FSH-R06 — One copy of each derivation
-**Why:** The ISO date and time validators are implemented twice, line for line,
-in the response guards and the pivot editor's config. Eleven graph-store actions
+**Why:** Eleven graph-store actions
 each re-implement the fingerprint → dirty → structural version → panel-context
 block that `commitGraphState` encapsulates, and the two families already
 disagree on when an undo snapshot is pushed. `failTrainJob` fabricates a
@@ -58,71 +56,25 @@ specification passages disagree about it. The specification names an `update`
 recover action that neither the browser nor the server has, and one test file is
 named for a store it does not test.
 
-**Plan:** Export the validators from one module; route the history-aware setters
+**Plan:** Route the history-aware setters
 and undo/redo through `commitGraphState`; give the cached train result a
 `result | null` plus `error` shape; delete `setSourceRevision` and drive its
 tests through `loadLiveDocumentStatus`; throw a job-failure error from the
 dispersion helper and align the two passages; correct the recover actions and
 the test file's name.
 
-**Acceptance:** jscpd reports none of the pairs; `useGraphStore` has one
+**Acceptance:** `useGraphStore` has one
 change-commit path; no fabricated response sentinel; the specification names
 remove, reset, recover and remove-connection only.
 
 **Dependencies:** `FSH-R03` moves the optimiser logic out of the same store.
 
-**Evidence:** `frontend/src/types/guards.ts::isValidPivotDate`;
-`frontend/src/panels/explore/pivotConfig.ts`;
-`frontend/src/stores/useGraphStore.ts::commitGraphState`;
+**Evidence:** `frontend/src/stores/useGraphStore.ts::commitGraphState`;
 `frontend/src/stores/useNodeResultsStore.ts::failTrainJob`;
 `frontend/src/stores/useDocumentStatusStore.ts::setSourceRevision`;
 `frontend/src/api/dispersion.ts::runDispersionEstimate`;
 `frontend/src/types/pipelineRepair.ts`;
 `frontend/src/stores/__tests__/useUIStore.dirty.derived.test.ts`.
-
-### FSH-R08 — One helper per concern
-**Why:** `formatNumber` and `formatBytes` round a value up to its unit boundary
-without carrying into the next unit ("1000.0K" for 999,999; "1024.0 KB" for
-1,048,575) while the sibling `formatByteSize` carries. Sorted-key canonical JSON
-is implemented five times in five shapes, so two values can canonicalise
-differently depending on the helper a surface reached. Two YYYY-MM-DD
-validators exist, and the global-constants one goes through `Date.UTC`, which
-the workbench one's own comment says reads years before 100 as the 1900s. The
-job-status vocabulary is hand-copied into `executionDiagnostics.ts` although the
-specification names `JOB_STATUS_VALUES` as the single vocabulary. Preview cells
-follow the browser locale while the trace panel and chart axes pin English, so
-one number renders with different separators across surfaces in a non-English
-browser. The "resolve identities, check the serial and the graph, apply or
-toast" block is written five times; the modelling Summary tab re-implements
-`formatFixed`; the five `useJobPolling` configurations repeat the same terminal
-rules; two hooks subscribe whole stores against the selector contract; the
-context-menu delete defers `clearNode` by a timer while the keyboard delete
-clears synchronously, and a test pins the timer.
-
-**Plan:** Carry at the unit boundary in both formatters (or build `formatBytes`
-on `formatByteSize`); keep `utils/canonicalJson.ts` as the one helper; replace
-`isRealDate` with `isDay`; import `JOB_STATUS_VALUES`; pin one locale constant
-or decide every surface follows the browser; one `createAfterIdentity` helper;
-`formatFixed` in the Summary tab; a `jobPollingDefaults` spread; selector
-subscriptions; one deletion order.
-
-**Acceptance:** `formatNumber(999999)` is "1.0M" and `formatBytes(1048575)` is
-"1.0 MB"; one canonical-JSON implementation with the `undefined`, `bigint` and
-nested-array cases tested once; jscpd reports none of the pairs; the lint that
-rejects local copies of a helper covers the cases above.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/utils/formatValue.ts::formatNumber`;
-`frontend/src/utils/formatBytes.ts::formatBytes`;
-`frontend/src/utils/formatBytes.ts::formatByteSize`;
-`frontend/src/utils/canonicalJson.ts::canonicalJson`;
-`frontend/src/utils/graphSnapshot.ts`; `frontend/src/hooks/useTracing.ts`;
-`frontend/src/utils/trainedJobHandles.ts`; `frontend/src/utils/globalConstants.ts`;
-`frontend/src/utils/sheetValues.ts::isDay`;
-`frontend/src/utils/executionDiagnostics.ts`; `frontend/src/utils/formatTrace.ts`;
-`frontend/src/utils/chartHelpers.ts`; `frontend/src/hooks/useBackgroundJobs.ts`;
-`frontend/src/panels/modelling/SummaryTab.tsx`.
 
 ### FSH-R09 — The specification and the supersession signal
 **Why:** The specification says the trace formatter quotes ordinary strings and

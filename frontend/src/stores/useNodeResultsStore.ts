@@ -39,6 +39,7 @@ import type {
 import type { ColumnInfo } from "../types/node"
 import { TERMINAL_JOB_STATUSES } from "../api/types"
 import { clearTrainedJobHandle, writeTrainedJobHandle } from "../utils/trainedJobHandles"
+import { canonicalJson } from "../utils/canonicalJson"
 
 export const MAX_CACHED_PREVIEWS = 24
 export const MAX_CACHED_SOLVE_RESULTS = 8
@@ -383,30 +384,9 @@ function rememberTrainOutcome(
 
 export function hashConfig(config: Record<string, unknown>): string {
   // Editor state travels beside the config (`HauteNodeData.editor` and the
-  // node data's own fields), so the whole config is the node's identity.
-  // Normalise through JSON first so identity follows the same value semantics
-  // as persisted config: undefined object fields are omitted, non-finite
-  // numbers become null, and serialisable values may use toJSON.
-  const json = JSON.stringify(config)
-  const jsonValue: unknown = JSON.parse(json)
-
-  return JSON.stringify(sortObjectKeys(jsonValue))
-}
-
-/** A JSON value with every object's keys sorted, so equal values stringify equally. */
-function sortObjectKeys(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(sortObjectKeys)
-  }
-  if (value !== null && typeof value === "object") {
-    const object = value as Record<string, unknown>
-    return Object.fromEntries(
-      Object.keys(object)
-        .sort()
-        .map(key => [key, sortObjectKeys(object[key])]),
-    )
-  }
-  return value
+  // node data's own fields), so the whole config is the node's identity, with
+  // the value semantics of persisted config (see `canonicalJson`).
+  return canonicalJson(config)
 }
 
 // ─── Derived-getter caches (Issue #13) ──────────────────────────
@@ -531,11 +511,11 @@ export function effectiveConstraintBounds(result: OptimiserSolveResult): Record<
 
 /** The cache key of an `/apply` request identity, with the query canonicalised. */
 export function optimiserApplyKey(identity: OptimiserApplyIdentity): string {
-  return JSON.stringify([
+  return canonicalJson([
     identity.jobId,
     identity.frontierGeneration,
     identity.target,
-    sortObjectKeys(identity.query),
+    identity.query,
   ])
 }
 

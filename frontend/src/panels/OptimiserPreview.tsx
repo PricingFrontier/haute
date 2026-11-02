@@ -736,7 +736,7 @@ const STATUS_LABELS = {
 } as const
 
 function formatFrontierValue(value: number): string {
-  return value.toLocaleString("en-US", { maximumFractionDigits: 6 })
+  return value.toLocaleString(undefined, { maximumFractionDigits: 6 })
 }
 
 function FrontierTab({

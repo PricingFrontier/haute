@@ -188,7 +188,9 @@ export default function useKeyboardShortcuts({
   commitSharedNodeDeletion,
 }: KeyboardShortcutsParams) {
   const addToast = useToastStore((s) => s.addToast)
-  const { setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen } = useUIStore()
+  const setShortcutsOpen = useUIStore((s) => s.setShortcutsOpen)
+  const setSubmodelDialog = useUIStore((s) => s.setSubmodelDialog)
+  const setNodeSearchOpen = useUIStore((s) => s.setNodeSearchOpen)
   const pasteRequestSerialRef = useRef(0)
   useEffect(() => {
     if (!enabled) return

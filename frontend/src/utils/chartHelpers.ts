@@ -15,7 +15,7 @@ const FLAT_SPREAD_RELATIVE = 1e-9
 /** Keep exact data in details; axes use a readable, consistent compact format. */
 export function formatChartNumber(value: number): string {
   if (value !== 0 && Math.abs(value) < EXPONENTIAL_BELOW) return value.toExponential(1)
-  return new Intl.NumberFormat("en", {
+  return new Intl.NumberFormat(undefined, {
     maximumSignificantDigits: 3,
     notation: Math.abs(value) >= COMPACT_FROM ? "compact" : "standard",
   }).format(value)
@@ -40,7 +40,7 @@ function tickLabel(value: number, notation: TickNotation, decimals: number): str
   // A tick that rounds to zero is labelled 0, never "-0.00".
   const shown = Math.abs(value) < decade(-decimals) / 2 ? 0 : value
   if (notation === "standard") {
-    return new Intl.NumberFormat("en", {
+    return new Intl.NumberFormat(undefined, {
       minimumFractionDigits: decimals,
       maximumFractionDigits: decimals,
     }).format(shown)
@@ -50,7 +50,7 @@ function tickLabel(value: number, notation: TickNotation, decimals: number): str
   // Compact units differ from label to label (250K beside 1M), so they share
   // the rounding rather than a count of decimals.
   const rounded = roundTo(shown, decimals)
-  return new Intl.NumberFormat("en", {
+  return new Intl.NumberFormat(undefined, {
     maximumSignificantDigits: Math.max(1, exponent(rounded) + decimals + 1),
     notation: "compact",
   }).format(rounded)

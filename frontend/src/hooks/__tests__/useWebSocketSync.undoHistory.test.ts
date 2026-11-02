@@ -26,7 +26,7 @@ vi.mock("../../stores/useToastStore.ts", () => {
     addToast: vi.fn(),
     dismissToast: vi.fn(),
   }
-  const useToastStore = Object.assign(() => store, {
+  const useToastStore = Object.assign((selector?: (state: typeof store) => unknown) => (selector ? selector(store) : store), {
     getState: () => store,
     setState: vi.fn(),
     subscribe: vi.fn(),
@@ -47,7 +47,7 @@ vi.mock("../../stores/useUIStore.ts", () => {
     setRenameDialog: vi.fn(),
     clearBandingRuleStash: vi.fn(),
   }
-  const useUIStore = Object.assign(() => store, {
+  const useUIStore = Object.assign((selector?: (state: typeof store) => unknown) => (selector ? selector(store) : store), {
     getState: () => store,
     setState: vi.fn(),
     subscribe: vi.fn(),
@@ -79,7 +79,7 @@ vi.mock("../../stores/useGraphStore.ts", () => {
       store.redoStack = []
     }),
   }
-  const useGraphStore = Object.assign(() => store, {
+  const useGraphStore = Object.assign((selector?: (state: typeof store) => unknown) => (selector ? selector(store) : store), {
     getState: () => store,
     setState: vi.fn(),
     subscribe: vi.fn(),

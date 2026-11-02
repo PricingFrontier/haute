@@ -13,7 +13,9 @@ describe("formatBytes", () => {
     expect(formatBytes(1024)).toBe("1.0 KB")
     expect(formatBytes(1536)).toBe("1.5 KB")
     expect(formatBytes(10240)).toBe("10.0 KB")
-    expect(formatBytes(1024 * 1024 - 1)).toBe("1024.0 KB")
+    // A value that rounds up to the next unit is written in it.
+    expect(formatBytes(1024 * 1024 - 1)).toBe("1.0 MB")
+    expect(formatBytes(1024 * 1024 - 52)).toBe("1023.9 KB")
   })
 
   it("returns MB for values 1 MB and above", () => {
@@ -31,7 +33,7 @@ describe("formatBytes", () => {
   })
 
   it("formats gigabytes from 1 GB", () => {
-    expect(formatBytes(1024 ** 3 - 1)).toBe("1024.0 MB")
+    expect(formatBytes(1024 ** 3 - 1)).toBe("1.0 GB")
     expect(formatBytes(1024 ** 3)).toBe("1.0 GB")
     expect(formatBytes(3.8 * 1024 ** 3)).toBe("3.8 GB")
   })

@@ -261,7 +261,6 @@ production:
 | Frontend node editors | FNE-1, FNE-2, FNE-4, FNE-7, FNE-8, FNE-17 | `FNED-R01` |
 | Frontend node editors | FNE-3, FNE-5, FNE-6, FNE-9, FNE-11 | `FNED-R02` |
 | Frontend node editors | FNE-10, FNE-12, FNE-13, FNE-14, FNE-15, FNE-16 | `FNED-R03` |
-| Frontend shared | FSB-3, FSB-4, FSB-5, FSB-6, FSB-9, FSB-13, FSB-14, FSB-16, FSB-17, FSB-18 | `FSH-R08` |
 | Frontend shared | FSB-7, FSB-8, FSB-11 | `FSH-R09` |
 | Frontend node editors | FNB-1, FNB-2, FNB-3, FNB-5, FNB-13 | `FNED-R04` |
 | Frontend node editors | FNB-4, FNB-6, FNB-7, FNB-8, FNB-9, FNB-10, FNB-11, FNB-12, FNB-14, FNB-15 | `FNED-R05` |
@@ -306,12 +305,11 @@ utilities (`ENGQ-R01`); Banding's `_id` inside the config (`FNED-R07`), the edit
 barrels (`ENGQ-R01`), the pivot editor writing the
 fields the backend defaults (`EDA-R02`); a second fabricated
 train-failure sentinel (`FSH-R06`); the browser's frontier
-generation fences that only ever see generation 0 (`OPT-R04`), the optimiser
-panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and
+generation fences that only ever see generation 0 (`OPT-R04`) and
 `applyFrontierPointSummary`'s null handling (`FSH-R03`); in the workbench UI and
 the app shell, the
 chart theme observer written twice (`EDA-R03`), the params-folder listing in the
-Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`), browser-locale dates (`FSH-R08`) and the
+Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`) and the
 modelling pane badges (`FMOU-R03`); in the tests, scripts and CI, the floating
 action tags in the generated workflows (`CLI-R06`), the campaign-named test modules
 (`ENGQ-R05`), the test-only reset hooks in production code (`ENGQ-R01`), and the

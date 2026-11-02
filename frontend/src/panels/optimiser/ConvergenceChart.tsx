@@ -48,7 +48,7 @@ const LIVE_SOLVES_ONLY =
 
 /** Totals and objectives in full, as the attainment table shows them. */
 function formatExact(value: number): string {
-  return value.toLocaleString("en-US", { maximumFractionDigits: 4 })
+  return value.toLocaleString(undefined, { maximumFractionDigits: 4 })
 }
 
 function seriesColor(index: number): string {

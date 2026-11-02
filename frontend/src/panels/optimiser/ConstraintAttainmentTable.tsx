@@ -13,7 +13,7 @@ import { LAMBDA_HELP, LAMBDA_LABEL } from "./lambdaCopy"
 
 /** Full precision to four decimals, grouped: a compact "1.01M" could hide a breach. */
 function formatAttainmentValue(value: number): string {
-  return value.toLocaleString("en-US", { maximumFractionDigits: 4 })
+  return value.toLocaleString(undefined, { maximumFractionDigits: 4 })
 }
 
 function formatSigned(text: string, value: number): string {
@@ -23,7 +23,7 @@ function formatSigned(text: string, value: number): string {
 function formatSlack(slack: number, slackPct: number | null): string {
   const absolute = formatSigned(formatAttainmentValue(slack), slack)
   if (slackPct === null) return absolute
-  const pct = slackPct.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  const pct = slackPct.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   return `${absolute} (${formatSigned(pct, slackPct)}%)`
 }
 

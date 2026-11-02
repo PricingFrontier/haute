@@ -1,12 +1,17 @@
-/** Format a byte count into a human-readable string (B / KB / MB / GB). */
+const BYTE_UNITS = ["KB", "MB", "GB", "TB"] as const
+
+/** Format a byte count into a human-readable string (B / KB / MB / GB) with one decimal. */
 export function formatBytes(b: number): string {
   if (b < 1024) return `${b} B`
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`
-  if (b < 1024 ** 3) return `${(b / (1024 * 1024)).toFixed(1)} MB`
-  return `${(b / 1024 ** 3).toFixed(1)} GB`
+  let value = b / 1024
+  let unit = 0
+  // A value that rounds up to the next unit is written in it: 1,048,575 bytes is "1.0 MB".
+  while (Number(value.toFixed(1)) >= 1024 && unit < 2) {
+    value /= 1024
+    unit += 1
+  }
+  return `${value.toFixed(1)} ${BYTE_UNITS[unit]}`
 }
-
-const BYTE_UNITS = ["KB", "MB", "GB", "TB"] as const
 
 /**
  * Format a byte count that can reach gigabytes, such as a cache budget.

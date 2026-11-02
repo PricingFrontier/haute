@@ -47,7 +47,10 @@ export function fractionToPercent(fraction: number): number {
 
 /** Format large numbers compactly: 1234567 → "1.23M", 12345 → "12.3K". */
 export function formatNumber(n: number): string {
-  if (Math.abs(n) >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M"
+  // A value that rounds up to the next unit is written in it: 999,999 is "1.00M", not "1000.0K".
+  if (Math.abs(n) >= 1_000_000 || Math.abs(Number((n / 1_000).toFixed(1))) >= 1_000) {
+    return (n / 1_000_000).toFixed(2) + "M"
+  }
   if (Math.abs(n) >= 1_000) return (n / 1_000).toFixed(1) + "K"
   if (Number.isInteger(n)) return String(n)
   return n.toFixed(4)

@@ -1,6 +1,7 @@
 /**
  * The repository's ESLint config rejects local copies of the shared polling,
- * error-text, formatting and object-guard helpers, and exempts only each
+ * error-text, formatting, object-guard, canonical-JSON, date and job-status
+ * helpers and pinned locales, and exempts only each
  * helper's owning module. These probes lint snippets through the real config.
  */
 import { ESLint } from "eslint"
@@ -42,6 +43,15 @@ describe("helper bans", () => {
     ["export function asRecord(v: unknown) { return v as Record<string, unknown> }", "isPlainObject"],
     ["export function isPlainObject(v: unknown) { return typeof v === 'object' }", "isPlainObject"],
     ["export function isObjectLiteral(v: unknown) { return typeof v === 'object' }", "isObjectLiteral"],
+    ["export function formatFixed(v: number, d: number) { return v.toFixed(d) }", "formatFixed"],
+    ["export const formatNumber = (n: number) => `${n}`", "formatNumber"],
+    ["function sortObjectKeys(v: unknown) { return v }", "canonicalJson"],
+    ["const stableValue = (v: unknown) => JSON.stringify(v)", "canonicalJson"],
+    ["function isRealDate(t: string) { return t.length === 10 }", "isDay"],
+    ["const isValidDate = (t: string) => t.length === 10", "isDay"],
+    ["export const STATUSES = ['running', 'memory_limited', 'contract_error']", "JOB_STATUS_VALUES"],
+    ["export const text = (n: number) => n.toLocaleString('en-GB')", "browser's locale"],
+    ["export const f = new Intl.NumberFormat('en', {})", "browser's locale"],
   ])("rejects %s", async (code, helper) => {
     const messages = await restrictedMessages(code)
     expect(messages).toHaveLength(1)
@@ -55,6 +65,8 @@ describe("helper bans", () => {
       "export function describe(e: unknown) { return apiErrorMessage(e, 'Failed.') }",
       "for (let attempt = 0; ; attempt += 1) { if (attempt > 2) break }",
       "while (Math.random() > 2) { break }",
+      "export const shown = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 2 })",
+      "export const statuses = ['running', 'completed']",
     ].join("\n")
     expect(await restrictedMessages(code)).toEqual([])
   })
@@ -66,6 +78,9 @@ describe("helper bans", () => {
     ["src/types/guards.ts", "export function isPlainObject(v: unknown) { return typeof v === 'object' }"],
     ["src/utils/objectLiteral.ts", "export function isObjectLiteral(v: unknown) { return typeof v === 'object' }"],
     ["src/api/errors.ts", "export const text = (e: { detail?: string; message: string }) => e.detail || e.message"],
+    ["src/utils/formatValue.ts", "export function formatFixed(v: number, d: number) { return v.toFixed(d) }"],
+    ["src/utils/isoDate.ts", "export function isDay(t: string) { return t.length === 10 }"],
+    ["src/api/types.ts", "export const JOB_STATUS_VALUES = ['running', 'memory_limited', 'contract_error'] as const"],
   ])("exempts the owning module %s", async (filePath, code) => {
     expect(await restrictedMessages(code, filePath)).toEqual([])
   })

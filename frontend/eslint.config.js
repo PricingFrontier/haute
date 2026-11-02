@@ -47,6 +47,10 @@ const FORMAT_SELECTORS = [
     message: 'Use formatDuration (utils/formatValue.ts).',
   },
   {
+    selector: 'FunctionDeclaration[id.name=/^(formatFixed|formatNumber)$/], VariableDeclarator[id.name=/^(formatFixed|formatNumber)$/]',
+    message: 'Use formatFixed or formatNumber (utils/formatValue.ts).',
+  },
+  {
     // A function, declared or assigned: how long ago is said by one rule.
     selector: 'FunctionDeclaration[id.name=/^(relativeTime|timeAgo|formatRelativeTime)$/], VariableDeclarator[id.name=/^(relativeTime|timeAgo|formatRelativeTime)$/][init.type=/^(ArrowFunctionExpression|FunctionExpression)$/]',
     message: 'Use relativeTime (utils/relativeTime.ts).',
@@ -60,6 +64,26 @@ const GUARD_SELECTORS = [
   {
     selector: 'FunctionDeclaration[id.name="isObjectLiteral"], VariableDeclarator[id.name="isObjectLiteral"]',
     message: 'Use isObjectLiteral (utils/objectLiteral.ts).',
+  },
+]
+// One implementation each of canonical JSON, a YYYY-MM-DD check, the job-status
+// vocabulary, and the locale numbers are shown in (the browser's).
+const HELPER_SELECTORS = [
+  {
+    selector: 'FunctionDeclaration[id.name=/^(sortObjectKeys|sortKeys|canonical|canonicalize|stableValue|stableStringify|stableJson)$/], VariableDeclarator[id.name=/^(sortObjectKeys|sortKeys|canonical|canonicalize|stableValue|stableStringify|stableJson)$/][init.type=/^(ArrowFunctionExpression|FunctionExpression)$/]',
+    message: 'Use canonicalJson or canonicalValue (utils/canonicalJson.ts).',
+  },
+  {
+    selector: 'FunctionDeclaration[id.name=/^(isRealDate|isValidDate|isDay|isIsoDay|isValidDay)$/], VariableDeclarator[id.name=/^(isRealDate|isValidDate|isDay|isIsoDay|isValidDay)$/][init.type=/^(ArrowFunctionExpression|FunctionExpression)$/]',
+    message: 'Use isDay, isTime or isDateTime (utils/isoDate.ts).',
+  },
+  {
+    selector: 'ArrayExpression:has(> Literal[value="memory_limited"]):has(> Literal[value="contract_error"])',
+    message: 'Use JOB_STATUS_VALUES, FAILED_JOB_STATUSES or TERMINAL_JOB_STATUSES (api/types.ts).',
+  },
+  {
+    selector: 'CallExpression[callee.property.name=/^toLocale(String|DateString|TimeString)$/][arguments.0.type="Literal"], NewExpression[callee.object.name="Intl"][arguments.0.type="Literal"]',
+    message: "Numbers and dates follow the browser's locale: pass undefined.",
   },
 ]
 const SOURCE_FILES = ['src/**/*.{ts,tsx}']
@@ -104,6 +128,11 @@ export default defineConfig([
   {
     files: SOURCE_FILES,
     ignores: TEST_FILES,
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS),
+  },
+  {
+    // The helpers' own homes.
+    files: ['src/utils/isoDate.ts', 'src/api/types.ts'],
     rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS),
   },
   {

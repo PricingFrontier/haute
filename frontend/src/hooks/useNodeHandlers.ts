@@ -151,13 +151,10 @@ export default function useNodeHandlers({
     const cleanupAfterRemoval = () => {
       setSelectedNode((prev) => (prev?.id === id ? null : prev))
       setPreviewData((prev) => (prev?.nodeId === id ? null : prev))
-      // Defer cache cleanup by one task tick (Issue #32). If `clearNode(id)`
-      // fires synchronously here, any downstream component reading the store
-      // during the same render cycle (before React has committed the
-      // setNodes update that removes the node from the graph) will see a
-      // state where the node still exists in the graph but its cached result
-      // has already been wiped — producing a flicker-crash.
-      setTimeout(() => { clearNode(id) }, 0)
+      // The node has left the graph by now, and React renders both store
+      // updates of this task together, so no render shows the node without
+      // its cached result — the same order the keyboard delete uses.
+      clearNode(id)
       if (lastSelectedNodeRef.current?.id === id) {
         lastSelectedNodeRef.current = null
         setLastSelectedId?.(null)

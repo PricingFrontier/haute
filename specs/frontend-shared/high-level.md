@@ -78,9 +78,12 @@ In scope:
   `utils/color.ts`, `utils/dtypeColors.ts`, `utils/portableKey.ts`,
   `utils/chartHelpers.ts`, `utils/formatTrace.ts`,
   `utils/mlflowOptimiser.ts`). Each repeated concern has one helper: error
-  text (`api/errors.ts`), byte counts (`utils/formatBytes.ts`), durations
-  (`utils/formatValue.ts`), relative times (`utils/relativeTime.ts`) and the
-  object guard (`types/guards.ts`); lint rejects a new local copy. Every panel
+  text (`api/errors.ts`), byte counts (`utils/formatBytes.ts`), durations and
+  abbreviated numbers (`utils/formatValue.ts`), relative times
+  (`utils/relativeTime.ts`), canonical JSON (`utils/canonicalJson.ts`), calendar
+  days (`utils/isoDate.ts`), the job-status vocabulary (`api/types.ts`) and the
+  object guard (`types/guards.ts`); lint rejects a new local copy. Numbers follow
+  the browser's locale on every surface. Every panel
   says how long ago something was by one rule, so one instant reads the same in
   the git panel, the assistant's chats, the Files panel, Explore and the
   underwriter app: "just now" under a minute, then whole minutes, hours and days

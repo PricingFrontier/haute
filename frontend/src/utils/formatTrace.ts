@@ -3,7 +3,6 @@
 import { formatJsonSpecialValue } from "./formatValue"
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}(T[\d:.Z+-]+)?$/
-export const TRACE_NUMBER_LOCALE = "en-GB"
 export const TRACE_MAX_FRACTION_DIGITS = 4
 
 export function formatTraceValue(
@@ -18,13 +17,10 @@ export function formatTraceValue(
     if (Number.isNaN(v)) return "NaN"
     if (v === Infinity) return "Infinity"
     if (v === -Infinity) return "-Infinity"
-    const formatted = v.toLocaleString(TRACE_NUMBER_LOCALE, {
-      maximumFractionDigits: maxFractionDigits,
-    })
     // Avoid making a small but meaningful non-zero value look like zero.
-    return v !== 0 && Number(formatted.replace(/,/g, "")) === 0
-      ? String(v)
-      : formatted
+    if (v !== 0 && Math.abs(v) < 0.5 * 10 ** -maxFractionDigits) return String(v)
+    // Numbers follow the browser's locale, as every other surface's do.
+    return v.toLocaleString(undefined, { maximumFractionDigits: maxFractionDigits })
   }
   if (typeof v === "string") {
     if (DATE_RE.test(v)) return v

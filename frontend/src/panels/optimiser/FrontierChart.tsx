@@ -322,8 +322,8 @@ export default function FrontierChart({
           {active && (
             <>
               <strong>Point {active.index + 1}</strong>
-              <span>{yLabel}: {active.y.toLocaleString("en-US", { maximumFractionDigits: 6 })}</span>
-              <span>{xLabel}: {active.x.toLocaleString("en-US", { maximumFractionDigits: 6 })}</span>
+              <span>{yLabel}: {active.y.toLocaleString(undefined, { maximumFractionDigits: 6 })}</span>
+              <span>{xLabel}: {active.x.toLocaleString(undefined, { maximumFractionDigits: 6 })}</span>
               <span>{STATUS_WORDS[active.status]}</span>
             </>
           )}

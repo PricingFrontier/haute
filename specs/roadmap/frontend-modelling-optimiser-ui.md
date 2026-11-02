@@ -105,8 +105,8 @@ sequence, generation check, the 409 `frontier_point_apply_replaced` and the 410)
 is implemented five times in four shapes that disagree: only Adjustments and
 Segments reissue the 409, Quotes shows it as a failure with Retry, the Export
 pane's load has no abort and no 409 or 410 handling, and Rates keys a map by
-request id. `formatStat` is another private number formatter with the no-carry
-rounding `FSH-R08` records. The combined-factor collar sentence prints the
+request id. `formatStat` is another private number formatter whose rounding does not
+carry into the next unit, as the shared `formatNumber` now does. The combined-factor collar sentence prints the
 Float32-widened grid ends raw (`0.800000011920929`) while the Adjustments and
 Segments tabs strip the widening. The specification says a selected point's
 Summary offers the Adjustments button; the code renders nothing and its test
@@ -122,7 +122,7 @@ un-export the internal ones.
 **Acceptance:** One fenced-request hook; jscpd reports none of the pairs; the
 collar sentence shows `0.8`; knip reports none of the exports.
 
-**Dependencies:** `FSH-R08` for the shared formatter.
+**Dependencies:** None.
 
 **Evidence:** `frontend/src/panels/optimiser/SegmentsTab.tsx`;
 `frontend/src/panels/optimiser/AdjustmentsTab.tsx`;

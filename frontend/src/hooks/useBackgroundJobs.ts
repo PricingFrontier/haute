@@ -17,7 +17,7 @@ import {
   getOptimiserStatus,
   getTrainStatus,
 } from "../api/client"
-import { FAILED_JOB_STATUSES } from "../api/types"
+import { FAILED_JOB_STATUSES, type JobStatus } from "../api/types"
 import type { NodeDataStatusResponse } from "../api/types"
 import { ApiResponseValidationError } from "../api/responseValidation"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
@@ -71,6 +71,15 @@ function trainProgressKey(status: TrainProgress): string {
     status.fold_index ?? null,
     status.completed_fits ?? null,
   ])
+}
+
+/** What every background poller shares: the visible progress pace, the job id, the terminal statuses and poll errors. */
+const jobPollingDefaults = {
+  progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
+  jobIdFn: (job: { jobId: string }) => job.jobId,
+  isComplete: (status: { status: string }) => status.status === "completed",
+  isError: (status: { status: JobStatus }) => FAILED_JOB_STATUSES.has(status.status),
+  getTerminalPollErrorMessage: getJobPollErrorMessage,
 }
 
 function solveJobIsActive(nodeId: string, jobId: string): boolean {
@@ -144,22 +153,18 @@ export default function useBackgroundJobs() {
   )
 
   useJobPolling<(typeof solveJobs)[string], SolveProgress>({
+    ...jobPollingDefaults,
     jobs: solveJobs,
     pollFn: solvePollFn,
     onProgress: solveOnProgress,
-    progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
     onComplete: solveOnComplete,
     onFail: solveOnFail,
     labelFn: (job) => job.nodeLabel,
-    jobIdFn: (job) => job.jobId,
-    isComplete: (s) => s.status === "completed",
-    isError: (s) => FAILED_JOB_STATUSES.has(s.status),
     getResult: (s) => (s.result ? s : undefined),
     getErrorMessage: (s) => buildExecutionFailureMessage(s.message || "Unknown error", s.execution_metrics, {
       status: s.status,
       terminalReason: s.terminal_reason,
     }),
-    getTerminalPollErrorMessage: getJobPollErrorMessage,
     addToast,
     successLabel: "Optimisation complete",
     failLabel: "Optimisation failed",
@@ -185,25 +190,21 @@ export default function useBackgroundJobs() {
   )
 
   useJobPolling<(typeof trainJobs)[string], TrainProgress>({
+    ...jobPollingDefaults,
     jobs: trainJobs,
     pollFn: trainPollFn,
     onProgress: updateTrainProgress,
-    progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
     // A training's rounds advance quickly, so it polls about once a second
     // while they do instead of backing off to five seconds.
     progressKey: trainProgressKey,
     onComplete: trainOnComplete,
     onFail: failTrainJob,
     labelFn: (job) => job.nodeLabel,
-    jobIdFn: (job) => job.jobId,
-    isComplete: (s) => s.status === "completed",
-    isError: (s) => FAILED_JOB_STATUSES.has(s.status),
     getResult: (s) => (s.result ? s : undefined),
     getErrorMessage: (s) => buildExecutionFailureMessage(s.message || "Unknown error", s.execution_metrics, {
       status: s.status,
       terminalReason: s.terminal_reason,
     }),
-    getTerminalPollErrorMessage: getJobPollErrorMessage,
     addToast,
     successLabel: "Training complete",
     failLabel: "Training failed",
@@ -228,16 +229,13 @@ export default function useBackgroundJobs() {
   )
 
   useJobPolling<(typeof pivotJobs)[string], ExplorePivotProgress>({
+    ...jobPollingDefaults,
     jobs: pivotJobs,
     pollFn: pivotPollFn,
     onProgress: updateExplorePivotProgress,
-    progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
     onComplete: pivotOnComplete,
     onFail: failExplorePivotJob,
     labelFn: (job) => `${job.nodeLabel} - ${job.pivotName}`,
-    jobIdFn: (job) => job.jobId,
-    isComplete: (s) => s.status === "completed",
-    isError: (s) => FAILED_JOB_STATUSES.has(s.status),
     getResult: (s) => (s.result ? s : undefined),
     getErrorMessage: (s) => buildExecutionFailureMessage(
       s.failure?.message || s.message || "Unknown error",
@@ -247,7 +245,6 @@ export default function useBackgroundJobs() {
         terminalReason: s.terminal_reason,
       },
     ),
-    getTerminalPollErrorMessage: getJobPollErrorMessage,
     addToast,
     successLabel: "Pivot complete",
     failLabel: "Pivot failed",
@@ -282,23 +279,19 @@ export default function useBackgroundJobs() {
   )
 
   useJobPolling<NodeDataSlotJob, NodeDataStatusResponse>({
+    ...jobPollingDefaults,
     jobs: nodeDataJobs,
     pollFn: nodeDataPollFn,
     onProgress: nodeDataOnProgress,
-    progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
     onComplete: nodeDataOnComplete,
     onFail: nodeDataOnFail,
     labelFn: (job) => job.startedByLabel,
-    jobIdFn: (job) => job.jobId,
-    isComplete: (s) => s.status === "completed",
-    isError: (s) => FAILED_JOB_STATUSES.has(s.status),
     getResult: (s) => s,
     getErrorMessage: (s) => buildExecutionFailureMessage(
       s.error || s.message || "Unknown error",
       s.execution_metrics,
       { status: s.status, terminalReason: s.terminal_reason },
     ),
-    getTerminalPollErrorMessage: getJobPollErrorMessage,
     addToast,
     successLabel: "Data cached",
     failLabel: "Data caching failed",
@@ -326,23 +319,19 @@ export default function useBackgroundJobs() {
   )
 
   useJobPolling<NodeDataSlotJob, NodeDataStatusResponse>({
+    ...jobPollingDefaults,
     jobs: profileJobs,
     pollFn: nodeDataPollFn,
     onProgress: profileOnProgress,
-    progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
     onComplete: profileOnComplete,
     onFail: profileOnFail,
     labelFn: (job) => job.startedByLabel,
-    jobIdFn: (job) => job.jobId,
-    isComplete: (s) => s.status === "completed",
-    isError: (s) => FAILED_JOB_STATUSES.has(s.status),
     getResult: (s) => s,
     getErrorMessage: (s) => buildExecutionFailureMessage(
       s.error || s.message || "Unknown error",
       s.execution_metrics,
       { status: s.status, terminalReason: s.terminal_reason },
     ),
-    getTerminalPollErrorMessage: getJobPollErrorMessage,
     addToast,
     successLabel: "Data profile ready",
     failLabel: "Data profile failed",

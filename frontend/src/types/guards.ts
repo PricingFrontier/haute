@@ -8,6 +8,8 @@
 
 import type { Node } from "@xyflow/react"
 
+import { isDateTime, isDay, isTime } from "../utils/isoDate"
+
 import {
   EXECUTION_STRATEGY_SCHEMA_VERSION,
   validateExecutionStrategyDiagnostic,
@@ -1834,8 +1836,6 @@ const EXPLORE_PIVOT_MEMBER_KINDS = [
 ] as const
 const PIVOT_INTEGER_PATTERN = /^-?(?:0|[1-9][0-9]*)$/
 const PIVOT_DECIMAL_PATTERN = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:E[+-]?[0-9]+)?$/
-const PIVOT_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
-const PIVOT_TIME_PATTERN = /^(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})?$/
 
 function expectFiniteNumber(parser: string, value: unknown, field: string): number {
   const parsed = expectNumber(parser, value, field)
@@ -1865,43 +1865,6 @@ function expectPositiveInteger(parser: string, value: unknown, field: string): n
     throw new Error(`${parser}: expected ${field} to be a positive integer`)
   }
   return parsed
-}
-
-function isValidPivotDate(value: string): boolean {
-  const match = PIVOT_DATE_PATTERN.exec(value)
-  if (match === null) return false
-  const year = Number(match[1])
-  const month = Number(match[2])
-  const day = Number(match[3])
-  if (year < 1) return false
-  const candidate = new Date(0)
-  candidate.setUTCFullYear(year, month - 1, day)
-  candidate.setUTCHours(0, 0, 0, 0)
-  return (
-    candidate.getUTCFullYear() === year &&
-    candidate.getUTCMonth() === month - 1 &&
-    candidate.getUTCDate() === day
-  )
-}
-
-function isValidPivotTime(value: string): boolean {
-  const match = PIVOT_TIME_PATTERN.exec(value)
-  if (match === null) return false
-  const hour = Number(match[1])
-  const minute = Number(match[2])
-  const second = Number(match[3])
-  if (hour > 23 || minute > 59 || second > 59) return false
-  const offset = /([+-])(\d{2}):(\d{2})$/.exec(value)
-  return offset === null || (Number(offset[2]) <= 23 && Number(offset[3]) <= 59)
-}
-
-function isValidPivotDateTime(value: string): boolean {
-  const separator = value.indexOf("T")
-  return (
-    separator > 0 &&
-    isValidPivotDate(value.slice(0, separator)) &&
-    isValidPivotTime(value.slice(separator + 1))
-  )
 }
 
 function expectPivotStringFormat(
@@ -1965,7 +1928,7 @@ function parseExplorePivotMemberKey(value: unknown, field: string): ExplorePivot
           memberValue,
           `${field}.value`,
           "an ISO date",
-          isValidPivotDate,
+          isDay,
         ),
       }
     case "datetime":
@@ -1976,7 +1939,7 @@ function parseExplorePivotMemberKey(value: unknown, field: string): ExplorePivot
           memberValue,
           `${field}.value`,
           "an ISO datetime",
-          isValidPivotDateTime,
+          isDateTime,
         ),
       }
     case "time":
@@ -1987,7 +1950,7 @@ function parseExplorePivotMemberKey(value: unknown, field: string): ExplorePivot
           memberValue,
           `${field}.value`,
           "an ISO time",
-          isValidPivotTime,
+          isTime,
         ),
       }
     case "boolean":

@@ -143,6 +143,12 @@ describe("formatNumber", () => {
     expect(formatNumber(999)).toBe("999")
   })
 
+  it("writes a value that rounds up to the next unit in it", () => {
+    expect(formatNumber(999_999)).toBe("1.00M")
+    expect(formatNumber(-999_950)).toBe("-1.00M")
+    expect(formatNumber(999_949)).toBe("999.9K")
+  })
+
   it("formats -999 as integer (above -K threshold)", () => {
     expect(formatNumber(-999)).toBe("-999")
   })

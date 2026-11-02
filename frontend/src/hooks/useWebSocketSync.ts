@@ -221,8 +221,8 @@ export default function useWebSocketSync({
   preambleRef, submodelsRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
   graphRefreshingRef, nodeIdCounter, fitView, enabled = true, onDocumentReload,
 }: WebSocketSyncParams): WsStatus {
-  const { setSyncBanner } = useUIStore()
-  const { addToast } = useToastStore()
+  const setSyncBanner = useUIStore((s) => s.setSyncBanner)
+  const addToast = useToastStore((s) => s.addToast)
   const [status, setStatus] = useState<WsStatus>(() => enabled ? "connecting" : "idle")
   const retriesRef = useRef(0)
 
