@@ -11,10 +11,10 @@ six trained families (CatBoost, GLM through RustyStats, XGBoost, LightGBM,
 EBM and t-boost) are in scope only for what each backend exposes to a caller
 that must bound memory; their losses, tuning and evaluation are out of scope.
 The GLM distributions that `MOD-M01` names in its acceptance are the subject
-of that package, not a tuning choice. `MOD-R03`, `MOD-R05` and `MOD-R06` come from
+of that package, not a tuning choice. `MOD-R03` and `MOD-R06` come from
 the [25 October 2026 codebase review](codebase-review-2026-10-25.md) and are the
-exception to that scope: they cover what the review found in the fits, the
-contracts and the training lifecycle.
+exception to that scope: they cover what the review found in the contracts and the
+training lifecycle.
 
 Today a training fit that exceeds its memory budget terminates: bounded
 streaming mode is refused outright (`BoundedMemoryUnsupportedError`, shown as
@@ -57,7 +57,6 @@ something this page settles.
 | MOD-M01 | Decision | P3 | Exact chunked GLM fitting under a memory budget. |
 | MOD-M02 | Decision | P3 | A low-memory boosted-tree fitting mode under an explicit user choice. |
 | MOD-R03 | Planned | P2 | Training publication validates the evaluation plan outside the job-store lock, and the plan stores memberships compactly. |
-| MOD-R05 | Planned | P3 | Diagnostics are measured as the fit was: weighted loss importance, one-based GPU iterations, no GLM `best_iteration`, a dispersion search that stops on `MemoryError`, the offset dtype in the contract, params logged whole. Model-card names, family importance labels and PDP x-values also describe what was actually scored. |
 | MOD-R06 | Planned | P3 | The training memory log is opt-in, the dead compatibility fields are gone, and the four native wrappers share one base. |
 
 ## Planned improvements
@@ -236,57 +235,6 @@ publication.
 `src/haute/routes/_training_artifacts.py::_validate_evaluation_artifact_contents`;
 `src/haute/routes/_job_store.py::compare_and_publish_completion`;
 `src/haute/routes/_training_lifecycle.py`.
-
-### MOD-R05 — Diagnostics measured as the fit was
-**Why:** The CatBoost `LossFunctionChange` importance is computed on a pool
-built without the weight column, so for a weight- or exposure-trained model
-the importance shown and logged is evaluated under an unweighted loss. A GPU
-CatBoost fit's reconstructed `loss_history` numbers its rows from 0 while the
-CPU callback and every other family number from 1, so the row kept as the best
-iteration and the live readout are off by one on GPU, and when `eval_pool is None`
-(`validation.method == "none"`) the `if is_gpu and eval_pool is not None` guard in
-`CatBoostAlgorithm.fit` skips `loss_history` reconstruction altogether even though
-`model.evals_result_["learn"]` is populated. A GLM reports its IRLS
-iteration count as `best_iteration`, persisted and logged where every other
-family's value means the early-stopping round. The dispersion
-profile-likelihood search absorbs `MemoryError` as a failed candidate, tries
-the remaining candidates and ends `contract_error` instead of
-`memory_limited`. The job captures the offset column's dtype into
-`_contract_offset_dtype` but nothing reads it, and the MLflow signature
-declares every offset `Float64`. Candidate-run params are truncated at 500
-characters as Python reprs although MLflow allows 6,000, so a GLM's
-`param_terms` reaches MLflow cut off.
-
-**Plan:** Pass `weight=self.weight` to the diagnostic pool; reconstruct the GPU
-`loss_history` from `model.evals_result_["learn"]` even when `eval_pool is None` and
-number the GPU history from one; return `best_iteration=None` for the GLM; re-raise
-`MemoryError` in the dispersion search; record the offset dtype in the contract and
-sign it from there; serialise structured params as compact JSON truncated at MLflow's
-limit, logging an over-long value as an artifact.
-
-**Acceptance:** Weighted and unweighted importances differ on a weighted
-fixture; a GPU-style `evals_result_` gives the callback's 1-based numbering and
-populates `loss_history` when `eval_pool is None` (`validation.method == "none"`); a GLM
-candidate logs no `best_iteration`; a dispersion `MemoryError` ends
-`memory_limited`; an integer exposure is signed as such; a 2,000-character
-`param_terms` round-trips from MLflow.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/modelling/_training_job.py::_compute_metrics`;
-`src/haute/modelling/_algorithms.py`;
-`src/haute/modelling/_rustystats.py::estimate_glm_dispersion`;
-`src/haute/modelling/_candidate_run.py`;
-`src/haute/modelling/_mlflow_log.py::log_experiment`.
-
-**28 October full-pass addition:** Model-card metric iteration shadows the supplied model
-name, producing `rmse — Model Card`; importance descriptions name PredictionValuesChange
-even for other families; integer-feature PDP labels include 1.25/1.5/1.75 although the
-scored feature is cast to integer 1. **Plan/acceptance:** preserve model identity, label
-each importance method accurately, and align each PDP x value with the value actually
-scored. Test family-specific card text and integer-grid predictions.
-Evidence: `src/haute/modelling/_model_card.py` and
-`src/haute/modelling/_metrics.py::compute_pdp`.
 
 ### MOD-R06 — Hygiene: the memory log, dead fields, one wrapper base
 **Why:** Every fit writes a debug memory log unconditionally: each checkpoint

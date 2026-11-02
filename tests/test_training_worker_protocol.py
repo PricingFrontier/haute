@@ -1321,6 +1321,53 @@ def test_dispersion_worker_remains_isolated_and_emits_fit_events(tmp_path: Path)
     assert [event.kind for event in queue.events] == ["progress", "progress", "dispersion_fit"]
 
 
+def test_a_dispersion_candidate_out_of_memory_ends_the_search_memory_limited(
+    tmp_path: Path,
+) -> None:
+    """The profile search treats a candidate that fails to converge as a bad candidate;
+    one that runs out of memory stops the search, and the job ends memory_limited."""
+    data = tmp_path / "prepared.parquet"
+    pl.DataFrame(
+        {
+            "x": [1.0, 2.0, 3.0, 4.0],
+            "y": [0.0, 1.0, 3.0, 2.0],
+            "weight": [1.0] * 4,
+            "offset": [0.0] * 4,
+        }
+    ).write_parquet(data)
+    fits: list[object] = []
+
+    class Builder:
+        def fit(self, **_kwargs):
+            fits.append(self)
+            raise MemoryError
+
+    with (
+        patch("haute.modelling.TrainingJob", _prepared_job(data, {"x": "Float64"})),
+        patch("rustystats.glm_dict", lambda **_kwargs: Builder()),
+    ):
+        result = _run_dispersion_process_job(
+            WorkerRuntime(_ForwardingQueue(), str(tmp_path / "artifacts")),
+            _dispersion_request(
+                tmp_path,
+                job_kwargs={
+                    "target": "y",
+                    "weight": "weight",
+                    "offset": "offset",
+                    "params": {
+                        "family": "negbinomial",
+                        "terms": {"x": {"type": "linear"}},
+                        "interactions": [],
+                    },
+                },
+            ),
+        )
+
+    assert isinstance(result, WorkerFailurePayload)
+    assert result.terminal_reason == "memory_limited"
+    assert len(fits) == 1
+
+
 def test_dispersion_frame_includes_an_interaction_only_materialised_column(tmp_path: Path) -> None:
     """The profile runs on the training design: an interaction factor whose
     main effect Include main effects materialises is loaded, while unused

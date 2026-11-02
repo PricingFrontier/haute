@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -197,6 +197,26 @@ class _CatBoostProgressCallback:
         if self._on_iteration:
             self._on_iteration(it, self._total, metrics, history_entry)
         return True  # True = continue training
+
+
+def _loss_history_from_evals(
+    evals: Mapping[str, Mapping[str, Sequence[float]]],
+) -> list[dict[str, float]]:
+    """A CatBoost ``evals_result_`` as the loss history the CPU callback records.
+
+    Rows are numbered from one, as the callback (and every other family) numbers
+    completed rounds; ``learn`` metrics are ``train_`` keys and every other dataset's
+    ``eval_`` keys.
+    """
+    history: list[dict[str, float]] = []
+    for dataset_name, metrics in evals.items():
+        prefix = "train" if dataset_name == "learn" else "eval"
+        for metric_name, values in metrics.items():
+            for index, value in enumerate(values):
+                while len(history) <= index:
+                    history.append({"iteration": float(len(history) + 1)})
+                history[index][f"{prefix}_{metric_name}"] = value
+    return history
 
 
 # User-friendly loss name → CatBoost loss_function string.
@@ -627,21 +647,10 @@ class CatBoostAlgorithm(BaseAlgorithm):
         if eval_pool is not None and hasattr(model, "best_iteration_"):
             best_iteration = model.best_iteration_
 
-        # On GPU, reconstruct loss history from the model's eval results
-        if is_gpu and eval_pool is not None and hasattr(model, "evals_result_"):
-            evals = model.evals_result_
-            if "validation" in evals:
-                for metric_name, values in evals["validation"].items():
-                    for i, v in enumerate(values):
-                        if i >= len(loss_history):
-                            loss_history.append({"iteration": i})
-                        loss_history[i][f"eval_{metric_name}"] = v
-            if "learn" in evals:
-                for metric_name, values in evals["learn"].items():
-                    for i, v in enumerate(values):
-                        if i >= len(loss_history):
-                            loss_history.append({"iteration": i})
-                        loss_history[i][f"train_{metric_name}"] = v
+        # GPU fits run no callback: the history comes from the model's recorded
+        # metrics, with or without a validation set.
+        if is_gpu:
+            loss_history = _loss_history_from_evals(model.evals_result_)
 
         rounds_fitted = getattr(model, "tree_count_", None)
         rounds_fitted = rounds_fitted if isinstance(rounds_fitted, int) else None

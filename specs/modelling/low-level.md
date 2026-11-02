@@ -75,7 +75,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/_candidate_run.py` | The candidate-run contract builder shared by canvas and scripted logging (`CANDIDATE_RUN_CONTRACT_VERSION`, `training_identity_sha256`, `CandidateProvenance` capture including git state, `CandidateArtifacts.require_files`, `build_candidate_run`); see [mlflow-model-registry](../mlflow-model-registry/low-level.md#candidate-run-contract). |
 | `src/haute/modelling/_native_pyfunc.py` | The MLflow pyfunc for every Haute-trained native model: `package_native_model` copies the model file and its feature contract into one package, and `_load_pyfunc` returns `NativePyfuncModel`, which checks the model against the contract identity and scores through haute's own `load_local_model` + `score_frame` path, returning the label and positive-class probability for classification. |
 | `src/haute/modelling/_charts.py` | Pure-SVG renderers used by model cards. |
-| `src/haute/modelling/_model_card.py` | `generate_model_card()` — self-contained HTML assembled for MLflow artifact logging; ordinary training does not persist it beside the model. |
+| `src/haute/modelling/_model_card.py` | `generate_model_card()` — self-contained HTML assembled for MLflow artifact logging; ordinary training does not persist it beside the model. It is titled with the model's name and heads a family's own importance with the importance method its descriptor names (`src/haute/modelling/_descriptors.py::AlgorithmDescriptor`): CatBoost's PredictionValuesChange, a GLM's absolute coefficient, XGBoost's and LightGBM's total gain, EBM's mean absolute term score, t-boost's variance share. |
 | `src/haute/modelling/_mlflow_log.py` | Destination-aware tracking-backend resolution wrappers over `_mlflow_settings.py` (every wrapper takes `destination`, `""` = the local folder), `log_experiment()`, flavor-aware model/signature logging, diagnostics artifacts, and best-effort model-card logging. |
 | `src/haute/modelling/_mlflow_settings.py` | The `[mlflow]` destination inventory in `haute.toml` (tracking_uri, folder): load/validate/save (tomlkit round-trip), tracking-URI form classification via `classify_tracking_uri()`, `validate_destination_key()`, the per-key resolver `resolve_destination()` (raising the `MlflowDestinationUnconfigured` marker for a merely unconfigured key), the three-entry inventory `list_destinations()`, draft resolution for the connection test (`candidate_tracking_config()`), and `node_destination_key()` — the local folder for a node or request that names no destination, so a configured remote is never chosen for it. |
 | `src/haute/modelling/_result_types.py` | `ModelDiagnostics` and `ModelCardMetadata` bundles shared by training, MLflow logging, and model-card generation. |
@@ -112,6 +112,11 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   `glm_result` (GLM only).
 - **`FitResult`** (`_algorithms.py`) — `model`, `best_iteration: int | None`,
   `loss_history: list[dict[str, float]]`. Returned by every algorithm's `fit()`.
+  `best_iteration` is the zero-based early-stopping round; a GLM, which has no early
+  stopping, returns `None` (its IRLS iteration count is a fit statistic), so a GLM candidate
+  logs no `best_iteration`. A GPU CatBoost fit, which runs no callback, builds its loss
+  history from `evals_result_` (`_loss_history_from_evals`), with or without a validation
+  set, numbered from one with the CPU callback's `train_`/`eval_` keys.
 - **`IterationCallback`** (`_algorithm_base.py`) — `(iteration, total, metrics,
   history_row)`, called after each iteration. `metrics` is the progress readout: the
   training metric under its native name and an evaluation set's as `<dataset>_<metric>`.
@@ -161,9 +166,15 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 - **`FeatureContract`** (`_feature_contract.py`, frozen dataclass) — `features`,
   `feature_types`, `categorical_features`, `target_name`,
   `target_type`, `task`, `contract_hash` (sha256 of canonical compact JSON over every
-  other field), `offset_column: str | None`, `offset_link: str | None`. Serialized
+  other field), `offset_column: str | None`, `offset_link: str | None`,
+  `offset_type: str | None` (`CONTRACT_VERSION` 5). Serialized
   contracts always contain every one of those fields, including a nullable
-  `offset_column` and `offset_link`. A contract holds no list of category values.
+  `offset_column`, `offset_link` and `offset_type`. `offset_type` is the contract dtype name
+  the offset column was trained with (`TrainingJob._offset_dtype_for_contract`, from data
+  preparation, never guessed); `build_candidate_run` refuses a contract with an offset column
+  but no `offset_type`, and `build_signature` declares the offset input with that dtype (it
+  has no default). Like `offset_link` it is not compared against live data: every scoring
+  path casts the offset to `Float64`. A contract holds no list of category values.
   `offset_link` (`log` or `identity`) says how the offset enters the model's raw score.
   It is null when `offset_column` is null, and may be null beside a named column only
   for a model that applies its own offset (a pyfunc, or a family whose file records
@@ -748,7 +759,9 @@ experiment logs nothing.
    (`method="bounded"`) maximising `rs.glm_dict(**builder_kwargs).fit().llf()` over the
    parameter — `theta` searched in log-space over `_DISPERSION_BOUNDS`. Each candidate
    fit that raises is treated as `-inf` log-likelihood rather than aborting the search;
-   only a search where every candidate fails raises `ValueError`. An `on_fit` callback
+   only a search where every candidate fails raises `ValueError`. A candidate that raises
+   `MemoryError` is not a bad candidate: it stops the search, and the job ends
+   `memory_limited`. An `on_fit` callback
    fires before each candidate fit, checks the child execution budget, and emits a
    bounded progress event (capped visually at fit 30); the parent event handler updates
    `job_id`'s `progress`/`message`.
@@ -1163,8 +1176,10 @@ evaluation-set-namespaced metrics, all as pure data.
 
 `log_experiment(*, experiment_name, candidate, destination="", check_cancelled=None)` first
 requires every candidate artifact file to exist, then configures tracking, sets the experiment,
-and starts the run with the candidate's name and tags. It logs params (truncated to MLflow's 500
-characters, batched by 100) and metrics, the model with its signature, the feature contract at
+and starts the run with the candidate's name and tags. It logs params (text as it is, a
+structured value as compact sorted JSON; a value longer than MLflow's `MAX_PARAM_VAL_LENGTH`,
+6,000 characters, is logged cut at that length and whole as `params/<key>.json`; batched by 100)
+and metrics, the model with its signature, the feature contract at
 the run root, the diagnostics JSON, and the evaluation/tuning evidence. Every native model (`.cbm` or `.rsglm`) is
 packaged with its feature contract and logged through the shared pyfunc
 (`loader_module="haute.modelling._native_pyfunc"`) as the LoggedModel named `model` (MLflow
@@ -1410,7 +1425,10 @@ potentially large copy on its threadpool.
   its deciles, over that order; `compute_pdp` takes its `max_sample` rows through the
   diagnostics rows' canonical order; a categorical PDP grid keeps its 30 most frequent
   levels with equal counts ordered by level, and AvE's category fold its largest levels
-  with equal exposure ordered by level.
+  with equal exposure ordered by level. A numeric PDP grid is labelled with the values the
+  model scored: the percentile grid (nearest-rank for an integer feature, so its points are
+  observed values) is cast to the feature's dtype and deduplicated before each point is
+  predicted.
 - The feature contract is hashed over sorted, separator-compact canonical JSON but
   written to disk pretty-printed — human-reviewable on disk, byte-deterministic for
   hashing.
@@ -1549,7 +1567,9 @@ rows/features) and retry.
   importance` before constructing its pool/calling `feature_importance_typed`.
   Both progress callbacks run outside the optional-diagnostic exception guards,
   so cancellation between stages propagates rather than being recorded as an
-  optional diagnostic failure. Loss importance stays full-partition. Targeted tests
+  optional diagnostic failure. Loss importance stays full-partition, and its pool
+  carries the job's weight (and offset), so a weight- or exposure-trained model's
+  `LossFunctionChange` is measured under the loss it was fitted with. Targeted tests
   pin stage order, the absence of a SHAP stage for algorithms without it, and
   cancellation before loss importance.
 - SHAP is computed once per run, on `shap_sample(diag_df, row_order)`: numpy's

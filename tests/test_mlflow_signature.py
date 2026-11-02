@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 from datetime import date, datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import mlflow
@@ -857,3 +858,64 @@ def test_a_logged_model_declares_the_dtypes_its_pyfunc_predicts(
             "pred_label": "int64",
             "pred_proba": "float64",
         }
+
+
+def test_an_integer_exposure_is_signed_as_trained_and_served_as_sent(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The contract records the exposure's dtype; the logged signature declares it, so
+    the reloaded pyfunc accepts the integer column the model was trained on."""
+    import numpy as np
+    from mlflow.tracking import MlflowClient
+
+    from haute._mlflow_utils import mlflow_fluent_operation, resolve_backend
+    from haute._sandbox import set_project_root
+    from haute.modelling._feature_contract import load_contract
+    from haute.modelling._training_job import TrainingJob, model_contract_filename
+
+    for name in ("MLFLOW_TRACKING_URI", "DATABRICKS_HOST", "DATABRICKS_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)  # conftest restores the original project root.
+    rng = np.random.default_rng(5)
+    x = rng.random(150)
+    exposure = rng.integers(1, 4, size=150)
+    frame = pl.DataFrame(
+        {"x": x, "exposure": pl.Series(exposure, dtype=pl.Int64), "claims": rng.poisson(exposure)}
+    )
+    result = TrainingJob(
+        name="freq",
+        data=frame,
+        target="claims",
+        offset="exposure",
+        loss_function="Poisson",
+        feature_columns=["x"],
+        params={"iterations": 10},
+        metrics=["poisson_deviance"],
+        evaluation={
+            "schema_version": 1,
+            "strategy": "random",
+            "seed": 3,
+            "validation": {"method": "none"},
+        },
+        mlflow_experiment="/exposure",
+        output_dir=str(tmp_path / "train"),
+    ).run()
+    contract = load_contract(Path(result.model_path).parent / model_contract_filename("freq"))
+    assert (contract.offset_column, contract.offset_type) == ("exposure", "Int64")
+
+    tracking_uri = resolve_backend("").tracking_uri
+    client = MlflowClient(tracking_uri=tracking_uri)
+    (run,) = client.search_runs([client.get_experiment_by_name("/exposure").experiment_id])
+    with mlflow_fluent_operation():
+        mlflow.set_tracking_uri(tracking_uri)
+        model_uri = f"runs:/{run.info.run_id}/model"
+        signature = mlflow.models.get_model_info(model_uri).signature
+        served = mlflow.pyfunc.load_model(model_uri).predict(
+            frame.select("x", "exposure").to_pandas()
+        )
+
+    inputs = {column["name"]: column["type"] for column in signature.inputs.to_dict()}
+    assert inputs == {"x": "double", "exposure": "long"}
+    assert served.shape == (150,) and np.isfinite(served).all()

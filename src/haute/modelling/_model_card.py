@@ -26,6 +26,7 @@ from haute.modelling._charts import (
     render_residuals_svg,
     render_scatter_svg,
 )
+from haute.modelling._descriptors import algorithm_descriptor
 from haute.modelling._result_types import ModelCardMetadata, ModelDiagnostics
 
 # ---------------------------------------------------------------------------
@@ -124,13 +125,13 @@ def generate_model_card(
 
     if diag.selection_metrics:
         selection_rows = []
-        for name, raw_summary in diag.selection_metrics.items():
+        for metric, raw_summary in diag.selection_metrics.items():
             if not isinstance(raw_summary, dict):
                 continue
             mean = raw_summary.get("mean")
             stddev = raw_summary.get("stddev")
             if isinstance(mean, int | float) and isinstance(stddev, int | float):
-                selection_rows.append([name, f"{float(mean):.4f}", f"{float(stddev):.4f}"])
+                selection_rows.append([metric, f"{float(mean):.4f}", f"{float(stddev):.4f}"])
         if selection_rows:
             sections.append("<h2>Validation Selection Metrics</h2>")
             sections.append(
@@ -241,14 +242,15 @@ def generate_model_card(
             stat_rows = [[k.title(), f"{v:.6f}"] for k, v in diag.residuals_stats.items()]
             sections.append(_html_table(["Statistic", "Value"], stat_rows, ["left", "right"]))
 
-    # --- Feature Importance (PredictionValuesChange) ---
+    # --- Feature Importance (the family's own measure) ---
     if diag.feature_importance:
-        sections.append("<h2>Feature Importance (PredictionValuesChange)</h2>")
+        method = algorithm_descriptor(meta.algorithm).importance_method
+        sections.append(f"<h2>Feature Importance ({html.escape(method)})</h2>")
         svg = render_horizontal_bars_svg(
             diag.feature_importance,
             "feature",
             "importance",
-            title="PredictionValuesChange",
+            title=method,
             color=COLOR_IMPORTANCE,
         )
         sections.append(f'<div class="chart">{svg}</div>')

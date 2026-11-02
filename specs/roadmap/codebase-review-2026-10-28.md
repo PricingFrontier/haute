@@ -81,7 +81,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P1 | Pending submodel drill-in replaces a newly loaded root with the old child and mismatched navigation context. | [FGC-R06](frontend-graph-canvas.md#fgc-r06--pending-submodel-navigation-belongs-to-its-document) | Actual navigation hook and stores, delayed layout. A subsequent destructive Save was not executed. |
 | P1 | Failed solve B restamps retained success A with B's identity, making old numbers appear current under a new objective. | [FSH-R12](frontend-shared.md#fsh-r12--failed-solves-cannot-relabel-retained-successful-results) | Actual store/hash/staleness helpers; preview label source checked. Publication already refuses the error state. |
 | P2 | Haute classifier pyfunc's label/probability table is flattened to 40 values for 20 input rows. | [MSC-11](model-scoring.md#msc-11--pyfunc-classification-outputs-have-an-explicit-scoring-shape) | Real saved/loaded CatBoost pyfunc, feature contract and scoring adapter. Explicit pyfunc selection is affected; automatic native selection may avoid it. |
-| P3 | Model card loses its name to a metric, importance method labels disagree with families, and integer PDP labels do not match scored values. | [MOD-R05](modelling.md#mod-r05--diagnostics-measured-as-the-fit-was), extended | Real card generation and model diagnostic calculations; separate from the signature's P2 contract impact. |
 | P3 | Relationships target `__w=[10,20]` is overwritten by internal weight alias: means become `[1,1]`, strength 0. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual Parquet, data-point resolver and relationship service; ordinary-name equivalent requires means `[10,20]`, strength 1. |
 | P3 | Copied Explore node B receives cached result.node_id A for the same producer/card. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual pivot service/cache. Numbers are correct; browser stores them under B, so no numerical cross-node corruption claim. |
 | P2 | Shared-flight operation TimeoutError is mistaken for a polling timeout; completed work spins until cancellation. | [ROAD-WORKER-09](background-jobs-api.md#road-worker-09--completed-operation-timeouts-are-terminal-failures) | Real SharedFlights and LatestWinsQueue with controlled failure/cancellation. |
@@ -225,7 +224,6 @@ adds a finding group or changes the 42-group count.
 | CLI/init/deploy existing gaps | Duplicates **DEP-R11** for impact alignment, **DEP-R12A** for build ownership, **DEP-R09** for dependency closure, and **CLI-R01**, **CLI-R04**, **CLI-R06** for init overwrite, TOML mutation and hook behavior. The scratch shorthand DEP-R12 predates its split; generic CLI errors/eager reads name no additional concrete case. |
 | inactive source-switch branch | Duplicate **EXEC-R14**. |
 | Literal-only chunked selects | Duplicate **EXEC-R09**; the deployed request-order witness is included in its accepted extension above. |
-| Model diagnostic weights | Duplicate **MOD-R05**. |
 | Hosted sign-in headers | Duplicate **WB-25**. |
 | Asynchronous assistant tool blocking | Duplicate **ASSIST-57**. |
 
@@ -250,7 +248,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | failed new solve identity | **FSH-R12**. |
 | pyfunc classifier output shape | **MSC-11**. |
 | literal select row proof | **EXEC-R09**. |
-| “PDP integer grids … pending contract test” | **MOD-R05**. The copied note belongs to `modelling/_metrics.py::compute_pdp`, not `_gpu.py` or `_shap.py`; it is not a separate unresolved GPU contract concern. |
 | completed TimeoutError retry loop | **ROAD-WORKER-09** after requested split; formerly bundled ROAD-WORKER-07. |
 
 The training-import note was attached to a batch including `cli/_app.py`, but its
@@ -290,8 +287,7 @@ probability assertions and a concrete P2 preview fix independent of reuse migrat
 The latter has since been delivered. This was same-family review, not cross-family validation.
 
 The subsequent **cross-family review by Claude** checked the decisive code for all
-42 finding groups and reported no false positives; it did not check MOD-R05's integer
-PDP-label item. It reproduced the parser half of NAME-10 and four
+42 finding groups and reported no false positives. It reproduced the parser half of NAME-10 and four
 findings since delivered, and supplied the hosted evidence for the core-only smoke finding, since delivered. This documentation
 follow-up incorporates its coverage qualifications, candidate dispositions, package
 splits, priorities, ownership, ordering and link corrections. Neither review approval

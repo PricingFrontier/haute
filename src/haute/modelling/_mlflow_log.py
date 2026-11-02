@@ -15,7 +15,7 @@ import json
 import os
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -195,6 +195,7 @@ def log_experiment(
     """
     from mlflow.entities import Metric, Param
     from mlflow.tracking import MlflowClient
+    from mlflow.utils.validation import MAX_PARAM_VAL_LENGTH
 
     candidate.artifacts.require_files()
 
@@ -218,14 +219,19 @@ def log_experiment(
     status = "FAILED"
     try:
         _check_cancelled()
-        # Truncate params to 500 chars (MLflow limit) and batch in groups of 100
-        truncated_params = {k: str(v)[:500] for k, v in candidate.params.items()}
-        param_items = list(truncated_params.items())
+        # A param longer than MLflow's limit is logged cut at the limit, and whole
+        # as params/<key>.json beside it. Batches of 100.
+        param_texts = {key: _param_text(value) for key, value in candidate.params.items()}
+        param_items = [(key, text[:MAX_PARAM_VAL_LENGTH]) for key, text in param_texts.items()]
         for i in range(0, len(param_items), 100):
             _check_cancelled()
             client.log_batch(
                 run_id, params=[Param(key, value) for key, value in param_items[i : i + 100]]
             )
+        for key, text in param_texts.items():
+            if len(text) > MAX_PARAM_VAL_LENGTH:
+                _check_cancelled()
+                client.log_text(run_id, text, f"params/{key}.json")
         timestamp = int(time.time() * 1000)
         client.log_batch(
             run_id,
@@ -292,6 +298,15 @@ def log_experiment(
     )
 
 
+def _param_text(value: Any) -> str:
+    """A param as MLflow stores it: text as is, a structured value as compact JSON."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Mapping | list | tuple):
+        return json.dumps(value, separators=(",", ":"), sort_keys=True, allow_nan=False)
+    return str(value)
+
+
 def _log_json_artifact(client: Any, run_id: str, data: Any, prefix: str, artifact_dir: str) -> None:
     """Write *data* to a temp JSON file and log it as an artifact of *run_id*."""
     with tempfile.NamedTemporaryFile(
@@ -345,7 +360,7 @@ def _log_model_with_signature(
         target_type=metadata.target_type,
         task=task,
         offset_name=metadata.offset_name or None,
-        offset_type=metadata.offset_type or "Float64",
+        offset_type=metadata.offset_type or None,
         offset_link=metadata.offset_link or None,
     )
 

@@ -618,7 +618,8 @@ class TestOffsetInSignatureAndContract:
             "task": "regression",
             "offset_column": None,
             "offset_link": None,
-            "contract_version": 4,
+            "offset_type": None,
+            "contract_version": 5,
             "model": None,
         }
         import hashlib

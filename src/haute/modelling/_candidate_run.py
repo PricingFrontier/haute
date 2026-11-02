@@ -280,6 +280,11 @@ def build_candidate_run(
             "The model's feature contract has no complete feature types; retrain the model."
             + (f" Missing types: {', '.join(missing_types)}." if missing_types else "")
         )
+    if contract.offset_column and contract.offset_type is None:
+        raise HauteValidationError(
+            "The model's feature contract does not record its offset column's dtype; "
+            "retrain the model."
+        )
     if final_test_metrics and development_metrics:
         raise HauteValidationError(
             "A run with a final test must not publish development diagnostics as metrics"
@@ -298,7 +303,7 @@ def build_candidate_run(
         target_name=contract.target_name,
         target_type=contract.target_type,
         offset_name=contract.offset_column or "",
-        offset_type="Float64" if contract.offset_column else "",
+        offset_type=contract.offset_type or "",
         offset_link=contract.offset_link or "",
     )
 

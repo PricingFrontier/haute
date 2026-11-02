@@ -43,7 +43,7 @@ def build_signature(
     target_type: str,
     task: Literal["classification", "regression"] = "regression",
     offset_name: str | None = None,
-    offset_type: str = "Float64",
+    offset_type: str | None = None,
     offset_link: str | None = None,
 ) -> ModelSignature:
     """Build an MLflow ModelSignature for a haute training run.
@@ -65,7 +65,8 @@ def build_signature(
             with. Declared as a required input so scoring payloads must carry
             it — the offset is part of every served prediction, never an
             optional extra. Must not shadow a feature name.
-        offset_type: Polars dtype string for the offset column.
+        offset_type: Polars dtype string the offset column was trained with (the
+            feature contract's ``offset_type``); required with ``offset_name``.
 
     Returns:
         A ``mlflow.models.ModelSignature`` whose input schema preserves the
@@ -98,6 +99,11 @@ def build_signature(
         ColSpec(type=_map_dtype(feature_types[f]), name=f) for f in features
     ]
     if offset_name is not None:
+        if not offset_type:
+            raise HauteValidationError(
+                f"offset column {offset_name!r} has no dtype; the signature declares the "
+                "offset as the model was trained on it, and never guesses one"
+            )
         # An exposure (log link) is optional: a request without it is priced for a
         # full policy term. An additive offset is a base premium and required.
         input_specs.append(

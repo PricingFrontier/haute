@@ -24,7 +24,11 @@ _TRAINED_AT = datetime(2026, 9, 13, 8, 30, 45, tzinfo=UTC)
 
 
 def _artifacts(
-    directory: Path, *, feature_types: dict[str, str] | None = None
+    directory: Path,
+    *,
+    feature_types: dict[str, str] | None = None,
+    offset: bool = False,
+    offset_type: str | None = None,
 ) -> CandidateArtifacts:
     model = directory / "freq.cbm"
     model.write_bytes(b"model")
@@ -39,6 +43,9 @@ def _artifacts(
             target_name="claims",
             target_type="Float64",
             task="regression",
+            offset_column="exposure" if offset else None,
+            offset_link="log" if offset else None,
+            offset_type=offset_type,
         ),
         contract,
     )
@@ -211,6 +218,17 @@ class TestBuildCandidateRun:
         artifacts.evidence["evaluation_report"].unlink()
         with pytest.raises(HauteValidationError, match="evaluation_report"):
             _build(tmp_path, artifacts=artifacts)
+
+    @pytest.mark.parametrize("offset_type", ["Int64", None])
+    def test_the_offset_is_signed_with_the_dtype_the_contract_records(
+        self, tmp_path: Path, offset_type: str | None
+    ) -> None:
+        artifacts = _artifacts(tmp_path, offset=True, offset_type=offset_type)
+        if offset_type is None:
+            with pytest.raises(HauteValidationError, match="offset column's dtype; retrain"):
+                _build(tmp_path, artifacts=artifacts)
+            return
+        assert _build(tmp_path, artifacts=artifacts).metadata.offset_type == "Int64"
 
     def test_a_contract_without_complete_feature_types_is_rejected(self, tmp_path: Path) -> None:
         artifacts = _artifacts(tmp_path, feature_types={"age": "Float64"})

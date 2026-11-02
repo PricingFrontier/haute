@@ -2936,11 +2936,14 @@ class TrainingJob:
         if hasattr(algo, "feature_importance_typed"):
             _report("Computing loss-based feature importance", 0.855)
             try:
+                # The loss the model was fitted under: a weight- or exposure-trained
+                # model's loss change is weighted as its training loss was.
                 _diag_pool = _build_pool(
                     diag_df,
                     features,
                     cat_features,
                     target=self.target,
+                    weight=self.weight,
                     offset=self.offset,
                     offset_link=self._offset_link() if self.offset else None,
                 )
@@ -3086,6 +3089,7 @@ class TrainingJob:
                 task="classification" if self.task == "classification" else "regression",
                 offset_column=self.offset,
                 offset_link=self._contract_offset_link(),
+                offset_type=self._offset_dtype_for_contract(),
                 model=self._model_identity(),
             )
             contract_path = output_dir / model_contract_filename(self.name)
@@ -3269,6 +3273,17 @@ class TrainingJob:
                 "the feature contract never guesses one."
             )
         return {f: self._contract_feature_dtypes[f] for f in features}
+
+    def _offset_dtype_for_contract(self) -> str | None:
+        """The offset column's dtype seen at data-prep time; ``None`` without an offset."""
+        if not self.offset:
+            return None
+        if not self._contract_offset_dtype:
+            raise HauteValidationError(
+                f"No dtype was recorded for the offset {self.offset!r}; the feature contract "
+                "never guesses one."
+            )
+        return self._contract_offset_dtype
 
     def _target_dtype_for_contract(self) -> str:
         """Return the target dtype seen at data-prep time."""

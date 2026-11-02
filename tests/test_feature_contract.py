@@ -181,7 +181,7 @@ class TestSaveLoad:
         save_contract(basic_contract, path)
 
         saved = json.loads(path.read_text(encoding="utf-8"))
-        assert saved["contract_version"] == CONTRACT_VERSION == 4
+        assert saved["contract_version"] == CONTRACT_VERSION == 5
         assert "categorical_levels" not in saved
 
     def test_saved_json_is_human_readable(
@@ -254,6 +254,7 @@ class TestLoadRejectsMalformed:
             "contract_hash": c.contract_hash,
             "offset_column": c.offset_column,
             "offset_link": c.offset_link,
+            "offset_type": c.offset_type,
             "contract_version": CONTRACT_VERSION,
             "model": None,
         }
@@ -474,6 +475,7 @@ def _raw_from_contract(contract: FeatureContract) -> dict:
         "contract_hash": contract.contract_hash,
         "offset_column": contract.offset_column,
         "offset_link": contract.offset_link,
+        "offset_type": contract.offset_type,
         "contract_version": CONTRACT_VERSION,
         "model": None,
     }

@@ -651,6 +651,36 @@ class TestLogExperiment:
         assert result.experiment_name == "/test/experiment"
         assert result.run_url is None
 
+    def test_structured_params_log_whole_and_an_over_long_one_is_kept_as_an_artifact(
+        self, tmp_path: Path, local_store: Any
+    ) -> None:
+        import json
+
+        from mlflow.utils.validation import MAX_PARAM_VAL_LENGTH
+
+        from haute.modelling._mlflow_log import log_experiment
+
+        terms = {f"driver_age_band_{i:03d}": {"type": "categorical"} for i in range(60)}
+        assert len(json.dumps(terms, separators=(",", ":"))) > 2000
+        huge = {f"level_{i:04d}": "x" * 20 for i in range(400)}
+        candidate = _candidate(
+            tmp_path / "c",
+            params={"algorithm": "glm", "n_features": 60, "param_terms": terms, "param_x": huge},
+        )
+        with (
+            patch("haute.modelling._mlflow_log._log_model_card"),
+            patch("haute.modelling._mlflow_log._log_model_with_signature"),
+        ):
+            result = log_experiment(experiment_name="params", candidate=candidate)
+
+        params = local_store.get_run(result.run_id).data.params
+        assert params["algorithm"] == "glm" and params["n_features"] == "60"
+        assert json.loads(params["param_terms"]) == terms
+        assert len(params["param_x"]) == MAX_PARAM_VAL_LENGTH
+        assert _artifact_names(local_store, result.run_id, "params") == {"param_x.json"}
+        whole = local_store.download_artifacts(result.run_id, "params/param_x.json", str(tmp_path))
+        assert json.loads(Path(whole).read_text(encoding="utf-8")) == huge
+
     def test_logs_the_feature_contract_and_evaluation_evidence(
         self, tmp_path: Path, local_store: Any
     ) -> None:
@@ -850,7 +880,7 @@ class TestLogExperiment:
         assert run.data.tags["haute.model_card"] == "unavailable"
         assert run.info.status == "FINISHED"
 
-    def test_many_params_batched_and_long_values_truncated(
+    def test_many_params_batched_and_a_value_under_the_limit_kept_whole(
         self, tmp_path: Path, local_store: Any
     ) -> None:
         # A batch carries at most 100 parameters, which the file store enforces.
@@ -867,7 +897,7 @@ class TestLogExperiment:
             )
         logged = local_store.get_run(result.run_id).data.params
         assert len(logged) == 150
-        assert len(logged["long_param"]) == 500
+        assert logged["long_param"] == "x" * 1000
 
     def test_a_log_after_another_experiment_was_selected_attaches_to_its_own_run(
         self, tmp_path: Path, local_store: Any

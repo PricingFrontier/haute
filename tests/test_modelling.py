@@ -745,6 +745,78 @@ class TestCatBoostAlgorithm:
         first = fit_result.loss_history[0]
         assert any(k.startswith("eval_") for k in first)
 
+    @pytest.mark.parametrize("with_validation", [True, False], ids=["validation", "learn-only"])
+    def test_a_gpu_history_is_numbered_and_keyed_as_the_cpu_callback_records_it(
+        self, train_data, with_validation: bool
+    ):
+        """A GPU fit has no callback; its history comes from ``evals_result_``, which
+        the CPU fit records too, so the two histories must be the same rows."""
+        from haute.modelling._algorithms import _loss_history_from_evals
+
+        train, held_out = train_data.slice(0, 150), train_data.slice(150)
+        fit_result = CatBoostAlgorithm().fit(
+            train,
+            features=["x1", "x2"],
+            cat_features=[],
+            target="target",
+            weight=None,
+            params=_fast_training_params(iterations=6),
+            task="regression",
+            eval_df=held_out if with_validation else None,
+        )
+        rebuilt = _loss_history_from_evals(fit_result.model.evals_result_)
+
+        assert rebuilt == fit_result.loss_history
+        assert [row["iteration"] for row in rebuilt] == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        assert any(key.startswith("eval_") for key in rebuilt[0]) is with_validation
+
+
+def test_the_loss_importance_is_measured_under_the_weighted_loss(tmp_path: Path) -> None:
+    from catboost import CatBoostRegressor
+
+    from haute.modelling._algorithms import _build_pool
+
+    rng = np.random.RandomState(4)
+    n = 400
+    x1, x2 = rng.randn(n), rng.randn(n)
+    heavy = np.arange(n) % 2 == 0
+    # The heavily weighted rows follow x1, the lightly weighted ones x2.
+    frame = pl.DataFrame(
+        {
+            "x1": x1,
+            "x2": x2,
+            "y": np.where(heavy, 3 * x1, 3 * x2) + rng.randn(n) * 0.1,
+            "w": np.where(heavy, 50.0, 0.02),
+        }
+    )
+    result = TrainingJob(
+        name="weighted",
+        data=frame,
+        target="y",
+        weight="w",
+        feature_columns=["x1", "x2"],
+        loss_function="RMSE",
+        params={"iterations": 30, "depth": 2},
+        evaluation={
+            "schema_version": 1,
+            "strategy": "random",
+            "seed": 1,
+            "validation": {"method": "none"},
+        },
+        output_dir=str(tmp_path),
+    ).run()
+    model = CatBoostRegressor()
+    model.load_model(result.model_path)
+
+    def importance(weight: str | None) -> dict[str, float]:
+        pool = _build_pool(frame, ["x1", "x2"], target="y", weight=weight)
+        rows = CatBoostAlgorithm().feature_importance_typed(model, pool, "LossFunctionChange")
+        return {row["feature"]: row["importance"] for row in rows}
+
+    reported = {row["feature"]: row["importance"] for row in result.feature_importance_loss}
+    assert reported == pytest.approx(importance("w"), rel=1e-6)
+    assert reported != pytest.approx(importance(None), rel=1e-2)
+
 
 # ---------------------------------------------------------------------------
 # TrainingJob

@@ -898,7 +898,8 @@ def compute_pdp(
     For each feature:
 
     - *Numeric*: create a grid of *n_grid* values (percentile-spaced from
-      data), then ``np.unique`` to deduplicate.
+      data; nearest-rank for an integer feature), cast to the feature's dtype and
+      deduplicated, so every label is the value the model scored.
     - *Categorical*: use unique values (up to 30 most frequent).
     - For each grid value: replace the column, predict, and average.
 
@@ -963,8 +964,19 @@ def compute_pdp(
                         f"feature {feat!r} holds only null and NaN values, so it has no PDP grid",
                     )
                 percentiles = np.linspace(0, 100, n_grid)
-                raw_grid = np.percentile(col_vals, percentiles)
-                grid_values = np.unique(raw_grid).tolist()
+                # Each point is labelled with the value the model scores there: an
+                # integer feature takes observed values (nearest rank), and every value
+                # is cast to the column's dtype before it is labelled.
+                dtype = sample_df[feat].dtype
+                raw_grid = np.percentile(
+                    col_vals, percentiles, method="nearest" if dtype.is_integer() else "linear"
+                )
+                grid_values = (
+                    pl.Series(feat, np.unique(raw_grid))
+                    .cast(dtype)
+                    .unique(maintain_order=True)
+                    .to_list()
+                )
 
             grid_entries: list[dict[str, Any]] = []
             for val in grid_values:
@@ -974,7 +986,7 @@ def compute_pdp(
                     )
                 else:
                     modified = sample_df.with_columns(
-                        pl.lit(float(val)).cast(sample_df[feat].dtype).alias(feat)
+                        pl.lit(val, dtype=sample_df[feat].dtype).alias(feat)
                     )
                 preds = algo.predict(model, modified, features, offset=offset)
                 avg_pred = float(np.mean(preds))
