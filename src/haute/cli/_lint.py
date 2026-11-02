@@ -36,6 +36,7 @@ def _lint_root(filepath: Path) -> Path:
     """The root the editor saves *filepath* under: the working directory ``haute serve``
     runs in when the file is inside it, else the file's own folder."""
     cwd = Path.cwd().resolve()
+    # not contained_path: chooses the root; a file outside the working directory is its own
     return cwd if filepath.is_relative_to(cwd) else filepath.parent
 
 
