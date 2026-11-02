@@ -225,31 +225,36 @@ class TestVersionSelection:
 
 
 class TestBuildDirCleanup:
-    """A failure mid-deploy (lines 168-172) must remove the .haute_build dir."""
+    """DEP-R12A: a deploy stages in a directory of its own under the project's
+    ``.haute_build`` and removes only that one, shipped or failed, unless kept."""
 
-    def test_failure_removes_build_dir(self, deploy_pipeline_file: Path) -> None:
+    def test_failure_removes_only_its_own_build_dir(self, deploy_pipeline_file: Path) -> None:
         from haute.deploy._mlflow import deploy_to_mlflow
 
         resolved = _make_resolved(pipeline_file=deploy_pipeline_file)
-        build_dir = deploy_pipeline_file.resolve().parent / ".haute_build"
+        builds = resolved.project_root / ".haute_build"
+        builds.mkdir()
+        (builds / "notes.txt").write_text("the user's own file")
 
         with mock_mlflow_deploy() as mocks:
             mocks.log_model.side_effect = RuntimeError("boom")
             with pytest.raises(RuntimeError, match="boom"):
                 deploy_to_mlflow(resolved)
 
-        # The except BaseException handler must have torn the build dir down.
-        assert not build_dir.exists()
+        assert [path.name for path in builds.iterdir()] == ["notes.txt"]
 
-    def test_success_keeps_build_dir(self, deploy_pipeline_file: Path) -> None:
-        """The cleanup is failure-only: a clean run leaves the manifest on disk."""
+    def test_success_removes_the_build_dir_unless_kept(self, deploy_pipeline_file: Path) -> None:
         from haute.deploy._mlflow import deploy_to_mlflow
 
         resolved = _make_resolved(pipeline_file=deploy_pipeline_file)
-        build_dir = deploy_pipeline_file.resolve().parent / ".haute_build"
+        builds = resolved.project_root / ".haute_build"
 
         with mock_mlflow_deploy():
-            result = deploy_to_mlflow(resolved)
+            shipped = deploy_to_mlflow(resolved)
+            kept = deploy_to_mlflow(resolved, keep_build=True)
 
-        assert build_dir.exists()
-        assert result.manifest_path.is_file()
+        assert shipped.build_dir is None
+        assert kept.build_dir is not None
+        assert kept.build_dir.parent == builds
+        assert (kept.build_dir / "deploy_manifest.json").is_file()
+        assert list(builds.iterdir()) == [kept.build_dir]

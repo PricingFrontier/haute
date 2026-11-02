@@ -49,7 +49,7 @@ def _make_deploy_result() -> MagicMock:
     result.model_version = 1
     result.model_uri = "models:/test-model/1"
     result.endpoint_url = None
-    result.manifest_path = Path("/tmp/deploy_manifest.json")
+    result.build_dir = None
     return result
 
 
@@ -80,7 +80,7 @@ class TestDeployDispatchDatabricks:
             result = deploy(config)
 
             mock_resolve.assert_called_once_with(config)
-            mock_mlflow.assert_called_once_with(fake_resolved)
+            mock_mlflow.assert_called_once_with(fake_resolved, keep_build=False)
             assert result is fake_result
 
     def test_deploy_resolved_dispatches_without_resolving_or_validating(self) -> None:
@@ -103,7 +103,7 @@ class TestDeployDispatchDatabricks:
         ):
             result = deploy_mod.deploy_resolved(fake_resolved)
 
-        mock_mlflow.assert_called_once_with(fake_resolved)
+        mock_mlflow.assert_called_once_with(fake_resolved, keep_build=False)
         assert result is fake_result
 
 
@@ -130,7 +130,7 @@ class TestDeployDispatchContainer:
             result = deploy(config)
 
             mock_resolve.assert_called_once_with(config)
-            mock_container.assert_called_once_with(fake_resolved)
+            mock_container.assert_called_once_with(fake_resolved, keep_build=False)
             assert result is fake_result
 
 
@@ -155,7 +155,7 @@ class TestDeployDispatchPlatformContainer:
             result = deploy(config)
 
             mock_resolve.assert_called_once_with(config)
-            mock_platform.assert_called_once_with(fake_resolved)
+            mock_platform.assert_called_once_with(fake_resolved, keep_build=False)
             assert result is fake_result
 
 
@@ -203,7 +203,7 @@ class TestDeployDispatchReturnValue:
         assert result.model_name == "test-model"
         assert result.model_version == 1
         assert result.model_uri == "models:/test-model/1"
-        assert result.manifest_path == Path("/tmp/deploy_manifest.json")
+        assert result.build_dir is None
 
     def test_deploy_releases_resolved_resources_after_success(self) -> None:
         from haute.deploy import deploy

@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import importlib.resources
 import json
-import shutil
 import tempfile
-import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -42,7 +40,12 @@ from haute.deploy._databricks_serving import (
 )
 from haute.deploy._request_rows import copy_verified
 from haute.deploy._served_haute import ServedHaute, served_haute
-from haute.deploy._utils import artifact_file_name, build_manifest, model_source_line
+from haute.deploy._utils import (
+    artifact_file_name,
+    build_manifest,
+    model_source_line,
+    owned_build_dir,
+)
 from haute.errors import DeployError, SchemaMismatchError
 
 logger = get_logger(component="deploy.mlflow")
@@ -50,25 +53,21 @@ logger = get_logger(component="deploy.mlflow")
 # Resolve the path to the models-from-code script shipped with the package
 _MODEL_CODE_PATH = str(importlib.resources.files("haute.deploy") / "_model_code.py")
 
-# One MLflow deploy at a time in this process: deploys share the pipeline's
-# ``.haute_build`` directory, and each picks the version it registered by
-# searching the registry after logging.
-_DEPLOY_LOCK = threading.Lock()
-
 if TYPE_CHECKING:
     from haute.deploy._config import DeployConfig
 
 
 @dataclass
 class DeployResult:
-    """Returned by deploy_to_mlflow()."""
+    """Returned by every deploy target."""
 
     model_name: str
     model_version: str
     """The registered model version (Databricks), or the image's tag (a container)."""
     model_uri: str
     endpoint_url: str | None
-    manifest_path: Path
+    build_dir: Path | None = None
+    """The build's directory when it was kept, else ``None``: removed once it shipped."""
 
 
 def build_uc_model_name(config: DeployConfig) -> str:
@@ -91,6 +90,8 @@ def build_experiment_name(config: DeployConfig) -> str:
 def deploy_to_mlflow(
     resolved: ResolvedDeploy,
     progress: Callable[[str], None] | None = None,
+    *,
+    keep_build: bool = False,
 ) -> DeployResult:
     """Deploy a resolved pipeline to MLflow + Databricks Model Serving.
 
@@ -104,6 +105,8 @@ def deploy_to_mlflow(
     Args:
         resolved: Fully resolved deployment config (from ``resolve_config()``).
         progress: Optional callback for step-by-step progress messages.
+        keep_build: Keep the build's directory (the manifest and the artefacts staged
+            for MLflow), named in the result, for inspection.
 
     Returns:
         DeployResult with model URI, version, and endpoint URL.
@@ -111,18 +114,11 @@ def deploy_to_mlflow(
     The experiment, the run, the manifest artifact, the run's terminal status and
     the version lookup go through a client bound to the MLflow destination; only
     ``mlflow.pyfunc.log_model`` (with its registration) holds MLflow's
-    process-global state, inside :func:`mlflow_fluent_operation`. Deploys run one
-    at a time in the process, because they share the pipeline's build directory
-    and read their registered version back from the registry.
+    process-global state, inside :func:`mlflow_fluent_operation`. Each deploy stages
+    its model in a directory of its own (``owned_build_dir``) and serves the version
+    its own log registered, so deploys in one process never share either.
     """
-    with _DEPLOY_LOCK:
-        return _deploy_to_mlflow(resolved, progress)
 
-
-def _deploy_to_mlflow(
-    resolved: ResolvedDeploy,
-    progress: Callable[[str], None] | None,
-) -> DeployResult:
     def _log(msg: str) -> None:
         if progress:
             progress(msg)
@@ -149,11 +145,8 @@ def _deploy_to_mlflow(
     # 1. Build deployment manifest
     manifest = build_manifest(resolved)
 
-    # 2. Write manifest to a persistent location (not a temp dir that gets deleted)
-    build_dir = resolved.pipeline_file.parent / ".haute_build"
-    build_dir.mkdir(exist_ok=True)
-
-    try:
+    # 2. Stage the model in a directory this deploy owns under the project.
+    with owned_build_dir(resolved, keep=keep_build) as build_dir:
         manifest_path = build_dir / "deploy_manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2))
 
@@ -195,7 +188,6 @@ def _deploy_to_mlflow(
             status = "FINISHED"
         finally:
             client.set_terminated(run_id, status)
-            shutil.rmtree(staging, ignore_errors=True)
 
         # 6. The version this call registered. The registry's highest could be another
         # job's registration of the same name, which would then be served.
@@ -212,31 +204,30 @@ def _deploy_to_mlflow(
 
         _log(f"Model URI: {model_uri}")
 
-        # 7. Create or update the serving endpoint, and wait until it serves the version
-        endpoint_url = _create_or_update_serving_endpoint(
-            config=config,
-            uc_model_name=uc_model_name,
-            model_version=model_version,
-            progress=_log,
-        )
+    # 7. Create or update the serving endpoint, and wait until it serves the version
+    endpoint_url = _create_or_update_serving_endpoint(
+        config=config,
+        uc_model_name=uc_model_name,
+        model_version=model_version,
+        progress=_log,
+    )
 
-        logger.info(
-            "deploy_completed",
-            model_name=model_name,
-            model_uri=model_uri,
-            version=model_version,
-            endpoint=config.effective_endpoint_name,
-        )
-        return DeployResult(
-            model_name=model_name,
-            model_version=str(model_version),
-            model_uri=model_uri,
-            endpoint_url=endpoint_url,
-            manifest_path=manifest_path,
-        )
-    except BaseException:
-        shutil.rmtree(build_dir, ignore_errors=True)
-        raise
+    logger.info(
+        "deploy_completed",
+        model_name=model_name,
+        model_uri=model_uri,
+        version=model_version,
+        endpoint=config.effective_endpoint_name,
+    )
+    if keep_build:
+        _log(f"Build kept in {build_dir}")
+    return DeployResult(
+        model_name=model_name,
+        model_version=str(model_version),
+        model_uri=model_uri,
+        endpoint_url=endpoint_url,
+        build_dir=build_dir if keep_build else None,
+    )
 
 
 def get_deploy_status(

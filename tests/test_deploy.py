@@ -1711,8 +1711,7 @@ class TestDatabricksTracking:
             assert isinstance(result, DeployResult)
             assert result.model_name == "test-model"
             assert result.model_version == "1"
-            assert result.manifest_path.name == "deploy_manifest.json"
-            assert result.manifest_path.parent == deploy_pipeline_file.parent / ".haute_build"
+            assert result.build_dir is None
 
     def test_deploy_uses_uc_model_name(self, deploy_pipeline_file: Path) -> None:
         """Model must be registered with catalog.schema.model_name format."""

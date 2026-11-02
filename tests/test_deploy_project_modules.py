@@ -300,11 +300,11 @@ def test_a_pipeline_without_project_modules_bundles_none(
     assert not (image / "utility").exists()
 
 
-def test_a_reused_build_directory_keeps_only_this_builds_utility(
+def test_a_build_directory_holding_an_earlier_build_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A stale package left by an earlier build would shadow the module this
-    build validated, so every build replaces the bundled utility code."""
+    """DEP-R12A: a stale package left by an earlier build would shadow the module this
+    build validated, so a bundle is written only into an empty directory."""
     from haute.deploy._container import prepare_build_directory
 
     project = tmp_path / "project"
@@ -319,17 +319,13 @@ def test_a_reused_build_directory_keeps_only_this_builds_utility(
     shutil.rmtree(project / "utility" / "rates")
     (project / "utility" / "rates.py").write_text("FACTOR = 3\n", encoding="utf-8")
     with _resolve(project) as resolved:
-        prepare_build_directory(resolved, image)
-    assert not (image / "utility" / "rates").exists()
-    assert (image / "utility" / "rates.py").read_text(encoding="utf-8") == "FACTOR = 3\n"
-
-    (project / "pipeline.py").write_text(
-        _PIPELINE.format(preamble="import math", factor="math.floor(3.5)"), encoding="utf-8"
-    )
-    shutil.rmtree(project / "utility")
-    with _resolve(project) as resolved:
-        prepare_build_directory(resolved, image)
-    assert not (image / "utility").exists()
+        with pytest.raises(DeployError, match="already holds files"):
+            prepare_build_directory(resolved, image)
+        prepare_build_directory(resolved, tmp_path / "fresh")
+    assert (image / "utility" / "rates" / "__init__.py").is_file(), "the earlier build is untouched"
+    fresh = tmp_path / "fresh" / "utility"
+    assert not (fresh / "rates").exists()
+    assert (fresh / "rates.py").read_text(encoding="utf-8") == "FACTOR = 3\n"
 
 
 def test_a_namespace_utility_deployed_from_its_pipeline_directory_is_bundled(

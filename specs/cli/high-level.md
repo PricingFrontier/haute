@@ -127,8 +127,10 @@ Out of scope, owned elsewhere:
   frontend has priority. Wheel installs and source checkouts without frontend dependencies use
   production mode with the pre-built static bundle. It binds to `localhost` by default so the
   browser session works with a bare `haute serve`.
-- `haute deploy [pipeline_file] [--model-name] [--dry-run] [--endpoint-suffix]` validates a pipeline,
-  scores its test quotes, and deploys it to the configured target. Non-dry-run deploys are blocked
+- `haute deploy [pipeline_file] [--model-name] [--dry-run] [--keep-build] [--endpoint-suffix]`
+  validates a pipeline, scores its test quotes, and deploys it to the configured target. Each
+  deploy stages its build in a directory of its own under the project's `.haute_build`, removed
+  once it has shipped or failed; `--keep-build` keeps it and names it. Non-dry-run deploys are blocked
   outside a recognised CI environment, and one whose target's credentials are not all set stops
   before any other work, naming every missing one. A Databricks deploy returns once its endpoint
   serves the new version, or fails with Databricks' reason when it cannot. A workbench project

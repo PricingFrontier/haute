@@ -15,7 +15,6 @@ MLflow target and the impact analysis. Current behaviour is specified in
 |---|---|---:|---|
 | DEP-R09 | Planned | P2 | The container image and the Databricks model install a recorded dependency closure resolved for their target Python and platform. |
 | DEP-R11 | Planned | P2 | Impact analysis fails on a row-count mismatch instead of pairing the wrong quotes, and a mistyped production URL is not a first deploy. |
-| DEP-R12A | Planned | P2 | Each build owns a fresh directory under the project and ships only its own artefacts. |
 | DEP-R12B | Planned | P3 | The output-schema cache lives under the project root with one entry per fingerprint. |
 | DEP-R15 | Planned | P3 | The served error envelopes carry a correlation id rather than the exception text. |
 | DEP-R16 | Decision | P3 | A quote whose production value is zero and whose staging value is not is reported, not a failure of the whole impact analysis. |
@@ -23,8 +22,7 @@ MLflow target and the impact analysis. Current behaviour is specified in
 
 ## Planned improvements
 
-`DEP-R09` locks every target's dependency closure with one resolver. `DEP-R12A` can
-proceed independently, coordinating edits to shared build code.
+`DEP-R09` locks every target's dependency closure with one resolver.
 
 ### DEP-R09 — Every target's dependency closure is locked
 **Why:** The Dockerfile pins the scoring-runtime distributions and the artefacts' engines
@@ -122,35 +120,6 @@ produce a labelled skip; authentication failures never produce that skip.
 `::score_http_endpoint_batched`; `src/haute/cli/_impact.py::_is_http_not_found` and
 `::_impact_http`.
 
-### DEP-R12A — Each build owns its directory and artefacts
-**Why:** The container build writes `cwd/.haute_build`, removes it wholesale on failure
-(whatever a user kept there) and leaves it behind on success with a copy of every
-artefact; a reused directory keeps earlier builds' `artifacts/*`, which the Dockerfile's
-`COPY artifacts/ artifacts/` ships although the manifest never names them. The MLflow
-target roots its build directory at the pipeline's directory instead. Stale unnamed
-artefacts are copied into the image even though the served loader reads manifest-named
-files; this is bundle isolation and disclosure risk, not evidence that those unnamed
-files change prices. Concurrent builds sharing the directory can overwrite each other's
-named files.
-
-**Plan:** Allocate a unique owned directory per build under the resolved project root,
-stage into an empty artefact folder, and remove only that directory after push or
-failure (keep it only on request). Apply the same ownership rule to both targets. Do
-not delete a pre-existing `.haute_build` or another build's files.
-
-**Acceptance:** Consecutive and concurrent builds from one checkout produce bundles
-containing only their own manifest's artefacts. Failure of one build does not change
-the other's bundle or a user's pre-existing directory. Running from another cwd keeps
-generated build files under the resolved project. P2 addresses this isolation gap;
-reassess as P1 if shared-checkout concurrent deployment is an advertised workflow.
-
-**Dependencies:** None; coordinate edits to shared build code with `DEP-R09` to
-`DEP-R11` without delaying isolation behind those packages.
-
-**Evidence:** `src/haute/deploy/_container.py::build_and_push_image` and
-`::write_bundle`; `src/haute/deploy/_mlflow.py::_deploy_to_mlflow`;
-`src/haute/deploy/_scorer.py`.
-
 ### DEP-R12B — A project-scoped output-schema cache
 **Why:** `.haute_cache/output_schema.json` is relative to the process cwd, stores
 one entry overwritten by whichever pipeline deployed last (causing avoidable cache
@@ -166,7 +135,7 @@ via `atomic_write_text`.
 changing a pipeline invalidates its entry. A dry run from another cwd writes the
 schema cache atomically only under the resolved project.
 
-**Dependencies:** None; coordinate the project-root resolution with `DEP-R12A`.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/deploy/_schema.py::infer_output_schema`;
 `src/haute/_file_ops.py::atomic_write_text`.

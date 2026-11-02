@@ -392,6 +392,7 @@ class TestDeployCiDetection:
 
         resolved = self._mock_resolved()
         deploy_result = MagicMock()
+        deploy_result.build_dir = None
         deploy_result.model_name = "test-model"
         deploy_result.model_version = 1
         deploy_result.endpoint_url = "https://host/ep/invocations"

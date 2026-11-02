@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import dataclasses
 import importlib.util
 import json
 import sys
@@ -63,6 +64,7 @@ def _make_resolved(
     container: ContainerConfig | None = None,
     model_name: str = "test-model",
     target: str = "container",
+    project_root: Path | None = None,
 ) -> ResolvedDeploy:
     """Build a minimal ResolvedDeploy for container unit tests.
 
@@ -82,6 +84,7 @@ def _make_resolved(
         input_schema={"age": "int", "region": "str"},
         output_schema={"premium": "float"},
         removed_node_ids=["exposure"],
+        **({} if project_root is None else {"project_root": project_root}),
     )
 
 
@@ -1406,16 +1409,29 @@ class TestBuildAndPushImage:
         "_generate_dockerfile",
     ]
 
+    @pytest.fixture(autouse=True)
+    def _deploy_from_elsewhere(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Each build runs from ``tmp_path/elsewhere``, not the project: a build's files
+        belong under the project, wherever it is deployed from."""
+        (tmp_path / "elsewhere").mkdir()
+        monkeypatch.chdir(tmp_path / "elsewhere")
+
     def _make_resolved_with_artifacts(
         self,
         tmp_path: Path,
         registry: str = "",
+        artifacts: dict[str, str] | None = None,
     ) -> ResolvedDeploy:
-        """Create a resolved deploy with real artifact files in tmp_path."""
-        artifact_file = tmp_path / "model.cbm"
-        artifact_file.write_text("fake model data")
+        """A resolved deploy of the project at ``tmp_path/project`` with real artifact files."""
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+        paths = {}
+        for name, content in (artifacts or {"model.cbm": "fake model data"}).items():
+            paths[name] = project / name
+            paths[name].write_text(content)
         return _make_resolved(
-            artifacts={"model.cbm": artifact_file},
+            artifacts=paths,
+            project_root=project,
             container=ContainerConfig(
                 registry=registry,
                 port=8080,
@@ -1442,15 +1458,15 @@ class TestBuildAndPushImage:
         """Without registry: builds locally, does not push."""
         resolved = self._make_resolved_with_artifacts(tmp_path, registry="")
 
-        with patch("haute.deploy._container.Path.cwd", return_value=tmp_path):
-            result = build_and_push_image(resolved)
+        result = build_and_push_image(resolved, keep_build=True)
 
         assert isinstance(result, ContainerBuildResult)
         assert result.image_tag == "test-model:abc1234"
         assert result.model_name == "test-model"
         # A container's version is its image's tag, the commit it was built from.
         assert result.model_version == "abc1234"
-        assert result.manifest_path.exists()
+        assert result.build_dir is not None
+        assert (result.build_dir / "deploy_manifest.json").exists()
         mock_build.assert_called_once()
         mock_push.assert_not_called()
 
@@ -1473,8 +1489,7 @@ class TestBuildAndPushImage:
         """With registry: builds and pushes."""
         resolved = self._make_resolved_with_artifacts(tmp_path, registry="myregistry.io/models")
 
-        with patch("haute.deploy._container.Path.cwd", return_value=tmp_path):
-            result = build_and_push_image(resolved)
+        result = build_and_push_image(resolved, keep_build=True)
 
         assert result.image_tag == "myregistry.io/models/test-model:def5678"
         mock_push.assert_called_once_with("myregistry.io/models/test-model:def5678")
@@ -1498,9 +1513,9 @@ class TestBuildAndPushImage:
         """Artifact files are copied into .haute_build/artifacts/."""
         resolved = self._make_resolved_with_artifacts(tmp_path)
 
-        with patch("haute.deploy._container.Path.cwd", return_value=tmp_path):
-            result = build_and_push_image(resolved)
+        result = build_and_push_image(resolved, keep_build=True)
 
+        assert result.build_dir is not None
         artifact_dest = result.build_dir / "artifacts" / "model.cbm"
         assert artifact_dest.exists()
         assert artifact_dest.read_text() == "fake model data"
@@ -1524,9 +1539,9 @@ class TestBuildAndPushImage:
         """Dockerfile and app.py are generated in the build directory."""
         resolved = self._make_resolved_with_artifacts(tmp_path)
 
-        with patch("haute.deploy._container.Path.cwd", return_value=tmp_path):
-            result = build_and_push_image(resolved)
+        result = build_and_push_image(resolved, keep_build=True)
 
+        assert result.build_dir is not None
         assert (result.build_dir / "Dockerfile").exists()
         assert (result.build_dir / "app.py").exists()
         assert (result.build_dir / "deploy_manifest.json").exists()
@@ -1550,10 +1565,10 @@ class TestBuildAndPushImage:
         """A reader of the container can see exactly what it was built against."""
         resolved = self._make_resolved_with_artifacts(tmp_path)
 
-        with patch("haute.deploy._container.Path.cwd", return_value=tmp_path):
-            result = build_and_push_image(resolved)
+        result = build_and_push_image(resolved, keep_build=True)
 
-        manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+        assert result.build_dir is not None
+        manifest = json.loads((result.build_dir / "deploy_manifest.json").read_text())
         assert manifest["container_dependencies"] == [
             f"haute=={version('haute')}",
             *(
@@ -1577,16 +1592,22 @@ class TestBuildAndPushImage:
         mock_df: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """Build directory is removed when an exception occurs."""
+        """A failed build removes its own directory and nothing else under .haute_build."""
         mock_build.side_effect = RuntimeError("docker build failed")
         resolved = self._make_resolved_with_artifacts(tmp_path)
+        builds = tmp_path / "project" / ".haute_build"
+        builds.mkdir()
+        (builds / "notes.txt").write_text("the user's own file")
+        (builds / "other-build").mkdir()
+        (builds / "other-build" / "deploy_manifest.json").write_text("{}")
 
-        with patch("haute.deploy._container.Path.cwd", return_value=tmp_path):
-            with pytest.raises(RuntimeError, match="docker build failed"):
-                build_and_push_image(resolved)
+        with pytest.raises(RuntimeError, match="docker build failed"):
+            build_and_push_image(resolved)
 
-        build_dir = tmp_path / ".haute_build"
-        assert not build_dir.exists()
+        assert sorted(path.name for path in builds.iterdir()) == ["notes.txt", "other-build"]
+        assert (builds / "notes.txt").read_text() == "the user's own file"
+        assert (builds / "other-build" / "deploy_manifest.json").read_text() == "{}"
+        assert not (tmp_path / "elsewhere" / ".haute_build").exists()
 
     @patch("haute.deploy._container._generate_dockerfile", return_value="FROM python:3.11-slim\n")
     @patch("haute.deploy._container._generate_app_source", return_value="# app\n")
@@ -1608,8 +1629,7 @@ class TestBuildAndPushImage:
         resolved = self._make_resolved_with_artifacts(tmp_path)
         messages: list[str] = []
 
-        with patch("haute.deploy._container.Path.cwd", return_value=tmp_path):
-            build_and_push_image(resolved, progress=messages.append)
+        build_and_push_image(resolved, progress=messages.append)
 
         assert any("manifest" in m.lower() for m in messages)
         assert any("docker image" in m.lower() for m in messages)
@@ -1633,10 +1653,86 @@ class TestBuildAndPushImage:
         """Trailing slash on registry is stripped from image tag."""
         resolved = self._make_resolved_with_artifacts(tmp_path, registry="myregistry.io/")
 
-        with patch("haute.deploy._container.Path.cwd", return_value=tmp_path):
-            result = build_and_push_image(resolved)
+        result = build_and_push_image(resolved, keep_build=True)
 
         assert result.image_tag == "myregistry.io/test-model:abc1234"
+
+    @patch("haute.deploy._container._generate_dockerfile", return_value="FROM python:3.11-slim\n")
+    @patch("haute.deploy._container._generate_app_source", return_value="# app\n")
+    @patch("haute.deploy._container._docker_push")
+    @patch("haute.deploy._container._docker_build")
+    @patch("haute.deploy._container._check_docker_available")
+    @patch("haute.deploy._container._git_sha_short", return_value="abc1234")
+    def test_a_shipped_build_leaves_nothing_behind_and_runs_from_any_cwd(
+        self,
+        mock_sha: MagicMock,
+        mock_check: MagicMock,
+        mock_build: MagicMock,
+        mock_push: MagicMock,
+        mock_app: MagicMock,
+        mock_df: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """DEP-R12A: the build stages under the project and is removed once it shipped."""
+        resolved = self._make_resolved_with_artifacts(tmp_path)
+
+        result = build_and_push_image(resolved)
+
+        assert result.build_dir is None
+        assert list((tmp_path / "project" / ".haute_build").iterdir()) == []
+        assert not (tmp_path / "elsewhere" / ".haute_build").exists()
+
+    @patch("haute.deploy._container._generate_dockerfile", return_value="FROM python:3.11-slim\n")
+    @patch("haute.deploy._container._generate_app_source", return_value="# app\n")
+    @patch("haute.deploy._container._docker_push")
+    @patch("haute.deploy._container._check_docker_available")
+    @patch("haute.deploy._container._git_sha_short", return_value="abc1234")
+    def test_consecutive_and_concurrent_builds_ship_only_their_own_artifacts(
+        self,
+        mock_sha: MagicMock,
+        mock_check: MagicMock,
+        mock_push: MagicMock,
+        mock_app: MagicMock,
+        mock_df: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """DEP-R12A: an earlier or a simultaneous build's artefacts never reach a bundle."""
+        import threading
+
+        shipped: dict[str, list[str]] = {}
+        both_staged = threading.Barrier(2, timeout=30)
+
+        def docker_build(build_dir: Path, image_tag: str) -> None:
+            manifest = json.loads((build_dir / "deploy_manifest.json").read_text())
+            shipped[manifest["output_node_id"] + "@" + str(build_dir)] = sorted(
+                path.name for path in (build_dir / "artifacts").iterdir()
+            )
+            assert sorted(Path(path).name for path in manifest["artifacts"].values()) == sorted(
+                path.name for path in (build_dir / "artifacts").iterdir()
+            )
+            if threading.current_thread() is not threading.main_thread():
+                both_staged.wait()
+
+        first = self._make_resolved_with_artifacts(tmp_path, artifacts={"a.cbm": "A"})
+        second = self._make_resolved_with_artifacts(tmp_path, artifacts={"b.cbm": "B"})
+        second = dataclasses.replace(second, output_node_id="second")
+
+        with patch("haute.deploy._container._docker_build", side_effect=docker_build):
+            build_and_push_image(first)
+            build_and_push_image(second)
+            threads = [
+                threading.Thread(target=build_and_push_image, args=(resolved,))
+                for resolved in (first, second)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        assert len(shipped) == 4, "every build stages in a directory of its own"
+        for key, files in shipped.items():
+            assert files == (["b.cbm"] if key.startswith("second@") else ["a.cbm"])
+        assert list((tmp_path / "project" / ".haute_build").iterdir()) == []
 
 
 # ---------------------------------------------------------------------------
@@ -1653,10 +1749,9 @@ class TestDeployToContainer:
     ) -> None:
         mock_build.return_value = ContainerBuildResult(
             image_tag="test-model:abc1234",
-            manifest_path=tmp_path / "deploy_manifest.json",
-            build_dir=tmp_path,
             model_name="test-model",
             model_version="abc1234",
+            build_dir=tmp_path,
         )
         resolved = _make_resolved()
         result = deploy_to_container(resolved)
@@ -1666,20 +1761,19 @@ class TestDeployToContainer:
         assert result.model_version == "abc1234"
         assert result.model_uri == "test-model:abc1234"
         assert result.endpoint_url is None
-        assert result.manifest_path == tmp_path / "deploy_manifest.json"
+        assert result.build_dir == tmp_path
 
     @patch("haute.deploy._container.build_and_push_image")
     def test_passes_progress_to_build(self, mock_build: MagicMock) -> None:
         mock_build.return_value = ContainerBuildResult(
             image_tag="m:v",
-            manifest_path=Path("m.json"),
-            build_dir=Path(),
             model_name="m",
             model_version="abc1234",
+            build_dir=None,
         )
         progress_fn = MagicMock()
         deploy_to_container(_make_resolved(), progress=progress_fn)
-        mock_build.assert_called_once_with(_make_resolved(), progress_fn)
+        mock_build.assert_called_once_with(_make_resolved(), progress_fn, keep_build=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1694,10 +1788,9 @@ class TestDeployToPlatformContainer:
     def _built(tmp_path: Path) -> ContainerBuildResult:
         return ContainerBuildResult(
             image_tag="registry.example/test-model:abc",
-            manifest_path=tmp_path / "manifest.json",
-            build_dir=tmp_path,
             model_name="test-model",
             model_version="abc1234",
+            build_dir=None,
         )
 
     @pytest.mark.parametrize("target", ["azure-container-apps", "aws-ecs", "gcp-run"])
@@ -1717,7 +1810,7 @@ class TestDeployToPlatformContainer:
         assert isinstance(result, DeployResult)
         assert result.model_uri == "registry.example/test-model:abc"
         assert result.endpoint_url is None
-        mock_build.assert_called_once_with(resolved, messages.append)
+        mock_build.assert_called_once_with(resolved, messages.append, keep_build=False)
         assert messages[-1] == (
             f"Service not updated: updating {target} is not implemented yet. "
             "Point the service at registry.example/test-model:abc."

@@ -103,7 +103,6 @@ class TestBuildAndPushImageCleanup:
         resolved = _resolve_minimal_live_quote(tmp_path, monkeypatch)
         try:
             with (
-                patch("haute.deploy._container.Path.cwd", return_value=tmp_path),
                 patch("haute.deploy._container._check_docker_available"),
                 patch("haute.deploy._container._git_sha_short", return_value="abc1234"),
                 patch(
@@ -114,8 +113,8 @@ class TestBuildAndPushImageCleanup:
                 with pytest.raises(DeployError, match="Docker build failed"):
                     build_and_push_image(resolved)
 
-            build_dir = tmp_path / ".haute_build"
-            assert not build_dir.exists()
+            # The failed build's own directory is gone; the project's .haute_build stays.
+            assert list((resolved.project_root / ".haute_build").iterdir()) == []
         finally:
             resolved.close()
 

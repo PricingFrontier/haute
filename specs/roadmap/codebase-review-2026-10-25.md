@@ -224,7 +224,7 @@ production:
 |---|---|---|
 | Deploy | PM-16 | `DEP-R09` |
 | Deploy | PM-37, PM-38 | `DEP-R11` |
-| Deploy | PM-7, PM-15, PM-25 | `DEP-R12A`, `DEP-R12B` |
+| Deploy | PM-7, PM-15, PM-25 | `DEP-R12A` (delivered), `DEP-R12B` |
 | Deploy | PM-18 | `DEP-R15` |
 | Deploy | PM-39 | `DEP-R16` (Decision) |
 | CLI | PM-34 | `CLI-R01` |

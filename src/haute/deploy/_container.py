@@ -27,7 +27,12 @@ from haute.deploy._request_limits import (
     DEFAULT_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES,
 )
 from haute.deploy._request_rows import copy_verified
-from haute.deploy._utils import artifact_file_name, build_manifest, model_source_line
+from haute.deploy._utils import (
+    artifact_file_name,
+    build_manifest,
+    model_source_line,
+    owned_build_dir,
+)
 from haute.errors import DeployError
 
 logger = get_logger(component="deploy.container")
@@ -80,11 +85,11 @@ class ContainerBuildResult:
     """Intermediate result from build_and_push_image()."""
 
     image_tag: str
-    manifest_path: Path
-    build_dir: Path
     model_name: str
     model_version: str
     """The image's tag (the commit it was built from), the version a container carries."""
+    build_dir: Path | None
+    """The build's directory when it was kept, else ``None``: removed once it shipped."""
 
 
 def write_bundle(
@@ -96,16 +101,23 @@ def write_bundle(
 
     The manifest (``build_manifest`` with its artifacts at ``artifacts/<file>``, each
     key's flat ``artifact_file_name``, and *manifest_extras* added), the artifacts copied
-    under ``artifacts/``, and the project's utility package beside them, any earlier
-    build's removed first.
+    under ``artifacts/``, and the project's utility package beside them. *build_dir* must
+    be empty or not exist yet: a bundle holds its own build's files and nothing else, so
+    one holding anything is refused rather than written over.
 
     Returns:
         Path to the written ``deploy_manifest.json``.
     """
     build_dir = Path(build_dir)
     build_dir.mkdir(parents=True, exist_ok=True)
+    if any(build_dir.iterdir()):
+        raise DeployError(
+            f"{build_dir} already holds files: a bundle is written into an empty directory, "
+            "so it ships only its own build's files.",
+            build_dir=str(build_dir),
+        )
     artifacts_dir = build_dir / "artifacts"
-    artifacts_dir.mkdir(exist_ok=True)
+    artifacts_dir.mkdir()
 
     manifest = build_manifest(resolved)
     manifest["artifacts"] = {
@@ -124,11 +136,6 @@ def write_bundle(
             name=artifact_name,
         )
 
-    # A reused build directory must not keep an earlier build's utility code:
-    # a stale package would shadow the module this build validated.
-    if (build_dir / UTILITY_PACKAGE).is_dir():
-        shutil.rmtree(build_dir / UTILITY_PACKAGE)
-    (build_dir / f"{UTILITY_PACKAGE}.py").unlink(missing_ok=True)
     utility = resolved.project_modules.utility
     if utility is not None and utility.is_dir():
         shutil.copytree(
@@ -153,15 +160,15 @@ def prepare_build_directory(
     """Prepare the container build directory with manifest, artifacts, app.py, and Dockerfile.
 
     Steps:
-        1. Create build directory
-        2. Write the bundle (``write_bundle``): the manifest, with the container's pinned
-           dependencies, the artifacts and the utility package
+        1. Write the bundle (``write_bundle``) into the empty *build_dir*: the manifest,
+           with the container's pinned dependencies, the artifacts and the utility package
+        2. Copy the haute wheel, when haute_requirement names one
         3. Generate FastAPI app source
-        4. Generate Dockerfile (and copy wheel if haute_requirement is a wheel path)
+        4. Generate Dockerfile
 
     Args:
         resolved: Fully resolved deployment config (from ``resolve_config()``).
-        build_dir: Destination directory for the build artefacts.
+        build_dir: Destination directory for the build artefacts, empty or not yet made.
         haute_requirement: Optional override for the ``haute`` dependency in the Dockerfile.
             When it names a local wheel file (*.whl), the wheel is copied into ``build_dir``
             and the Dockerfile gains ``COPY <wheel name> .`` before ``pip install ./<wheel name>``.
@@ -184,20 +191,16 @@ def prepare_build_directory(
     _validate_model_name(model_name)
 
     build_dir = Path(build_dir)
-    build_dir.mkdir(parents=True, exist_ok=True)
 
-    wheel_name: str | None = None
+    wheel_path: Path | None = None
     haute_pip_dep: str | None = None
     if haute_requirement is not None:
         if haute_requirement.lower().endswith(".whl"):
             wheel_path = Path(haute_requirement)
-            wheel_name = wheel_path.name
-            dest_wheel = build_dir / wheel_name
-            if wheel_path.resolve() != dest_wheel.resolve():
-                shutil.copy2(wheel_path, dest_wheel)
-            haute_pip_dep = f"./{wheel_name}"
+            haute_pip_dep = f"./{wheel_path.name}"
         else:
             haute_pip_dep = haute_requirement
+    wheel_name = wheel_path.name if wheel_path is not None else None
 
     extra_pins = [
         _pinned_dockerfile_dependency(name, name, required_by=["the app"])
@@ -213,6 +216,8 @@ def prepare_build_directory(
             ]
         },
     )
+    if wheel_path is not None:
+        shutil.copy2(wheel_path, build_dir / wheel_path.name)
 
     app_source = _generate_app_source(config.model_name, ct.port)
     (build_dir / "app.py").write_text(app_source, encoding="utf-8")
@@ -235,23 +240,25 @@ def prepare_build_directory(
 def build_and_push_image(
     resolved: ResolvedDeploy,
     progress: Callable[[str], None] | None = None,
+    *,
+    keep_build: bool = False,
 ) -> ContainerBuildResult:
     """Build a Docker image from a resolved pipeline - shared by all container targets.
 
     Steps:
-        1. Build deployment manifest JSON
-        2. Generate FastAPI app source
-        3. Copy artifacts into build directory
-        4. Generate Dockerfile
-        5. Build Docker image
-        6. Push to registry (if configured)
+        1. Stage the bundle, app and Dockerfile in a directory this build owns under the
+           project's ``.haute_build`` (``owned_build_dir``)
+        2. Build the Docker image
+        3. Push it to the registry (if configured)
+        4. Remove the build's directory, shipped or failed, unless *keep_build*
 
     Args:
         resolved: Fully resolved deployment config (from ``resolve_config()``).
         progress: Optional callback for step-by-step progress messages.
+        keep_build: Keep the build's directory, named in the result, for inspection.
 
     Returns:
-        ContainerBuildResult with image tag and paths for the caller.
+        ContainerBuildResult with the image tag.
     """
 
     def _log(msg: str) -> None:
@@ -265,11 +272,7 @@ def build_and_push_image(
     _validate_base_image(ct.base_image)
     _validate_model_name(model_name)
 
-    # 1. Create build directory
-    build_dir = Path.cwd() / ".haute_build"
-    build_dir.mkdir(exist_ok=True)
-
-    try:
+    with owned_build_dir(resolved, keep=keep_build) as build_dir:
         _log("Building deployment manifest...")
         manifest_path = prepare_build_directory(resolved, build_dir)
         _log(f"  Manifest: {manifest_path}")
@@ -279,20 +282,17 @@ def build_and_push_image(
         _log("Generating FastAPI app...")
         _log("Generating Dockerfile...")
 
-        # 6. Determine image tag
         git_sha = _git_sha_short()
         if ct.registry:
             image_tag = f"{ct.registry.rstrip('/')}/{model_name}:{git_sha}"
         else:
             image_tag = f"{model_name}:{git_sha}"
 
-        # 7. Build Docker image
         _log(f"Building Docker image: {image_tag}")
         _check_docker_available()
         _docker_build(build_dir, image_tag)
         _log(f"  ✓ Image built: {image_tag}")
 
-        # 8. Push if registry is configured
         if ct.registry:
             _log(f"Pushing to registry: {ct.registry}")
             _docker_push(image_tag)
@@ -300,21 +300,21 @@ def build_and_push_image(
         else:
             _log("  No registry configured - image is local only.")
 
-        return ContainerBuildResult(
-            image_tag=image_tag,
-            manifest_path=manifest_path,
-            build_dir=build_dir,
-            model_name=model_name,
-            model_version=git_sha,
-        )
-    except BaseException:
-        shutil.rmtree(build_dir, ignore_errors=True)
-        raise
+    if keep_build:
+        _log(f"  Build kept in {build_dir}")
+    return ContainerBuildResult(
+        image_tag=image_tag,
+        model_name=model_name,
+        model_version=git_sha,
+        build_dir=build_dir if keep_build else None,
+    )
 
 
 def deploy_to_container(
     resolved: ResolvedDeploy,
     progress: Callable[[str], None] | None = None,
+    *,
+    keep_build: bool = False,
 ) -> DeployResult:
     """Generic container target - build and push only, no service update.
 
@@ -322,19 +322,21 @@ def deploy_to_container(
     For managed platform targets (Azure Container Apps, AWS ECS, GCP Cloud
     Run), use ``deploy_to_platform_container()`` instead.
     """
-    result = build_and_push_image(resolved, progress)
+    result = build_and_push_image(resolved, progress, keep_build=keep_build)
     return DeployResult(
         model_name=result.model_name,
         model_version=result.model_version,
         model_uri=result.image_tag,
         endpoint_url=None,
-        manifest_path=result.manifest_path,
+        build_dir=result.build_dir,
     )
 
 
 def deploy_to_platform_container(
     resolved: ResolvedDeploy,
     progress: Callable[[str], None] | None = None,
+    *,
+    keep_build: bool = False,
 ) -> DeployResult:
     """Platform container target (azure-container-apps, aws-ecs, gcp-run): build and push.
 
@@ -349,7 +351,7 @@ def deploy_to_platform_container(
             f"Target '{target}' pushes the scoring image for a manual service update, "
             "so it needs a registry: set [deploy.container] registry in haute.toml."
         )
-    result = build_and_push_image(resolved, progress)
+    result = build_and_push_image(resolved, progress, keep_build=keep_build)
     if progress:
         progress(
             f"Service not updated: updating {target} is not implemented yet. "
@@ -360,7 +362,7 @@ def deploy_to_platform_container(
         model_version=result.model_version,
         model_uri=result.image_tag,
         endpoint_url=None,
-        manifest_path=result.manifest_path,
+        build_dir=result.build_dir,
     )
 
 

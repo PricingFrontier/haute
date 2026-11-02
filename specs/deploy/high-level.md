@@ -375,6 +375,12 @@ definition file's own preamble, would be refused like any other unbundled projec
   is an application-level admission and sampled-RSS guarantee, not a substitute for a
   platform hard limit; the batch worker's cap is a real one.
 
+Each build, of either backend, stages its bundle in a directory of its own under the
+project's `.haute_build`, wherever the deploy runs from, and removes it once the build has
+shipped or failed (`haute deploy --keep-build` keeps it); a bundle is written only into an
+empty directory, so it ships its own build's files and nothing else, and consecutive or
+concurrent builds from one checkout never share or remove each other's files.
+
 Three further container-platform targets (Azure Container Apps, AWS ECS, GCP Cloud Run)
 share the container build step and are build and push only: they require
 `container.registry`, push the image there, and finish successfully, reporting that the

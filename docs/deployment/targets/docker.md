@@ -171,7 +171,7 @@ As an analyst, **you can stop reading here** - your job is done after Step 5 abo
 
 ??? note "What Haute generates (click to expand)"
 
-    When Haute deploys, it creates a `.haute_build/` directory containing:
+    When Haute deploys, it builds the image from a directory of its own under the project's `.haute_build/`, containing:
 
     | File | Purpose |
     |---|---|
@@ -181,7 +181,7 @@ As an analyst, **you can stop reading here** - your job is done after Step 5 abo
     | `artifacts/` | Copies of model files |
     | `utility/` | Your project's utility package, when the pipeline imports it |
 
-    These are generated fresh on every deploy.
+    These are generated fresh on every deploy, in a new directory each time, which is removed once the image is built and pushed. Run `haute deploy --keep-build` to keep it for inspection.
 
 ??? note "API contract (click to expand)"
 

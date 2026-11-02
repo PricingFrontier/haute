@@ -67,6 +67,7 @@ class DeployCliConfig:
     model_name: str | None
     endpoint_suffix: str | None
     dry_run: bool
+    keep_build: bool = False
 
 
 def handle_deploy(config: DeployCliConfig) -> None:
@@ -242,7 +243,7 @@ def handle_deploy(config: DeployCliConfig) -> None:
         from haute.deploy import deploy_resolved
 
         target = resolved_deploy.config.target
-        result = deploy_resolved(resolved_deploy)
+        result = deploy_resolved(resolved_deploy, keep_build=config.keep_build)
         if target in BUILD_AND_PUSH_ONLY_TARGETS:
             # Build and push only: the image tag is the handoff for a manual update.
             click.echo(f"  \u2713 Image pushed: {result.model_uri}")
@@ -263,6 +264,8 @@ def handle_deploy(config: DeployCliConfig) -> None:
             elif result.model_uri:
                 click.echo("\nDeploy complete. Serve locally with:")
                 click.echo(f'  mlflow models serve -m "{result.model_uri}" -p 5001')
+        if result.build_dir is not None:
+            click.echo(f"\nBuild kept in {result.build_dir}")
     except ImportError as e:
         click.echo(f"\n  \u2717 Missing dependency: {e}", err=True)
         click.echo(
@@ -285,6 +288,11 @@ def handle_deploy(config: DeployCliConfig) -> None:
 @click.option("--model-name", default=None, help="Override model name from haute.toml.")
 @click.option("--dry-run", is_flag=True, help="Validate and score test quotes without deploying.")
 @click.option(
+    "--keep-build",
+    is_flag=True,
+    help="Keep this build's directory under .haute_build instead of removing it.",
+)
+@click.option(
     "--endpoint-suffix",
     default=None,
     help=ENDPOINT_SUFFIX_HELP,
@@ -294,6 +302,7 @@ def deploy(
     model_name: str | None,
     endpoint_suffix: str | None,
     dry_run: bool,
+    keep_build: bool,
 ) -> None:
     """Deploy a pipeline as a live scoring API.
 
@@ -306,5 +315,6 @@ def deploy(
         model_name=model_name,
         endpoint_suffix=endpoint_suffix,
         dry_run=dry_run,
+        keep_build=keep_build,
     )
     handle_deploy(config)
