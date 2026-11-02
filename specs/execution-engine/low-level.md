@@ -196,10 +196,12 @@
   width and measured, from the column's uncompressed Parquet size and a bounded head probe
   of the rows, never assumed to be one 8-byte value. A node's columns are its own output's:
   a Polars node with code resolves them from its column lineage over its inputs' resolved
-  columns (`_resolve_code_node_columns`), a column it keeps by name keeping its input's
-  width and any other (a join's suffixed column, a computed one) sized as the widest input
-  column the lineage says it alone reads; when the lineage cannot follow the code, a node
-  with several inputs is sized as all of them. A node that is neither (nor an Edge Join, nor
+  columns (`_resolve_code_node_columns`), a column it outputs under an input column's name
+  sized as that column and any other (a join's suffixed column, a computed one) as the
+  widest input column the lineage says it alone reads, and neither less than one 8-byte
+  value, since the lineage cannot tell a carried column from one the code recomputed
+  wider (a one-byte column cast to eight bytes); when the lineage cannot follow the code,
+  a node with several inputs is sized as all of them. A node that is neither (nor an Edge Join, nor
   a selection) takes its input's columns, walking up to a sized source.
 - **`RowCardinalityAnalysis`** (`_column_lineage.py`, frozen dataclass) — the
   fail-closed row analogue of column lineage for a linear Polars program. It reports

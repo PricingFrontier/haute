@@ -302,6 +302,7 @@ def _interactive_worker_entrypoint(
                         with bind_job_progress(progress_cell, job_id):
                             value = function(*args, **kwargs)
                         envelope = ("result", job_id, "ok", value)
+                        del value
                     except BaseException as raised:
                         failure = (
                             memory_error_for_thread_start_failure(raised) if applied else raised
@@ -322,6 +323,9 @@ def _interactive_worker_entrypoint(
                                 _public_exception_payload(failure),
                             ),
                         )
+                        # The envelope carries only text; the exception's traceback
+                        # would hold the failed job's frames into the next job.
+                        del failure
                 # Serialise synchronously so an unpicklable return value becomes a
                 # deterministic remote error instead of dying in Queue's feeder.
                 try:
@@ -345,6 +349,9 @@ def _interactive_worker_entrypoint(
                         protocol=pickle.HIGHEST_PROTOCOL,
                     )
                 result_queue.put(payload)
+                # A warm worker keeps nothing of a job while it waits for the next:
+                # the result and the request are released before the next baseline.
+                del envelope, payload
                 raw_ack = request_queue.get()
                 acknowledgement = pickle.loads(raw_ack)
                 if acknowledgement != ("ack", job_id):
@@ -381,6 +388,7 @@ def _interactive_worker_entrypoint(
                     protocol=pickle.HIGHEST_PROTOCOL,
                 )
             )
+            del raw_request, request, function, args, kwargs
     except BaseException:
         # The parent classifies an entrypoint/protocol failure from exitcode;
         # trying to use a possibly broken queue here can hide the original exit.
@@ -873,7 +881,7 @@ class InteractiveWorkerPool:
         self._close_slot(slot, graceful=False)
         try:
             replacement = self._start_slot(index=slot.index, generation=slot.generation + 1)
-        except InteractiveWorkerStartError as start_error:
+        except (InteractiveWorkerStartError, IsolatedWorkerHostError) as start_error:
             logger.warning(
                 "interactive_worker_replacement_failed",
                 worker_index=slot.index,

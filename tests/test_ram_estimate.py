@@ -667,6 +667,43 @@ class TestWidthsFollowTheLineage:
         estimated = self._estimated_input_bytes(tmp_path, code, right)
         assert measured / 2 <= estimated <= measured * 2, (estimated, measured)
 
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "df = src.select(pl.col('b').cast(pl.Float64))",
+            "df = src.with_columns(pl.col('b') * 1.5)",
+            "df = src.select((pl.col('b') * 1.5).alias('scaled'))",
+        ],
+    )
+    def test_a_narrow_column_code_recomputes_is_not_charged_its_narrow_width(
+        self, tmp_path: Path, code: str
+    ) -> None:
+        """Code can replace a one-byte column with an eight-byte one, under its own name
+        or a new one; the estimate charges the wider value, never the source's byte."""
+        rows = self.ROWS
+        frame = pl.DataFrame({"b": pl.Series([i % 200 for i in range(rows)], dtype=pl.UInt8)})
+        frame.write_parquet(tmp_path / "narrow_u8.parquet")
+        source = _make_source_node(
+            node_id="src",
+            label="src",
+            node_type="dataInput",
+            config=_ready_file_input_config(tmp_path / "narrow_u8.parquet"),
+        )
+        node = _make_transform_node(node_id="t", label="t", config={"code": code})
+        model = _make_modelling_node()
+        graph = PipelineGraph(
+            nodes=[source, node, model],
+            edges=[
+                GraphEdge(id="e1", source="src", target="t"),
+                GraphEdge(id="e2", source="t", target=model.id),
+            ],
+        )
+
+        estimate = estimate_safe_training_rows(graph, model.id)
+
+        assert estimate.estimated_bytes is not None
+        assert estimate.estimated_bytes / _OVERHEAD_MULTIPLIER >= 8 * rows
+
     def test_a_nested_column_is_measured(self, tmp_path: Path) -> None:
         path = tmp_path / "nested.parquet"
         self._frames()["nested"].write_parquet(path)

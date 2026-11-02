@@ -1713,9 +1713,12 @@ def _resolve_code_node_columns(
 ) -> _ResolvedTargetColumns | None:
     """A Polars node's output columns, from its own lineage over its inputs' columns.
 
-    A column the node keeps by name keeps its input's width; any other (a join's
-    suffixed column, a computed one) is sized as the widest input column it reads,
-    found by asking the lineage what that column alone demands. When the lineage
+    A column the node outputs under an input column's name is sized as that column,
+    and any other (a join's suffixed column, a computed one) as the widest input
+    column it reads, found by asking the lineage what that column alone demands. The
+    lineage does not tell a carried column from one the code recomputed, which can be
+    wider than what it reads (a one-byte column cast to eight bytes), so neither is
+    charged less than one fixed-width value. When the lineage
     cannot follow the code, a node with several inputs is sized as all of them (a
     join or concatenation holds every input's columns), and None leaves a node with
     one input to its input's columns, as the walk to its source finds them.
@@ -1739,9 +1742,8 @@ def _resolve_code_node_columns(
     widths = _source_column_base_widths(index.loaded_source_metadata())
 
     def widest(width_keys: Iterable[str], column: str) -> str:
-        keys = list(width_keys)
-        if not keys:
-            return _COMPUTED_WIDTH_KEY.format(column)
+        # The computed key is one fixed-width value: the floor for any output column.
+        keys = [*width_keys, _COMPUTED_WIDTH_KEY.format(column)]
         return max(keys, key=lambda key: widths.get(key, float(_BYTES_PER_COL)))
 
     def lineage(demanded: set[str] | None) -> Any:

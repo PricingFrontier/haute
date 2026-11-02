@@ -114,11 +114,15 @@ def test_cardinality_analysis_fails_closed_for_row_expanding_expressions(code: s
         "df = rows.select(pl.lit(series))",
         "df = rows.select(pl.lit(pl.Series([1, 2, 3, 4, 5])).alias('x'))",
         "df = rows.select(pl.all().is_null(), pl.lit(series).alias('x'))",
+        "df = rows.select(pl.col('a').sum(), pl.lit(series).alias('x'))",
+        "df = rows.select(pl.col('a').mean().alias('m'), pl.lit(series).alias('x'))",
     ],
 )
 def test_cardinality_analysis_fails_closed_for_a_selected_lit_of_a_non_literal(code: str) -> None:
-    """A column-free select of ``pl.lit`` holding a Series has the Series' length, which
-    can be longer than the frame; a literal scalar or list is one row."""
+    """A select of ``pl.lit`` holding a Series takes the Series' length, which can be
+    longer than the frame, unless a row-local expression of a named column holds it to
+    the frame's height; an aggregate of a column is one row and broadcasts. A literal
+    scalar or list is one row."""
     result = analyze_polars_cardinality(code, {"rows": 3})
 
     assert not result.supported
@@ -130,6 +134,8 @@ def test_cardinality_analysis_fails_closed_for_a_selected_lit_of_a_non_literal(c
     [
         "df = rows.select(pl.lit([1, 2]).alias('pair'), pl.lit(-1).alias('flag'))",
         "df = rows.select(pl.col('a'), pl.lit(series).alias('x'))",
+        "df = rows.select('a', pl.lit(series).alias('x'))",
+        "df = rows.select((pl.col('a') * 2).alias('b'), pl.lit(series).alias('x'))",
         "df = rows.with_columns(pl.lit(BASE_RATE).alias('base'))",
     ],
 )

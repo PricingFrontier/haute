@@ -470,10 +470,12 @@ def await_worker_ready(
             message = result_queue.get(timeout=config.stop_poll_interval_seconds)
         except queue.Empty:
             message = None
-        if message is not None:
-            return ("ready", None) if is_ready(message) else ("result", message)
-        if not process.is_alive():
+        if message is not None and not is_ready(message):
+            return "result", message
+        if message is None and not process.is_alive():
             return "exited", None
+        # Checked on the ready report too: the footprint it reports at becomes the
+        # job's baseline, so one past the ceiling must not be accepted with it.
         rss_bytes = process_rss_bytes(pid)
         if rss_bytes is not None and rss_bytes > config.startup_rss_ceiling_bytes:
             _terminate_process(process)
@@ -482,6 +484,8 @@ def await_worker_ready(
             )
             exceeded.add_note("The worker exceeded its startup ceiling before it reported ready.")
             raise exceeded
+        if message is not None:
+            return "ready", None
         if config.stop_reason is not None and (reason := config.stop_reason()) is not None:
             _terminate_process(process)
             raise IsolatedWorkerStoppedError(terminal_reason=reason)

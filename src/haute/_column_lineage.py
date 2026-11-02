@@ -916,18 +916,45 @@ def column_free_select_argument(
     return None
 
 
-def _selects_a_lit_of_unknown_length(call: ast.Call, aliases: frozenset[str]) -> bool:
-    """Whether a selection that may not keep its input's rows holds ``pl.lit`` of a
-    value that is not a literal.
+def _keeps_the_frame_height(
+    argument: ast.expr, *, positional: bool, aliases: frozenset[str]
+) -> bool:
+    """Whether a selection argument is a column of the frame's height.
 
-    ``pl.lit`` of a Series is a column of the Series' length. Beside a column the
-    selection reads by name it must match the frame's height (or be one row), but a
-    selection reading no column takes its length, which can outgrow the frame. A
-    literal scalar or a literal list is one row.
+    A column read by name is, and so is a row-local expression of named columns.
+    An aggregate of a column is one row, and a selector may match no column.
     """
-    if column_free_select_argument(call, selector_aliases=aliases) is None:
+    if _literal_column_name(argument) is not None:
+        return True
+    if positional and isinstance(argument, ast.List | ast.Tuple):
+        return any(_literal_column_name(element) is not None for element in argument.elts)
+    if not _referenced_columns(argument):
         return False
-    for argument in (*call.args, *(keyword.value for keyword in call.keywords)):
+    from haute.chunking import classify_row_local_expression
+
+    return classify_row_local_expression(ast.unparse(argument), selector_aliases=aliases).eligible
+
+
+def _selects_a_lit_of_unknown_length(call: ast.Call, aliases: frozenset[str]) -> bool:
+    """Whether a selection holds ``pl.lit`` of a value that is not a literal, with
+    nothing holding it to the frame's height.
+
+    ``pl.lit`` of a Series is a column of the Series' length. Beside a column of the
+    frame's height it must match that height (or be one row); beside nothing but
+    one-row values (literals, aggregates) or selectors that may match nothing, the
+    selection takes its length, which can outgrow the frame. A literal scalar or a
+    literal list is one row.
+    """
+    arguments = [
+        *((argument, True) for argument in call.args),
+        *((keyword.value, False) for keyword in call.keywords),
+    ]
+    if any(
+        _keeps_the_frame_height(argument, positional=positional, aliases=aliases)
+        for argument, positional in arguments
+    ):
+        return False
+    for argument, _positional in arguments:
         for child in ast.walk(argument):
             if not isinstance(child, ast.Call) or _polars_call_name(child) != "lit":
                 continue

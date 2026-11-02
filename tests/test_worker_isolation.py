@@ -1994,6 +1994,32 @@ def test_a_worker_past_its_startup_ceiling_before_it_is_ready_is_stopped() -> No
     assert any("startup ceiling" in note for note in raised.value.__notes__)
 
 
+def test_a_ready_report_from_a_worker_past_its_startup_ceiling_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ready message and an over-ceiling footprint arrive together: the footprint is
+    checked before it becomes the job's baseline."""
+    import haute._worker_isolation as isolation
+
+    stopped: list[object] = []
+    process = SimpleNamespace(pid=123, is_alive=lambda: True)
+    ready_queue = SimpleNamespace(get=lambda timeout: "ready")
+    monkeypatch.setattr(isolation, "process_rss_bytes", lambda _pid: 65 * _MIB)
+    monkeypatch.setattr(isolation, "_terminate_process", stopped.append)
+
+    with pytest.raises(IsolatedWorkerMemoryLimitExceededError) as raised:
+        isolation.await_worker_ready(
+            process,
+            ready_queue,
+            is_ready=lambda message: message == "ready",
+            config=IsolatedWorkerConfig(timeout_seconds=120, startup_rss_ceiling_bytes=64 * _MIB),
+            deadline=None,
+        )
+
+    assert stopped == [process]
+    assert any("startup ceiling" in note for note in raised.value.__notes__)
+
+
 def test_a_worker_that_never_reports_ready_fails_at_its_startup_deadline() -> None:
     from tests import _spawned_slow_import as fixture
 

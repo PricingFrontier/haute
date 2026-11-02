@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import multiprocessing
 import os
 import pickle
@@ -8,6 +9,7 @@ import queue
 import signal
 import threading
 import time
+import weakref
 from types import SimpleNamespace
 from typing import Any
 
@@ -24,6 +26,7 @@ from haute._interactive_workers import (
     resolve_interactive_execution_mode,
     resolve_interactive_polars_threads,
 )
+from haute._worker_isolation import IsolatedWorkerHostError
 
 
 def _cell() -> Any:
@@ -50,6 +53,31 @@ def _worker_mark_started(path: str, seconds: float) -> int:
 
 def _worker_fail() -> None:
     raise ValueError("child failed")
+
+
+class _JobData:
+    """Data a job holds, standing for a frame: its release is observable by weak reference."""
+
+
+# Weak references to the job data a worker created, in that worker's own module copy.
+_JOB_DATA: list[weakref.ref[_JobData]] = []
+
+
+def _worker_fail_holding_data() -> None:
+    data = _JobData()
+    _JOB_DATA.append(weakref.ref(data))
+    raise ValueError(f"child failed holding {type(data).__name__}")
+
+
+def _worker_return_data() -> _JobData:
+    data = _JobData()
+    _JOB_DATA.append(weakref.ref(data))
+    return data
+
+
+def _worker_job_data_released() -> bool:
+    gc.collect()
+    return bool(_JOB_DATA) and all(reference() is None for reference in _JOB_DATA)
 
 
 def _worker_polars_thread_pool_size() -> int:
@@ -392,21 +420,47 @@ def test_a_worker_breaching_its_growth_cap_is_replaced_and_the_next_request_serv
     assert value == 7
 
 
+@pytest.mark.parametrize("job", [_worker_fail_holding_data, _worker_return_data])
+def test_a_warm_worker_keeps_nothing_of_its_last_job(job: Any) -> None:
+    """A worker that stays warm after a job, failed or successful, holds none of its
+    data while it waits: the next job's memory baseline does not include it."""
+    pool = InteractiveWorkerPool(size=1, polars_threads=2)
+    try:
+        if job is _worker_fail_holding_data:
+            with pytest.raises(InteractiveWorkerRemoteError, match="child failed"):
+                pool.run(job, affinity_key="lineage", timeout_seconds=30)
+        else:
+            pool.run(job, affinity_key="lineage", timeout_seconds=30)
+        released = pool.run(_worker_job_data_released, affinity_key="lineage", timeout_seconds=30)
+    finally:
+        pool.close()
+
+    assert released is True
+
+
+@pytest.mark.parametrize(
+    "start_error",
+    [
+        worker_mod.InteractiveWorkerStartError(
+            "replacement did not become ready", terminal_reason="error"
+        ),
+        IsolatedWorkerHostError("replacement did not become ready: resource tracker died"),
+    ],
+    ids=["start", "host"],
+)
 def test_a_failed_replacement_is_started_again_by_the_next_request(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, start_error: Exception
 ) -> None:
-    """One replacement that fails to start (a readiness timeout under load) leaves the
-    slot needing a start, not closed for the server's life; the original failure carries
-    the start error as a note."""
+    """One replacement that fails to start (a readiness timeout under load, or a host
+    whose process machinery failed) leaves the slot needing a start, not closed for the
+    server's life; the original failure carries the start error as a note."""
     pool = InteractiveWorkerPool(size=1, polars_threads=2, poll_interval_seconds=0.01)
     real_start = pool._start_slot
     failures = iter([True])
 
     def start_failing_once(*, index: int, generation: int):
         if next(failures, False):
-            raise worker_mod.InteractiveWorkerStartError(
-                "replacement did not become ready", terminal_reason="error"
-            )
+            raise start_error
         return real_start(index=index, generation=generation)
 
     try:
