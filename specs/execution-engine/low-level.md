@@ -663,8 +663,9 @@ hands over its write's digests the same way:
   first, so a `validate` Polars rejects at schema resolution (`right`/`semi`/`anti`) raises
   Polars' own error and writes nothing; `cross` ignores `validate` as Polars does; on
   `inner`/`left`/`full` the whole checked side is proven unique before any part — non-null
-  keys only, a hash-partitioned group-by of about `chunk_rows` keys at a time — and a
-  violation raises Polars' `ComputeError("join keys did not fulfill <v> validation")`. Each
+  keys only, a hash-partitioned group-by of about `chunk_rows` keys at a time, which filters
+  the checked side once per partition — and a violation raises Polars'
+  `ComputeError("join keys did not fulfill <v> validation")`. Each
   driving chunk probes its lookup matches (`semi` on the chunk's keys, `head(chunk_rows + 1)`);
   when they fit and their keys are unique the chunk joins them directly, otherwise per-key
   match counts split the chunk into consecutive groups of at most `chunk_rows` expected output
@@ -680,6 +681,18 @@ hands over its write's digests the same way:
   A `semi`/`anti` join reads only the lookup's distinct keys. A `full` join adds the lookup
   rows no driving row matched, once each and in the lookup's order, after every driving
   row, as the full join of an empty base with them: where an ordered full join places them.
+  To find them it semi-joins the base's key columns against each `chunk_rows` slice of the
+  lookup, so a full join reads its base keys once per lookup slice: bounded in memory, but
+  slower than one native sink as both sides grow. Measured on 24 September 2026 with
+  500,000-row chunks and half the lookup keys unmatched, at a similar peak: 0.17 s against
+  0.09 s native at one million rows a side, 1.09 s against 0.35 s at five million, 2.66 s
+  against 0.74 s at ten million. A larger streaming chunk size in the pipeline settings
+  reads the base fewer times. A cross join whose lookup is larger than one chunk is likewise
+  bounded but slow, re-reading each lookup slice for every driving slice of one row (67.3 s
+  against 8.4 s native at 2,000 × 600,000 rows). A lookup that fits one chunk is collected
+  once and joined with each driving slice (28.3 s against 19.3 s native at one million ×
+  1,000 rows, 0.46 s against 0.20 s at one million × 12): a scenario expander's small lookup
+  stays within 2.5 times native.
   Every join states its order (`maintainOrder` is required), and so does every frame join
   in `src/haute/`, the assistant's examples included: `"none"` where nothing reads the
   order (a count, a table keyed by id, a sort after it), held by `tests/test_join_orders.py`.

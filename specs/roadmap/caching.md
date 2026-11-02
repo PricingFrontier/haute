@@ -27,7 +27,7 @@ measured limits of the existing consumers.
 | One store, every consumer | Node outputs, input snapshots (including each emitting table of a structured API Input, prepared automatically), and analyses share `.haute_cache`; previews, bounded runs, explicit builds, and traces run under one seed plan. | — |
 | No duplicated runs | A bounded run seeds from any fresh covering generation and captures a join, fan-out, join feeder, batch Model Score, or consumed producer only where recomputing it costs more than the cache round trip, and records why it skipped the others; a preview seeds the same way and captures only the joins and costly full-input work it must compute in full. A chain of plain transforms is recomputed by every preview and bounded run by design, because recomputing it costs less than the cache round trip. Each capture publishes as soon as it is written, so a run that fails or is cancelled later keeps what it had already published. A preview served from the response cache reports its generations as seeded, and the canvas raises the node-data epoch only for a capture generation it has not seen, so a repeat preview costs no refetch. | — |
 | Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. A preview says when a node was not cached and how to fix it. | A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). |
-| Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A node with one input whose code is provably row-local, or a Data Input whose post-load code is, is written a slice of its input (or source scan) at a time where a capture, an explicit build or a Data Output writes it, so its memory does not grow with the input. A pass-through node carries its parent's recipe forward, and training preparation writes its prepared parquet through the same bounded writer, slicing the frame or the recipe's input and recording which. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | Full joins rescan the base once per lookup chunk (`CACHE-S18`; measured 24-Sep-2026 and not yet worth building). |
+| Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A node with one input whose code is provably row-local, or a Data Input whose post-load code is, is written a slice of its input (or source scan) at a time where a capture, an explicit build or a Data Output writes it, so its memory does not grow with the input. A pass-through node carries its parent's recipe forward, and training preparation writes its prepared parquet through the same bounded writer, slicing the frame or the recipe's input and recording which. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | — |
 | Failures are recoverable | A corrupt generation is reported, never silently repaired, and names the node whose cache to clear or rebuild; a plan whose inputs moved stops, before collection and again if they move before a capture publishes. | — |
 
 ## Priorities
@@ -35,12 +35,10 @@ measured limits of the existing consumers.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | CACHE-S13 | Planned | P3 | A capturing preview finishes as a job instead of dying at the interactive timeout. Unproven: no measured preview approaches the timeout (re-measured 24-Sep-2026). |
-| CACHE-S18 | Planned | P3 | Full joins are written with a bounded number of scans. Measured 24-Sep-2026: about 2 s over native at 10M × 10M rows, so not yet worth building. |
 
 ## Planned improvements
 
-`CACHE-S18` is gated on a measurement named in its own entry rather than
-started on the strength of its shape. `CACHE-S13` is also measurement-gated:
+`CACHE-S13` is measurement-gated:
 no measured preview approaches its timeout. What is left is measured
 against cost rather than shape. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
@@ -161,78 +159,3 @@ no budget that refuses a capture.
 `_pipeline_time_limit`); `src/haute/routes/_background_jobs.py`;
 `src/haute/_seed_plans.py` (`SeedPlanDecision`); `src/haute/schemas.py`;
 `frontend/src/hooks/usePipelineAPI.ts`; `frontend/src/stores/useNodeDataStore.ts`.
-
-### CACHE-S18 — Bounded scans in full joins
-
-**Why:** A full join's unmatched pass (`src/haute/_chunked_writes.py`,
-`_write_chunked_join`) runs a semi-join of the whole base against every
-lookup chunk, so the base is scanned once per chunk of the lookup side. It is
-correct and bounded in output, but costs the product of the two sides divided
-by the chunk size. The uniqueness check filters its input once per hash
-partition, so it is a rescanning algorithm too and not a model for this
-package. The cross-join half of this package is already delivered: a lookup
-side larger than one chunk is read in `chunk_rows` slices rather than
-collected, and every part holds at most `chunk_rows` rows, written
-driving-then-lookup.
-
-**Measured 24-Sep-2026; not yet worth building.** Full and cross joins do
-occur (across this repository's graphs, 7 full and 10 cross against 105 left
-and 35 inner). The rule this measurement decides: build the partitioning only
-if a real graph pays the rescan cost at a size where it matters. Synthetic
-Parquet sides with half the lookup keys unmatched, the default 500,000-row
-chunk, each case in a fresh process (peak is the process's peak working set):
-
-| Join | Base rows | Lookup rows | Native | Chunked writer | Parts |
-|---|---:|---:|---:|---:|---:|
-| full | 1M | 1M | 0.09 s, 0.35 GB | 0.17 s, 0.45 GB | 4 |
-| full | 5M | 5M | 0.35 s, 0.84 GB | 1.09 s, 1.08 GB | 20 |
-| full | 10M | 10M | 0.74 s, 1.39 GB | 2.66 s, 1.44 GB | 40 |
-| cross | 1M | 12 | 0.20 s, 0.38 GB | 0.46 s, 0.38 GB | 25 |
-| cross | 1M | 1,000 | 19.3 s, 0.80 GB | 28.3 s, 0.67 GB | 2,000 |
-| cross | 2,000 | 600k | 8.4 s, 0.95 GB | 67.3 s, 0.67 GB | 4,000 |
-
-The largest tables in a real store today are about 1M rows (`haute-demo`), and
-the largest recorded capture is a 10M-row join (`CACHE-S13`). At that size the
-chunked writer, rescans included, takes about 2 seconds longer than the native
-join at a similar peak working set, so the partitioning below is not built.
-Revisit when a real graph's full join has more than 10M rows on each side, or
-when a capture record shows a full join's chunked write taking more than 10
-seconds longer than the native join. The cross join with a
-lookup larger than one chunk is bounded in memory but slow (it re-reads each
-lookup slice for every driving slice of one row); real cross joins (scenario
-expanders) use small lookups, where the writer is within 2.5 times native.
-
-**Plan:** Partition physically, not by rescanning. In one pass over each
-side, write the lookup side's whole rows, keys and payload, and the base
-side's distinct keys into `partitions` part files by
-`hash(keys) % partitions`, with `partitions` chosen from the larger row count
-so an average bucket fits a chunk; null keys, which match nothing, are
-written straight to the unmatched output and never partitioned. Then, per
-partition, anti-join the lookup bucket against the base-key bucket and write
-the unmatched lookup rows through the empty-base join. Hashing keeps every
-row of one key in one bucket, so skew is handled where it lands: a lookup
-bucket is a part file and is read in slices of `chunk_rows` against its
-base-key bucket, so a hot key with more distinct payload rows than a chunk
-is written a slice at a time; a base-key bucket holds distinct keys, so a hot
-key is one row there, and a base-key bucket that still exceeds a chunk (many
-distinct keys hashed together) is partitioned once more with a second seed,
-after which a bucket that still exceeds a chunk makes the join fall back to
-the native write with a recorded reason. Each side is read at most twice,
-once to partition and once through its buckets, plus one pass over any
-re-partitioned bucket.
-
-**Acceptance:** `tests/test_chunked_writes.py` proves full-join equality with
-the native join across partitions, including null keys on either side,
-`coalesce`, an empty side, and an unmatched hot key whose distinct payload
-rows exceed `chunk_rows`, and asserts through a scan-counting source that
-each side is read at most twice plus one re-partition pass; it proves the
-second-seed re-partition and the native fallback each take effect on a
-constructed skew; the capture record reports the partition count, the
-re-partition count, and any fallback reason.
-
-**Owning specifications:** [IO layer](../io-layer/low-level.md) (chunked
-joins).
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_chunked_writes.py`.
