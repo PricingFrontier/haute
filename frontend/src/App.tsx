@@ -24,7 +24,6 @@ import type { OnUpdateConfigResult, SimpleEdge, SimpleNode } from "./panels/edit
 import { GraphProvider } from "./panels/GraphContext"
 import DataPreview, { type PreviewData } from "./panels/DataPreview"
 import ExplorePreview from "./panels/ExplorePreview"
-import OptimiserDataPreview from "./panels/OptimiserDataPreview"
 
 import { TraceStatePanel } from "./panels/TraceStatePanel"
 import type { ProjectFilePlace } from "./api/types"
@@ -145,6 +144,8 @@ const ModellingPreview = lazy(() => import("./panels/ModellingPreview").then(
 // Optimiser results are produced only after a user-triggered solve, so keep
 // the comparatively heavy charts out of the initial application bundle.
 const OptimiserPreview = lazy(() => import("./panels/OptimiserPreview"))
+// An optimiser node's scenario preview shares those panes; it loads on first display.
+const OptimiserDataPreview = lazy(() => import("./panels/OptimiserDataPreview"))
 // The trace panel shows only after a cell click; its chunk is fetched when the
 // trace request starts, so it is usually ready by the time the result arrives.
 const loadTracePanel = () => import("./panels/TracePanel")
@@ -384,11 +385,13 @@ function ActiveNodePreviewBody({
     && previewData.preview.length > 0
   ) {
     return (
-      <OptimiserDataPreview
-        data={previewData}
-        config={nodeData(activeNode).config ?? {}}
-        onRefresh={refreshAction}
-      />
+      <Suspense fallback={null}>
+        <OptimiserDataPreview
+          data={previewData}
+          config={nodeData(activeNode).config ?? {}}
+          onRefresh={refreshAction}
+        />
+      </Suspense>
     )
   }
   return (
