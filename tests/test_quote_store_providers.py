@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.dialects import mssql, postgresql
+from sqlalchemy.dialects.mssql.mssqlpython import MSDialect_mssqlpython
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.schema import CreateTable
@@ -42,6 +43,7 @@ from haute._quote_store._providers import (
     connect_hook,
     make_server_engine,
     missing_privileges,
+    server_url,
 )
 from haute._quote_store._schema import store_schema, structure
 from haute._quote_store._store import make_engine, reaching
@@ -127,10 +129,13 @@ def test_a_server_location_is_made_from_its_parts_holding_no_sign_in() -> None:
 
     store = resolve_store(declared, "prod", environ)
 
-    # The server as SQL Server's own clients take it, the driver, encryption, and no sign-in.
-    assert make_url(store.url).query["odbc_connect"] == (
-        "Driver={ODBC Driver 18 for SQL Server};"
-        "Server=tcp:hidden-sql.database.windows.net,1433;Database=hidden-quotes;Encrypt=yes"
+    # The server as SQL Server's own clients take it, encryption, and no sign-in, as the
+    # connection string mssql-python is handed.
+    parsed = make_url(store.url)
+    assert parsed.drivername == "mssql+mssqlpython"
+    assert MSDialect_mssqlpython().create_connect_args(parsed) == (
+        ("Server=hidden-sql.database.windows.net,1433;Database=hidden-quotes;Encrypt=yes",),
+        {},
     )
     assert validate_credential_free_uri(store.url) == store.url
     assert store.sql_schema == "hidden_pricing"
@@ -152,6 +157,23 @@ def test_a_server_location_is_made_from_its_parts_holding_no_sign_in() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("server", "says"),
+    [
+        ("tcp:pricing.database.windows.net,1433", "Server=pricing.database.windows.net,1433"),
+        ("TCP: pricing.database.windows.net , 1433", "Server=pricing.database.windows.net,1433"),
+        ("pricing.database.windows.net", "Server=pricing.database.windows.net"),
+        ("localhost,14330", "Server=localhost,14330"),
+    ],
+)
+def test_a_sqlserver_server_is_taken_as_its_own_clients_write_it(server: str, says: str) -> None:
+    url = make_url(server_url(PROVIDERS["sqlserver"], server, "quotes"))
+
+    (connection_string,), _ = MSDialect_mssqlpython().create_connect_args(url)
+
+    assert connection_string == f"{says};Database=quotes;Encrypt=yes"
+
+
 def test_an_entra_sign_in_reads_only_what_its_identity_needs() -> None:
     system = resolve_store(
         (StoreEnvironment("prod", "sqlserver", "managed-identity"),),
@@ -168,7 +190,7 @@ def test_an_entra_sign_in_reads_only_what_its_identity_needs() -> None:
     signed = resolve_store(
         (principal,),
         "prod",
-        {"HAUTE_STORE_URL": "mssql+pyodbc://s/d?driver=x", "T": "t", "C": "c", "S": "s3"},
+        {"HAUTE_STORE_URL": "mssql+mssqlpython://s/d", "T": "t", "C": "c", "S": "s3"},
     )
     assert signed.sign_in == SignIn("service-principal", client_id="c", tenant_id="t", secret="s3")
 
@@ -179,20 +201,36 @@ def test_an_entra_sign_in_reads_only_what_its_identity_needs() -> None:
         ("sqlserver", {"HAUTE_STORE_SERVER": "hidden-a"}, "set HAUTE_STORE_SERVER and"),
         (
             "sqlserver",
-            {"HAUTE_STORE_URL": "mssql+pyodbc://hidden-u:hidden-p@hidden-a/hidden-b"},
+            {"HAUTE_STORE_URL": "mssql+mssqlpython://hidden-u:hidden-p@hidden-a/hidden-b"},
             "holds a sign-in",
         ),
         (
             "sqlserver",
-            {"HAUTE_STORE_URL": "mssql+pyodbc://hidden-a/hidden-b?Password=hidden-p"},
+            {"HAUTE_STORE_URL": "mssql+mssqlpython://hidden-a/hidden-b?Password=hidden-p"},
             "holds a sign-in",
         ),
         (
             "sqlserver",
-            {"HAUTE_STORE_URL": "mssql+pyodbc:///?odbc_connect=Server%3Dhidden-a%3BUID%3Dhidden"},
+            {"HAUTE_STORE_URL": "mssql+mssqlpython://hidden-a/hidden-b?UID=hidden"},
             "holds a sign-in (UID)",
         ),
-        ("sqlserver", {"HAUTE_STORE_URL": "mssql+pymssql://hidden-a/hidden-b"}, "through pyodbc"),
+        (
+            "sqlserver",
+            {"HAUTE_STORE_URL": "mssql+mssqlpython://hidden-a/b?Authentication=hidden"},
+            "holds a sign-in",
+        ),
+        (
+            "sqlserver",
+            {
+                "HAUTE_STORE_URL": "mssql+mssqlpython:///?odbc_connect=Server%3Dhidden-a%3BUID%3Dhidden"
+            },
+            "holds a sign-in (UID)",
+        ),
+        (
+            "sqlserver",
+            {"HAUTE_STORE_URL": "mssql+pyodbc://hidden-a/hidden-b"},
+            "through mssqlpython",
+        ),
         ("sqlserver", {"HAUTE_STORE_URL": "postgresql+psycopg://hidden-a/b"}, "not a sqlserver"),
         ("postgresql", {"HAUTE_STORE_URL": "oracle://hidden-a/hidden-b"}, "does not run on"),
     ],
@@ -200,6 +238,8 @@ def test_an_entra_sign_in_reads_only_what_its_identity_needs() -> None:
         "no database",
         "user in the URL",
         "password asked of the URL",
+        "user attribute",
+        "authentication attribute",
         "ODBC user",
         "driver",
         "provider",
@@ -237,7 +277,7 @@ def test_a_url_that_does_not_parse_is_refused_without_repeating_it() -> None:
 
 
 def test_a_connection_the_server_refuses_is_said_without_the_drivers_words() -> None:
-    # psycopg's and pyodbc's own text names the server, its port and who signs in.
+    # psycopg's and mssql-python's own text names the server, its port and who signs in.
     said = 'connection to server at "hidden-host", port 5432 failed: for user "hidden-user"'
     url = "postgresql+psycopg://hidden-host/quotes"
 
@@ -272,12 +312,12 @@ def test_a_connection_the_server_refuses_is_said_without_the_drivers_words() -> 
 def test_a_sqlserver_connection_takes_a_fresh_entra_token_and_no_integrated_sign_in() -> None:
     credential = Credential()
     hook = connect_hook(PROVIDERS["sqlserver"], SignIn("managed-identity"), credential)
-    first: list[Any] = ["Driver={ODBC Driver 18 for SQL Server};Server=s;Trusted_Connection=Yes"]
+    first: list[Any] = ["Server=s;Database=d;Encrypt=yes;Authentication=ActiveDirectoryIntegrated"]
     params: dict[str, Any] = {}
 
     hook(None, None, first, params)
 
-    assert first == ["Driver={ODBC Driver 18 for SQL Server};Server=s"]
+    assert first == ["Server=s;Database=d;Encrypt=yes"]
     assert params == {"attrs_before": {SQL_COPT_SS_ACCESS_TOKEN: _packed("token-1")}}
     assert credential.asked == [("https://database.windows.net/.default",)]
     # The next connection asks again, so a token past its life is never handed on.
@@ -377,7 +417,7 @@ def test_a_release_image_takes_each_declared_providers_driver() -> None:
             StoreEnvironment("prod", "sqlserver", "managed-identity"),
             StoreEnvironment("dev2", "sqlite"),
         )
-    ) == ("sqlalchemy", "alembic", "pyodbc", "azure-identity")
+    ) == ("sqlalchemy", "alembic", "mssql-python", "azure-identity")
     assert store_dependencies((StoreEnvironment("prod", "postgresql", "password", PASSWORD),)) == (
         "sqlalchemy",
         "alembic",
@@ -536,7 +576,7 @@ def _script_run(server: Target, script: str) -> Iterator[tuple[Any, BaseExceptio
         try:
             cursor.execute(script)
             if server.backend == "sqlserver":
-                # pyodbc raises a statement's error once its result is reached.
+                # The driver raises a statement's error once its result is reached.
                 while cursor.nextset():
                     pass
         except Exception as exc:  # noqa: BLE001 - the driver's own error is the evidence
@@ -676,7 +716,7 @@ def test_a_sign_in_lacking_a_privilege_closes_the_quotes_naming_it(server: Targe
     finally:
         if server.backend == "sqlserver":
             server.run(f"DROP USER {reader}")
-            # The ODBC driver manager may pool the refused app's connection: end it first,
+            # The driver may pool the refused app's connection: end it first,
             # outside a transaction, which KILL takes no part in.
             engine = make_engine(server.url, sign_in=server.sign_in)
             try:

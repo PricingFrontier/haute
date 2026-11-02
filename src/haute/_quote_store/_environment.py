@@ -50,9 +50,11 @@ _HELD: Mapping[str, str] = {
     "client_id_env": "client id",
     "client_secret_env": "client secret",
 }
-#: ODBC attributes that would sign a connection in from its URL, which the environment's
-#: sign-in does instead.
-_ODBC_SIGN_IN = frozenset({"uid", "user id", "trusted_connection", "integrated security"})
+#: Connection-string attributes that would sign a connection in from its URL, which the
+#: environment's sign-in does instead.
+_ODBC_SIGN_IN = frozenset(
+    {"uid", "user id", "trusted_connection", "integrated security", "authentication"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,9 +148,12 @@ def _server_location_url(environment: StoreEnvironment, url: str) -> str:
             f"{STORE_URL_ENV} is not a {environment.provider} URL, the provider the {name} "
             "environment declares."
         )
-    odbc = make_url(url).query.get("odbc_connect")
-    for part in str(odbc or "").split(";"):
-        key = part.split("=", 1)[0].strip()
+    # SQL Server's driver takes each of the URL's query keys as an attribute of its connection
+    # string, and an odbc_connect one's as it is written.
+    query = make_url(url).query
+    odbc = str(query.get("odbc_connect") or "")
+    keys = [*query, *(part.split("=", 1)[0] for part in odbc.split(";"))]
+    for key in (each.strip() for each in keys):
         if key and (is_credential_name(key) or key.casefold() in _ODBC_SIGN_IN):
             raise QuoteStoreEnvironmentError(
                 f"{STORE_URL_ENV} for the {name} store holds a sign-in ({key}), which the "

@@ -1,8 +1,9 @@
 """The engines the quote store runs on (specs/workbench).
 
 ``sqlite`` is a file the store's process reads. ``sqlserver`` is SQL Server 2019 and
-later, Azure SQL Database and Azure SQL Managed Instance, through pyodbc and Microsoft ODBC
-Driver 18 (:data:`SQLSERVER_DRIVER`); ``postgresql`` is PostgreSQL and its hosted forms (Azure
+later, Azure SQL Database and Azure SQL Managed Instance, through Microsoft's mssql-python,
+whose wheels carry ODBC Driver 18, so nothing is installed apart from the package;
+``postgresql`` is PostgreSQL and its hosted forms (Azure
 Database for PostgreSQL, Amazon RDS and Aurora, Cloud SQL, Databricks Lakebase), through
 psycopg. Each enforces keys, runs a transaction across tables and runs DDL inside one, so a
 migrate that fails part way changes nothing.
@@ -31,9 +32,7 @@ from sqlalchemy.engine import URL, make_url
 if TYPE_CHECKING:
     from haute._quote_store._schema import StoreSchema
 
-#: The ODBC driver ``sqlserver`` connects through, which a release's image installs.
-SQLSERVER_DRIVER = "ODBC Driver 18 for SQL Server"
-#: The pyodbc connection attribute an Entra ID access token is handed in.
+#: The connection attribute an Entra ID access token is handed to SQL Server's driver in.
 SQL_COPT_SS_ACCESS_TOKEN = 1256
 #: The sign-ins that go through Microsoft Entra ID: a hosted app's managed identity, a
 #: service principal, and the analyst's own sign-in, ``entra``, made in the browser.
@@ -118,11 +117,11 @@ PROVIDERS: Mapping[str, Provider] = {
     "sqlserver": Provider(
         "sqlserver",
         "mssql",
-        "pyodbc",
+        "mssqlpython",
         128,
         False,
         "https://database.windows.net/.default",
-        ("pyodbc",),
+        ("mssql-python",),
     ),
     "postgresql": Provider(
         "postgresql",
@@ -165,20 +164,32 @@ def _odbc_value(value: str) -> str:
     return value
 
 
+def _sqlserver_address(server: str) -> tuple[str, int | None]:
+    """*server* as SQL Server's own clients take it, ``tcp:name,1433``, as its host and port,
+    None where it names none: the protocol is left out, TCP being the only one a server on
+    another machine is reached over."""
+    address = server.strip()
+    if address[:4].casefold() == "tcp:":
+        address = address[4:].strip()
+    host, comma, number = address.rpartition(",")
+    if comma and number.strip().isdigit():
+        return host.strip(), int(number)
+    return address, None
+
+
 def server_url(provider: Provider, server: str, database: str) -> str:
     """The URL of *provider*'s database *database* on *server*, as a host names them: the
     server as the engine's own clients take it (``tcp:name,1433`` on SQL Server, ``host:port``
-    on PostgreSQL), with no sign-in in it."""
+    on PostgreSQL), with no sign-in in it, and on SQL Server encrypted."""
     if provider.name == "sqlserver":
-        odbc = ";".join(
-            [
-                f"Driver={{{SQLSERVER_DRIVER}}}",
-                f"Server={_odbc_value(server)}",
-                f"Database={_odbc_value(database)}",
-                "Encrypt=yes",
-            ]
+        host, port = _sqlserver_address(server)
+        url = URL.create(
+            "mssql+mssqlpython",
+            host=host,
+            port=port,
+            database=database,
+            query={"Encrypt": "yes"},
         )
-        url = URL.create("mssql+pyodbc", query={"odbc_connect": odbc})
     else:
         host, port = server, None
         name, _, number = server.partition(":")
@@ -209,8 +220,9 @@ def connect_hook(
     """SQLAlchemy's ``do_connect`` hook signing each new connection to *provider*'s database
     in as *sign_in* says: an Entra ID token asked of *credential* (the sign-in's own unless
     given) as the connection is made, which the credential renews as it nears its end, or the
-    password. On SQL Server the token goes in the driver's access-token attribute, and the
-    integrated sign-in SQLAlchemy asks for when a URL names no user is taken out."""
+    password. On SQL Server the token goes in the driver's access-token attribute, and any
+    other sign-in the connection string holds (an integrated one, a user, a password or an
+    authentication method) is taken out."""
     if sign_in.entra and credential is None:
         credential = sign_in.credential()
     scope = str(provider.token_scope)

@@ -169,7 +169,7 @@ Out of scope, owned elsewhere:
   [workbench](../workbench/high-level.md), Test quotes), and, with `[deploy.container]
   base_image` set, the Dockerfile that makes it the image's build context, installing the
   driver of each provider the release's environments declare, pinned as installed where it
-  builds (pyodbc and Microsoft's ODBC Driver 18 for `sqlserver`, psycopg for `postgresql`,
+  builds (mssql-python, which carries ODBC Driver 18, for `sqlserver`, psycopg for `postgresql`,
   azure-identity for a Microsoft Entra ID sign-in), a driver not installed there refused
   naming it; `--image` builds that image with Docker. `--push` builds it as
   `<registry>/<name>:<short commit>`, the registry `[deploy.container] registry` names, which

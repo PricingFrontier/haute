@@ -573,22 +573,17 @@ jobs:
           version: "0.8.22"
           python-version: "3.12"
 
-      # The driver the sqlserver provider connects through, as a release's image installs it.
-      - name: Microsoft ODBC Driver 18 for SQL Server
+      # The system libraries the ODBC driver inside mssql-python loads, as a release's image
+      # installs them; the driver itself comes with the package.
+      - name: Libraries for SQL Server's driver
         run: |
-          if ! odbcinst -q -d 2>/dev/null | grep -q "ODBC Driver 18 for SQL Server"; then
-            . /etc/os-release
-            curl -fsSL -o /tmp/packages-microsoft-prod.deb \
-              "https://packages.microsoft.com/config/${ID}/${VERSION_ID}/packages-microsoft-prod.deb"
-            sudo dpkg -i /tmp/packages-microsoft-prod.deb
-            sudo apt-get update
-            sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc
-          fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libltdl7 libkrb5-3 libgssapi-krb5-2
 
       - run: uv sync --group dev --locked
       - name: Store tests on SQL Server and PostgreSQL
         env:
-          HAUTE_TEST_SQLSERVER_URL: mssql+pyodbc://localhost:1433/master?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+          HAUTE_TEST_SQLSERVER_URL: mssql+mssqlpython://localhost:1433/master?TrustServerCertificate=yes
           HAUTE_TEST_SQLSERVER_USER: sa
           HAUTE_TEST_SQLSERVER_PASSWORD: Haute-store-ci-1!
           HAUTE_TEST_POSTGRESQL_URL: postgresql+psycopg://localhost:5432/postgres

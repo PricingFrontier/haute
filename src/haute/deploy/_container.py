@@ -169,8 +169,8 @@ def prepare_build_directory(
         extra_dependencies: Distributions the caller's app needs past the scoring runtime,
             installed in the image pinned to the versions installed here: the underwriter
             app's quote store.
-        sqlserver_odbc: Install Microsoft ODBC Driver 18 for SQL Server in the image, which
-            the quote store's ``sqlserver`` provider connects through.
+        sqlserver_odbc: Install the system libraries the ODBC Driver 18 inside mssql-python's
+            wheels loads, which the quote store's ``sqlserver`` provider connects through.
 
     Returns:
         Path to the written ``deploy_manifest.json``.
@@ -951,22 +951,15 @@ async def quote(request: Request) -> JSONResponse:
 # ── Dockerfile generation ───────────────────────────────────────────
 
 
-#: The image's steps installing Microsoft ODBC Driver 18 for SQL Server from Microsoft's
-#: repository for the base image's own distribution and release, which the quote store's
-#: ``sqlserver`` provider connects through. ``ACCEPT_EULA`` accepts Microsoft's licence for
-#: the driver, as its installation asks.
-SQLSERVER_ODBC_STEPS = r"""# Microsoft ODBC Driver 18 for SQL Server, which the
-# quote store's sqlserver provider connects through; installing it accepts
-# Microsoft's licence terms (ACCEPT_EULA).
+#: The image's steps installing, from the base image's own distribution, the system libraries
+#: the ODBC Driver 18 inside mssql-python's wheels loads (libltdl, and Kerberos's for its
+#: sign-ins), which the quote store's ``sqlserver`` provider connects through: the driver
+#: itself comes with the package, so no repository of Microsoft's is added.
+SQLSERVER_ODBC_STEPS = r"""# The system libraries the ODBC driver inside mssql-python
+# loads, which the quote store's sqlserver provider connects through.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates \
- && . /etc/os-release \
- && curl -fsSL -o /tmp/packages-microsoft-prod.deb \
-    "https://packages.microsoft.com/config/${ID}/${VERSION_ID}/packages-microsoft-prod.deb" \
- && dpkg -i /tmp/packages-microsoft-prod.deb \
- && rm /tmp/packages-microsoft-prod.deb \
- && apt-get update \
- && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 unixodbc \
+ && apt-get install -y --no-install-recommends \
+    libltdl7 libkrb5-3 libgssapi-krb5-2 \
  && rm -rf /var/lib/apt/lists/*
 
 """
@@ -984,8 +977,8 @@ def _generate_dockerfile(
     sqlserver_odbc: bool = False,
 ) -> str:
     """Generate a Dockerfile for the scoring container, copying *extra_files* beside app.py and
-    installing *extra_pins*, pinned requirements, with the runtime, and Microsoft's ODBC
-    driver first when *sqlserver_odbc* (:data:`SQLSERVER_ODBC_STEPS`)."""
+    installing *extra_pins*, pinned requirements, with the runtime, and the libraries SQL
+    Server's driver loads first when *sqlserver_odbc* (:data:`SQLSERVER_ODBC_STEPS`)."""
     haute_dep, *runtime_deps = _pinned_dockerfile_deps(resolved, haute_requirement=haute_pip_dep)
     runtime_line = " ".join([*runtime_deps, *extra_pins])
     copy_wheel = f"COPY {wheel_name} .\n" if wheel_name else ""
