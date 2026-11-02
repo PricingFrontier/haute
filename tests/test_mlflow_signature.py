@@ -707,6 +707,21 @@ def test_decimal_dtypes_are_rejected_with_explicit_cast_guidance(dtype: object) 
     assert "Float64" in message
 
 
+def test_an_offset_without_its_dtype_is_refused_rather_than_guessed() -> None:
+    from haute.modelling._signature import build_signature
+
+    with pytest.raises(ValueError, match="offset column 'exposure' has no dtype"):
+        build_signature(
+            features=["age"],
+            feature_types={"age": "Float64"},
+            categorical_features=[],
+            target_name="claims",
+            target_type="Float64",
+            offset_name="exposure",
+            offset_link="log",
+        )
+
+
 def test_temporal_signature_persists_through_mlflow_dict_roundtrip() -> None:
     from haute.modelling._signature import build_signature
 

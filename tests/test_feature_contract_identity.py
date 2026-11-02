@@ -126,6 +126,12 @@ def test_the_offset_dtype_round_trips_is_hashed_and_needs_a_column(tmp_path: Pat
     assert_contracts_match(signed("Int64"), signed(None))
     with pytest.raises(FeatureMismatchError, match="offset_type is set but offset_column is null"):
         signed("Int64", column=None)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    for malformed in (64, ""):
+        raw["offset_type"] = malformed
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        with pytest.raises(FeatureMismatchError, match="offset_type must be a dtype name"):
+            load_contract(path, verify_hash=False)
 
 
 @pytest.mark.parametrize(
