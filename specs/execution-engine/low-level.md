@@ -511,9 +511,12 @@ read is shared only when two of those edges reach one collected node and that co
 has no row limit, or the frame's lineage holds a node whose `limit_blocker` names an
 operation the limit cannot reach (an aggregation, a window, `unique`, opaque Python). A
 lineage runs up only the inputs the limit reaches (`_inputs_the_limit_reaches`): a node's one
-input, or an Edge Join's base input, its probe side, since its join side is read whole
-either way; of a node with several inputs it names none, as the analysis cannot tell which
-the limit reaches. A limited collection feeds its consumers its plan, so a path runs on
+input, unless its code joins frames (`NodeRecomputeFacts.joins_frames`: it may join its
+input as the lookup side, read whole); an Edge Join's probe side, the side whose rows it
+keeps (its base input for a left, semi or anti join, its join input for a right join), the
+other side being read whole either way, and neither side of an inner, full or cross join;
+and of a node with several inputs none, as the analysis cannot tell which the limit
+reaches. A limited collection feeds its consumers its plan, so a path runs on
 through it; one without a limit feeds them its DataFrame, so a path stops there; and a node
 whose builder reads its input through a Python scan, which collects it in a query of its
 own (`_SEPARATE_QUERY_NODE_TYPES`: Model Score, Rating Step, Optimiser Apply, Scenario
@@ -2243,7 +2246,7 @@ present a structural or schema result as execution evidence.
   equal to fresh-process measurements.
 - **Code-node recompute facts.** `haute.projection.recompute_facts_by_node(order, node_map,
   relevant_edges=, submodels=, preamble=)` derives `NodeRecomputeFacts(cost,
-  slice_transparent, full_input_work, reason, limit_blocker)` for every node whose config carries non-blank
+  slice_transparent, full_input_work, reason, limit_blocker, joins_frames)` for every node whose config carries non-blank
   `code` (`POLARS`, `EXPLORE`, `SCENARIO_EXPANDER`, `MODEL_SCORE` post-code, `DATA_INPUT`
   post-load code, `EXTERNAL_FILE`). It reuses the receiver-aware AST walk with an optional
   report mode returning every call in evaluation order, categorized as:
@@ -2315,7 +2318,8 @@ present a structural or schema result as execution evidence.
   aggregation in the same code feeds (measured over a 5M-row source, sharing a sort peaked
   17 % and a left join 34 to 56 % higher than recomputing them); and an unregistered,
   unresolved or unparseable call names none. (`LazyFrame.map_batches(..., slice_pushdown=True)`
-  is not exempt: on Polars 2.0 its function still sees every row under a limit.) The boundary
+  is not exempt: on Polars 2.0 its function still sees every row under a limit.)
+  `joins_frames` is true when a reported registered call is a `join` or `join_asof`. The boundary
   walk's own output is unchanged: the report mode is an optional argument and builtin fact
   rules apply only in report mode.
 - **Every builder declares its recompute cost.** `NodeRegistryEntry` carries

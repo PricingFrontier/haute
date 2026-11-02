@@ -37,6 +37,7 @@ from haute._chunked_writes import (
     WriteRecipe,
     check_recipe_equivalence,
 )
+from haute._edge_join import EDGE_JOIN_DEFAULT_HOW
 from haute._execute_lazy import (
     _GC_BATCH_INTERVAL,
     NodeBoundary,
@@ -1200,7 +1201,7 @@ class _Walk:
             submodels=self.graph.submodels,
             preamble=self.graph.preamble or "",
         )
-        limit_inputs = self._inputs_the_limit_reaches(run)
+        limit_inputs = self._inputs_the_limit_reaches(run, facts)
         blocks_the_limit: dict[str, bool] = {}
         for node_id in self.run_order:
             node_facts = facts.get(node_id)
@@ -1234,13 +1235,20 @@ class _Walk:
                 shared.add(key)
         return frozenset(shared)
 
-    def _inputs_the_limit_reaches(self, run: frozenset[str]) -> dict[str, tuple[str, ...]]:
+    def _inputs_the_limit_reaches(
+        self,
+        run: frozenset[str],
+        facts: Mapping[str, projection_planner.NodeRecomputeFacts],
+    ) -> dict[str, tuple[str, ...]]:
         """Each node's parents a row limit on its output reaches through it.
 
-        A node with one input passes the limit to it, and an Edge Join to its base
-        input, the probe side; its join side is read whole either way. Of a node with
-        several inputs the analysis cannot tell which the limit reaches, so it names
-        none: a blocker above it is not a reason to share its frame.
+        A node with one input passes the limit to it, unless its code joins frames (it
+        may join its input as the lookup side, read whole). An Edge Join passes it to
+        its probe side, the one whose rows it keeps: its base input for a left, semi or
+        anti join, its join input for a right join; the other side is read whole, and
+        of an inner, full or cross join neither side is proven. Of a node with several
+        inputs the analysis cannot tell which the limit reaches, so it names none: a
+        blocker above it is then not a reason to share its frame.
         """
         inputs: dict[str, list[GraphEdge]] = {node_id: [] for node_id in self.run_order}
         for edge in self.graph_plan.relevant_edges:
@@ -1248,9 +1256,13 @@ class _Walk:
                 inputs[edge.target].append(edge)
         reached: dict[str, tuple[str, ...]] = {}
         for node_id, edges in inputs.items():
-            if self.node_map[node_id].data.nodeType is NodeType.EDGE_JOIN:
-                reached[node_id] = tuple(e.source for e in edges if e.targetHandle == "base")
-            elif len(edges) == 1:
+            node = self.node_map[node_id]
+            node_facts = facts.get(node_id)
+            if node.data.nodeType is NodeType.EDGE_JOIN:
+                how = node.data.config.get("how") or EDGE_JOIN_DEFAULT_HOW
+                probe = _EDGE_JOIN_PROBE_ROLE.get(how)
+                reached[node_id] = tuple(e.source for e in edges if e.targetHandle == probe)
+            elif len(edges) == 1 and not (node_facts is not None and node_facts.joins_frames):
                 reached[node_id] = (edges[0].source,)
             else:
                 reached[node_id] = ()
@@ -2163,6 +2175,9 @@ _NODE_STAGES = {WalkPurpose.SINK: "lazy_build"}
 # does not share a subplan of its own: its common-subplan elimination caches a simple
 # diamond's producer, which stops a preview's row limit reaching the source.
 _DISPLAY_COLLECT_OPTIMIZATIONS = pl.QueryOptFlags(comm_subplan_elim=False)
+
+# The Edge Join input a row limit on its output reaches: the side whose rows it keeps.
+_EDGE_JOIN_PROBE_ROLE = {"left": "base", "semi": "base", "anti": "base", "right": "join"}
 
 # Node types whose builders read their input through a Python scan (eager scoring, the
 # rating miss guard, online optimiser apply, scenario expansion, OUTPUT assembly, the

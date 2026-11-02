@@ -874,15 +874,15 @@ def test_a_frame_read_through_a_python_scan_is_not_shared(reader: NodeType) -> N
     assert _shared_by(graph, "both") == set()
 
 
-def _joined_graph(*, grouped_side: str) -> PipelineGraph:
-    """An Edge Join of quotes and a grouped lookup, read by two branches that meet."""
+def _joined_graph(*, grouped_side: str, how: str = "left") -> PipelineGraph:
+    """An Edge Join of quotes and a grouped input, read by two branches that meet."""
     other_side = "join" if grouped_side == "base" else "base"
     return PipelineGraph(
         nodes=[
             _node("quotes", NodeType.DATA_INPUT),
             _node("lookup", NodeType.DATA_INPUT),
             _node("grouped", NodeType.POLARS, code="df = lookup.group_by('k').agg(pl.len())"),
-            _node("joined", NodeType.EDGE_JOIN, how="left", on=["k"]),
+            _node("joined", NodeType.EDGE_JOIN, how=how, on=["k"]),
             _node("a", NodeType.POLARS, code="df = joined.select('k')"),
             _node("b", NodeType.POLARS, code="df = joined.select(k2='k')"),
             _node("both", NodeType.POLARS, code="df = pl.concat([a, b], how='diagonal')"),
@@ -899,13 +899,50 @@ def _joined_graph(*, grouped_side: str) -> PipelineGraph:
     )
 
 
-def test_a_blocker_on_a_joins_lookup_side_does_not_share_the_join() -> None:
-    """The limit still reaches the join's probe side, which a cache would read whole."""
-    assert _shared_by(_joined_graph(grouped_side="join"), "both") == set()
+@pytest.mark.parametrize(
+    ("grouped_side", "how"),
+    [("join", "left"), ("join", "semi"), ("base", "right"), ("base", "inner"), ("join", "full")],
+)
+def test_a_blocker_off_a_joins_probe_side_does_not_share_the_join(
+    grouped_side: str, how: str
+) -> None:
+    """The limit still reaches the side whose rows the join keeps (a right join keeps
+    its join input's), which a cache would read whole; of an inner or full join no
+    side is proven."""
+    assert _shared_by(_joined_graph(grouped_side=grouped_side, how=how), "both") == set()
 
 
-def test_a_blocker_on_a_joins_probe_side_shares_the_join() -> None:
-    assert _shared_by(_joined_graph(grouped_side="base"), "both") == {"joined"}
+@pytest.mark.parametrize(("grouped_side", "how"), [("base", "left"), ("join", "right")])
+def test_a_blocker_on_a_joins_probe_side_shares_the_join(grouped_side: str, how: str) -> None:
+    assert _shared_by(_joined_graph(grouped_side=grouped_side, how=how), "both") == {"joined"}
+
+
+def test_code_joining_its_one_input_as_a_lookup_does_not_inherit_its_blocker() -> None:
+    """The node's single input may be the join's lookup side, read whole either way."""
+    graph = PipelineGraph(
+        nodes=[
+            _node("src", NodeType.DATA_INPUT),
+            _node("grouped", NodeType.POLARS, code="df = src.group_by('k').agg(pl.len())"),
+            _node(
+                "joined",
+                NodeType.POLARS,
+                code="df = pl.scan_parquet('quotes.parquet').join(grouped, on='k', how='left')",
+            ),
+            _node("a", NodeType.POLARS, code="df = joined.select('k')"),
+            _node("b", NodeType.POLARS, code="df = joined.select(k2='k')"),
+            _node("both", NodeType.POLARS, code="df = pl.concat([a, b], how='diagonal')"),
+        ],
+        edges=[
+            _edge("src", "grouped"),
+            _edge("grouped", "joined"),
+            _edge("joined", "a"),
+            _edge("joined", "b"),
+            _edge("a", "both"),
+            _edge("b", "both"),
+        ],
+    )
+
+    assert _shared_by(graph, "both") == set()
 
 
 _COUNTING_PREAMBLE = """
@@ -915,21 +952,25 @@ def score(frame):
     SEEN.append(frame.height)
     return frame
 
-def seen(values):
+def doubled(values):
     SEEN.append(len(values))
-    return values
+    return values * 2
 """
 
 
-def _real_diamond(scratch: Path, shared_code: str) -> tuple[WalkResult, list[int]]:
+def _real_diamond(
+    scratch: Path, shared_code: str, *, column: str = "x"
+) -> tuple[WalkResult, list[int]]:
     """The executor's own builders run every node's declared code; SEEN counts the rows a
-    Python function in *shared* is handed."""
+    Python function in *shared* is handed. Both branches read *column* of *shared*."""
     graph = PipelineGraph(
         nodes=[
             _source(scratch, "src", pl.DataFrame({"x": list(range(1_000))})),
             _node("shared", NodeType.POLARS, code=shared_code),
-            _node("low", NodeType.POLARS, code="df = shared.select('x')"),
-            _node("high", NodeType.POLARS, code="df = shared.select(x=pl.col('x') + 1_000)"),
+            _node("low", NodeType.POLARS, code=f"df = shared.select(v=pl.col('{column}'))"),
+            _node(
+                "high", NodeType.POLARS, code=f"df = shared.select(v=pl.col('{column}') + 1_000)"
+            ),
             _node("both", NodeType.POLARS, code="df = pl.concat([low, high])"),
         ],
         edges=[
@@ -964,13 +1005,15 @@ def test_a_limited_preview_computes_a_python_step_it_shares_once(haute_scratch: 
 def test_a_limited_preview_lets_its_limit_reach_an_elementwise_step(haute_scratch: Path) -> None:
     result, seen = _real_diamond(
         haute_scratch,
-        "df = src.with_columns(y=pl.col('x').map_batches(seen, return_dtype=pl.Int64, "
+        "df = src.with_columns(y=pl.col('x').map_batches(doubled, return_dtype=pl.Int64, "
         "is_elementwise=True))",
+        column="y",
     )
 
-    assert sum(seen) < 1_000
+    # The function ran, on fewer rows than the source holds, and its values are shown.
+    assert 0 < sum(seen) < 1_000
     assert "CACHE" not in result.frames["low"].explain(optimized=False)
-    assert result.collected["both"]["x"].to_list() == list(range(10))
+    assert result.collected["both"]["v"].to_list() == [2 * x for x in range(10)]
 
 
 def test_a_preview_collect_runs_without_polars_subplan_sharing(
