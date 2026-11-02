@@ -1769,6 +1769,43 @@ describe("request() edge cases", () => {
     }
   })
 
+  it("lets a slow Catch up and Spin off answer: the server bounds their fetch", async () => {
+    // Their fetch may wait out a credential helper's sign-in, up to the server's 60
+    // seconds: a 30-second browser deadline would report a failure the server then undoes.
+    vi.useFakeTimers()
+    try {
+      const fastForwardBody = { remote: "origin", working_branch: "dev", fast_forwarded: ["dev"] }
+      const branchAwayBody = { working_branch: "dev", set_aside_as: "dev-2026-11-02" }
+      mockFetch.mockImplementation(
+        (url: string, options?: RequestInit) =>
+          new Promise((resolve, reject) => {
+            const signal = options?.signal as AbortSignal | undefined
+            signal?.addEventListener(
+              "abort",
+              () => reject(new DOMException("Aborted", "AbortError")),
+              { once: true },
+            )
+            setTimeout(
+              () =>
+                resolve(
+                  jsonResponse(url === "/api/git/fast-forward" ? fastForwardBody : branchAwayBody),
+                ),
+              45 * 1000,
+            )
+          }),
+      )
+
+      const caughtUp = gitFastForward("origin")
+      const spunOff = gitBranchAway("origin")
+      await vi.advanceTimersByTimeAsync(45 * 1000)
+
+      await expect(caughtUp).resolves.toEqual(fastForwardBody)
+      await expect(spunOff).resolves.toEqual(branchAwayBody)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("preserves caller-initiated aborts as AbortError", async () => {
     mockFetch.mockImplementation((_url: string, options?: RequestInit) =>
       new Promise((_resolve, reject) => {

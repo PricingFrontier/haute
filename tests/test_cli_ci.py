@@ -26,6 +26,7 @@ from haute._scaffold import (
     workbench_ci_files,
 )
 from haute.cli import cli
+from tests._git_helpers import git_run, install_hook
 
 _VALUES = {
     "DATABRICKS_MLFLOW_HOST": "https://adb-9.azuredatabricks.net",
@@ -291,6 +292,135 @@ def test_update_follows_a_change_of_provider(runner, project: Path) -> None:
     assert result.exit_code == 0, result.output
     assert (project / ".gitlab-ci.yml").is_file()
     assert not (project / ".github").exists()
+
+
+def _to_provider(project: Path, provider: str) -> None:
+    toml = project / "haute.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8").replace('provider = "github"', f'provider = "{provider}"'),
+        encoding="utf-8",
+    )
+
+
+def _in_a_repository(project: Path, *, working_branch: str | None) -> None:
+    """*project* committed in a repository of its own, with *working_branch* chosen as the
+    editor chooses one (its ledger checked out), or none."""
+    from haute._git_setup import set_working_branch
+
+    git_run(project, "init", "-b", "main")
+    git_run(project, "config", "user.name", "Test Actuary")
+    git_run(project, "config", "user.email", "test@example.com")
+    git_run(project, "add", "-A")
+    git_run(project, "commit", "-m", "The project")
+    if working_branch is not None:
+        set_working_branch(working_branch, project, create=True, cwd=project)
+
+
+def test_update_records_a_workflow_it_adds_for_the_next_commit(runner, project: Path) -> None:
+    # Commit takes a new file only in the pipeline folder, so a workflow a newer Haute adds
+    # never reached version history: the branch merged without its deploy workflow.
+    _in_a_repository(project, working_branch="pricing-dev")
+    _to_provider(project, "gitlab")
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
+    saved = git_run(project, "show", "--name-only", "--format=", "pricing-dev-save").splitlines()
+    assert ".gitlab-ci.yml" in saved
+    assert git_run(project, "status", "--porcelain", "--", ".gitlab-ci.yml") == ""
+    assert "Recorded in version history: .gitlab-ci.yml" in result.output
+    # What it changed or removed in tracked files is left on disk, for review and Commit.
+    assert ".github/workflows/ci.yml" not in saved
+    assert git_run(project, "status", "--porcelain", "--", ".github/workflows/ci.yml") == (
+        "D .github/workflows/ci.yml"
+    )
+
+
+def test_update_names_a_file_it_adds_that_it_could_not_record(runner, project: Path) -> None:
+    _in_a_repository(project, working_branch=None)
+    _to_provider(project, "gitlab")
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
+    assert git_run(project, "status", "--porcelain", "--", ".gitlab-ci.yml") == "?? .gitlab-ci.yml"
+    assert "no working branch is chosen" in result.output
+    assert "Not yet in version history: .gitlab-ci.yml" in result.output
+    assert "git status" in result.output
+
+
+def test_update_records_a_workflow_an_earlier_run_left_uncommitted(runner, project: Path) -> None:
+    # A project already in that state: the workflow on disk as generated, never committed.
+    # Run again, the update finds it unchanged and records it all the same.
+    from haute._git_setup import set_working_branch
+
+    _in_a_repository(project, working_branch=None)
+    _to_provider(project, "gitlab")
+    assert runner.invoke(cli, ["ci", "update"]).exit_code == 0
+    set_working_branch("pricing-dev", project, create=True, cwd=project)
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
+    assert "unchanged .gitlab-ci.yml" in result.output
+    saved = git_run(project, "show", "--name-only", "--format=", "pricing-dev-save").splitlines()
+    assert ".gitlab-ci.yml" in saved
+    assert "Recorded in version history: .gitlab-ci.yml" in result.output
+
+
+def test_update_records_nothing_while_the_checkout_is_on_another_branch(
+    runner, project: Path
+) -> None:
+    # Recording on the ledger would check it out: never from under a branch the analyst
+    # switched to in git, whose files it would replace.
+    _in_a_repository(project, working_branch="pricing-dev")
+    git_run(project, "switch", "-c", "deployment-fix")
+    (project / "README.md").write_text("# deployment fix\n", encoding="utf-8")
+    git_run(project, "add", "README.md")
+    git_run(project, "commit", "-m", "Deployment fix")
+    tips = {
+        branch: git_run(project, "rev-parse", branch)
+        for branch in ("pricing-dev", "pricing-dev-save", "deployment-fix")
+    }
+    _to_provider(project, "gitlab")
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
+    assert git_run(project, "branch", "--show-current") == "deployment-fix"
+    assert {branch: git_run(project, "rev-parse", branch) for branch in tips} == tips
+    assert (project / "README.md").read_text(encoding="utf-8") == "# deployment fix\n"
+    assert "deployment-fix" in result.output
+    assert "Not yet in version history: .gitlab-ci.yml" in result.output
+
+
+def test_update_records_a_file_a_failed_capture_left_staged(runner, project: Path) -> None:
+    # A capture stages its files before committing: one whose commit a hook refused leaves
+    # them staged, no longer untracked, and the next run must still take them.
+    _in_a_repository(project, working_branch="pricing-dev")
+    _to_provider(project, "gitlab")
+    hook = install_hook(project, "pre-commit", "#!/bin/sh\nexit 1\n")
+
+    failed = runner.invoke(cli, ["ci", "update"])
+
+    assert failed.exit_code == 0, failed.output
+    assert "Not yet in version history: .gitlab-ci.yml" in failed.output
+    hook.unlink()
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
+    saved = git_run(project, "show", "--name-only", "--format=", "pricing-dev-save").splitlines()
+    assert ".gitlab-ci.yml" in saved
+    assert "Recorded in version history: .gitlab-ci.yml" in result.output
+
+
+def test_update_outside_a_repository_records_nothing(runner, project: Path) -> None:
+    _to_provider(project, "gitlab")
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
+    assert "version history" not in result.output
 
 
 @pytest.fixture

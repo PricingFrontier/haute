@@ -238,6 +238,22 @@ and `identity_required`; a `GitDomainError` or
 the pathspec-scoped commit of a later save never takes them; `POST /api/git/capture` takes
 them later.
 
+`haute ci update` and a `haute init` re-run capture through it too, with
+`capture_new_files` (`haute/cli/_init_cmd.py`): of the files they generate (every generated
+file, so one an earlier run wrote and nobody committed is taken too) and the other files a
+re-run wrote, those Git does not track yet, in one save whose default message names them:
+untracked (`git ls-files --others --exclude-standard -z` on their literal paths) or staged as
+an addition against `HEAD` and never committed (`git diff --cached --name-only
+--diff-filter=A`), as a capture whose commit a hook refused leaves its files, so the next run
+still takes them. Their changes to tracked files, and the workflows they prune, are left on
+disk for review and the milestone's sweep. Since `commit_save` checks the ledger out, the
+capture is made only while the checkout is on the chosen working branch's ledger; on any other
+branch, or a detached `HEAD`, it is skipped, saying where the checkout is, so no other
+branch's files are replaced. A capture made is reported with the files it took; one skipped or
+failed prints why and names its files as not yet in version history, pointing at `git
+status`, which lists new files where `git diff` does not. Outside a repository there is
+nothing to capture.
+
 Every public mutation entry point acquires the reentrant repository lock before its first
 precondition read and holds it through Git changes, clone-state writes, and any compensation.
 Nested calls such as `commit_milestone` → `commit_save` → `resolve_ledger` reuse the same
@@ -529,7 +545,9 @@ when `refs/heads/<ledger>` resolves, so a corrupted state value cannot reinterpr
 tag, or another revision expression as a branch. Push then performs a strict `git ls-remote
 --symref` inspection of the selected
 remote using the noninteractive remote environment (`_remote_env`) and process launcher, with
-`_FETCH_TIMEOUT_SECONDS` as its deadline. Unlike a best-effort poll, this helper must
+`_FETCH_TIMEOUT_SECONDS` (60 seconds, the publication's own) as its deadline: a credential
+helper may sign in before the remote answers, and Git Credential Manager's first sign-in
+after a quiet spell takes longer than ten seconds. Unlike a best-effort poll, this helper must
 preserve three outcomes: a successful advertisement with object refs, a successful
 advertisement with zero object refs, and failure. An unborn symbolic `HEAD` without an
 object SHA does not make the remote non-empty; any advertised branch or tag does. A timeout,
@@ -807,8 +825,10 @@ without replacing a successfully parsed response with a cleanup error.
   remote-list reads never perform network I/O. Every deliberate remote read runs through
   `_remote_env` and `_run_process_group`: no stdin, no terminal, no prompt, and a transport
   of the analyst's own run as configured. Fetch/inspection subprocesses use
-  `_FETCH_TIMEOUT_SECONDS`; the publication subprocess uses `_PUSH_TIMEOUT_SECONDS`; at either
-  deadline the whole process tree goes.
+  `_FETCH_TIMEOUT_SECONDS`; the publication subprocess uses `_PUSH_TIMEOUT_SECONDS`; both are
+  60 seconds, since each is an action the analyst started and is waiting on (Push, Catch up,
+  Spin off a copy) and a credential helper may sign in first; at either deadline the whole
+  process tree goes.
   Explicit Push inspection/publication, expected-default fetch, Catch up, and Spin off a
   copy are strict: timeout, launch failure, non-zero exit, or unreadable output refuses the
   operation and must never be reclassified as a zero-ref remote or successful refresh.

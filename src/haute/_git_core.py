@@ -49,9 +49,12 @@ _VOLATILE_ARTEFACTS = (
     ".webassets-cache",
 )
 
-# Hard ceiling on a single background fetch so a slow / unreachable / auth-walled
-# remote can never wedge the request thread (F1).
-_FETCH_TIMEOUT_SECONDS: float = 10.0
+# Hard ceiling on a single remote read (ls-remote or fetch) so a slow / unreachable /
+# auth-walled remote can never wedge the request thread (F1). Every read held to it is one
+# the analyst started and waits on (Push, Catch up, Spin off a copy), as the publication
+# is, so it is the publication's: a credential helper may sign in first, and Git Credential
+# Manager's first sign-in after a quiet spell takes longer than ten seconds.
+_FETCH_TIMEOUT_SECONDS: float = 60.0
 # Publication can legitimately take longer than a ref advertisement/fetch, but
 # it must still release the repository mutation lock on a wedged transport.
 _PUSH_TIMEOUT_SECONDS: float = 60.0
@@ -547,9 +550,9 @@ def _remote_env(cwd: Path | None = None) -> dict[str, str]:
 def _fetch_refs(remote: str, *refs: str, cwd: Path | None = None) -> bool:
     """Run a prompt-proof, time-bounded ``git fetch``; return success.
 
-    A background fetch must never block the UI on a credential prompt or a hung
-    connection (F1): terminal and SSH prompts are disabled and the subprocess is
-    killed after ``_FETCH_TIMEOUT_SECONDS``. Any failure — including timeout —
+    A fetch must never block the UI on a credential prompt or a hung connection
+    (F1): terminal and SSH prompts are disabled and the subprocess is killed after
+    ``_FETCH_TIMEOUT_SECONDS``. Any failure — including timeout —
     degrades silently to the locally-known remote-tracking refs; a fetch only
     ever updates ``refs/remotes/*``, so failing to fetch breaks no local
     invariant. Callers serialise via ``_fetch_exec_lock`` (shared object store).
