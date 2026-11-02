@@ -11,6 +11,7 @@ import { resolve } from "node:path"
 
 import { expect, test, type Locator, type Page } from "@playwright/test"
 
+import { withEdgeIdentity } from "../../src/utils/edgeIds"
 import { e2eProjectRoot, resetE2eProject } from "../projectIsolation"
 
 const quotesConfigPath = resolve(
@@ -313,11 +314,12 @@ function renameFrameHandle(
   oldHandle: string,
   newHandle: string,
 ): GraphEnvelope {
+  // The editor names a rebound connection by its new handle.
   const renamedEdges = frameEdges(envelope).map((edge) =>
     edge.source === API_NODE_ID &&
     edge.target === DOWNSTREAM_NODE_ID &&
     edge.sourceHandle === oldHandle
-      ? { ...edge, sourceHandle: newHandle }
+      ? withEdgeIdentity(edge, { sourceHandle: newHandle })
       : edge,
   )
   return { graph: { edges: renamedEdges } }

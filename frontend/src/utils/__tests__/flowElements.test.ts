@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest"
-import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import { NODE_TYPES } from "../nodeTypes"
 import {
   appEdge,
   appNode,
   deselectNodes,
-  edgeId,
   nodeLabel,
   selectOnlyNode,
 } from "../flowElements"
@@ -42,27 +40,14 @@ describe("flowElements", () => {
     expect(() => nodeLabel("unknown" as never, "mystery")).toThrow("Unknown node type")
   })
 
-  it("mints each edge id as the server does, from the whole connection identity", () => {
-    const { cases } = loadUiContractFixture<{
-      cases: { source: string; target: string; sourceHandle: string | null; targetHandle: string | null; id: string }[]
-    }>("edge_ids")
-    for (const { id, ...identity } of cases) {
-      expect(edgeId(identity)).toBe(id)
-      expect(appEdge(identity)).toEqual({ id, ...identity })
-    }
-    expect(new Set(cases.map((item) => item.id)).size).toBe(cases.length)
-  })
-
-  it("normalizes absent edge handles and refuses empty identity fields", () => {
-    expect(appEdge({ source: "source", target: "target" })).toEqual({
-      id: "e-source-target",
-      source: "source",
-      target: "target",
-      sourceHandle: null,
+  it("mints each edge's id from its identity and normalizes absent handles", () => {
+    expect(appEdge({ source: "quote", target: "price", sourceHandle: "policy" })).toEqual({
+      id: "e-quote-price-policy",
+      source: "quote",
+      target: "price",
+      sourceHandle: "policy",
       targetHandle: null,
     })
-    expect(() => edgeId({ source: "a", target: "b", sourceHandle: "" })).toThrow("empty")
-    expect(() => edgeId({ source: "", target: "b" })).toThrow("empty")
   })
 
   it("deselects nodes without mutating the original node objects", () => {

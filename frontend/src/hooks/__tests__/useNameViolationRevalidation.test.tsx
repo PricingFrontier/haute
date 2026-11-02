@@ -242,6 +242,24 @@ describe("useNameViolationRevalidation after an input binding edit", () => {
     expect(resolveEditorNodeIdentities).toHaveBeenCalledTimes(2)
   })
 
+  it("lets an edit made while a check is unanswered supersede it", async () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument())
+    let answerFirst: (value: unknown) => void = () => {}
+    resolveEditorNodeIdentities
+      .mockImplementationOnce(() => new Promise((resolve) => { answerFirst = resolve }))
+      .mockResolvedValueOnce({ identities: [], violations: [] })
+    const { rerender } = renderHook(
+      ({ nodes, code }) => useNameViolationRevalidation({ nodes, edges, submodels: {}, preamble: code, buildContextGraph }),
+      { initialProps: { nodes: [quoteInput("policy")], code: "def rate_lookup():\n    pass" } },
+    )
+
+    rerender({ nodes: [quoteInput("rate_lookup")], code: "def rate_lookup():\n    pass" })
+    rerender({ nodes: [quoteInput("rate_lookup")], code: "" })
+    await waitFor(() => expect(resolveEditorNodeIdentities).toHaveBeenCalledTimes(2))
+    await act(async () => answerFirst({ identities: [], violations: [FRAME_HELPER] }))
+    expect(useDocumentStatusStore.getState().inputBindingViolations).toEqual([])
+  })
+
   it("asks after a definition gains a public input port", async () => {
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument())
     resolveEditorNodeIdentities.mockResolvedValue({ identities: [], violations: [RESERVED, PORT_HELPER] })

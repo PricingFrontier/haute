@@ -1,4 +1,5 @@
 import type { Edge, Node, XYPosition } from "@xyflow/react"
+import { edgeId } from "./edgeIds"
 import { NODE_TYPE_META, type NodeTypeValue } from "./nodeTypes"
 
 type AppNodeParams = {
@@ -71,34 +72,6 @@ export function nodeLabel(type: NodeTypeValue, id: string): string {
   }
   const match = id.match(/(\d+)$/)
   return `${meta.name} ${match ? match[1] : id}`
-}
-
-function edgeIdField(value: string): string {
-  if (value === "") throw new Error("An edge id cannot be minted from an empty endpoint or handle")
-  return value.replaceAll("~", "~0").replaceAll("-", "~1")
-}
-
-/**
- * The edge's id: an injective encoding of its four-field identity, minted
- * exactly as the server mints it (`haute._graph_utils._edge_id`), so a
- * connection keeps its id through save and reload and two distinct
- * connections never share one. Each present field is escaped (`~` as `~0`,
- * `-` as `~1`) and joined with `-` after `e`; absent trailing handles are left
- * off, and an absent source handle before a target handle is empty.
- */
-export function edgeId({
-  source,
-  target,
-  sourceHandle = null,
-  targetHandle = null,
-}: AppEdgeParams): string {
-  const fields = [edgeIdField(source), edgeIdField(target)]
-  if (targetHandle !== null) {
-    fields.push(sourceHandle === null ? "" : edgeIdField(sourceHandle), edgeIdField(targetHandle))
-  } else if (sourceHandle !== null) {
-    fields.push(edgeIdField(sourceHandle))
-  }
-  return ["e", ...fields].join("-")
 }
 
 export function deselectNodes<T extends { selected?: boolean }>(nodes: T[]): T[] {

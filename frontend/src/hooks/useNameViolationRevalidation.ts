@@ -52,9 +52,9 @@ function bindingEdited(previousKey: string, nextKey: string): boolean {
  * answers with the violations that remain, which the banner and the save/run
  * fence follow. In any other document, an edit to an existing API Input's frame
  * labels or a definition's public input ports asks the same, and so does any
- * such change while one of their violations is showing; the violations with a
- * binding go to the editor that set it. A newer edit supersedes an answer
- * still in flight. Positions are left out of the change key, so dragging a node
+ * such change or preamble edit while one of their violations is showing or a
+ * request is unanswered; the violations with a binding go to the editor that
+ * set it. A newer edit supersedes an answer still in flight. Positions are left out of the change key, so dragging a node
  * asks nothing.
  */
 export function useNameViolationRevalidation({
@@ -74,6 +74,8 @@ export function useNameViolationRevalidation({
 }): void {
   const fenced = useDocumentStatusStore((state) => state.nameFence !== null)
   const requestSerial = useRef(0)
+  // Whether the latest request is unanswered: until it is, any change asks again.
+  const pending = useRef(false)
   const previousBindings = useRef<string | null>(null)
 
   const bindingsKey = useMemo(
@@ -93,14 +95,16 @@ export function useNameViolationRevalidation({
   useEffect(() => {
     const previous = previousBindings.current
     previousBindings.current = bindingsKey
-    if (!fenced) {
+    if (!fenced && !pending.current) {
       const showing = useDocumentStatusStore.getState().inputBindingViolations.length > 0
       if (!showing && (previous === null || !bindingEdited(previous, bindingsKey))) return
     }
     const request = ++requestSerial.current
+    pending.current = true
     resolveEditorNodeIdentities({ nodes: [], graph: buildContextGraph() })
       .then((response) => {
         if (request !== requestSerial.current) return
+        pending.current = false
         const violations = response.violations ?? []
         const store = useDocumentStatusStore.getState()
         store.setNameViolations(violations)
@@ -108,6 +112,7 @@ export function useNameViolationRevalidation({
       })
       .catch((error: unknown) => {
         if (request !== requestSerial.current) return
+        pending.current = false
         // The banner and the editors keep the last answer, so the fence stays closed.
         useToastStore.getState().addToast(
           "error",

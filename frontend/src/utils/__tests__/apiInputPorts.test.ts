@@ -29,6 +29,8 @@ import {
   edgeInputName,
 } from "../apiInputPorts"
 import { buildGraph } from "../buildGraph"
+import { edgeId } from "../edgeIds"
+import { appEdge } from "../flowElements"
 import { NODE_TYPES } from "../nodeTypes"
 import type { SimpleEdge, SimpleNode } from "../../panels/editors/_shared"
 
@@ -577,6 +579,26 @@ describe("migrateApiInputEdges", () => {
     expect(edges.map((e) => e.sourceHandle)).toEqual(["quotes", "drivers"])
     // The untouched edge keeps its object identity.
     expect(edges[1]).toBe(driversEdge)
+  })
+
+  it("names a rebound edge by its new frame, so a frame reusing the old label connects under its own id", () => {
+    const policy = appEdge({ source: "quote", target: "price", sourceHandle: "policy" })
+    const { edges } = migrateApiInputEdges({
+      nodeId: "quote",
+      prevConfig: { tables: [table("policy", true)] },
+      nextConfig: { tables: [renamed(table("policy", true), "renamed_policy")] },
+      edges: [policy],
+    })
+    expect(edges).toEqual([expect.objectContaining({
+      id: edgeId({ source: "quote", target: "price", sourceHandle: "renamed_policy" }),
+      sourceHandle: "renamed_policy",
+    })])
+
+    const reused = appEdge({ source: "quote", target: "price", sourceHandle: "policy" })
+    const both = [...edges, reused]
+    expect(new Set(both.map((edge) => edge.id)).size).toBe(2)
+    // Deleting the new connection leaves the renamed one.
+    expect(both.filter((edge) => edge.id !== reused.id)).toEqual(edges)
   })
 
   it("returns the same edges reference when no port was renamed", () => {

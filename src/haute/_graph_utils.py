@@ -94,7 +94,7 @@ def _edge_id(
     therefore never share an id, whatever their names: ``base`` to
     ``rates_apply`` is ``e-base-rates_apply`` and ``base_rates`` to ``apply`` is
     ``e-base_rates-apply``. The browser mints the same id
-    (``frontend/src/utils/flowElements.ts::edgeId``), so a connection keeps its
+    (``frontend/src/utils/edgeIds.ts::edgeId``), so a connection keeps its
     id through save and reload; ``tests/fixtures/ui_contracts/edge_ids.json``
     holds both to it.
     """

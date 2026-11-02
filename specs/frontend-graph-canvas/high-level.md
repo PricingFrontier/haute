@@ -658,10 +658,11 @@ candidate, with the error toast.
   selection). A document loaded without violations is not fenced or revalidated this way,
   except for its input bindings: after an edit changes the frame labels of an API Input or the
   public input ports of a definition that the graph already held (a new node or definition
-  asks nothing), the browser sends the same request, and while any of the returned
-  violations with a `binding` remain it sends it again after each such change or preamble
-  edit. Those violations are shown where the name is set: under the API Input's frame label
-  field (node editors) and in the drilled Input inspector beside the public input port. Save
+  asks nothing), the browser sends the same request. It sends it again after each such
+  change or preamble edit while any returned violation with a `binding` remains, or while
+  a request is still unanswered, which the later one supersedes. Those violations are
+  shown where the name is set: under the API Input's frame label field (node editors)
+  and in the drilled Input inspector beside the public input port. Save
   refuses them as before; they add no fence.
 - **Recovery canvas rendering and minimal repair.** Unavailable and blocked nodes
   remain selectable and expose their diagnostics, source/config location, and
@@ -892,15 +893,18 @@ candidate, with the error toast.
   with `~` escaped as `~0` and `-` as `~1`, joined by `-`, an absent trailing
   handle left off and an absent source handle before a target handle left
   empty. The server (`haute._graph_utils._edge_id`) and the browser
-  (`edgeId` in `frontend/src/utils/flowElements.ts`) mint it identically,
+  (`edgeId` in `frontend/src/utils/edgeIds.ts`) mint it identically,
   held to one shared fixture (`tests/fixtures/ui_contracts/edge_ids.json`), so
   distinct connections never share an id whatever their node names
   (`base` → `rates_apply` and `base_rates` → `apply`), and an id survives
-  parse, save, reload and a ready document's recovery snapshot unchanged. Paste
-  mints each copied connection's id through the same function from its new
-  endpoints and its original handles, so a two-frame Quote Input's parallel
+  parse, save, reload and a ready document's recovery snapshot unchanged. Every
+  edit that gives an existing connection another endpoint or handle mints its id
+  again from the result (`withEdgeIdentity`): paste (new endpoints, original
+  handles), a frame rename rebinding its connections, a retargeted submodel
+  input and swapped Edge Join inputs. So a two-frame Quote Input's parallel
   connections stay two after a paste, deleting one leaves the other, and one
-  undo restores exactly the deleted one. A degraded document's recovery
+  undo restores exactly the deleted one; and a renamed frame's connection cannot
+  share its id with a later connection to a new frame under the old label. A degraded document's recovery
   connections keep their own `edge:` ids, which also count each duplicate
   declaration.
 - `NodePanel` separates the recovery diagnostic boundary from healthy editor input-identity
