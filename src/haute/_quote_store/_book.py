@@ -1118,7 +1118,7 @@ class QuoteBook:
         )
         if held.rowcount != 1:
             raise QuoteNotFoundError(f"The app keeps no quote {identity_label(reference, 1)}.")
-        highest = connection.execute(
+        highest: int = connection.execute(
             select(func.max(self._details.c.quote_option)).where(
                 self._details.c.quote_reference == reference
             )
