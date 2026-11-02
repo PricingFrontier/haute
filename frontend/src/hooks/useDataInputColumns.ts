@@ -60,9 +60,10 @@ export function useDataInputColumns(
 
   const addToast = useToastStore((s) => s.addToast)
 
+  const globalConstants = useGraphStore((s) => s.globalConstants)
   const graphFingerprint = useMemo(
-    () => computeStructuralFingerprint(allNodes, edges, preamble),
-    [allNodes, edges, preamble],
+    () => computeStructuralFingerprint(allNodes, edges, preamble, globalConstants),
+    [allNodes, edges, preamble, globalConstants],
   )
 
   // Keep fresh refs for allNodes/edges so the effect body reads current data

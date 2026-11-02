@@ -26,6 +26,7 @@ import useUIStore, { type ExplorePane, type ModellingPane, type OptimiserPane } 
 import useNodeDataStore, { profileForConsumer } from "../stores/useNodeDataStore"
 import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
+import useGraphStore from "../stores/useGraphStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
 import { recoverySummaryKey, useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
@@ -1152,6 +1153,7 @@ function NodePanelContent({
     setOptimiserPaneIssues({ nodeId, panes })
   }, [])
   const activeSource = useSettingsStore((s) => s.activeSource)
+  const globalConstants = useGraphStore((s) => s.globalConstants)
   const documentDiagnostics = useDocumentStatusStore((s) => s.diagnostics)
   const canRepair = useDocumentStatusStore((s) => s.capabilities?.can_repair === true)
   const reservedApiInputFrameLabels = useDocumentStatusStore(
@@ -1168,9 +1170,16 @@ function NodePanelContent({
   // picker never renders members from a superseded identity.
   const exploreConfigHash = useMemo(() => {
     if (!node || effectiveNodeType(node) !== NODE_TYPES.EXPLORE) return null
-    const identity = buildNodeDataCacheIdentity({ node, allNodes, edges, submodels, preamble })
+    const identity = buildNodeDataCacheIdentity({
+      node,
+      allNodes,
+      edges,
+      submodels,
+      preamble,
+      globalConstants,
+    })
     return hashConfig({ graph: identity, source: activeSource })
-  }, [node, allNodes, edges, submodels, preamble, activeSource])
+  }, [node, allNodes, edges, submodels, preamble, globalConstants, activeSource])
 
   // The columns of the data this node reads, when another consumer of the
   // point has already established them; never a request of its own. Gated on

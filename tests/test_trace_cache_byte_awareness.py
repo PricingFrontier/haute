@@ -145,7 +145,7 @@ class TestTraceCacheOversizedEntry:
         assert stats["entries"] == 0
         assert stats["bytes"] == 0
 
-    def test_oversized_replacement_retains_existing_entry(self) -> None:
+    def test_oversized_replacement_evicts_existing_entry(self) -> None:
         small = pl.DataFrame({"x": [1]})
         big = pl.DataFrame({"x": list(range(100))})
         cache = _trace_shaped_cache(max_bytes=small.estimated_size())
@@ -155,12 +155,10 @@ class TestTraceCacheOversizedEntry:
 
         assert cache.put("fp", _trace_entry({"node": big})) is False
 
-        # A rejected replacement never destroys the previously retained
-        # value; callers learn explicitly that the new value was not stored.
-        retained = cache.get("fp")
-        assert retained is not None
-        assert retained["eager_outputs"]["node"].equals(small)
-        assert cache.stats()["bytes"] == small.estimated_size()
+        # The caller replaced the value, so the one it held is never served
+        # again; the caller learns explicitly that the new value was not stored.
+        assert cache.get("fp") is None
+        assert cache.stats()["bytes"] == 0
 
     def test_oversized_rejection_is_loud(self, caplog: pytest.LogCaptureFixture) -> None:
         df = pl.DataFrame({"x": [1, 2, 3]})

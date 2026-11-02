@@ -131,7 +131,6 @@ owns no work; the packages carry the plan, acceptance and evidence.
 | §3.1 Three worker mechanisms | `ROAD-WORKER-05` ([background jobs](background-jobs-api.md)) |
 | §3.2 Results store | `FSH-R03` ([frontend shared](frontend-shared.md)) |
 | §4.10 Node registry | `PCFG-R09` ([pipeline config](pipeline-config.md)) |
-| §4.10 Cache identity framework | `CACHE-S25` ([caching](caching.md)) |
 | §5.1 Generated browser contract | `API-R03` ([server API](server-api.md)) |
 | §5.4 Typed node configs | `PCFG-R07` ([pipeline config](pipeline-config.md)) |
 | §6 Specification drift: the `pipeline_dir` cwd fallback | `PCFG-R04` ([pipeline config](pipeline-config.md)) |

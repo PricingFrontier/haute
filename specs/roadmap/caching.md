@@ -39,18 +39,14 @@ measured limits of the existing consumers.
 | CACHE-S22 | Planned | P3 | The shapes that cannot carry a write recipe at all can. |
 | CACHE-S17 | Planned | P3 | Planning cost stays flat as graphs grow, a lease validates each part once per process, and the store's bookkeeping files are swept. |
 | CACHE-S18 | Planned | P3 | Full joins are written with a bounded number of scans. Measured 24-Sep-2026: about 2 s over native at 10M × 10M rows, so not yet worth building. |
-| CACHE-S25 | Planned | P3 | Cache identity hashes the whole canonical node config instead of classifying every field. |
-| CACHE-S26 | Planned | P1 | `LRUCache.put` evicts an existing key when a replacement value exceeds `max_bytes`, and `buildNodeDataCacheIdentity` includes `globalConstants` in the frontend node-data identity. |
 
 ## Planned improvements
 
 Delivery order is `CACHE-S17` → `CACHE-S22` → `CACHE-S18`, each gated on a
 measurement named in its own entry rather than started on the strength of its
 shape; `CACHE-S19` remains deferred. `CACHE-S13` is also measurement-gated:
-no measured preview approaches its timeout. `CACHE-S25`, from the
-[23 September 2026 codebase review](codebase-review-2026-09-23.md), sits
-outside that order: editor state now travels beside the node config. What
-is left is measured against cost rather than shape. A package must not bypass
+no measured preview approaches its timeout. What is left is measured
+against cost rather than shape. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
 specified. Every package builds on the node-output snapshot store (signature,
 slot index, column widening, retention, cross-process leases, and the
@@ -463,68 +459,3 @@ joins).
 **Dependencies:** None.
 
 **Evidence:** `src/haute/_chunked_writes.py`.
-
-### CACHE-S25 — Hash the whole canonical node config
-**Why:** The cache-identity framework declares a versioned field set for nine
-consumers and classifies every node-config field as included or excluded,
-failing on any unclassified field. Most of that classification exists to keep
-editor-only state (column lists, schema warnings, step errors) out of cache
-keys, because that state is stored inside the node config.
-
-**Plan:** Editor state travels beside the config (`NodeData.editor`), so key execution
-caches on the complete canonical config and delete the per-field
-classification. Keep the consumer contracts only where a consumer genuinely
-needs a narrower identity, and say why in the specification.
-
-**Acceptance:** Any change to a persisted config field changes the execution
-identity without a classification table; editor-state changes do not; the
-cache-identity tests are reduced to the remaining consumer contracts.
-
-**Dependencies:** None.
-
-**Owning specifications:** [caching](../caching/low-level.md).
-
-**Evidence:** `src/haute/_cache.py::CacheConsumerContract`;
-`src/haute/_cache.py::_classify_config_fields`;
-`src/haute/_cache.py::validate_cache_config_field_classifications`;
-`tests/test_cache_identity_contract.py`.
-
-### CACHE-S26 — Evict oversized `LRUCache` replacements and include `globalConstants` in frontend node-data identity
-**Why:** Two cache-coherency defects allow stale data to survive an update:
-1. In `LRUCache.put`, when `size > self._max_bytes` and `key in self._data`, the
-   method logs `replaced_existing=True` and returns `False` before calling
-   `self._remove_key(key)`. Updating an existing key with a value larger than
-   `max_bytes` leaves the stale previous entry in the cache under `key`.
-2. On the backend, `node_snapshot_signature` includes `global_constants` via
-   `graph_fingerprint(lineage)`. On the frontend, `buildNodeDataCacheIdentity`
-   computes `configHash` from upstream node configs, `edges`, `submodels` and
-   `activeSource` while omitting `globalConstants`. Editing a Global Constant
-   therefore leaves `configHash` and `exploreConfigHash` unchanged in `NodePanel`,
-   `useNodeDataCache`, `useDataInputColumns` and `useWholeDataAnswer`, serving
-   stale node-data availability or invoking callbacks that closed over the old
-   `buildGraph`.
-
-**Plan:** Call `self._remove_key(key)` in `LRUCache.put` before returning `False`
-when `replaced_existing` is true. Include `globalConstants` in
-`buildNodeDataCacheIdentity` (and thread it from `useGraphStore` through
-`NodePanel`, `useNodeDataCache`, `useDataInputColumns` and `useWholeDataAnswer`)
-so frontend and backend node-data identities move together when a Global Constant
-changes.
-
-**Acceptance:** Putting a value smaller than `max_bytes` followed by an update for
-the same key larger than `max_bytes` returns `False` and removes the prior cached
-value (`cache.get(key) is None`). Editing a Global Constant changes
-`buildNodeDataCacheIdentity` for downstream nodes and refreshes `useNodeDataCache`
-and `useWholeDataAnswer` against the updated graph.
-
-**Dependencies:** None.
-
-**Owning specifications:** [caching](../caching/low-level.md);
-[frontend shared](../frontend-shared/low-level.md#the-shared-data-cache).
-
-**Evidence:** `src/haute/_lru_cache.py::LRUCache.put`;
-`frontend/src/panels/dataPointIdentity.ts::buildNodeDataCacheIdentity`;
-`frontend/src/hooks/useNodeDataCache.ts::useNodeDataCache`;
-`frontend/src/panels/NodePanel.tsx`;
-`frontend/src/hooks/useDataInputColumns.ts::useDataInputColumns`;
-`frontend/src/panels/editors/shared/useWholeDataAnswer.ts::useWholeDataAnswer`.
