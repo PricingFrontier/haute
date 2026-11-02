@@ -447,10 +447,16 @@ therefore fail at the caller, consistent with the application's fail-loud policy
 
 ## Failure model
 
-> NOTE: Independent request-input edits can supersede each other while identity
-> resolution is pending, losing an earlier change. Retaining the pending draft
-> is tracked in [FSH-R10](../roadmap/frontend-shared.md#fsh-r10--retain-edits-during-input-identity-resolution).
-
+- Request-input edits made while their identities resolve build on one
+  another. The Quote Input editor shows the node's pending draft and each edit
+  extends it; the newest draft is committed once its identities resolve,
+  whatever order the replies arrive in, and an older draft's reply, success or
+  failure, changes nothing because the newer draft carries its edits. A failed
+  resolution of the newest draft is reported and returns the editor to the
+  committed configuration without rolling back anything committed before it. A
+  document or editing-capability change withdraws the draft and commits
+  nothing, and Save waits for the newest draft to commit before it reads the
+  graph.
 - A failed optimiser solve is recorded as a failed attempt beside the node's
   earlier result, never over that result's identity: the retained numbers keep
   the job, config, source and graph version that produced them, so they read as

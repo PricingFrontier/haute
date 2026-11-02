@@ -17,7 +17,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | File | Responsibility |
 | --- | --- |
 | `frontend/src/App.tsx` | `FlowEditor` — the canvas composition boundary: wires `<ReactFlow>` event props to interaction hooks, derives and renders the transient edge-join candidate, owns local selection/context-menu/dialog state, picks the active preview pane, adapts the shared Submodel creation policy, owns the Instance toolbar handler and the Submodel button's Dissolve mode (a lone selected submodel occurrence routes the button to `handleDissolveSubmodel`, one request at a time), and gates Save/Commit on git working-branch status (`saveProject`, the git flows' save before a milestone, a move, a switch or an identity retry: while the workbench is enabled, the form store's unsaved or uncaptured edits through a lazy import, then the workbench's tables fetched afresh, refusing with a toast when that fails, then the graph-commit fence, then the workbench nodes' connections held to those tables at once (`holdConnections`), then the pipeline). Reads the workbench's status once and removes each Workbench Input's and Workbench Output's connections to tables the form no longer has through `useWorkbenchConnections`, and hosts the workbench's view ([workbench](../workbench/low-level.md)): while `useWorkbenchStore.activeView` is the workbench's, the pipeline region (`data-testid="pipeline-view"`) is invisible and inert, the shortcut hook is disabled, Ctrl/Cmd+Enter is off, React Flow's delete and pan keys are null, the canvas's floating menus close on leaving, the lazy `WorkbenchToolbar` replaces `Toolbar` and the lazy `WorkbenchView` covers the region, given `resolveWorkbenchGraph` (the whole document from the refs, through `resolveGraphFromRefs`) to price the workbench's sample on; while the workbench is enabled, the palette column ends with `ViewSwitcher`. Exports `App`, which mounts `FlowEditor` inside `ReactFlowProvider`. |
-| `frontend/src/hooks/useGraphCommitController.ts` | The single state authority for selected-node config and label commits: assigns per-node request generations, captures the graph/document identity fence, resolves prospective node/API-frame identities, invokes the pure preflight planner, and applies one graph transaction, an undo step, only while the request still owns that fence. |
+| `frontend/src/hooks/useGraphCommitController.ts` | The single state authority for selected-node config and label commits: assigns per-node request generations, captures the graph/document identity fence, resolves prospective node/API-frame identities, invokes the pure preflight planner, and applies one graph transaction, an undo step, only while the request still owns that fence. Holds each request input's pending draft while its identities resolve and publishes it (`pendingNodeData`), so the editor builds every edit on the last one accepted. |
 | `frontend/src/utils/nodeUpdatePlan.ts` | Pure selected-node update planner: reconciles API-frame handles, migrates dependent mappings (a free-code original on an `edges` surface, a Transform or an External File, gains an `inputMapping` binding; a stepped original on one has its `source`/`join`/`concat` input references rewritten in place through `polarsStepInputs.ts` and never gains one), checks post-update input-name collisions, and returns either a complete root-graph/submodel candidate or a typed rejection without mutating the store. `frontend/src/utils/__tests__/nodeUpdatePlan.steps.test.ts` covers the stepped rewrite and its collision rejection; `nodeUpdatePlan.test.ts` the binding a coded Transform or External File gains. |
 | `frontend/src/nodes/PipelineNode.tsx` | Renders every known non-submodel node type at full detail regardless of zoom, plus the edge-join marker variant, and delegates unknown `nodeType` values to `UnavailablePipelineNode`; computes source/target `Handle` sets, including multi-frame api-input handles (row-mounted through the shared `FramePortRows` component) and edge-join geometry-dependent handle placement; each ordinary card uses one shared default port row with optional `inputs`/target content on the left and its node/output name plus optional source handle on the right; edge-join handles retain their specialised quiet treatment; owns api-input instance-name suppression and the zero-frame "No emitted frames" state. |
 | `frontend/src/nodes/nodeCanvasStyle.tsx` | `deriveNodeCanvasFlags` and `NodeTraceValuePill` — shared derivation of selection border, trace/hover-dimmed opacity (`0.25`), trace/change focus shadow (`_traceFocused` / `_changeFocused`), comparison diff shadow/outline (`_diffStatus`), and active `_traceValue` pill across the pipeline, submodel, and submodel-port node renderers. |
@@ -425,7 +425,31 @@ reconciliation rather than dropping them or committing a second mutation.
    editor-document identity before starting any asynchronous identity
    resolution. A resolver failure, a newer request for that node, a document
    replacement, or any intervening graph/registry replacement retires the
-   candidate without mutating graph or history. Once current, it asks
+   candidate without mutating graph or history.
+   A request-input config update (a Quote Input's or a Workbench Input's) is
+   accepted into the node's **pending draft** before its identities resolve.
+   `onUpdateNode` preflights the update against the committed graph — a refusal
+   returns `{ ok: false, error }` and leaves any draft unchanged — then makes the
+   update the node's draft, publishes it in `pendingNodeData`, and launches
+   resolution of the whole draft. `App.tsx` lays the published draft's `config`
+   over the panel node, so `NodePanel` and the editor build the next update on
+   the last accepted one rather than on the committed config, and independent
+   edits made while replies are outstanding accumulate in the draft. The newest
+   draft owns the commit: a reply for a draft that a newer update has replaced —
+   a success or a failure, arriving before or after the newer draft's — changes
+   nothing, reports nothing and settles `{ ok: true }`, because the newer draft
+   carries its edits. The newest draft's resolved result commits as one undo
+   entry and retires the draft. Its failure — a resolver error, a malformed
+   result, a refused final preflight, or a graph still changing after the
+   retries below — retires the draft, so the editor shows the committed config
+   again, and is reported by toast; nothing committed earlier is rolled back. A
+   rename of the node issued after the draft's request, a document or
+   editing-capability change, and unmount supersede the draft: its reply commits
+   nothing and reports that the update was superseded, and a document or
+   capability change also withdraws every published draft at once, so no edit
+   in the next document builds on one. Every request-input update resolves its
+   identities; none is committed on the strength of an earlier resolution.
+   Once current, it asks
    `nodeUpdatePlan.ts` to compute the complete tentative result before any
    store mutation: the new config and `applyApiInputConfigChange`'s edge
    rebind/prune outcome (owned by `utils/apiInputPorts.ts`). For a frame
@@ -451,7 +475,9 @@ reconciliation rather than dropping them or committing a second mutation.
    interfaces retry against the live graph within the same editable document
    (up to three attempts); positions, selection and preview metadata never
    invalidate it. A changed document, editing capability, unmount, or newer
-   request for the same node cancels the operation without retry. The pure preflight checks
+   request for the same node cancels the operation without retry; a newer
+   update of a request input's draft carries the replaced draft instead, as
+   above. The pure preflight checks
    each affected executable target's post-commit input-name set — edge names
    and the logical names they resolve to — for duplicates. On a collision the commit
    returns `{ ok: false, error }` and **nothing mutates** — no snapshot, no
@@ -1349,7 +1375,10 @@ array-only payload or omitted-edge compatibility branch is supported.
   registers every asynchronous API-input update and rename before returning
   control to the browser event loop. All App save entry points await that
   shared fence before `usePipelineAPI.handleSave` reads `graphRef`; a failed
-  commit blocks the save. `useNodeRenameSession` invokes its supplied rename
+  commit blocks the save. A request-input update whose draft a newer update
+  replaced settles successfully, so Save waits for the newest draft to commit
+  and saves the graph holding it; a pending draft itself is never saved, and
+  a failed newest draft blocks that save. `useNodeRenameSession` invokes its supplied rename
   handler synchronously (while still observing the result asynchronously), so
   the blur event registers its work before the following Save click runs.
 - **`RenameDialog` renders a single-line `<textarea>`, not
@@ -1568,7 +1597,9 @@ again through the editor and save paths.
     api-input emit-port edge reconciliation suite (Defect 1: emit-off
     prunes with a warning; W1.3: renaming a connected port rebinds its edge
     in one undo entry; W1.4: a blanked port label never reaches the graph;
-    editing a non-port field never prunes a valid edge); panel
+    editing a non-port field never prunes a valid edge; two column
+    deselections made while identity replies are outstanding both land,
+    whichever reply arrives first, and Save waits for them and saves both); panel
     open/close mutual exclusivity (Utility/Constants/Git/branch indicator);
     the Submodel button's Dissolve mode (a lone selected submodel occurrence
     reads Dissolve and is dissolved by one request however often the button
@@ -1596,6 +1627,17 @@ again through the editor and save paths.
     re-renders `Toolbar`, `NodePanel`, and `DataPreview` at most once across the
     drag sequence.
 - **Node/edge handlers — `frontend/src/hooks/__tests__/`:**
+  - `frontend/src/hooks/__tests__/useGraphCommitController.pending.test.ts` —
+    the commit fence and request-input pending drafts. With identity replies
+    held, edits to two columns and to two top-level fields, each built on the
+    published draft, commit together in one transaction whether the replies
+    arrive in order or reversed, and Save's wait settles only once that commit
+    is in `graphRef`; repeated edits of one field keep the latest value; a
+    replaced draft's failure is ignored while the newer draft lands, and the
+    newest draft's failure is reported, withdraws the draft and keeps what was
+    committed earlier; a refused update leaves the draft; a document,
+    capability or unmount change withdraws the draft at once and commits
+    nothing; a rename issued after an update supersedes it.
   - `frontend/src/hooks/__tests__/useGraphCanvasState.test.ts` and
     `frontend/src/hooks/__tests__/useGraphCanvasState.dragSimplification.test.ts`
     — conversion of

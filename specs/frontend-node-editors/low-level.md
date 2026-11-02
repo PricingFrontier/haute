@@ -76,7 +76,9 @@
   from `App.onUpdateNode`'s preflight: editors whose edits can trigger a frame rename (the
   ApiInputEditor label commit) surface `error` inline beside the offending field and clear it
   on the next successful commit; edits that cannot fail preflight may ignore the return value
-  unchanged. Every production supplier of the callback migrates with the type — including the
+  unchanged. For a request input, `{ ok: true }` means the edit was accepted into the node's
+  pending draft; the commit lands once its identities resolve, and a failure then is reported
+  by toast. Every production supplier of the callback migrates with the type — including the
   read-only inspector (`frontend/src/components/ReadOnlyNodeConfig.tsx`), whose inert no-op
   callback returns `{ ok: true }` — so the contract change is compile-time loud, not
   runtime-discovered. `InputSource`
@@ -140,6 +142,11 @@
    disabled while the prospective server identity resolves; failure remains inline and
    leaves the graph untouched. API-input frame changes likewise resolve the candidate
    identity before App atomically commits config, rebound edges, and dependent mappings.
+   Until then the panel renders the commit controller's pending draft config for the
+   node ([frontend-graph-canvas](../frontend-graph-canvas/low-level.md)), so
+   `ApiInputEditor` builds each later edit on the draft rather than on the committed
+   config; a refused update leaves the draft as it was, and when the draft is
+   retired (committed, failed or superseded) the editor shows the committed config.
 4. Schema, mapping, banding and rating editors derive visible rows from persisted config, accept
    user changes, normalise only at their documented conversion/update boundary, then invoke the
    panel callback. Rating factor changes filter `factorDtypes` atomically with `factors` and

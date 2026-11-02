@@ -17,7 +17,6 @@ to `FSH-R09` from the
 |---|---|---:|---|
 | FSH-R03 | Planned | P3 | The results store holds results; validation and optimiser logic move out. |
 | FSH-R06 | Planned | P3 | The stores carry one copy of each derivation and validator, no test-only action, no fabricated result sentinel, and their specification names the actions that exist. |
-| FSH-R10 | Planned | P2 | Independent request-input edits made while identity resolution is pending are retained together. |
 
 ## Planned improvements
 
@@ -73,36 +72,3 @@ remove, reset, recover and remove-connection only.
 `frontend/src/api/dispersion.ts::runDispersionEstimate`;
 `frontend/src/types/pipelineRepair.ts`;
 `frontend/src/stores/__tests__/useUIStore.dirty.derived.test.ts`.
-
-### FSH-R10 — Retain edits during input identity resolution
-**Why:** The [28 October review](codebase-review-2026-10-28.md) reproduced two
-API Input column deselections yielding `[true, false]` instead of
-`[false, false]` when both occur before identity resolution returns.
-`onUpdateNode` asynchronously resolves every request-input edit, without
-publishing a pending config. The editor builds each full update from unchanged
-props, and the controller invalidates the earlier request when the next starts.
-Its later whole-config result therefore loses an independent earlier edit.
-The superseded edit is announced by an error toast from `onUpdateNode` in
-`useGraphCommitController.ts`, so this is a P2 interaction failure rather than silent loss.
-A superseded-update toast does not preserve the user's intended configuration.
-
-**Plan:** Give request-input editing one authoritative pending draft or ordered
-edit stream so each edit builds on the last accepted intent while server-owned
-identities are resolved. Commit identities and graph references consistently;
-retain the existing document, capability and stale-response guards. Avoid
-resolving identities for changes that cannot change them only if the identity
-contract proves that distinction. Define pending, failed and superseded edit
-behaviour in frontend-shared and node-editor specifications first.
-
-**Acceptance:** Delay identity responses and edit two different columns and two
-different top-level config fields: both edits survive, including reversed reply
-order. Repeated edits of the same field keep the latest value. A failed resolution
-is visible and does not silently discard unrelated accepted edits. Switching
-documents or becoming read-only still prevents stale commits. Save waits for
-the final accepted draft and persists it. Extend the controller/editor tests.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/hooks/useGraphCommitController.ts`;
-`frontend/src/panels/NodePanel.tsx`;
-`frontend/src/panels/editors/ApiInputEditor.tsx`.

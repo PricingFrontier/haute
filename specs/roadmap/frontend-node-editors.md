@@ -258,8 +258,8 @@ leaves no usable stale confirmation. An unchanged empty draft still applies
 the inference, and an unchanged populated draft requires its existing explicit
 confirmation. Test with the actual editor and controlled request completion.
 
-**Dependencies:** None. `FSH-R10` owns a different race in ordinary config
-commit resolution; fixing that controller alone does not authenticate inference.
+**Dependencies:** None. Ordinary config commits hold a pending draft while
+identities resolve; that fence alone does not authenticate inference.
 
 **Evidence:** `frontend/src/panels/editors/ApiInputEditor.tsx`;
 `frontend/src/panels/editors/apiInputSchema.ts`.

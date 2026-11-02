@@ -98,6 +98,7 @@ import { shouldUseLiteGraphEffects } from "./utils/graphPerformance"
 import type { DrilledOccurrenceIdentity } from "./utils/submodelRuntimeTarget"
 import { effectiveNodeType, isSubmodelInstanceConfig, nodeData } from "./types/node"
 import type { HauteNodeData } from "./types/node"
+import { expectPlainObject } from "./types/guards"
 import { useScopedNodeSave } from "./hooks/useScopedNodeSave"
 import { useActiveNodeReveal } from "./hooks/useActiveNodeReveal"
 import BoxSelectionReset from "./components/BoxSelectionReset"
@@ -1380,7 +1381,7 @@ function FlowEditor() {
     ])
   }, [])
 
-  const { onUpdateNode, onRenameNode, waitForPendingCommits } = useGraphCommitController({
+  const { onUpdateNode, onRenameNode, waitForPendingCommits, pendingNodeData } = useGraphCommitController({
     graphRef,
     submodelsRef,
     readDocumentIdentity,
@@ -1393,6 +1394,21 @@ function FlowEditor() {
     setSelectedNode,
     addToast,
   })
+  // A request input's editor shows its pending draft while the draft's identities
+  // resolve, so the next edit builds on it rather than on the committed config.
+  const pendingPanelData = panelNode ? pendingNodeData.get(panelNode.id) : undefined
+  const editorPanelNode = useMemo(
+    () => (panelNode && pendingPanelData
+      ? {
+          ...panelNode,
+          data: {
+            ...panelNode.data,
+            config: expectPlainObject("Pending node draft", pendingPanelData.config, "config"),
+          },
+        }
+      : panelNode),
+    [panelNode, pendingPanelData],
+  )
 
   // A Workbench Input's and a Workbench Output's ports are the workbench's tables, at the
   // top level and inside a submodel alike: their connections to a table the form no longer
@@ -2234,7 +2250,7 @@ function FlowEditor() {
           retryTrace={retryTrace}
           panelGraph={panelGraph}
           submodels={submodelsSnapshot}
-          panelNode={panelNode}
+          panelNode={editorPanelNode}
           onUpdateNode={handlePanelUpdateNode}
           onRenameNode={onRenameNode}
           onDeleteEdge={editingReadOnly ? undefined : handleDeleteEdge}

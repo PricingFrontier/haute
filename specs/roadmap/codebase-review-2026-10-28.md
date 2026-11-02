@@ -67,7 +67,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | Priority | Trigger and observed consequence | Owning package | Evidence strength |
 |---|---|---|---|
 | P1 | An IDE save after assistant plan verification is overwritten by apply; the rename and post-save verification still succeed. | [ASSIST-61](assistant.md#assist-61--keep-the-authenticated-revision-through-commit) | Real temporary pipeline and transactional save; deterministic edit before commit. |
-| P2 | Two independent API Input edits before identity resolution completes retain only the second edit. | [FSH-R10](frontend-shared.md#fsh-r10--retain-edits-during-input-identity-resolution) | Actual controller: expected `[false, false]`, received `[true, false]`; `onUpdateNode` surfaces the superseded edit as an error toast. |
 | P1 | Inference for `first.json` returns after the user selected `second.json` and added a table; old path/tables are written back. | [FNED-R06](frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft) | Actual API Input editor with delayed inference response. |
 
 ### Additional full-source findings
@@ -224,7 +223,7 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | Earlier candidate note | Accepted owner |
 |---|---|
 | dispersion caller ownership / estimate queued | **FMOU-R06** for same-mounted draft identity; separate helper error-contract wording is **FSH-R06**. |
-| request-input edits / explicit Auto Layout | **FSH-R10**, **FGC-R05**; mixed Delete **FGC-R07**. |
+| request-input edits / explicit Auto Layout | **FGC-R05**; mixed Delete **FGC-R07**. |
 | delayed drill-in | **FGC-R06**. |
 | utility async read/save/switch | **FGC-R08**. |
 | blocked recovery inspector | **FGC-R09**. |
