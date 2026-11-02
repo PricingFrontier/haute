@@ -2499,7 +2499,11 @@ are the only claim needed against a concurrent completion:
 - a completion publishes only over `running`.
 
 The job's cancellation reason is the session's stop signal, so a cancelled or timed-out solve
-terminates the session at once, mid-native-call.
+terminates the session at once, mid-native-call. The cancel and timeout routes record the
+job's outcome before the stop; a stop no route recorded (the registry's cancellation at
+server shutdown) is recorded by the solve itself (`_record_stop`: `Cancelled`, `Timed out` or
+`Superseded by a newer run`), and an outcome a route recorded first stands. An auto-range job
+records a stop the same way.
 
 **Solver input.** The session command owns the solver input. It is removed after
 `build_and_solve` returns, or once the session dies.

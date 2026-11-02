@@ -221,6 +221,36 @@ def test_server_shutdown_cancels_a_running_job_and_leaves_no_worker(
         stop_background_jobs(timeout_seconds=10)
 
 
+def test_job_shutdown_keeps_its_bound_while_a_job_holds_its_registry() -> None:
+    """A publication holding a registry delays that registry's cancel, never the shutdown."""
+    registry = CancellableJobRegistry()
+    registry.register_latest("publishing", "publishing-job")
+    publishing = threading.Event()
+    release = threading.Event()
+
+    def publish() -> None:
+        with registry.latest_publication("publishing-job"):
+            publishing.set()
+            release.wait(30)
+
+    holder = threading.Thread(target=publish, name="haute-test-publishing-job", daemon=True)
+    start_job_thread(holder)
+    assert publishing.wait(10)
+    try:
+        started = time.monotonic()
+        still_running = stop_background_jobs(timeout_seconds=0.3)
+        elapsed = time.monotonic() - started
+        assert not registry.is_cancelled("publishing-job")
+    finally:
+        release.set()
+        holder.join(10)
+
+    assert "haute-test-publishing-job" in still_running
+    assert elapsed < 5
+    stop_background_jobs(timeout_seconds=5)
+    assert registry.is_cancelled("publishing-job")
+
+
 def test_job_shutdown_returns_at_its_bound_naming_the_jobs_still_running() -> None:
     release = threading.Event()
     thread = threading.Thread(
@@ -1643,6 +1673,23 @@ def test_an_unrecorded_outcome_is_settled_as_an_error(tmp_path: Path) -> None:
     assert settled["supervisor_error_class"] == "ValueError"
     assert "could not record" in settled["message"]
     assert supervisor.settle_unrecorded_outcome(job_id) is None
+
+
+def test_an_unrecorded_outcome_is_kept_no_longer_than_its_job(tmp_path: Path) -> None:
+    """What a status route could settle expires with the store's TTL, as the job does."""
+    store = JobStore(ttl_seconds=0)
+    supervisor = IsolatedJobSupervisor(
+        JobLifecycle(store),
+        protocol_runner=lambda *_args, **_kwargs: WorkerResultManifest(metadata={}),
+    )
+    first, second = (store.create_job({"status": "running"}) for _ in range(2))
+    for job_id in (first, second):
+        # The job is gone (TTL 0) or refuses the field: either way nothing is recorded.
+        _launch(supervisor, job_id, tmp_path, completed_fields=lambda _r: {"ended_at": 1.0}).join(
+            timeout=10
+        )
+
+    assert supervisor.settle_unrecorded_outcome(first) is None
 
 
 def test_protocol_supervisor_publishes_parent_fields_and_progress(tmp_path) -> None:

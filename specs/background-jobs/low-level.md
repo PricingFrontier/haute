@@ -350,8 +350,10 @@ therefore cannot be bypassed by test or shutdown reset code.
   still the uncancelled latest owner for its key while holding the registry `RLock`
   across the caller's block, serialising the check and publication indivisibly
   relative to concurrent `register_latest` and `cancel`.
-- `cancel_all(reason)` — cancels every active token not already cancelled, keeping an
-  earlier reason such as `superseded`.
+- `cancel_all(reason, timeout)` — cancels every active token not already cancelled, keeping
+  an earlier reason such as `superseded`. It waits at most `timeout` seconds for the registry
+  lock, which `latest_publication` holds across a job's publication (a profile written to
+  disk), and returns `False` without cancelling anything when the lock stayed held.
 - `release(job_id)` — pops the token; if `_latest_by_key[token.key]` still points at
   this `job_id`, removes that mapping too (so a *stale* `job_id` being released after
   a newer one has already superseded it does not accidentally clear the newer job's
@@ -362,8 +364,9 @@ therefore cannot be bypassed by test or shutdown reset code.
 The server's lifespan calls it at shutdown (through `asyncio.to_thread`, with a 10-second
 bound) before it ends the dedicated workers and the interactive pool. Until the bound it
 repeats: snapshot `_REGISTRIES` and the live `_JOB_THREADS`; call each registry's
-`cancel_all(reason="cancelled")`; return if no job thread is alive; otherwise join each
-for what remains of the bound. Repeating catches a job registered, or a thread started
+`cancel_all(reason="cancelled")` with what remains of the bound, so a registry held by a
+publication is cancelled on a later pass and never stalls the others; return if no job
+thread is alive; otherwise join each for what remains of the bound. Repeating catches a job registered, or a thread started
 (a training preparation launching its supervisor), while it waits. It returns the names
 of the job threads still alive at the bound, which the lifespan logs as
 `background_jobs_outlived_shutdown`; it never kills a thread or a process itself.
@@ -432,10 +435,12 @@ The thread executes one total outcome pipeline:
    that a precedence-rejected write still left the job terminal.
 4. A missing/unverifiable job or failed terminal write is recorded on
    `IsolatedSupervisorThread.infrastructure_failure` as
-   `SupervisorInfrastructureError` (`join_and_raise()` is the raising join) and kept by
-   the supervisor for the job. `settle_unrecorded_outcome(job_id)` pops it and records
-   `error` with `_UNRECORDED_OUTCOME_MESSAGE` and only `error`/`supervisor_error_class`
-   fields; a refused write restores it for the next poll, and a precedence-rejected one
+   `SupervisorInfrastructureError` (`join_and_raise()` is the raising join), and the
+   supervisor keeps its text and class for the job (`_UnrecordedOutcome`, never the
+   exception or its traceback), dropping any it kept longer than the store's
+   `ttl_seconds`, by when the job itself is gone. `settle_unrecorded_outcome(job_id)`
+   pops it and records `error` with `_UNRECORDED_OUTCOME_MESSAGE` and only
+   `error`/`supervisor_error_class` fields; a refused write restores it for the next poll, and a precedence-rejected one
    returns the job as another writer left it. Training's status route and the
    dispersion status and cancel routes call it, through
    `TrainService.with_recorded_outcome`, for a job still `running`. If persistence
@@ -654,7 +659,9 @@ is only warranted for a concrete thread callable that can honour such a signal.
   real sleeping protocol worker returns within the bound, leaves no worker process and
   records the job `cancelled`; `stop_background_jobs` returns at its bound naming a job
   thread that does not stop. A terminal write the store refuses is settled as `error`
-  by `settle_unrecorded_outcome`, and only once. The two `MemoryError` subclasses
+  by `settle_unrecorded_outcome`, and only once; one kept past the store's TTL is gone. A
+  registry held by a publication delays only its own cancellation, never the shutdown's
+  bound. The two `MemoryError` subclasses
   Haute raises (`ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError`) are
   `memory_limited` from a real one-shot, protocol and pool child alike.
 - `tests/test_worker_protocol.py` — the bounded version-1 transport: spawn-safe

@@ -274,6 +274,11 @@ class JobStore:
         self._artifact_leases: dict[tuple[str, str], int] = {}
         self._deferred_artifact_cleanups: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {}
 
+    @property
+    def ttl_seconds(self) -> int:
+        """How long a job's metadata is kept (from its last activity while running)."""
+        return self._ttl_seconds
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

@@ -69,7 +69,8 @@ def stop_background_jobs(*, timeout_seconds: float) -> tuple[str, ...]:
             registries = tuple(_REGISTRIES)
             running = [thread for thread in _JOB_THREADS if thread.is_alive()]
         for registry in registries:
-            registry.cancel_all(reason="cancelled")
+            # A registry held by a job's publication is cancelled on a later pass.
+            registry.cancel_all(reason="cancelled", timeout=deadline - time.monotonic())
         if not running or time.monotonic() >= deadline:
             return tuple(thread.name for thread in running)
         for thread in running:
@@ -153,12 +154,21 @@ class CancellableJobRegistry:
             token.cancel(reason)
             return True
 
-    def cancel_all(self, *, reason: TerminalReason) -> None:
-        """Request cancellation for every active job not already asked to stop."""
-        with self._lock:
+    def cancel_all(self, *, reason: TerminalReason, timeout: float) -> bool:
+        """Request cancellation for every active job not already asked to stop.
+
+        Waits at most *timeout* seconds for the registry, which a job's publication
+        holds (``latest_publication``); False if it stayed held and nothing was cancelled.
+        """
+        if not self._lock.acquire(timeout=max(timeout, 0.0)):
+            return False
+        try:
             for token in self._tokens_by_job_id.values():
                 if not token.cancelled:
                     token.cancel(reason)
+        finally:
+            self._lock.release()
+        return True
 
     def is_cancelled(self, job_id: str) -> bool:
         with self._lock:
@@ -297,6 +307,15 @@ class IsolatedSupervisorThread(threading.Thread):
 
 
 @dataclass(frozen=True, slots=True)
+class _UnrecordedOutcome:
+    """What a supervisor keeps of an outcome it could not persist: text, not the exception."""
+
+    error: str
+    error_class: str
+    recorded_at: float  # time.monotonic()
+
+
+@dataclass(frozen=True, slots=True)
 class _SupervisorOutcome:
     terminal_reason: TerminalReason
     message: str
@@ -321,8 +340,9 @@ class IsolatedJobSupervisor:
         self._lifecycle = lifecycle
         self._protocol_runner = protocol_runner
         self._failures_lock = threading.Lock()
-        # Jobs whose terminal outcome could not be persisted, until a status poll settles them.
-        self._unrecorded: dict[str, SupervisorInfrastructureError] = {}
+        # Jobs whose terminal outcome could not be persisted, until a status poll settles
+        # them or the store's TTL has evicted the job itself.
+        self._unrecorded: dict[str, _UnrecordedOutcome] = {}
 
     def settle_unrecorded_outcome(self, job_id: str) -> JobSnapshot | None:
         """Record ``error`` for a job whose outcome this supervisor could not persist.
@@ -342,16 +362,27 @@ class IsolatedJobSupervisor:
                 job_id,
                 to="error",
                 message=_UNRECORDED_OUTCOME_MESSAGE,
-                fields={
-                    "error": str(failure.cause),
-                    "supervisor_error_class": type(failure.cause).__name__,
-                },
+                fields={"error": failure.error, "supervisor_error_class": failure.error_class},
             )
         except BaseException:
             with self._failures_lock:
                 self._unrecorded.setdefault(job_id, failure)
             raise
         return settled if settled is not None else self._lifecycle.store.require_job(job_id)
+
+    def _keep_unrecorded(self, job_id: str, cause: BaseException) -> None:
+        """Keep *cause*'s text for the job's status route, dropping any kept past the TTL."""
+        now = time.monotonic()
+        ttl_seconds = self._lifecycle.store.ttl_seconds
+        with self._failures_lock:
+            self._unrecorded = {
+                kept_id: kept
+                for kept_id, kept in self._unrecorded.items()
+                if now - kept.recorded_at < ttl_seconds
+            }
+            self._unrecorded[job_id] = _UnrecordedOutcome(
+                error=str(cause), error_class=type(cause).__name__, recorded_at=now
+            )
 
     def launch_protocol(
         self,
@@ -428,8 +459,7 @@ class IsolatedJobSupervisor:
             except BaseException as exc:
                 failure = SupervisorInfrastructureError(job_id, exc)
                 thread._record_infrastructure_failure(failure)
-                with self._failures_lock:
-                    self._unrecorded[job_id] = failure
+                self._keep_unrecorded(job_id, exc)
                 logger.error(
                     "isolated_supervisor_terminal_persistence_failed",
                     job_id=job_id,

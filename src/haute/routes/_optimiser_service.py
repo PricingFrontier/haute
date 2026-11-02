@@ -328,6 +328,13 @@ def _with_flattened_optimiser_graph(
     return body.model_copy(update={"graph": flat_graph})
 
 
+_STOPPED_MESSAGES: dict[str, str] = {
+    "cancelled": "Cancelled",
+    "timed_out": "Timed out",
+    "superseded": "Superseded by a newer run",
+}
+
+
 def _coerce_stopped_terminal_reason(reason: str) -> TerminalReason:
     if reason in TERMINAL_REASONS:
         return cast(TerminalReason, reason)
@@ -1558,9 +1565,9 @@ class OptimiserSolveService:
                 on_progress=on_progress,
                 cancellation_token=execution_token,
             )
-        except InteractiveWorkerStoppedError:
-            # Cancel and timeout transition the job themselves.
+        except InteractiveWorkerStoppedError as exc:
             logger.info("solve_session_stopped", job_id=job_id)
+            self._record_stop(job_id, exc.terminal_reason, start_time=start_time)
         except SessionCommandError as exc:
             self._lifecycle.transition(
                 job_id,
@@ -2114,6 +2121,20 @@ class OptimiserSolveService:
             message="Cancelled",
         )
         return self._frontier_auto_range_status_response(job)
+
+    def _record_stop(self, job_id: str, reason: str, *, start_time: float) -> None:
+        """Record a stop no route recorded first, such as a server shutdown's.
+
+        The cancel and timeout routes record their own outcome before the worker
+        stops; the same reason again is no higher in precedence, so theirs stands.
+        """
+        terminal_reason = _coerce_stopped_terminal_reason(reason)
+        self._lifecycle.transition(
+            job_id,
+            to=terminal_reason,
+            message=_STOPPED_MESSAGES.get(terminal_reason, "Stopped"),
+            elapsed_seconds=time.monotonic() - start_time,
+        )
 
     def cancel_solve(self, job_id: str) -> JobSnapshot:
         """Cancel a running optimiser solve job."""
@@ -2831,7 +2852,8 @@ class OptimiserSolveService:
                         execution_token=execution_token,
                         **prepared,
                     )
-                except BackgroundJobStoppedError:
+                except BackgroundJobStoppedError as exc:
+                    self._record_stop(job_id, exc.terminal_reason, start_time=start_time)
                     return
                 except RequestRefusedError:
                     return
