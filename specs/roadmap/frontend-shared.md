@@ -7,7 +7,7 @@ behaviour is specified in
 [the frontend-shared specification](../frontend-shared/high-level.md).
 Generating the API contract is planned in the
 [server API roadmap](server-api.md) (`API-R03`). `FSH-R03` comes from the
-[23 September 2026 codebase review](codebase-review-2026-09-23.md); `FSH-R05`
+[23 September 2026 codebase review](codebase-review-2026-09-23.md); `FSH-R06`
 to `FSH-R09` from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 
@@ -16,7 +16,6 @@ to `FSH-R09` from the
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | FSH-R03 | Planned | P3 | The results store holds results; validation and optimiser logic move out. |
-| FSH-R05 | Planned | P2 | A save stores the saved document's fingerprint, so a WebSocket reconnect after a save discards no running job and no undo history; a completion callback that throws is reported; a timed-out fetch is aborted; the session bootstrap has a deadline. |
 | FSH-R06 | Planned | P3 | The stores carry one copy of each derivation and validator, no test-only action, no fabricated result sentinel, and their specification names the actions that exist. |
 | FSH-R07 | Planned | P2 | Ctrl+S saves what is being typed in a code box, node creation is fenced on the graph's structure rather than on object identity, a refused scoped update marks nothing edited, a copied node carries no other node's transient metadata, and a save whose answer was lost is reconciled instead of reported failed. |
 | FSH-R08 | Planned | P3 | One helper per concern in the hooks and utilities: unit formatting that carries, one canonical JSON, one date validator, one job-status vocabulary, one locale, one node-creation block, one polling configuration, selector subscriptions. |
@@ -43,52 +42,6 @@ derivation; its tests cover state transitions only.
 
 **Evidence:** `frontend/src/stores/useNodeResultsStore.ts::applyFrontierPointSummary`;
 `frontend/src/stores/useNodeResultsStore.ts::hashConfig`.
-
-### FSH-R05 — A save keeps the browser in step
-**Why:** After a successful pipeline save nothing refreshes the stored
-`documentFingerprint` (`acknowledgeSave` sets only the revision and the save
-response carries no fingerprint), so the next WebSocket reconnect resyncs with
-the pre-save fingerprint; the server answers a full document for a file that has
-not changed, and the client treats it as an external change: the execution
-generation is bumped, `useBackgroundJobs` discards every active solve, train and
-pivot job and resets the node-data store, and the graph, clean after the save,
-is replaced with its undo and redo history wiped and a "Pipeline updated from
-file" toast. A save followed by a sleep-wake or any socket drop during a long
-training loses the job's tracking and the history. A completion callback that
-throws (a frontier-generation contract violation, a storage exception) is
-swallowed because the poller is retired before the callback runs, so the job
-stays shown as running and every later re-render recreates a poller that
-refetches the finished status and throws again. `fetchMlflow` races the
-inventory request against a 15 s timer without an abort signal, so the request
-runs on after the timeout. The session bootstrap uses a raw `fetch` with no
-deadline, so a server that accepts the connection but never answers leaves the
-page blank instead of reaching the failure screen.
-
-**Plan:** Store the fingerprint the save now returns in `acknowledgeSave`, and
-return and store the saved document's fingerprint from the scoped-save,
-repair-apply and submodel routes too (the save already publishes the saved
-document to the other tabs, leaving the saver's socket out); call
-`onComplete` and `onFail` inside a guard that reports the error and leaves no
-job record; pass an `AbortController` to the MLflow fetch; give the bootstrap a
-deadline and render the failure screen on timeout. Add a test: save, drop and
-reopen the socket, assert active jobs and undo history survive.
-
-**Acceptance:** A reconnect after a save produces no document frame and bumps
-no generation when the server document is still the saved version. Test two tabs
-and both HTTP/socket arrival orders: the saver retains jobs,
-undo history and newer dirty edits, while the other tab receives one saved-document
-update. A throwing completion callback shows a toast and ends the job
-record; a timed-out MLflow fetch is aborted; a silent server reaches the
-bootstrap failure screen within the deadline.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/stores/useDocumentStatusStore.ts::acknowledgeSave`;
-`frontend/src/hooks/usePipelineAPI.ts`; `frontend/src/hooks/useWebSocketSync.ts`;
-`frontend/src/hooks/useBackgroundJobs.ts`;
-`frontend/src/hooks/jobPollingController.ts`;
-`frontend/src/stores/useSettingsStore.ts::fetchMlflow`;
-`frontend/src/api/client.ts::performSessionBootstrap`.
 
 ### FSH-R06 — One copy of each derivation
 **Why:** The ISO date and time validators are implemented twice, line for line,

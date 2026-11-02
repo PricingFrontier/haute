@@ -218,7 +218,8 @@
   installed, importable, destinations, detail}` — populated from
   `GET /api/mlflow/destinations?probe=true`
   (`parseMlflowDestinationsResponse`), fetched once on the first render of
-  any MLflow section under a 15-second deadline — the backend may spend its
+  any MLflow section under a 15-second deadline, at which the request is
+  aborted rather than left running — the backend may spend its
   full 5-second probe budget per remote, so a remote that exhausts its
   budget arrives as an amber entry rather than tripping a whole-inventory
   error. `status` is `"ready"` when the inventory arrived,
@@ -282,7 +283,10 @@ never inserts one silently.
 **Local session bootstrap (`main.tsx` + `api/client.ts`)**:
 `bootstrapHauteSession()` deduplicates concurrent calls, POSTs
 `/api/session/bootstrap` with `credentials:"same-origin"` and `cache:"no-store"`,
-and never reads a response token. The browser stores the HttpOnly cookie and
+and never reads a response token. The request has a 15-second deadline
+(`SESSION_BOOTSTRAP_TIMEOUT_MS`): a server that accepts the connection but never
+answers is aborted and rejects with `ApiTimeoutError`, so the page reaches the
+failure diagnostic instead of staying blank. The browser stores the HttpOnly cookie and
 ordinary API/raw-stream requests explicitly use same-origin credentials.
 `main.tsx` mounts `App` only after success; failure renders a local-server
 diagnostic with Reload. A forced bootstrap refresh is used by WebSocket
@@ -428,7 +432,12 @@ job and leaves no timer or request alive after unmount. The controller hands
 every callback the id of the job it polled (`onProgress(key, jobId, status)`,
 `onComplete(key, jobId, status)`, `onFail(key, jobId, message, status?)`):
 its own job record is the one the last render committed, so the id, not the
-key, says which job a reply is for.
+key, says which job a reply is for. A terminal callback runs inside a guard:
+when `onComplete` throws (a result that breaks its contract, a storage
+failure), the controller reports the error as an error toast naming the job
+and ends the job through `onFail` with that message, so no job is left shown
+as running and no poller is recreated to fetch and throw again; an `onFail`
+that throws is reported the same way.
 
 **Terminal-response ownership.** A progress, completion or failure applies
 only to the job it was asked about. The training and pivot actions take that

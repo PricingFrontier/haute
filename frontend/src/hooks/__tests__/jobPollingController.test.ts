@@ -56,6 +56,45 @@ describe("JobPollingController", () => {
     expect(onProgress).toHaveBeenCalledWith("node", "new", { status: "running", progress: 0.2 })
   })
 
+  it("reports a completion callback that throws and ends the job through onFail", async () => {
+    const jobs: Record<string, Job> = { node: { jobId: "old", nodeLabel: "Old" } }
+    const pollFn = vi.fn(() => Promise.resolve({ status: "completed", progress: 1 }))
+    const onComplete = vi.fn(() => { throw new Error("frontier generation 2 does not match 1") })
+    // The store's failure action removes the job record, as useBackgroundJobs' does.
+    const onFail = vi.fn((nodeId: string) => { delete jobs[nodeId] })
+    const addToast = vi.fn()
+    const controller = new JobPollingController(config({
+      jobs, pollFn, onComplete, onFail, addToast, getResult: (status) => status,
+    }))
+    controller.reconcile()
+    await advance(500)
+
+    expect(onFail).toHaveBeenCalledWith("node", "old", "frontier generation 2 does not match 1")
+    expect(addToast).toHaveBeenCalledWith(
+      "error",
+      "Failed: Old - the outcome could not be recorded: frontier generation 2 does not match 1",
+    )
+    expect(addToast).not.toHaveBeenCalledWith("success", expect.anything())
+    // A later render creates no poller to fetch the finished status and throw again.
+    controller.updateConfig(config({ jobs: { ...jobs }, pollFn, onComplete, onFail, addToast, getResult: (status) => status }))
+    controller.reconcile()
+    await advance(5_000)
+    expect(pollFn).toHaveBeenCalledTimes(1)
+    expect(onComplete).toHaveBeenCalledTimes(1)
+  })
+
+  it("reports a failure callback that throws instead of swallowing it", async () => {
+    const pollFn = vi.fn(() => Promise.resolve({ status: "error", progress: 1 }))
+    const onFail = vi.fn(() => { throw new Error("storage is full") })
+    const addToast = vi.fn()
+    const controller = new JobPollingController(config({ pollFn, onFail, addToast }))
+    controller.reconcile()
+    await advance(500)
+
+    expect(onFail).toHaveBeenCalledTimes(1)
+    expect(addToast).toHaveBeenCalledWith("error", "Failed: Old - the outcome could not be recorded: storage is full")
+  })
+
   it("aborts a removed job and drops pending throttled progress", async () => {
     const signals: AbortSignal[] = []
     const activePoll = deferred<Status>()

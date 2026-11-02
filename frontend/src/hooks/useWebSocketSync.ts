@@ -11,6 +11,7 @@ import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
+import { pendingSavesSettled } from "../stores/pendingSaves"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { constantDrafts } from "../utils/globalConstants"
 import {
@@ -380,8 +381,16 @@ export default function useWebSocketSync({
           if (!isCurrentSourceFile(frame.sourceFile, currentDocumentSource())) {
             return
           }
-          // The document already shown: a git action's broadcast, or the answer to
-          // a forced resync, of what the canvas holds. Nothing to apply or announce.
+          // A resync answered while this tab's save is in flight may carry the
+          // document that save wrote: its answer decides, so the frame waits for it.
+          const saves = pendingSavesSettled(currentDocumentSource() ?? frame.sourceFile)
+          if (saves) {
+            await saves
+            if (!mounted || !isCurrentSourceFile(frame.sourceFile, currentDocumentSource())) return
+          }
+          // The document already shown: a git action's broadcast, the answer to a
+          // resync, or this tab's own save, of what the canvas holds. Nothing to
+          // apply or announce.
           if (
             useDocumentStatusStore.getState().graphSynchronized
             && frame.documentFingerprint === acceptedDocumentFingerprintFor(frame.sourceFile)

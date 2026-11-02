@@ -155,9 +155,9 @@ whose detail matches the "missing/invalid session" reason fires a
 `window` `CustomEvent` (`HAUTE_SESSION_EXPIRED_EVENT`) rather than being
 handled locally — any part of the app can listen for session expiry without
 the client needing to know about auth UI. Before `App` mounts,
-`bootstrapHauteSession()` makes one same-origin, no-store POST and lets the
-browser retain the returned HttpOnly cookie; concurrent callers share the
-same promise. A forced refresh requested while a normal bootstrap is active
+`bootstrapHauteSession()` makes one same-origin, no-store POST, bounded by a
+deadline, and lets the browser retain the returned HttpOnly cookie; concurrent
+callers share the same promise. A forced refresh requested while a normal bootstrap is active
 is queued behind that request rather than incorrectly joining it. The token
 never enters JavaScript, request headers assembled by the client, or a
 WebSocket URL. Bundle-split modules such as `api/dispersion.ts` reuse the

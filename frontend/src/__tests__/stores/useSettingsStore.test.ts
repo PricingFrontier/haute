@@ -351,6 +351,31 @@ describe("useSettingsStore", () => {
   // MLflow dedup
   // ────────────────────────────────────────────────────────────────
 
+  describe("MLflow fetch deadline", () => {
+    it("aborts an inventory request that outlives its deadline and reports the timeout", async () => {
+      vi.useFakeTimers()
+      try {
+        let signal: AbortSignal | undefined
+        vi.mocked(getMlflowDestinations).mockImplementationOnce((_probe, options) => {
+          signal = options?.signal
+          return new Promise(() => {})
+        })
+        useSettingsStore.getState().fetchMlflow()
+        expect(signal?.aborted).toBe(false)
+
+        await vi.advanceTimersByTimeAsync(15_000)
+
+        expect(signal?.aborted).toBe(true)
+        expect(useSettingsStore.getState().mlflow).toMatchObject({
+          status: "error",
+          detail: "MLflow inventory check timed out after 15s",
+        })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+  })
+
   describe("MLflow fetch dedup", () => {
     it("calling fetchMlflow twice rapidly only makes one API request", async () => {
       const mockInventory = vi.mocked(getMlflowDestinations)
@@ -383,7 +408,7 @@ describe("useSettingsStore", () => {
       await vi.waitFor(() => {
         expect(useSettingsStore.getState().mlflow.status).toBe("ready")
       })
-      expect(mockInventory).toHaveBeenCalledWith(true)
+      expect(mockInventory).toHaveBeenCalledWith(true, { signal: expect.any(AbortSignal) })
     })
 
     it("successful inventory sets ready with its destinations", async () => {

@@ -74,7 +74,8 @@ export interface DocumentStatusStore extends DocumentStatusState {
   setGraphSynchronized: (graphSynchronized: boolean) => void
   setSystemFailure: (systemFailure: string) => void
   setSourceRevision: (sourceRevision: string | null) => void
-  acknowledgeSave: (sourceRevision: string) => void
+  /** Adopt the saved document's revision and the fingerprint the save names for it. */
+  acknowledgeSave: (sourceRevision: string, documentFingerprint: string) => void
   reset: () => void
 }
 
@@ -175,9 +176,9 @@ const useDocumentStatusStore = create<DocumentStatusStore>()((set) => ({
   })),
   // Persisting this canvas doesn't replace the document that owns running jobs.
   // Keep their original config/version stamps so edited results still read stale.
-  // The canvas now holds the saved document, which no response fingerprinted: the
-  // one first loaded must not be taken for it when a switch brings it back.
-  acknowledgeSave: (sourceRevision) => set({ sourceRevision, documentFingerprint: null }),
+  // The canvas now holds the saved document: a resync naming its fingerprint is
+  // answered with nothing while the file is still that version.
+  acknowledgeSave: (sourceRevision, documentFingerprint) => set({ sourceRevision, documentFingerprint }),
   reset: () => set((state) => ({ ...initialState(), executionGeneration: state.executionGeneration + 1 })),
 }))
 

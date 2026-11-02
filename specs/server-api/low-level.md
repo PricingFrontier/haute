@@ -1470,7 +1470,10 @@ document is authoritative.
 
 Each apply route, and the node-scoped save, goes through one transport, `_apply_repair`: it
 acquires `save_lock` and runs the apply in the thread pool, answering a `PipelineRepairError`
-with its structured detail and an `OSError` with 409 `repair_artifact_unavailable`. The
+with its structured detail and an `OSError` with 409 `repair_artifact_unavailable`. A
+successful answer names the fingerprint of the editor document it carries (the response
+itself for the node save, its `document` for a repair) in the `x-haute-document-fingerprint`
+header, the digest a load and a live-sync frame of that file carry. The
 apply reloads the document and computes the complete plan under the lock; a stale revision
 is HTTP 409 before staging. The four routes
 (remove, connection remove, recover and `POST /api/pipeline/node/save`) answer it with one

@@ -261,15 +261,20 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
     _mlflowFetchingGuard = true
     set({ _mlflowFetching: true, _mlflowLastAttempt: Date.now() })
     let timeoutId: ReturnType<typeof setTimeout> | undefined
+    // The deadline also aborts the request, so it does not run on unseen.
+    const inventoryRequest = new AbortController()
     const timeout = new Promise<never>((_, reject) => {
       timeoutId = setTimeout(
-        () => reject(new Error(
-          `MLflow inventory check timed out after ${MLFLOW_INVENTORY_TIMEOUT_MS / 1000}s`,
-        )),
+        () => {
+          reject(new Error(
+            `MLflow inventory check timed out after ${MLFLOW_INVENTORY_TIMEOUT_MS / 1000}s`,
+          ))
+          inventoryRequest.abort()
+        },
         MLFLOW_INVENTORY_TIMEOUT_MS,
       )
     })
-    Promise.race([getMlflowDestinations(true), timeout])
+    Promise.race([getMlflowDestinations(true, { signal: inventoryRequest.signal }), timeout])
       .then((data) => {
         // The probes' verdicts live in the entries; only the package facts
         // decide whether the inventory itself is usable.

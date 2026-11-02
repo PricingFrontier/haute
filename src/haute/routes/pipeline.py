@@ -1193,6 +1193,7 @@ _Repaired = TypeVar("_Repaired", PipelineRepairApplyResponse, PipelineEditorDocu
 async def _apply_repair(
     apply: Callable[..., _Repaired],
     body: BaseModel,
+    response: Response,
     *,
     io_event: str,
     noun: str,
@@ -1201,11 +1202,14 @@ async def _apply_repair(
 
     A refusal answers its structured detail. A read or write failure answers 409: a
     restore that fails is its own refusal (``repair_rollback_failed``), so whenever this
-    answer is reached the *noun* changed nothing.
+    answer is reached the *noun* changed nothing. A success names the fingerprint of the
+    document it returns, so the canvas that adopts it can skip that document on a resync.
     """
     try:
         async with save_lock:
-            return await run_in_threadpool(apply, project_root=Path.cwd().resolve(), request=body)
+            repaired = await run_in_threadpool(
+                apply, project_root=Path.cwd().resolve(), request=body
+            )
     except PipelineRepairError as exc:
         return _pipeline_recovery_error_response(exc.status_code, exc.detail())
     except OSError as exc:
@@ -1220,6 +1224,9 @@ async def _apply_repair(
                 ),
             },
         )
+    document = repaired if isinstance(repaired, PipelineEditorDocument) else repaired.document
+    _name_document_fingerprint(response, document)
+    return repaired
 
 
 @router.post(
@@ -1228,11 +1235,13 @@ async def _apply_repair(
 )
 async def apply_remove_unavailable_node(
     body: PipelineRepairRemoveRequest,
+    response: Response,
 ) -> PipelineRepairApplyResponse | JSONResponse:
     """Plan and apply one explicitly confirmed removal against its named revision."""
     return await _apply_repair(
         apply_remove_unavailable_node_plan,
         body,
+        response,
         io_event="pipeline_repair_apply_io_failed",
         noun="repair",
     )
@@ -1241,21 +1250,28 @@ async def apply_remove_unavailable_node(
 @router.post("/pipeline/node/save", response_model=PipelineEditorDocument)
 async def scoped_node_save(
     body: PipelineNodeSaveRequest,
+    response: Response,
 ) -> PipelineEditorDocument | JSONResponse:
     """Save one scoped-editable node in isolation; the document fences stay."""
     return await _apply_repair(
-        apply_scoped_node_save, body, io_event="pipeline_node_save_io_failed", noun="save"
+        apply_scoped_node_save,
+        body,
+        response,
+        io_event="pipeline_node_save_io_failed",
+        noun="save",
     )
 
 
 @router.post("/pipeline/repair/connection/remove/apply", response_model=PipelineRepairApplyResponse)
 async def apply_remove_broken_connection(
     body: PipelineRepairRemoveConnectionRequest,
+    response: Response,
 ) -> PipelineRepairApplyResponse | JSONResponse:
     """Plan and commit one confirmed broken-connection removal through the shared transaction."""
     return await _apply_repair(
         apply_remove_connection_plan,
         body,
+        response,
         io_event="pipeline_repair_apply_io_failed",
         noun="repair",
     )
@@ -1264,11 +1280,13 @@ async def apply_remove_broken_connection(
 @router.post("/pipeline/repair/recover/apply", response_model=PipelineRepairApplyResponse)
 async def apply_recover_unavailable_node(
     body: PipelineRepairRecoverRequest,
+    response: Response,
 ) -> PipelineRepairApplyResponse | JSONResponse:
     """Plan and commit one confirmed update, reset or recover through the shared transaction."""
     return await _apply_repair(
         apply_recover_unavailable_node_plan,
         body,
+        response,
         io_event="pipeline_repair_apply_io_failed",
         noun="repair",
     )

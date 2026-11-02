@@ -774,19 +774,22 @@ describe("App integration - degraded execution fence", () => {
       nodes: [makeNode("survivor", "Survivor")],
     })
     vi.mocked(api.applyRemoveUnavailableNode).mockResolvedValueOnce({
-      repair_kind: "remove_unavailable_node",
-      applied_artifacts: ["rating/main.py"],
-      changes: [{
-        path: "rating/main.py",
-        operation: "update",
-        description: "Remove broken.",
-        diff: "-@pipeline.removed",
-        diff_truncated: false,
-      }],
-      document: repaired,
-      field_changes: [],
-      completeness: [],
-      previous_config: null,
+      value: {
+        repair_kind: "remove_unavailable_node",
+        applied_artifacts: ["rating/main.py"],
+        changes: [{
+          path: "rating/main.py",
+          operation: "update",
+          description: "Remove broken.",
+          diff: "-@pipeline.removed",
+          diff_truncated: false,
+        }],
+        document: repaired,
+        field_changes: [],
+        completeness: [],
+        previous_config: null,
+      },
+      documentFingerprint: "fingerprint-repaired",
     })
 
     render(<App />)
@@ -813,6 +816,8 @@ describe("App integration - degraded execution fence", () => {
       { timeout: PANEL_HYDRATION_TIMEOUT_MS },
     )
     expect(useDocumentStatusStore.getState().sourceRevision).toBe("revision-repaired")
+    // The watcher's frame of the repair's own write, or a reconnect, skips the document shown.
+    expect(useDocumentStatusStore.getState().documentFingerprint).toBe("fingerprint-repaired")
     expect(screen.queryByTestId("pipeline-repair-dialog")).not.toBeInTheDocument()
     expect(screen.queryByTestId("node-recovery-diagnostics")).not.toBeInTheDocument()
   })

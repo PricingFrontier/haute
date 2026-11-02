@@ -9,8 +9,8 @@ describe("useDocumentStatusStore", () => {
     const store = useDocumentStatusStore.getState()
     store.loadDocumentStatus(loaded)
     const startingRequest = captureDocumentExecutionFence()
-    store.acknowledgeSave("r2")
-    store.acknowledgeSave("r3")
+    store.acknowledgeSave("r2", "fp-r2")
+    store.acknowledgeSave("r3", "fp-r3")
     expect(useDocumentStatusStore.getState().sourceRevision).toBe("r3")
     expect(isDocumentExecutionFenceCurrent(startingRequest)).toBe(true)
     // An external reload is a new execution owner even when its file/hash match.
@@ -31,16 +31,21 @@ describe("useDocumentStatusStore", () => {
     if (change === "unsynchronised") store.setGraphSynchronized(false)
     if (change === "system failure") store.setSystemFailure("load failed")
     if (change === "capability loss") store.loadDocumentStatus({ ...loaded, capabilities: { ...loaded.capabilities, can_execute: false } })
-    store.acknowledgeSave("saved")
+    store.acknowledgeSave("saved", "fp-saved")
     expect(isDocumentExecutionFenceCurrent(captured)).toBe(false)
     store.reset()
   })
 
-  it("forgets the accepted document's fingerprint once a save replaces that document", () => {
+  it("records the saved document's fingerprint in place of the one first loaded", () => {
     const store = useDocumentStatusStore.getState()
     store.loadDocumentStatus(loaded, true, "fingerprint-as-loaded")
-    store.acknowledgeSave("r2")
-    expect(useDocumentStatusStore.getState().documentFingerprint).toBeNull()
+    const generation = useDocumentStatusStore.getState().executionGeneration
+    store.acknowledgeSave("r2", "fingerprint-as-saved")
+    expect(useDocumentStatusStore.getState()).toMatchObject({
+      sourceRevision: "r2",
+      documentFingerprint: "fingerprint-as-saved",
+      executionGeneration: generation,
+    })
     store.reset()
   })
 

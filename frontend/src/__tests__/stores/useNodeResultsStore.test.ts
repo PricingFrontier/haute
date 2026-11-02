@@ -147,8 +147,8 @@ describe("useNodeResultsStore", () => {
       store.updateExplorePivotProgress("n1", "pivot", { ...progress, result: null })
     }
     const collections = ["trainJobs", "solveJobs", "pivotJobs"] as const
-    document.acknowledgeSave("r2")
-    document.acknowledgeSave("r3")
+    document.acknowledgeSave("r2", "fp-r2")
+    document.acknowledgeSave("r3", "fp-r3")
     update()
     for (const key of collections) {
       expect(useNodeResultsStore.getState()[key].n1).toMatchObject({ progress, source: "live", structuralVersion: 7 })

@@ -1,3 +1,5 @@
+import { apiErrorMessage } from "../api/errors"
+
 const BASE_INTERVAL_MS = 500
 const PROGRESS_INTERVAL_MS = 1_000
 const MAX_INTERVAL_MS = 5_000
@@ -218,8 +220,50 @@ export class JobPollingController<TJob, TStatus> {
     if (!this.isCurrent(nodeId, state)) return
     const job = this.config.jobs[nodeId]
     this.retire(nodeId, state)
-    this.config.onFail(nodeId, state.jobId, "Job timed out after 24 hours")
-    this.config.addToast("error", `${this.config.failLabel}: ${this.config.labelFn(job)} - Job timed out after 24 hours`)
+    this.fail(nodeId, state.jobId, job, "Job timed out after 24 hours")
+  }
+
+  /** End the job as failed and say so; a throwing `onFail` is reported, never swallowed. */
+  private fail(nodeId: string, jobId: string, job: TJob, message: string, status?: TStatus): void {
+    try {
+      if (status === undefined) this.config.onFail(nodeId, jobId, message)
+      else this.config.onFail(nodeId, jobId, message, status)
+    } catch (error) {
+      this.reportCallbackError(job, error)
+      return
+    }
+    this.config.addToast("error", `${this.config.failLabel}: ${this.config.labelFn(job)} - ${message}`)
+  }
+
+  /**
+   * Record a completed job. The poller is already retired, so a throwing
+   * `onComplete` (a result that breaks its contract, a storage failure) would
+   * leave the job shown as running and a new poller to fetch and throw again:
+   * it is reported, and the job ends as failed with that error instead.
+   */
+  private complete(nodeId: string, jobId: string, job: TJob, result: TStatus): void {
+    try {
+      this.config.onComplete(nodeId, jobId, result)
+    } catch (error) {
+      this.reportCallbackError(job, error)
+      try {
+        this.config.onFail(nodeId, jobId, apiErrorMessage(error))
+      } catch (failError) {
+        // WHY: the toast above already reports the outcome; this keeps the stack for debugging.
+        console.error(`${this.config.failLabel}: the failure could not be recorded`, failError)
+      }
+      return
+    }
+    this.config.addToast("success", `${this.config.successLabel}: ${this.config.labelFn(job)}`)
+  }
+
+  private reportCallbackError(job: TJob, error: unknown): void {
+    // WHY: the toast below shows the message; the console keeps the stack for debugging.
+    console.error(`${this.config.failLabel}: the job's outcome could not be recorded`, error)
+    this.config.addToast(
+      "error",
+      `${this.config.failLabel}: ${this.config.labelFn(job)} - the outcome could not be recorded: ${apiErrorMessage(error)}`,
+    )
   }
 
   private poll(nodeId: string, state: JobPollerState<TStatus>): void {
@@ -257,13 +301,11 @@ export class JobPollingController<TJob, TStatus> {
     const job = this.config.jobs[nodeId]
     if (this.config.isComplete(status) || this.config.isError(status)) {
       this.retire(nodeId, state)
-      if (this.config.isComplete(status) && this.config.getResult(status)) {
-        this.config.onComplete(nodeId, state.jobId, this.config.getResult(status)!)
-        this.config.addToast("success", `${this.config.successLabel}: ${this.config.labelFn(job)}`)
+      const result = this.config.isComplete(status) ? this.config.getResult(status) : undefined
+      if (result) {
+        this.complete(nodeId, state.jobId, job, result)
       } else {
-        const message = this.config.getErrorMessage(status) || "Unknown error"
-        this.config.onFail(nodeId, state.jobId, message, status)
-        this.config.addToast("error", `${this.config.failLabel}: ${this.config.labelFn(job)} - ${message}`)
+        this.fail(nodeId, state.jobId, job, this.config.getErrorMessage(status) || "Unknown error", status)
       }
       return
     }
@@ -295,8 +337,7 @@ export class JobPollingController<TJob, TStatus> {
     const terminalMessage = this.config.getTerminalPollErrorMessage?.(error)
     if (terminalMessage) {
       this.retire(nodeId, state)
-      this.config.onFail(nodeId, state.jobId, terminalMessage)
-      this.config.addToast("error", `${this.config.failLabel}: ${this.config.labelFn(job)} - ${terminalMessage}`)
+      this.fail(nodeId, state.jobId, job, terminalMessage)
       return
     }
     state.consecutiveErrors += 1

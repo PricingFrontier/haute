@@ -3,6 +3,7 @@ import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import {
   ApiError,
   ApiTimeoutError,
+  SESSION_BOOTSTRAP_TIMEOUT_MS,
   getPreviewProgress,
   HAUTE_SESSION_EXPIRED_EVENT,
   bootstrapHauteSession,
@@ -453,6 +454,26 @@ describe("request() core via loadPipeline", () => {
 
     expect(mockFetch).toHaveBeenCalledTimes(3)
     expect(mockFetch.mock.calls[2][0]).toBe("/api/session/bootstrap")
+  })
+
+  it("gives up on a bootstrap the server never answers at its deadline, aborting the request", async () => {
+    vi.useFakeTimers()
+    try {
+      let signal: AbortSignal | undefined
+      mockFetch.mockImplementationOnce((_url: string, init: RequestInit) => {
+        signal = init.signal ?? undefined
+        return new Promise<Response>((_, reject) => {
+          signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")))
+        })
+      })
+      const bootstrap = bootstrapHauteSession(true)
+      const outcome = expect(bootstrap).rejects.toThrow(ApiTimeoutError)
+      await vi.advanceTimersByTimeAsync(SESSION_BOOTSTRAP_TIMEOUT_MS)
+      await outcome
+      expect(signal?.aborted).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("retries a normal bootstrap after a forced refresh fails", async () => {
@@ -1947,8 +1968,8 @@ describe("no request carries streaming_chunk_size", () => {
 
   it("sends the exact scoped node-save body and parses the authoritative document", async () => {
     const { saveNodeScoped } = await import("../client")
-    mockFetch.mockReturnValueOnce(jsonResponse(makePipelineEditorDocument()))
-    const document = await saveNodeScoped({
+    mockFetch.mockReturnValueOnce(jsonResponse(makePipelineEditorDocument(), 200, { "x-haute-document-fingerprint": "fp-saved" }))
+    const { value: document, documentFingerprint } = await saveNodeScoped({
       sourceFile: "main.py",
       sourceRevision: "rev-1",
       targetSourceFile: "main.py",
@@ -1964,6 +1985,19 @@ describe("no request carries streaming_chunk_size", () => {
       config: { path: "data/quotes.parquet" },
     })
     expect(document.document_kind).toBe("haute.pipeline_editor_document")
+    expect(documentFingerprint).toBe("fp-saved")
+  })
+
+  it.each([
+    ["saveNodeScoped", () => import("../client").then(({ saveNodeScoped }) => saveNodeScoped({
+      sourceFile: "main.py", sourceRevision: "rev-1", targetSourceFile: "main.py", targetRecoveryId: "node@10", config: {},
+    }))],
+    ["applyRemoveUnavailableNode", () => applyRemoveUnavailableNode({
+      sourceFile: "main.py", sourceRevision: "rev-1", targetSourceFile: "main.py", targetRecoveryId: "broken@10", deleteConfig: false,
+    })],
+  ])("%s refuses an answer that names no document fingerprint", async (caller, call) => {
+    mockFetch.mockReturnValueOnce(jsonResponse(makePipelineEditorDocument()))
+    await expect(call()).rejects.toThrow(`${caller}: response has no x-haute-document-fingerprint header`)
   })
 
   it("sends the exact remove-repair request body and parses the authoritative response", async () => {
@@ -1972,13 +2006,14 @@ describe("no request carries streaming_chunk_size", () => {
       repair_kind: "remove_unavailable_node", applied_artifacts: ["main.py"],
       changes: [{ path: "main.py", operation: "update", description: "Remove broken.", diff: "-broken", diff_truncated: false }],
       document: makePipelineEditorDocument(), field_changes: [], completeness: [], previous_config: null,
-    }))
-    const response = await applyRemoveUnavailableNode(request)
+    }, 200, { "x-haute-document-fingerprint": "fp-repaired" }))
+    const { value: response, documentFingerprint } = await applyRemoveUnavailableNode(request)
     expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/api/pipeline/repair/remove/apply")
     expect(JSON.parse(mockFetch.mock.calls.at(-1)?.[1].body)).toEqual({
       source_file: "main.py", source_revision: "rev-1", target_source_file: "main.py", target_recovery_id: "broken@10", delete_config: false,
     })
     expect(response.changes[0].path).toBe("main.py")
+    expect(documentFingerprint).toBe("fp-repaired")
   })
 
   it("sends the exact connection-removal request body and parses its response", async () => {
@@ -1987,8 +2022,8 @@ describe("no request carries streaming_chunk_size", () => {
       repair_kind: "remove_connection", applied_artifacts: ["modules/inputs.py"],
       changes: [{ path: "modules/inputs.py", operation: "update", description: "Remove the broken connection.", diff: "-connect", diff_truncated: false }],
       document: makePipelineEditorDocument(), field_changes: [], completeness: [], previous_config: null,
-    }))
-    const response = await applyRemoveBrokenConnection(request)
+    }, 200, { "x-haute-document-fingerprint": "fp-repaired" }))
+    const { value: response } = await applyRemoveBrokenConnection(request)
     expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/api/pipeline/repair/connection/remove/apply")
     expect(JSON.parse(mockFetch.mock.calls.at(-1)?.[1].body)).toEqual({
       source_file: "main.py", source_revision: "rev-1", target_source_file: "modules/inputs.py", target_connection_id: "edge:abc",

@@ -1291,11 +1291,12 @@ function FlowEditor() {
 
   const handleRepairApplied = useCallback((
     document: import("./types/pipelineDocument").PipelineEditorDocument,
+    documentFingerprint: string,
   ) => {
     const recoverTargetId =
       pipelineRepairTarget?.action === "recover" ? pipelineRepairTarget.recoveryId : null
-    // The repair response names no document fingerprint; the next resync fetches the document.
-    adoptPipelineDocument(document, null)
+    // A resync, or the watcher's frame of this write, then skips the document shown.
+    adoptPipelineDocument(document, documentFingerprint)
     previousDocumentRevisionRef.current = document.source_revision
     resetToAuthoritativeRoot(
       document.source_file,
@@ -1318,10 +1319,13 @@ function FlowEditor() {
     selectedNodeRef.current = selectedNode ?? null
   }, [selectedNode])
   const applyScopedSaveDocument = useCallback(
-    (document: import("./types/pipelineDocument").PipelineEditorDocument, savedNodeId: string) => {
+    (
+      document: import("./types/pipelineDocument").PipelineEditorDocument,
+      documentFingerprint: string,
+      savedNodeId: string,
+    ) => {
       const selectionUnchanged = selectedNodeRef.current?.id === savedNodeId
-      // The scoped save response names no document fingerprint; the next resync fetches the document.
-      adoptPipelineDocument(document, null)
+      adoptPipelineDocument(document, documentFingerprint)
       previousDocumentRevisionRef.current = document.source_revision
       resetToAuthoritativeRoot(document.source_file, document.pipeline_name ?? "main")
       if (selectionUnchanged) {

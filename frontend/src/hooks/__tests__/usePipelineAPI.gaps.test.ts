@@ -15,6 +15,8 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useNodeDataStore from "../../stores/useNodeDataStore"
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
+import { pendingSavesSettled } from "../../stores/pendingSaves"
 import type { BackendNodeStatus } from "../../types/node"
 
 vi.mock("../../api/client", () => ({
@@ -237,6 +239,34 @@ describe("usePipelineAPI - gap tests", () => {
       await waitFor(() => {
         expect(saveCallCount).toBe(2)
       })
+    })
+
+    it("adopts the saved document's fingerprint, and holds live-sync frames until the save answers", async () => {
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
+      let answer!: (response: Awaited<ReturnType<typeof savePipeline>>) => void
+      mockSave.mockReturnValueOnce(new Promise((resolve) => { answer = resolve }))
+      const params = makeParams()
+      params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+      const { result } = renderHook(() => usePipelineAPI(params))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+      const sourceFile = useDocumentStatusStore.getState().sourceFile
+      expect(pendingSavesSettled(sourceFile)).toBeNull()
+
+      let saving!: Promise<boolean>
+      act(() => { saving = result.current.handleSave() })
+      const held = pendingSavesSettled(sourceFile)
+      expect(held).not.toBeNull()
+      await act(async () => {
+        answer({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-saved", document_fingerprint: "fingerprint-saved" })
+        await saving
+        await held
+      })
+
+      expect(useDocumentStatusStore.getState()).toMatchObject({
+        sourceRevision: "revision-saved",
+        documentFingerprint: "fingerprint-saved",
+      })
+      expect(pendingSavesSettled(sourceFile)).toBeNull()
     })
 
     it("second save failure does not corrupt lastSavedSnapshot from first success", async () => {

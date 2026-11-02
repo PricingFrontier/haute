@@ -23,6 +23,7 @@ import { reportSaveCapture } from "../stores/saveCapture"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useNodeDataStore from "../stores/useNodeDataStore"
 import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
+import { trackPendingSave } from "../stores/pendingSaves"
 import useUIStore from "../stores/useUIStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
@@ -1519,7 +1520,7 @@ export default function usePipelineAPI({
     const requestGraph = toCanonicalGraphPayload(savedSnapshot)
     const saveRequestId = ++saveRequestSeq.current
     try {
-      const data = await savePipeline({
+      const saving = savePipeline({
         name: pipelineNameRef.current,
         description: descriptionRef.current,
         graph: {
@@ -1539,6 +1540,8 @@ export default function usePipelineAPI({
         preserved_blocks: preservedBlocksRef.current,
         connection_id: syncConnectionId(),
       })
+      trackPendingSave(saveSourceFile, saving)
+      const data = await saving
       // Mark the exact graph snapshot that reached the backend, unless a
       // newer save has already been applied.
       if (
@@ -1554,7 +1557,7 @@ export default function usePipelineAPI({
           appliedSaveSeq.current = saveRequestId
           sourceRevisionRef.current = data.source_revision
           const status = useDocumentStatusStore.getState()
-          status.acknowledgeSave(data.source_revision)
+          status.acknowledgeSave(data.source_revision, data.document_fingerprint)
           status.setGraphSynchronized(true)
           useUIStore.getState().setSyncBanner(null)
         }

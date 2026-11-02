@@ -2832,6 +2832,13 @@ def test_remove_unavailable_node_apply_reports_the_exact_edits_it_made(
 
     assert response.status_code == 200, response.text
     applied = response.json()
+    # The fingerprint a resync of the repaired file carries, so the repairing canvas skips it.
+    from haute._pipeline_recovery import pipeline_document_fingerprint
+
+    repaired = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    assert response.headers["x-haute-document-fingerprint"] == pipeline_document_fingerprint(
+        repaired.model_dump(mode="json", by_alias=True)
+    )
     assert applied["repair_kind"] == "remove_unavailable_node"
     assert "plan_hash" not in applied
     assert [change["path"] for change in applied["changes"]] == [
