@@ -197,6 +197,12 @@ def test_validate_v2_schema_accepts_minimal() -> None:
             "v2 tables[0].columns[0].origin must be inferred, inherited or manual",
             id="origin-null",
         ),
+        pytest.param(
+            "origin",
+            [],
+            "v2 tables[0].columns[0].origin must be inferred, inherited or manual",
+            id="origin-list",
+        ),
         pytest.param("key", 1, "v2 tables[0].columns[0].key must be a bool", id="key-int"),
         pytest.param("key", "true", "v2 tables[0].columns[0].key must be a bool", id="key-string"),
     ],

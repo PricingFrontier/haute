@@ -354,23 +354,45 @@ describe("ApiInputEditor", () => {
       expect(screen.getByTestId("api-input-infer-btn")).toBeEnabled()
     })
 
-    it("stages a reply behind the confirmation once the same file's tables changed, merging into the newer tables", async () => {
+    it("drops a reply once the same file's tables changed, saying so, and a new inference merges through the confirmation", async () => {
       const answer = controlledInference()
       const first = successfulOnUpdateSpy()
       const view = render(editor({ path: "data.json", tables: [] }, first))
       fireEvent.click(screen.getByTestId("api-input-infer-btn"))
       const latest = successfulOnUpdateSpy()
-      view.rerender(editor({ path: "data.json", tables: [userTable] }, latest))
+      const edited = { path: "data.json", tables: [userTable] }
+      view.rerender(editor(edited, latest))
 
       await answer()
 
       expect(first).not.toHaveBeenCalled()
       expect(latest).not.toHaveBeenCalled()
+      expect(screen.queryByTestId("api-input-infer-confirm-banner")).toBeNull()
+      expect(screen.getByText("The node changed while this inference ran, so it was not applied.")).toBeTruthy()
+
+      const again = controlledInference()
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+      await again()
       fireEvent.click(screen.getByTestId("api-input-infer-confirm"))
-      expect(first).not.toHaveBeenCalled()
       const written = latest.mock.calls.at(-1)?.[0] as { path: string; tables: Array<{ label: string }> }
       expect(written.path).toBe("data.json")
       expect(written.tables.map((table) => table.label)).toContain("quotes")
+    })
+
+    it("writes nothing when the document is reloaded under the open editor", async () => {
+      const answer = controlledInference()
+      const before = successfulOnUpdateSpy()
+      const view = render(editor({ path: "data.json", tables: [] }, before))
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+      // The same node in a document read again: an equal config, but not the draft asked from.
+      const after = successfulOnUpdateSpy()
+      view.rerender(editor({ path: "data.json", tables: [] }, after))
+
+      await answer()
+
+      expect(before).not.toHaveBeenCalled()
+      expect(after).not.toHaveBeenCalled()
+      expect(screen.queryByTestId("api-input-infer-confirm-banner")).toBeNull()
     })
 
     it("writes nothing once the editor has closed (another node or document)", async () => {
@@ -413,7 +435,7 @@ describe("ApiInputEditor", () => {
       expect((onUpdate.mock.calls[0][0] as { tables: Array<{ label: string }> }).tables[0].label).toBe("policies")
     })
 
-    it("drops a staged confirmation when the file changes", async () => {
+    it("drops a staged confirmation when the file changes, for good", async () => {
       const answer = controlledInference()
       const onUpdate = successfulOnUpdateSpy()
       const view = render(editor({ path: "data.json", tables: [userTable] }, onUpdate))
@@ -422,7 +444,9 @@ describe("ApiInputEditor", () => {
       expect(screen.getByTestId("api-input-infer-confirm-banner")).toBeTruthy()
 
       view.rerender(editor({ path: "other.json", tables: [userTable] }, onUpdate))
-
+      expect(screen.queryByTestId("api-input-infer-confirm-banner")).toBeNull()
+      // Selecting the first file again does not bring the earlier confirmation back.
+      view.rerender(editor({ path: "data.json", tables: [userTable] }, onUpdate))
       expect(screen.queryByTestId("api-input-infer-confirm-banner")).toBeNull()
       expect(onUpdate).not.toHaveBeenCalled()
     })

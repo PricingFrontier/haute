@@ -29,6 +29,15 @@ describe("IoArgumentsEditor", () => {
     expect(screen.getByText("separator has no value, so it is not saved. Enter a JSON value such as \",\".")).toBeInTheDocument()
   })
 
+  it("says a saved argument whose value is cleared keeps its saved value", () => {
+    const onCommit = renderArguments({ separator: "," })
+    type("Argument 1 value", "")
+
+    expect(onCommit).toHaveBeenLastCalledWith({ separator: "," })
+    expect(screen.getByText("separator has no value, so its saved value is kept. Enter a JSON value, or remove the argument.")).toBeInTheDocument()
+    expect(screen.queryByText(/so it is not saved/)).not.toBeInTheDocument()
+  })
+
   it("does not claim a previous value is kept for a new argument with invalid JSON", () => {
     renderArguments({})
     fireEvent.click(screen.getByRole("button", { name: "Add argument" }))

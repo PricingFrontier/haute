@@ -80,14 +80,14 @@ export default function ApiInputEditor({
   const [inferringSource, setInferringSource] = useState<string | null>(null)
   const inferring = inferringSource !== null && inferringSource === currentPath
   const [inferError, setInferError] = useState<string | null>(null)
-  // When a re-infer would overwrite tables the user has already curated, or
-  // the draft changed while it ran, the normalised inferred tables are staged
-  // here, for the file they were inferred from, behind a confirm/cancel gate
-  // instead of clobbering. An unchanged empty draft skips the gate.
-  const [stagedInference, setStagedInference] = useState<{ source: string; tables: ApiInputTableV2[] } | null>(null)
-  // A staged inference is offered only while its file is the one selected.
-  const pendingInferred =
-    stagedInference !== null && stagedInference.source === currentPath ? stagedInference.tables : null
+  // When a re-infer would overwrite tables the user has already curated, the
+  // normalised inferred tables are staged here behind a confirm/cancel gate
+  // instead of clobbering, for the very draft they were inferred against: any
+  // change of that draft (an edit, an undo, another file, the document read
+  // again) drops the staged tables for good. An empty draft skips the gate.
+  const [stagedInference, setStagedInference] = useState<{ draft: Record<string, unknown>; tables: ApiInputTableV2[] } | null>(null)
+  if (stagedInference !== null && stagedInference.draft !== config) setStagedInference(null)
+  const pendingInferred = stagedInference !== null && stagedInference.draft === config ? stagedInference.tables : null
   // The editor's latest config and update, for an inference reply that arrives
   // after renders, and the generation that invalidates a reply on unmount
   // (another node or document) or a newer inference.
@@ -361,12 +361,12 @@ export default function ApiInputEditor({
     writeBack(next)
   }
   /**
-   * Infer the selected file's tables. The reply is bound to that file and the
-   * draft it was asked from: it is dropped if the editor closed, a newer
-   * inference started or another file is selected by then; it applies at once
-   * only to the same, still-empty draft; and otherwise it waits behind the
-   * replace confirmation, which merges into the tables as they are when it is
-   * confirmed. It writes through the editor's current update, so a document
+   * Infer the selected file's tables. The reply is bound to the very draft it
+   * was asked from: it is dropped if the editor closed or a newer inference
+   * started by then, and dropped with a note if the draft changed (an edit, an
+   * undo, another file, the document read again); it applies at once to that
+   * draft when it has no tables, and otherwise waits behind the replace
+   * confirmation. It writes through the editor's current update, so a document
    * that cannot be edited any more refuses it.
    */
   const inferTables = async () => {
@@ -374,13 +374,16 @@ export default function ApiInputEditor({
     const source = currentPath
     const askedFrom = config
     const generation = ++inferGeneration.current
-    const isCurrent = () =>
-      generation === inferGeneration.current && configField(latest.current.config, "path", undefined) === source
+    const isCurrent = () => generation === inferGeneration.current
     setInferringSource(source)
     setInferError(null)
     try {
       const result = await inferJsonCacheSchema({ path: source })
       if (!isCurrent()) return
+      if (latest.current.config !== askedFrom) {
+        setInferError("The node changed while this inference ran, so it was not applied.")
+        return
+      }
       // Route the raw /infer response through `readV2` so unknown column
       // types are coerced instead of being raw-cast into state. Infer is
       // fresh backend output that was never user-persisted, so it opts
@@ -395,15 +398,15 @@ export default function ApiInputEditor({
       // Refresh the single most-recent-inference snapshot on EVERY infer,
       // whether or not the replace gate is later confirmed.
       setLastInfer(inferred)
-      const { config: current, onUpdate: update } = latest.current
-      const currentShape = classifyConfig(current)
-      const currentV2 = currentShape.kind === "v2" ? currentShape.v2 : emptyV2(source)
-      if (current === askedFrom && currentV2.tables.length === 0) {
-        // First run on an unchanged draft — nothing to clobber, apply in one click.
-        const committed = update(writeV2({ ...currentV2, tables: inferred }))
+      const update = latest.current.onUpdate
+      const askedShape = classifyConfig(askedFrom)
+      const askedV2 = askedShape.kind === "v2" ? askedShape.v2 : emptyV2(source)
+      if (askedV2.tables.length === 0) {
+        // First run — nothing to clobber, apply in one click.
+        const committed = update(writeV2({ ...askedV2, tables: inferred }))
         if (!committed.ok) setInferError(committed.error)
       } else {
-        setStagedInference({ source, tables: inferred })
+        setStagedInference({ draft: askedFrom, tables: inferred })
       }
     } catch (e) {
       if (isCurrent()) setInferError(apiErrorMessage(e))

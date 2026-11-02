@@ -208,7 +208,9 @@ export function IoArgumentsEditor({
                     className="mt-0.5 text-[11px]"
                     style={{ color: "var(--danger-text)" }}
                   >
-                    {name} has no value, so it is not saved. Enter a JSON value such as ",".
+                    {keepsSavedValue
+                      ? `${name} has no value, so its saved value is kept. Enter a JSON value, or remove the argument.`
+                      : `${name} has no value, so it is not saved. Enter a JSON value such as ",".`}
                   </p>
                 )}
                 {invalidValue && (

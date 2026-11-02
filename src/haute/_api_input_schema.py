@@ -501,7 +501,9 @@ def validate_v2_schema(config: dict[str, Any]) -> None:
                     raise ApiInputSchemaError(
                         f"v2 tables[{ti}].columns[{ci}].status must be Confirmed or Inferred",
                     )
-            if "origin" in col and col["origin"] not in _COLUMN_ORIGINS:
+            if "origin" in col and (
+                not isinstance(col["origin"], str) or col["origin"] not in _COLUMN_ORIGINS
+            ):
                 raise ApiInputSchemaError(
                     f"v2 tables[{ti}].columns[{ci}].origin must be inferred, inherited or manual",
                 )

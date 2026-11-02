@@ -1627,6 +1627,15 @@ def test_validate_banding_config_rejects_unusable_authored_factor(factor) -> Non
             "breakpoint rule '2024-03-31' requires label (rules[0])",
         ),
         ([{"boundary": "", "label": "all"}], "only an open-ended boundary"),
+        # A falsy scalar label passes the writer but bands nothing when executed.
+        (
+            [{"boundary": "10", "label": 0}],
+            "Banding output 'x_band' has no usable breakpoints rule",
+        ),
+        (
+            [{"boundary": "10", "label": False}],
+            "Banding output 'x_band' has no usable breakpoints rule",
+        ),
     ],
 )
 def test_validate_banding_config_rejects_breakpoints_that_band_nothing(rules, message) -> None:

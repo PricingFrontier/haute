@@ -584,9 +584,9 @@ def validate_banding_config(config: dict[str, Any]) -> list[dict[str, Any]]:
 
     Every factor names a banding type, draft or not, and every rule row is one the
     sidecar writer can write (:func:`compact_banding_config_for_sidecar`): a value or
-    boundary, what it maps to, no value twice. So every configured rule is usable. A
-    factor without a column, output column, or rules remains a supported draft no-op;
-    once configured, its breakpoints must make intervals.
+    boundary, what it maps to, no value twice. A factor without a column, output
+    column, or rules remains a supported draft no-op; once configured, its breakpoints
+    must make intervals at least one of which bands rows.
     """
 
     factors = normalise_banding_factors(config)
@@ -604,11 +604,19 @@ def validate_banding_config(config: dict[str, Any]) -> list[dict[str, Any]]:
         if not str(factor.get("column", "") or "").strip() or not output_column:
             continue
         if factor.get("banding") == "breakpoints" and configured_rules:
-            # The boundaries must make intervals: a lone open-ended band makes none.
-            _breakpoints_to_rules(
+            # The boundaries must make intervals (a lone open-ended band makes none),
+            # and one must band rows: a falsy label such as 0 reads as no band name.
+            intervals = _breakpoints_to_rules(
                 normalise_banding_rules("breakpoints", configured_rules),
                 right_closed=bool(factor.get("rightClosed", True)),
             )
+            if not any(
+                _banding_rule_comparators(rule) and rule.get("assignment") not in (None, "")
+                for rule in intervals
+            ):
+                raise ConfigSettingError(
+                    _no_usable_rule_message(output_column, "breakpoints"), setting="factors"
+                )
     require_distinct_banding_outputs(factors)
     return factors
 
