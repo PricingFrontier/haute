@@ -1157,6 +1157,47 @@ describe("useEdgeHandlers", () => {
     expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/graph changed/)
   })
 
+  it("does not commit a resolved edgeJoin after its dragged source is edited", async () => {
+    const params = makeEdgeJoinInsertionParams()
+    let candidate: { nodes: Node[]; edges: Edge[] } | null = null
+    let resolveIdentities!: (value: { nodes: Node[]; edges: Edge[] }) => void
+    params.resolveGraphIdentities = vi.fn((nodes, edges) => {
+      candidate = { nodes: [...nodes], edges: [...edges] }
+      return new Promise((resolve) => { resolveIdentities = resolve })
+    })
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({ from: "c", fromHandleId: "lookup_out" }),
+      )
+    })
+    await vi.waitFor(() => expect(params.resolveGraphIdentities).toHaveBeenCalledOnce())
+    // The source's outputs are edited (an API input's frame renamed): the new
+    // edge would name an output the source no longer has. Names and structure stay.
+    params.graphRef.current = {
+      ...params.graphRef.current,
+      nodes: params.graphRef.current.nodes.map((node) => node.id === "c"
+        ? { ...node, data: { ...node.data, config: { frames: [{ label: "renamed_out" }] } } }
+        : node),
+    }
+    await act(async () => {
+      if (!candidate) throw new Error("Expected an Edge Join identity candidate")
+      resolveIdentities({
+        nodes: candidate.nodes.map((node) => node.id === "edgeJoin_1"
+          ? { ...node, data: { ...node.data, _defaultInputName: "server_join" } }
+          : node),
+        edges: candidate.edges,
+      })
+      await Promise.resolve()
+    })
+
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/graph changed/)
+  })
+
   it("onConnectEnd ignores input-handle drops on an existing edge", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [

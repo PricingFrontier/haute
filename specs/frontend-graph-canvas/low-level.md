@@ -418,7 +418,8 @@ reconciliation rather than dropping them or committing a second mutation.
    none of these, so it no longer
    refuses a creation; every apply adds to the live graph rather than replacing
    it with the captured one, so such a change is kept. Edge Join insertion
-   depends on the split edge's target, whose input mapping it rewrites; its
+   depends on the split edge's target, whose input mapping it rewrites, and on
+   the sources of its new edges, whose outputs those edges name; its
    apply takes the new node, the rewritten target and the replacement edges
    from the resolved insertion and everything else from the live graph. `App.tsx`'s
    own `handleSwapEdgeJoinInputs` is a concrete example: it calls

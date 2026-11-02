@@ -364,10 +364,15 @@ export default function useEdgeHandlers({
         // The insertion was computed from the graph as it is now.
         const capturedGraph = graphRef.current
         const rewrittenNodeIds = edgeJoinRewrittenNodeIds(result)
+        // The new edges name their sources' outputs (an API input's frame is its
+        // handle), so an edit to a source refuses the insertion too.
+        const sourceNodeIds = result.edges
+          .filter((edge) => edge.target === result.newNodeId)
+          .map((edge) => edge.source)
         await createAfterIdentity({
           graphRef,
           serialRef: structuralCreationSerialRef,
-          dependsOnNodeIds: rewrittenNodeIds,
+          dependsOnNodeIds: [...new Set([...rewrittenNodeIds, ...sourceNodeIds])],
           resolve: async () => finalizeResolvedEdgeJoinInsertion(
             result,
             await resolveGraphIdentities(result.nodes, result.edges),
