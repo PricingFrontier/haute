@@ -68,6 +68,13 @@ export interface NodeDataSlotJob {
   message: string
   /** The consumer that started the build, for the toast a completion raises. */
   startedByLabel: string
+  /**
+   * This tab started the job rather than joining one running elsewhere: only
+   * such a job is its consumers' to stop. Kept on the slot, not by the
+   * consumer that started it, so every consumer of the point — and that one
+   * mounted again — can stop it.
+   */
+  startedHere: boolean
 }
 
 /**
@@ -77,10 +84,13 @@ export interface NodeDataSlotJob {
  */
 export interface NodeDataProfileJob extends NodeDataSlotJob {
   dataVersion: string
-  /**
-   * This tab started the job rather than joining one running elsewhere: only
-   * such a job is its consumers' to stop.
-   */
+}
+
+/** What a job's registration says about it; a job not said to be started here is joined. */
+interface NodeDataJobStart {
+  jobId: string
+  message: string
+  startedByLabel: string
   startedHere?: boolean
 }
 
@@ -145,23 +155,25 @@ export interface NodeDataStore {
     profile: NodeDataProfile,
     executionMetrics?: ExecutionMetrics | null,
   ) => void
-  startProfileJob: (
-    slotKey: string,
-    job: {
-      jobId: string
-      message: string
-      startedByLabel: string
-      dataVersion: string
-      startedHere?: boolean
-    },
-  ) => void
+  startProfileJob: (slotKey: string, job: NodeDataJobStart & { dataVersion: string }) => void
   /** Record that asking for a profile failed, so a consumer can offer a retry. */
   reportProfileFailure: (slotKey: string, dataVersion: string | null, message: string) => void
   /** Forget a recorded failure, so the profile is asked for again. */
   clearProfileFailure: (slotKey: string) => void
   updateProfileProgress: (slotKey: string, status: NodeDataStatusResponse) => void
   finishProfileJob: (slotKey: string, status?: NodeDataStatusResponse | null) => void
-  startJob: (slotKey: string, job: { jobId: string; message: string; startedByLabel: string }) => void
+  /**
+   * Register a build a run started or joined. *answer* is the run's own point:
+   * when the store holds no entry for the slot — the asking consumer moved to
+   * another identity before the answer could be published — the entry is made
+   * from it, because the build runs on the server whatever the consumer asks
+   * about now and must still be polled and stoppable.
+   */
+  startJob: (
+    slotKey: string,
+    job: NodeDataJobStart,
+    answer?: { point: NodeDataPointResponse; source: string },
+  ) => void
   /** Record a delegated build (an input snapshot or JSON cache) with its canceller. */
   startDelegatedBuild: (slotKey: string, build: NodeDataDelegatedBuild) => void
   reportDelegatedProgress: (slotKey: string, token: string, message: string | null) => void
@@ -205,6 +217,42 @@ function pointRefLabel(point: NodeDataPointResponse): { producerNodeId: string; 
     producerNodeId: point.point.producer_node_id,
     portLabel: point.point.port_label ?? null,
   }
+}
+
+/** The slot entry an authoritative `point` describes, with the build state the caller decided. */
+function slotFromPoint(
+  point: NodeDataPointResponse,
+  source: string,
+  job: NodeDataSlotJob | null,
+  delegatedBuild: NodeDataDelegatedBuild | null,
+): NodeDataSlot {
+  return {
+    slotKey: point.slot_key,
+    ...pointRefLabel(point),
+    source,
+    kind: point.kind,
+    reportedState: point.state,
+    reportedDemand: point.demand,
+    dataVersion: point.data_version ?? null,
+    rowCount: point.row_count ?? null,
+    sizeBytes: point.size_bytes ?? null,
+    retention: point.retention ?? null,
+    generation: point.generation ?? null,
+    readsDirectly: point.reads_directly,
+    buildEndpoint: point.build_endpoint ?? null,
+    clearEndpoint: point.clear_endpoint ?? null,
+    job,
+    delegatedBuild,
+  }
+}
+
+/**
+ * Whether a job registered or reported as *jobId* was started here: a later
+ * `joined` answer or a point naming the same job never takes that away, and a
+ * different job does not inherit it.
+ */
+function startedHereFor(previous: NodeDataSlotJob | null | undefined, jobId: string, startedHere = false): boolean {
+  return startedHere || (previous?.jobId === jobId && previous.startedHere)
 }
 
 function generationChanged(before: NodeDataSlot | undefined, after: NodeDataGeneration | null): boolean {
@@ -251,7 +299,7 @@ const useNodeDataStore = create<NodeDataStore>((set, get) => ({
       const slotKey = point.slot_key
       const previous = state.slots[slotKey]
       const generation = point.generation ?? null
-      const job = point.job
+      const job: NodeDataSlotJob | null = point.job
         ? {
             jobId: point.job.job_id,
             progress: point.job.progress,
@@ -259,28 +307,12 @@ const useNodeDataStore = create<NodeDataStore>((set, get) => ({
             // A job this client did not start is still shown; the label of the
             // consumer that started it is unknown, so the point names itself.
             startedByLabel: previous?.job?.startedByLabel ?? point.point.producer_node_id,
+            startedHere: startedHereFor(previous?.job, point.job.job_id),
           }
         : previous?.job?.jobId && point.state === "building"
           ? previous.job
           : null
-      const slot: NodeDataSlot = {
-        slotKey,
-        ...pointRefLabel(point),
-        source,
-        kind: point.kind,
-        reportedState: point.state,
-        reportedDemand: point.demand,
-        dataVersion: point.data_version ?? null,
-        rowCount: point.row_count ?? null,
-        sizeBytes: point.size_bytes ?? null,
-        retention: point.retention ?? null,
-        generation,
-        readsDirectly: point.reads_directly,
-        buildEndpoint: point.build_endpoint ?? null,
-        clearEndpoint: point.clear_endpoint ?? null,
-        job,
-        delegatedBuild: previous?.delegatedBuild ?? null,
-      }
+      const slot = slotFromPoint(point, source, job, previous?.delegatedBuild ?? null)
       const versionChanged =
         previous !== undefined && previous.dataVersion !== slot.dataVersion
       return {
@@ -314,11 +346,7 @@ const useNodeDataStore = create<NodeDataStore>((set, get) => ({
           message: job.message,
           startedByLabel: job.startedByLabel,
           dataVersion: job.dataVersion,
-          // A later `joined` answer for the same job never takes away that
-          // this tab started it.
-          startedHere:
-            job.startedHere ||
-            (state.profileJobs[slotKey]?.jobId === job.jobId && state.profileJobs[slotKey]?.startedHere),
+          startedHere: startedHereFor(state.profileJobs[slotKey], job.jobId, job.startedHere),
         },
       },
       profileFailures: withoutKey(state.profileFailures, slotKey),
@@ -386,15 +414,19 @@ const useNodeDataStore = create<NodeDataStore>((set, get) => ({
       }
     }),
 
-  startJob: (slotKey, job) =>
+  startJob: (slotKey, job, answer) =>
     set((state) => {
-      const slot = state.slots[slotKey]
+      // Without the run's point there is nothing authoritative to make an
+      // entry from, so a slot the store does not hold is left alone.
+      const slot =
+        state.slots[slotKey] ?? (answer ? slotFromPoint(answer.point, answer.source, null, null) : undefined)
       if (!slot) return {}
       const running: NodeDataSlotJob = {
         jobId: job.jobId,
         progress: 0.03,
         message: job.message,
         startedByLabel: job.startedByLabel,
+        startedHere: startedHereFor(slot.job, job.jobId, job.startedHere),
       }
       return {
         slots: {

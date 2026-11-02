@@ -26,7 +26,7 @@
 | `frontend/src/types/trainGuards.ts` | Dynamically imported runtime parsers for modelling train/status/estimate responses, outside the initial JavaScript graph. `parseTrainResponse` and `parseTrainStatusResponse` take the whole structure, including the evaluation and tuning reports and the fit evidence, from the generated `training` validators, and shape by hand only what the server model leaves open: the diagnostic row lists, loss history, GLM inference and regularisation, EBM terms and the feature-selection report. The evaluation and tuning invariants are checked once on the server, where their artifacts are produced, so the browser does not re-check them. `parseTrainEstimateResponse` takes the estimate's structure from the generated `TrainEstimateResponse` validator and applies only the cross-field rules by hand: the evaluation preview's strategy/validation consistency, and the unavailable reason's figures and blocking node (narrowed to a discriminated union). |
 | `frontend/src/types/pipelineRepair.ts` | Exact-key minimal repair apply wire types and parsers. Apply delegates its nested document to `parsePipelineEditorDocument`; no response or request type contains replacement source bytes or migration operations. |
 | `frontend/src/stores/useNodeResultsStore.ts` | Zustand store: preview/solve/train/explore/pivot result and job caches (`startTrainJob` records the `trainingLineage` of the submitted training payload that the editor passes in; a fence-current completion remembers the job in the browser handles of `utils/trainedJobHandles` and an error or failure forgets it; `restoreTrainResult` puts back a completed training result restored after a reload, never replacing an existing result or running job; `markTrainResultExpired` records, in `expiredTrainJobs`, a node whose remembered completed result the server no longer holds, unless the node has a result or running job, and starting a training job, a completed or restored result, or clearing the node drops that record), authoritative training history plus bounded ETA samples, column cache, derived-getter memoization, LRU eviction, and the atomic per-pivot start claim (one current claim per Explore node + pivot id holding the owning node id, the requested dataframe cache key, calculation identity, and a unique generation token; taking a claim before submission serialises concurrent consumers, an identical automatic target no-ops, every manual Retry and every newer automatic target atomically replaces the generation, only the current token may promote it to a job or release it — superseded outcomes are discarded — and clearing a node's results drops exactly the claims whose stored node id matches). |
-| `frontend/src/stores/useNodeDataStore.ts` | Zustand store of the data every consumer of one point shares, keyed by slot (`producerNodeId|portLabel|source`): the point's kind, the generation its producer's current signature has (id, column set, rows, bytes, retention, freshness), the running build — a node-data job with its progress, or a delegated build with its message, its canceller, and the token that owns it — the profile of the data version it holds and why the last profile failed — attributed to the version that profile was computed for, so a generation published while it ran is still profiled — how the point is built or cleared, and a monotonic node-data epoch. It also records, per consumer node, the slot it was last told it reads together with the identity that answer was given for, so a read for another identity returns nothing. A consumer's own availability is derived from the entry and its column demand, never stored. |
+| `frontend/src/stores/useNodeDataStore.ts` | Zustand store of the data every consumer of one point shares, keyed by slot (`producerNodeId|portLabel|source`): the point's kind, the generation its producer's current signature has (id, column set, rows, bytes, retention, freshness), the running build — a node-data job with its progress and whether this tab started it (`startedHere`, as a profile job also records), or a delegated build with its message, its canceller, and the token that owns it — the profile of the data version it holds and why the last profile failed — attributed to the version that profile was computed for, so a generation published while it ran is still profiled — how the point is built or cleared, and a monotonic node-data epoch. It also records, per consumer node, the slot it was last told it reads together with the identity that answer was given for, so a read for another identity returns nothing. A consumer's own availability is derived from the entry and its column demand, never stored. |
 | `frontend/src/hooks/useNodeDataCache.ts` | One consumer node's view of the data it reads: the point, its availability for that consumer's demand, and `run`, `refresh`, `cancel`, and `clear`. |
 | `frontend/src/hooks/useNodeDataProfile.ts` | The shared `profile` analysis of the data one consumer reads: asked for once per slot and data version while the point is `current`, fenced against a document that has moved on, stored per slot so every pane showing that data gets it, with `cancel` for the running job, and `error` plus `refresh` so a failed attempt is retried rather than left as an empty pane. Each request names the version it asks about, which the job it starts carries. |
 | `frontend/src/utils/operationToken.ts` | `nextOperationToken`: a process-unique token that tells one asynchronous operation apart from the operation that replaced it. |
@@ -610,7 +610,9 @@ value again; a draft equal to what the field already shows sends nothing. The Ca
 disabled, since nothing is captured for it to bound.
 
 The pane loads the settings each time it opens; reopened while a save is in flight, it shows
-that save's outcome instead of loading over it. Until the first load returns, the settings'
+that save's outcome instead of loading over it. A load answered after a newer load began,
+after a save was confirmed, or while a save is pending changes nothing: neither the settings
+shown nor the last confirmed settings a failed save restores. Until the first load returns, the settings'
 fields are disabled and empty; a failed load reports the server's message (`role="alert"`)
 above them, and they stay disabled until a later open loads. Each commit sends one key in
 `PATCH /api/pipeline-settings` (`null` for automatic) and shows the new value at once; saves
@@ -769,7 +771,18 @@ it (specified in the [server API](../server-api/low-level.md#node-data-builds)).
 3. `stores/useNodeDataStore.ts` keeps one entry per slot, so consumers of the same point share
    the generation and the running build. `run` and `refresh` post `/api/node-data/run`; a
    `started` or `joined` response registers the build under the slot, and `useBackgroundJobs`
-   polls it once for the whole application. Every terminal outcome — completed, failed, or
+   polls it once for the whole application. The registered build records whether this tab
+   started it (`startedHere`), which a later `joined` answer or a `point` reporting the same
+   job never takes away and a different job does not inherit. The slot holds that, not the
+   consumer, so every consumer of the point in this tab shows the node's Stop for the build and
+   cancels it: the consumer that started it, another consumer of the same point (an editor's
+   build stopped from the preview frame), and a consumer remounted after its tab, panel or node
+   switched away and back. A build joined from another client is left running. The run's
+   answer is fenced on the identity that sent it: a build the server started or joined is
+   registered whatever the consumer now asks about — the slot created from the run's `point`
+   when the store does not hold it — so it is polled and can still be stopped; for an identity
+   the consumer has left, a `delegated` answer starts no build and an already-cached answer
+   raises no notice. Every terminal outcome — completed, failed, or
    cancelled — clears the build and raises the epoch, so consumers ask what is there now instead
    of showing a cancel control for a build that has stopped. A `delegated` response hands a
    snapshot-backed Data Input or an API-input table to the input-snapshot orchestration
@@ -835,7 +848,12 @@ same Vitest config.
   raises it once, and a reset making the next announcement count again — a build adopted from
   another client, two consumers deriving `current` and `partial` from one narrow generation,
   progress
-  from a build either of them started, delegation handing over exactly the producer node, a
+  from a build either of them started, a build this tab started stopped by another consumer
+  of the point and by the consumer remounted, its `startedHere` kept by a `joined` answer or a
+  `point` naming the same job and not carried to a different one, a build started for an
+  identity the consumer left while the run was on the wire still registered (its slot created
+  from the run's point) and stoppable while a delegated answer for such an identity starts
+  nothing, delegation handing over exactly the producer node, a
   forced or stale delegated build replacing data the ensure pass would skip, a delegated build
   shown to another consumer and cancelled through the slot, delegated clears, a point read
   directly offering no build, a clear that leaves nothing claimed as cached and a refused clear
@@ -913,7 +931,9 @@ same Vitest config.
   had and recording the message; a save shown at once and replaced by the server's response;
   saves sent in order with only the latest one's outcome displayed; a failed save restoring
   the last confirmed settings and toasting; a load during a pending save waiting for that save
-  instead of overwriting it; and a repeated save of a pending or confirmed value sending nothing.
+  instead of overwriting it; a load answered while a save is pending, or after a newer load,
+  leaving the confirmed settings a failed save restores untouched; and a repeated save of a
+  pending or confirmed value sending nothing.
 - **`useSettingsStore`** (`frontend/src/stores/__tests__/useSettingsStore.addSource.test.ts`):
   covers the sanitize-then-dedup `addSource` path (asserting the
   discriminated `{ok, reason, key}` result for the empty and duplicate

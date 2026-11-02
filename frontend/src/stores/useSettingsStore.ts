@@ -158,14 +158,21 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
     const confirmations = _settingsConfirmations
     try {
       const settings = await getPipelineSettings()
-      // A save confirmed since this load began holds newer settings.
-      if (confirmations !== _settingsConfirmations) return
-      set({ _confirmedPipelineSettings: settings })
-      // A pending save shows its own value; its failure restores these.
-      if (request !== _settingsLoadSeq || Object.keys(get()._pendingPipelineSettings).length > 0) {
+      // A save confirmed since this load began, or a newer load, holds newer
+      // settings; a pending save shows its own value, and its failure restores
+      // the settings confirmed before it, not this answer.
+      if (
+        confirmations !== _settingsConfirmations
+        || request !== _settingsLoadSeq
+        || Object.keys(get()._pendingPipelineSettings).length > 0
+      ) {
         return
       }
-      set({ pipelineSettings: settings, pipelineSettingsError: null })
+      set({
+        _confirmedPipelineSettings: settings,
+        pipelineSettings: settings,
+        pipelineSettingsError: null,
+      })
     } catch (e) {
       if (request !== _settingsLoadSeq || Object.keys(get()._pendingPipelineSettings).length > 0) {
         return

@@ -19,7 +19,6 @@ to `FSH-R09` from the
 | FSH-R06 | Planned | P3 | The stores carry one copy of each derivation and validator, no test-only action, no fabricated result sentinel, and their specification names the actions that exist. |
 | FSH-R09 | Planned | P3 | The frontend-shared specification describes the formatter, the pollers and the store shape that exist, and preview supersession is recognised by a structured code rather than by its message text. |
 | FSH-R10 | Planned | P2 | Independent request-input edits made while identity resolution is pending are retained together. |
-| FSH-R13 | Planned | P2 | `useNodeDataCache` persists job ownership (`startedHere`) in `useNodeDataStore` so Stop/Cancel works across tab and node switches, `loadPipelineSettings` checks staleness before overwriting `_confirmedPipelineSettings`, and `UtilityPanel` syncs the `Imports` editor buffer with external `preamble` changes. |
 
 ## Planned improvements
 
@@ -134,48 +133,3 @@ the final accepted draft and persists it. Extend the controller/editor tests.
 **Evidence:** `frontend/src/hooks/useGraphCommitController.ts`;
 `frontend/src/panels/NodePanel.tsx`;
 `frontend/src/panels/editors/ApiInputEditor.tsx`.
-
-### FSH-R13 — Store-backed node-data job ownership, guarded pipeline settings load, and `UtilityPanel` preamble buffer sync
-**Why:** Three shared state and hook defects affect node-data cancellation, pipeline
-settings, and the Utility Imports editor:
-1. Unlike `startProfileJob` (which stores `startedHere` in `useNodeDataStore`),
-   `useNodeDataCache` tracks job ownership in local hook state (`ownedJobId`).
-   Switching tabs in `ExplorePreview`, selecting another node and returning, or
-   starting a node-data build from an editor (`useWholeDataAnswer`) and clicking
-   Stop in `DataPreview` loses `ownedJobId`, so `startedHere` is `false`, the Stop
-   button disappears, and `cancel()` becomes a no-op. In addition, if `configHash`
-   changes while `runNodeData` is in flight, `publish` returns early before
-   `observePoint` creates the slot, and `startJob` then drops the started job when
-   `!slot`.
-2. In `useSettingsStore.loadPipelineSettings`,
-   `set({ _confirmedPipelineSettings: settings })` runs before the guard
-   `if (request !== _settingsLoadSeq || Object.keys(get()._pendingPipelineSettings).length > 0) return`,
-   so an out-of-order response or a load arriving while a settings PATCH is pending
-   overwrites `_confirmedPipelineSettings`, causing a subsequent PATCH failure
-   rollback to restore stale settings.
-3. In `UtilityPanel`, the `Imports` `CodeEditor` uses a static `key="imports"` with
-   `defaultValue={preamble}` (which `CodeEditor` reads only on mount), so external
-   changes to `preamble` (such as Undo/Redo or an auto-inserted `from utility...`
-   import when a utility module is created while viewing `Imports`) never update the
-   mounted editor buffer, and the next edit in `Imports` overwrites the external
-   `preamble` change.
-
-**Plan:** Record `startedHere` on the node-data job entry in `useNodeDataStore`
-(initializing the slot in `startJob` if needed and fencing `runNodeData` on the
-initiating `configHash`), move the `_settingsLoadSeq` / `_pendingPipelineSettings`
-guard in `loadPipelineSettings` above `set({ _confirmedPipelineSettings: settings })`,
-and sync or re-key the `Imports` `CodeEditor` in `UtilityPanel` when `preamble`
-changes externally.
-
-**Acceptance:** Starting a node-data build in one consumer (or before switching
-nodes/tabs) keeps `startedHere === true` and allows `cancel()` from `DataPreview`
-or after returning to the node; a stale `loadPipelineSettings` response arriving
-during a pending PATCH leaves `_confirmedPipelineSettings` untouched; and an external
-`preamble` update while `Imports` is open updates the `CodeEditor` content.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/hooks/useNodeDataCache.ts::useNodeDataCache`;
-`frontend/src/stores/useNodeDataStore.ts::useNodeDataStore`;
-`frontend/src/stores/useSettingsStore.ts::useSettingsStore`;
-`frontend/src/panels/UtilityPanel.tsx::UtilityPanel`.

@@ -327,7 +327,10 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
    save straight after typing takes all of it. Ctrl+S (`hasModifier`, on the open file's
    editor) runs `saveDraft(false)` and prevents the key, so the pipeline's window-level Ctrl+S, which skips a prevented key, does
    not also run; on the Imports entry the key is left to the pipeline's save, the preamble
-   being the pipeline's.
+   being the pipeline's. The Imports entry's editor shows the preamble as it is: a change made
+   outside the panel while it is open — Undo or Redo, or the import line a new utility file
+   adds — replaces its text in place (the editor's external value, not a remount, so its
+   undo history stays), and the next edit there builds on it.
 3. Closing the panel, or any UI-store change that would hide it (another panel, a node click),
    is held back by the store while `utilityUnsaved` (`utilityLeave`, the held changes merged);
    an action outside the store that hides it, the view switcher's change of view, is held the
@@ -504,7 +507,8 @@ a failed save sent again; a refused delete keeping its draft; the unload warning
 responses) and syntax errors; `frontend/src/stores/__tests__/useUIStore.exclusivity.test.ts` pins the
 held changes and actions, and `frontend/src/panels/__tests__/UtilityPanel.liveEditor.test.tsx`, with
 the real editor, text typed while a close waits on a save, saved before it closes or kept
-behind the conflict, and Ctrl+S straight after typing. The Explore suites also pin progressbar name/value semantics, TSV headers and
+behind the conflict, Ctrl+S straight after typing, and a preamble changed outside the panel
+while the Imports entry is open replacing its text, the next edit there building on it. The Explore suites also pin progressbar name/value semantics, TSV headers and
 contents, RFC-4180 CSV quoting through the download blob, full filtered-schema export across
 pagination, disabled empty-table actions, and native-button accessibility.
 `frontend/src/__tests__/App.utilityPanelLazy.test.ts` and the bundle-budget tests
