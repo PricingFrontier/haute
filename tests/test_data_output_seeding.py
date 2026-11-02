@@ -227,6 +227,32 @@ def test_data_output_over_a_chunk_local_recipe_is_written_input_sliced(
     assert_frame_equal(_result(project), expected)
 
 
+def test_data_output_over_a_data_input_filtering_in_its_own_code_is_written_input_sliced(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same filter in the Data Input's code slices the input scan too (CACHE-S22)."""
+    graph = _graph(project)
+    quotes = next(node for node in graph["nodes"] if node["id"] == "quotes")
+    # A selective filter, so a write of unfiltered slices would not equal it.
+    quotes["data"]["config"]["code"] = "df = df.filter(pl.col('a') > 2)"
+    graph["nodes"] = [quotes, next(node for node in graph["nodes"] if node["id"] == "out")]
+    graph["edges"] = [{"id": "e0", "source": "quotes", "target": "out"}]
+
+    from haute._polars_utils import set_streaming_chunk_size
+
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
+    set_streaming_chunk_size(40)
+    write = _write(monkeypatch, graph)
+
+    assert write.status_code == 200, write.body
+    metrics = write.metrics
+    assert metrics["data_output_write_strategy"] == "input_sliced"
+    assert (metrics["data_output_write_input_slices"] or 0) > 1
+    expected = pl.read_parquet(project / "quotes.parquet").filter(pl.col("a") > 2)
+    assert 0 < expected.height < pl.read_parquet(project / "quotes.parquet").height
+    assert_frame_equal(_result(project), expected)
+
+
 def test_data_output_with_user_arguments_keeps_the_native_sink(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

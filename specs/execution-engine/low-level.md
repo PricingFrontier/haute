@@ -714,7 +714,15 @@ to a caller that writes a node in full, and `unshaped_frames=...` hands it, for 
 that shapes its columns, its frame before that step. Beside edge joins, the lazy engine builds
 write recipes for single-input `NodeType.POLARS` nodes by classifying their code with
 `classify_chunk_local_polars_code` (with bound source frame names and preamble selector aliases)
-using the prepared boundary's source nodes directly. Missing source nodes are invalid prepared
+using the prepared boundary's source nodes directly. A Data Input with post-load code gets one
+too: its builder returns a `SourceWithCode`, whose `open_scan` opens and projects the source's
+scan and whose `apply_code` runs the code on a frame (calling it does both). A sink walk opens
+the scan once, builds the output from it, and records a recipe whose input is that scan and
+whose function is the code, classified with the frame name `df`. So a filter in a Data Input's
+code is written `input_sliced`, a slice of the source at a time, as the same filter in a
+Transform is, where before it was written natively; a Data Input whose code Polars can slice
+through (adding columns) is still written `sliced`, and one whose code is not chunk-local
+(a sort) still natively, carrying the classifier's reason. Missing source nodes are invalid prepared
 state and must fail, never silently omit a recipe input name. An edge from a request input
 (API, Quote or Workbench Input) with no `sourceHandle` names no table: `_build_funcs` gives its
 consumer a function that raises `ConfigError` naming the consumer and the input instead of

@@ -1279,7 +1279,7 @@ entirely and leave every touched file in whatever state it happened to be in."
   and a build worker stopped, timed out, or killed at its memory cap ends with that status and
   removes the capture it had staged. `test_an_explicit_build_and_its_captures_share_the_editor_chunk_size`
   verifies that an explicit build and its captures run at the editor's chunk size and that the
-  capture evidence records it. An explicit build of a chunk-local filter node writes `input_sliced` across several parts and equals the native result.
+  capture evidence records it. An explicit build of a chunk-local filter node writes `input_sliced` across several parts and equals the native result, and so does a Data Input whose own code is that filter, over Parquet and over a CSV's input snapshot; one whose code adds columns writes `sliced`, and one whose code sorts writes natively, naming `sort`.
 - `tests/test_analysis_results.py` covers the profile route: an uncached point asking to be
   cached, a profile computed once and then served from the store, a second request joining the
   running profile, a refreshed point never returning the previous profile, admission failure,

@@ -29,7 +29,7 @@ import polars as pl
 
 import haute.execution as execution_facade
 import haute.projection as projection_planner
-from haute._builders import _passthrough_fn
+from haute._builders import SourceWithCode, _passthrough_fn
 from haute._chunked_writes import (
     JoinRecipe,
     RecipeEquivalenceError,
@@ -1126,7 +1126,7 @@ class _Walk:
         with self._stage(_NODE_STAGES.get(self.policy.purpose), node_id):
             inputs = [] if boundary.is_source else self._node_inputs(boundary)
             try:
-                frame = self.boundaries.invoke(boundary, inputs)
+                frame = self._invoke(boundary, inputs)
                 # A display walk resolves the node's schema here, so a lazy
                 # plan's failure surfaces while the inputs are still in hand.
                 built = self._shape_output(boundary, frame)
@@ -1319,6 +1319,28 @@ class _Walk:
         runtime_plan = self.projection.runtime_plan
         assert runtime_plan is not None
         return set(runtime_plan.demand_for_edge(edge) or ())
+
+    def _invoke(self, boundary: NodeBoundary, inputs: Sequence[_Frame]) -> Any:
+        """Invoke one node; a source with post-load code also records its write recipe.
+
+        Such a source opens its scan once here, so the recipe slices exactly the
+        scan its output was built from.
+        """
+        source = boundary.fn
+        if not isinstance(source, SourceWithCode) or self.measuring or self.display:
+            return self.boundaries.invoke(boundary, inputs)
+        scan, frame = source.opened()
+        if scan is not None:
+            write = _write_recipe(
+                source.apply_code,
+                boundary.node,
+                (scan,),
+                frame_names=["df"],
+                selector_aliases=self.selector_aliases,
+            )
+            if write is not None:
+                self.write_recipes[boundary.node_id] = write
+        return frame
 
     def _record_recipes(self, boundary: NodeBoundary, inputs: Sequence[_Frame]) -> None:
         """The recipes a full write of this node can be chunked by."""

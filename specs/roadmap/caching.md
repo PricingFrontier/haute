@@ -27,7 +27,7 @@ measured limits of the existing consumers.
 | One store, every consumer | Node outputs, input snapshots (including each emitting table of a structured API Input, prepared automatically), and analyses share `.haute_cache`; previews, bounded runs, explicit builds, and traces run under one seed plan. | — |
 | No duplicated runs | A bounded run seeds from any fresh covering generation and captures a join, fan-out, join feeder, batch Model Score, or consumed producer only where recomputing it costs more than the cache round trip, and records why it skipped the others; a preview seeds the same way and captures only the joins and costly full-input work it must compute in full. A chain of plain transforms is recomputed by every preview and bounded run by design, because recomputing it costs less than the cache round trip. Each capture publishes as soon as it is written, so a run that fails or is cancelled later keeps what it had already published. A preview served from the response cache reports its generations as seeded, and the canvas raises the node-data epoch only for a capture generation it has not seen, so a repeat preview costs no refetch. | Two consumers that resolve the same cold capture point at the same time, or an explicit build and an automatic capture of one node, both compute it; the publication lock decides only who publishes (`CACHE-S19`). |
 | Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. A preview says when a node was not cached and how to fix it. | A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). |
-| Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A node with one input whose code is provably row-local is written a slice of its input at a time where a capture or an explicit build writes it, so its memory does not grow with the input. A pass-through node carries its parent's recipe forward, and training preparation writes its prepared parquet through the same bounded writer, slicing the frame or the recipe's input and recording which. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | Full joins rescan the base once per lookup chunk (`CACHE-S18`; measured 24-Sep-2026 and not yet worth building). |
+| Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A node with one input whose code is provably row-local, or a Data Input whose post-load code is, is written a slice of its input (or source scan) at a time where a capture, an explicit build or a Data Output writes it, so its memory does not grow with the input. A pass-through node carries its parent's recipe forward, and training preparation writes its prepared parquet through the same bounded writer, slicing the frame or the recipe's input and recording which. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | Full joins rescan the base once per lookup chunk (`CACHE-S18`; measured 24-Sep-2026 and not yet worth building). |
 | Failures are recoverable | A corrupt generation is reported, never silently repaired, and names the node whose cache to clear or rebuild; a plan whose inputs moved stops, before collection and again if they move before a capture publishes. | — |
 
 ## Priorities
@@ -36,14 +36,12 @@ measured limits of the existing consumers.
 |---|---|---:|---|
 | CACHE-S13 | Planned | P3 | A capturing preview finishes as a job instead of dying at the interactive timeout. Unproven: no measured preview approaches the timeout (re-measured 24-Sep-2026). |
 | CACHE-S19 | Deferred | P3 | Two consumers that need the same cold capture compute it once. |
-| CACHE-S22 | Planned | P3 | The shapes that cannot carry a write recipe at all can. |
 | CACHE-S18 | Planned | P3 | Full joins are written with a bounded number of scans. Measured 24-Sep-2026: about 2 s over native at 10M × 10M rows, so not yet worth building. |
 
 ## Planned improvements
 
-Delivery order is `CACHE-S22` → `CACHE-S18`, each gated on a
-measurement named in its own entry rather than started on the strength of its
-shape; `CACHE-S19` remains deferred. `CACHE-S13` is also measurement-gated:
+`CACHE-S18` is gated on a measurement named in its own entry rather than
+started on the strength of its shape; `CACHE-S19` remains deferred. `CACHE-S13` is also measurement-gated:
 no measured preview approaches its timeout. What is left is measured
 against cost rather than shape. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
@@ -274,44 +272,6 @@ the job path so it is not bounded by the interactive timeout.
 **Evidence:** `src/haute/_node_snapshots.py`; `src/haute/_seed_plans.py`;
 `src/haute/_execute_lazy.py` (`_PlannedCaptures`);
 `src/haute/_execution_context.py`.
-
-### CACHE-S22 — The shapes that cannot carry a write recipe at all
-
-**Why:** The chunked writer slices a node's input when the engine can hand it a write recipe.
-Two shapes never can, so they take the native path however cheap their work is.
-
-A **Data Input with editor code** has no input frame the engine hands out, because its scan lives
-inside its builder; the builder must expose that scan before a recipe can name it.
-
-A node whose operations ARE row-local but whose **code the allowlist refuses** is refused for the
-code, not for the work. An earlier draft proposed letting a node type declare its builder's step
-chunk-local; that is the wrong granularity, since stepped nodes already render their operations
-into `code` that the classifier reads (`src/haute/_types.py:902-914`), and a node carrying a code
-box is not decidable by its type at all (`src/haute/_builders.py:648-660`). The question is the
-classifier's reach over the code it is given, and it should be answered by measuring which
-refusals occur in real graphs before widening anything.
-
-**Measured 20-Sep-2026, and it retires the allowlist half.** Every recipe refusal is now logged
-(`write_recipe_refused`, with the node, reason, blocking operator and position), and tallied over
-the seeding, node-data and Data Output suites: 74 admitted against 41 refused, whose blocking
-operators were `sort` 32, `head` 4, `collect` 3, `pl.int_range` 1 and one unresolved name. Every
-one of those is global by definition — a slice cannot be sorted, or headed, or collected, and
-give the same answer as the whole — so each is refused correctly and there is nothing the
-evidence asks to admit. Widening the allowlist is not work; confirming it against a real project's
-graphs, rather than this repository's, is the only thing left to say about it.
-
-**Plan:** What remains is the other shape: a Data Input with editor code has no input frame the
-engine hands out, because its scan lives inside its builder. Expose that scan so a recipe can name
-it.
-
-**Acceptance:** Named once the measurement says which refusals are worth removing.
-
-**Owning specifications:** [execution engine](../execution-engine/low-level.md)
-(chunk-local classification, write recipes).
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/chunking.py`; `src/haute/_builders.py` (a Data Input's scan).
 
 ### CACHE-S18 — Bounded scans in full joins
 
