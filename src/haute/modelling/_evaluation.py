@@ -286,6 +286,76 @@ class EvaluationConfig:
         return result
 
 
+#: The evaluation plan file's format: one membership label per source row.
+PLAN_SCHEMA_VERSION = 2
+#: A final-test row's membership label.
+_TEST_LABEL = "T"
+_TEST_GROUP = -1
+#: Development rows carry the label of their group: the rows every validation fit
+#: treats alike (a fold, a temporal block, a holdout's validation or training rows).
+_GROUP_LABELS = "0123456789abcdefghijklmnopqrstuvwxyz"
+_LABEL_CODES = np.frombuffer(_GROUP_LABELS.encode("ascii"), dtype=np.uint8)
+_GROUP_OF_CODE = np.full(256, -2, dtype=np.int16)
+_GROUP_OF_CODE[ord(_TEST_LABEL)] = _TEST_GROUP
+_GROUP_OF_CODE[_LABEL_CODES] = np.arange(len(_GROUP_LABELS), dtype=np.int16)
+
+
+def _encode_memberships(plan: EvaluationPlan) -> tuple[str, list[dict[str, str]]]:
+    """A plan's memberships as one label per row, and each fit's groups by label.
+
+    Development rows that every validation fit treats alike (train, validation or
+    outside it) form one group; groups are labelled in the order of their roles, so
+    one plan has one encoding.
+    """
+    development = np.asarray(plan.development_positions, dtype=np.int64)
+    roles = np.zeros((len(plan.validation_fits), plan.row_count), dtype=np.int8)
+    for index, fit in enumerate(plan.validation_fits):
+        roles[index, np.asarray(fit.train_positions, dtype=np.int64)] = 1
+        roles[index, np.asarray(fit.validation_positions, dtype=np.int64)] = 2
+    if plan.validation_fits:
+        signatures, groups = np.unique(roles[:, development].T, axis=0, return_inverse=True)
+        groups = groups.reshape(-1)
+    else:
+        signatures, groups = np.zeros((1, 0), dtype=np.int8), np.zeros(len(development), int)
+    if len(signatures) > len(_GROUP_LABELS):
+        raise HauteValidationError("evaluation plan has more development groups than labels")
+    codes = np.full(plan.row_count, ord(_TEST_LABEL), dtype=np.uint8)
+    codes[development] = _LABEL_CODES[groups]
+    fits = [
+        {
+            role: "".join(
+                _GROUP_LABELS[group]
+                for group in range(len(signatures))
+                if signatures[group, index] == value
+            )
+            for role, value in (("train", 1), ("validation", 2))
+        }
+        for index in range(len(plan.validation_fits))
+    ]
+    return codes.tobytes().decode("ascii"), fits
+
+
+def _decode_memberships(value: object, row_count: int) -> np.ndarray:
+    """Each row's development group (``-1`` for the final test) from its label."""
+    if not isinstance(value, str) or len(value) != row_count or not value.isascii():
+        raise HauteValidationError("memberships must hold one label per source row")
+    groups = _GROUP_OF_CODE[np.frombuffer(value.encode("ascii"), dtype=np.uint8)]
+    if (groups == -2).any():
+        raise HauteValidationError("memberships hold an unknown label")
+    return groups
+
+
+def _fit_groups(value: object, group_count: int, name: str) -> frozenset[int]:
+    if not isinstance(value, str):
+        raise TypeError(f"validation fit {name} must be a string of group labels")
+    groups = [_GROUP_LABELS.find(label) for label in value]
+    if any(group < 0 or group >= group_count for group in groups) or len(set(groups)) != len(
+        groups
+    ):
+        raise HauteValidationError(f"validation fit {name} names an unknown or repeated group")
+    return frozenset(groups)
+
+
 @dataclass(frozen=True)
 class EvaluationValidationFit:
     train_positions: tuple[int, ...]
@@ -298,12 +368,6 @@ class EvaluationValidationFit:
     @property
     def validation_rows(self) -> int:
         return len(self.validation_positions)
-
-    def to_plain_data(self) -> dict[str, Any]:
-        return {
-            "train_positions": [int(x) for x in self.train_positions],
-            "validation_positions": [int(x) for x in self.validation_positions],
-        }
 
 
 @dataclass(frozen=True)
@@ -342,14 +406,14 @@ class EvaluationPlan:
         return mask
 
     def to_plain_data(self) -> dict[str, Any]:
+        memberships, fits = _encode_memberships(self)
         return {
             "schema_version": self.schema_version,
             "source_sha256": self.source_sha256,
             "row_count": self.row_count,
             "config": self.config.to_plain_data(),
-            "development_positions": [int(x) for x in self.development_positions],
-            "test_positions": [int(x) for x in self.test_positions],
-            "validation_fits": [x.to_plain_data() for x in self.validation_fits],
+            "memberships": memberships,
+            "validation_fits": fits,
             "summary": dict(self.summary),
         }
 
@@ -360,60 +424,41 @@ class EvaluationPlan:
             "source_sha256",
             "row_count",
             "config",
-            "development_positions",
-            "test_positions",
+            "memberships",
             "validation_fits",
             "summary",
         }
         data = _exact_mapping(raw, required, "evaluation plan")
-        if _integer(data["schema_version"], "schema_version") != 1:
+        if _integer(data["schema_version"], "schema_version") != PLAN_SCHEMA_VERSION:
             raise HauteValidationError("unsupported plan schema_version")
         source = _sha256(data["source_sha256"], "source_sha256")
         count = _integer(data["row_count"], "row_count", low=1)
         config = EvaluationConfig.from_plain_data(data["config"])
-
-        def positions(value: object, name: str) -> tuple[int, ...]:
-            if not isinstance(value, list):
-                raise TypeError(f"{name} must be a list")
-            values = tuple(_integer(x, name, low=0, high=count - 1) for x in value)
-            if len(set(values)) != len(values):
-                raise HauteValidationError(f"duplicate {name}")
-            if values != tuple(sorted(values)):
-                raise HauteValidationError(f"{name} must be in canonical ascending order")
-            return values
-
-        dev, test = (
-            positions(data["development_positions"], "development_positions"),
-            positions(data["test_positions"], "test_positions"),
-        )
-        if not dev or set(dev) & set(test) or set(dev) | set(test) != set(range(count)):
+        groups = _decode_memberships(data["memberships"], count)
+        group_count = int(groups.max()) + 1 if (groups >= 0).any() else 0
+        if group_count == 0:
             raise HauteValidationError("development/test positions overlap or are empty")
-        if bool(test) != (config.test is not None):
+        if set(np.unique(groups[groups >= 0]).tolist()) != set(range(group_count)):
+            raise HauteValidationError("development group labels are not contiguous")
+        test_rows = np.flatnonzero(groups == _TEST_GROUP)
+        if bool(len(test_rows)) != (config.test is not None):
             raise HauteValidationError("test membership disagrees with evaluation config")
         if (
             not isinstance(data["validation_fits"], list)
             or len(data["validation_fits"]) != config.validation_fit_count
         ):
             raise HauteValidationError("validation fit count disagrees")
-        fits = []
+        every_group = frozenset(range(group_count))
+        fit_groups: list[tuple[frozenset[int], frozenset[int]]] = []
         for item in data["validation_fits"]:
-            item = _exact_mapping(
-                item, {"train_positions", "validation_positions"}, "validation fit"
-            )
-            fit = EvaluationValidationFit(
-                positions(item["train_positions"], "train_positions"),
-                positions(item["validation_positions"], "validation_positions"),
-            )
-            if (
-                not fit.train_positions
-                or not fit.validation_positions
-                or set(fit.train_positions) & set(fit.validation_positions)
-                or not (set(fit.train_positions) | set(fit.validation_positions)).issubset(dev)
-            ):
+            item = _exact_mapping(item, {"train", "validation"}, "validation fit")
+            train = _fit_groups(item["train"], group_count, "train")
+            valid = _fit_groups(item["validation"], group_count, "validation")
+            if not train or not valid or train & valid:
                 raise HauteValidationError("invalid validation fit membership")
-            fits.append(fit)
+            fit_groups.append((train, valid))
         if config.validation["method"] == "cross_validation":
-            validation_sets = [set(fit.validation_positions) for fit in fits]
+            validation_sets = [valid for _, valid in fit_groups]
             if any(
                 left & right
                 for index, left in enumerate(validation_sets)
@@ -421,29 +466,36 @@ class EvaluationPlan:
             ):
                 raise HauteValidationError("cross-validation validation memberships overlap")
             if config.strategy == "temporal":
-                for previous, current in zip(fits, fits[1:], strict=False):
-                    if set(current.train_positions) != (
-                        set(previous.train_positions) | set(previous.validation_positions)
-                    ):
+                for (previous_train, previous_valid), (current_train, _) in zip(
+                    fit_groups, fit_groups[1:], strict=False
+                ):
+                    if current_train != previous_train | previous_valid:
                         raise HauteValidationError(
                             "temporal cross-validation training membership is not expanding"
                         )
-                if set(fits[-1].train_positions) | set(fits[-1].validation_positions) != set(dev):
+                if fit_groups[-1][0] | fit_groups[-1][1] != every_group:
                     raise HauteValidationError(
                         "temporal cross-validation does not end with all development rows"
                     )
-            elif set().union(*validation_sets) != set(dev):
+            elif frozenset().union(*validation_sets) != every_group:
                 raise HauteValidationError(
                     "cross-validation validation memberships do not partition development"
                 )
             if config.strategy != "temporal" and any(
-                set(fit.train_positions) | set(fit.validation_positions) != set(dev) for fit in fits
+                train | valid != every_group for train, valid in fit_groups
             ):
                 raise HauteValidationError("cross-validation fit does not cover development")
-        elif fits and (
-            set(fits[0].train_positions) | set(fits[0].validation_positions) != set(dev)
-        ):
+        elif fit_groups and fit_groups[0][0] | fit_groups[0][1] != every_group:
             raise HauteValidationError("single validation fit does not cover development")
+        dev = tuple(np.flatnonzero(groups >= 0).tolist())
+        test = tuple(test_rows.tolist())
+
+        def members(selected: frozenset[int]) -> tuple[int, ...]:
+            return tuple(np.flatnonzero(np.isin(groups, sorted(selected))).tolist())
+
+        fits = [
+            EvaluationValidationFit(members(train), members(valid)) for train, valid in fit_groups
+        ]
         if not isinstance(data["summary"], dict):
             raise TypeError("summary must be an object")
         summary = data["summary"]
@@ -477,7 +529,11 @@ class EvaluationPlan:
                 raise HauteValidationError("summary test date count disagrees with membership")
             if summary["development_date_count"] + summary["test_date_count"] > count:
                 raise HauteValidationError("summary date counts exceed source rows")
-        return cls(1, source, count, config, dev, test, tuple(fits), summary)
+        plan = cls(PLAN_SCHEMA_VERSION, source, count, config, dev, test, tuple(fits), summary)
+        memberships, encoded_fits = _encode_memberships(plan)
+        if memberships != data["memberships"] or encoded_fits != data["validation_fits"]:
+            raise HauteValidationError("evaluation plan memberships are not in canonical form")
+        return plan
 
 
 def _count(size: float, total: int) -> int:
@@ -862,7 +918,7 @@ def generate_evaluation_plan(
         {"development_rows": len(dev), "test_rows": len(test), "validation_fit_count": len(fits)}
     )
     return EvaluationPlan(
-        1,
+        PLAN_SCHEMA_VERSION,
         source_sha256,
         row_count,
         config,

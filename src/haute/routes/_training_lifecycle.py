@@ -2049,50 +2049,47 @@ class TrainService:
                         )
             staged_evaluation = cast(EvaluationReportPayload, staged_response.evaluation)
 
-            # The store owns the lifecycle claim around this callback. A
-            # cancellation that wins first suppresses publication; one that
-            # arrives afterwards observes the paired completed record.
+            # Every artifact file is read and checked here, outside the store's lock:
+            # the staged set is the run's own and no longer changes, and status polls
+            # must not wait on a large plan's validation.
+            published = _validate_training_artifacts(
+                result,
+                artifact_root=artifact_root,
+                expected_model_name=str(job_kwargs["name"]),
+                expected_evaluation=staged_evaluation,
+                expected_tuning=staged_response.tuning,
+            )
+            response_fields["model_path"] = str(published["model"])
+            evaluation_fields = staged_evaluation.model_dump(mode="json", exclude_none=True)
+            for kind, response_field in _EVALUATION_ARTIFACT_PATHS.items():
+                evaluation_fields[response_field] = str(published[kind])
+            response_fields["evaluation"] = evaluation_fields
+            if staged_response.tuning is not None:
+                tuning_fields = staged_response.tuning.model_dump(mode="json", exclude_none=True)
+                for kind, response_field in _TUNING_ARTIFACT_PATHS.items():
+                    tuning_fields[response_field] = str(published[kind])
+                response_fields["tuning"] = tuning_fields
+            response = TrainResponse.model_validate(response_fields)
+            _assert_json_finite(response)
+            completed_progress_fields: dict[str, Any] = {}
+            if response.tuning is not None:
+                completed_progress_fields = {
+                    "phase": "completed",
+                    "trial_index": None,
+                    "trial_count": response.tuning.trial_count,
+                    "fold_index": None,
+                    "fold_count": (response.tuning.trial_fit_count // response.tuning.trial_count),
+                    "completed_fits": response.tuning.total_fit_count,
+                    "total_fits": response.tuning.total_fit_count,
+                    "best_objective": response.tuning.winner_objective,
+                }
+            handle = training_artifacts_handle(artifact_root, published)
+
+            # The store owns the lifecycle claim around this callback, which only
+            # hands over the validated fields. A cancellation that wins first
+            # suppresses publication; one that arrives afterwards observes the paired
+            # completed record.
             def publish_completion_fields() -> Mapping[str, Any]:
-                published = _validate_training_artifacts(
-                    result,
-                    artifact_root=artifact_root,
-                    expected_model_name=str(job_kwargs["name"]),
-                    expected_evaluation=staged_evaluation,
-                    expected_tuning=staged_response.tuning,
-                )
-                response_fields["model_path"] = str(published["model"])
-                evaluation_fields = staged_evaluation.model_dump(
-                    mode="json",
-                    exclude_none=True,
-                )
-                for kind, response_field in _EVALUATION_ARTIFACT_PATHS.items():
-                    evaluation_fields[response_field] = str(published[kind])
-                response_fields["evaluation"] = evaluation_fields
-                if staged_response.tuning is not None:
-                    tuning_fields = staged_response.tuning.model_dump(
-                        mode="json",
-                        exclude_none=True,
-                    )
-                    for kind, response_field in _TUNING_ARTIFACT_PATHS.items():
-                        tuning_fields[response_field] = str(published[kind])
-                    response_fields["tuning"] = tuning_fields
-                response = TrainResponse.model_validate(response_fields)
-                _assert_json_finite(response)
-                completed_progress_fields: dict[str, Any] = {}
-                if response.tuning is not None:
-                    completed_progress_fields = {
-                        "phase": "completed",
-                        "trial_index": None,
-                        "trial_count": response.tuning.trial_count,
-                        "fold_index": None,
-                        "fold_count": (
-                            response.tuning.trial_fit_count // response.tuning.trial_count
-                        ),
-                        "completed_fits": response.tuning.total_fit_count,
-                        "total_fits": response.tuning.total_fit_count,
-                        "best_objective": response.tuning.winner_objective,
-                    }
-                handle = training_artifacts_handle(artifact_root, published)
                 # Ownership passes to the job record in this critical section;
                 # parent cleanup must no longer remove the directory.
                 artifact_publication_committed.set()

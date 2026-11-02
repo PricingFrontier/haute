@@ -1701,6 +1701,58 @@ class TestLaunchBackgroundWorker:
         # Temp parquet removed in the worker finally (1229->exit true side).
         assert not Path(tmp_parquet).exists()
 
+    def test_publication_reads_its_artifacts_with_status_polls_still_answering(self, tmp_path):
+        """The evaluation artifacts are read and validated before the store's lock is
+        taken: a status poll made while they are read answers at once."""
+        import threading
+
+        from haute.routes import _training_artifacts
+        from haute.routes import _training_lifecycle as _train_service
+
+        store, service, job_id = self._service_and_job()
+        context = _training_execution_context()
+        tmp_parquet = str(tmp_path / "train.parquet")
+        Path(tmp_parquet).write_text("x", encoding="utf-8")
+        read = _training_artifacts._validate_evaluation_artifact_contents
+        polls: list[str] = []
+
+        def slow_reader(*args, **kwargs):
+            poll = threading.Thread(
+                target=lambda: polls.append(store.require_job(job_id)["status"])
+            )
+            poll.start()
+            # Under the store's lock this poll could not answer until the read ends.
+            poll.join(timeout=5)
+            assert not poll.is_alive(), "a status poll waited on the artifact read"
+            return read(*args, **kwargs)
+
+        with (
+            patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob),
+            patch.object(
+                _train_service,
+                "build_training_job_kwargs",
+                return_value={"name": "train", "output_dir": str(tmp_path / "outputs")},
+            ),
+            patch.object(
+                _training_artifacts, "_validate_evaluation_artifact_contents", slow_reader
+            ),
+        ):
+            thread = service._launch_background(
+                job_id,
+                "train",
+                _launch_config(),
+                {"iterations": 1},
+                tmp_parquet,
+                warning=None,
+                total_source_rows=100,
+                execution_context=context,
+            )
+            assert thread is not None
+            thread.join_and_raise(timeout=20)
+
+        assert polls == ["running"]
+        assert store.require_job(job_id)["status"] == "completed"
+
     def test_execution_cancelled_marks_cancelled(self, tmp_path):
         """An ExecutionCancelledError from run() → job cancelled (1164-1169)."""
         from haute._execution_context import ExecutionCancelledError

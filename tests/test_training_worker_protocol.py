@@ -1769,23 +1769,26 @@ def test_train_service_publication_wins_late_cancel_and_records_elapsed(tmp_path
     )
     started, cancellation = threading.Event(), {}
     cancel_thread: threading.Thread | None = None
-    real_validate = _validate_training_artifacts
+    real_publish = store.compare_and_publish_completion
 
-    def publish_while_cancel_waits(*args, **kwargs):
-        nonlocal cancel_thread
-        cancel_thread = threading.Thread(
-            target=lambda: (started.set(), cancellation.update(service.cancel(job_id))), daemon=True
-        )
-        cancel_thread.start()
-        assert started.wait(timeout=10)
-        return real_validate(*args, **kwargs)
+    def publish_while_cancel_waits(job_id_: str, *, publish, **kwargs):
+        # The cancel is requested once the swap holds the store's lock, so it waits
+        # for the publication and then observes the completed record.
+        def publish_with_cancel_waiting():
+            nonlocal cancel_thread
+            cancel_thread = threading.Thread(
+                target=lambda: (started.set(), cancellation.update(service.cancel(job_id))),
+                daemon=True,
+            )
+            cancel_thread.start()
+            assert started.wait(timeout=10)
+            return publish()
+
+        return real_publish(job_id_, publish=publish_with_cancel_waiting, **kwargs)
 
     with (
         patch("haute.modelling.TrainingJob", SilentSuccessfulTrainingJob),
-        patch(
-            "haute.routes._training_lifecycle._validate_training_artifacts",
-            side_effect=publish_while_cancel_waits,
-        ),
+        patch.object(store, "compare_and_publish_completion", publish_while_cancel_waits),
     ):
         thread = service._launch_background(
             job_id,

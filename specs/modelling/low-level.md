@@ -543,15 +543,19 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    artifacts, and—when enabled—three tuning artifacts. It returns progress events and
    a validated result manifest containing a bounded `TrainResponse` payload. In the
    parent, the supervisor strictly reloads and cross-checks the complete staged set in
-   place (`_validate_training_artifacts`), rewrites all artifact paths to their absolute
-   locations inside the job's artifact directory, and transitions the job to `"completed"`
+   place (`_validate_training_artifacts`) before it takes the job store's lock, so no file
+   is read while status polls wait on it: the staged set is the run's own and no longer
+   changes. It rewrites all artifact paths to their absolute
+   locations inside the job's artifact directory, and the publish callback, which only hands
+   over those validated fields, transitions the job to `"completed"`
    with final `elapsed_seconds` and `artifact_handles["training_artifacts"]` (kind
    `modelling_training_artifacts`, version 1, the directory and each artifact kind's file
    name). No file is moved or replaced: the validated directory is the published,
    immutable artifact set, and ownership passes from parent cleanup to the job record in the
-   same job-store critical section as the transition. Cancellation that wins first prevents
-   publication, and parent cleanup removes the directory; publication that wins first
-   prevents a late cancellation from relabelling the model. Once that job completes, the
+   same job-store critical section as the transition. Cancellation that wins first (which
+   includes one requested while the artifacts are being validated) prevents publication, and
+   parent cleanup removes the directory; publication that wins first prevents a late
+   cancellation from relabelling the model. Once that job completes, the
    store detaches and cleans the artifact handles of earlier completed training jobs for the
    same pipeline source and node (`node_id` and `pipeline_source` are recorded when the job
    is created), skipping any job whose artifacts are currently held by an export; a skipped

@@ -11,9 +11,7 @@ six trained families (CatBoost, GLM through RustyStats, XGBoost, LightGBM,
 EBM and t-boost) are in scope only for what each backend exposes to a caller
 that must bound memory; their losses, tuning and evaluation are out of scope.
 The GLM distributions that `MOD-M01` names in its acceptance are the subject
-of that package, not a tuning choice. `MOD-R03` comes from
-the [25 October 2026 codebase review](codebase-review-2026-10-25.md) and is the
-exception to that scope: it covers what the review found in the training lifecycle.
+of that package, not a tuning choice.
 
 Today a training fit that exceeds its memory budget terminates: bounded
 streaming mode is refused outright (`BoundedMemoryUnsupportedError`, shown as
@@ -55,7 +53,6 @@ something this page settles.
 |---|---|---:|---|
 | MOD-M01 | Decision | P3 | Exact chunked GLM fitting under a memory budget. |
 | MOD-M02 | Decision | P3 | A low-memory boosted-tree fitting mode under an explicit user choice. |
-| MOD-R03 | Planned | P2 | Training publication validates the evaluation plan outside the job-store lock, and the plan stores memberships compactly. |
 
 ## Planned improvements
 
@@ -210,26 +207,3 @@ external-memory measurement. The model-card and result metadata surface.
 `src/haute/modelling/_ebm.py`; `src/haute/modelling/_training_job.py`;
 `src/haute/modelling/_model_card.py`; `src/haute/_ram_estimate.py` (the
 existing downsample decision).
-
-### MOD-R03 — Publication validates outside the lock
-**Why:** The evaluation plan stores every source position of the development
-set and of every validation fit's train and validation sets as JSON integers,
-and the parent re-parses and re-validates that file, with the results and the
-report, inside the job-store critical section at publication; at 2,000,000
-rows and five folds the plan is 71 MB and the reload takes 13.3 s with a
-0.65 GB peak, during which every status poll stalls.
-
-**Plan:** Store memberships compactly (a per-row partition label array, or
-sorted position ranges) and validate the plan outside the lock, entering it
-only to publish the already-validated fields.
-
-**Acceptance:** A 2M-row, five-fold plan is under 10 MB; publication holds the
-lock for no file read (a test with a slow reader); status polls answer during
-publication.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/modelling/_evaluation.py`;
-`src/haute/routes/_training_artifacts.py::_validate_evaluation_artifact_contents`;
-`src/haute/routes/_job_store.py::compare_and_publish_completion`;
-`src/haute/routes/_training_lifecycle.py`.

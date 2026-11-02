@@ -417,9 +417,12 @@ whose order is None, can sample different rows.
 
 After null-target filtering, planning writes and strictly reloads one canonical
 digest-linked `{model}.evaluation-plan.json` for the exact prepared parquet. The artifact
-contains the source digest, exact source positions, development/final-test
-membership, ordered validation-fit train/validation memberships, canonical strategy
-configuration, row counts, and bounded group/date summaries.
+contains the source digest, canonical strategy configuration, row counts, bounded
+group/date summaries, and the exact memberships held compactly (plan schema version 2):
+one label per source row, `T` for the final test or the label of the development group
+the row belongs to (the rows every validation fit treats alike: a fold, a temporal block,
+a holdout's validation or training rows), and for each ordered validation fit the groups
+it trains on and validates on. A two-million-row five-fold plan is about 2 MB.
 
 Planning assigns the final test first. Every validation fit is then derived solely
 from development positions. Single validation has one selection fit; K-fold
@@ -879,10 +882,11 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   invalid validation/test objects fail during cheap config validation before a job is created.
 - Evaluation planning rejects group leakage, temporal ties split across partitions, and invalid
   temporal ordering before persistence. The strict plan loader rejects unknown/missing fields,
-  source mismatches, duplicate/out-of-range or non-canonical positions, overlap, empty
-  requested partitions, count/summary disagreement, non-partitioning ordinary CV, and a
-  non-expanding temporal CV sequence; training also compares the reloaded plan with the
-  generated plan before fitting.
+  an earlier plan schema, source mismatches, a membership string that is not one known label
+  per row, a fit naming an unknown, repeated or shared group, a labelling that is not the
+  plan's canonical one, empty requested partitions, count/summary disagreement,
+  non-partitioning ordinary CV, and a non-expanding temporal CV sequence; training also
+  compares the reloaded plan with the generated plan before fitting.
 - Search-space validation for tuning rejects orchestration-owned keys, including objectives/losses,
   device/resource selection, callbacks, write directories, random seed, and `iterations`; the fixed
   `iterations` value is the upper ceiling.

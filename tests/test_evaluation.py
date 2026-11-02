@@ -567,28 +567,62 @@ def test_evaluation_plan_artifact_is_strict_digest_linked_and_byte_stable(
     assert load_evaluation_plan(first, source_sha256="e" * 64) == plan
     assert file_sha256(first) == hashlib.sha256(first.read_bytes()).hexdigest()
 
+    # One label per row: the final test is "T", a development row its fold's group.
+    raw = plan.to_plain_data()
+    assert len(raw["memberships"]) == 20 and raw["memberships"].count("T") == 5
+    assert raw["validation_fits"][0] == {"train": "01", "validation": "2"}
+
     unknown = plan.to_plain_data()
     unknown["unknown"] = 1
     with pytest.raises(ValueError):
         EvaluationPlan.from_plain_data(unknown)
-    overlap = plan.to_plain_data()
-    overlap["test_positions"][0] = overlap["development_positions"][0]
-    with pytest.raises(ValueError):
-        EvaluationPlan.from_plain_data(overlap)
-    unordered = plan.to_plain_data()
-    unordered["development_positions"] = list(reversed(unordered["development_positions"]))
-    with pytest.raises(ValueError, match="canonical ascending"):
-        EvaluationPlan.from_plain_data(unordered)
+    both_roles = plan.to_plain_data()
+    both_roles["validation_fits"][0]["train"] = "012"
+    with pytest.raises(ValueError, match="invalid validation fit membership"):
+        EvaluationPlan.from_plain_data(both_roles)
+    relabelled = plan.to_plain_data()
+    relabelled["memberships"] = relabelled["memberships"].translate(str.maketrans("01", "10"))
+    relabelled["validation_fits"] = [
+        {role: labels.translate(str.maketrans("01", "10")) for role, labels in fit.items()}
+        for fit in relabelled["validation_fits"]
+    ]
+    with pytest.raises(ValueError, match="canonical form"):
+        EvaluationPlan.from_plain_data(relabelled)
+    short = plan.to_plain_data()
+    short["memberships"] = short["memberships"][:-1]
+    with pytest.raises(ValueError, match="one label per source row"):
+        EvaluationPlan.from_plain_data(short)
     missing_test = plan.to_plain_data()
-    missing_test["development_positions"].extend(missing_test["test_positions"])
-    missing_test["development_positions"].sort()
-    missing_test["test_positions"] = []
+    missing_test["memberships"] = missing_test["memberships"].replace("T", "0")
     missing_test["summary"]["development_rows"] = 20
     missing_test["summary"]["test_rows"] = 0
     with pytest.raises(ValueError, match="test membership"):
         EvaluationPlan.from_plain_data(missing_test)
     with pytest.raises(ValueError, match="source"):
         load_evaluation_plan(first, source_sha256="f" * 64)
+
+
+@pytest.mark.slow
+def test_a_two_million_row_five_fold_plan_is_under_ten_megabytes(tmp_path: Path) -> None:
+    rows = 2_000_000
+    plan = generate_evaluation_plan(
+        random_config(
+            validation={"method": "cross_validation", "fold_count": 5}, test={"size": 0.2}
+        ),
+        source_sha256="e" * 64,
+        row_count=rows,
+        row_order=np.arange(rows),
+        task="regression",
+    )
+    path = tmp_path / "plan.json"
+    save_evaluation_plan(plan, path)
+
+    assert path.stat().st_size < 10 * 1024 * 1024
+    reloaded = load_evaluation_plan(path, source_sha256="e" * 64)
+    assert [fit.validation_rows for fit in reloaded.validation_fits] == [
+        fit.validation_rows for fit in plan.validation_fits
+    ]
+    assert reloaded == plan
 
 
 def test_evaluation_artifact_atomic_write_preserves_destination_on_replace_failure(
@@ -645,9 +679,7 @@ def test_temporal_cv_plan_artifact_validates_expanding_membership(tmp_path) -> N
     assert load_evaluation_plan(path, source_sha256="9" * 64) == plan
 
     malformed = plan.to_plain_data()
-    malformed["validation_fits"][1]["train_positions"] = malformed["validation_fits"][0][
-        "train_positions"
-    ]
+    malformed["validation_fits"][1]["train"] = malformed["validation_fits"][0]["train"]
     with pytest.raises(ValueError, match="not expanding"):
         EvaluationPlan.from_plain_data(malformed)
 
