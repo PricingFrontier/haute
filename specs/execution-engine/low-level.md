@@ -23,7 +23,7 @@
 | `src/haute/_pipeline_settings.py` | The per-clone pipeline settings file `.haute/pipeline-settings.json`: the `PipelineSettings` keys and their validation, stat-gated reads (`read_pipeline_settings`), locked atomic updates (`update_pipeline_settings`), the current automatic figures (`automatic_pipeline_settings`), the time limits and byte sizes its consumers read, `PipelineSettingsError`, and the server process following the file's chunk rows (`follow_chunk_rows`). See "Pipeline settings" below. |
 | `src/haute/_chunked_writes.py` | Bounded chunked writes: `sliceable` (positive proof on Polars' optimised IR that slicing a frame equals slicing its single Parquet/IPC scan or in-memory input), `write_parts` (a node output as ordered `part-NNNNN.parquet` files: a chunked edge join, one native sink per slice, an input-sliced write, or one native sink), `JoinRecipe`, `WriteRecipe`, `part_paths`/`scan_parts`. |
 | `src/haute/_polars_environment.py` | The Polars settings every process Haute starts runs under (see "Polars process settings" below): `polars_process_environment`, `polars_spill_root`, `apply_polars_process_environment`, `release_polars_spill_dir`, which every worker path calls beside its private-cgroup cleanup once the child has ended, and `reap_polars_spill_dirs`, which removes the folders of ended processes. |
-| `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` collects on the engine its caller names, `streaming` or `in-memory` (a required argument; every collect in `src/haute/` names one), and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve checkpoint, collect-count, and typed-error telemetry. `bounded_collect_batches` streams batches from a query run on a dedicated thread, so an engine panic raises instead of ending the stream early. It also owns the Python scans that expose opaque Python steps to Polars pushdown (`row_local_python_scan`, `fanout_python_scan`, `limited_python_scan`, `key_prefix_python_scan`), whose exceptions reach every seam as themselves. |
+| `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` collects on the engine its caller names, `streaming` or `in-memory` (a required argument; every collect in `src/haute/` names one), and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract; `execution_collect` and `streaming_collect` take optional Polars `optimizations` that replace Polars' defaults for that one query. All three preserve checkpoint, collect-count, and typed-error telemetry. `bounded_collect_batches` streams batches from a query run on a dedicated thread, so an engine panic raises instead of ending the stream early. It also owns the Python scans that expose opaque Python steps to Polars pushdown (`row_local_python_scan`, `fanout_python_scan`, `limited_python_scan`, `key_prefix_python_scan`), whose exceptions reach every seam as themselves. |
 | `src/haute/_node_apply.py` | Config-driven implementations of External File object loading (`load_external_object_from_config`, after `validate_external_file_config` refuses an empty `path` or a missing or unsupported `fileType` with a `ConfigSettingError` naming the setting, the check Recover reports too), `liveSwitch` input selection, `scenarioExpander` row expansion (`expand_scenarios_from_config`, and `expand_scenarios_bounded` for the interactive form a preview row limit reaches through), `optimiserApply` artifact dispatch, output response-document assembly (`assemble_output_from_config`), and a Workbench Input's frames and a Workbench Output's tables (`resolve_workbench_input_from_config`, `assemble_workbench_output_from_config`: given a config, the one a run gives the node with its tables; given a sidecar path, as generated code passes it, the sidecar read and given the tables of the form folder of the project holding `base_dir`, through `_workbench_node_config`, and `workbench_input_ports_from_config` the ports alone, the sample unread) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
 | `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`, declaring every type's recompute cost (`recompute_cost=`); owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component, and `pass_through_selected_edge` / `PASS_THROUGH_NODE_TYPES`, which state the incoming edge a pass-through node's built function returns. A node built without an input (an unconnected Rating Step, Banding, Scenario Expander, Model Score or Optimiser Apply, an unsaved Data Input, and the deploy scorer's external and model placeholders) starts from `pl.LazyFrame()`, which has no rows, and so returns none: a constant it adds gives no row either (Polars 1 invented one). It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). A stepped Polars transform's function carries `transform_fn.failed_step`, which replays the schemas of the steps' prefixes on the run's input frames to name the step a run failed on and, for something Polars 2 refuses only on rows, what to change (`_failed_step`, `StepFailure`). |
 | `src/haute/_node_builder.py` | `NodeBuildHooks` and `wrap_builder`, the interception seam used by deploy scoring while preserving the canonical runtime builders. |
@@ -500,16 +500,22 @@ are never capped. A materialised node collects its own plan limited to
 `row_limits_by_node[node]`, or `row_limit` when unset, after projection and column-limit
 selection (each frame of a multi-frame node), and a limited collection never feeds a
 consumer, nor one narrower than the columns its consumers need: consumers then read the
-node's uncapped plan, which `WalkResult.frames` also exposes. A frame several edges read is
-handed to each as it is, never through `cache()`. Polars scopes a cache to one query, so it
-shares no computation between separate collections. Within one query, common-subplan
-elimination computes a simple diamond's shared frame once, but not a frame shared again
-below another shared frame (a nested diamond), which each unshared path recomputes, as a
-write of the same graph does. The walker still adds no cache there: a cache keeps a
-preview's row limit from reaching the source and holds a materialised copy of the frame
-against the preview's budget, and the engine prefers the smaller peak to the single
-computation. Consumers of a collected node share its DataFrame instead,
-when it holds every row and column they need.
+node's uncapped plan, which `WalkResult.frames` also exposes. A display walk decides
+which frames its collects share (`_frames_to_share`), and collects with Polars'
+common-subplan elimination off (`_DISPLAY_COLLECT_OPTIMIZATIONS`), whose own cache in a
+simple diamond stops the row limit reaching the source. A cache in a collected query holds
+the whole frame and stops the row limit reaching what produced it, while recomputing the
+frame once per path reads only the rows the limit lets through, so a frame several edges
+read is shared only when two of those edges reach one collected node and that collection
+has no row limit, or the frame's lineage holds a node whose `limit_blocker` names an
+operation the limit cannot reach (an aggregation, a window, `unique`, opaque Python). A
+limited collection feeds its consumers its plan, so a path runs on through it; one without
+a limit feeds them its DataFrame, so a path stops there. A seeded node is read from its
+snapshot, so the lineage stops at it, and a frame the analysis cannot classify is
+recomputed. A shared frame reaches every edge through one `cache()` per source frame,
+picked by port. Polars scopes a cache to one query, so separate collections never share
+one; consumers of a collected node share its DataFrame instead, when it holds every row and
+column they need. A sink or measuring walk shares nothing.
 
 Under a leased `snapshot_plan` (`haute._seed_plans`, resolved for this exact execution
 by `_check_snapshot_plan`) a display walk runs only the plan's seeds and executed nodes,
@@ -2217,7 +2223,7 @@ present a structural or schema result as execution evidence.
   equal to fresh-process measurements.
 - **Code-node recompute facts.** `haute.projection.recompute_facts_by_node(order, node_map,
   relevant_edges=, submodels=, preamble=)` derives `NodeRecomputeFacts(cost,
-  slice_transparent, full_input_work, reason)` for every node whose config carries non-blank
+  slice_transparent, full_input_work, reason, limit_blocker)` for every node whose config carries non-blank
   `code` (`POLARS`, `EXPLORE`, `SCENARIO_EXPANDER`, `MODEL_SCORE` post-code, `DATA_INPUT`
   post-load code, `EXTERNAL_FILE`). It reuses the receiver-aware AST walk with an optional
   report mode returning every call in evaluation order, categorized as:
@@ -2279,7 +2285,12 @@ present a structural or schema result as execution evidence.
   cheap and transparent. The reason string names the first deciding call: `costly:<name>`,
   `unregistered_frame_method:<name>`, `unresolved_call:<name>`,
   `unresolved_callback:<name>`, `opaque:<name>`, `syntax_error`, `blank_code`, and `cheap`.
-  `full_input_work` is true when a reported registered call is full-input work. The boundary
+  `full_input_work` is true when a reported registered call is full-input work.
+  `limit_blocker` names the first reported registered call that is costly to recompute and
+  passes no row slice, other than `sort`, `top_k`, `bottom_k`, `join` and `join_asof`, which a
+  preview's row limit still reaches (it turns a sort into a top-k and streams a join's probe
+  side; measured over a 5M-row source, sharing them peaked 17 to 56 % higher than recomputing
+  them); an unregistered, unresolved or unparseable call names none. The boundary
   walk's own output is unchanged: the report mode is an optional argument and builtin fact
   rules apply only in report mode.
 - **Every builder declares its recompute cost.** `NodeRegistryEntry` carries
@@ -2296,7 +2307,9 @@ present a structural or schema result as execution evidence.
   `recompute_facts_by_node` returns facts for every node in `order` except a `source` type
   with blank `code`: a `code` type takes its code's facts (blank code: cheap, transparent,
   reason `blank_code`); a `costly` type is costly and not transparent (reason
-  `builder:<type>`), taking its code's full-input work when it has code; a `cheap` type takes its registry transparency, combined with its
+  `builder:<type>`), taking its code's full-input work and limit blocker when it has code
+  (the builder itself blocks no row limit: scoring, a rating lookup and an Edge Join take it
+  through); a `cheap` type takes its registry transparency, combined with its
   code's facts when it has non-blank `code` (costly if either says so, transparent only if
   both); and a `source` type with code takes its code's facts. For builder slice transparency,
   `BANDING` (a `with_columns` of cut expressions), `OUTPUT`, `DATA_OUTPUT`, and every

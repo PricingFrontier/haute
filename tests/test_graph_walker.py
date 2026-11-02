@@ -746,32 +746,38 @@ def test_a_measuring_policy_carries_queries_and_a_row_bound() -> None:
         CollectPolicy(purpose=WalkPurpose.MEASURE, queries=_RowCounts())
 
 
-def test_a_display_walk_computes_a_shared_input_once_per_query_without_caching_it() -> None:
-    """Two branches of one collected query read one producer: it runs once, through
-    Polars' common-subplan elimination, with no ``cache()`` holding a copy of it."""
-    runs: list[int] = []
+def _diamond_walk(shared_code: str, *, row_limit: int | None) -> tuple[WalkResult, list[int]]:
+    """A source two branches read through *shared*, collected once where they meet.
 
-    def expensive(frame: pl.DataFrame) -> pl.DataFrame:
-        runs.append(frame.height)
-        return frame.with_columns(y=pl.col("x") * 2)
+    The source counts its computations; *shared*'s declared code is what the walker
+    classifies, while its builder only adds a column.
+    """
+    reads: list[int] = []
 
-    def node(node_id: str, node_type: NodeType = NodeType.POLARS) -> GraphNode:
-        return GraphNode(id=node_id, data=NodeData(label=node_id, nodeType=node_type))
+    def counted(frame: pl.DataFrame) -> pl.DataFrame:
+        reads.append(frame.height)
+        return frame
+
+    def node(node_id: str, node_type: NodeType = NodeType.POLARS, **config: object) -> GraphNode:
+        return GraphNode(
+            id=node_id, data=NodeData(label=node_id, nodeType=node_type, config=dict(config))
+        )
 
     def build(built: GraphNode, **_kwargs: object) -> tuple[str, object, bool]:
         steps = {
-            "src": lambda: pl.LazyFrame({"x": list(range(100))}),
-            "shared": lambda f: f.map_batches(expensive, schema={"x": pl.Int64, "y": pl.Int64}),
+            "src": lambda: pl.LazyFrame({"x": list(range(100))}).map_batches(counted),
+            "shared": lambda f: f.with_columns(y=pl.col("x") * 2),
             "low": lambda f: f.filter(pl.col("y") < 50),
             "high": lambda f: f.filter(pl.col("y") >= 50).select(pl.col("x").alias("x_high")),
-            "both": lambda low, high: low.join(high, how="cross").head(3),
+            "both": lambda low, high: pl.concat([low.select("x"), high.select(x="x_high")]),
         }
         return built.id, steps[built.id], built.id == "src"
 
     graph = PipelineGraph(
         nodes=[
             node("src", NodeType.DATA_INPUT),
-            *(node(n) for n in ("shared", "low", "high", "both")),
+            node("shared", code=shared_code),
+            *(node(n) for n in ("low", "high", "both")),
         ],
         edges=[
             GraphEdge(id="1", source="src", target="shared"),
@@ -781,12 +787,75 @@ def test_a_display_walk_computes_a_shared_input_once_per_query_without_caching_i
             GraphEdge(id="5", source="high", target="both"),
         ],
     )
-
     result = walk_graph(
-        graph, build, policy=CollectPolicy.display(collect=["both"], record_failures=True)
+        graph,
+        build,
+        policy=CollectPolicy.display(collect=["both"], row_limit=row_limit, record_failures=True),
     )
-
     assert result.errors == {}
-    assert result.collected["both"].height == 3
-    assert runs == [100]
+    return result, reads
+
+
+@pytest.mark.parametrize(
+    "shared_code",
+    [
+        "df = src.group_by('x').agg(pl.len())",
+        "df = src.unique()",
+        "df = src.map_batches(score)",
+    ],
+)
+def test_a_limited_preview_shares_a_frame_its_row_limit_cannot_reach(shared_code: str) -> None:
+    """The branches meet in the collected node and the shared frame's code holds an
+    operation the limit cannot pass: one cache, one computation."""
+    result, reads = _diamond_walk(shared_code, row_limit=10)
+
+    assert reads == [100]
+    assert "CACHE" in result.frames["low"].explain(optimized=False)
+
+
+@pytest.mark.parametrize(
+    "shared_code",
+    [
+        "df = src.with_columns(y=pl.col('x') * 2)",
+        "df = src.sort('x')",
+        "df = src.join(other, on='x', how='left')",
+        "df = helper(src)",
+    ],
+)
+def test_a_limited_preview_recomputes_a_frame_its_row_limit_reaches(shared_code: str) -> None:
+    """A row-local frame, a sort (a top-k under the limit), a join (its probe side
+    streams) or code the analyser cannot classify is computed once per path, with no
+    cache to stop the limit reaching the source."""
+    result, reads = _diamond_walk(shared_code, row_limit=10)
+
+    assert len(reads) == 2
     assert "CACHE" not in result.frames["low"].explain(optimized=False)
+
+
+def test_a_preview_without_a_row_limit_shares_every_frame_its_branches_meet_below() -> None:
+    result, reads = _diamond_walk("df = src.with_columns(y=pl.col('x') * 2)", row_limit=None)
+
+    assert reads == [100]
+    assert "CACHE" in result.frames["low"].explain(optimized=False)
+
+
+def test_a_preview_collect_runs_without_polars_subplan_sharing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The walker decides what is shared, so a simple diamond of plain columns reaches
+    the collect with no cache Polars would add, and its limit reaches the source."""
+    import haute._graph_walker as walker_module
+
+    handed: list[pl.QueryOptFlags | None] = []
+    real_collect = walker_module.streaming_collect
+
+    def recording(frame: pl.LazyFrame, **kwargs: Any) -> pl.DataFrame:
+        handed.append(kwargs.get("optimizations"))
+        return real_collect(frame, **kwargs)
+
+    monkeypatch.setattr(walker_module, "streaming_collect", recording)
+    result, reads = _diamond_walk("df = src.with_columns(y=pl.col('x') * 2)", row_limit=10)
+
+    assert handed and all(flags is not None for flags in handed)
+    plan = result.frames["both"].head(10).explain(optimizations=handed[-1])
+    assert "CACHE" not in plan
