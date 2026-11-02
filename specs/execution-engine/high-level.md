@@ -136,7 +136,11 @@ running heavy work in a child process the parent can kill on timeout or memory l
   optimiser apply, and OUTPUT assembly — run as Python scans that honour the limit,
   projection, and predicate Polars pushes into them, and their exceptions reach the caller as
   themselves, class and attributes intact, at every Haute collect, batch-collect, and sink
-  seam and at a direct Polars `.collect()` alike. Native Polars node plans are never wrapped. A
+  seam and at a direct Polars `.collect()` alike. Native Polars node plans are never wrapped.
+  A frame several nodes read is recomputed once per path of the preview's query, so the
+  limit reaches it, unless the limit cannot (an aggregation, a window, `unique` or opaque
+  Python produces it) or the collect has no limit: then the walker shares it through one
+  cache, and Polars' own subplan sharing stays off for preview collects. A
   preview's row count is the height of the limited target output, and trace follows the
   limited preview. Deploy live scoring, batched parquet scoring, sink/batch execution, and
   user-authored Python UDFs keep their execution; Explore reports, training, and optimiser

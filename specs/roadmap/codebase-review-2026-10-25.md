@@ -122,8 +122,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the forty-eight packages delivered or settled since (thirteen by 28
-October 2026, twenty-five more on 29 October, two on 1 November, eight more by 2 November) have been removed from the sections below; the coverage table keeps the
+The findings of the forty-nine packages delivered or settled since (thirteen by 28
+October 2026, twenty-five more on 29 October, two on 1 November, nine more by 2 November) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -135,7 +135,6 @@ target dependency resolution. The component roadmaps now carry the resulting pla
 
 | Packages | Correction |
 |---|---|
-| `EXEC-R17` | Keep same-size/same-mtime utility freshness and support deferred imports while scoping `sys.path`; bytecode invalidation is a correctness defence. |
 | `FSH-R07`, `FSH-R05` | Recover a save only from complete canonical saved-content equality, retain newer dirty edits, and distinguish intended other-tab broadcasts from watcher duplicates and self-echoes. |
 | `DEP-R11` | Check every response batch before positional pairing; require explicit first-deploy intent or authoritative absence, never infer absence from an outage. |
 | `DEP-R09` | Resolve and verify dependency locks for each target Python/platform and extras. |
@@ -247,7 +246,6 @@ production:
 | CLI | PM-35 | `CLI-R04` |
 | CLI | PM-27, PM-31, PM-32, PM-33 | `CLI-R05` |
 | CLI | PM-29 (templates), PM-30 | `CLI-R06` |
-| Execution engine | the preamble `sys.path` edit | `EXEC-R17` |
 | IO layer | CIO-5, CIO-11 | `IO-R06` |
 | Background jobs | WRK-2 | `ROAD-WORKER-06` |
 | Background jobs | WRK-5, WRK-6, WRK-11, WRK-14 | `ROAD-WORKER-07` |

@@ -807,6 +807,12 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
                         field=field_name,
                         path=raw_path,
                     ) from exc
+        # Project code is read statically before anything runs the preamble: an
+        # import the bundle does not carry is not importable here either, so the
+        # schema dry run below could only fail on it with a bare import error.
+        project_modules = resolve_project_modules(pruned_graph.preamble or "", pipeline_dir)
+        if project_modules.unbundled_imports:
+            raise DeployError(" ".join(project_modules.unbundled_imports))
         # Only data in the pipeline folder ships, from a snapshot that is current.
         refuse_data_outside_pipeline_folder(pruned_graph, deploy_inputs, pipeline_dir, project_root)
         with runtime_project_root_scope(config.pipeline_file, project_root=project_root):
@@ -888,7 +894,6 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
         # Whether a request of several quotes is answered in request order; a lookup
         # the bundle carries is read here for repeated join keys.
         rows = request_rows(pruned_graph, deploy_inputs, output_node_id, artifact_paths)
-        project_modules = resolve_project_modules(pruned_graph.preamble or "", pipeline_dir)
     except BaseException:
         resources.close()
         raise

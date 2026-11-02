@@ -316,8 +316,8 @@ bundle. The container copies it beside `app.py`, and the Databricks model logs i
 MLflow code path, so the served preamble imports the files that were validated. Any
 other static absolute import, in the preamble or in a bundled `utility` file, that
 resolves from the pipeline directory or the working directory is project code the bundle
-does not carry. `validate_deploy` refuses it, naming the module and the file that imports
-it. Imports that resolve from installed packages are for the serving environment to
+does not carry, and Haute does not import it in the editor either. Resolving the deploy refuses it,
+naming the module and the file that imports it. Imports that resolve from installed packages are for the serving environment to
 provide. The served preamble's names reach every code box, as in the editor: a bundled
 External File's code sees them beside `obj`, and a Model Score's code beside `model`.
 A pipeline's submodel modules are never bundled, and need not be: deploy serves the
@@ -557,8 +557,8 @@ most: a silent wrong answer here mis-prices real policies.
   alone, it is answered with every row it gives. A deployment answering a batch as one
   frame whose answer has another row count fails that request with both counts (HTTP 500
   `deploy_internal_error` from a container).
-- **Pre-deploy validation failures** (structural checks, project-local imports the bundle
-  does not carry, and test-quote scoring/expected-output mismatches) are all collected
+- **Pre-deploy validation failures** (structural checks and test-quote
+  scoring/expected-output mismatches) are all collected
   and raised together as a single `DeployError`
   listing every failure, rather than surfaced one at a time across repeated deploy
   attempts.
@@ -588,7 +588,7 @@ most: a silent wrong answer here mis-prices real policies.
   image tag so the operator can update the service. A failed build or push fails the deploy.
 - **Known unsupported deploy inputs** fail rather than being made self-contained: plain
   JSON static sources are not batch-deployable; a project-local import other than the
-  `utility` package is refused at validation; bundled local `modelScore` serving supports
+  `utility` package is refused when the deploy is resolved; bundled local `modelScore` serving supports
   every family the model family registry loads from a file (CatBoost `.cbm`, RustyStats
   `.rsglm`, XGBoost `.ubj`, LightGBM `.lgbm`, EBM `.ebm`, t-boost `.tboost`), while a discovered MLflow pyfunc
   directory cannot currently be bundled and served by this path.

@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import gc
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -36,6 +37,7 @@ from haute._chunked_writes import (
     WriteRecipe,
     check_recipe_equivalence,
 )
+from haute._edge_join import EDGE_JOIN_DEFAULT_HOW
 from haute._execute_lazy import (
     _GC_BATCH_INTERVAL,
     NodeBoundary,
@@ -488,6 +490,8 @@ class _Walk:
         self.column_cache: dict[tuple[str, str | None], frozenset[str]] = {}
         self.file_backed: set[str] = set(self.seed_frames)
         self.remaining = dict(self.prepared.children_count)
+        # One cache per shared frame, so every edge reading it reads the same plan node.
+        self.shared_inputs: dict[tuple[str, str | None], pl.LazyFrame] = {}
         self.join_recipes: dict[str, JoinRecipe] = {}
         self.write_recipes: dict[str, WriteRecipe] = {}
         self.unshaped_frames: dict[str, pl.LazyFrame] = {}
@@ -537,6 +541,7 @@ class _Walk:
             self._prepare_inputs()
         self._read_seeds()
         self.projection = self._plan_projection()
+        self.shared_frames = self._frames_to_share() if self.display else frozenset()
         self.boundaries = self._build_boundaries()
         self.captures = _PlannedCaptures(
             self.plan,
@@ -1153,15 +1158,115 @@ class _Walk:
     def _input_frame(self, edge: GraphEdge) -> _Frame:
         """The frame *edge* delivers: its source frame, picked by port.
 
-        A frame several edges read is never wrapped in ``cache()``: Polars scopes a
-        cache to one query, so separate collections below it compute it each time
-        anyway, while within one query common-subplan elimination already computes
-        it once. The cache only held a materialised copy of it.
+        A display walk hands a frame it shares (``_frames_to_share``) to every edge
+        through one ``cache()``, so the collected query computes it once.
         """
         picked = _pick_source_frame(self.frames[edge.source], edge)
         if not self.display:
             return picked
-        return _lazy(picked)
+        key = (edge.source, edge.sourceHandle)
+        if key not in self.shared_frames or not isinstance(picked, pl.LazyFrame):
+            return _lazy(picked)
+        shared = self.shared_inputs.get(key)
+        if shared is None:
+            shared = self.shared_inputs[key] = picked.cache()
+        return shared
+
+    def _frames_to_share(self) -> frozenset[tuple[str, str | None]]:
+        """The frames a display walk computes once for consumers that meet below them.
+
+        A cache in a collected query holds the whole frame and stops the row limit
+        reaching what produced it; recomputing the frame once per path instead reads
+        only the rows the limit lets through. So a frame several edges read is shared
+        only when two of them reach one collected node (a limited collection feeds
+        its consumers its plan, so a path runs on through it; one without a limit
+        feeds them its DataFrame, so a path stops there), and that collection has no
+        row limit or the frame's lineage holds an operation the limit cannot reach
+        (``NodeRecomputeFacts.limit_blocker``: an aggregation, a window, ``unique``,
+        opaque Python). A seeded node is read from its snapshot, so the lineage
+        stops at it. A frame the analysis cannot classify is recomputed.
+        """
+        run = frozenset(self.run_order)
+        readers: dict[tuple[str, str | None], list[str]] = {}
+        for edge in self.graph_plan.relevant_edges:
+            if edge.source in run and edge.target in run:
+                readers.setdefault((edge.source, edge.sourceHandle), []).append(edge.target)
+        fanned = {key: targets for key, targets in readers.items() if len(targets) > 1}
+        if not fanned:
+            return frozenset()
+        facts = projection_planner.recompute_facts_by_node(
+            self.run_order,
+            self.node_map,
+            relevant_edges=self.graph_plan.relevant_edges,
+            submodels=self.graph.submodels,
+            preamble=self.graph.preamble or "",
+        )
+        limit_inputs = self._inputs_the_limit_reaches(run, facts)
+        blocks_the_limit: dict[str, bool] = {}
+        for node_id in self.run_order:
+            node_facts = facts.get(node_id)
+            blocks_the_limit[node_id] = node_id not in self.seed_frames and (
+                (node_facts is not None and node_facts.limit_blocker is not None)
+                or any(blocks_the_limit.get(parent, False) for parent in limit_inputs[node_id])
+            )
+        collected_below: dict[str, frozenset[str]] = {}
+        for node_id in reversed(self.run_order):
+            if self.node_map[node_id].data.nodeType in _SEPARATE_QUERY_NODE_TYPES:
+                # Its builder reads its input in a query of its own (a Python scan), so
+                # no path through it meets another in a collected query.
+                collected_below[node_id] = frozenset()
+                continue
+            collects = self.policy.collects(node_id)
+            below = {node_id} if collects else set()
+            if not (collects and self.policy.row_limit_for(node_id) is None):
+                for child in self.prepared.children_of.get(node_id, ()):
+                    below |= collected_below.get(child, frozenset())
+            collected_below[node_id] = frozenset(below)
+        shared: set[tuple[str, str | None]] = set()
+        for key, targets in fanned.items():
+            paths = Counter(
+                collected for target in targets for collected in collected_below[target]
+            )
+            meeting = [collected for collected, count in paths.items() if count > 1]
+            if meeting and (
+                blocks_the_limit[key[0]]
+                or any(self.policy.row_limit_for(collected) is None for collected in meeting)
+            ):
+                shared.add(key)
+        return frozenset(shared)
+
+    def _inputs_the_limit_reaches(
+        self,
+        run: frozenset[str],
+        facts: Mapping[str, projection_planner.NodeRecomputeFacts],
+    ) -> dict[str, tuple[str, ...]]:
+        """Each node's parents a row limit on its output reaches through it.
+
+        A node with one input passes the limit to it, unless its code joins frames (it
+        may join its input as the lookup side, read whole). An Edge Join passes it to
+        its probe side, the one whose rows it keeps: its base input for a left, semi or
+        anti join, its join input for a right join; the other side is read whole, and
+        of an inner, full or cross join neither side is proven. Of a node with several
+        inputs the analysis cannot tell which the limit reaches, so it names none: a
+        blocker above it is then not a reason to share its frame.
+        """
+        inputs: dict[str, list[GraphEdge]] = {node_id: [] for node_id in self.run_order}
+        for edge in self.graph_plan.relevant_edges:
+            if edge.source in run and edge.target in run:
+                inputs[edge.target].append(edge)
+        reached: dict[str, tuple[str, ...]] = {}
+        for node_id, edges in inputs.items():
+            node = self.node_map[node_id]
+            node_facts = facts.get(node_id)
+            if node.data.nodeType is NodeType.EDGE_JOIN:
+                how = node.data.config.get("how") or EDGE_JOIN_DEFAULT_HOW
+                probe = _EDGE_JOIN_PROBE_ROLE.get(how)
+                reached[node_id] = tuple(e.source for e in edges if e.targetHandle == probe)
+            elif len(edges) == 1 and not (node_facts is not None and node_facts.joins_frames):
+                reached[node_id] = (edges[0].source,)
+            else:
+                reached[node_id] = ()
+        return reached
 
     def _node_inputs(self, boundary: NodeBoundary) -> list[_Frame]:
         """Route, project and contract-check the frames a node receives."""
@@ -1716,12 +1821,15 @@ class _Walk:
         return collect_frame
 
     def _run_collect(self, node_id: str, frame: pl.LazyFrame) -> pl.DataFrame:
+        optimizations = _DISPLAY_COLLECT_OPTIMIZATIONS if self.display else None
         if self.context is None:
-            return streaming_collect(frame)
+            return streaming_collect(frame, optimizations=optimizations)
         self.context.checkpoint(label="before_collect", node_id=node_id)
         self._step_started("collect", node_id)
         with self.context.stage("eager_collect", node_id=node_id):
-            df = streaming_collect(frame, execution_context=self.context)
+            df = streaming_collect(
+                frame, execution_context=self.context, optimizations=optimizations
+            )
         self._step_finished("collect", node_id)
         self.context.checkpoint(label="after_collect", node_id=node_id)
         return df
@@ -1767,7 +1875,11 @@ class _Walk:
         for label, port_frame in bundle.items():
             capped = port_frame.head(limit) if limit else port_frame
             collected[label] = (
-                streaming_collect(capped, execution_context=self.context)
+                streaming_collect(
+                    capped,
+                    execution_context=self.context,
+                    optimizations=_DISPLAY_COLLECT_OPTIMIZATIONS,
+                )
                 if isinstance(capped, pl.LazyFrame)
                 else capped
             )
@@ -2080,6 +2192,28 @@ class _Walk:
 
 
 _NODE_STAGES = {WalkPurpose.SINK: "lazy_build"}
+
+# A display walk decides which frames its collects share (_frames_to_share), so Polars
+# does not share a subplan of its own: its common-subplan elimination caches a simple
+# diamond's producer, which stops a preview's row limit reaching the source.
+_DISPLAY_COLLECT_OPTIMIZATIONS = pl.QueryOptFlags(comm_subplan_elim=False)
+
+# The Edge Join input a row limit on its output reaches: the side whose rows it keeps.
+_EDGE_JOIN_PROBE_ROLE = {"left": "base", "semi": "base", "anti": "base", "right": "join"}
+
+# Node types whose builders read their input through a Python scan (eager scoring, the
+# rating miss guard, online optimiser apply, scenario expansion, OUTPUT assembly, the
+# Workbench Output's tables), which collects it in a query of its own.
+_SEPARATE_QUERY_NODE_TYPES = frozenset(
+    {
+        NodeType.MODEL_SCORE,
+        NodeType.RATING_STEP,
+        NodeType.OPTIMISER_APPLY,
+        NodeType.SCENARIO_EXPANDER,
+        NodeType.OUTPUT,
+        NodeType.WORKBENCH_OUTPUT,
+    }
+)
 
 
 @dataclass(slots=True)

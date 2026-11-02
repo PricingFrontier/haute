@@ -6,11 +6,9 @@ import ast as _ast
 import importlib as _importlib
 import json as _json
 import math as _math
-import sys as _sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from importlib.machinery import PathFinder as _PathFinder
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -1233,40 +1231,15 @@ def _pipeline_dir(graph: PipelineGraph) -> Path | None:
     return path.resolve().parent
 
 
-def _utility_search_path(pipeline_dir: str | Path | None) -> list[str]:
-    """Return the search path the executor uses to resolve the ``utility`` import.
-
-    Mirrors :func:`haute.executor._prioritise_preamble_import_paths`: the
-    pipeline directory and the current working directory are searched first,
-    then the rest of ``sys.path``.  Hashing whatever *this* path resolves keeps
-    the fingerprint aligned with the module that actually executes — a two-dir
-    scan silently misses a ``utility`` resolved elsewhere on ``sys.path``.
-    """
-    prioritised: list[str] = []
-    if pipeline_dir is not None:
-        prioritised.append(str(Path(pipeline_dir).resolve()))
-    prioritised.append(str(Path.cwd().resolve()))
-
-    seen = set(prioritised)
-    ordered = list(prioritised)
-    for entry in _sys.path:
-        # Skip the empty string (means "cwd", already covered) and duplicates
-        # so the resolution order matches the executor exactly.
-        if not entry or entry in seen:
-            continue
-        seen.add(entry)
-        ordered.append(entry)
-    return ordered
-
-
 def _resolve_utility_locations(pipeline_dir: str | Path | None) -> list[Path] | None:
     """Resolve the top-level ``utility`` module/package the preamble will import.
 
-    Uses :class:`importlib.machinery.PathFinder` against the same prioritised
-    search path the executor installs at exec time, so the bytes we hash are the
-    bytes that will run.  ``PathFinder.find_spec`` performs pure resolution — it
-    neither imports the module nor mutates ``sys.modules`` — and we invalidate
-    the finder caches first so a freshly created/edited ``utility`` is seen.
+    Resolves it as the import does (:func:`haute._project_imports.find_utility_spec`:
+    the project's directories, then the rest of the path for a project without one),
+    so the bytes we hash are the bytes that will run.  ``PathFinder.find_spec``
+    performs pure resolution — it neither imports the module nor mutates
+    ``sys.modules`` — and we invalidate the finder caches first so a freshly
+    created/edited ``utility`` is seen.
 
     Returns the filesystem location(s) to hash (a single file for a module, one
     or more directories for a package / namespace package), or ``None`` when
@@ -1274,7 +1247,9 @@ def _resolve_utility_locations(pipeline_dir: str | Path | None) -> list[Path] | 
     ``"missing"`` so a later creation still invalidates the digest).
     """
     _importlib.invalidate_caches()
-    spec = _PathFinder.find_spec("utility", _utility_search_path(pipeline_dir))
+    from haute._project_imports import find_utility_spec
+
+    spec = find_utility_spec(pipeline_dir)
     if spec is None:
         return None
     search_locations = spec.submodule_search_locations

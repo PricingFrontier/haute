@@ -620,10 +620,6 @@ def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> li
     # 9. A workbench project's Workbench nodes hold the tables its form defines.
     errors.extend(_workbench_form_errors(resolved))
 
-    # Project-local imports the bundle does not carry would fail on import in
-    # the served bundle, although they resolve from the project here.
-    errors.extend(resolved.project_modules.unbundled_imports)
-
     output_fields = resolved.config.output_fields
     if output_fields is not None and (
         not output_fields

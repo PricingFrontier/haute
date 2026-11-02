@@ -257,9 +257,10 @@ def test_a_project_module_outside_utility_is_refused_at_validation(
     _make_project(project, monkeypatch, preamble="from local_rates import FACTOR")
     (project / "local_rates.py").write_text("FACTOR = 3\n", encoding="utf-8")
 
-    with _resolve(project) as resolved:
-        with pytest.raises(DeployError, match=r"the preamble imports project module 'local_rates'"):
-            validate_deploy(resolved)
+    # Resolving the deploy refuses it: the pipeline cannot run without the module.
+    with pytest.raises(DeployError, match=r"the preamble imports project module 'local_rates'"):
+        with _resolve(project):
+            pass
 
 
 def test_a_utility_module_importing_other_project_code_is_refused_at_validation(
@@ -273,11 +274,11 @@ def test_a_utility_module_importing_other_project_code_is_refused_at_validation(
     )
     (project / "local_rates.py").write_text("FACTOR = 3\n", encoding="utf-8")
 
-    with _resolve(project) as resolved:
-        with pytest.raises(
-            DeployError, match=r"utility/helpers\.py imports project module 'local_rates'"
-        ):
-            validate_deploy(resolved)
+    with pytest.raises(
+        DeployError, match=r"utility/helpers\.py imports project module 'local_rates'"
+    ):
+        with _resolve(project):
+            pass
 
 
 def test_a_pipeline_without_project_modules_bundles_none(

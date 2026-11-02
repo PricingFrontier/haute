@@ -1700,6 +1700,9 @@ class ReportedCall:
     name: str
     entries: tuple[PolarsOperation, ...]
     positional_arguments: int
+    elementwise: bool
+    """Whether the call says its function is elementwise (``is_elementwise=True``), which
+    lets a row slice through it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1710,6 +1713,14 @@ class NodeRecomputeFacts:
     slice_transparent: bool
     full_input_work: bool
     reason: str
+    limit_blocker: str | None
+    """The first registered operation in the node's code that a preview's row limit
+    cannot reach (costly to recompute and passing no row slice, and neither a sort nor
+    a join, which a limit still reaches), or None. A call the analyser cannot classify
+    names none."""
+    joins_frames: bool
+    """Whether the node's code joins frames, so which of its inputs a row limit on its
+    output reaches is unproven."""
 
 
 SCALAR_BUILTINS = frozenset(
@@ -2053,6 +2064,13 @@ def _materialising_calls_in_source_order(
                 name=name,
                 entries=entries,
                 positional_arguments=positional_arguments,
+                elementwise=isinstance(call_node, ast.Call)
+                and any(
+                    keyword.arg == "is_elementwise"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value is True
+                    for keyword in call_node.keywords
+                ),
             )
         )
 
@@ -2685,8 +2703,43 @@ def _registered_expression_call(call: ast.Call) -> PolarsOperation | None:
     return entry
 
 
+# Costly operations a preview's row limit still reaches, so recomputing them under a
+# limit costs less than a shared copy: the limit turns a sort into a top-k (a top-k or
+# bottom-k is already one), and a join's probe side streams under it. Measured over a
+# 5M-row source: a shared sort peaked 17 % higher and a shared left join 34 to 56 %
+# higher than recomputing them for a 1,000-row preview.
+_ROW_LIMIT_REACHES = frozenset({"sort", "top_k", "bottom_k"})
+_JOINS = frozenset({"join", "join_asof"})
+
+
+def _row_limit_blocker(report: list[ReportedCall]) -> str | None:
+    """The first registered call a preview's row limit cannot reach, or None.
+
+    An unregistered or unresolved call names none: what the analyser cannot classify
+    is never a reason to share a frame. Neither does code holding a join: the limit
+    reaches the join's probe side, and the analyser cannot tell which side an
+    aggregation in the same code feeds. An elementwise Python function
+    (``is_elementwise=True``) passes the slice.
+    """
+    if any(call.category == "registered" and call.name in _JOINS for call in report):
+        return None
+    for call in report:
+        if (
+            call.category == "registered"
+            and call.name not in _ROW_LIMIT_REACHES
+            and not call.elementwise
+            and any(
+                entry.costly_to_recompute and not entry.slice_transparent for entry in call.entries
+            )
+        ):
+            return call.name
+    return None
+
+
 def _fold_recompute_report(report: list[ReportedCall]) -> NodeRecomputeFacts:
     """Fold a sequence of reported AST calls into node recompute facts."""
+    limit_blocker = _row_limit_blocker(report)
+    joins_frames = any(call.category == "registered" and call.name in _JOINS for call in report)
     has_full_input = any(
         c.category == "registered"
         and any(full_input_work(e.receiver, e.name, e.namespace) for e in c.entries)
@@ -2701,6 +2754,8 @@ def _fold_recompute_report(report: list[ReportedCall]) -> NodeRecomputeFacts:
                 slice_transparent=False,
                 full_input_work=has_full_input,
                 reason=f"unregistered_frame_method:{call.name}",
+                limit_blocker=limit_blocker,
+                joins_frames=joins_frames,
             )
         if call.category == "unresolved_call":
             return NodeRecomputeFacts(
@@ -2708,6 +2763,8 @@ def _fold_recompute_report(report: list[ReportedCall]) -> NodeRecomputeFacts:
                 slice_transparent=False,
                 full_input_work=has_full_input,
                 reason=f"unresolved_call:{call.name}",
+                limit_blocker=limit_blocker,
+                joins_frames=joins_frames,
             )
         if call.category == "unresolved_callback":
             return NodeRecomputeFacts(
@@ -2715,6 +2772,8 @@ def _fold_recompute_report(report: list[ReportedCall]) -> NodeRecomputeFacts:
                 slice_transparent=False,
                 full_input_work=has_full_input,
                 reason=f"unresolved_callback:{call.name}",
+                limit_blocker=limit_blocker,
+                joins_frames=joins_frames,
             )
         if call.category == "registered" and any(e.costly_to_recompute for e in call.entries):
             return NodeRecomputeFacts(
@@ -2722,6 +2781,8 @@ def _fold_recompute_report(report: list[ReportedCall]) -> NodeRecomputeFacts:
                 slice_transparent=False,
                 full_input_work=has_full_input,
                 reason=f"costly:{call.name}",
+                limit_blocker=limit_blocker,
+                joins_frames=joins_frames,
             )
 
     # 2. Cheap - check slice transparency
@@ -2748,6 +2809,8 @@ def _fold_recompute_report(report: list[ReportedCall]) -> NodeRecomputeFacts:
             slice_transparent=False,
             full_input_work=has_full_input,
             reason=f"opaque:{first_opaque_name}",
+            limit_blocker=limit_blocker,
+            joins_frames=joins_frames,
         )
 
     return NodeRecomputeFacts(
@@ -2755,6 +2818,8 @@ def _fold_recompute_report(report: list[ReportedCall]) -> NodeRecomputeFacts:
         slice_transparent=True,
         full_input_work=has_full_input,
         reason="cheap",
+        limit_blocker=limit_blocker,
+        joins_frames=joins_frames,
     )
 
 
@@ -2822,6 +2887,8 @@ def code_recompute_facts(
             slice_transparent=True,
             full_input_work=False,
             reason="blank_code",
+            limit_blocker=None,
+            joins_frames=False,
         )
     try:
         tree = ast.parse(code)
@@ -2831,6 +2898,8 @@ def code_recompute_facts(
             slice_transparent=False,
             full_input_work=False,
             reason="syntax_error",
+            limit_blocker=None,
+            joins_frames=False,
         )
 
     if preamble_facts is None:
@@ -3049,6 +3118,8 @@ def recompute_facts_by_node(
             )
         elif reg_cost == "costly":
             code_full_input = False
+            code_blocker: str | None = None
+            code_joins = False
             if has_code:
                 code_facts = code_recompute_facts(
                     code_str,
@@ -3057,11 +3128,17 @@ def recompute_facts_by_node(
                     preamble_facts=preamble_facts,
                 )
                 code_full_input = code_facts.full_input_work
+                code_blocker = code_facts.limit_blocker
+                code_joins = code_facts.joins_frames
+            # A costly builder (a model's scoring, a rating table's lookup, an Edge
+            # Join's join) takes a row limit through it; only its code can block one.
             found[node_id] = NodeRecomputeFacts(
                 cost="costly",
                 slice_transparent=False,
                 full_input_work=code_full_input,
                 reason=f"builder:{node_type.value}",
+                limit_blocker=code_blocker,
+                joins_frames=code_joins,
             )
         elif reg_cost == "cheap":
             if has_code:
@@ -3086,6 +3163,8 @@ def recompute_facts_by_node(
                         slice_transparent=slice_trans,
                         full_input_work=code_facts.full_input_work,
                         reason=reason,
+                        limit_blocker=code_facts.limit_blocker,
+                        joins_frames=code_facts.joins_frames,
                     )
             else:
                 reason = "cheap" if reg_slice_transparent else f"builder:{node_type.value}"
@@ -3094,6 +3173,8 @@ def recompute_facts_by_node(
                     slice_transparent=reg_slice_transparent,
                     full_input_work=False,
                     reason=reason,
+                    limit_blocker=None,
+                    joins_frames=False,
                 )
         else:
             raise RuntimeError(f"NodeType {node_type.value!r} declares no recompute cost")

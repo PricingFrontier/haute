@@ -12,7 +12,6 @@ from haute.executor import (
     PreambleError,
     _compile_preamble,
     _estimate_preview_cache_entry_bytes,
-    _evict_utility_import_state,
     _preview_projection_columns,
     _preview_row_limit_for_width,
     _result_order_for_target,
@@ -33,35 +32,21 @@ from tests.conftest import (
 )
 
 
-def test_evict_utility_import_state_removes_file_and_package_bytecode(
-    tmp_path: Path,
+def test_evicting_utility_forgets_every_utility_module_and_nothing_else(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.chdir(tmp_path)
-    utility_file = tmp_path / "utility.py"
-    utility_file.write_text("VALUE = 1\n", encoding="utf-8")
-    file_pycache = tmp_path / "__pycache__"
-    file_pycache.mkdir()
-    file_bytecode = file_pycache / "utility.cpython-313.pyc"
-    file_bytecode.write_bytes(b"stale")
+    import sys
+    import types
 
-    utility_package = tmp_path / "utility"
-    nested_pycache = utility_package / "nested" / "__pycache__"
-    nested_pycache.mkdir(parents=True)
-    package_bytecode = nested_pycache / "helpers.cpython-313.pyc"
-    package_bytecode.write_bytes(b"stale")
-    not_a_cache_dir = utility_package / "not_a_dir" / "__pycache__"
-    not_a_cache_dir.parent.mkdir()
-    not_a_cache_dir.write_bytes(b"not a directory")
+    from haute._project_imports import evict_utility_modules
 
-    pipeline_dir = tmp_path / "pipeline"
-    pipeline_dir.mkdir()
-    (pipeline_dir / "utility.py").write_text("VALUE = 2\n", encoding="utf-8")
+    for name in ("utility", "utility.helpers", "utility.nested.rates", "utility_other"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
 
-    _evict_utility_import_state(str(pipeline_dir))
+    evict_utility_modules()
 
-    assert not file_bytecode.exists()
-    assert not package_bytecode.exists()
+    assert not {"utility", "utility.helpers", "utility.nested.rates"} & set(sys.modules)
+    assert "utility_other" in sys.modules
 
 
 def test_utility_error_outside_cwd_keeps_absolute_source_path(
