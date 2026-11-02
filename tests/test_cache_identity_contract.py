@@ -11,9 +11,8 @@ import pytest
 import haute._cache as cache_module
 from haute._cache import (
     ALGO_VERSION,
-    CACHE_CONFIG_FIELD_CLASSIFICATIONS,
     CACHE_CONSUMER_CONTRACTS,
-    CacheConfigFieldClassification,
+    PRESENTATION_CONFIG_FIELDS,
     CacheConsumer,
     CacheInputClass,
     CacheInputDisposition,
@@ -21,10 +20,16 @@ from haute._cache import (
     checked_cache_input_values,
     checked_cache_inputs,
     graph_fingerprint,
-    validate_cache_config_field_classifications,
 )
 from haute._config_validation import VALID_KEYS
-from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from haute._types import (
+    GraphEdge,
+    GraphNode,
+    NodeData,
+    NodeEditorState,
+    NodeType,
+    PipelineGraph,
+)
 from haute.execution import dataframe_graph_input_fingerprint
 from tests._source_files import source_files
 
@@ -344,35 +349,115 @@ def test_contract_builders_reject_ambiguous_or_empty_classifications() -> None:
             excluded={CacheInputClass.NODE_CONFIG: "duplicate"},
         )
     with pytest.raises(ValueError, match="rationale"):
-        CacheConfigFieldClassification(exclusion_reason="   ")
-    with pytest.raises(ValueError, match="rationale"):
         CacheInputDisposition(exclusion_reason="   ")
 
 
-def test_every_recognised_config_field_has_an_explicit_cache_classification() -> None:
-    validate_cache_config_field_classifications()
-    assert set(CACHE_CONFIG_FIELD_CLASSIFICATIONS) == set(NodeType)
-    for node_type, valid_fields in VALID_KEYS.items():
-        assert set(CACHE_CONFIG_FIELD_CLASSIFICATIONS[node_type]) == set(valid_fields)
+def _single_node_graph(node_type: NodeType, config: dict[str, object]) -> PipelineGraph:
+    return PipelineGraph(nodes=[_node("only", node_type=node_type, config=config)])
 
 
-def test_reflective_coverage_rejects_a_new_unclassified_config_field() -> None:
-    expanded = dict(VALID_KEYS)
-    expanded[NodeType.POLARS] = VALID_KEYS[NodeType.POLARS] | {"new_output_field"}
+@pytest.mark.parametrize(
+    ("node_type", "field"),
+    [
+        (node_type, field)
+        for node_type in NodeType
+        for field in sorted(VALID_KEYS.get(node_type, frozenset()))
+        if field not in PRESENTATION_CONFIG_FIELDS.get(node_type, frozenset())
+    ],
+)
+def test_every_persisted_config_field_changes_the_execution_identity(
+    node_type: NodeType, field: str
+) -> None:
+    first: object = "first"
+    second: object = "second"
+    if field == "steps":
+        # Two valid step lists that differ only in a step id render the same
+        # code, so the identity can tell them apart only by signing the steps.
+        lead = (
+            [{"id": "s", "kind": "source", "input": "quotes"}]
+            if node_type is NodeType.POLARS
+            else []
+        )
+        first = [*lead, {"id": "limit-a", "kind": "limit", "n": 1}]
+        second = [*lead, {"id": "limit-b", "kind": "limit", "n": 1}]
+    first_graph = _single_node_graph(node_type, {field: first})
+    second_graph = _single_node_graph(node_type, {field: second})
+    if field == "steps":
+        rendered = [graph.nodes[0].data.config.get("code") for graph in (first_graph, second_graph)]
+        assert rendered[0] and rendered[0] == rendered[1]
+    baseline = graph_fingerprint(first_graph)
 
-    with pytest.raises(RuntimeError, match="polars.*new_output_field"):
-        validate_cache_config_field_classifications(expanded)
+    assert graph_fingerprint(second_graph) != baseline
+    assert graph_fingerprint(_single_node_graph(node_type, {})) != baseline
 
 
-def test_every_presentation_config_exclusion_has_a_rationale() -> None:
-    exclusions = [
-        classification
-        for fields in CACHE_CONFIG_FIELD_CLASSIFICATIONS.values()
-        for classification in fields.values()
-        if classification.exclusion_reason
-    ]
-    assert exclusions
-    assert all(item.input_class is None and item.exclusion_reason.strip() for item in exclusions)
+def test_a_config_field_no_table_declares_changes_the_execution_identity() -> None:
+    """The identity hashes the whole config, so a new field needs no registration."""
+    assert "new_output_field" not in VALID_KEYS[NodeType.POLARS]
+    baseline = graph_fingerprint(_single_node_graph(NodeType.POLARS, {"new_output_field": 1}))
+
+    assert graph_fingerprint(_single_node_graph(NodeType.POLARS, {"new_output_field": 2})) != (
+        baseline
+    )
+
+
+_PRESENTATION_FIELDS = [
+    (NodeType.MODEL_SCORE, "experiment_id"),
+    (NodeType.MODEL_SCORE, "experiment_name"),
+    (NodeType.MODEL_SCORE, "run_name"),
+    (NodeType.OPTIMISER_APPLY, "experiment_id"),
+    (NodeType.OPTIMISER_APPLY, "experiment_name"),
+    (NodeType.OPTIMISER_APPLY, "run_name"),
+    (NodeType.EXPLORE, "charts"),
+    (NodeType.EXPLORE, "overview"),
+    (NodeType.EXPLORE, "pivot_formulas"),
+    (NodeType.EXPLORE, "pivots"),
+]
+
+
+def test_the_presentation_config_fields_are_exactly_the_specified_ones() -> None:
+    assert sorted(
+        (node_type, field)
+        for node_type, fields in PRESENTATION_CONFIG_FIELDS.items()
+        for field in fields
+    ) == sorted(_PRESENTATION_FIELDS)
+
+
+@pytest.mark.parametrize(("node_type", "field"), _PRESENTATION_FIELDS)
+def test_a_presentation_config_field_leaves_the_execution_identity_alone(
+    node_type: NodeType, field: str
+) -> None:
+    # A presentation field is a persisted setting of its node type, or it
+    # would name nothing.
+    assert field in VALID_KEYS[node_type]
+    baseline = graph_fingerprint(_single_node_graph(node_type, {"code": "df = df"}))
+
+    assert graph_fingerprint(
+        _single_node_graph(node_type, {"code": "df = df", field: "anything"})
+    ) == (baseline)
+
+
+def test_editor_state_leaves_the_execution_identity_alone() -> None:
+    graph = _graph()
+    target = graph.node_map["target"]
+    with_editor = target.model_copy(
+        update={
+            "data": target.data.model_copy(
+                update={
+                    "editor": NodeEditorState(
+                        steps_error="step 1 is invalid",
+                        steps_discarded="the sidecar could not be read",
+                        discarded_sidecar="config/transform/target.json",
+                    )
+                }
+            )
+        }
+    )
+    changed = graph.model_copy(
+        update={"nodes": [with_editor if node.id == "target" else node for node in graph.nodes]}
+    )
+
+    assert graph_fingerprint(changed) == graph_fingerprint(graph)
 
 
 def test_graph_identity_changes_for_execution_label_and_source_location() -> None:

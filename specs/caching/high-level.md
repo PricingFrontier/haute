@@ -24,8 +24,10 @@ owns the per-port transformation and each API-input table's identity and build.
 
 Graph fingerprints and preview/trace lineage keys include every execution-relevant graph,
 utility-file, runtime switch, upstream lineage, output port, and algorithm-version input
-defined by their checked consumer contract. Presentation-only fields are explicitly
-classified and excluded. `lineage_cache_key()` is the common preview/trace factory; callers
+defined by their checked consumer contract. A node's configuration is signed whole but for
+the few presentation fields no execution reads (an MLflow picker's browsing state and
+Explore's cards), so a newly declared setting needs no registration; editor state travels
+beside the config and is never signed. `lineage_cache_key()` is the common preview/trace factory; callers
 do not key directly from `graph_fingerprint()` alone.
 
 Every identity that covers a node's result signs the global constants that node's lineage
@@ -206,7 +208,7 @@ keeps the stat fallback honest on filesystems without them.
 
 ## Failure model
 
-Unknown/missing checked inputs and unclassified config fields fail key construction.
+Unknown/missing checked inputs fail key construction.
 Stat/loader errors propagate and failed values are not cached; a gate that moves twice
 during load raises.
 
