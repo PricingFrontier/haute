@@ -11,7 +11,8 @@ import {
   type UseStaleConfigEstimateResult,
 } from "../hooks/useStaleConfigEstimate"
 import useGraphStore from "../stores/useGraphStore"
-import useNodeResultsStore, { type TrainProgress } from "../stores/useNodeResultsStore"
+import useNodeResultsStore, { type CachedTrainResult, type TrainProgress } from "../stores/useNodeResultsStore"
+import { hasTrainResult } from "../stores/nodeResultsSelectors"
 import {
   captureDocumentExecutionFence,
   isDocumentExecutionFenceCurrent,
@@ -189,6 +190,12 @@ const DEFAULT_EVALUATION: Record<string, unknown> = {
   validation: { method: "single", size: 0.2 },
 }
 
+/** Why a node's last training failed: the failed job's error, or a result the server marked an error. */
+function trainFailure(cached: CachedTrainResult): string | null {
+  if (cached.result === null) return cached.error ?? null
+  return cached.result.status === "error" ? cached.result.error ?? null : null
+}
+
 function failureStatus(error: unknown, message: string): TrainProgress | undefined {
   const execution_metrics = executionMetricsFromError(error)
   if (!execution_metrics) return undefined
@@ -345,6 +352,7 @@ function TrainPane({
         trainProgress={trainJob?.progress ?? null}
         estimatedRemainingSeconds={trainJob?.estimatedRemainingSeconds ?? null}
         trainResult={cachedResult?.result ?? null}
+        trainError={cachedResult ? trainFailure(cachedResult) : null}
         isStale={estimate.isStale}
         ramEstimate={estimate.estimate}
         ramEstimateLoading={estimate.loading}
@@ -669,7 +677,7 @@ export default function ModellingConfig({
       onUpdate={onUpdate}
       nodeLabel={allNodes.find((node) => node.id === nodeId)?.data.label ?? "model"}
       trainedJobId={
-        cachedResult && cachedResult.result.status !== "error" && cachedResult.jobId
+        cachedResult && hasTrainResult(cachedResult) && cachedResult.jobId
           ? cachedResult.jobId
           : null
       }

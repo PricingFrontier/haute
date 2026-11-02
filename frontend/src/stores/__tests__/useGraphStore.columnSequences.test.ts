@@ -38,31 +38,30 @@ function initialModel(): Model {
 }
 
 function applyModel(model: Model, operation: Operation) {
-  const push = () => {
+  // An edit is an undo step only when it changes the config: one that leaves
+  // it as it was records nothing, as the graph store commits.
+  const commit = (next: ColumnConfig) => {
+    if (JSON.stringify(next) === JSON.stringify(model.config)) return
     model.undo.push(clone(model.config))
     model.redo = []
+    model.config = next
   }
   const next = clone(model.config)
   if (operation === "select") {
-    push()
     next.selected_columns = ["id", "city", "country"]
-    model.config = next
+    commit(next)
   } else if (operation === "edit") {
-    push()
     next.selected_columns = ["city", "id"]
-    model.config = next
+    commit(next)
   } else if (operation === "rename") {
-    push()
     next.column_renames = { ...(next.column_renames ?? {}), city: "Municipality" }
-    model.config = next
+    commit(next)
   } else if (operation === "emptySettings") {
-    push()
-    model.config = { selected_columns: [], column_renames: {} }
+    commit({ selected_columns: [], column_renames: {} })
   } else if (operation === "clear") {
-    push()
     delete next.selected_columns
     delete next.column_renames
-    model.config = next
+    commit(next)
   } else if (operation === "undo" && model.undo.length) {
     model.redo.push(clone(model.config))
     model.config = model.undo.pop()!

@@ -222,7 +222,7 @@ scratch notes. Package splits use the new owners without adding finding groups.
 
 | Earlier candidate note | Accepted owner |
 |---|---|
-| dispersion caller ownership / estimate queued | **FMOU-R06** for same-mounted draft identity; separate helper error-contract wording is **FSH-R06**. |
+| dispersion caller ownership / estimate queued | **FMOU-R06** for same-mounted draft identity. |
 | request-input edits / explicit Auto Layout | **FGC-R05**; mixed Delete **FGC-R07**. |
 | delayed drill-in | **FGC-R06**. |
 | utility async read/save/switch | **FGC-R08**. |

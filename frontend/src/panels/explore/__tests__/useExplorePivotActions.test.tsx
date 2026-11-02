@@ -8,6 +8,7 @@ import type {
 } from "../../../api/types"
 import type { ExploreDataView } from "../exploreDataView"
 import useDocumentStatusStore from "../../../stores/useDocumentStatusStore"
+import { makePipelineEditorDocument } from "../../../testSupport/pipelineDocumentFixture"
 import useGraphStore from "../../../stores/useGraphStore"
 import useNodeResultsStore, {
   explorePivotResultKey,
@@ -147,7 +148,13 @@ describe("useExplorePivotActions", () => {
     }
     expect(mockRunExplorePivot).toHaveBeenCalledTimes(1)
 
-    act(() => { useDocumentStatusStore.getState().setSourceRevision("adopted-document") })
+    act(() => {
+      useDocumentStatusStore.getState().loadLiveDocumentStatus(
+        makePipelineEditorDocument({ source_revision: "adopted-document" }),
+        true,
+        "fingerprint-adopted",
+      )
+    })
     await act(async () => { finishOld(completed(result)) })
 
     await waitFor(() => expect(mockRunExplorePivot).toHaveBeenCalledTimes(2))

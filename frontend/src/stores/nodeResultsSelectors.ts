@@ -6,10 +6,15 @@
  */
 import type { ModellingPreviewData } from "../panels/ModellingPreview"
 import type { OptimiserPreviewData } from "../panels/OptimiserPreview"
-import type { CachedTrainResult, SolvedCachedSolveResult } from "./useNodeResultsStore"
+import type { CachedTrainResult, SolvedCachedSolveResult, TrainResult } from "./useNodeResultsStore"
 
 const optimiserPreviews = new WeakMap<SolvedCachedSolveResult, OptimiserPreviewData>()
 const modellingPreviews = new WeakMap<CachedTrainResult, Map<string, ModellingPreviewData>>()
+
+/** A training outcome with a usable result: not a failed job, nor a result the server marked an error. */
+export function hasTrainResult(cached: CachedTrainResult): cached is CachedTrainResult & { result: TrainResult } {
+  return cached.result !== null && cached.result.status !== "error"
+}
 
 /** The optimiser preview of a solved result. */
 export function optimiserPreviewFor(cached: SolvedCachedSolveResult): OptimiserPreviewData {
@@ -30,7 +35,10 @@ export function optimiserPreviewFor(cached: SolvedCachedSolveResult): OptimiserP
 }
 
 /** The modelling preview of a completed training result under its node's label. */
-export function modellingPreviewFor(cached: CachedTrainResult, nodeLabel: string): ModellingPreviewData {
+export function modellingPreviewFor(
+  cached: CachedTrainResult & { result: TrainResult },
+  nodeLabel: string,
+): ModellingPreviewData {
   let byLabel = modellingPreviews.get(cached)
   if (!byLabel) {
     byLabel = new Map()

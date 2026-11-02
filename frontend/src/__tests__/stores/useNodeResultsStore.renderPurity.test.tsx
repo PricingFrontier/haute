@@ -98,6 +98,6 @@ describe("useNodeResultsStore render-pure preview getters", () => {
     expect(Object.keys(trainResults)).toHaveLength(MAX_CACHED_TRAIN_RESULTS)
     expect(trainResults.t0).toBeUndefined()
     expect(trainResults.t1).toBeDefined()
-    expect(trainResults["t-new"]?.result.final_test_metrics.rmse).toBe(999)
+    expect(trainResults["t-new"]?.result?.final_test_metrics.rmse).toBe(999)
   })
 })

@@ -236,7 +236,8 @@ editability changed while the dialog was open; adding a constraint after deletin
 `optimiserSolveReadiness` blocks `canSolve` when `objective` or a constraint column is
 missing from `dataInputColumns`.
 
-**Dependencies:** Coordinates with `FSH-R06` (`failTrainJob`).
+**Dependencies:** None. A failed training is cached as `result: null` with
+its `error`.
 
 **Evidence:** `frontend/src/panels/ModellingConfig.tsx::ModellingConfig`;
 `frontend/src/stores/useNodeResultsStore.ts::useNodeResultsStore`;

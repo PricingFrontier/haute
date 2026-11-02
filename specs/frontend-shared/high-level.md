@@ -498,8 +498,8 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   integer) throws immediately from `assertValidCacheLimit` rather than
   silently disabling eviction.
 - `runDispersionEstimate`'s job wait rejects with
-  an `ApiError` carrying the job's message on any non-`running`/non-`completed` terminal
-  status, and with a plain `Error` if a `"completed"` status arrives
+  a `JobFailedError` carrying the job's status and message on any non-`running`/non-`completed`
+  terminal status (no HTTP request failed, so it is no `ApiError`), and with a plain `Error` if a `"completed"` status arrives
   without a result/value payload — a job that finishes without the data
   it promised is a contract violation, not treated as success. A caller
   `AbortSignal` fired mid-poll rejects with a `DOMException`
@@ -551,4 +551,5 @@ validation requires the action-specific discriminator, the applied artifacts,
 bounded artifact patches and a complete valid editor document. The browser never
 accepts replacement bytes, source spans, migration instructions, or a recovery
 graph as an apply payload; it sends only server identities, revision, and the
-update/reset/recover action or explicit removal config-deletion choice.
+reset/recover action, the connection to remove, or the explicit removal
+config-deletion choice.

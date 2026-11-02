@@ -13,9 +13,9 @@ import {
   validateDispersionEstimateResponse,
   validateDispersionEstimateStatusResponse,
 } from "../generated/api-contracts.modelling.validators.mjs"
-import { waitForJob } from "../hooks/jobPollingController"
+import { JobFailedError, waitForJob } from "../hooks/jobPollingController"
 import { expectGeneratedContract } from "../types/generatedContractValidation"
-import { ApiError, post, request } from "./client"
+import { post, request } from "./client"
 import { TERMINAL_JOB_STATUSES } from "./types"
 import type {
   DispersionEstimateStart,
@@ -92,7 +92,7 @@ export async function runDispersionEstimate(
       signal: options?.signal,
     })
     if (status.status !== "completed") {
-      throw new ApiError(status.error || status.message || `Dispersion estimation ${status.status}`, 500)
+      throw new JobFailedError(status.status, status.error || status.message || `Dispersion estimation ${status.status}`)
     }
     if (status.value === null) {
       throw new Error("Dispersion estimation completed without a value")

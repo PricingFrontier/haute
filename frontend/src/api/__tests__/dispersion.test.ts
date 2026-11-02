@@ -11,6 +11,7 @@ import {
   runDispersionEstimate,
 } from "../dispersion"
 import { ApiError } from "../client"
+import { JobFailedError } from "../../hooks/jobPollingController"
 
 let mockFetch: ReturnType<typeof vi.fn>
 
@@ -110,9 +111,11 @@ describe("dispersion estimation endpoints", () => {
     mockFetch
       .mockReturnValueOnce(jsonResponse({ status: "started", job_id: "disp-1" }))
       .mockReturnValueOnce(jsonResponse(makeDispersionStatus({ status: "contract_error", error: "no converged fit" })))
-    await expect(
-      runDispersionEstimate({ graph: dummyGraph, node_id: "n1", param: "theta" }, { pollIntervalMs: 0 }),
-    ).rejects.toThrow("no converged fit")
+    const run = runDispersionEstimate({ graph: dummyGraph, node_id: "n1", param: "theta" }, { pollIntervalMs: 0 })
+    // The job failed; no HTTP request did, so it is no ApiError.
+    await expect(run).rejects.toBeInstanceOf(JobFailedError)
+    await expect(run).rejects.toMatchObject({ status: "contract_error", message: "no converged fit" })
+    await expect(run).rejects.not.toBeInstanceOf(ApiError)
   })
 
   it("runDispersionEstimate rejects when completed without a value", async () => {

@@ -1191,7 +1191,7 @@ describe("ModellingConfig", () => {
         const state = useNodeResultsStore.getState()
         expect(state.trainJobs.node_1).toBeUndefined()
         expect(state.trainResults.node_1?.terminalStatus?.status).toBe("cancelled")
-        expect(state.trainResults.node_1?.result.error).toBe("Cancelled")
+        expect(state.trainResults.node_1?.error).toBe("Cancelled")
       })
     })
 
@@ -1237,8 +1237,8 @@ describe("ModellingConfig", () => {
         const store = useNodeResultsStore.getState()
         const cached = store.trainResults.node_1
         expect(cached).toBeTruthy()
-        expect(cached.result.status).toBe("error")
-        expect(cached.result.error).toBe("Network fail")
+        expect(cached.result).toBeNull()
+        expect(cached.error).toBe("Network fail")
       })
     })
 
@@ -1268,7 +1268,7 @@ describe("ModellingConfig", () => {
 
       await waitFor(() => {
         const cached = useNodeResultsStore.getState().trainResults.node_1
-        expect(cached?.result.error).toBe("Training rejected by admission control")
+        expect(cached?.error).toBe("Training rejected by admission control")
         expect(cached?.terminalStatus?.status).toBe("memory_limited")
         expect(cached?.terminalStatus?.terminal_reason).toBe("memory_limited")
         expect(cached?.terminalStatus?.execution_metrics).toBe(executionMetrics)
@@ -1282,8 +1282,8 @@ describe("ModellingConfig", () => {
       await waitFor(() => {
         const store = useNodeResultsStore.getState()
         const cached = store.trainResults.node_1
-        expect(cached?.result.status).toBe("error")
-        expect(cached?.result.error).toBe("Refused")
+        expect(cached?.result).toBeNull()
+        expect(cached?.error).toBe("Refused")
         expect(cached?.jobId).toBe("startup-failure:node_1")
         expect(cached?.source).toBe("live")
         expect(store.trainJobs.node_1).toBeUndefined()

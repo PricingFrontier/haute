@@ -27,7 +27,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/panels/editors/SubmodelPortEditor.tsx` | Renders the drilled boundary inspector body. Input reuses the standard `InputSourcesBar` chip/remove presentation for its declared public frames and exposes no mutation control when read-only; Output has no editable interface list. |
 | `frontend/src/panels/useGraph.ts` | Defines `GraphContext` (`React.Context<GraphContextValue \| undefined>`) and the `useGraph()` consumer hook, which throws when called outside a provider. |
 | `frontend/src/panels/GraphContext.tsx` | `GraphProvider` component; memoises the context value on `{allNodes, edges, submodels, preamble, openNode}` identity. |
-| `frontend/src/stores/useGraphStore.ts` | Zustand store owning `nodes`/`edges`/`preamble`/`submodels`, undo/redo history (four-field graph snapshots interleaved with VC entries; `setNodesAndEdgesAndSubmodels` commits through `commitGraphState`), and three derived fingerprints (`structuralFingerprint`, `panelContextFingerprint`, `persistedFingerprint`) plus the `dirty` boolean derived from them. It exports the production `computeStructuralFingerprint` for direct contract tests; tests must not maintain a copied fingerprint implementation. |
+| `frontend/src/stores/useGraphStore.ts` | Zustand store owning `nodes`/`edges`/`preamble`/`submodels`, undo/redo history (four-field graph snapshots interleaved with VC entries; every history-aware setter, the raw preamble/submodel/constant setters and undo/redo commit through one `commitGraphChange`, which records an undo step only when the authored fingerprint changed), and three derived fingerprints (`structuralFingerprint`, `panelContextFingerprint`, `persistedFingerprint`) plus the `dirty` boolean derived from them. It exports the production `computeStructuralFingerprint` for direct contract tests; tests must not maintain a copied fingerprint implementation. |
 | `frontend/src/types/node.ts` | Shared node-data and persisted node-type contract owned by [frontend-shared](../frontend-shared/low-level.md) and consumed by the canvas. |
 | `frontend/src/hooks/createAfterIdentity.ts` | `createAfterIdentity`, the one resolve-then-commit path of every canvas creation (Duplicate, Create Instance, palette and connection drops, Edge Join insertion, paste): fenced on the kind's request serial, the graph's `structuralFingerprint` and the authored data of the nodes the creation depends on, applying onto the live graph; and `authoredNodeData`, a node's data without its underscore-prefixed fields, which a copy is built from. |
 | `frontend/src/hooks/useNodeHandlers.ts` | Node CRUD handlers: ordinary atomic delete, guarded submodel deletion, duplicate and instance creation that resolve authoritative identities before commit, reusable-submodel occurrence creation with deterministic fresh id/alias allocation, rename dialog, and in-flight-guarded ELK auto-layout fenced on the initiating document, navigation scope, and graph topology (merging returned positions by node id onto live nodes while preserving live data and selection, or rejecting an obsolete layout with a toast). Resolver rejection, malformed output, or graph replacement leaves state untouched. |
@@ -491,13 +491,17 @@ reconciliation rather than dropping them or committing a second mutation.
    (`setNodesAndEdgesAndSubmodels`, one snapshot) plus the selected-node view
    update, as a single undo entry; undo restores root and nested state
    coherently, never a root-only revert.
-6. **Store internals, history-aware path.** Every history-aware setter calls
+6. **Store internals, history-aware path.** Every history-aware setter commits
+   through `commitGraphChange`, which, when the change moves the authored
+   (persisted) fingerprint, calls
    `pushSnapshotInternal()` (deep-clones the pre-mutation state — nodes,
    edges, preamble, and submodels — via `captureGraphSnapshot`, which
    delegates to `cloneGraphSnapshot` in `graphSnapshot.ts`; React Flow
    presentation and volatile preview/trace fields never enter history, while
    server identities remain available when a snapshot is restored. The stack evicts the oldest entry once
-   `undoStack.length >= MAX_HISTORY`), then always recomputes
+   `undoStack.length >= MAX_HISTORY`) and clears redo — a change of no authored
+   state (a selection, a generated step-code refresh) records no step and keeps
+   redo — then always recomputes
    `persistedFingerprint` and `dirty` (via `computeDirty` against
    `lastSavedSnapshot`/`savedPersistedFingerprint`), recomputes
    `panelContextFingerprint`/`Version` only if `computePanelContextFingerprint`

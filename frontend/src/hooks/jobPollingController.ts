@@ -1,4 +1,5 @@
 import { apiErrorMessage } from "../api/errors"
+import type { JobStatus } from "../api/types"
 
 const BASE_INTERVAL_MS = 500
 const PROGRESS_INTERVAL_MS = 1_000
@@ -35,6 +36,17 @@ export interface JobPollingConfig<TJob, TStatus> {
   addToast: (type: "success" | "error" | "warning" | "info", text: string) => void
   successLabel: string
   failLabel: string
+}
+
+/** An awaited job ended in a terminal status other than completed: no HTTP request failed. */
+export class JobFailedError extends Error {
+  override name = "JobFailed"
+  readonly status: JobStatus
+
+  constructor(status: JobStatus, message: string) {
+    super(message)
+    this.status = status
+  }
 }
 
 /** An awaited job wait passed its deadline without a terminal status. */

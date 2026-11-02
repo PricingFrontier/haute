@@ -257,7 +257,6 @@ production:
 | Assistant | ASB-3, ASB-7, ASB-11 | `ASSIST-59` |
 | Explore / EDA | SUB-5, SUB-6, SUB-7, SUB-10 | `EDA-R01` |
 | Explore / EDA | SUB-8, SUB-9, SUB-12 | `EDA-R02` |
-| Frontend shared | FSA-3, FSA-4, FSA-5, FSA-6, FSA-7, FSA-9, FSA-12 | `FSH-R06` |
 | Frontend node editors | FNE-1, FNE-2, FNE-4, FNE-7, FNE-8, FNE-17 | `FNED-R01` |
 | Frontend node editors | FNE-3, FNE-5, FNE-6, FNE-9, FNE-11 | `FNED-R02` |
 | Frontend node editors | FNE-10, FNE-12, FNE-13, FNE-14, FNE-15, FNE-16 | `FNED-R03` |
@@ -302,8 +301,7 @@ rule (`NAME-09`); the dead
 `submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
 utilities (`ENGQ-R01`); Banding's `_id` inside the config (`FNED-R07`), the editors'
 barrels (`ENGQ-R01`), the pivot editor writing the
-fields the backend defaults (`EDA-R02`); a second fabricated
-train-failure sentinel (`FSH-R06`); the browser's frontier
+fields the backend defaults (`EDA-R02`); the browser's frontier
 generation fences that only ever see generation 0 (`OPT-R04`); in the workbench UI and
 the app shell, the
 chart theme observer written twice (`EDA-R03`), the params-folder listing in the

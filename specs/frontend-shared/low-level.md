@@ -183,6 +183,10 @@
   the point-selection actions ignore it. Every result is stored from the active
   job that produced it, with that job's `source` and `structuralVersion`; a
   completion with no matching active job stores nothing.
+  A `CachedTrainResult` holds the server's training result, or, for a job
+  that failed, `result: null` and the failure's `error`, as the solve cache
+  models a failure: no response is fabricated to record one, and readers ask
+  `hasTrainResult` whether a usable result is there.
 - **`CachedExplorePivotResult` / `ActiveExplorePivotJob`** (`stores/useNodeResultsStore.ts`): records keyed by
   `${exploreNodeId}:${pivotId}`. A cached matrix stores its backend calculation identity and
   dataframe-cache key; an active job stores the same composite ownership plus job id/source.
@@ -327,8 +331,10 @@ shorter `timeoutMs`) rejects it with `JobWaitTimeoutError`. The wait never
 cancels the job; a caller that owns the job decides that. The callers are:
 
 - `runDispersionEstimate`: starts the job, waits at the configured interval
-  (500ms by default) with the caller's signal, and resolves or rejects the
-  single outer promise. An abort after job creation awaits
+  (500ms by default) with the caller's signal, and resolves with the value or
+  rejects the single outer promise: with a `JobFailedError` (the job's status
+  and message) for a job that ended in any terminal status but completed, as
+  the failure model says. An abort after job creation awaits
   `cancelDispersion(jobId)` before the outer promise rejects; cancellation
   failure remains visible. `GLMTargetConfig` owns one controller per estimate
   and aborts it on unmount, so a closed panel cancels its estimate and never
@@ -955,10 +961,11 @@ same Vitest config.
 - **`useToastStore`** (`frontend/src/stores/__tests__/useToastStore.test.ts`,
   `frontend/src/stores/__tests__/useToastStore.dedup.test.ts`): dedup-by-`(type,text)`, cap-at-10, and
   the counter-not-advancing-on-suppression invariant.
-- **`useUIStore`** (`frontend/src/stores/__tests__/useUIStore.test.ts`,
-  `frontend/src/stores/__tests__/useUIStore.dirty.derived.test.ts`): modal-mutual-exclusion (opening
+- **`useUIStore`** (`frontend/src/stores/__tests__/useUIStore.test.ts`): modal-mutual-exclusion (opening
   utility/constants/git/assistant closes the other three) and per-node selection-map
-  helpers.
+  helpers. `frontend/src/stores/__tests__/useGraphStore.dirtyDerivation.test.ts` pins the
+  derived dirty flag (`serializeSnapshot`, `selectIsDirty` and the graph store's
+  lifecycle) and that `useUIStore` holds no saved-snapshot state.
 - **MLflow destination surface**
   (`frontend/src/components/__tests__/MlflowDestinationSelector.test.tsx`,
   `frontend/src/utils/__tests__/mlflowDestinations.test.ts`,
@@ -1331,7 +1338,7 @@ recovery objects.
 `api/client.ts` exposes one apply call per repair family; there is no dry-run
 call or plan hash. The removal call sends the root document source, current raw
 revision, target source/recovery identity, and explicit `delete_config`; the
-recovery call sends `action: update | reset | recover` and no deletion option to
+recovery call sends `action: reset | recover` and no deletion option to
 `/api/pipeline/repair/recover/apply`. Runtime parsers reject unknown keys,
 unexpected discriminators, unbounded/invalid patch entries, and a malformed
 nested editor document. The response's bounded display diffs describe what the
@@ -1346,7 +1353,7 @@ authoritative document.
 
 Recovery has no draft dialog, draft transport, draft validators, or persistent
 client recovery state. The single `PipelineRepairDialog` confirms all four
-actions (remove, update, reset, recover) with one Apply click; there is no
+actions (remove, reset, recover, remove-connection) with one Apply click; there is no
 preview step. Applying a recover stores the apply response's field
 outcomes, completeness entries, previous configuration and bounded diffs in
 `useRecoverySummaryStore`, keyed by the owning source file plus the target's

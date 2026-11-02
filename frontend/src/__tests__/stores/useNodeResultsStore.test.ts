@@ -150,7 +150,7 @@ describe("useNodeResultsStore", () => {
     for (const key of collections) {
       expect(useNodeResultsStore.getState()[key].n1).toMatchObject({ progress, source: "live", structuralVersion: 7 })
     }
-    document.setSourceRevision("external")
+    document.loadLiveDocumentStatus(makePipelineEditorDocument({ source_file: "main.py", source_revision: "external" }), true, "fp-external")
     update()
     for (const key of collections) expect(useNodeResultsStore.getState()[key].n1).toBeUndefined()
   })
@@ -512,8 +512,8 @@ describe("useNodeResultsStore", () => {
       // Error is stored in trainResults
       const failedResult = useNodeResultsStore.getState().trainResults["t1"]
       expect(failedResult).toBeDefined()
-      expect(failedResult.result?.error).toBe("Out of memory")
-      expect(failedResult.result?.status).toBe("error")
+      expect(failedResult.result).toBeNull()
+      expect(failedResult.error).toBe("Out of memory")
     })
 
     it("retains structured terminal training diagnostics on failure", () => {
@@ -1022,7 +1022,7 @@ describe("useNodeResultsStore", () => {
       expect(trainJobs["active-train"]).toBeDefined()
       expect(Object.keys(trainResults)).toHaveLength(MAX_CACHED_TRAIN_RESULTS)
       expect(trainResults.t0).toBeUndefined()
-      expect(trainResults[`t${MAX_CACHED_TRAIN_RESULTS}`]?.result.final_test_metrics.rmse).toBe(MAX_CACHED_TRAIN_RESULTS)
+      expect(trainResults[`t${MAX_CACHED_TRAIN_RESULTS}`]?.result?.final_test_metrics.rmse).toBe(MAX_CACHED_TRAIN_RESULTS)
     })
 
     it("evicts cached modelling previews when failed train results push out old entries", () => {
@@ -1039,7 +1039,7 @@ describe("useNodeResultsStore", () => {
       const { trainResults } = useNodeResultsStore.getState()
       expect(Object.keys(trainResults)).toHaveLength(MAX_CACHED_TRAIN_RESULTS)
       expect(trainResults.t0).toBeUndefined()
-      expect(trainResults["t-new"].result?.status).toBe("error")
+      expect(trainResults["t-new"]).toMatchObject({ result: null, error: "Training failed" })
     })
 
     it("keeps explicitly touched train results when evicting", () => {
@@ -1058,7 +1058,7 @@ describe("useNodeResultsStore", () => {
       expect(Object.keys(trainResults)).toHaveLength(MAX_CACHED_TRAIN_RESULTS)
       expect(trainResults.t0).toBeDefined()
       expect(trainResults.t1).toBeUndefined()
-      expect(trainResults["t-new"]?.result.final_test_metrics.rmse).toBe(999)
+      expect(trainResults["t-new"]?.result?.final_test_metrics.rmse).toBe(999)
     })
 
     it("keeps the pinned modelling preview result when evicting by recency", () => {
@@ -1079,8 +1079,8 @@ describe("useNodeResultsStore", () => {
       expect(trainResults.t0).toBeDefined()
       expect(trainResults.t1).toBeUndefined()
       expect(trainResults.t2).toBeUndefined()
-      expect(trainResults["t-new-1"]?.result.final_test_metrics.rmse).toBe(998)
-      expect(trainResults["t-new-2"]?.result.final_test_metrics.rmse).toBe(999)
+      expect(trainResults["t-new-1"]?.result?.final_test_metrics.rmse).toBe(998)
+      expect(trainResults["t-new-2"]?.result?.final_test_metrics.rmse).toBe(999)
     })
 
     it("clearNode removes preview eviction bookkeeping for the cleared node", () => {
@@ -1113,7 +1113,7 @@ describe("useNodeResultsStore", () => {
 
       expect(useNodeResultsStore.getState().solveResults["missing-solve"]).toBeUndefined()
       expect(useNodeResultsStore.getState().trainResults["missing-train"]).toBeUndefined()
-      expect(useNodeResultsStore.getState().trainResults["t-error"].result?.status).toBe("error")
+      expect(useNodeResultsStore.getState().trainResults["t-error"].result).toBeNull()
     })
   })
 

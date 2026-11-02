@@ -51,7 +51,7 @@ import {
   withoutSupersededApplyEntries,
 } from "../utils/optimiserSolveResults"
 import { nextTrainEstimate, type TrainEstimateSample } from "../utils/trainEstimate"
-import { modellingPreviewFor, optimiserPreviewFor } from "./nodeResultsSelectors"
+import { hasTrainResult, modellingPreviewFor, optimiserPreviewFor } from "./nodeResultsSelectors"
 
 export const MAX_CACHED_PREVIEWS = 24
 export const MAX_CACHED_SOLVE_RESULTS = 8
@@ -205,8 +205,12 @@ interface ActiveSolveJob {
   documentFence?: DocumentExecutionFence
 }
 
+/** A node's training outcome: the server's result, or, for a job that failed,
+ *  no result and the failure, as the solve cache models it. */
 export interface CachedTrainResult {
-  result: TrainResult
+  result: TrainResult | null
+  /** Why the job failed; set exactly when `result` is null. */
+  error?: string
   terminalStatus?: TrainProgress | null
   jobId: string
   configHash: string
@@ -1018,7 +1022,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
 
   restoreTrainResult: (nodeId, cached) =>
     set((s) => {
-      if (s.trainResults[nodeId] || s.trainJobs[nodeId] || cached.result.status === "error") return s
+      if (s.trainResults[nodeId] || s.trainJobs[nodeId] || !hasTrainResult(cached)) return s
       touchCachedResult(trainResultRecency, nodeId)
       const bounded = trimCacheByRecency(
         { ...s.trainResults, [nodeId]: cached },
@@ -1045,7 +1049,8 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       const { [nodeId]: _removedJob, ...remainingJobs } = s.trainJobs; void _removedJob
       touchCachedResult(trainResultRecency, nodeId)
       const nextCached: CachedTrainResult = {
-        result: { status: "error", job_id: null, diagnostic_metrics: {}, final_test_metrics: {}, feature_importance: [], model_path: "", development_rows: 0, final_test_rows: 0, diagnostics_set: "development", features: [], cat_features: [], error, best_iteration: null, loss_history: [], loss_history_truncated: false, validation_loss_history: [], validation_loss_history_truncated: false, double_lift: [], shap_summary: [], shap_beeswarm: [], shap_curves: [], shap_link: null, feature_importance_loss: [], ave_per_feature: [], residuals_histogram: [], residuals_stats: {}, actual_vs_predicted: [], lorenz_curve: [], lorenz_curve_perfect: [], pdp_data: [], warning: null, total_source_rows: null, glm_coefficients: [], glm_relativities: [], glm_fit_statistics: {}, glm_inference: null, glm_smooth_terms: [], glm_regularization: null, ebm_terms: [], tboost_tables: null, diagnostics_errors: [], feature_selection: null, final_tree_count: null, fit_evidence: null },
+        result: null,
+        error,
         terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,
         configHash: job.configHash,
@@ -1241,7 +1246,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
 
   getModellingPreview: (nodeId) => {
     const cached = get().trainResults[nodeId]
-    if (!cached || cached.result.status === "error") {
+    if (!cached || !hasTrainResult(cached)) {
       return null
     }
     return modellingPreviewFor(cached, get().trainJobs[nodeId]?.nodeLabel ?? "Model")
@@ -1259,7 +1264,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
 
   touchModellingPreview: (nodeId) => {
     const cached = get().trainResults[nodeId]
-    if (cached && cached.result.status !== "error") {
+    if (cached && hasTrainResult(cached)) {
       touchCachedResult(trainResultRecency, nodeId)
     } else {
       dropCachedResult(trainResultRecency, nodeId)

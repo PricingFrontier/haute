@@ -192,7 +192,7 @@ failure without a job id; delete and un-export the symbols.
 chart; jscpd reports no observer pair; the glyph matches the specification;
 knip reports none of the exports.
 
-**Dependencies:** `FSH-R06` removes the store's other fabricated sentinel.
+**Dependencies:** None.
 
 **Evidence:** `frontend/src/panels/explore/chartData.ts::adaptPivotChartData`;
 `frontend/src/panels/explore/ExploreChartsPane.tsx`;

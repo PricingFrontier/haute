@@ -27,7 +27,7 @@ describe("useDocumentStatusStore", () => {
     const store = useDocumentStatusStore.getState()
     store.loadDocumentStatus(loaded)
     const captured = captureDocumentExecutionFence()
-    if (change === "external revision") store.setSourceRevision("external")
+    if (change === "external revision") store.loadLiveDocumentStatus({ ...loaded, source_revision: "external" }, true, "fp-external")
     if (change === "unsynchronised") store.setGraphSynchronized(false)
     if (change === "system failure") store.setSystemFailure("load failed")
     if (change === "capability loss") store.loadDocumentStatus({ ...loaded, capabilities: { ...loaded.capabilities, can_execute: false } })
