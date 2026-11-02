@@ -8,8 +8,15 @@ import { useEffect, useState } from "react"
 
 import type { TrainProgress, TrainResult } from "../stores/useNodeResultsStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
+import useDocumentStatusStore, {
+  captureDocumentExecutionFence,
+  documentReadOnlyReason,
+  isDocumentEditable,
+  isDocumentExecutionFenceCurrent,
+} from "../stores/useDocumentStatusStore"
 import useGraphStore from "../stores/useGraphStore"
 import { confirmed } from "../stores/useQuestionStore"
+import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import { nodeData } from "../types/node"
 import { NODE_TYPES } from "../utils/nodeTypes"
@@ -178,7 +185,15 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
   const introduction = activeTab === "summary" ? null : { title: VIEW_TITLES[activeTab] }
 
   const fixBestParameters = async (params: Record<string, unknown>) => {
+    if (!isDocumentEditable(useDocumentStatusStore.getState())) {
+      useToastStore.getState().addToast("error", documentReadOnlyReason())
+      return
+    }
+    const documentFence = captureDocumentExecutionFence()
     if (!(await confirmed({ title: "Use the winning parameters as fixed parameters and disable tuning?", confirm: "Use them" }))) return
+    // The answer belongs to the document asked about, while it could still be
+    // edited: another document, or one gone read-only, is left alone.
+    if (!isDocumentExecutionFenceCurrent(documentFence) || !isDocumentEditable(useDocumentStatusStore.getState())) return
 
     useGraphStore.getState().setNodes((nodes) =>
       nodes.map((node) => {

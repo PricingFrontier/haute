@@ -8,7 +8,7 @@ import type {
   OptimiserSegmentsResponse,
   OptimiserSolveResult,
 } from "../../../api/types"
-import SegmentsTab, { NO_SEGMENT_KEYS, type SegmentResults } from "../SegmentsTab"
+import SegmentsTab, { type SegmentResults } from "../SegmentsTab"
 import { makeOnlineSolveResult } from "./fixtures"
 
 const mockSegments = vi.fn()
@@ -168,7 +168,7 @@ describe("SegmentsTab: keys and the index", () => {
   it("says to tick validation factors when the result has no key, and asks for nothing", () => {
     render(<Harness solvedResult={makeOnlineSolveResult({ segment_keys: [] })} />)
 
-    expect(screen.getByText(NO_SEGMENT_KEYS)).toBeTruthy()
+    expect(screen.getByText("Tick validation factors in the optimiser's Factors pane")).toBeTruthy()
     expect(mockIndex).not.toHaveBeenCalled()
     expect(mockSegments).not.toHaveBeenCalled()
   })

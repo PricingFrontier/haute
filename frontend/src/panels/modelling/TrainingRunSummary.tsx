@@ -16,7 +16,7 @@ import {
   type Terms,
 } from "./glmTerms"
 import { glmCrossValidates } from "./glmFamilies"
-import { trainingFitBudget } from "./trainingFitBudget"
+import { fitBudgetLabel } from "./trainingFitBudget"
 import { evaluationConfigurationIssues } from "../../utils/trainingObjective"
 
 /**
@@ -89,25 +89,10 @@ export function TrainingRunSummary({
     "tuning",
     null,
   )
-  const validationFit = publishesValidationFit(String(config.algorithm ?? ""))
-  const validationMethod = (evaluation.validation as Record<string, unknown> | undefined)?.method
-  // A family that publishes its validation fit is never refit: a study adds the
-  // reproduced winning fit, and a plan with no validation has its one fit.
-  const refitOnDevelopment = validationFit
-    ? validationMethod === "none"
-    : config.refit_on_development !== false
-  const budget = trainingFitBudget(
-    evaluation,
-    tuning,
-    refitOnDevelopment || (validationFit && tuning !== null),
-  )
-  const fitBudget = !budget
-    ? "Complete evaluation settings"
-    : budget.selection === 1 && budget.total === 1
-      ? "1 validation fit (saved model)"
-      : budget.selection === 0
-      ? "1 final fit"
-      : `${budget.total} total fits: ${budget.selection} ${tuning ? "tuning" : "validation"} ${budget.selection === 1 ? "fit" : "fits"} + 1 ${validationFit ? "winning validation fit" : "final fit"}`
+  const fitBudget = fitBudgetLabel(evaluation, tuning, {
+    publishesValidationFit: publishesValidationFit(String(config.algorithm ?? "")),
+    refitOnDevelopment: config.refit_on_development !== false,
+  }) ?? "Complete evaluation settings"
   const params = configField<Record<string, unknown>>(config, "params", {})
   const hasCategoricalFeatures =
     config.algorithm === "catboost"

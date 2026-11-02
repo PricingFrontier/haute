@@ -11,24 +11,25 @@ import { configField } from "../../utils/configField"
 import { NODE_TYPES } from "../../utils/nodeTypes"
 import type { SimpleEdge, SimpleNode } from "../editors/_shared"
 import type { SolveIssue } from "./OptimiserSolveStatus"
+import { constraintBoundKind, constraintBoundValue } from "./constraintBounds"
 
 /** The solver's frontier workload cap: steps ** constraints solves (mirrors the backend). */
-export const FRONTIER_COMPUTE_LIMIT = 10_000
+const FRONTIER_COMPUTE_LIMIT = 10_000
 
 /** The most analysis columns a solve keeps for result breakdowns (mirrors the backend). */
 export const MAX_ANALYSIS_COLUMNS = 12
 
-export const COLUMN_MAPPINGS = [
+const COLUMN_MAPPINGS = [
   { key: "quote_id", label: "Row ID" },
   { key: "scenario_index", label: "Scenario Index" },
   { key: "scenario_value", label: "Scenario Value" },
 ] as const
 
 /** One connected incoming edge, identified by its exact executable input name. */
-export type InputNodeInfo = { name: string; label: string; nodeType: string; sourceNodeId: string }
+type InputNodeInfo = { name: string; label: string; nodeType: string; sourceNodeId: string }
 
 /** Every node directly feeding the optimiser, by executable input name. */
-export function findInputNodes(
+function findInputNodes(
   nodeId: string,
   allNodes: SimpleNode[],
   edges: SimpleEdge[],
@@ -131,7 +132,7 @@ export function resolveOptimiserInputs(
   }
 }
 
-export type SolveReadiness = {
+type SolveReadiness = {
   issues: SolveIssue[]
   canSolve: boolean
   /** The setup is solvable apart from the frontier ranges Auto range fills. */
@@ -147,9 +148,10 @@ export function sweptConstraintNames(
 }
 
 /**
- * Every reason the node cannot be solved. Mapped columns are checked only once
- * the input's columns are known (`dataInputColumns` non-empty), and analysis
- * columns once the analysis frame's are (`analysisFrameColumns` non-empty).
+ * Every reason the node cannot be solved. Mapped, objective and constraint
+ * columns are checked only once the input's columns are known
+ * (`dataInputColumns` non-empty), and analysis columns once the analysis
+ * frame's are (`analysisFrameColumns` non-empty).
  */
 export function optimiserSolveReadiness(
   config: Record<string, unknown>,
@@ -186,9 +188,13 @@ export function optimiserSolveReadiness(
       issues.push({
         pane: "factors",
         label: "Factors",
-        message: inputs.bandingNodes.length === 0
-          ? "Connect a Banding node to define the rating factors."
-          : "Select a connected Rating Factor Source.",
+        message: inputs.malformedBandingSource
+          ? "The Rating Factor Source must be an input name."
+          : inputs.missingExplicitBandingSource
+            ? "The selected Rating Factor Source is not connected."
+            : inputs.bandingNodes.length === 0
+              ? "Connect a Banding node to define the rating factors."
+              : "Select a connected Rating Factor Source.",
       })
     } else if (factorColumns.length === 0) {
       issues.push({ pane: "factors", label: "Factors", message: "Select at least one rating factor." })
@@ -208,6 +214,14 @@ export function optimiserSolveReadiness(
           label: "Data",
           message: `${mapping.label} uses "${column}", which the input does not have.`,
         })
+      }
+    }
+    if (objective && !inputColumnNames.has(objective)) {
+      issues.push({ pane: "data", label: "Data", message: `The objective “${objective}” is not a column of the input.` })
+    }
+    for (const name of Object.keys(constraints)) {
+      if (!inputColumnNames.has(name)) {
+        issues.push({ pane: "constraints", label: "Constraints", message: `Constraint “${name}” is not a column of the input.` })
       }
     }
   }
@@ -236,6 +250,16 @@ export function optimiserSolveReadiness(
           message: `Validation factor “${column}” is not a column of the validation input.`,
         })
       }
+    }
+  }
+  // A constraint holds exactly one bound; a swept one runs from its range, so
+  // only a fixed one needs its value.
+  for (const [name, spec] of Object.entries(constraints)) {
+    const kind = constraintBoundKind(spec)
+    if (kind === null) {
+      issues.push({ pane: "constraints", label: "Constraints", message: `Choose a bound for the ${name} constraint.` })
+    } else if (constraintBoundValue(spec, kind) === undefined && !Object.hasOwn(frontierRanges, name)) {
+      issues.push({ pane: "constraints", label: "Constraints", message: `Set a value for the ${name} constraint.` })
     }
   }
   // Auto range needs only a solvable setup: it exists to fill the frontier

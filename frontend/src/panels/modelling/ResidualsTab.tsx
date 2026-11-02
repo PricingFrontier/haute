@@ -6,6 +6,7 @@ import {
   ChartLegend,
   ChartSvg,
   ChartValueGrid,
+  ChartYAxisTitle,
   MODELLING_CHART_AXIS_FONT_SIZE as axisFontSize,
   MODELLING_CHART_AXIS_TEXT_COLOR as axisTextColor,
   MODELLING_CHART_GRID_COLOR as gridColor,
@@ -215,16 +216,9 @@ function ActualVsPredictedScatter({
         >
           Actual
         </text>
-        <text
-          x={12}
-          y={marginTop + plotHeight / 2}
-          textAnchor="middle"
-          fontSize={axisFontSize}
-          fill={axisTextColor}
-          transform={`rotate(-90,12,${marginTop + plotHeight / 2})`}
-        >
+        <ChartYAxisTitle plotTop={marginTop} plotHeight={plotHeight}>
           Predicted
-        </text>
+        </ChartYAxisTitle>
       </ChartSvg>
       <ChartLegend
         compact

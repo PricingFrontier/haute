@@ -2074,7 +2074,8 @@ suites prove the same canonical vocabulary and bounded lifecycle end to end.
   with a remove action once the columns are known.
 - `trainingObjective.ts` shares evaluation issue detection between Split, tab readiness
   and Train. Fraction sums at or above one are invalid for non-temporal single
-  validation. CatBoost Tweedie power is a finite number in the open interval (1, 2),
+  validation and are their own `evaluation-fraction-sum` issue, which Split picks by that
+  code to show beside the validation settings. CatBoost Tweedie power is a finite number in the open interval (1, 2),
   mirrored by `_train_config.py`; `src/haute/modelling/_evaluation.py` rejects impossible fraction sums.
 - `SplitAndMetricsConfig` starts with a Row limit section, before allocation and split
   settings. `ModellingConfig` passes the persisted `row_limit` and its update callback
@@ -2103,15 +2104,19 @@ suites prove the same canonical vocabulary and bounded lifecycle end to end.
   editor, with no individual parameter inputs or advanced disclosure. JSON edits
   preserve arbitrary keys and merge reserved settings from their owning controls;
   omitted parameters remain library-managed rather than gaining display-only defaults.
-- Tuning changes only tuning configuration. It reports final-test presence with a
-  Split navigation action and shows trial count times validation fits plus one final
-  fit. Invalid local parameter/search-space drafts remain visible across pane changes.
-- Both algorithms expose Parameters. GLM regularization describes penalty-selection
+- Choosing tuning writes the tuning configuration and turns on `refit_on_development`
+  (t-boost, which is never refit, excepted); it never changes the evaluation. The tuning
+  note reports final-test presence with a Split navigation action and states the fit
+  budget in the Train run summary's words, and its search space is labelled with the
+  selected family's name. Invalid local parameter/search-space drafts remain visible across
+  pane changes.
+- Every family exposes Parameters. GLM regularization describes penalty-selection
   CV separately from evaluation CV. Readiness issues map to panes, and Train links to
   their controls. The run summary reflects effective feature selection and evaluation.
-- Estimate failures show the server's detail. Evaluation-preview failures are shown
-  with Split feedback; other estimate failures are labelled memory-estimate failures,
-  without asserting training success. An unavailable estimate is not a failure: Train
+- Estimate failures show the server's detail. A failure the server codes
+  `evaluation_preview_failed` is an evaluation-preview failure, shown in Split and in the
+  Train estimate's place in the server's words; any other estimate failure is labelled a
+  memory-estimate failure, without asserting training success. An unavailable estimate is not a failure: Train
   shows "Memory estimate unavailable" with its reason in place of the missing figures
   (naming the blocking node by its canvas label for `row_count_unprovable`), the source
   rows when known, and the available RAM. It never shows a fits-in-memory or downsample
@@ -2174,8 +2179,9 @@ used for staged input.
   and `engine_module`. `DESCRIPTORS` holds CatBoost and the GLM under the same keys as
   `ALGORITHM_REGISTRY`; `MODEL_FILE_SUFFIXES` derives from them, and saving a model whose
   algorithm has no suffix raises. `capability_fixture()` serialises the frontend's
-  `algorithmCapabilities.json` (including each family's round-key aliases and validation-only
-  parameters, which the frontend's tuning-report check uses to mirror the refit projection),
+  `algorithmCapabilities.json` (including each family's round key, from which the Summary
+  tab's `tuningFamilyCapability` names a study's tuned family, its round-key aliases and its
+  validation-only parameters),
   and
   `tests/test_algorithm_descriptors.py::test_frontend_capability_fixture_matches_the_descriptors`
   fails when they differ.

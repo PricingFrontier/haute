@@ -143,14 +143,17 @@ export function useOptimiserScenarioData(
     return { quoteIds: ids, quoteRowsByQuote: map }
   }, [previewRows, quoteIdCol])
 
-  // ── Quote navigation: back to the first quote whenever the quote count changes ──
-  const [navigation, setNavigation] = useState({ quoteCount: quoteIds.length, index: 0, search: "" })
-  if (navigation.quoteCount !== quoteIds.length) {
-    setNavigation({ quoteCount: quoteIds.length, index: 0, search: "" })
+  // ── Quote navigation: back to the first quote whenever the quotes change ──
+  // Keyed by the quote ids in order, so another quote-id column or another
+  // set of quotes of the same size starts afresh too.
+  const quoteSetKey = useMemo(() => quoteIds.join("\u0000"), [quoteIds])
+  const [navigation, setNavigation] = useState({ quoteSetKey, index: 0, search: "" })
+  if (navigation.quoteSetKey !== quoteSetKey) {
+    setNavigation({ quoteSetKey, index: 0, search: "" })
   }
-  const current = navigation.quoteCount === quoteIds.length
+  const current = navigation.quoteSetKey === quoteSetKey
     ? navigation
-    : { quoteCount: quoteIds.length, index: 0, search: "" }
+    : { quoteSetKey, index: 0, search: "" }
   const searchValue = current.search
 
   const clampedIndex = Math.min(current.index, Math.max(0, quoteIds.length - 1))

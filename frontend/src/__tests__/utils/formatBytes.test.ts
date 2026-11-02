@@ -9,11 +9,29 @@ describe("formatBytes", () => {
     expect(formatBytes(1023)).toBe("1023 B")
   })
 
-  it("returns KB for values from 1 KB to just under 1 MB", () => {
+  it("returns KB for values from 1 KB while they print below 1024.0", () => {
     expect(formatBytes(1024)).toBe("1.0 KB")
     expect(formatBytes(1536)).toBe("1.5 KB")
     expect(formatBytes(10240)).toBe("10.0 KB")
-    expect(formatBytes(1024 * 1024 - 1)).toBe("1024.0 KB")
+    // 1023.949 KB.
+    expect(formatBytes(1_048_524)).toBe("1023.9 KB")
+  })
+
+  it("carries a value that would print as 1024.0 into the next unit", () => {
+    // 1023.950 KB and 1023.999 KB both round to 1024.0.
+    expect(formatBytes(1_048_525)).toBe("1.0 MB")
+    expect(formatBytes(1_048_575)).toBe("1.0 MB")
+    expect(formatBytes(1024 ** 3 - 1)).toBe("1.0 GB")
+  })
+
+  it("stops at GB", () => {
+    expect(formatBytes(2048 * 1024 ** 3)).toBe("2048.0 GB")
+  })
+
+  it("keeps the sign of a negative count, choosing the unit by its size", () => {
+    expect(formatBytes(-512)).toBe("-512 B")
+    expect(formatBytes(-1536)).toBe("-1.5 KB")
+    expect(formatBytes(-1_048_575)).toBe("-1.0 MB")
   })
 
   it("returns MB for values 1 MB and above", () => {
@@ -31,7 +49,6 @@ describe("formatBytes", () => {
   })
 
   it("formats gigabytes from 1 GB", () => {
-    expect(formatBytes(1024 ** 3 - 1)).toBe("1024.0 MB")
     expect(formatBytes(1024 ** 3)).toBe("1.0 GB")
     expect(formatBytes(3.8 * 1024 ** 3)).toBe("3.8 GB")
   })

@@ -1,6 +1,6 @@
 import type { OptimiserPane } from "../../stores/useUIStore"
 
-export type OptimiserPaneEntry = { key: OptimiserPane; label: string }
+type OptimiserPaneEntry = { key: OptimiserPane; label: string }
 
 /** The panes an optimiser node shows, in tab order. Factors holds the ratebook
  * and validation factors, so both modes have it. */
