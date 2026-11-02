@@ -29,12 +29,16 @@ vi.mock("../../api/client", () => ({
   ApiError: class ApiError extends Error {
     status: number
     detail?: string
+    body?: unknown
+    rawDetail?: unknown
 
-    constructor(msg: string, status = 0, detail?: string) {
+    constructor(msg: string, status = 0, detail?: string, body?: unknown, rawDetail?: unknown) {
       super(msg)
       this.name = "ApiError"
       this.status = status
       this.detail = detail
+      this.body = body
+      this.rawDetail = rawDetail
     }
   },
 }))
@@ -188,8 +192,10 @@ describe("usePipelineAPI - gap tests", () => {
     it("does NOT show error preview when the backend supersedes an obsolete preview", async () => {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
 
+      // Reworded on purpose: the code, not the message, says the preview was superseded.
+      const superseded = { error_code: "request_superseded", message: "A newer preview of this node replaced this one" }
       mockPreview.mockRejectedValue(
-        new ApiError("HTTP 409", 409, "Preview request superseded by a newer request"),
+        new ApiError("HTTP 409", 409, JSON.stringify(superseded), { detail: superseded }, superseded),
       )
 
       const params = makeParams()
@@ -205,6 +211,29 @@ describe("usePipelineAPI - gap tests", () => {
       await advanceTimers(200)
       expect(mockPreview).toHaveBeenCalledTimes(1)
       expect(result.current.previewData?.status).not.toBe("error")
+    })
+
+    it("shows a 409 that only mentions supersession as a preview error", async () => {
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
+
+      // No code: a worker stopped for another reason is a failure the panel shows.
+      mockPreview.mockRejectedValue(
+        new ApiError("HTTP 409", 409, "Interactive execution was stopped with reason 'superseded'"),
+      )
+
+      const params = makeParams()
+      const { result } = renderHook(() => usePipelineAPI(params))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      vi.useFakeTimers()
+
+      act(() => {
+        result.current.fetchPreview(makeNode("n1"))
+      })
+
+      await advanceTimers(200)
+      expect(mockPreview).toHaveBeenCalledTimes(1)
+      expect(result.current.previewData?.status).toBe("error")
     })
   })
 

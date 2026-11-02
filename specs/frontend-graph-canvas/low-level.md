@@ -1420,7 +1420,9 @@ array-only payload or omitted-edge compatibility branch is supported.
 - `usePipelineAPI.fetchPreviewImmediate`/`refreshPreview`/`previewNodeFrame`
   each distinguish three outcomes on preview failure: an abort or
   supersession (`isAbortError`/`isPreviewSupersededError`) is silent
-  cancellation; an `ApiTimeoutError` additionally toasts `error`; anything
+  cancellation, a supersession being a 409 whose detail carries
+  `error_code: "request_superseded"` (`apiErrorCode`), whatever its message
+  says, and no other 409; an `ApiTimeoutError` additionally toasts `error`; anything
   else paints an error `PreviewData` and — for a refresh's upstream
   members — toasts a `warning` naming the failing node, without aborting
   siblings.
@@ -1706,7 +1708,8 @@ again through the editor and save paths.
     in panel and toast; `nodeIdCounter` seeded from max numeric suffix
     (not `nodes.length`).
   - `frontend/src/hooks/__tests__/usePipelineAPI.gaps.test.ts` — preview error/abort/supersession
-    distinctions; concurrent saves complete independently (no dedup) and a
+    distinctions (a supersession known by its code with the server's message reworded, and a
+    409 that only mentions supersession shown as an error); concurrent saves complete independently (no dedup) and a
     second save's failure doesn't corrupt the first's saved snapshot;
     preview caching (fresh-cache skip, custom debounce, structuralVersion/
     source/rowLimit staleness triggers a refetch); terminal-state

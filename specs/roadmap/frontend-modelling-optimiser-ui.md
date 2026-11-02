@@ -47,8 +47,8 @@ issue; the family's label and the Train pane's wording in the tune copy.
 and the quoted greps report none of the symbols; jscpd none of the pairs; no
 message-prefix match remains; the search-space label names the selected family.
 
-**Dependencies:** `FSH-R09` covers the same message-matching pattern for
-previews.
+**Dependencies:** None. Previews already recognise supersession by its
+structured code rather than by message text.
 
 **Evidence:** `specs/frontend-modelling-optimiser-ui/high-level.md`;
 `frontend/src/panels/modelling/FeatureImportance.tsx`;

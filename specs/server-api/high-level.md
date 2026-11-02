@@ -649,7 +649,8 @@ detail, and the assistant shows the same message.
 - **Resource limits** surface as their own status codes rather than a generic 500:
   `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → 507 from any synchronous
   route, through the one memory-limit mapping; a superseded request →
-  `SupersededRequestError` → 409; a timed-out isolated operation → 504. Production heavy-route
+  `SupersededRequestError` → 409, a superseded preview or trace naming itself with
+  `error_code: "request_superseded"`; a timed-out isolated operation → 504. Production heavy-route
   workers are terminated and joined before the terminal response or job transition. Parent
   cleanup then removes the exact private staging artifact, and admission is released only after
   both worker termination and cleanup have completed.

@@ -261,7 +261,6 @@ production:
 | Frontend node editors | FNE-1, FNE-2, FNE-4, FNE-7, FNE-8, FNE-17 | `FNED-R01` |
 | Frontend node editors | FNE-3, FNE-5, FNE-6, FNE-9, FNE-11 | `FNED-R02` |
 | Frontend node editors | FNE-10, FNE-12, FNE-13, FNE-14, FNE-15, FNE-16 | `FNED-R03` |
-| Frontend shared | FSB-7, FSB-8, FSB-11 | `FSH-R09` |
 | Frontend node editors | FNB-1, FNB-2, FNB-3, FNB-5, FNB-13 | `FNED-R04` |
 | Frontend node editors | FNB-4, FNB-6, FNB-7, FNB-8, FNB-9, FNB-10, FNB-11, FNB-12, FNB-14, FNB-15 | `FNED-R05` |
 | Frontend modelling | FMD-7, FMD-8, FMD-9, FMD-10, FMD-11, FMD-13, FMD-14, FMD-15 | `FMOU-R03` |

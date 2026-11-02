@@ -626,7 +626,11 @@ class TestPreviewNode:
         )
 
         assert resp.status_code == 409
-        assert resp.json()["detail"] == "Preview request superseded by a newer request"
+        # The browser knows a superseded preview by its code, not its wording.
+        assert resp.json()["detail"] == {
+            "error_code": "request_superseded",
+            "message": "Preview request superseded by a newer request",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -691,7 +695,10 @@ class TestTraceRow:
         )
 
         assert resp.status_code == 409
-        assert resp.json()["detail"] == "Trace request superseded by a newer request"
+        assert resp.json()["detail"] == {
+            "error_code": "request_superseded",
+            "message": "Trace request superseded by a newer request",
+        }
 
 
 # ---------------------------------------------------------------------------

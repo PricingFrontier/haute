@@ -14,6 +14,12 @@ T = TypeVar("T")
 class SupersededRequestError(RuntimeError):
     """Raised when a request is replaced by a newer same-key request."""
 
+    error_code = "request_superseded"
+
+    def to_payload(self) -> dict[str, str]:
+        """The structured 409 detail: the browser recognises supersession by its code."""
+        return {"error_code": self.error_code, "message": str(self)}
+
 
 @dataclass
 class _SupersessionState:

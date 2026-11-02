@@ -186,10 +186,11 @@ Capability order and unsupported legs remain intact, and cache
 readiness/freshness/progress are separate typed values.
 
 **Result caching.** `useNodeResultsStore` is the only place preview rows,
-optimiser solves, training runs, explore reports, and pivot matrices are kept
-once computed. Each result category (`previews`, `solveResults`, `trainResults`,
-`exploreResults`, `pivotResults`) is bounded to a fixed entry count and evicted
-by least-recently-touched. In all five caches the currently pinned/open node's
+optimiser solves, training runs, and Explore pivot matrices are kept
+once computed; the data an Explore preview profiles is the shared data point's,
+kept in `useNodeDataStore`. Each result category (`previews`, `solveResults`,
+`trainResults`, `pivotResults`) is bounded to a fixed entry count and evicted
+by least-recently-touched. In all four caches the currently pinned/open node's
 entries survive eviction pressure; the pivot trimmer excludes the pinned node's
 entries entirely from eviction candidates. A
 config-hash (`hashConfig`) lets panels detect
@@ -427,9 +428,10 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   modules (dispersion, assistant) consume `client.ts`'s exported fetch/stream
   helpers rather than hand-rolling transport, which is how the rule holds
   even for the assistant's non-JSON SSE stream.
-- `useBackgroundJobs` (mounted once via `BackgroundJobPolling`) polls solve,
-  train, and explore jobs regardless of which panel is currently open, so
-  those results reach `useNodeResultsStore` even after the user navigates
+- `useBackgroundJobs` (mounted once via `BackgroundJobPolling`) polls optimiser
+  solve, training, Explore pivot, node-data build and data-profile jobs
+  regardless of which panel is currently open, so their results reach
+  `useNodeResultsStore` and `useNodeDataStore` even after the user navigates
   away from the node that started them; this depends on the backend's job
   endpoints described in [background-jobs](../background-jobs/high-level.md).
 - Every job wait goes through `hooks/jobPollingController.ts`. Jobs the store

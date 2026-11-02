@@ -1,10 +1,11 @@
 /**
  * Background job polling hook — mounted once in App.tsx.
  *
- * Manages polling for all active optimiser and training jobs regardless of
- * which panel is open. This means clicking away from a node mid-solve no
- * longer kills the polling loop — results are captured in useNodeResultsStore
- * and a toast notifies the user on completion.
+ * Manages polling for every active optimiser solve, training, Explore pivot,
+ * node-data build and data-profile job regardless of which panel is open.
+ * This means clicking away from a node mid-solve no longer kills the polling
+ * loop — results are captured in useNodeResultsStore or useNodeDataStore and a
+ * toast notifies the user on completion.
  *
  * Polling mechanics (exponential backoff, max lifetime, cleanup) are delegated
  * to the generic useJobPolling hook — this file is a thin orchestrator that

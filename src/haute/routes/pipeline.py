@@ -977,7 +977,8 @@ def _interactive_failures(run: _InteractiveRun, *, timed_out: str) -> Iterator[N
     its admission back.
 
     The memory budget answers 507; a deadline 504 with *timed_out*, the run's token
-    cancelled so its work stops; a newer request 409; a worker that crashed or failed
+    cancelled so its work stops; a newer request 409 with ``request_superseded``, and a
+    worker stopped for another reason a plain 409; a worker that crashed or failed
     507 or 500, by what it reported; a public contract error its own payload. A thread
     still running past its deadline keeps the admission until it ends.
     """
@@ -992,7 +993,11 @@ def _interactive_failures(run: _InteractiveRun, *, timed_out: str) -> Iterator[N
     except (InteractiveWorkerTimeoutError, TimeoutError):
         run.token.cancel()
         raise HTTPException(status_code=504, detail=timed_out) from None
-    except (InteractiveWorkerStoppedError, SupersededRequestError) as exc:
+    except SupersededRequestError as exc:
+        # The browser drops a superseded preview silently, so it is named by a
+        # code rather than recognised by its wording.
+        raise HTTPException(status_code=409, detail=exc.to_payload()) from None
+    except InteractiveWorkerStoppedError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     except InteractiveWorkerCrashedError as exc:
         _raise_interactive_worker_crash_http_error(exc, operation=run.operation)

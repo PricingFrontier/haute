@@ -51,7 +51,7 @@ import {
 import { executionWarningNodeIds } from "../utils/executionDiagnostics"
 import { refreshRereadInput } from "../utils/inputSnapshotSource"
 import { newPreviewRequestId, pollPreviewProgress } from "./previewProgressPoller"
-import { apiErrorMessage, isStaleRevision } from "../api/errors"
+import { apiErrorCode, apiErrorMessage, isStaleRevision } from "../api/errors"
 import { useDebouncedCallback } from "./useDebouncedCallback"
 import { constantDrafts, constantsPayload, saveRefusal } from "../utils/globalConstants"
 export { columnFingerprint } from "../utils/columnFingerprint"
@@ -448,10 +448,9 @@ function isAbortError(err: unknown): boolean {
       (err as { name?: unknown }).name === "AbortError"
 }
 
+/** The server dropped this preview for a newer one of the same node: its 409 says so by code. */
 function isPreviewSupersededError(err: unknown): boolean {
-  if (!(err instanceof ApiError) || err.status !== 409) return false
-  const text = `${err.detail ?? ""} ${err.message}`
-  return text.toLowerCase().includes("superseded")
+  return err instanceof ApiError && err.status === 409 && apiErrorCode(err) === "request_superseded"
 }
 
 function isApiTimeoutError(err: unknown): err is ApiTimeoutError {

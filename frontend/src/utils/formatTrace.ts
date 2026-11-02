@@ -2,7 +2,6 @@
 
 import { formatJsonSpecialValue } from "./formatValue"
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}(T[\d:.Z+-]+)?$/
 export const TRACE_MAX_FRACTION_DIGITS = 4
 
 export function formatTraceValue(
@@ -22,10 +21,8 @@ export function formatTraceValue(
     // Numbers follow the browser's locale, as every other surface's do.
     return v.toLocaleString(undefined, { maximumFractionDigits: maxFractionDigits })
   }
-  if (typeof v === "string") {
-    if (DATE_RE.test(v)) return v
-    return v
-  }
+  // A string, a date's text included, is shown as it is.
+  if (typeof v === "string") return v
   if (typeof v === "object") {
     return JSON.stringify(v, (_key, value: unknown) => formatJsonSpecialValue(value) ?? value)
   }

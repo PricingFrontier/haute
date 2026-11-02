@@ -17,7 +17,6 @@ to `FSH-R09` from the
 |---|---|---:|---|
 | FSH-R03 | Planned | P3 | The results store holds results; validation and optimiser logic move out. |
 | FSH-R06 | Planned | P3 | The stores carry one copy of each derivation and validator, no test-only action, no fabricated result sentinel, and their specification names the actions that exist. |
-| FSH-R09 | Planned | P3 | The frontend-shared specification describes the formatter, the pollers and the store shape that exist, and preview supersession is recognised by a structured code rather than by its message text. |
 | FSH-R10 | Planned | P2 | Independent request-input edits made while identity resolution is pending are retained together. |
 
 ## Planned improvements
@@ -74,32 +73,6 @@ remove, reset, recover and remove-connection only.
 `frontend/src/api/dispersion.ts::runDispersionEstimate`;
 `frontend/src/types/pipelineRepair.ts`;
 `frontend/src/stores/__tests__/useUIStore.dirty.derived.test.ts`.
-
-### FSH-R09 — The specification and the supersession signal
-**Why:** The specification says the trace formatter quotes ordinary strings and
-retains date-shaped ones; the code returns every string unchanged and the regex
-is dead. It says `useBackgroundJobs` mounts four pollers (solve, train, explore,
-pivot) and the results store holds `exploreResults` and `exploreJobs`; the hook
-mounts five (solve, train, pivot, node-data build, data profile), polls no
-Explore job, and the store has no such maps. Preview supersession is recognised
-by searching the 409's text for "superseded", so a reworded server message would
-surface every superseded preview as a preview error; the server's 409 carries no
-`error_code`.
-
-**Plan:** Correct the three specification passages and delete the dead regex;
-give the supersession 409 a structured `error_code` (one line in the preview
-route) and match on it.
-
-**Acceptance:** The specification matches the formatter, the pollers and the
-store; the supersession test passes with the server message reworded.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/utils/formatTrace.ts`;
-`frontend/src/hooks/useBackgroundJobs.ts`;
-`frontend/src/stores/useNodeResultsStore.ts`;
-`frontend/src/hooks/usePipelineAPI.ts::isPreviewSupersededError`;
-`src/haute/routes/pipeline.py`; `specs/frontend-shared/low-level.md`.
 
 ### FSH-R10 — Retain edits during input identity resolution
 **Why:** The [28 October review](codebase-review-2026-10-28.md) reproduced two
