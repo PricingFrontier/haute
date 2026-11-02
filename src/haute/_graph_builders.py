@@ -323,13 +323,13 @@ def _build_edges(
                 pair = (param, node_info["func_name"])
                 # A duplicated parameter name (``ast.parse`` accepts
                 # ``def f(a, a)``; the signature check refuses it later) would
-                # otherwise emit two GraphEdges sharing the same id ``e_a_f``.
-                # Dedupe here so the edge id stays unique.
+                # otherwise emit two GraphEdges sharing one identity, and so
+                # one id. Dedupe here so the edge id stays unique.
                 if pair not in explicit_edges and pair not in seen_implicit:
                     seen_implicit.add(pair)
                     edges.append(
                         GraphEdge(
-                            id=f"e_{pair[0]}_{pair[1]}",
+                            id=_edge_id(pair[0], pair[1]),
                             source=pair[0],
                             target=pair[1],
                         )

@@ -68,6 +68,7 @@ export default function ReadOnlyNodeConfig({ nodeType, config, nodeId }: ReadOnl
           loadPivotFilterMembers={noFilterMembers}
           exploreConfigHash={null}
           reservedApiInputFrameLabels={reservedFrameLabels}
+          inputBindingViolations={EMPTY}
           accentColor={accentColor}
         />
       </LazyEditorBoundary>

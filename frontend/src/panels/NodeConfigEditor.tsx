@@ -1,6 +1,8 @@
 import { NODE_TYPES } from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
 import type { HauteNodeData } from "../types/node"
+import type { PipelineNameViolation } from "../types/pipelineDocument"
+import { frameViolationMessages } from "../utils/inputBindingViolations"
 import type { ExplorePane, ModellingPane, OptimiserPane } from "../stores/useUIStore"
 import {
   ApiInputEditor,
@@ -80,6 +82,8 @@ export type NodeConfigEditorProps = {
   loadPivotFilterMembers: LoadPivotFilterMembers
   exploreConfigHash: string | null
   reservedApiInputFrameLabels: Set<string>
+  /** The document's violations a frame or a public input port names, shown where it is set. */
+  inputBindingViolations: readonly PipelineNameViolation[]
   accentColor: string
   /**
    * The comparison view's inert render: node types without a read-only editor
@@ -128,6 +132,7 @@ export function NodeConfigEditor({
   loadPivotFilterMembers,
   exploreConfigHash,
   reservedApiInputFrameLabels,
+  inputBindingViolations,
   accentColor,
   readOnly = false,
 }: NodeConfigEditorProps) {
@@ -144,6 +149,7 @@ export function NodeConfigEditor({
           onUpdate={onUpdateConfig}
           accentColor={accentColor}
           reservedFrameLabels={reservedApiInputFrameLabels}
+          labelViolations={frameViolationMessages(inputBindingViolations, node.id)}
         />
       )
 
@@ -232,6 +238,7 @@ export function NodeConfigEditor({
         <SubmodelPortEditor
           node={node}
           onDeleteInputPort={onDeleteSubmodelInputPort}
+          inputBindingViolations={inputBindingViolations}
         />
       )
 

@@ -55,18 +55,22 @@ import { ValidatedTextField } from "../../components/form"
 // ─── ApiInputEditor ───────────────────────────────────────────────
 
 const COLUMN_TYPES: ColumnType[] = ["int", "float", "str", "bool", "date"]
+const NO_LABEL_VIOLATIONS: ReadonlyMap<string, string> = new Map()
 
 export default function ApiInputEditor({
   config,
   onUpdate,
   accentColor,
   reservedFrameLabels,
+  labelViolations = NO_LABEL_VIOLATIONS,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   accentColor: string
   /** Server-advertised frame labels reserved by the executable language. */
   reservedFrameLabels: ReadonlySet<string>
+  /** The server's name violations each committed frame label causes, by label. */
+  labelViolations?: ReadonlyMap<string, string>
 }) {
   const currentPath = configField<string | undefined>(config, "path", undefined)
   const { schema, loading: loadingSchema, error: schemaError, fetchForPath } = useSchemaFetch(currentPath)
@@ -787,7 +791,7 @@ export default function ApiInputEditor({
                   testIdPrefix={`api-input-table-${ti}`}
                   ambiguousNames={ambiguous}
                   validateLabel={validateTableLabel(ti)}
-                  commitError={labelCommitErrors[ti] ?? null}
+                  commitError={labelCommitErrors[ti] ?? labelViolations.get(table.label) ?? null}
                   onUpdate={(patch) => updateTable(ti, patch)}
                   onRemove={() => removeTable(ti)}
                   onAddColumn={() => addColumn(ti)}

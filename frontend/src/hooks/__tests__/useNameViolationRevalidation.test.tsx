@@ -25,6 +25,7 @@ const RESERVED: PipelineNameViolation = {
   name: "pl",
   message: "Node 'pl' (the pipeline) takes the name `pl`, which the generated module binds to polars.",
   parties: [{ node_id: "pl", label: "pl", submodel: null }],
+  binding: null,
 }
 const DUPLICATE: PipelineNameViolation = {
   kind: "duplicate",
@@ -34,6 +35,21 @@ const DUPLICATE: PipelineNameViolation = {
     { node_id: "transform", label: "transform", submodel: null },
     { node_id: "transform", label: "transform", submodel: "rates" },
   ],
+  binding: null,
+}
+const FRAME_HELPER: PipelineNameViolation = {
+  kind: "support_input",
+  name: "rate_lookup",
+  message: "Node 'rated' (the pipeline) receives an input named `rate_lookup`, which a definition in the preamble binds. Rename the input or the helper.",
+  parties: [{ node_id: "rated", label: "rated", submodel: null }],
+  binding: { kind: "frame", node_id: "quotes", handle: "rate_lookup", submodel: null },
+}
+const PORT_HELPER: PipelineNameViolation = {
+  kind: "support_input",
+  name: "band",
+  message: "Node 'child' (submodel 'rates') receives an input named `band`, which `band` from `utility.bands` binds. Rename the input or the helper.",
+  parties: [{ node_id: "child", label: "child", submodel: "rates" }],
+  binding: { kind: "submodel_input", submodel: "rates", port: "band" },
 }
 
 function fencedDocument(violations: PipelineNameViolation[] = [RESERVED, DUPLICATE]) {
@@ -60,6 +76,19 @@ describe("the document's name violations", () => {
     expect(parsePipelineEditorDocument(wire).name_violations).toEqual([RESERVED, DUPLICATE])
     wire.name_violations[0].kind = "shadowed"
     expect(() => parsePipelineEditorDocument(wire)).toThrow(/name_violations\[0\]\.kind/)
+  })
+
+  it("carry the frame or public input port that names their input, which loading keeps for its editor", () => {
+    const wire = JSON.parse(JSON.stringify(fencedDocument([RESERVED, FRAME_HELPER, PORT_HELPER])))
+    const document = parsePipelineEditorDocument(wire)
+    expect(document.name_violations).toEqual([RESERVED, FRAME_HELPER, PORT_HELPER])
+    useDocumentStatusStore.getState().loadDocumentStatus(document)
+    expect(useDocumentStatusStore.getState().inputBindingViolations).toEqual([FRAME_HELPER, PORT_HELPER])
+
+    wire.name_violations[1].binding = { kind: "frame", node_id: "quotes", handle: "rate_lookup" }
+    expect(() => parsePipelineEditorDocument(wire)).toThrow(/name_violations\[1\]\.binding/)
+    wire.name_violations[1].binding = { kind: "submodel_input", submodel: "rates", port: "" }
+    expect(() => parsePipelineEditorDocument(wire)).toThrow(/name_violations\[1\]\.binding\.port/)
   })
 
   it("fence save, run and preview until renames clear them, and again if they return", () => {
@@ -165,5 +194,80 @@ describe("useNameViolationRevalidation", () => {
       nodes: [node("pl", "pl")], edges, submodels: {}, preamble, buildContextGraph,
     }))
     expect(resolveEditorNodeIdentities).not.toHaveBeenCalled()
+  })
+})
+
+describe("useNameViolationRevalidation after an input binding edit", () => {
+  const edges: Edge[] = []
+  const buildContextGraph = () => ({ nodes: [], edges: [], submodels: undefined, preamble: undefined })
+
+  function quoteInput(...labels: string[]): Node {
+    return {
+      id: "quotes",
+      type: "apiInput",
+      position: { x: 0, y: 0 },
+      data: { label: "quotes", nodeType: "apiInput", config: { tables: labels.map((label) => ({ label })) } },
+    }
+  }
+
+  function rates(...ports: string[]) {
+    return { rates: { definitionId: "rates", file: "modules/rates.py", inputPorts: ports.map((name) => ({ name, targets: [] })), outputPorts: [] } }
+  }
+
+  it("asks after a frame label is committed, and clears what fixing it clears, in a document without a fence", async () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument())
+    resolveEditorNodeIdentities.mockResolvedValue({ identities: [], violations: [FRAME_HELPER] })
+    const { rerender } = renderHook(
+      ({ nodes, code }) => useNameViolationRevalidation({ nodes, edges, submodels: {}, preamble: code, buildContextGraph }),
+      { initialProps: { nodes: [quoteInput("policy")], code: "" } },
+    )
+    expect(resolveEditorNodeIdentities).not.toHaveBeenCalled()
+
+    rerender({ nodes: [quoteInput("rate_lookup")], code: "" })
+    await waitFor(() => expect(useDocumentStatusStore.getState().inputBindingViolations).toEqual([FRAME_HELPER]))
+    expect(resolveEditorNodeIdentities).toHaveBeenCalledWith({ nodes: [], graph: buildContextGraph() })
+    // No fence follows: save itself refuses the name.
+    expect(useDocumentStatusStore.getState().nameViolations).toEqual([])
+    expect(useDocumentStatusStore.getState().capabilities?.can_save).toBe(true)
+
+    // While one shows, removing the helper from the preamble asks again.
+    resolveEditorNodeIdentities.mockResolvedValue({ identities: [], violations: [] })
+    rerender({ nodes: [quoteInput("rate_lookup")], code: "# helper removed" })
+    await waitFor(() => expect(useDocumentStatusStore.getState().inputBindingViolations).toEqual([]))
+    expect(resolveEditorNodeIdentities).toHaveBeenCalledTimes(2)
+
+    // With nothing showing, a preamble edit or a new request input asks nothing.
+    rerender({ nodes: [quoteInput("rate_lookup")], code: "" })
+    rerender({ nodes: [quoteInput("rate_lookup"), node("transform", "transform")], code: "" })
+    expect(resolveEditorNodeIdentities).toHaveBeenCalledTimes(2)
+  })
+
+  it("lets an edit made while a check is unanswered supersede it", async () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument())
+    let answerFirst: (value: unknown) => void = () => {}
+    resolveEditorNodeIdentities
+      .mockImplementationOnce(() => new Promise((resolve) => { answerFirst = resolve }))
+      .mockResolvedValueOnce({ identities: [], violations: [] })
+    const { rerender } = renderHook(
+      ({ nodes, code }) => useNameViolationRevalidation({ nodes, edges, submodels: {}, preamble: code, buildContextGraph }),
+      { initialProps: { nodes: [quoteInput("policy")], code: "def rate_lookup():\n    pass" } },
+    )
+
+    rerender({ nodes: [quoteInput("rate_lookup")], code: "def rate_lookup():\n    pass" })
+    rerender({ nodes: [quoteInput("rate_lookup")], code: "" })
+    await waitFor(() => expect(resolveEditorNodeIdentities).toHaveBeenCalledTimes(2))
+    await act(async () => answerFirst({ identities: [], violations: [FRAME_HELPER] }))
+    expect(useDocumentStatusStore.getState().inputBindingViolations).toEqual([])
+  })
+
+  it("asks after a definition gains a public input port", async () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument())
+    resolveEditorNodeIdentities.mockResolvedValue({ identities: [], violations: [RESERVED, PORT_HELPER] })
+    const { rerender } = renderHook(
+      ({ submodels }) => useNameViolationRevalidation({ nodes: [], edges, submodels, preamble: "", buildContextGraph }),
+      { initialProps: { submodels: rates("policy") } },
+    )
+    rerender({ submodels: rates("policy", "band") })
+    await waitFor(() => expect(useDocumentStatusStore.getState().inputBindingViolations).toEqual([PORT_HELPER]))
   })
 })

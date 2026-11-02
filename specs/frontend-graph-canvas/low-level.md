@@ -24,7 +24,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/nodes/FramePortRows.tsx` | Shared full-detail port-row primitives used by API Input, ordinary Pipeline nodes, the parent Submodel card, and drilled Input/Output boundary cards. `FramePortRows` owns common named-port typography, truncation/title behavior, row-relative source/target handle placement, and the mirrored origin semicircle class/accent for each direction. `DefaultInputPort` owns the canonical target handle and exact muted `inputs` label so it can compose into an ordinary node's shared row; `DefaultInputPortRow` wraps the same content for input-only boundary cards. |
 | `frontend/src/nodes/SubmodelNode.tsx` | Resolves occurrences through `config.definitionId` and the typed definition registry, applies `deriveNodeCanvasFlags` and `NodeTraceValuePill` so submodel cards draw diff rings, trace/change focus rings, dimmed opacity, selection borders, and trace values, then keeps the structural `SUBMODEL` marker in the standard accent header treatment and renders the mutable occurrence name as a 13px semibold primary-foreground right-hand header pill, followed by one visible generic `inputs` target plus labelled `out__<name>` rows, a registry-derived accessible child count, and a visible invalid-definition alert. The generic target shares the first output row or falls back to a standalone row. Non-interactive `in__<name>` anchors are co-located beneath it so canonical parent edges retain their named persisted handles without presenting multiple main-canvas input sockets. |
 | `frontend/src/nodes/SubmodelPortNode.tsx` | Renders one composite Input or Output boundary card inside a drilled submodel using `deriveNodeCanvasFlags` and `NodeTraceValuePill` (selection border, trace/hover dimming, focus and diff rings, and trace value). Both headers use the same right-pointing arrow while their handles retain their graph semantics. Input turns its ordered declared ports, including unrouted ports, into shared source-handle rows and has no creation row; Output renders one shared default-input row and never lists exported frames. |
-| `frontend/src/panels/editors/SubmodelPortEditor.tsx` | Renders the drilled boundary inspector body. Input reuses the standard `InputSourcesBar` chip/remove presentation for its declared public frames and exposes no mutation control when read-only; Output has no editable interface list. |
+| `frontend/src/panels/editors/SubmodelPortEditor.tsx` | Renders the drilled boundary inspector body. Input reuses the standard `InputSourcesBar` chip/remove presentation for its declared public frames and exposes no mutation control when read-only, and below it shows, per public input port, the messages of the document's input-binding violations whose `binding` is that port of its definition (`submodel-port-<name>-violation`); Output has no editable interface list. |
 | `frontend/src/panels/useGraph.ts` | Defines `GraphContext` (`React.Context<GraphContextValue \| undefined>`) and the `useGraph()` consumer hook, which throws when called outside a provider. |
 | `frontend/src/panels/GraphContext.tsx` | `GraphProvider` component; memoises the context value on `{allNodes, edges, submodels, preamble, openNode}` identity. |
 | `frontend/src/stores/useGraphStore.ts` | Zustand store owning `nodes`/`edges`/`preamble`/`submodels`, undo/redo history (four-field graph snapshots interleaved with VC entries; `setNodesAndEdgesAndSubmodels` commits through `commitGraphState`), and three derived fingerprints (`structuralFingerprint`, `panelContextFingerprint`, `persistedFingerprint`) plus the `dirty` boolean derived from them. It exports the production `computeStructuralFingerprint` for direct contract tests; tests must not maintain a copied fingerprint implementation. |
@@ -37,11 +37,11 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/hooks/useActiveNodeReveal.ts` | Keeps the inspector's active node visible in the canvas area its inspector and preview pane leave: arms on each active-node change or node-search centre request, re-checks when React Flow's canvas size or the armed node's measured size changes, glides only the first placement, and disarms on a user pan/zoom gesture. Returns `handleMoveStart` for React Flow's `onMoveStart` and `centreNode` for node search. |
 | `frontend/src/utils/nodeReveal.ts` | Pure `nodeRevealViewport` geometry: the zoom-preserving least pan that places a node `NODE_REVEAL_MARGIN_PX` inside the canvas (centring on an axis it cannot fit), or a centred placement at a requested zoom; `null` when a nearest placement needs no move. |
 | `frontend/src/hooks/usePipelineAPI.ts` | Pipeline editor-document load-on-mount; recovery-to-React-Flow adaptation; atomic document-status/revision plus graph ingestion; request-facing refs; preview lifecycle; and capability-fenced Save. |
-| `frontend/src/stores/useDocumentStatusStore.ts` | Authoritative editor-document status, diagnostics, capabilities, raw revision, source-only text, and last accepted document identity, including its `documentFingerprint` (null when the accepting response named none) that every `/ws/sync` resync sends. `acknowledgeSave` clears it: the canvas then holds the saved document, which no response has fingerprinted, so a later frame of the document first loaded (a switch to a branch that holds it) is not taken for the one shown. `requestResync()` bumps `resyncRequests`, asking the socket for the document whatever its fingerprint (the git UI, after dropping the canvas's edits for a git action). A ready document loaded with name violations keeps them as `nameViolations` with a `nameFence` (the fenced and the lifted capabilities); `setNameViolations` adopts a revalidated list and switches the capabilities between the two, and is a no-op for a document loaded without violations. Graph state/history remain in `useGraphStore`. |
+| `frontend/src/stores/useDocumentStatusStore.ts` | Authoritative editor-document status, diagnostics, capabilities, raw revision, source-only text, and last accepted document identity, including its `documentFingerprint` (null when the accepting response named none) that every `/ws/sync` resync sends. `acknowledgeSave` clears it: the canvas then holds the saved document, which no response has fingerprinted, so a later frame of the document first loaded (a switch to a branch that holds it) is not taken for the one shown. `requestResync()` bumps `resyncRequests`, asking the socket for the document whatever its fingerprint (the git UI, after dropping the canvas's edits for a git action). A ready document loaded with name violations keeps them as `nameViolations` with a `nameFence` (the fenced and the lifted capabilities); `setNameViolations` adopts a revalidated list and switches the capabilities between the two, and is a no-op for a document loaded without violations. `inputBindingViolations` holds the violations with a `binding` — the loaded document's, then those of each revalidation answer (`setInputBindingViolations`) — for the editors that set those names, fenced or not. Graph state/history remain in `useGraphStore`. |
 | `frontend/src/types/pipelineDocument.ts` | Strict version-1 editor-document wire types/guards and the single adapter from recovery nodes/edges/submodels into render-only React Flow snapshots, including required node identities, edge input identities, submodel input-port identities, and reserved API-frame labels. Recovery wire values are never accepted as canonical graph values. |
 | `frontend/src/components/PipelineRecoveryBanner.tsx` | Accessible degraded-document summary and issues entry point. |
 | `frontend/src/components/NameViolationsBanner.tsx` | The ready document's remaining name violations from the document status store, each row selecting its nodes through App's violation handler. |
-| `frontend/src/hooks/useNameViolationRevalidation.ts` | While the document is fenced by its names, posts the canonical graph with no candidate nodes to the editor identity request on each name-relevant change and adopts the answer; a request serial discards superseded answers, and a failure keeps the last list and toasts. |
+| `frontend/src/hooks/useNameViolationRevalidation.ts` | While the document is fenced by its names, posts the canonical graph with no candidate nodes to the editor identity request on each name-relevant change and adopts the answer; otherwise posts it when a request input already in the graph changes its frame labels or a definition already in the graph changes its public input ports, and on any such change or preamble edit while input-binding violations show or a request is unanswered, so a later edit supersedes it. Each answer goes to `setNameViolations` and `setInputBindingViolations`; a request serial discards superseded answers, and a failure keeps the last lists and toasts. |
 | `frontend/src/components/SourceRecoveryView.tsx` | Read-only current-source and document-diagnostic surface used when no trustworthy graph skeleton exists. |
 | `frontend/src/components/PipelineLoadFailureView.tsx` | Dedicated initial-load system-failure surface that keeps transport, permission, discovery, and unreadable-file failures distinct from authored recovery diagnostics. |
 | `frontend/src/components/PipelineRepairDialog.tsx` | Minimal repair confirmation surface. It submits only document/target identities and the document revision, retains config by default, and never authors replacement bytes. |
@@ -71,7 +71,8 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/utils/validateConfigRefs.ts` | `validateConfigRefs`/`formatConfigRefWarnings` — flags submodel occurrence `instanceOf` fields pointing at non-existent owner occurrences; edge-name selectors are validated against their target's exact incoming-edge identities instead. |
 | `frontend/src/utils/layout.ts` | `getLayoutedElements` plus `nodeIdsNeedingLayout`/`mergeLayoutedNodePositions` for partial imported-graph layout; finite positions including the origin are authoritative. Also owns `clusterSnap`/`alignPositions` coordinate snapping. |
 | `frontend/src/utils/connectionValidation.ts` | `isPipelineConnectionValid` — the graph-level `isValidConnection` React Flow validator, including ordinary executable input-name uniqueness, generic-submodel-input name lookup/allocation policy, strict public-port validation and one-binding-per-input enforcement, and null-API-handle rejection in every gesture direction. |
-| `frontend/src/utils/flowElements.ts` | `appNode`/`appEdge`/`nodeLabel`/`edgeId`/`deselectNodes`/`selectOnlyNode` — node/edge factories and id/selection helpers. |
+| `frontend/src/utils/flowElements.ts` | `appNode`/`appEdge`/`nodeLabel`/`deselectNodes`/`selectOnlyNode` — node/edge factories and selection helpers; `appEdge` names its edge with `edgeId`. |
+| `frontend/src/utils/edgeIds.ts` | `edgeId`, the injective four-field edge id the server's `_edge_id` also mints (high-level, Failure model), refusing an empty endpoint or handle, and `withEdgeIdentity`, which applies an identity change to an existing edge and mints its id again; the API Input rename migration, submodel input retargeting, Edge Join input swap and paste use it. It imports nothing, so the end-to-end specs use it to predict an edited edge's id. |
 | `frontend/src/utils/flowHandles.ts` | Owns the interaction-only `SUBMODEL_INPUT_HANDLE` and `DEFAULT_TARGET_HANDLE` sentinels; `normalizeDefaultTargetHandle` collapses React Flow's synthetic ordinary target id to `null`. |
 | `frontend/src/utils/nodeTypes.ts` | Canvas metadata derived from shared `types/node.ts::PIPELINE_NODE_TYPES`: `NODE_TYPE_META` and lookups (`SOURCE_ONLY_TYPES`, `SINK_ONLY_TYPES`, `SINGLETON_TYPES`, `PALETTE_TYPES`, `nodeTypeIcons`/`nodeTypeColors`/`nodeTypeLabels`, `PILL_TYPES`), the request inputs (`REQUEST_INPUT_TYPES`, `isRequestInputType`) and their shared singleton slot (`singletonTypesOccupiedBy`, `singletonLimitMessage`). The `polars` type is named Transform (badge `TRANSFORM`) wherever the editor names a type, including a new node's generated label; its type id, decorator and config directory stay `polars`. |
 | `frontend/src/utils/apiInputPorts.ts` | Mirrors backend API-input frame identity and resolves authoritative executable names across ordinary nodes and public submodel labels while retaining public-port ids as boundary handles; also owns label validation, conservative rename updates, and orphan-handle pruning. |
@@ -1412,6 +1413,16 @@ array-only payload or omitted-edge compatibility branch is supported.
 whole-document graph loads, saved-baseline installation, version advancement,
 and undo/redo history clearing across pipeline switches.
 
+`frontend/src/hooks/__tests__/useNameViolationRevalidation.test.tsx` pins the name
+violations' wire parse, including each `binding` and its refusal when malformed, the fence
+and banner, the fenced revalidation, and the input-binding revalidation of an unfenced
+document: nothing asked on load or for a new request input, an answer after an existing API
+Input's frame label or a definition's public input ports change, a preamble edit asking
+again only while one shows, and no fence following. `frontend/src/__tests__/editors/SubmodelPortEditor.test.tsx`
+pins each public input port's violation shown in its definition's inspector only, and
+`frontend/src/utils/__tests__/inputBindingViolations.test.ts` the matching by request input
+and by definition.
+
 The pure connection/frame helpers are defended by
 `frontend/src/utils/__tests__/apiInputPorts.test.ts`,
 `frontend/src/utils/__tests__/edgeJoinGraph.test.ts`, and
@@ -1628,7 +1639,10 @@ again through the editor and save paths.
     one resolve-before-commit transaction: cloned node identities and internal
     edge identities come from the authoritative resolver, while rejection,
     malformed results, superseding requests, and intervening graph edits are
-    visible atomic no-ops.
+    visible atomic no-ops. On the real graph store, a copied, deleted and
+    pasted two-frame Quote Input keeps its two parallel connections under
+    distinct ids; removing one through the canvas's edge changes leaves the
+    other, and one undo restores exactly the removed one.
   - The Edge Join insertion feedback component is covered with React Testing
     Library: a compatible candidate exposes one named polite status and the
     derived edge receives the candidate class; clearing or invalidating the
@@ -1826,9 +1840,17 @@ again through the editor and save paths.
   - `frontend/src/utils/__tests__/connectionValidation.test.ts` — edge-join output-to-default-input
     allowed; self-loops rejected; incomplete connections rejected.
   - `frontend/src/utils/__tests__/flowElements.test.ts` — node creation from type metadata defaults;
-    metadata-name-based label generation; deterministic edge ids and
+    metadata-name-based label generation; an edge named from its identity with
     normalised handle fields; non-mutating deselect/select-only-node
     helpers.
+  - `frontend/src/utils/__tests__/edgeIds.test.ts` — edge ids equal to the shared
+    fixture's (`tests/fixtures/ui_contracts/edge_ids.json`, which
+    `tests/test_graph_utils.py` holds the server to) and distinct across it, refused
+    empty fields, and an edge moved to another handle renamed with everything else kept.
+    The rename migration (`frontend/src/utils/__tests__/apiInputPorts.test.ts`), the
+    retarget (`frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts`) and the swap
+    (`frontend/src/utils/__tests__/edgeJoinGraph.test.ts`) each pin the moved edge's new
+    id, and a reused old frame label connecting under its own.
   - `frontend/src/utils/__tests__/nodeTypes.test.ts` — every `NODE_TYPES` value present (exact count);
     `NODE_TYPE_META` completeness and 1:1 coverage; the Model Training description naming
     the family word of every algorithm in `algorithmCapabilities.json`; Explore's one-input

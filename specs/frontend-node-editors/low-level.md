@@ -7,7 +7,8 @@
 | `frontend/src/panels/NodePanel.tsx` | Composes the selected-node panel and memoised per-edge `InputSource` list. Its recovery inspector, generic tab strip, schema-warning banner, notes (the previewed node's `_notes`, one line each), and editor body are pure local view components; scoped UI transitions are delegated to `useNodePanelSession`, and editor routing to `NodeConfigEditor`. |
 | `frontend/src/panels/useRecordedNodeColumns.ts` | The node's own columns for the Polars panes' code columns: `_availableColumns` while `_columnsSource` is the active source, kept (with one identity for equal content) through a cleared stash while the node's config differs only in `code` or `steps` (other values compared by identity); any other config change or a source switch drops the kept columns, and going back to that source or those settings does not restore them. |
 | `frontend/src/panels/useNodePanelSession.ts` | The single module authority for scoped panel UI: a node-keyed reducer owns the active generic tab and dismissed schema-warning identity, while its label-keyed rename session owns pending/error/request-generation state. Keyed scope replacement exposes defaults in the replacement render; asynchronous rename completions apply only while the initiating label session remains mounted and current. A label failing the shared name-shape check (`nodeNameIssue`) is refused inline without a request; a valid one is sent trimmed. |
-| `frontend/src/panels/NodeConfigEditor.tsx` | The one per-type editor dispatch: a pure router over node type and supplied graph/config callbacks that owns no node-switch lifecycle state. Its `readOnly` mode serves the comparison view: node types without a read-only editor (Explore, Edge Join, submodel port, unknown) render a plain config dump, and the Polars editor gets no replace-config callback, so its step/code switch stays disabled. |
+| `frontend/src/panels/NodeConfigEditor.tsx` | The one per-type editor dispatch: a pure router over node type and supplied graph/config callbacks that owns no node-switch lifecycle state. It passes the document's input-binding violations (`inputBindingViolations`, empty in the comparison view) to the API Input editor, as each frame label's messages for this node (`frameViolationMessages`, `frontend/src/utils/inputBindingViolations.ts`; a request input is a document-wide singleton, so its node id finds it), and to the submodel port editor. Its `readOnly` mode serves the comparison view: node types without a read-only editor (Explore, Edge Join, submodel port, unknown) render a plain config dump, and the Polars editor gets no replace-config callback, so its step/code switch stays disabled. |
+| `frontend/src/utils/inputBindingViolations.ts` | `frameViolationMessages` and `portViolationMessages`: of the document's input-binding violations, the messages each frame label of one request input, or each public input port of one definition, names (every consumer's together), for the API Input editor and the drilled Input inspector. |
 | `frontend/src/components/PipelineRepairDialog.tsx` | [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)-owned confirmation UI for the remove, update, reset and recover actions, invoked from the unavailable-node inspector. |
 | `frontend/src/panels/PreviewPanelTabs.tsx` | Generic ARIA tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md) and used by the node panel for algorithm-specific modelling panes and the active-training indicator. |
 | `frontend/src/panels/NodePalette.tsx` | Renders draggable node templates in `haute-ui`'s palette shell (`PaletteColumn`, and `PaletteHeader` titled "Nodes" with the minimiser), each a `PaletteItem` in its node group's colour. A singleton type already in the graph is disabled: faded, `aria-disabled` and not draggable; the two request inputs share one slot and the two response nodes another, so either of a pair disables both. While the project's workbench is enabled the palette shows the Workbench Input in the Quote Input's place and the Workbench Output in the Quote Response's, each dragged with its plain default config, since its ports are the tables the workbench store fetched. |
@@ -669,6 +670,12 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   identifier, or a Python hard keyword) at commit time with the same inline validation used
   for blank/duplicate labels (`apiInputLabelIssue` — the exact ASCII mirror) — the label is
   the downstream argument name, so an invalid label never reaches the config.
+- A committed frame label the server's naming rule refuses for another reason (a consumer
+  would receive a name the generated module or support code binds — a preamble or utility
+  helper) shows that `reserved_input`/`support_input` violation's message under the label
+  field, in the field's error slot, while the label is the one the violation names; a
+  pending commit refusal takes precedence. Renaming the label clears it at once, and the
+  revalidation answer confirms it.
 - WebSocket graph updates retain rejected edges for repair, so a null-handle API-input edge can
   reach the panel even though the canvas cannot author one. Its chip and output block use the
   `<unresolved>` marker with `frameUnresolved`; a named stale handle is retained verbatim. Neither
@@ -817,7 +824,8 @@ Browser coverage for authoring flows is in `frontend/e2e/data-io-nodes.spec.ts`,
 alongside its canvas geometry assertions).
 
 `frontend/src/__tests__/editors/ApiInputEditor.test.tsx` pins the structured-file extension
-filter and XML cache action. `frontend/src/panels/editors/__tests__/_shared.test.tsx` pins
+filter and XML cache action, and a server name violation shown under the frame label it
+names until that label changes. `frontend/src/panels/editors/__tests__/_shared.test.tsx` pins
 navigation/rendering for a directory whose `size` is null and ensures no numeric/`NaN` size is
 shown.
 

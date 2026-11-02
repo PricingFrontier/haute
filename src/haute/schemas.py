@@ -1416,12 +1416,44 @@ class PipelineNameViolationParty(BaseModel):
     submodel: str | None = None
 
 
+class PipelineNameViolationFrameBinding(BaseModel):
+    """A request input's frame, which names the input its consumers receive."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["frame"]
+    # The request input, its frame's source handle, and the definition it sits in, if any.
+    node_id: str = Field(min_length=1)
+    handle: str = Field(min_length=1)
+    submodel: str | None
+
+
+class PipelineNameViolationPortBinding(BaseModel):
+    """A submodel's public input port, which names the input its targets receive."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["submodel_input"]
+    # The definition the port belongs to, and the port's name.
+    submodel: str = Field(min_length=1)
+    port: str = Field(min_length=1)
+
+
+PipelineNameViolationBinding = Annotated[
+    PipelineNameViolationFrameBinding | PipelineNameViolationPortBinding,
+    Field(discriminator="kind"),
+]
+
+
 class PipelineNameViolation(BaseModel):
     """One name violation (codegen's naming rule, or support code's), with its message.
 
     A support-code violation that involves no node (two helpers binding one
     name, a statement the inventory cannot read) has no parties, and an
-    unreadable statement has no name.
+    unreadable statement has no name. A ``reserved_input`` or ``support_input``
+    violation whose input a frame or a public input port names carries that
+    ``binding``, so the editor that set it can show the violation; any other
+    violation's is ``None``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1441,6 +1473,7 @@ class PipelineNameViolation(BaseModel):
     name: str
     message: str = Field(min_length=1)
     parties: list[PipelineNameViolationParty]
+    binding: PipelineNameViolationBinding | None
 
 
 class PipelineEditorDocument(BaseModel):

@@ -38,13 +38,10 @@ from pathlib import Path
 from haute._executable_names import (
     RESERVED_NAMES,
     ROOT_MODULE,
-    NameParty,
     NameViolation,
-    _edge_bindings,
-    _mapping_bindings,
     _named_parties,
-    _port_bindings,
     executable_name_violations,
+    received_inputs,
 )
 from haute._io import read_user_text
 from haute._submodel_paths import (
@@ -482,25 +479,20 @@ def support_code_violations(
 def _input_support_collisions(
     graph: PipelineGraph, helpers: dict[str, SupportBinding]
 ) -> Iterator[NameViolation]:
-    ports = _port_bindings(graph)
-    modules = [(ROOT_MODULE, graph)]
-    modules.extend((did, definition.graph) for did, definition in (graph.submodels or {}).items())
-    for module, scoped in modules:
-        edges = _edge_bindings(scoped)
-        for node in scoped.nodes:
-            names = [
-                *(name for name, _origin in edges.get(node.id, [])),
-                *(name for name, _origin in _mapping_bindings(node)),
-                *ports.get((module, node.id), []),
-            ]
-            for name in dict.fromkeys(names):
-                binding = helpers.get(name)
-                if binding is None:
-                    continue
-                party = NameParty(node_id=node.id, label=node.data.label, module=module)
-                yield NameViolation(
-                    kind="support_input", name=name, parties=(party,), origin=binding.where()
-                )
+    for party, inputs in received_inputs(graph):
+        seen: set[str] = set()
+        for received in inputs:
+            helper = helpers.get(received.name)
+            if helper is None or received.name in seen:
+                continue
+            seen.add(received.name)
+            yield NameViolation(
+                kind="support_input",
+                name=received.name,
+                parties=(party,),
+                origin=helper.where(),
+                binding=received.binding,
+            )
 
 
 def utility_reader(*directories: Path) -> UtilityReader:

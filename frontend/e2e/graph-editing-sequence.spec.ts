@@ -76,7 +76,7 @@ test.describe("graph editing sequence", () => {
     // selection state exactly as core-flows proves it, before any other
     // gesture; the edge locator is declared here because the dissolve
     // assertion and every later step share it.
-    let edgeId = "e_raw_rows_enriched"
+    let edgeId = "e-raw_rows-enriched"
     let edge = page.getByTestId(`rf__edge-${edgeId}`)
     await expect(edge).toBeAttached()
 

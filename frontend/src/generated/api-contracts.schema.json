@@ -13777,8 +13777,26 @@
     },
     "PipelineNameViolation": {
       "additionalProperties": false,
-      "description": "One name violation (codegen's naming rule, or support code's), with its message.\n\nA support-code violation that involves no node (two helpers binding one\nname, a statement the inventory cannot read) has no parties, and an\nunreadable statement has no name.",
+      "description": "One name violation (codegen's naming rule, or support code's), with its message.\n\nA support-code violation that involves no node (two helpers binding one\nname, a statement the inventory cannot read) has no parties, and an\nunreadable statement has no name. A ``reserved_input`` or ``support_input``\nviolation whose input a frame or a public input port names carries that\n``binding``, so the editor that set it can show the violation; any other\nviolation's is ``None``.",
       "properties": {
+        "binding": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/PipelineNameViolationFrameBinding"
+                },
+                {
+                  "$ref": "#/$defs/PipelineNameViolationPortBinding"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Binding"
+        },
         "kind": {
           "enum": [
             "duplicate",
@@ -13816,9 +13834,50 @@
         "kind",
         "name",
         "message",
-        "parties"
+        "parties",
+        "binding"
       ],
       "title": "PipelineNameViolation",
+      "type": "object"
+    },
+    "PipelineNameViolationFrameBinding": {
+      "additionalProperties": false,
+      "description": "A request input's frame, which names the input its consumers receive.",
+      "properties": {
+        "handle": {
+          "minLength": 1,
+          "title": "Handle",
+          "type": "string"
+        },
+        "kind": {
+          "const": "frame",
+          "title": "Kind",
+          "type": "string"
+        },
+        "node_id": {
+          "minLength": 1,
+          "title": "Node Id",
+          "type": "string"
+        },
+        "submodel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Submodel"
+        }
+      },
+      "required": [
+        "kind",
+        "node_id",
+        "handle",
+        "submodel"
+      ],
+      "title": "PipelineNameViolationFrameBinding",
       "type": "object"
     },
     "PipelineNameViolationParty": {
@@ -13853,6 +13912,34 @@
         "submodel"
       ],
       "title": "PipelineNameViolationParty",
+      "type": "object"
+    },
+    "PipelineNameViolationPortBinding": {
+      "additionalProperties": false,
+      "description": "A submodel's public input port, which names the input its targets receive.",
+      "properties": {
+        "kind": {
+          "const": "submodel_input",
+          "title": "Kind",
+          "type": "string"
+        },
+        "port": {
+          "minLength": 1,
+          "title": "Port",
+          "type": "string"
+        },
+        "submodel": {
+          "minLength": 1,
+          "title": "Submodel",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "submodel",
+        "port"
+      ],
+      "title": "PipelineNameViolationPortBinding",
       "type": "object"
     },
     "PipelineSettingsAutomatic": {

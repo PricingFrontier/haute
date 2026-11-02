@@ -161,7 +161,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "io-layer",
     "model-scoring",
     "modelling",
-    "name-collisions",
     "optimiser-validation",
     "pipeline-config",
     "polars-2",
