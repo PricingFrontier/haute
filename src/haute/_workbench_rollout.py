@@ -853,7 +853,11 @@ class AzureContainerApps:
         what = f"set the image of {self._where}"
         with _azure(what):
             poller = self._client.container_apps.begin_update(
-                self._group, self._name, envelope, timeout=self._budget(what, end)
+                self._group,
+                self._name,
+                envelope,
+                timeout=self._budget(what, end),
+                polling=_update_poller(),
             )
             poller.wait(timeout=max(0.0, end - self._now()))
             if not poller.done():
@@ -890,6 +894,7 @@ class AzureContainerApps:
                 self._name,
                 ContainerApp(location=app.location, tags=tags),
                 timeout=self._budget(what),
+                polling=_update_poller(),
             )
             poller.wait(timeout=REQUEST_TIMEOUT_SECONDS * 4)
             if not poller.done():
@@ -899,6 +904,20 @@ class AzureContainerApps:
     def token(self, client_id: str) -> str:
         with _azure(f"give the CI service principal a token for the app {client_id}"):
             return str(self._credential.get_token(f"{client_id}/.default").token)
+
+
+def _update_poller() -> Any:
+    """The poller an update's progress is read through, made here rather than by the SDK.
+
+    ``begin_update`` sends the update with its keyword arguments, then builds its own
+    ``ARMPolling`` from them as well, whose first parameter is ``timeout`` (its wait between
+    polls): the request bound a rollout passes reached it twice and failed after Azure had
+    taken the update, before the check or the record. One given as ``polling`` takes none of
+    them, and waits between polls as Azure's ``Retry-After`` says, else the SDK's 30 seconds.
+    """
+    from azure.mgmt.core.polling.arm_polling import ARMPolling
+
+    return ARMPolling()
 
 
 def _client(credential: Any, subscription: str, **options: Any) -> ContainerAppsAPIClient:
