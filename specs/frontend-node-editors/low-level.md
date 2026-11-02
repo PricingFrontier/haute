@@ -275,7 +275,13 @@ visible.
 `DataInputEditor` keeps provider controls in Config while NodePanel hosts
 its Polars code in the shared Transform tab. It uses `useSchemaFetch` only when the
 selected capability requires a bounded schema, merging detected dtypes into
-`arguments.schema` without discarding other arguments. `DataOutputEditor` has
+`arguments.schema` without discarding other arguments; `useSchemaFetch` keys its read by the
+path and reader settings, so the button applies only the schema read for the current ones.
+`ApiInputEditor.inferTables` captures the file and the config object it was asked from and a
+generation (bumped by each inference and on unmount), reads the latest config and update from a
+ref when the reply arrives, and drops the reply unless the generation and file still hold; it
+applies only when the latest config is the very object it was asked from and has no tables, and
+otherwise stages the tables with their source file for the replace confirmation. `DataOutputEditor` has
 no code panel. Its per-node Zustand entry carries request id, semantic request
 identity, phase, and structured result/error; request-id checks reject late
 results. Test seam: `resetOutputWriteStoreForTests()` clears every per-node

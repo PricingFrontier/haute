@@ -774,13 +774,20 @@ api-input frame-identity helpers owned by
 
 ## Failure model
 
-> NOTE: Completed Data Input schema can remain applicable after a file change while
-> the new schema loads. [FNED-R06](../roadmap/frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft)
-> tracks this transition.
-
-> NOTE: A late API Input inference reply can restore its old source path and
-> overwrite newer tables. Source, draft and document fencing is tracked in
-> [FNED-R06](../roadmap/frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft).
+- **A detected schema belongs to its file and reader settings.** A Data Input's detected
+  schema (and its **Use detected schema**) is shown only for the path and reader settings
+  it was read with: while another file's or other settings' schema loads, after a retry
+  starts, or once the path is cleared, none is offered, and a late reply for an earlier
+  read is ignored.
+- **An inference reply belongs to the file and draft it was asked for.** API Input's
+  **Infer Tables** reply is dropped when the editor has closed (another node or document),
+  a newer inference started, or another file is selected by the time it arrives; it is
+  applied at once only to the same draft it was asked from, still without tables; any
+  other draft (tables there, or changed while it ran, on the same file) gets the replace
+  confirmation, which merges into the tables as they are when confirmed. A staged
+  confirmation is offered only while its file stays selected. The reply writes through the
+  editor's current update, so a document that can no longer be edited refuses it and the
+  refusal shows where inference errors do.
 
 Client-side parse and shape checks show inline invalid state where implemented. Server failures
 such as format, file, Databricks, or MLflow lookup errors are rendered by the invoking editor.

@@ -315,6 +315,119 @@ describe("ApiInputEditor", () => {
     expect(screen.queryByText("HTTP 422")).toBeNull()
   })
 
+  describe("an inference reply belongs to the file and draft it was asked for", () => {
+    const inferred = {
+      tables: [{
+        path: "$[:]", label: "policies", emit: true,
+        columns: [{ name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", selected: true }],
+      }],
+    }
+    const userTable = {
+      path: "$[:]", label: "quotes", emit: true,
+      columns: [{ name: "quote_id", path: "$[:].quote_id", type: "str", status: "Confirmed", selected: true }],
+    }
+    /** An inference the test answers by hand. */
+    function controlledInference() {
+      let answer: (value: unknown) => void = () => {}
+      mockInferJsonCacheSchema.mockImplementation(() => new Promise((resolve) => { answer = resolve }))
+      return async () => {
+        await act(async () => {
+          answer(inferred)
+        })
+      }
+    }
+    const editor = (config: Record<string, unknown>, onUpdate: OnUpdateConfig) => (
+      <ApiInputEditor {...DEFAULT_PROPS} config={config} onUpdate={onUpdate} />
+    )
+
+    it("writes nothing for a reply about a file no longer selected, and offers no confirmation", async () => {
+      const answer = controlledInference()
+      const onUpdate = successfulOnUpdateSpy()
+      const view = render(editor({ path: "first.json", tables: [] }, onUpdate))
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+      view.rerender(editor({ path: "second.json", tables: [userTable] }, onUpdate))
+
+      await answer()
+
+      expect(onUpdate).not.toHaveBeenCalled()
+      expect(screen.queryByTestId("api-input-infer-confirm-banner")).toBeNull()
+      expect(screen.getByTestId("api-input-infer-btn")).toBeEnabled()
+    })
+
+    it("stages a reply behind the confirmation once the same file's tables changed, merging into the newer tables", async () => {
+      const answer = controlledInference()
+      const first = successfulOnUpdateSpy()
+      const view = render(editor({ path: "data.json", tables: [] }, first))
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+      const latest = successfulOnUpdateSpy()
+      view.rerender(editor({ path: "data.json", tables: [userTable] }, latest))
+
+      await answer()
+
+      expect(first).not.toHaveBeenCalled()
+      expect(latest).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByTestId("api-input-infer-confirm"))
+      expect(first).not.toHaveBeenCalled()
+      const written = latest.mock.calls.at(-1)?.[0] as { path: string; tables: Array<{ label: string }> }
+      expect(written.path).toBe("data.json")
+      expect(written.tables.map((table) => table.label)).toContain("quotes")
+    })
+
+    it("writes nothing once the editor has closed (another node or document)", async () => {
+      const answer = controlledInference()
+      const onUpdate = successfulOnUpdateSpy()
+      const view = render(editor({ path: "data.json", tables: [] }, onUpdate))
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+      view.unmount()
+
+      await answer()
+
+      expect(onUpdate).not.toHaveBeenCalled()
+    })
+
+    it("writes through the editor's current update, which refuses once editing is not allowed", async () => {
+      const answer = controlledInference()
+      const config = { path: "data.json", tables: [] }
+      const editable = successfulOnUpdateSpy()
+      const view = render(editor(config, editable))
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+      const refusing = vi.fn<OnUpdateConfig>(() => ({ ok: false, error: "The document is read-only." }))
+      view.rerender(editor(config, refusing))
+
+      await answer()
+
+      expect(editable).not.toHaveBeenCalled()
+      expect(refusing).toHaveBeenCalledTimes(1)
+      expect(screen.getByText("The document is read-only.")).toBeTruthy()
+    })
+
+    it("applies a reply to an unchanged empty draft at once", async () => {
+      const answer = controlledInference()
+      const onUpdate = successfulOnUpdateSpy()
+      render(editor({ path: "data.json", tables: [] }, onUpdate))
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+
+      await answer()
+
+      expect(onUpdate).toHaveBeenCalledTimes(1)
+      expect((onUpdate.mock.calls[0][0] as { tables: Array<{ label: string }> }).tables[0].label).toBe("policies")
+    })
+
+    it("drops a staged confirmation when the file changes", async () => {
+      const answer = controlledInference()
+      const onUpdate = successfulOnUpdateSpy()
+      const view = render(editor({ path: "data.json", tables: [userTable] }, onUpdate))
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+      await answer()
+      expect(screen.getByTestId("api-input-infer-confirm-banner")).toBeTruthy()
+
+      view.rerender(editor({ path: "other.json", tables: [userTable] }, onUpdate))
+
+      expect(screen.queryByTestId("api-input-infer-confirm-banner")).toBeNull()
+      expect(onUpdate).not.toHaveBeenCalled()
+    })
+  })
+
   it("Infer Tables does NOT clobber existing user tables without confirmation", async () => {
     mockInferJsonCacheSchema.mockResolvedValue({
       tables: [

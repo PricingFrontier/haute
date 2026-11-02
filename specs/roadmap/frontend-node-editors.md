@@ -15,7 +15,6 @@ These packages come from the
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | FNED-R05 | Planned | P3 | The step builder's open card follows its step through undo, the pivot editor carries no unknown keys the backend refuses, the two banding grids, the two rating grids, the params pickers and the zone cards exist once, and the internal-only exports are un-exported. |
-| FNED-R06 | Planned | P1 | A schema inference reply cannot replace a newer input file, table configuration or document. |
 | FNED-R07 | Planned | P2 | `OptimiserApplyEditor` cancels stale `readJson` calls, `OutputEditor` invalidates `outputDoc` on mapping edits, `ColumnsTab` handles stale column selections cleanly, `IoArgumentsEditor` flags blank or unbacked invalid JSON arguments, `BandingRulesGrid` strips internal `_id` keys before persisting, `PivotFormulaSection` resets `onFormulaEditorChange` on unmount and Undo, and `CodeMirrorEditor` re-syncs `errorLine` diagnostics on same-line repeats. |
 
 ## Planned improvements
@@ -62,43 +61,6 @@ about ten bands.
 `frontend/src/panels/editors/explorePivots/ZoneSection.tsx`;
 `frontend/src/panels/editors/banding/GenerateBandsDialog.tsx`;
 `frontend/src/utils/polarsDtypes.ts`.
-
-### FNED-R06 — Inference stays bound to its source and draft
-**Why:** The [28 October review](codebase-review-2026-10-28.md) started Infer
-Tables on `first.json` with no tables, changed the editor to `second.json` with
-a new table, and released the old response. `inferTables` used the old closure's
-empty-table test and `v2` config to write back `first.json` and its inferred
-table, erasing the new configuration. It has no request generation, source or
-document fence; its replace confirmation is also based on the earlier draft.
-
-**Plan:** Bind inference and any staged confirmation to the initiating document,
-node, source and relevant draft version. Invalidate/abort outdated work and
-discard stale replies. Recheck the current draft before automatic first-time
-application; never decide that there is nothing to overwrite from a captured
-empty config. Specify how a still-current inference can be deliberately merged
-after the draft changes, preserving the existing confirmation rules.
-
-**Acceptance:** A delayed response after a file change, same-file table edit,
-node/document change or loss of edit capability changes no newer config and
-leaves no usable stale confirmation. An unchanged empty draft still applies
-the inference, and an unchanged populated draft requires its existing explicit
-confirmation. Test with the actual editor and controlled request completion.
-
-**Dependencies:** None. `FSH-R10` owns a different race in ordinary config
-commit resolution; fixing that controller alone does not authenticate inference.
-
-**Evidence:** `frontend/src/panels/editors/ApiInputEditor.tsx`;
-`frontend/src/panels/editors/apiInputSchema.ts`.
-
-**28 October full-pass addition:** Completed Data Input schema is also source-bound:
-`useSchemaFetch` keeps A's schema while B loads, and `DataInputEditor` leaves Use detected
-schema enabled. The real editor commits `{a_only: Int64}` into B's arguments in the witness.
-**Plan/acceptance:** associate schema with path and reader settings, clear or render stale
-results explicitly, and disable application until that identity matches the current draft.
-Cover file changes, reader-option changes, retries and clearing a path. Existing source/draft
-fencing must cover already-completed schema as well as late inference replies. Evidence:
-`frontend/src/hooks/useSchemaFetch.ts::useSchemaFetch.fetchForPath`;
-`frontend/src/panels/editors/DataInputEditor.tsx::DataInputEditor` (Use detected schema button).
 
 ### FNED-R07 — `OptimiserApplyEditor` artifact read cleanup, `OutputEditor` preview invalidation, and `ColumnsTab`, `IoArgumentsEditor`, banding/rating grid, `PivotFormulaSection`, and `CodeMirrorEditor` state sync
 **Why:** Eight node-editor state defects affect Optimiser Apply,
