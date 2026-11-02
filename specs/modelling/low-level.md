@@ -567,7 +567,9 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    protocol, crash, cancellation, timeout, cleanup, and unexpected supervisor failures
    map through `JobLifecycle`; parent cleanup always releases the cancellation registry
    and RAM admission and removes the prepared/staged temporary data.
-5. `GET /train/status/{job_id}` first compares a running job's `start_time` with its
+5. `GET /train/status/{job_id}` first settles a running job whose supervisor could not
+   record its outcome (`TrainService.with_recorded_outcome`, background-jobs), then compares
+   a running job's `start_time` with its
    configured/default timeout; an overdue job requests child termination and atomically
    transitioned to `timed_out` before the response is assembled. It then returns
    progress/loss history/result through `_train_status_response`, the one projection of a
@@ -782,7 +784,7 @@ experiment logs nothing.
    deletes the temp parquet and staging root.
 8. `GET /dispersion/status/{job_id}` and `POST /dispersion/cancel/{job_id}` mirror the
    training job's status/cancel routes, scoped to `job_type="dispersion_estimate"` via
-   `TrainService.dispersion_job`. The original job record carries `start_time` and
+   `TrainService.dispersion_job`, which settles an unrecorded outcome the same way. The original job record carries `start_time` and
    `timeout`; the process supervisor enforces the remaining duration without depending
    on status polling.
 

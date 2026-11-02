@@ -41,6 +41,7 @@ from haute._worker_isolation import (
     _exitcode_looks_memory_limited,
     _terminate_process,
     create_worker_queue,
+    remote_failure_terminal_reason,
     start_process_with_environment,
 )
 
@@ -188,23 +189,18 @@ class InteractiveWorkerRemoteError(InteractiveWorkerError):
         remote_message: str,
         remote_traceback: str,
         public_payload: dict[str, object] | None,
+        is_memory: bool,
     ) -> None:
-        terminal_reason: WorkerTerminalReason = (
-            "contract_error"
-            if remote_type.startswith("NativeMemoryLimit")
-            else "memory_limited"
-            if remote_type.endswith("MemoryError")
-            else "error"
-        )
         super().__init__(
             f"Interactive worker raised {remote_type}: {remote_message}",
-            terminal_reason=terminal_reason,
+            terminal_reason=remote_failure_terminal_reason(remote_type, is_memory=is_memory),
         )
         self.remote_type = remote_type
         self.remote_module = remote_module
         self.remote_message = remote_message
         self.remote_traceback = remote_traceback
         self.public_payload = public_payload
+        self.is_memory = is_memory
 
 
 @dataclass(slots=True)
@@ -227,8 +223,8 @@ class _PreemptibleJob:
 
 
 # What a warm or dedicated worker sends for a failure: the exception's type name,
-# module, message and traceback, and its public payload.
-FailureEvidence = tuple[str, str, str, str, dict[str, object] | None]
+# module, message and traceback, its public payload, and whether it is a MemoryError.
+FailureEvidence = tuple[str, str, str, str, dict[str, object] | None, bool]
 
 
 def failure_evidence(exc: BaseException, *, message: str | None = None) -> FailureEvidence:
@@ -239,23 +235,27 @@ def failure_evidence(exc: BaseException, *, message: str | None = None) -> Failu
         str(exc) if message is None else message,
         "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
         _public_exception_payload(exc),
+        isinstance(exc, MemoryError),
     )
 
 
 def remote_error_from_evidence(evidence: Any) -> InteractiveWorkerRemoteError:
     """The typed failure for a worker's evidence (parent side); malformed evidence is refused."""
-    if not isinstance(evidence, tuple) or len(evidence) != 5:
+    if not isinstance(evidence, tuple) or len(evidence) != 6 or type(evidence[5]) is not bool:
         raise InteractiveWorkerProtocolError(
             "Interactive worker returned malformed error evidence",
             terminal_reason="contract_error",
         )
-    remote_type, remote_module, remote_message, remote_traceback, public_payload = evidence
+    remote_type, remote_module, remote_message, remote_traceback, public_payload, is_memory = (
+        evidence
+    )
     return InteractiveWorkerRemoteError(
         remote_type=str(remote_type),
         remote_module=str(remote_module),
         remote_message=str(remote_message),
         remote_traceback=str(remote_traceback),
         public_payload=public_payload if isinstance(public_payload, dict) else None,
+        is_memory=is_memory,
     )
 
 

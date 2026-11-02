@@ -48,6 +48,7 @@ from haute._worker_isolation import (
     _WorkerRssWatchdog,
     await_worker_ready,
     create_worker_queue,
+    note_teardown_failure,
     prepare_worker_for_job,
     process_memory_caps_supported,
     report_worker_ready,
@@ -109,6 +110,7 @@ class WorkerRemoteFailureError(IsolatedWorkerRemoteError):
             remote_type=payload.error_type,
             remote_message=payload.message,
             remote_traceback=payload.traceback,
+            is_memory=payload.terminal_reason == "memory_limited",
         )
         self.terminal_reason = cast(WorkerTerminalReason, payload.terminal_reason)
         self.fields = payload.fields
@@ -479,28 +481,28 @@ def run_worker_protocol(
             try:
                 _terminate_and_confirm(process)
             except BaseException as exc:
-                if primary_error is None:
-                    primary_error = exc
-                else:
-                    primary_error.add_note(f"process cleanup failed: {exc}")
-        try:
-            process.join(timeout=2.0)
-            progress_queue.close()
-            progress_queue.join_thread()
-            result_queue.close()
-            result_queue.join_thread()
-        except Exception:
-            pass
+                primary_error = note_teardown_failure(primary_error, exc, step="process cleanup")
+        teardown: tuple[tuple[str, Callable[[], object]], ...] = (
+            ("process join", lambda: process.join(timeout=2.0)),
+            ("progress queue close", progress_queue.close),
+            ("progress queue feeder join", progress_queue.join_thread),
+            ("result queue close", result_queue.close),
+            ("result queue feeder join", result_queue.join_thread),
+        )
+        for step, action in teardown:
+            try:
+                action()
+            except BaseException as exc:
+                primary_error = note_teardown_failure(primary_error, exc, step=step)
         try:
             pid = getattr(process, "pid", None)
             if pid is not None and not process.is_alive():
                 cleanup_private_cgroups_for_pid(pid)
                 release_polars_spill_dir(pid)
         except BaseException as exc:
-            if primary_error is None:
-                primary_error = exc
-            else:
-                primary_error.add_note(f"native memory resource cleanup failed: {exc}")
+            primary_error = note_teardown_failure(
+                primary_error, exc, step="native memory resource cleanup"
+            )
     if primary_error is not None:
         raise primary_error
     if result is None:

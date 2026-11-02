@@ -473,6 +473,7 @@ def test_dry_run_process_worker_failures_are_mapped_and_parent_admission_is_rele
             remote_message="private child detail",
             remote_traceback="private traceback",
             public_payload=None,
+            is_memory=False,
         )
         expected_status = 500
 

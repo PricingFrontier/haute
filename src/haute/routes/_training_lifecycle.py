@@ -916,7 +916,14 @@ class TrainService:
         job = self._store.require_job(job_id)
         if job.get(_JOB_TYPE_KEY) != _DISPERSION_JOB_TYPE:
             raise NotFoundError(f"Dispersion estimation job '{job_id}' not found")
-        return job
+        return self.with_recorded_outcome(job_id, job)
+
+    def with_recorded_outcome(self, job_id: str, job: JobSnapshot) -> JobSnapshot:
+        """*job*, recorded ``error`` when its supervisor could not record how it ended."""
+        if job.get("status") != "running":
+            return job
+        settled = self._supervisor.settle_unrecorded_outcome(job_id)
+        return job if settled is None else settled
 
     def cancel_dispersion(self, job_id: str) -> JobSnapshot:
         """Cancel a running dispersion-estimation job."""

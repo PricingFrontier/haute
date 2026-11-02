@@ -122,8 +122,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the fifty-one packages delivered or settled since (thirteen by 28
-October 2026, twenty-five more on 29 October, two on 1 November, eleven more by 2 November) have been removed from the sections below; the coverage table keeps the
+The findings of the fifty-two packages delivered or settled since (thirteen by 28
+October 2026, twenty-five more on 29 October, two on 1 November, twelve more by 2 November) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -237,7 +237,6 @@ production:
 | CLI | PM-27, PM-31, PM-32, PM-33 | `CLI-R05` |
 | CLI | PM-29 (templates), PM-30 | `CLI-R06` |
 | IO layer | CIO-5, CIO-11 | `IO-R06` |
-| Background jobs | WRK-5, WRK-6, WRK-11, WRK-14 | `ROAD-WORKER-07` |
 | Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
 | Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |

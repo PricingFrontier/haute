@@ -31,7 +31,7 @@
 | `src/haute/_topo.py` | Strict `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), `canonical_topological_order` (the same graphlib sorter driven lexically: the smallest ready node id always comes next, so it is independent of input order; projection diagnostics rank nodes by it), and `ancestors` (a node and its ancestors over reversed edges, walked by `upstream_node_ids`). The default sorter never silently ignores an unknown endpoint. It is the one topological sort; `_find_cycle_nodes` peels in-degrees only to report every node in a cycle. |
 | `src/haute/graph_utils.py` | Canonical outward re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. Low-level engine modules import canonical graph models from `_types.py` and pure helpers from `_graph_utils.py` directly; importing back through this heavyweight facade would re-enter `_execute_lazy.py` and create an execution/RAM-estimation cycle. |
 | `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids` (the one ancestor walk, over any parents mapping, in depth-first preorder from the node's parents; `ancestors`, the trace waterfall's lineage check, the recovery route's ancestor closure and the optimiser's upstream node-type search all use it), `_sanitize_func_name`, `edge_input_name` (the single edge->input-name derivation: apiInput-frame edge -> its frame label verbatim, submodel-output edge -> its sanitised public output port name from an owner and, from an instance, the instance's sanitised name (one output) or `<instance>_<port>` (several), else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `resolve_orig_source_names`, and edge-id construction (`_edge_id`, the injective four-field encoding the browser's `edgeId` mints identically; frontend-graph-canvas, Failure model). |
-| `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional address-space resource cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state; the shared supervisor helpers `isolated_worker_failure_is_memory()` (RSS breach, unsupported cap, memory-looking crash exit code, or a memory-typed remote exception) and `isolated_worker_memory_detail()` (the closed memory-limit payload whose reason is one of worker_rss_limit_exceeded, native_memory_cap_unavailable, worker_may_have_exceeded_memory_limit, or worker_memory_limit) that the Data Output writer, training preparation, and the deployed batch path all map their 507 outcomes through. |
+| `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional address-space resource cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state; the shared supervisor helpers `isolated_worker_failure_is_memory()` (RSS breach, unsupported cap, memory-looking crash exit code, or a remote exception the child found to be a memory error or whose native cap was unavailable) and `isolated_worker_memory_detail()` (the closed memory-limit payload whose reason is one of worker_rss_limit_exceeded, native_memory_cap_unavailable, worker_may_have_exceeded_memory_limit, or worker_memory_limit) that the Data Output writer, training preparation, and the deployed batch path all map their 507 outcomes through. |
 | `src/haute/_native_memory_limit.py` | Required/best-effort native memory enforcement for isolated workers: aggregate Linux cgroup and Windows Job Object leases, single-process RLIMIT compatibility, fork-safe ownership, and the context-local active-backend proof used to prevent unaccounted descendant parallelism. |
 | `src/haute/routes/_isolated_worker_async.py` | Async route bridge for cancellable isolated-worker transactions: runs the blocking supervisor off-loop, propagates route cancellation/timeout without thread-compute fallback, drains the supervisor to termination, preserves the primary failure when cleanup also fails, and provides the shared linearizable cancellation/publication gate. |
 | `src/haute/chunking.py` | The chunk-local classifiers only: the receiver-aware AST row-local user-code classifier (`classify_chunk_local_polars_code()` returning a `ChunkLocalDecision`; `is_chunk_local_polars_code()` is its boolean view) with its frame-method, expression-method, namespace-method, and Polars-function allowlists, admitting only chunk-proven operations; lazy execution's input-sliced write recipe (`_execute_lazy.py`) and trace edge alignment (`_trace_correlation.py`) use it. `classify_row_local_expression()` runs the same walk and argument guards over one expression in a row-semantics mode, admitting every operation the operation registry classes as row-local (and a `when` chained on a conditional) rather than only the chunk-proven ones; trace formula evaluation (`_expression_parser.py`) uses it. There is no chunk planner or runner. |
@@ -1199,6 +1199,9 @@ fallback without the preload or the allowance. `_protocol_entrypoint` installs i
 same `NativeMemoryLease` as the other entrypoints, with the caller's `require_memory_limit`;
 a required cap the host cannot install is its `contract_error`, as it is for a one-shot worker,
 and `run_worker_protocol` removes the joined child's private cgroup as `run_isolated_worker` does.
+Its teardown records a failure the same way too: a failed join, queue close or feeder join is
+a note on the primary error, or the error when there was none, never swallowed. The dedicated
+worker, which raises nothing as it ends, logs `dedicated_worker_queue_close_failed`.
 Every entrypoint starts its result queue's feeder thread (and the protocol worker its progress
 queue's) with `start_worker_queue_feeder()` before installing the cap, so reporting never needs
 a new thread under it. When a cap is active, `memory_error_for_thread_start_failure()` turns an
@@ -1476,6 +1479,11 @@ ways:
   threads. The module
   registry holds every live worker; the server lifespan and `atexit` set shutdown fencing
   (new starts refused) and terminate them.
+- **A memory failure ends the worker.** A remote exception the child found a
+  `MemoryError` leaves the worker's state suspect, so it is terminated with
+  `memory_evidence` `watchdog` for the child's own sampled checkpoint
+  (`ExecutionMemoryLimitExceededError`), otherwise `cap_confirmed` when the limiter
+  recorded a refusal during the command, or `suspected`.
 - **Limit evidence is collected.** On Windows the child associates an I/O completion port with
   its Job Object and a watcher thread counts `JOB_OBJECT_MSG_JOB_MEMORY_LIMIT` notifications
   (`record_job_notification`) into a parent-owned `multiprocessing.Value`; the parent reads it
@@ -2892,7 +2900,12 @@ present a structural or schema result as execution evidence.
 - `IsolatedWorkerError` hierarchy (`_worker_isolation.py`) —
   `IsolatedWorkerStartError` (process failed to start), `IsolatedWorkerRemoteError`
   (child raised a Python exception; carries `remote_type`/`remote_message`/
-  `remote_traceback`; an exception caused by a path Windows refused for its length is
+  `remote_traceback` and `is_memory`, the child's own `isinstance(exc, MemoryError)`.
+  `remote_failure_terminal_reason` is the one rule the one-shot, pool and dedicated
+  parents apply, and the protocol child applies the same `isinstance`: a
+  `NativeMemoryLimit*` type is `contract_error`, a `MemoryError` of any name
+  (`ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError`) `memory_limited`,
+  anything else `error`; an exception caused by a path Windows refused for its length is
   reported as the `PathTooLongError` behind it, with the original traceback, see
   [io-layer](../io-layer/low-level.md)), `IsolatedWorkerCrashedError` (child exited without a result;
   reclassified to `terminal_reason="memory_limited"` when the exit code looks like

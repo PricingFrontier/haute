@@ -155,7 +155,9 @@ Out of scope (owned elsewhere):
   worker thread can be capped so the HTTP response returns (504) within a timeout,
   but the underlying work is *not* aborted — it keeps running. On completion the task is
   drained: a late successful return value is discarded, while an ordinary late exception is
-  logged. If the HTTP request itself is
+  logged. A `TimeoutError` the work itself raised (the same type as the response
+  deadline's since Python 3.11) reaches the caller as itself, and work that finished
+  as the deadline passed answers with its own outcome. If the HTTP request itself is
   cancelled (e.g. client disconnect), this component still waits for started thread
   work to actually finish before letting the cancellation propagate, since Python
   cannot forcibly terminate a running thread. Heavy execution routes use killable process
@@ -304,8 +306,11 @@ Depended on:
 
   The supervisor also catches unexpected parent-side exceptions and attempts an
   `error` transition. If the terminal write itself cannot be persisted or verified,
-  `IsolatedSupervisorThread.infrastructure_failure` and `join_and_raise()` expose a
-  typed `SupervisorInfrastructureError`; the failure is not left only on stderr.
+  the supervisor keeps the typed `SupervisorInfrastructureError` for the job, and the
+  job's status route settles it: the job is recorded `error` with a message saying its
+  outcome could not be recorded, so a poller sees it fail instead of seeing it run
+  until its TTL. The settling write carries only the failure's text and class, never
+  the fields that may have failed the first write.
 - **Training child boundary.** Request validation and pipeline materialisation remain
   in the parent with its admitted context; fit/evaluation/model-write and dispersion
   search run in spawn children using plain requests and staged artifacts. Only a

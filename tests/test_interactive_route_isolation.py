@@ -214,6 +214,9 @@ def _remote_error(
         remote_message="private child detail",
         remote_traceback="private traceback",
         public_payload=public_payload,
+        # What the child's isinstance(exc, MemoryError) says for the names used here.
+        is_memory=remote_type
+        in {"MemoryError", "ExecutionAdmissionError", "ExecutionMemoryLimitExceededError"},
     )
 
 
@@ -583,6 +586,7 @@ class _RaisingCoordinator:
                 remote_message="private",
                 remote_traceback="private traceback",
                 public_payload=None,
+                is_memory=False,
             ),
             500,
         ),
@@ -595,6 +599,7 @@ class _RaisingCoordinator:
                 remote_message="private allocation detail",
                 remote_traceback="private traceback",
                 public_payload=None,
+                is_memory=True,
             ),
             507,
         ),
@@ -605,6 +610,7 @@ class _RaisingCoordinator:
                 remote_message="private host detail",
                 remote_traceback="private traceback",
                 public_payload=None,
+                is_memory=False,
             ),
             507,
         ),
@@ -616,6 +622,7 @@ class _RaisingCoordinator:
                 remote_message="forged",
                 remote_traceback="private traceback",
                 public_payload=None,
+                is_memory=True,
             ),
             500,
         ),

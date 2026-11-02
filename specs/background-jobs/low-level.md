@@ -432,10 +432,16 @@ The thread executes one total outcome pipeline:
    that a precedence-rejected write still left the job terminal.
 4. A missing/unverifiable job or failed terminal write is recorded on
    `IsolatedSupervisorThread.infrastructure_failure` as
-   `SupervisorInfrastructureError`; `join_and_raise()` is the caller-visible raising
-   join. If persistence succeeds, an unexpected parent exception is re-raised from
-   the thread only after the job is safely terminal, preserving diagnostic visibility
-   without stranding it as running.
+   `SupervisorInfrastructureError` (`join_and_raise()` is the raising join) and kept by
+   the supervisor for the job. `settle_unrecorded_outcome(job_id)` pops it and records
+   `error` with `_UNRECORDED_OUTCOME_MESSAGE` and only `error`/`supervisor_error_class`
+   fields; a refused write restores it for the next poll, and a precedence-rejected one
+   returns the job as another writer left it. Training's status route and the
+   dispersion status and cancel routes call it, through
+   `TrainService.with_recorded_outcome`, for a job still `running`. If persistence
+   succeeds, an unexpected parent exception is re-raised from the thread only after
+   the job is safely terminal, preserving diagnostic visibility without stranding it
+   as running.
 
 **Version-1 worker protocol.** The child serializes each progress update once and
 attempts a non-blocking write to the capacity-64 queue; a full queue or exhausted
@@ -467,7 +473,10 @@ the root itself are never removed.
 2. `await asyncio.wait_for(asyncio.shield(blocking_task), timeout=timeout)` — the
    `shield` is what lets a timeout (or outer cancellation) *not* cancel the
    underlying task; only the `wait_for` wrapper is abandoned.
-3. **On `TimeoutError`**: attaches `_drain_background_future_result` as a
+3. **On `TimeoutError`**: when the task is already done, the `TimeoutError` was the
+   work's own (one type since Python 3.11) or the work finished as the deadline passed,
+   so `_finished_outcome` returns its value or raises its exception as the `completed`
+   or `failed` outcome. Otherwise it attaches `_drain_background_future_result` as a
    done-callback on the still-running task (a successful value is consumed and discarded;
    an ordinary exception is logged), logs a warning, and raises
    `BlockingWorkTimeoutError(operation, timeout,
@@ -573,7 +582,7 @@ is only warranted for a concrete thread callable that can honour such a signal.
 | `InvalidRequestError` (400) | `JobStore.require_completed_job` | When the job exists but isn't `completed`; message includes the actual status. |
 | `SingleFlightConflictError(RuntimeError)` | `SingleFlightCoordinator.acquire` | Not caught inside this component; optimiser route code (`_optimiser_service.py`) converts the equivalent caller-side conflict into a `ConflictError` (409). |
 | `BackgroundJobStoppedError(RuntimeError)` | Not raised by this component itself — it is the typed exception in-process worker code is expected to raise after observing `CancellableJobRegistry.cancellation_reason(job_id)` is non-`None`. | Caught by remaining in-process consumers such as `_optimiser_service.py`; migrated process workers use the protocol stop callback and typed failure payloads. |
-| `IsolatedWorkerError` and subtypes | Raised inside `run_isolated_worker` or `run_worker_protocol` (owned by worker isolation/transport) | Converted by `IsolatedJobSupervisor` into a typed lifecycle outcome, preferring a child-curated `user_message` payload field over the typed wrapper text for the terminal message. Unexpected parent exceptions become `error`; terminal-persistence failure is exposed through `IsolatedSupervisorThread.join_and_raise()`. |
+| `IsolatedWorkerError` and subtypes | Raised inside `run_isolated_worker` or `run_worker_protocol` (owned by worker isolation/transport) | Converted by `IsolatedJobSupervisor` into a typed lifecycle outcome, preferring a child-curated `user_message` payload field over the typed wrapper text for the terminal message. Unexpected parent exceptions become `error`; a terminal-persistence failure is settled as `error` by the job's status route (`settle_unrecorded_outcome`). |
 | `BlockingWorkTimeoutError(TimeoutError)` | `run_blocking_with_response_timeout` | Raised only by explicitly configured compatibility-thread paths. Production API Input table builds, output-write, OUTPUT dry-run, and Explore paths use killable process isolation and do not fall back to this helper after a process-start or worker failure. |
 | `asyncio.CancelledError` | Re-raised by `run_blocking_with_response_timeout` after draining the background task | Propagates to the ASGI layer as normal task cancellation. |
 
@@ -644,10 +653,13 @@ is only warranted for a concrete thread callable that can honour such a signal.
   terminal-persistence infrastructure failure. The server lifespan's shutdown with a
   real sleeping protocol worker returns within the bound, leaves no worker process and
   records the job `cancelled`; `stop_background_jobs` returns at its bound naming a job
-  thread that does not stop.
+  thread that does not stop. A terminal write the store refuses is settled as `error`
+  by `settle_unrecorded_outcome`, and only once. The two `MemoryError` subclasses
+  Haute raises (`ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError`) are
+  `memory_limited` from a real one-shot, protocol and pool child alike.
 - `tests/test_worker_protocol.py` — the bounded version-1 transport: spawn-safe
   request/result payloads, progress ordering and drops, validation limits,
-  cancellation/timeout/crash cleanup, and artifact containment/integrity.
+  cancellation/timeout/crash cleanup, and artifact containment/integrity; a failing queue close noted on the primary error.
 - `tests/test_artifact_housekeeping.py` — ownership markers, direct-child and
   symlink/reparse containment, stale-cutoff semantics, malformed markers, and
   isolated cleanup failures.

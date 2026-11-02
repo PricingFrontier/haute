@@ -647,6 +647,7 @@ def test_a_remote_worker_failure_reports_only_the_fixed_internal_detail(
             remote_type="RuntimeError",
             remote_message=secret,
             remote_traceback=f"traceback containing {secret}",
+            is_memory=False,
         )
 
     monkeypatch.setattr(service_mod, "run_isolated_worker", fail_worker)

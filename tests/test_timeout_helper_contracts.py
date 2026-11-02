@@ -92,6 +92,32 @@ async def test_run_blocking_with_response_timeout_reraises_worker_exception() ->
 
 
 @pytest.mark.asyncio
+async def test_a_worker_timeout_error_reaches_the_caller_as_itself() -> None:
+    """ROAD-WORKER-07: on Python 3.11 wait_for raises the work's own TimeoutError.
+
+    asyncio copies a thread's TimeoutError into a new one with the same arguments, so
+    the caller's is the worker's by type and message, not by identity.
+    """
+
+    def time_out() -> None:
+        raise TimeoutError("the source did not answer")
+
+    with structlog.testing.capture_logs() as logs:
+        with pytest.raises(TimeoutError) as captured:
+            await run_blocking_with_response_timeout(
+                time_out,
+                timeout=30,
+                operation="unit_worker_timeout",
+            )
+
+    assert type(captured.value) is TimeoutError
+    assert str(captured.value) == "the source did not answer"
+    assert not any(record.get("event") == "route_work_response_timeout" for record in logs)
+    (measurement,) = _work_measurements(logs)
+    assert measurement["outcome"] == "failed"
+
+
+@pytest.mark.asyncio
 async def test_run_blocking_with_response_timeout_logs_and_reraises_timeout() -> None:
     def sleep_past_deadline() -> str:
         time.sleep(0.05)

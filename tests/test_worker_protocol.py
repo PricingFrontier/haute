@@ -987,6 +987,34 @@ def test_cleanup_runs_when_progress_callback_raises(tmp_path: Path) -> None:
     assert _live_workers(name) == []
 
 
+def test_a_failing_queue_close_is_a_note_on_the_primary_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ROAD-WORKER-07: the protocol parent records a teardown failure, as the one-shot does."""
+    import multiprocessing.queues
+
+    real_close = multiprocessing.queues.Queue.close
+
+    def failing_close(queue: Any) -> None:
+        real_close(queue)
+        raise OSError("queue close failed")
+
+    monkeypatch.setattr(multiprocessing.queues.Queue, "close", failing_close)
+
+    with pytest.raises(IsolatedWorkerRemoteError, match="child failed") as raised:
+        run_worker_protocol(
+            _failing_worker,
+            _request(),
+            artifact_root=tmp_path / "artifacts",
+            artifact_kinds=frozenset({"model"}),
+            max_artifact_size_bytes=100,
+        )
+
+    notes = raised.value.__notes__
+    assert "progress queue close failed: queue close failed" in notes
+    assert "result queue close failed: queue close failed" in notes
+
+
 def test_child_failure_is_typed(tmp_path: Path) -> None:
     with pytest.raises(IsolatedWorkerRemoteError, match="child failed"):
         run_worker_protocol(

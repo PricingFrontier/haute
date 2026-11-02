@@ -44,6 +44,7 @@ from haute._worker_protocol import (
     WorkerRemoteFailureError,
     WorkerRequest,
     WorkerResultManifest,
+    run_worker_protocol,
 )
 from haute.routes._background_jobs import (
     CancellableJobRegistry,
@@ -109,6 +110,27 @@ def _launch(
         max_artifact_size_bytes=0,
         **kwargs,
     )
+
+
+def _raise_memory_refusal(kind: str) -> None:
+    """Raise one of the two MemoryError subclasses Haute's own checks raise."""
+    from haute._execution_admission import ExecutionAdmissionError
+    from haute._execution_context import ExecutionMemoryLimitExceededError, ExecutionProfile
+
+    if kind == "admission":
+        raise ExecutionAdmissionError(
+            "child",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_limit_bytes=1,
+            rss_at_admission_bytes=None,
+            reason="refused in the child",
+        )
+    raise ExecutionMemoryLimitExceededError("child", rss_bytes=2, limit_bytes=1)
+
+
+def _memory_refusal_protocol_worker(runtime, request):
+    del runtime
+    _raise_memory_refusal(request.payload["kind"])
 
 
 def _sleeping_protocol_worker(runtime, request):
@@ -518,6 +540,41 @@ async def test_run_isolated_worker_async_uses_no_stop_reason_when_unconfigured(
     )
 
 
+@pytest.mark.parametrize("kind", ["admission", "checkpoint"])
+@pytest.mark.parametrize("parent", ["one_shot", "protocol", "pool"])
+def test_every_parent_reports_a_child_memory_refusal_as_memory_limited(
+    parent: str, kind: str, tmp_path: Path
+) -> None:
+    """ROAD-WORKER-07: ExecutionAdmissionError and ExecutionMemoryLimitExceededError
+    are MemoryErrors, so each parent reports them as memory, whatever their names."""
+    from haute._interactive_workers import InteractiveWorkerPool, InteractiveWorkerRemoteError
+
+    if parent == "one_shot":
+        with pytest.raises(IsolatedWorkerRemoteError) as raised:
+            run_isolated_worker(_raise_memory_refusal, kind)
+        assert isolated_worker_failure_is_memory(raised.value)
+    elif parent == "protocol":
+        with pytest.raises(IsolatedWorkerRemoteError) as raised:
+            run_worker_protocol(
+                _memory_refusal_protocol_worker,
+                WorkerRequest("memory", "test", {"kind": kind}),
+                artifact_root=tmp_path,
+                artifact_kinds=frozenset(),
+                max_artifact_size_bytes=0,
+            )
+        assert isolated_worker_failure_is_memory(raised.value)
+    else:
+        pool = InteractiveWorkerPool(size=1, polars_threads=2)
+        try:
+            with pytest.raises(InteractiveWorkerRemoteError) as raised:
+                pool.run(_raise_memory_refusal, kind, affinity_key="memory", timeout_seconds=120)
+        finally:
+            pool.close()
+
+    assert raised.value.terminal_reason == "memory_limited"
+    assert raised.value.is_memory is True
+
+
 @pytest.mark.parametrize(
     ("failure", "expected"),
     [
@@ -530,6 +587,7 @@ async def test_run_isolated_worker_async_uses_no_stop_reason_when_unconfigured(
                 remote_type="MemoryError",
                 remote_message="out of memory",
                 remote_traceback="traceback",
+                is_memory=True,
             ),
             True,
         ),
@@ -538,6 +596,7 @@ async def test_run_isolated_worker_async_uses_no_stop_reason_when_unconfigured(
                 remote_type="NativeMemoryLimitUnsupportedError",
                 remote_message="unsupported",
                 remote_traceback="traceback",
+                is_memory=False,
             ),
             True,
         ),
@@ -546,6 +605,7 @@ async def test_run_isolated_worker_async_uses_no_stop_reason_when_unconfigured(
                 remote_type="ValueError",
                 remote_message="bad value",
                 remote_traceback="traceback",
+                is_memory=False,
             ),
             False,
         ),
@@ -573,14 +633,15 @@ def test_a_child_failure_on_a_path_too_long_for_windows_is_reported_as_such(
     try:
         raise FileNotFoundError(2, "No such file or directory", path)
     except FileNotFoundError as exc:
-        kind, (remote_type, remote_message, remote_traceback) = isolation._worker_error_envelope(
-            exc
+        kind, (remote_type, remote_message, remote_traceback, is_memory) = (
+            isolation._worker_error_envelope(exc)
         )
 
     assert kind == "error"
     assert remote_type == "PathTooLongError"
     assert f"a path of {len(path)} characters" in remote_message
     assert "FileNotFoundError" in remote_traceback
+    assert is_memory is False
 
 
 @pytest.mark.parametrize(
@@ -591,6 +652,7 @@ def test_a_child_failure_on_a_path_too_long_for_windows_is_reported_as_such(
                 remote_type="PathTooLongError",
                 remote_message="too long",
                 remote_traceback="traceback",
+                is_memory=False,
             ),
             True,
         ),
@@ -599,6 +661,7 @@ def test_a_child_failure_on_a_path_too_long_for_windows_is_reported_as_such(
                 remote_type="FileNotFoundError",
                 remote_message="missing",
                 remote_traceback="traceback",
+                is_memory=False,
             ),
             False,
         ),
@@ -888,7 +951,7 @@ def test_one_shot_notes_native_cleanup_failure_without_masking_remote_error(
     )
     monkeypatch.setattr(
         "haute._worker_isolation._wait_for_worker",
-        lambda *_args, **_kwargs: ("error", ("ValueError", "bad", "traceback")),
+        lambda *_args, **_kwargs: ("error", ("ValueError", "bad", "traceback", False)),
     )
     monkeypatch.setattr(
         "haute._worker_isolation.cleanup_private_cgroups_for_pid",
@@ -1203,10 +1266,11 @@ def test_isolated_entrypoint_serialises_child_failure(monkeypatch: pytest.Monkey
 
     status, payload = pickle.loads(results.get_nowait())
     assert status == "error"
-    error_type, message, remote_traceback = payload  # type: ignore[misc]
+    error_type, message, remote_traceback, is_memory = payload  # type: ignore[misc]
     assert error_type == "ValueError"
     assert message == "child boom"
     assert "ValueError: child boom" in remote_traceback
+    assert is_memory is False
 
 
 def test_isolated_entrypoint_exposes_native_backend_only_during_callable(
@@ -1555,6 +1619,30 @@ def test_isolated_job_supervisor_exposes_terminal_persistence_failure(
     assert store.require_job(job_id)["status"] == "running"
     with pytest.raises(SupervisorInfrastructureError, match="store unavailable"):
         thread.join_and_raise()
+
+
+def test_an_unrecorded_outcome_is_settled_as_an_error(tmp_path: Path) -> None:
+    """ROAD-WORKER-07: a terminal write the store refused leaves the job running until
+    its status route settles it; the settling write carries only the failure's text."""
+    store = JobStore()
+    job_id = store.create_job({"status": "running"})
+    supervisor = IsolatedJobSupervisor(
+        JobLifecycle(store),
+        protocol_runner=lambda *_args, **_kwargs: WorkerResultManifest(metadata={}),
+    )
+
+    # A lifecycle-owned field makes the store refuse the supervisor's terminal write.
+    thread = _launch(supervisor, job_id, tmp_path, completed_fields=lambda _r: {"ended_at": 1.0})
+    thread.join(timeout=10)
+
+    assert isinstance(thread.infrastructure_failure, SupervisorInfrastructureError)
+    assert store.require_job(job_id)["status"] == "running"
+    settled = supervisor.settle_unrecorded_outcome(job_id)
+    assert settled is not None
+    assert settled["status"] == "error"
+    assert settled["supervisor_error_class"] == "ValueError"
+    assert "could not record" in settled["message"]
+    assert supervisor.settle_unrecorded_outcome(job_id) is None
 
 
 def test_protocol_supervisor_publishes_parent_fields_and_progress(tmp_path) -> None:

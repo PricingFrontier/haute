@@ -456,6 +456,27 @@ def test_malformed_failure_evidence_is_a_protocol_failure_that_ends_the_worker()
     assert created.death.kind == "crashed"
 
 
+def test_a_sampled_checkpoint_over_budget_ends_the_worker_on_watchdog_evidence() -> None:
+    """A child's ExecutionMemoryLimitExceededError is a MemoryError: memory, from its watchdog."""
+    created = DedicatedWorker(owner="test", polars_threads=2, process_name="haute-test-checkpoint")
+    evidence = (
+        "ExecutionMemoryLimitExceededError",
+        "haute._execution_context",
+        "over budget",
+        "traceback",
+        None,
+        True,
+    )
+    result = pickle.dumps(("result", "c" * 32, "error", evidence, None))
+
+    with pytest.raises(InteractiveWorkerRemoteError) as raised:
+        created._interpret_result("c" * 32, result, evidence_before=None)
+
+    assert raised.value.terminal_reason == "memory_limited"
+    assert created.death is not None
+    assert (created.death.kind, created.death.memory_evidence) == ("remote_memory", "watchdog")
+
+
 def test_a_worker_terminated_before_it_starts_never_spawns() -> None:
     open_dedicated_workers()
     created = DedicatedWorker(owner="test", polars_threads=2, process_name="haute-test-early")

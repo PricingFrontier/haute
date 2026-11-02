@@ -33,6 +33,7 @@ from haute.routes._job_lifecycle import (
     TerminalReason,
     require_job_status,
 )
+from haute.routes._job_store import JobSnapshot
 
 logger = get_logger(component="server.background_jobs")
 
@@ -319,6 +320,38 @@ class IsolatedJobSupervisor:
     ) -> None:
         self._lifecycle = lifecycle
         self._protocol_runner = protocol_runner
+        self._failures_lock = threading.Lock()
+        # Jobs whose terminal outcome could not be persisted, until a status poll settles them.
+        self._unrecorded: dict[str, SupervisorInfrastructureError] = {}
+
+    def settle_unrecorded_outcome(self, job_id: str) -> JobSnapshot | None:
+        """Record ``error`` for a job whose outcome this supervisor could not persist.
+
+        Its status route calls this, so the job is answered as failed instead of staying
+        ``running`` until its TTL. The write carries only the failure's text and class,
+        not the fields that may have failed the first write. Returns the job after the
+        write (as another writer left it, when precedence refused this one), or ``None``
+        when nothing is waiting for this job.
+        """
+        with self._failures_lock:
+            failure = self._unrecorded.pop(job_id, None)
+        if failure is None:
+            return None
+        try:
+            settled = self._lifecycle.transition(
+                job_id,
+                to="error",
+                message=_UNRECORDED_OUTCOME_MESSAGE,
+                fields={
+                    "error": str(failure.cause),
+                    "supervisor_error_class": type(failure.cause).__name__,
+                },
+            )
+        except BaseException:
+            with self._failures_lock:
+                self._unrecorded.setdefault(job_id, failure)
+            raise
+        return settled if settled is not None else self._lifecycle.store.require_job(job_id)
 
     def launch_protocol(
         self,
@@ -395,6 +428,8 @@ class IsolatedJobSupervisor:
             except BaseException as exc:
                 failure = SupervisorInfrastructureError(job_id, exc)
                 thread._record_infrastructure_failure(failure)
+                with self._failures_lock:
+                    self._unrecorded[job_id] = failure
                 logger.error(
                     "isolated_supervisor_terminal_persistence_failed",
                     job_id=job_id,
@@ -526,6 +561,12 @@ class IsolatedJobSupervisor:
             or current_reason != current_status
         ):
             raise RuntimeError(f"Isolated job {job_id!r} has incoherent terminal status and reason")
+
+
+_UNRECORDED_OUTCOME_MESSAGE = (
+    "The job finished, but the server could not record its outcome. "
+    "Check the server logs, then run it again."
+)
 
 
 def _coerce_worker_terminal_reason(reason: str) -> TerminalReason:

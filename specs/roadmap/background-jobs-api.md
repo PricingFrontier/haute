@@ -15,7 +15,6 @@ specifications and their ordinary regression tests.
 | Package | State | Priority | Outcome |
 |---|---|---|---|
 | `ROAD-WORKER-05` | Planned | P3 | One worker primitive and one worker-failure taxonomy serve one-shot, pooled and job workers. |
-| `ROAD-WORKER-07` | Planned | P3 | The three parents classify a memory failure the same way, a supervisor's persistence failure reaches the status route, a worker's own `TimeoutError` is not reported as a response timeout, and teardown failures are recorded. |
 
 ## Planned improvements
 
@@ -50,43 +49,3 @@ warm interactive worker pool.
 `src/haute/routes/_isolated_worker_async.py`; `src/haute/routes/_timeouts.py`;
 `src/haute/_dedicated_workers.py::DedicatedWorker` (the optimiser's solver session,
 which already reuses the warm pool's error family).
-
-### ROAD-WORKER-07 — Failures classified and surfaced the same way
-**Why:** Four places lose or misname a failure. The one-shot parent maps only
-the exact name `"MemoryError"`, the pool maps `endswith("MemoryError")`, the
-protocol child maps `isinstance(exc, MemoryError)`, and the shared HTTP
-predicate names two `MemoryError` subclasses, so the same child failure is
-`error` for a one-shot or pool worker and `memory_limited` for a protocol
-worker; the node-data service records a one-shot child's memory failure
-without `error_code=memory_limit` and the dedicated worker special-cases one
-class name to compensate. `IsolatedSupervisorThread.infrastructure_failure`
-and `join_and_raise` are read by no production code, so a job whose terminal
-state could not be persisted stays `running` until its TTL with only a log
-line. `run_blocking_with_response_timeout` catches `TimeoutError` around
-`asyncio.wait_for`, which on Python 3.11 is also what the worker raises, so a
-worker that fails with any `TimeoutError` is answered 504 "timed out" and
-recorded `response_timeout` (probed). The protocol parent and the dedicated
-worker swallow queue-close and join failures in bare `except: pass` blocks
-while the one-shot attaches each as a note. This package comes from the
-[25 October 2026 codebase review](codebase-review-2026-10-25.md).
-
-**Plan:** One memory classification shared by the three parents (an `is_memory`
-flag the child sets from `isinstance(exc, MemoryError)`); surface a dead
-supervisor thread's `infrastructure_failure` from the status route and
-transition the job; in the timeout branch re-raise the task's own exception
-when `blocking_task.done()`; record teardown failures as notes.
-
-**Acceptance:** Each parent reports `memory_limited` for both `MemoryError`
-subclasses; a job whose persistence failed is answered as failed by its status
-route; a worker-raised `TimeoutError` reaches the caller as itself; a failing
-queue close appears as a note on the primary error.
-
-**Dependencies:** `ROAD-WORKER-05` would subsume the classification.
-
-**Evidence:** `src/haute/_worker_isolation.py::IsolatedWorkerRemoteError`;
-`src/haute/_interactive_workers.py::InteractiveWorkerRemoteError`;
-`src/haute/_worker_protocol.py::_terminal_reason_for_exception`;
-`src/haute/_worker_isolation.py::isolated_worker_failure_is_memory`;
-`src/haute/routes/_background_jobs.py::IsolatedSupervisorThread`;
-`src/haute/routes/_timeouts.py::run_blocking_with_response_timeout`;
-`src/haute/_dedicated_workers.py::DedicatedWorker`.

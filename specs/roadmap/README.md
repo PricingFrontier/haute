@@ -24,7 +24,7 @@ records corrections to that audit's claims and proposed remedies.
 | Component | Improvement surface | Start with |
 |---|---|---|
 | [Assistant](assistant.md) | The provider client as the policy describes it, bounded requests with a terminal event on every stream, tools that never stall the server, facts the model can trust, the core's and the tools' hygiene, the chat panel's failures and clicks; blocking data findings, structured step authoring, typed banding and rating, item-level edits and per-model qualification (all deferred); assistant apply retaining the authenticated revision through commit, and workbench form tables resolved from the configured project root | `ASSIST-54` |
-| [Background jobs and API lifecycle](background-jobs-api.md) | One failure classification with persistence failures surfaced, one worker primitive | `ROAD-WORKER-07` |
+| [Background jobs and API lifecycle](background-jobs-api.md) | One worker primitive | `ROAD-WORKER-05` |
 | [CLI](cli.md) | `haute init` keeping a root `main.py` it did not write, `haute run` as a lazy walk, `haute lint` running the editor's validators, `pyproject.toml` through `tomlkit`, error reporting, generated CI hygiene; `haute impact` dataset confinement and `lint`/`run` pipeline resolution error handling | `CLI-R01` |
 | [Deploy](deploy.md) | Every target's dependency closure locked, typed `haute.toml`, impact alignment, build directories under the project, one copy of each deploy mechanism; matching JSON and NDJSON output documents | `DEP-R09` |
 | [Documentation](docs.md) | The Databricks guide as the deploy runs, the CI pages as the generated workflows are, a new project's path from an empty folder, upgrade notes for a project made by 0.6.0, the site publishing `main` again | `DOC-01` |

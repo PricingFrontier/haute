@@ -168,6 +168,18 @@ class IsolatedWorkerHostError(IsolatedWorkerError):
     """
 
 
+def remote_failure_terminal_reason(remote_type: str, *, is_memory: bool) -> WorkerTerminalReason:
+    """The terminal reason for an exception a child reported: one rule for every parent.
+
+    *is_memory* is the child's own ``isinstance(exc, MemoryError)``, so every subclass
+    (an admission refusal, a sampled checkpoint over budget) counts whatever its name.
+    A native cap the child could not install is a contract error.
+    """
+    if remote_type.startswith("NativeMemoryLimit"):
+        return "contract_error"
+    return "memory_limited" if is_memory else "error"
+
+
 class IsolatedWorkerRemoteError(IsolatedWorkerError):
     """Raised when the child process returns a Python exception."""
 
@@ -177,21 +189,16 @@ class IsolatedWorkerRemoteError(IsolatedWorkerError):
         remote_type: str,
         remote_message: str,
         remote_traceback: str,
+        is_memory: bool,
     ) -> None:
-        terminal_reason: WorkerTerminalReason = (
-            "contract_error"
-            if remote_type.startswith("NativeMemoryLimit")
-            else "memory_limited"
-            if remote_type == "MemoryError"
-            else "error"
-        )
         super().__init__(
             f"Isolated worker raised {remote_type}: {remote_message}",
-            terminal_reason=terminal_reason,
+            terminal_reason=remote_failure_terminal_reason(remote_type, is_memory=is_memory),
         )
         self.remote_type = remote_type
         self.remote_message = remote_message
         self.remote_traceback = remote_traceback
+        self.is_memory = is_memory
 
 
 class IsolatedWorkerCrashedError(IsolatedWorkerError):
@@ -293,22 +300,13 @@ class IsolatedWorkerTerminationError(IsolatedWorkerError):
         )
 
 
-_MEMORY_REMOTE_TYPES = frozenset(
-    {
-        "MemoryError",
-        "ExecutionAdmissionError",
-        "ExecutionMemoryLimitExceededError",
-        "NativeMemoryLimitUnsupportedError",
-    }
-)
-
-
 def isolated_worker_failure_is_memory(exc: BaseException) -> bool:
     """Return whether a worker failure is a memory outcome.
 
     An RSS breach and an unsupported native cap always are; a crashed child
     is memory-bound only when its exit-code heuristic said so; a remote
-    exception is when the child's own exception type names a memory refusal.
+    exception is when the child's exception was a ``MemoryError`` or its native cap
+    could not be installed.
     """
     if isinstance(
         exc,
@@ -318,7 +316,7 @@ def isolated_worker_failure_is_memory(exc: BaseException) -> bool:
     if isinstance(exc, IsolatedWorkerCrashedError):
         return exc.terminal_reason == "memory_limited"
     if isinstance(exc, IsolatedWorkerRemoteError):
-        return exc.remote_type in _MEMORY_REMOTE_TYPES
+        return exc.is_memory or exc.remote_type == "NativeMemoryLimitUnsupportedError"
     return False
 
 
@@ -870,14 +868,15 @@ def run_isolated_worker(
             result = cast(T, payload)
             has_result = True
         elif status == "error":
-            remote_type, remote_message, remote_traceback = cast(
-                tuple[str, str, str],
+            remote_type, remote_message, remote_traceback, is_memory = cast(
+                tuple[str, str, str, bool],
                 payload,
             )
             raise IsolatedWorkerRemoteError(
                 remote_type=remote_type,
                 remote_message=remote_message,
                 remote_traceback=remote_traceback,
+                is_memory=is_memory,
             )
         else:  # pragma: no cover - guarded by child entrypoint protocol
             raise IsolatedWorkerCrashedError(
@@ -890,10 +889,7 @@ def run_isolated_worker(
 
         def record_finalization_error(exc: BaseException, *, step: str) -> None:
             nonlocal primary_error
-            if primary_error is None:
-                primary_error = exc
-            else:
-                primary_error.add_note(f"{step} failed: {exc}")
+            primary_error = note_teardown_failure(primary_error, exc, step=step)
 
         process_alive = False
         if process_started:
@@ -986,6 +982,16 @@ def _isolated_worker_entrypoint(
         result_queue.join_thread()
 
 
+def note_teardown_failure(
+    primary: BaseException | None, exc: BaseException, *, step: str
+) -> BaseException:
+    """The error a worker's teardown ends with: the primary one with *exc* noted, or *exc*."""
+    if primary is None:
+        return exc
+    primary.add_note(f"{step} failed: {exc}")
+    return primary
+
+
 def _ready_message() -> tuple[str, int]:
     return ("ready", os.getpid())
 
@@ -998,7 +1004,7 @@ def _is_ready_payload(process: BaseProcess, raw: Any) -> bool:
         return False
 
 
-def _worker_error_envelope(exc: BaseException) -> tuple[str, tuple[str, str, str]]:
+def _worker_error_envelope(exc: BaseException) -> tuple[str, tuple[str, str, str, bool]]:
     # Windows reports a path too long for it as a missing file; name the cause, so the
     # parent can classify the failure, and keep the original traceback.
     reported: BaseException = path_too_long_error(exc) or exc
@@ -1008,6 +1014,7 @@ def _worker_error_envelope(exc: BaseException) -> tuple[str, tuple[str, str, str
             type(reported).__name__,
             str(reported),
             "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+            isinstance(exc, MemoryError),
         ),
     )
 
