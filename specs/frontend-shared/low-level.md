@@ -1215,7 +1215,13 @@ all externally supplied arrays/objects. Its `capabilities` value is the shared U
 components must not recreate status-to-capability policy locally. `documentReadOnlyReason()` is
 the shared user-facing explanation for a blocked mutation/save: a live document-transport failure
 names itself, a mutable-but-unsynchronised canvas names the pending on-disk change, and only a
-genuinely non-mutable document blames unresolved load diagnostics. `systemFailure` is independent of
+genuinely non-mutable document blames unresolved load diagnostics. A request captures the
+document's execution fence (`captureDocumentExecutionFence`: source file, execution generation,
+load status, execute capability) and publishes only while `isDocumentExecutionFenceCurrent`;
+`documentExecutionKey` is that fence with the graph's synchronisation as one string, a selector
+that changes exactly when a running request's fence stops being current (a save, which advances
+only the source revision, never changes it), which the optimiser auto range and the GLM
+dispersion estimate scope their runs by. `systemFailure` is independent of
 authored recovery diagnostics: setting it also marks the graph unsynchronised, while any newly
 validated document atomically clears it. Reset leaves the editor without authority until a new
 validated document arrives.

@@ -11,9 +11,10 @@ import {
   type UseStaleConfigEstimateResult,
 } from "../hooks/useStaleConfigEstimate"
 import useGraphStore from "../stores/useGraphStore"
-import useNodeResultsStore, { type TrainProgress, type TrainResult } from "../stores/useNodeResultsStore"
-import {
+import useNodeResultsStore, { hashConfig, type TrainProgress, type TrainResult } from "../stores/useNodeResultsStore"
+import useDocumentStatusStore, {
   captureDocumentExecutionFence,
+  documentExecutionKey,
   isDocumentExecutionFenceCurrent,
 } from "../stores/useDocumentStatusStore"
 import useSettingsStore from "../stores/useSettingsStore"
@@ -547,15 +548,19 @@ export default function ModellingConfig({
     },
     [config.refit_on_development, onUpdate, validationFit],
   )
-  const onEstimateDispersion = useCallback(
-    (param: DispersionParam, signal: AbortSignal) => runDispersionEstimate({
+  // A dispersion estimate reads the document, this node's training settings,
+  // the graph feeding it and the data source; a change to any stops it.
+  const documentKey = useDocumentStatusStore(documentExecutionKey)
+  const trainingHash = useMemo(() => hashConfig(trainingIdentity), [trainingIdentity])
+  const dispersionEstimate = useMemo(() => ({
+    scope: JSON.stringify([documentKey, nodeId, activeSource, structuralVersion, trainingHash]),
+    run: (param: DispersionParam, signal: AbortSignal) => runDispersionEstimate({
       graph: graph(),
       node_id: nodeId,
       param,
-      source: useSettingsStore.getState().activeSource,
+      source: activeSource,
     }, { signal }),
-    [graph, nodeId],
-  )
+  }), [activeSource, documentKey, graph, nodeId, structuralVersion, trainingHash])
   const onTrain = useCallback(async () => {
     if (hasTrainingConfigurationIssues) return
     const documentFence = captureDocumentExecutionFence()
@@ -766,7 +771,7 @@ export default function ModellingConfig({
   } else if (algorithm === "glm" && pane === "target") {
     paneBody = (
       <>
-        <GLMTargetConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} onEstimateDispersion={onEstimateDispersion} />
+        <GLMTargetConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} dispersionEstimate={dispersionEstimate} />
       </>
     )
   } else if (algorithm === "glm" && pane === "params") {

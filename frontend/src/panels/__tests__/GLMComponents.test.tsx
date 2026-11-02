@@ -260,12 +260,40 @@ describe("GLMTargetConfig", () => {
         config={{ ...baseConfig, family: "negbinomial" }}
         onUpdate={onUpdate}
         columns={defaultColumns}
-        onEstimateDispersion={onEstimateDispersion}
+        dispersionEstimate={{ scope: "scope-1", run: onEstimateDispersion }}
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
     expect(onEstimateDispersion).toHaveBeenCalledWith("theta", expect.any(AbortSignal))
     await vi.waitFor(() => expect(onUpdate).toHaveBeenCalledWith("theta", 2.4487))
+  })
+
+  it("stops an estimate whose scope changed, applies no late value and says so", async () => {
+    let finish: ((value: number) => void) | undefined
+    let signal: AbortSignal | undefined
+    const onEstimateDispersion = vi.fn((_param: string, estimateSignal: AbortSignal) => {
+      signal = estimateSignal
+      return new Promise<number>((resolve, reject) => {
+        finish = resolve
+        estimateSignal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true })
+      })
+    })
+    const config = { ...baseConfig, family: "negbinomial" }
+    const { rerender } = render(
+      <GLMTargetConfig config={config} onUpdate={onUpdate} columns={defaultColumns} dispersionEstimate={{ scope: "scope-1", run: onEstimateDispersion }} />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
+    expect(screen.getByRole("button", { name: "Estimating…" })).toBeDisabled()
+
+    rerender(
+      <GLMTargetConfig config={{ ...config, theta: 7 }} onUpdate={onUpdate} columns={defaultColumns} dispersionEstimate={{ scope: "scope-2", run: onEstimateDispersion }} />,
+    )
+    expect(signal?.aborted).toBe(true)
+    finish?.(3)
+    expect(await screen.findByRole("status")).toHaveTextContent("Estimate stopped: the training settings changed while it ran.")
+    expect(screen.getByRole("button", { name: "Estimate from data" })).toBeEnabled()
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toEqual([])
   })
 
   it("unmounting mid-estimate aborts it and never applies a late value", async () => {
@@ -280,7 +308,7 @@ describe("GLMTargetConfig", () => {
         config={{ ...baseConfig, family: "negbinomial" }}
         onUpdate={onUpdate}
         columns={defaultColumns}
-        onEstimateDispersion={onEstimateDispersion}
+        dispersionEstimate={{ scope: "scope-1", run: onEstimateDispersion }}
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
@@ -304,7 +332,7 @@ describe("GLMTargetConfig", () => {
         config={{ ...baseConfig, family: "negbinomial" }}
         onUpdate={onUpdate}
         columns={defaultColumns}
-        onEstimateDispersion={onEstimateDispersion}
+        dispersionEstimate={{ scope: "scope-1", run: onEstimateDispersion }}
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
@@ -328,7 +356,7 @@ describe("GLMTargetConfig", () => {
         config={{ ...baseConfig, family: "negbinomial" }}
         onUpdate={onUpdate}
         columns={defaultColumns}
-        onEstimateDispersion={onEstimateDispersion}
+        dispersionEstimate={{ scope: "scope-1", run: onEstimateDispersion }}
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
@@ -347,7 +375,7 @@ describe("GLMTargetConfig", () => {
         config={{ ...baseConfig, family: "negbinomial" }}
         onUpdate={onUpdate}
         columns={defaultColumns}
-        onEstimateDispersion={onEstimateDispersion}
+        dispersionEstimate={{ scope: "scope-1", run: onEstimateDispersion }}
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
@@ -367,7 +395,7 @@ describe("GLMTargetConfig", () => {
         config={{ ...baseConfig, family: "tweedie" }}
         onUpdate={onUpdate}
         columns={defaultColumns}
-        onEstimateDispersion={onEstimateDispersion}
+        dispersionEstimate={{ scope: "scope-1", run: onEstimateDispersion }}
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))

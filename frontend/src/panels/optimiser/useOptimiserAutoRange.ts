@@ -12,6 +12,7 @@ import type {
 } from "../../api/types"
 import useDocumentStatusStore, {
   captureDocumentExecutionFence,
+  documentExecutionKey,
   isDocumentExecutionFenceCurrent,
   type DocumentExecutionFence,
 } from "../../stores/useDocumentStatusStore"
@@ -197,21 +198,10 @@ export type UseOptimiserAutoRangeOptions = {
 }
 
 /**
- * The document's execution identity, as the solve fences on it. A save
- * advances the source revision without replacing that identity, so it never
- * retires a run; loading another document, accepting an external revision,
- * losing the right to execute or an unsynchronised graph does.
+ * A run's scope, as the solve's fence: the node, the structural version and
+ * the document's execution identity. A save, which advances only the source
+ * revision, never retires a run.
  */
-function documentScopeKey(state: ReturnType<typeof useDocumentStatusStore.getState>): string {
-  return JSON.stringify([
-    state.sourceFile,
-    state.executionGeneration,
-    state.loadStatus,
-    state.capabilities?.can_execute === true,
-    state.graphSynchronized,
-  ])
-}
-
 function autoRangeScopeKey(
   nodeId: string,
   graphVersion: number,
@@ -232,7 +222,7 @@ export function useOptimiserAutoRange({
 }: UseOptimiserAutoRangeOptions) {
   const [state, dispatch] = useReducer(reducer, initialState)
   const graphVersion = useGraphStore((current) => current.structuralVersion)
-  const currentDocumentKey = useDocumentStatusStore(documentScopeKey)
+  const currentDocumentKey = useDocumentStatusStore(documentExecutionKey)
   const scopeKey = autoRangeScopeKey(nodeId, graphVersion, currentDocumentKey)
   const generationRef = useRef(0)
   const activeRef = useRef<ActiveRun | null>(null)
@@ -336,7 +326,7 @@ export function useOptimiserAutoRange({
       const publishedScopeKey = autoRangeScopeKey(
         nodeId,
         useGraphStore.getState().structuralVersion,
-        documentScopeKey(useDocumentStatusStore.getState()),
+        documentExecutionKey(useDocumentStatusStore.getState()),
       )
       dispatch({
         type: "completed",

@@ -225,6 +225,23 @@ export function captureDocumentExecutionFence(): DocumentExecutionFence {
   return executionFence(useDocumentStatusStore.getState())
 }
 
+/**
+ * The execution fence, with the graph's synchronisation, as one comparable
+ * key: a store selector that changes exactly when a running request's fence
+ * stops being current. A save advances only the source revision, so it never
+ * changes the key.
+ */
+export function documentExecutionKey(state: DocumentStatusState): string {
+  const fence = executionFence(state)
+  return JSON.stringify([
+    fence.sourceFile,
+    fence.executionGeneration,
+    fence.loadStatus,
+    fence.canExecute,
+    state.graphSynchronized,
+  ])
+}
+
 export function isDocumentExecutionFenceCurrent(
   captured: DocumentExecutionFence,
 ): boolean {

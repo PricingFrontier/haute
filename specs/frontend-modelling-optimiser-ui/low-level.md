@@ -226,8 +226,17 @@ Only a current, accepted save response may acknowledge this revision transition.
    terminal `gpu_vram_limit` message require an explicit CPU selection and retry rather than
    describing an automatic fallback. The optional GLM dispersion action calls the dispersion API
    and writes a successful theta/variance-power estimate through the ordinary editable update
-   callback. `GLMTargetConfig` aborts an estimate still running when it unmounts, which cancels
-   the job and applies no value; a failed cancellation is reported as an error toast.
+   callback. `ModellingConfig` passes `GLMTargetConfig` a `dispersionEstimate`: its `run` (the
+   current graph, node id and active source) and its `scope`, one key of the document's
+   `documentExecutionKey`, the node id, the active source, the structural version and the hash
+   of the node's training identity (`trainingIdentityConfig`, which includes the estimated
+   `theta` or `var_power`). An estimate keeps the scope it started under; when the scope
+   changes, `GLMTargetConfig` aborts it (which cancels the job), the buttons are free again and
+   a neutral `role="status"` note reads "Estimate stopped: the training settings changed while
+   it ran."; a reply is filled in only while the scope is still the one it started under, so a
+   late value for target A never lands on target B's manual theta. `GLMTargetConfig` aborts an
+   estimate still running when it unmounts, which cancels the job and applies no value; a
+   failed cancellation (on unmount or a scope change) is reported as an error toast.
 4. `frontend/src/panels/ModellingPreview.tsx` computes which tabs have result data, renders only
    those, and resets the active tab when a new result arrives. `SummaryTab` separates selection
    estimates from final-test metrics, renders ordered validation fits and tuning
@@ -942,6 +951,11 @@ Verification is deliberately assigned to the owning seams:
   snapshot build, and abort during a wait.
   `TrainingActionsAndResults.test.tsx` covers the collapsed **Error details** traceback under a failure
   (absent without a traceback) and the waiting notice with Train and Re-train disabled.
+  `ModellingConfig.test.tsx`'s dispersion-estimate cases render the real editor with held
+  replies: the request carries the current graph, node and source and an unchanged draft's
+  field is filled; target A's late theta never overwrites target B's manual theta 7; and a
+  source or structural change stops the estimate. `GLMComponents.test.tsx` covers the stopped
+  note, unmount abort and failed-cancellation toast.
 - `frontend/src/panels/__tests__/NodePanel.test.tsx`,
   `frontend/src/stores/__tests__/useUIStore.test.ts`, and
   `frontend/src/panels/__tests__/PreviewPanelTabs.test.tsx` cover strip gating, per-node memory,

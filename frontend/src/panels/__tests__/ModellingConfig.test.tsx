@@ -5,6 +5,7 @@ import { ApiError } from "../../api/client"
 import { trainingIdentityConfig } from "../../utils/modellingExportConfig"
 import { trainingLineage } from "../../utils/trainedJobHandles"
 import { buildGraph } from "../../utils/buildGraph"
+import { runDispersionEstimate } from "../../api/dispersion"
 import type { SimpleNode as GraphNodeInput } from "../editors/_shared"
 import { GraphProvider } from "../GraphContext"
 import useGraphStore from "../../stores/useGraphStore"
@@ -1257,6 +1258,101 @@ describe("ModellingConfig", () => {
   // ═════════════════════════════════════════════════════════════════
   // Staleness indicator
   // ═════════════════════════════════════════════════════════════════
+
+  describe("Dispersion estimate ownership", () => {
+    const initialSource = useSettingsStore.getState().activeSource
+    afterEach(() => useSettingsStore.setState({ activeSource: initialSource }))
+
+    const negbinomial = (overrides: Record<string, unknown> = {}) => ({
+      target: "claims_a",
+      task: "regression",
+      algorithm: "glm",
+      family: "negbinomial",
+      terms: { age: { type: "linear" } },
+      ...overrides,
+    })
+    const columns = [
+      { name: "claims_a", dtype: "Int64" },
+      { name: "claims_b", dtype: "Int64" },
+      { name: "age", dtype: "Float64" },
+    ]
+
+    /** A reply held until the test settles it, and the signal it was asked under. */
+    function holdEstimate() {
+      const held: { signal?: AbortSignal; resolve?: (value: number) => void } = {}
+      vi.mocked(runDispersionEstimate).mockImplementationOnce((_args, options) => {
+        held.signal = options?.signal
+        return new Promise<number>((resolve) => { held.resolve = resolve })
+      })
+      return held
+    }
+
+    function renderGlm(config: Record<string, unknown>) {
+      withPassThroughGraph()
+      const node = { id: "node_1", data: { label: "glm", description: "", nodeType: "modelling", config } }
+      const view = renderConfig({ config, upstreamColumns: columns, allNodes: [node] })
+      const rerenderWith = (next: Record<string, unknown>) => view.rerender(
+        <GraphProvider allNodes={[{ ...node, data: { ...node.data, config: next } }]} edges={[]}>
+          <ModellingConfig {...view.props} config={{ ...next, evaluation: view.props.config.evaluation }} />
+        </GraphProvider>,
+      )
+      return { ...view, node, rerenderWith }
+    }
+
+    it("asks for the current graph and source, and fills the unchanged draft's field", async () => {
+      useSettingsStore.setState({ activeSource: "batch" })
+      const held = holdEstimate()
+      const { props, node } = renderGlm(negbinomial())
+
+      fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
+      expect(runDispersionEstimate).toHaveBeenCalledWith(
+        { graph: payloadFor([node]), node_id: "node_1", param: "theta", source: "batch" },
+        { signal: expect.any(AbortSignal) },
+      )
+
+      await act(async () => held.resolve?.(3))
+      expect(props.onUpdate).toHaveBeenCalledWith("theta", 3)
+    })
+
+    it("never writes target A's late estimate over target B's manual theta", async () => {
+      const held = holdEstimate()
+      const { props, rerenderWith } = renderGlm(negbinomial())
+
+      fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
+      rerenderWith(negbinomial({ target: "claims_b", theta: 7 }))
+      expect(held.signal?.aborted).toBe(true)
+
+      await act(async () => held.resolve?.(3))
+      expect(props.onUpdate).not.toHaveBeenCalledWith("theta", 3)
+      expect(screen.getByPlaceholderText("e.g. 1.5")).toHaveValue(7)
+      expect(screen.getByRole("button", { name: "Estimate from data" })).toBeEnabled()
+    })
+
+    it("stops an estimate when the data source changes", async () => {
+      useSettingsStore.setState({ activeSource: "live" })
+      const held = holdEstimate()
+      const { props } = renderGlm(negbinomial())
+
+      fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
+      act(() => useSettingsStore.setState({ activeSource: "batch" }))
+      expect(held.signal?.aborted).toBe(true)
+
+      await act(async () => held.resolve?.(3))
+      expect(props.onUpdate).not.toHaveBeenCalled()
+    })
+
+    it("stops an estimate when the graph feeding the node changes", async () => {
+      const held = holdEstimate()
+      const { props } = renderGlm(negbinomial({ family: "tweedie", var_power: 1.5 }))
+
+      fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
+      act(() => useGraphStore.setState((state) => ({ structuralVersion: state.structuralVersion + 1 })))
+      expect(held.signal?.aborted).toBe(true)
+
+      await act(async () => held.resolve?.(1.7))
+      expect(props.onUpdate).not.toHaveBeenCalled()
+    })
+  })
 
   describe("Staleness indicator", () => {
     beforeEach(() => { defaultPane = "train" })
