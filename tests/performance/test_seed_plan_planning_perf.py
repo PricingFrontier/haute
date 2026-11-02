@@ -49,7 +49,9 @@ def _graph(project: Path, length: int) -> PipelineGraph:
             data=NodeData(
                 label="joined",
                 nodeType=NodeType.POLARS,
-                config={"code": "df = quotes.join(claims, on='id', how='left')"},
+                # One claim per id, declared so admission can estimate the join
+                # on a runner with no hard memory cap.
+                config={"code": "df = quotes.join(claims, on='id', how='left', validate='m:1')"},
             ),
         ),
     ]
