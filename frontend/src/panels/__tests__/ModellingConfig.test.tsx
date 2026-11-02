@@ -1194,6 +1194,40 @@ describe("ModellingConfig", () => {
       })
     })
 
+    it.each([
+      ["completed", { status: "completed", result: makeTrainResult({ final_test_metrics: { rmse: 9 } }) }],
+      ["cancelled", { status: "cancelled", result: null }],
+      ["refused", null],
+    ] as const)("leaves a newer job alone when the earlier job's cancellation (%s) answers late", async (_name, reply) => {
+      const running = { status: "running" as const, progress: 0.1, message: "Fitting", iteration: 0, total_iterations: 0, train_loss: {}, elapsed_seconds: 1 }
+      useNodeResultsStore.getState().startTrainJob("node_1", "job_a", "Model", "hash-a", "live", 0)
+      let answer!: (value: unknown) => void
+      let refuse!: (error: Error) => void
+      mockCancelTrain.mockReturnValueOnce(new Promise((resolve, reject) => {
+        answer = resolve
+        refuse = reject
+      }))
+      renderConfig()
+      fireEvent.click(screen.getByRole("button", { name: "Cancel training" }))
+      await waitFor(() => expect(mockCancelTrain).toHaveBeenCalledWith("job_a"))
+
+      // Polling retires A with its own result, then B starts.
+      const resultA = makeTrainResult()
+      act(() => {
+        useNodeResultsStore.getState().completeTrainJob("node_1", "job_a", resultA)
+        useNodeResultsStore.getState().startTrainJob("node_1", "job_b", "Model", "hash-b", "live", 1)
+      })
+      await act(async () => {
+        if (reply === null) refuse(new Error("Cancellation unavailable"))
+        else answer({ ...running, ...reply, message: "Answer", terminal_reason: reply.status })
+      })
+
+      const state = useNodeResultsStore.getState()
+      expect(state.trainJobs.node_1).toMatchObject({ jobId: "job_b", configHash: "hash-b", progress: null })
+      expect(state.trainResults.node_1).toMatchObject({ jobId: "job_a", configHash: "hash-a", result: resultA })
+      expect(useToastStore.getState().toasts.some((toast) => toast.text.includes("Could not cancel training"))).toBe(false)
+    })
+
     it("stores error result when trainModel throws", async () => {
       mockTrainModel.mockRejectedValue(new Error("Network fail"))
       renderConfig()
@@ -1240,16 +1274,18 @@ describe("ModellingConfig", () => {
       })
     })
 
-    it("stores synchronous result when trainModel returns non-started status", async () => {
-      const result = makeTrainResult()
-      mockTrainModel.mockResolvedValue(result)
+    it("records a start that answers no started job as a failure of that attempt", async () => {
+      mockTrainModel.mockResolvedValue(makeTrainResult({ status: "error", error: "Refused" }))
       renderConfig()
       fireEvent.click(screen.getByRole("button", { name: /Train Model/ }))
       await waitFor(() => {
         const store = useNodeResultsStore.getState()
         const cached = store.trainResults.node_1
-        expect(cached).toBeTruthy()
-        expect(cached.result.status).toBe("completed")
+        expect(cached?.result.status).toBe("error")
+        expect(cached?.result.error).toBe("Refused")
+        expect(cached?.jobId).toBe("startup-failure:node_1")
+        expect(cached?.source).toBe("live")
+        expect(store.trainJobs.node_1).toBeUndefined()
       })
     })
   })

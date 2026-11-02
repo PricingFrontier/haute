@@ -41,7 +41,7 @@ function recordPivotResult(nodeId: string, pivotId: string): string {
     "test-source",
     0,
   )
-  store.completeExplorePivotJob(key, makePivotResult(nodeId, pivotId))
+  store.completeExplorePivotJob(key, `job-${nodeId}-${pivotId}`, makePivotResult(nodeId, pivotId))
   return key
 }
 

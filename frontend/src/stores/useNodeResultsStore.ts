@@ -346,18 +346,16 @@ function jobFenceIsCurrent(job: { documentFence?: DocumentExecutionFence }): boo
  * Runs at the store's completion boundary, so a job that finishes while the
  * node's editor is closed is still restorable after a reload. A completed job
  * started through `startTrainJob` is remembered under its document; an error,
- * or a direct completion with no job, forgets the node's handle.
+ * or a job with no lineage (a refused start), forgets the node's handle.
  */
 function rememberTrainOutcome(
   nodeId: string,
-  job: ActiveTrainJob | undefined,
+  job: ActiveTrainJob,
   result: TrainResult | null,
 ): void {
-  const sourceFile = job
-    ? job.documentFence?.sourceFile
-    : captureDocumentExecutionFence().sourceFile
+  const sourceFile = job.documentFence?.sourceFile
   if (!sourceFile) return
-  if (!job || !job.lineage || result === null || result.status === "error") {
+  if (!job.lineage || result === null || result.status === "error") {
     clearTrainedJobHandle(sourceFile, nodeId)
     return
   }
@@ -790,8 +788,10 @@ interface NodeResultsState {
 
   // ── Training actions ──
   startTrainJob: (nodeId: string, jobId: string, nodeLabel: string, configHash: string, source: string, structuralVersion: number, lineage?: string) => void
-  updateTrainProgress: (nodeId: string, progress: TrainProgress) => void
-  completeTrainJob: (nodeId: string, result: TrainResult, terminalStatus?: TrainProgress) => void
+  // The training and pivot job actions name the job a reply is for and change
+  // nothing unless the key's active job has that id.
+  updateTrainProgress: (nodeId: string, jobId: string, progress: TrainProgress) => void
+  completeTrainJob: (nodeId: string, jobId: string, result: TrainResult, terminalStatus?: TrainProgress) => void
   /**
    * Put back a completed result the server still holds (after a browser reload).
    * Never replaces a result or a running job the node already has.
@@ -802,12 +802,12 @@ interface NodeResultsState {
    * job. Ignored when the node has meanwhile got a result or a running job.
    */
   markTrainResultExpired: (nodeId: string, jobId: string) => void
-  failTrainJob: (nodeId: string, error: string, terminalStatus?: TrainProgress) => void
+  failTrainJob: (nodeId: string, jobId: string, error: string, terminalStatus?: TrainProgress) => void
 
   startExplorePivotJob: (key: string, jobId: string, nodeId: string, pivotId: string, nodeLabel: string, pivotName: string, calculationIdentity: string, source: string, structuralVersion: number, requestedDataVersion?: string | null) => void
-  updateExplorePivotProgress: (key: string, progress: ExplorePivotProgress) => void
-  completeExplorePivotJob: (key: string, result: ExplorePivotResult, terminalStatus?: ExplorePivotProgress) => void
-  failExplorePivotJob: (key: string, error: string, terminalStatus?: ExplorePivotProgress) => void
+  updateExplorePivotProgress: (key: string, jobId: string, progress: ExplorePivotProgress) => void
+  completeExplorePivotJob: (key: string, jobId: string, result: ExplorePivotResult, terminalStatus?: ExplorePivotProgress) => void
+  failExplorePivotJob: (key: string, jobId: string, error: string, terminalStatus?: ExplorePivotProgress) => void
   /**
    * Takes the auto-update claim for a pivot before submitting. Returns the
    * claim token, or null when an identical target is already claimed (the
@@ -1252,10 +1252,10 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
     }),
 
-  updateTrainProgress: (nodeId, progress) =>
+  updateTrainProgress: (nodeId, jobId, progress) =>
     set((s) => {
       const job = s.trainJobs[nodeId]
-      if (!job) return s
+      if (job?.jobId !== jobId) return s
       if (!jobFenceIsCurrent(job)) {
         return { trainJobs: omitRecordKey(s.trainJobs, nodeId) }
       }
@@ -1265,27 +1265,25 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
     }),
 
-  completeTrainJob: (nodeId, result, terminalStatus) => {
+  completeTrainJob: (nodeId, jobId, result, terminalStatus) => {
     const completingJob = get().trainJobs[nodeId]
-    const fenceCurrent = completingJob === undefined || jobFenceIsCurrent(completingJob)
+    if (completingJob?.jobId !== jobId) return
+    const fenceCurrent = jobFenceIsCurrent(completingJob)
     set((s) => {
       const job = s.trainJobs[nodeId]
-      if (job && !jobFenceIsCurrent(job)) {
+      if (job?.jobId !== jobId) return s
+      if (!jobFenceIsCurrent(job)) {
         return { trainJobs: omitRecordKey(s.trainJobs, nodeId) }
       }
-      // Remove the active job if present; also works for direct completion
-      // (no active job) used by ModellingConfig for sync/error results.
       const { [nodeId]: _removedJob, ...remainingJobs } = s.trainJobs; void _removedJob
       touchCachedResult(trainResultRecency, nodeId)
       const nextCached: CachedTrainResult = {
         result,
         terminalStatus: terminalStatus ?? null,
-        jobId: job?.jobId ?? "",
-        configHash: job?.configHash ?? "",
-        // Direct completion with no active job has no recorded source; the
-        // empty sentinel never matches a real source, so it reads as stale.
-        source: job?.source ?? "",
-        structuralVersion: job?.structuralVersion ?? -1,
+        jobId: job.jobId,
+        configHash: job.configHash,
+        source: job.source,
+        structuralVersion: job.structuralVersion,
       }
       const bounded = trimCacheByRecency(
         {
@@ -1305,7 +1303,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         cacheModellingPreview(nodeId, bounded.records[nodeId], undefined)
       }
       return {
-        trainJobs: job ? remainingJobs : s.trainJobs,
+        trainJobs: remainingJobs,
         trainResults: bounded.records,
         expiredTrainJobs: forgetExpiredTrainJob(s.expiredTrainJobs, nodeId),
       }
@@ -1339,12 +1337,13 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
     }),
 
-  failTrainJob: (nodeId, error, terminalStatus) => {
+  failTrainJob: (nodeId, jobId, error, terminalStatus) => {
     const failingJob = get().trainJobs[nodeId]
-    const fenceCurrent = failingJob !== undefined && jobFenceIsCurrent(failingJob)
+    if (failingJob?.jobId !== jobId) return
+    const fenceCurrent = jobFenceIsCurrent(failingJob)
     set((s) => {
       const job = s.trainJobs[nodeId]
-      if (!job) return s
+      if (job?.jobId !== jobId) return s
       if (!jobFenceIsCurrent(job)) {
         return { trainJobs: omitRecordKey(s.trainJobs, nodeId) }
       }
@@ -1401,20 +1400,20 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       },
     })),
 
-  updateExplorePivotProgress: (key, progress) =>
+  updateExplorePivotProgress: (key, jobId, progress) =>
     set((s) => {
       const job = s.pivotJobs[key]
-      if (!job) return s
+      if (job?.jobId !== jobId) return s
       if (!jobFenceIsCurrent(job)) {
         return { pivotJobs: omitRecordKey(s.pivotJobs, key) }
       }
       return { pivotJobs: { ...s.pivotJobs, [key]: { ...job, progress } } }
     }),
 
-  completeExplorePivotJob: (key, result, terminalStatus) =>
+  completeExplorePivotJob: (key, jobId, result, terminalStatus) =>
     set((s) => {
       const job = s.pivotJobs[key]
-      if (!job) return s
+      if (job?.jobId !== jobId) return s
       if (!jobFenceIsCurrent(job)) {
         return { pivotJobs: omitRecordKey(s.pivotJobs, key) }
       }
@@ -1441,10 +1440,10 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       return { pivotJobs, pivotResults }
     }),
 
-  failExplorePivotJob: (key, error, terminalStatus) =>
+  failExplorePivotJob: (key, jobId, error, terminalStatus) =>
     set((s) => {
       const job = s.pivotJobs[key]
-      if (!job) return s
+      if (job?.jobId !== jobId) return s
       if (!jobFenceIsCurrent(job)) {
         return { pivotJobs: omitRecordKey(s.pivotJobs, key) }
       }

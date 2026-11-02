@@ -22,7 +22,6 @@ to `FSH-R09` from the
 | FSH-R08 | Planned | P3 | One helper per concern in the hooks and utilities: unit formatting that carries, one canonical JSON, one date validator, one job-status vocabulary, one locale, one node-creation block, one polling configuration, selector subscriptions. |
 | FSH-R09 | Planned | P3 | The frontend-shared specification describes the formatter, the pollers and the store shape that exist, and preview supersession is recognised by a structured code rather than by its message text. |
 | FSH-R10 | Planned | P2 | Independent request-input edits made while identity resolution is pending are retained together. |
-| FSH-R11 | Planned | P1 | A cancellation reply can update only the job and document it was sent for, never relabel an old result as a newer calculation. |
 | FSH-R12 | Planned | P1 | Retained optimiser numbers keep the successful solve's config, source, structural version and job identity after a later failure. |
 | FSH-R13 | Planned | P2 | `useNodeDataCache` persists job ownership (`startedHere`) in `useNodeDataStore` so Stop/Cancel works across tab and node switches, `loadPipelineSettings` checks staleness before overwriting `_confirmedPipelineSettings`, and `UtilityPanel` syncs the `Imports` editor buffer with external `preamble` changes. |
 
@@ -296,38 +295,6 @@ the final accepted draft and persists it. Extend the controller/editor tests.
 `frontend/src/panels/NodePanel.tsx`;
 `frontend/src/panels/editors/ApiInputEditor.tsx`.
 
-### FSH-R11 — Cancellation replies belong to one job
-**Why:** The [28 October review](codebase-review-2026-10-28.md) reproduced a
-delayed cancellation reply for pivot job A deleting replacement job B. If A
-finished before cancellation, its completed result is stored with B's job ID
-and calculation identity, so an older pivot can appear current for a changed
-calculation over the same data. `cancelPivot` addresses the store only by
-node/pivot key; the store reads whichever job is there when the reply arrives.
-The training cancel callback has the same missing job/document check (source
-evidence; the executed probes cover pivots). The optimiser's stop action already
-captures a document fence and checks the active job ID before applying a reply.
-
-**Plan:** Apply that existing fence and job-identity pattern to pivot and training
-cancellation, including late failures and notices. Make the store boundary take
-the expected job ID where that prevents callers from assigning stale results to
-current metadata. Keep polling and cancellation consistent; the document fence
-on the current stored job alone does not authenticate an old response.
-Specify the terminal-response ownership rule before implementation.
-
-**Acceptance:** Delay cancellation of A, retire A through polling and start B.
-For cancelled, failed and completed A replies, B and its result identity are
-unchanged. Repeat across a document change reusing the same node/pivot IDs and
-for training. A matching completed reply preserves its own result, a matching
-cancelled reply retires its own job, and a failed cancel request keeps polling.
-
-**Dependencies:** None; reuse the optimiser cancellation pattern. `FSH-R03`
-may reorganise result storage later but is not needed to fix response ownership.
-
-**Evidence:** `frontend/src/panels/explore/useExplorePivotActions.ts`;
-`frontend/src/stores/useNodeResultsStore.ts`;
-`frontend/src/panels/ModellingConfig.tsx`;
-`frontend/src/panels/optimiser/solveActions.ts`.
-
 ### FSH-R12 — Failed solves cannot relabel retained successful results
 
 **Why:** `failOptimiserSolve` keeps the earlier result but overwrites its identity with the
@@ -347,7 +314,7 @@ failure may retain a matching result without inventing a successful B. Cover bot
 originalResult/frontier consumers; export must continue refusing failed/currently invalid
 publication.
 
-**Dependencies:** None. `FSH-R11` owns delayed cancellation replies, a separate failure even when jobs are strictly sequential.
+**Dependencies:** None.
 
 **Evidence:** `frontend/src/stores/useNodeResultsStore.ts::useNodeResultsStore.failSolveJob`;
 `frontend/src/panels/OptimiserPreview.tsx::OptimiserPreview` (`objectiveName`);

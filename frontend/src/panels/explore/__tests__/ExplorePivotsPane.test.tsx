@@ -196,7 +196,7 @@ function completeStoredResult(
   act(() => {
     useNodeResultsStore
       .getState()
-      .completeExplorePivotJob(key, makeResult(pivot, dataVersion))
+      .completeExplorePivotJob(key, `completed-${pivot.id}`, makeResult(pivot, dataVersion))
   })
   return key
 }
@@ -417,7 +417,7 @@ describe("ExplorePivotsPane", () => {
     const key = completeStoredResult(pivot)
     act(() => {
       startStoredJob(pivot, "refresh-job")
-      useNodeResultsStore.getState().updateExplorePivotProgress(key, {
+      useNodeResultsStore.getState().updateExplorePivotProgress(key, "refresh-job", {
         status: "running",
         progress: 0.4,
         message: "Grouping refreshed claims",
@@ -602,7 +602,7 @@ describe("ExplorePivotsPane", () => {
     act(() => {
       useNodeResultsStore
         .getState()
-        .failExplorePivotJob(failedKey, "Failed to group claims")
+        .failExplorePivotJob(failedKey, "failed-job", "Failed to group claims")
     })
 
     renderPane([failed, successful])
@@ -636,7 +636,7 @@ describe("ExplorePivotsPane", () => {
         pivotCalculationIdentity(pivot),
         "explore_dataset:replacement",
       )
-      useNodeResultsStore.getState().failExplorePivotJob(key, failure.message, {
+      useNodeResultsStore.getState().failExplorePivotJob(key, "failed-refresh-job", failure.message, {
         status: "contract_error",
         progress: 1,
         message: failure.message,
@@ -696,7 +696,7 @@ describe("ExplorePivotsPane", () => {
     act(() => {
       useNodeResultsStore
         .getState()
-        .completeExplorePivotJob(key, makeResult(original))
+        .completeExplorePivotJob(key, "completed-job", makeResult(original))
     })
 
     const renamed = {

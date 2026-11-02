@@ -53,7 +53,7 @@ describe("JobPollingController", () => {
     expect(onProgress).not.toHaveBeenCalled()
 
     await advance(500)
-    expect(onProgress).toHaveBeenCalledWith("node", { status: "running", progress: 0.2 })
+    expect(onProgress).toHaveBeenCalledWith("node", "new", { status: "running", progress: 0.2 })
   })
 
   it("aborts a removed job and drops pending throttled progress", async () => {

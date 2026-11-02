@@ -184,7 +184,7 @@ function seedResult(
     sourceResult.data_version,
   )
   act(() => {
-    useNodeResultsStore.getState().completeExplorePivotJob(key, sourceResult)
+    useNodeResultsStore.getState().completeExplorePivotJob(key, "pivot-completed", sourceResult)
   })
   return key
 }

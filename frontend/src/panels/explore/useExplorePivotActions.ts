@@ -172,15 +172,17 @@ export default function useExplorePivotActions({
       failure: ExplorePivotFailure | null = null,
       executionMetrics: ExecutionMetrics | null = null,
     ) => {
+      const jobId = `failed:${key}:${Date.now()}`
       startStoredJob(
         pivot,
         key,
-        `failed:${key}:${Date.now()}`,
+        jobId,
         calculationIdentity,
         requestedDataVersion,
       )
       failJob(
         key,
+        jobId,
         message,
         terminalStatus(status, message, failure, executionMetrics),
       )
@@ -258,7 +260,7 @@ export default function useExplorePivotActions({
             calculationIdentity,
             requestedDataVersion,
           )
-          completeJob(key, response.result, {
+          completeJob(key, jobId, response.result, {
             status: "completed",
             progress: 1,
             message: response.message || "Completed",
@@ -280,7 +282,7 @@ export default function useExplorePivotActions({
           calculationIdentity,
           requestedDataVersion,
         )
-        updateProgress(key, {
+        updateProgress(key, response.job_id, {
           status: "running",
           progress: 0.05,
           message: response.message || "Starting",
@@ -327,18 +329,25 @@ export default function useExplorePivotActions({
   const cancelPivot = useCallback(
     async (pivot: ExplorePivotConfig, jobId: string) => {
       const key = explorePivotResultKey(node.id, pivot.id)
+      const documentFence = captureDocumentExecutionFence()
+      // The reply belongs to the job it cancelled: polling may have retired that
+      // job and another started, or the document changed, while it was pending.
+      const replyIsCurrent = () =>
+        isDocumentExecutionFenceCurrent(documentFence)
+        && useNodeResultsStore.getState().pivotJobs[key]?.jobId === jobId
       setNotice(pivot.id, null)
       try {
         const response = await cancelExplorePivot(jobId)
+        if (!isDocumentExecutionFenceCurrent(documentFence)) return
         if (response.status === "completed" && response.result) {
-          completeJob(key, response.result, response)
+          completeJob(key, jobId, response.result, response)
         } else {
-          failJob(key, response.message || "Cancelled", response)
+          failJob(key, jobId, response.message || "Cancelled", response)
         }
       } catch (error) {
         // A failed cancellation request does not prove the calculation stopped.
         // Keep the active job so background polling can resolve it.
-        setNotice(pivot.id, { message: apiErrorMessage(error) })
+        if (replyIsCurrent()) setNotice(pivot.id, { message: apiErrorMessage(error) })
       }
     },
     [completeJob, failJob, node.id, setNotice],

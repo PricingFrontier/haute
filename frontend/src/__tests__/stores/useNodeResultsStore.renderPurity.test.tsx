@@ -77,7 +77,7 @@ describe("useNodeResultsStore render-pure preview getters", () => {
     const store = useNodeResultsStore.getState()
     for (let i = 0; i < MAX_CACHED_TRAIN_RESULTS; i += 1) {
       store.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`, "live", 0)
-      store.completeTrainJob(`t${i}`, makeTrainResult({ final_test_metrics: { rmse: i } }))
+      store.completeTrainJob(`t${i}`, `job-${i}`, makeTrainResult({ final_test_metrics: { rmse: i } }))
     }
 
     function RenderReader() {
@@ -92,7 +92,7 @@ describe("useNodeResultsStore render-pure preview getters", () => {
     )
 
     store.startTrainJob("t-new", "job-new", "Train new", "hash-new", "live", 0)
-    store.completeTrainJob("t-new", makeTrainResult({ final_test_metrics: { rmse: 999 } }))
+    store.completeTrainJob("t-new", "job-new", makeTrainResult({ final_test_metrics: { rmse: 999 } }))
 
     const { trainResults } = useNodeResultsStore.getState()
     expect(Object.keys(trainResults)).toHaveLength(MAX_CACHED_TRAIN_RESULTS)

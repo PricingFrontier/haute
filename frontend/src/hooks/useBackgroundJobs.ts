@@ -73,6 +73,10 @@ function trainProgressKey(status: TrainProgress): string {
   ])
 }
 
+function solveJobIsActive(nodeId: string, jobId: string): boolean {
+  return useNodeResultsStore.getState().solveJobs[nodeId]?.jobId === jobId
+}
+
 export default function useBackgroundJobs() {
   const addToast = useToastStore((s) => s.addToast)
   const documentSourceFile = useDocumentStatusStore((s) => s.sourceFile)
@@ -117,21 +121,35 @@ export default function useBackgroundJobs() {
     (jobId: string, signal: AbortSignal) => getOptimiserStatus(jobId, { signal }),
     [],
   )
+  // The solve actions address the node, so a reply applies only while the job
+  // it was polled for is still the node's.
+  const solveOnProgress = useCallback(
+    (nodeId: string, jobId: string, status: SolveProgress) => {
+      if (solveJobIsActive(nodeId, jobId)) updateSolveProgress(nodeId, status)
+    },
+    [updateSolveProgress],
+  )
   const solveOnComplete = useCallback(
-    (nodeId: string, status: SolveProgress) => {
-      if (!status.result) return
+    (nodeId: string, jobId: string, status: SolveProgress) => {
+      if (!status.result || !solveJobIsActive(nodeId, jobId)) return
       completeSolveJob(nodeId, status.result, status)
     },
     [completeSolveJob],
+  )
+  const solveOnFail = useCallback(
+    (nodeId: string, jobId: string, message: string, status?: SolveProgress) => {
+      if (solveJobIsActive(nodeId, jobId)) failSolveJob(nodeId, message, status)
+    },
+    [failSolveJob],
   )
 
   useJobPolling<(typeof solveJobs)[string], SolveProgress>({
     jobs: solveJobs,
     pollFn: solvePollFn,
-    onProgress: updateSolveProgress,
+    onProgress: solveOnProgress,
     progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
     onComplete: solveOnComplete,
-    onFail: failSolveJob,
+    onFail: solveOnFail,
     labelFn: (job) => job.nodeLabel,
     jobIdFn: (job) => job.jobId,
     isComplete: (s) => s.status === "completed",
@@ -159,9 +177,9 @@ export default function useBackgroundJobs() {
     [],
   )
   const trainOnComplete = useCallback(
-    (nodeId: string, status: TrainProgress) => {
+    (nodeId: string, jobId: string, status: TrainProgress) => {
       if (!status.result) return
-      completeTrainJob(nodeId, status.result, status)
+      completeTrainJob(nodeId, jobId, status.result, status)
     },
     [completeTrainJob],
   )
@@ -202,9 +220,9 @@ export default function useBackgroundJobs() {
     [],
   )
   const pivotOnComplete = useCallback(
-    (key: string, status: ExplorePivotProgress) => {
+    (key: string, jobId: string, status: ExplorePivotProgress) => {
       if (!status.result) return
-      completeExplorePivotJob(key, status.result, status)
+      completeExplorePivotJob(key, jobId, status.result, status)
     },
     [completeExplorePivotJob],
   )
@@ -247,12 +265,16 @@ export default function useBackgroundJobs() {
     (jobId: string, signal: AbortSignal) => getNodeDataStatus(jobId, { signal }),
     [],
   )
+  const nodeDataOnProgress = useCallback(
+    (slotKey: string, _jobId: string, status: NodeDataStatusResponse) => updateNodeDataProgress(slotKey, status),
+    [updateNodeDataProgress],
+  )
   const nodeDataOnComplete = useCallback(
-    (slotKey: string, status: NodeDataStatusResponse) => finishNodeDataJob(slotKey, status),
+    (slotKey: string, _jobId: string, status: NodeDataStatusResponse) => finishNodeDataJob(slotKey, status),
     [finishNodeDataJob],
   )
   const nodeDataOnFail = useCallback(
-    (slotKey: string, _message: string, status?: NodeDataStatusResponse) => {
+    (slotKey: string, _jobId: string, _message: string, status?: NodeDataStatusResponse) => {
       void _message
       finishNodeDataJob(slotKey, status ?? null)
     },
@@ -262,7 +284,7 @@ export default function useBackgroundJobs() {
   useJobPolling<NodeDataSlotJob, NodeDataStatusResponse>({
     jobs: nodeDataJobs,
     pollFn: nodeDataPollFn,
-    onProgress: updateNodeDataProgress,
+    onProgress: nodeDataOnProgress,
     progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
     onComplete: nodeDataOnComplete,
     onFail: nodeDataOnFail,
@@ -287,12 +309,16 @@ export default function useBackgroundJobs() {
   const profileJobs = useNodeDataStore((s) => s.profileJobs)
   const updateProfileProgress = useNodeDataStore((s) => s.updateProfileProgress)
   const finishProfileJob = useNodeDataStore((s) => s.finishProfileJob)
+  const profileOnProgress = useCallback(
+    (slotKey: string, _jobId: string, status: NodeDataStatusResponse) => updateProfileProgress(slotKey, status),
+    [updateProfileProgress],
+  )
   const profileOnComplete = useCallback(
-    (slotKey: string, status: NodeDataStatusResponse) => finishProfileJob(slotKey, status),
+    (slotKey: string, _jobId: string, status: NodeDataStatusResponse) => finishProfileJob(slotKey, status),
     [finishProfileJob],
   )
   const profileOnFail = useCallback(
-    (slotKey: string, _message: string, status?: NodeDataStatusResponse) => {
+    (slotKey: string, _jobId: string, _message: string, status?: NodeDataStatusResponse) => {
       void _message
       finishProfileJob(slotKey, status ?? null)
     },
@@ -302,7 +328,7 @@ export default function useBackgroundJobs() {
   useJobPolling<NodeDataSlotJob, NodeDataStatusResponse>({
     jobs: profileJobs,
     pollFn: nodeDataPollFn,
-    onProgress: updateProfileProgress,
+    onProgress: profileOnProgress,
     progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
     onComplete: profileOnComplete,
     onFail: profileOnFail,

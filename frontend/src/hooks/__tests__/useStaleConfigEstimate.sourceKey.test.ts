@@ -109,7 +109,7 @@ describe("solve/train cached results carry source identity", () => {
   it("completeTrainJob stamps the job's source and structuralVersion onto the cached result", () => {
     const store = useNodeResultsStore.getState()
     store.startTrainJob("node_1", "job_1", "Model Training", "hash_a", "source_a", 3)
-    useNodeResultsStore.getState().completeTrainJob("node_1", {
+    useNodeResultsStore.getState().completeTrainJob("node_1", "job_1", {
       status: "completed",
       metrics: {},
       feature_importance: [],

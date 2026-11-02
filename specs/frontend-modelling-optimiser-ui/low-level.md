@@ -848,8 +848,9 @@ The behavioural contract is defined in
   lineage to `startTrainJob`, so an edit made while the request is pending never relabels the job.
   A fence-current `completeTrainJob` writes the handle — job ID, config hash, source and that
   lineage — under the job's document (`documentFence.sourceFile`); a job started without a lineage
-  is never remembered; a fence-current error result, failure (`failTrainJob`) or direct completion
-  without a job forgets the node's handle, and a job whose document changed touches no handle.
+  is never remembered; a fence-current error result or failure (`failTrainJob`, including a refused
+  start, recorded as a failed `startup-failure:<nodeId>` job) forgets the node's handle, and a job
+  whose document changed touches no handle.
   `ModellingConfig`, through `useTrainedJobRestore`, reads the handle when the node has neither a
   result nor a running job: a completed result is put back with `restoreTrainResult`, keeping the
   stored config hash and source, with the current structural version when the `trainingLineage`

@@ -3213,7 +3213,8 @@ describe("App integration - a Model Training node's results panel", () => {
   })
 
   it("shows the results, and no such message, when a result is present", async () => {
-    useNodeResultsStore.getState().completeTrainJob("model", makeTrainResult())
+    useNodeResultsStore.getState().startTrainJob("model", "job-1", "Claims Model", "config", "live", 0)
+    useNodeResultsStore.getState().completeTrainJob("model", "job-1", makeTrainResult())
     await openModelNode()
 
     expect(await screen.findByRole("tablist", { name: "Model result panes" }, { timeout: 10_000 })).toBeTruthy()

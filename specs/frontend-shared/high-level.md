@@ -450,11 +450,13 @@ therefore fail at the caller, consistent with the application's fail-loud policy
 > resolution is pending, losing an earlier change. Retaining the pending draft
 > is tracked in [FSH-R10](../roadmap/frontend-shared.md#fsh-r10--retain-edits-during-input-identity-resolution).
 
-> NOTE: Pivot cancellation can retire a newer job or label an old result with its
-> identity; training cancellation has the same missing response-ownership guard.
-> Job and document fencing is tracked in
-> [FSH-R11](../roadmap/frontend-shared.md#fsh-r11--cancellation-replies-belong-to-one-job).
-
+- A job reply belongs to the job it was asked about. Polling and Cancel name
+  the job id with every progress, completion and failure they hand the results
+  store, and the store changes nothing when the node's or pivot's active job
+  has another id; a Cancel reply also applies only while the document it was
+  sent for is current. A late reply for an earlier pivot, training or solve
+  therefore never retires a newer job or labels its result with the newer
+  calculation's identity.
 - A non-2xx HTTP response becomes an `ApiError` with `status`/`detail`;
   `loadPipeline` follows the same fail-loud rule as other endpoints and does
   not invent an empty graph for a 404.

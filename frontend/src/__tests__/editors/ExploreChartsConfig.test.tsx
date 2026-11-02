@@ -157,7 +157,7 @@ function seedFreshPivot(sourcePivot: ExplorePivotConfig) {
     "pricing",
     0,
   )
-  useNodeResultsStore.getState().completeExplorePivotJob(key, result(sourcePivot))
+  useNodeResultsStore.getState().completeExplorePivotJob(key, "pivot-job", result(sourcePivot))
   seedSharedProfile("explore_1")
 }
 
@@ -1341,7 +1341,7 @@ describe("ExploreChartsConfig", () => {
     ).toBeVisible()
     loading.unmount()
 
-    useNodeResultsStore.getState().failExplorePivotJob(key, "boom")
+    useNodeResultsStore.getState().failExplorePivotJob(key, "pivot-loading", "boom")
     const errored = openConfigure()
     expect(
       screen.getByText(

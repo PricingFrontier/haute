@@ -93,7 +93,7 @@ describe("useJobPolling", () => {
       await advance(500)
 
       expect(pollFn).toHaveBeenCalledWith("j1", expect.any(AbortSignal))
-      expect(onProgress).toHaveBeenCalledWith("n1", {
+      expect(onProgress).toHaveBeenCalledWith("n1", "j1", {
         status: "running",
         progress: 0.5,
         message: "Working",
@@ -123,7 +123,7 @@ describe("useJobPolling", () => {
       await advance(500)
 
       expect(onComplete).toHaveBeenCalledTimes(1)
-      expect(onComplete).toHaveBeenCalledWith("n1", expect.objectContaining({ result }))
+      expect(onComplete).toHaveBeenCalledWith("n1", "j1", expect.objectContaining({ result }))
       expect(addToast).toHaveBeenCalledWith("success", "Job complete: Node 1")
     })
 
@@ -147,7 +147,7 @@ describe("useJobPolling", () => {
 
       await advance(500)
 
-      expect(onFail).toHaveBeenCalledWith("n1", "Infeasible", {
+      expect(onFail).toHaveBeenCalledWith("n1", "j1", "Infeasible", {
         status: "error",
         progress: 0,
         message: "Infeasible",
@@ -208,7 +208,7 @@ describe("useJobPolling", () => {
 
       await advance(500)
       expect(onProgress).toHaveBeenCalledTimes(1)
-      expect(onProgress).toHaveBeenLastCalledWith("n1", expect.objectContaining({ progress: 0.1 }))
+      expect(onProgress).toHaveBeenLastCalledWith("n1", "j1", expect.objectContaining({ progress: 0.1 }))
 
       await advance(1500)
       expect(pollFn.mock.calls.length).toBeGreaterThan(1)
@@ -217,10 +217,10 @@ describe("useJobPolling", () => {
       await advance(2000)
       expect(onProgress.mock.calls.length).toBeGreaterThanOrEqual(2)
       expect(onProgress.mock.calls.length).toBeLessThan(pollFn.mock.calls.length)
-      expect(onProgress).toHaveBeenLastCalledWith("n1", expect.objectContaining({
+      expect(onProgress).toHaveBeenLastCalledWith("n1", "j1", expect.objectContaining({
         progress: expect.any(Number),
       }))
-      expect(onProgress.mock.lastCall?.[1].progress).toBeGreaterThan(0.1)
+      expect(onProgress.mock.lastCall?.[2].progress).toBeGreaterThan(0.1)
     })
     it("does not delay completion behind a pending throttled progress update", async () => {
       const result = { value: 42 }
@@ -255,7 +255,7 @@ describe("useJobPolling", () => {
 
       await advance(2000)
       expect(onComplete).toHaveBeenCalledTimes(1)
-      expect(onComplete).toHaveBeenCalledWith("n1", expect.objectContaining({ result }))
+      expect(onComplete).toHaveBeenCalledWith("n1", "j1", expect.objectContaining({ result }))
 
       await advance(2000)
       expect(onProgress).toHaveBeenCalledTimes(1)
@@ -285,7 +285,7 @@ describe("useJobPolling", () => {
 
       await advance(2000)
       expect(onFail).toHaveBeenCalledTimes(1)
-      expect(onFail).toHaveBeenCalledWith("n1", "Failed", {
+      expect(onFail).toHaveBeenCalledWith("n1", "j1", "Failed", {
         status: "error",
         progress: 0.2,
         message: "Failed",
@@ -411,7 +411,7 @@ describe("useJobPolling", () => {
       // MAX_LIFETIME_MS = 24 * 60 * 60 * 1000
       await advance(86_400_500)
 
-      expect(onFail).toHaveBeenCalledWith("n1", "Job timed out after 24 hours")
+      expect(onFail).toHaveBeenCalledWith("n1", "j1", "Job timed out after 24 hours")
       expect(addToast).toHaveBeenCalledWith(
         "error",
         "Job failed: Node 1 - Job timed out after 24 hours",
@@ -468,13 +468,13 @@ describe("useJobPolling", () => {
         await Promise.resolve()
       })
 
-      expect(onProgress).not.toHaveBeenCalledWith("n1", expect.objectContaining({
+      expect(onProgress).not.toHaveBeenCalledWith("n1", expect.any(String), expect.objectContaining({
         message: "Old job progress",
       }))
 
       await advance(500)
       expect(pollFn).toHaveBeenCalledWith("new-job", expect.any(AbortSignal))
-      expect(onProgress).toHaveBeenCalledWith("n1", expect.objectContaining({
+      expect(onProgress).toHaveBeenCalledWith("n1", "new-job", expect.objectContaining({
         message: "New job progress",
       }))
     })
@@ -516,13 +516,13 @@ describe("useJobPolling", () => {
         await Promise.resolve()
       })
 
-      expect(onProgress).not.toHaveBeenCalledWith("n1", expect.objectContaining({
+      expect(onProgress).not.toHaveBeenCalledWith("n1", expect.any(String), expect.objectContaining({
         message: "Old job progress",
       }))
 
       await advance(500)
       expect(pollFn).toHaveBeenCalledWith("new-job", expect.any(AbortSignal))
-      expect(onProgress).toHaveBeenCalledWith("n1", expect.objectContaining({
+      expect(onProgress).toHaveBeenCalledWith("n1", "new-job", expect.objectContaining({
         message: "Replacement job progress",
       }))
     })

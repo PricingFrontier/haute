@@ -136,9 +136,9 @@ describe("useNodeResultsStore", () => {
     store.startExplorePivotJob("n1", "pivot", "n1", "p1", "Explore", "Pivot", "calculation", "live", 7)
     const progress = { status: "running" as const, progress: 0.5, message: "Still working", elapsed_seconds: 5, iteration: 3, total_iterations: 6, train_loss: {}, failure: null, terminal_reason: null, execution_metrics: null }
     const update = () => {
-      store.updateTrainProgress("n1", progress)
+      store.updateTrainProgress("n1", "train", progress)
       store.updateSolveProgress("n1", progress)
-      store.updateExplorePivotProgress("n1", { ...progress, result: null })
+      store.updateExplorePivotProgress("n1", "pivot", { ...progress, result: null })
     }
     const collections = ["trainJobs", "solveJobs", "pivotJobs"] as const
     document.acknowledgeSave("r2")
@@ -368,7 +368,7 @@ describe("useNodeResultsStore", () => {
     it("updateTrainProgress attaches progress to active job", () => {
       const s = useNodeResultsStore.getState()
       s.startTrainJob("t1", "tj-1", "Train Node", "h", "live", 0)
-      s.updateTrainProgress("t1", {
+      s.updateTrainProgress("t1", "tj-1", {
         status: "running",
         progress: 0.7,
         message: "Training...",
@@ -384,7 +384,7 @@ describe("useNodeResultsStore", () => {
     })
 
     it("updateTrainProgress is a no-op for unknown node", () => {
-      useNodeResultsStore.getState().updateTrainProgress("nope", {
+      useNodeResultsStore.getState().updateTrainProgress("nope", "tj-x", {
         status: "running",
         progress: 0.5,
         message: "x",
@@ -400,7 +400,7 @@ describe("useNodeResultsStore", () => {
       const s = useNodeResultsStore.getState()
       s.startTrainJob("t1", "tj-1", "Train Node", "cfg-hash", "live", 0)
       const result = makeTrainResult()
-      s.completeTrainJob("t1", result)
+      s.completeTrainJob("t1", "tj-1", result)
 
       const updated = useNodeResultsStore.getState()
       expect(updated.trainJobs["t1"]).toBeUndefined()
@@ -410,23 +410,23 @@ describe("useNodeResultsStore", () => {
       expect(updated.trainResults["t1"].configHash).toBe("cfg-hash")
     })
 
-    it("completeTrainJob works even without an active job (direct completion)", () => {
+    it("ignores a training reply for a job the node no longer runs", () => {
       const s = useNodeResultsStore.getState()
-      const result = makeTrainResult()
-      s.completeTrainJob("t1", result)
+      s.completeTrainJob("t1", "tj-gone", makeTrainResult())
+      s.startTrainJob("t1", "tj-2", "Train Node", "h2", "live", 4)
+      s.updateTrainProgress("t1", "tj-1", { status: "running", progress: 0.9, message: "Old", iteration: 9, total_iterations: 10, train_loss: {}, elapsed_seconds: 9 })
+      s.completeTrainJob("t1", "tj-1", makeTrainResult())
+      s.failTrainJob("t1", "tj-1", "Old failure")
 
       const updated = useNodeResultsStore.getState()
-      // Should still be stored with empty jobId/configHash
-      expect(updated.trainResults["t1"]).toBeDefined()
-      expect(updated.trainResults["t1"].result).toEqual(result)
-      expect(updated.trainResults["t1"].jobId).toBe("")
-      expect(updated.trainResults["t1"].configHash).toBe("")
+      expect(updated.trainResults["t1"]).toBeUndefined()
+      expect(updated.trainJobs["t1"]).toMatchObject({ jobId: "tj-2", configHash: "h2", progress: null })
     })
 
     it("full lifecycle: start → update → complete", () => {
       const s = useNodeResultsStore.getState()
       s.startTrainJob("t1", "tj-1", "Train Node", "h", "live", 0)
-      s.updateTrainProgress("t1", {
+      s.updateTrainProgress("t1", "tj-1", {
         status: "running",
         progress: 0.5,
         message: "Training...",
@@ -436,7 +436,7 @@ describe("useNodeResultsStore", () => {
         elapsed_seconds: 5,
       })
       const result = makeTrainResult({ final_test_metrics: { rmse: 0.02 } })
-      s.completeTrainJob("t1", result)
+      s.completeTrainJob("t1", "tj-1", result)
 
       const final = useNodeResultsStore.getState()
       expect(Object.keys(final.trainJobs)).toHaveLength(0)
@@ -452,7 +452,7 @@ describe("useNodeResultsStore", () => {
     it("removes job from trainJobs on failure", () => {
       const s = useNodeResultsStore.getState()
       s.startTrainJob("t1", "tj-1", "Train Node", "h", "live", 0)
-      s.updateTrainProgress("t1", {
+      s.updateTrainProgress("t1", "tj-1", {
         status: "running",
         progress: 0.3,
         message: "training",
@@ -462,7 +462,7 @@ describe("useNodeResultsStore", () => {
         elapsed_seconds: 3,
       })
 
-      s.failTrainJob("t1", "Out of memory")
+      s.failTrainJob("t1", "tj-1", "Out of memory")
 
       // Job is removed from the map (prevents infinite poll-restart loop)
       expect(useNodeResultsStore.getState().trainJobs["t1"]).toBeUndefined()
@@ -489,7 +489,7 @@ describe("useNodeResultsStore", () => {
       }
 
       s.startTrainJob("t1", "tj-1", "Train Node", "h", "live", 0)
-      s.failTrainJob("t1", "Stopped", terminalStatus)
+      s.failTrainJob("t1", "tj-1", "Stopped", terminalStatus)
 
       const failedResult = useNodeResultsStore.getState().trainResults["t1"]
       expect(failedResult.terminalStatus).toEqual(terminalStatus)
@@ -497,7 +497,7 @@ describe("useNodeResultsStore", () => {
     })
 
     it("is a no-op for unknown node", () => {
-      useNodeResultsStore.getState().failTrainJob("ghost", "oops")
+      useNodeResultsStore.getState().failTrainJob("ghost", "tj-x", "oops")
       expect(useNodeResultsStore.getState().trainJobs["ghost"]).toBeUndefined()
     })
   })
@@ -516,7 +516,8 @@ describe("useNodeResultsStore", () => {
 
     it("records nothing for a node that has since got a result or a running job", () => {
       const s = useNodeResultsStore.getState()
-      s.completeTrainJob("t1", makeTrainResult())
+      s.startTrainJob("t1", "tj-1", "Train Node", "h", "live", 0)
+      s.completeTrainJob("t1", "tj-1", makeTrainResult())
       s.startTrainJob("t2", "tj-2", "Train Node", "h", "live", 0)
       s.markTrainResultExpired("t1", "tj-gone")
       s.markTrainResultExpired("t2", "tj-gone")
@@ -525,7 +526,10 @@ describe("useNodeResultsStore", () => {
 
     it.each<[string, (s: State) => void]>([
       ["training starts", (s) => s.startTrainJob("t1", "tj-2", "Train Node", "h", "live", 0)],
-      ["a result arrives", (s) => s.completeTrainJob("t1", makeTrainResult())],
+      ["a result arrives", (s) => {
+        s.startTrainJob("t1", "tj-2", "Train Node", "h", "live", 0)
+        s.completeTrainJob("t1", "tj-2", makeTrainResult())
+      }],
       [
         "a result is restored",
         (s) => s.restoreTrainResult("t1", {
@@ -555,17 +559,30 @@ describe("useNodeResultsStore", () => {
     it("keeps pivot IDs on the same node independent and completes only the matching job", () => {
       const first = start("e1", "p1")
       const second = start("e1", "p2")
-      useNodeResultsStore.getState().completeExplorePivotJob(first, makePivotResult({ pivot_id: "p1" }))
+      useNodeResultsStore.getState().completeExplorePivotJob(first, "e1-p1", makePivotResult({ pivot_id: "p1" }))
       const state = useNodeResultsStore.getState()
       expect(state.pivotResults[first]?.result?.pivot_id).toBe("p1")
       expect(state.pivotJobs[first]).toBeUndefined()
       expect(state.pivotJobs[second]).toBeDefined()
     })
 
+    it("ignores a pivot reply for a job the key no longer runs", () => {
+      const key = start("e1", "p1", "job-1")
+      useNodeResultsStore.getState().startExplorePivotJob(key, "job-2", "e1", "p1", "Node e1", "Pivot p1", "identity-2", "pricing", 3)
+      const store = useNodeResultsStore.getState()
+      store.updateExplorePivotProgress(key, "job-1", makePivotStatus({ status: "running", message: "Old" }))
+      store.completeExplorePivotJob(key, "job-1", makePivotResult({ pivot_id: "p1" }))
+      store.failExplorePivotJob(key, "job-1", "Old failure")
+
+      const state = useNodeResultsStore.getState()
+      expect(state.pivotResults[key]).toBeUndefined()
+      expect(state.pivotJobs[key]).toMatchObject({ jobId: "job-2", calculationIdentity: "identity-2", progress: null })
+    })
+
     it("retains a prior result when a refresh fails and records terminal failure metadata", () => {
       const key = start("e1", "p1", "job-1")
       const previous = makePivotResult({ pivot_id: "p1", calculation_key: "old" })
-      useNodeResultsStore.getState().completeExplorePivotJob(key, previous)
+      useNodeResultsStore.getState().completeExplorePivotJob(key, "job-1", previous)
       useNodeResultsStore.getState().startExplorePivotJob(
         key,
         "job-2",
@@ -579,7 +596,7 @@ describe("useNodeResultsStore", () => {
         "new-dataframe-cache",
       )
       const terminal = makePivotStatus({ message: "No memory" })
-      useNodeResultsStore.getState().failExplorePivotJob(key, "No memory", terminal)
+      useNodeResultsStore.getState().failExplorePivotJob(key, "job-2", "No memory", terminal)
       expect(useNodeResultsStore.getState().pivotResults[key]).toMatchObject({
         result: previous,
         error: "No memory",
@@ -613,8 +630,8 @@ describe("useNodeResultsStore", () => {
         "live-fingerprint",
       )
       const state = useNodeResultsStore.getState()
-      state.completeExplorePivotJob(completedKey, makePivotResult({ pivot_id: "completed" }))
-      state.failExplorePivotJob(failedKey, "obsolete failure")
+      state.completeExplorePivotJob(completedKey, "e1-completed", makePivotResult({ pivot_id: "completed" }))
+      state.failExplorePivotJob(failedKey, "e1-failed", "obsolete failure")
 
       expect(useNodeResultsStore.getState().pivotJobs).toEqual({})
       expect(useNodeResultsStore.getState().pivotResults).toEqual({})
@@ -624,9 +641,9 @@ describe("useNodeResultsStore", () => {
       const first = start("e1", "p1")
       const second = start("e1", "p2")
       const other = start("e10", "p1")
-      useNodeResultsStore.getState().completeExplorePivotJob(first, makePivotResult())
-      useNodeResultsStore.getState().completeExplorePivotJob(second, makePivotResult({ pivot_id: "p2" }))
-      useNodeResultsStore.getState().completeExplorePivotJob(other, makePivotResult({ node_id: "e10" }))
+      useNodeResultsStore.getState().completeExplorePivotJob(first, "e1-p1", makePivotResult())
+      useNodeResultsStore.getState().completeExplorePivotJob(second, "e1-p2", makePivotResult({ pivot_id: "p2" }))
+      useNodeResultsStore.getState().completeExplorePivotJob(other, "e10-p1", makePivotResult({ node_id: "e10" }))
       const pending = start("e1", "pending")
       const pendingOther = start("e10", "pending")
       useNodeResultsStore.getState().clearNode("e1")
@@ -641,7 +658,7 @@ describe("useNodeResultsStore", () => {
     it("enforces the pivot result LRU cap", () => {
       for (let index = 0; index < MAX_CACHED_EXPLORE_PIVOT_RESULTS + 1; index += 1) {
         const key = start(`e${index}`, "p1")
-        useNodeResultsStore.getState().completeExplorePivotJob(key, makePivotResult({ node_id: `e${index}` }))
+        useNodeResultsStore.getState().completeExplorePivotJob(key, `e${index}-p1`, makePivotResult({ node_id: `e${index}` }))
       }
       expect(Object.keys(useNodeResultsStore.getState().pivotResults)).toHaveLength(MAX_CACHED_EXPLORE_PIVOT_RESULTS)
     })
@@ -1036,7 +1053,7 @@ describe("useNodeResultsStore", () => {
 
       for (let i = 0; i < MAX_CACHED_TRAIN_RESULTS + 1; i += 1) {
         s.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`, "live", 0)
-        s.completeTrainJob(`t${i}`, makeTrainResult({ final_test_metrics: { rmse: i } }))
+        s.completeTrainJob(`t${i}`, `job-${i}`, makeTrainResult({ final_test_metrics: { rmse: i } }))
       }
 
       const { trainJobs, trainResults } = useNodeResultsStore.getState()
@@ -1051,11 +1068,11 @@ describe("useNodeResultsStore", () => {
 
       for (let i = 0; i < MAX_CACHED_TRAIN_RESULTS; i += 1) {
         s.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`, "live", 0)
-        s.completeTrainJob(`t${i}`, makeTrainResult({ final_test_metrics: { rmse: i } }))
+        s.completeTrainJob(`t${i}`, `job-${i}`, makeTrainResult({ final_test_metrics: { rmse: i } }))
       }
       expect(s.getModellingPreview("t0")).not.toBeNull()
       s.startTrainJob("t-new", "job-new", "Train new", "hash-new", "live", 0)
-      s.failTrainJob("t-new", "Training failed")
+      s.failTrainJob("t-new", "job-new", "Training failed")
 
       const { trainResults } = useNodeResultsStore.getState()
       expect(Object.keys(trainResults)).toHaveLength(MAX_CACHED_TRAIN_RESULTS)
@@ -1068,12 +1085,12 @@ describe("useNodeResultsStore", () => {
 
       for (let i = 0; i < MAX_CACHED_TRAIN_RESULTS; i += 1) {
         s.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`, "live", 0)
-        s.completeTrainJob(`t${i}`, makeTrainResult({ final_test_metrics: { rmse: i } }))
+        s.completeTrainJob(`t${i}`, `job-${i}`, makeTrainResult({ final_test_metrics: { rmse: i } }))
       }
       expect(s.getModellingPreview("t0")).not.toBeNull()
       s.touchModellingPreview("t0")
       s.startTrainJob("t-new", "job-new", "Train new", "hash-new", "live", 0)
-      s.completeTrainJob("t-new", makeTrainResult({ final_test_metrics: { rmse: 999 } }))
+      s.completeTrainJob("t-new", "job-new", makeTrainResult({ final_test_metrics: { rmse: 999 } }))
 
       const { trainResults } = useNodeResultsStore.getState()
       expect(Object.keys(trainResults)).toHaveLength(MAX_CACHED_TRAIN_RESULTS)
@@ -1087,13 +1104,13 @@ describe("useNodeResultsStore", () => {
 
       for (let i = 0; i < MAX_CACHED_TRAIN_RESULTS; i += 1) {
         s.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`, "live", 0)
-        s.completeTrainJob(`t${i}`, makeTrainResult({ final_test_metrics: { rmse: i } }))
+        s.completeTrainJob(`t${i}`, `job-${i}`, makeTrainResult({ final_test_metrics: { rmse: i } }))
       }
       s.setPinnedPreviewNodeId("t0")
       s.startTrainJob("t-new-1", "job-new-1", "Train new 1", "hash-new-1", "live", 0)
-      s.completeTrainJob("t-new-1", makeTrainResult({ final_test_metrics: { rmse: 998 } }))
+      s.completeTrainJob("t-new-1", "job-new-1", makeTrainResult({ final_test_metrics: { rmse: 998 } }))
       s.startTrainJob("t-new-2", "job-new-2", "Train new 2", "hash-new-2", "live", 0)
-      s.completeTrainJob("t-new-2", makeTrainResult({ final_test_metrics: { rmse: 999 } }))
+      s.completeTrainJob("t-new-2", "job-new-2", makeTrainResult({ final_test_metrics: { rmse: 999 } }))
 
       const { trainResults } = useNodeResultsStore.getState()
       expect(Object.keys(trainResults)).toHaveLength(MAX_CACHED_TRAIN_RESULTS)
@@ -1129,7 +1146,7 @@ describe("useNodeResultsStore", () => {
       s.touchModellingPreview("missing-train")
 
       s.startTrainJob("t-error", "job-error", "Train error", "hash-error", "live", 0)
-      s.failTrainJob("t-error", "Training failed")
+      s.failTrainJob("t-error", "job-error", "Training failed")
       s.touchModellingPreview("t-error")
 
       expect(useNodeResultsStore.getState().solveResults["missing-solve"]).toBeUndefined()
@@ -2172,7 +2189,7 @@ describe("useNodeResultsStore", () => {
     it("getModellingPreview returns null when train result has error status", () => {
       const s = useNodeResultsStore.getState()
       s.startTrainJob("t1", "tj-1", "Model Node", "cfg-h", "live", 0)
-      s.completeTrainJob("t1", makeTrainResult({ status: "error", error: "OOM" }))
+      s.completeTrainJob("t1", "tj-1", makeTrainResult({ status: "error", error: "OOM" }))
 
       const preview = useNodeResultsStore.getState().getModellingPreview("t1")
       expect(preview).toBeNull()
@@ -2181,7 +2198,7 @@ describe("useNodeResultsStore", () => {
     it("getModellingPreview returns result when status is 'completed'", () => {
       const s = useNodeResultsStore.getState()
       s.startTrainJob("t1", "tj-1", "Model Node", "cfg-h", "live", 0)
-      s.completeTrainJob("t1", makeTrainResult({ status: "completed" }))
+      s.completeTrainJob("t1", "tj-1", makeTrainResult({ status: "completed" }))
 
       const preview = useNodeResultsStore.getState().getModellingPreview("t1")
       expect(preview).not.toBeNull()
@@ -2198,7 +2215,7 @@ describe("useNodeResultsStore", () => {
       const s = useNodeResultsStore.getState()
       // Start a job, complete it, then start another job for the same node
       s.startTrainJob("t1", "tj-1", "First Label", "h1", "live", 0)
-      s.completeTrainJob("t1", makeTrainResult())
+      s.completeTrainJob("t1", "tj-1", makeTrainResult())
       // Start a new job (different config) — old result still cached
       s.startTrainJob("t1", "tj-2", "Updated Label", "h2", "live", 0)
 
@@ -2210,8 +2227,8 @@ describe("useNodeResultsStore", () => {
 
     it("getModellingPreview falls back to 'Model' when no active job", () => {
       const s = useNodeResultsStore.getState()
-      // Complete directly without a job (direct completion path)
-      s.completeTrainJob("t1", makeTrainResult())
+      // A restored result has no active job
+      s.restoreTrainResult("t1", { result: makeTrainResult(), terminalStatus: null, jobId: "tj-1", configHash: "h", source: "live", structuralVersion: 0 })
 
       const preview = useNodeResultsStore.getState().getModellingPreview("t1")
       expect(preview).not.toBeNull()
@@ -2284,7 +2301,7 @@ describe("useNodeResultsStore", () => {
       expect(useNodeResultsStore.getState().trainJobs["n1"]).toBeDefined()
 
       // Complete train — solve result should still be there
-      s.completeTrainJob("n1", makeTrainResult())
+      s.completeTrainJob("n1", "tj-1", makeTrainResult())
       expect(useNodeResultsStore.getState().trainResults["n1"]).toBeDefined()
       expect(useNodeResultsStore.getState().solveResults["n1"]).toBeDefined()
     })
@@ -2446,7 +2463,7 @@ describe("useNodeResultsStore", () => {
     it("getModellingPreview returns same reference on repeated calls", () => {
       const s = useNodeResultsStore.getState()
       s.startTrainJob("n1", "j1", "Model", "h1", "live", 0)
-      s.completeTrainJob("n1", makeTrainResult())
+      s.completeTrainJob("n1", "j1", makeTrainResult())
 
       const a = useNodeResultsStore.getState().getModellingPreview("n1")
       const b = useNodeResultsStore.getState().getModellingPreview("n1")
@@ -2456,11 +2473,12 @@ describe("useNodeResultsStore", () => {
     it("getModellingPreview returns new reference after state change", () => {
       const s = useNodeResultsStore.getState()
       s.startTrainJob("n1", "j1", "Model", "h1", "live", 0)
-      s.completeTrainJob("n1", makeTrainResult())
+      s.completeTrainJob("n1", "j1", makeTrainResult())
 
       const a = useNodeResultsStore.getState().getModellingPreview("n1")
       // Overwrite with a new result
-      s.completeTrainJob("n1", makeTrainResult({ status: "completed", final_test_metrics: { rmse: 0.01 } }))
+      s.startTrainJob("n1", "j2", "Model", "h1", "live", 0)
+      s.completeTrainJob("n1", "j2", makeTrainResult({ status: "completed", final_test_metrics: { rmse: 0.01 } }))
       const b = useNodeResultsStore.getState().getModellingPreview("n1")
       expect(a).not.toBe(b)
     })
@@ -2468,13 +2486,13 @@ describe("useNodeResultsStore", () => {
     it("getModellingPreview keeps its reference across active job progress updates", () => {
       const s = useNodeResultsStore.getState()
       s.startTrainJob("n1", "j1", "Initial Label", "h1", "live", 0)
-      s.completeTrainJob("n1", makeTrainResult())
+      s.completeTrainJob("n1", "j1", makeTrainResult())
       s.startTrainJob("n1", "j2", "Updated Label", "h2", "live", 0)
 
       const beforeProgress = useNodeResultsStore.getState().getModellingPreview("n1")
       expect(beforeProgress!.nodeLabel).toBe("Updated Label")
 
-      s.updateTrainProgress("n1", {
+      s.updateTrainProgress("n1", "j2", {
         status: "running",
         progress: 0.25,
         message: "training",
@@ -2493,7 +2511,7 @@ describe("useNodeResultsStore", () => {
     it("getModellingPreview returns null for error results", () => {
       const s = useNodeResultsStore.getState()
       s.startTrainJob("n1", "j1", "Model", "h1", "live", 0)
-      s.failTrainJob("n1", "boom")
+      s.failTrainJob("n1", "j1", "boom")
 
       expect(useNodeResultsStore.getState().getModellingPreview("n1")).toBeNull()
     })

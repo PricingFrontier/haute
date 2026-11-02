@@ -8,7 +8,11 @@ const CONSECUTIVE_FAILURES_FOR_TOAST = 5
 export interface JobPollingConfig<TJob, TStatus> {
   jobs: Record<string, TJob>
   pollFn: (jobId: string, signal: AbortSignal) => Promise<TStatus>
-  onProgress: (nodeId: string, status: TStatus) => void
+  /**
+   * Each callback names the job it polled: the job record is the last
+   * committed render's, so the store may already hold a newer job for the key.
+   */
+  onProgress: (nodeId: string, jobId: string, status: TStatus) => void
   progressThrottleMs?: number
   /**
    * Opts into progress-aware backoff: the signature of the progress a status
@@ -17,8 +21,8 @@ export interface JobPollingConfig<TJob, TStatus> {
    * while unchanged or after errors. Without it every poll backs off.
    */
   progressKey?: (status: TStatus) => string
-  onComplete: (nodeId: string, result: TStatus) => void
-  onFail: (nodeId: string, errorMsg: string, terminalStatus?: TStatus) => void
+  onComplete: (nodeId: string, jobId: string, result: TStatus) => void
+  onFail: (nodeId: string, jobId: string, errorMsg: string, terminalStatus?: TStatus) => void
   labelFn: (job: TJob) => string
   jobIdFn: (job: TJob) => string
   isComplete: (status: TStatus) => boolean
@@ -214,7 +218,7 @@ export class JobPollingController<TJob, TStatus> {
     if (!this.isCurrent(nodeId, state)) return
     const job = this.config.jobs[nodeId]
     this.retire(nodeId, state)
-    this.config.onFail(nodeId, "Job timed out after 24 hours")
+    this.config.onFail(nodeId, state.jobId, "Job timed out after 24 hours")
     this.config.addToast("error", `${this.config.failLabel}: ${this.config.labelFn(job)} - Job timed out after 24 hours`)
   }
 
@@ -254,11 +258,11 @@ export class JobPollingController<TJob, TStatus> {
     if (this.config.isComplete(status) || this.config.isError(status)) {
       this.retire(nodeId, state)
       if (this.config.isComplete(status) && this.config.getResult(status)) {
-        this.config.onComplete(nodeId, this.config.getResult(status)!)
+        this.config.onComplete(nodeId, state.jobId, this.config.getResult(status)!)
         this.config.addToast("success", `${this.config.successLabel}: ${this.config.labelFn(job)}`)
       } else {
         const message = this.config.getErrorMessage(status) || "Unknown error"
-        this.config.onFail(nodeId, message, status)
+        this.config.onFail(nodeId, state.jobId, message, status)
         this.config.addToast("error", `${this.config.failLabel}: ${this.config.labelFn(job)} - ${message}`)
       }
       return
@@ -291,7 +295,7 @@ export class JobPollingController<TJob, TStatus> {
     const terminalMessage = this.config.getTerminalPollErrorMessage?.(error)
     if (terminalMessage) {
       this.retire(nodeId, state)
-      this.config.onFail(nodeId, terminalMessage)
+      this.config.onFail(nodeId, state.jobId, terminalMessage)
       this.config.addToast("error", `${this.config.failLabel}: ${this.config.labelFn(job)} - ${terminalMessage}`)
       return
     }
@@ -329,6 +333,6 @@ export class JobPollingController<TJob, TStatus> {
     this.clearPendingProgress(state)
     if (!this.isCurrent(nodeId, state)) return
     state.lastProgressPublishedAt = Date.now()
-    this.config.onProgress(nodeId, status)
+    this.config.onProgress(nodeId, state.jobId, status)
   }
 }

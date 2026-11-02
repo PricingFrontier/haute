@@ -166,12 +166,9 @@
   A failed solve with no earlier result is cached with `result` and
   `originalResult` `null` and its `error`; no result is fabricated for it (no zero
   objective or baseline), `getOptimiserPreview` returns `null` for it, and the
-  point-selection actions ignore it. A
-  direct `complete*Job` call with no active job recorded (no in-flight
-  `ActiveSolveJob`/`ActiveTrainJob` to read `source`/`structuralVersion`
-  from) falls back to `source: ""` and `structuralVersion: -1` — sentinels
-  that can never equal a real value, so the record reads as stale rather
-  than silently matching whatever the caller happens to be viewing.
+  point-selection actions ignore it. Every result is stored from the active
+  job that produced it, with that job's `source` and `structuralVersion`; a
+  completion with no matching active job stores nothing.
 - **`CachedExplorePivotResult` / `ActiveExplorePivotJob`** (`stores/useNodeResultsStore.ts`): records keyed by
   `${exploreNodeId}:${pivotId}`. A cached matrix stores its backend calculation identity and
   dataframe-cache key; an active job stores the same composite ownership plus job id/source.
@@ -418,7 +415,30 @@ progress behind the retry loop. Reconciliation aborts and retires a
 poller when its node disappears or the same node is replaced by a different
 job id; completions from retired identities cannot publish progress or
 terminal state. Controller disposal performs the same retirement for every
-job and leaves no timer or request alive after unmount.
+job and leaves no timer or request alive after unmount. The controller hands
+every callback the id of the job it polled (`onProgress(key, jobId, status)`,
+`onComplete(key, jobId, status)`, `onFail(key, jobId, message, status?)`):
+its own job record is the one the last render committed, so the id, not the
+key, says which job a reply is for.
+
+**Terminal-response ownership.** A progress, completion or failure applies
+only to the job it was asked about. The training and pivot actions take that
+job's id (`updateTrainProgress`, `completeTrainJob`, `failTrainJob`,
+`updateExplorePivotProgress`, `completeExplorePivotJob`,
+`failExplorePivotJob`, each `(key, jobId, ...)`) and change nothing unless the
+key's active job has that id; the solve poller checks the node's active solve
+id before calling the solve actions, as `stopOptimiserSolve` does. Cancel
+(`cancelPivot`, the modelling panel's Cancel, `stopOptimiserSolve`) captures
+the document fence before sending, drops a reply that arrives after the fence
+moved, and otherwise hands the reply to the store under the id it cancelled:
+a completed reply stores that job's result with that job's identity, a
+cancelled or failed reply retires that job, and a progress reply updates it.
+A cancel request that fails leaves the job to polling; its notice or toast is
+shown only while that job is still the active one in the same document. A
+training start that is refused, or answers anything but a started job, is
+recorded like a solve's: a `startup-failure:<nodeId>` job is started and
+failed with the error, so no result is stored without the identity it was
+attempted for.
 
 **Modal focus trap** (`ModalShell`): on mount, stashes
 `document.activeElement`, focuses the dialog container, and installs a

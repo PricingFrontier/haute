@@ -349,7 +349,8 @@ describe("App — chrome drag-frame isolation (FGC-R03)", () => {
     expect(document.querySelector('[data-testid="modelling-preview"]')).toBeNull()
 
     act(() => {
-      useNodeResultsStore.getState().completeTrainJob("n1", makeTrainResult())
+      useNodeResultsStore.getState().startTrainJob("n1", "job-1", "n1", "config", "live", 0)
+      useNodeResultsStore.getState().completeTrainJob("n1", "job-1", makeTrainResult())
     })
 
     expect(await screen.findByTestId("modelling-preview")).toHaveTextContent("n1")
