@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import os
 import pickle
 import queue
 import sys
+import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
     IsolatedWorkerCrashedError,
+    IsolatedWorkerMemoryLimitExceededError,
     IsolatedWorkerRemoteError,
     IsolatedWorkerStartError,
     IsolatedWorkerStoppedError,
@@ -115,6 +119,19 @@ def _worker_reporting_its_environment(runtime, request):
     return WorkerResultManifest(metadata={"value": os.environ.get("HAUTE_TEST_WORKER_VARIABLE")})
 
 
+def _go() -> threading.Event:
+    """The parent's go-ahead, already given: an in-process entrypoint runs its job at once."""
+    go = threading.Event()
+    go.set()
+    return go
+
+
+def _past_ready(results: Any) -> Any:
+    """The child's result, past its ready report when it got that far."""
+    message = results.get_nowait()
+    return results.get_nowait() if message[0] == "ready" else message
+
+
 def _request() -> WorkerRequest:
     return WorkerRequest("request-1", "training", {"items": [1, True, None]})
 
@@ -152,6 +169,7 @@ def test_protocol_entrypoint_installs_the_shared_native_lease(
     _protocol_entrypoint(
         results,
         progress,
+        _go(),
         _worker_with_progress,
         _request(),
         str(tmp_path),
@@ -160,7 +178,7 @@ def test_protocol_entrypoint_installs_the_shared_native_lease(
         allowance,
     )
 
-    status, result = results.get_nowait()  # type: ignore[misc]
+    status, result = _past_ready(results)  # type: ignore[misc]
     assert status == "ok"
     assert isinstance(result, WorkerResultManifest)
     assert applied == expected
@@ -201,7 +219,7 @@ def test_protocol_worker_starts_its_queue_feeders_before_the_cap(
     )
 
     _protocol_entrypoint(
-        results, progress, _worker_with_progress, _request(), str(tmp_path), 128, True, 0
+        results, progress, _go(), _worker_with_progress, _request(), str(tmp_path), 128, True, 0
     )
 
     assert events == ["result feeder", "progress feeder", "cap"]
@@ -230,6 +248,7 @@ def test_protocol_worker_imports_its_preload_modules_before_the_cap(
         _protocol_entrypoint(
             results,
             queue.Queue(),
+            _go(),
             _worker_with_progress,
             _request(),
             str(tmp_path / "artifacts"),
@@ -241,7 +260,7 @@ def test_protocol_worker_imports_its_preload_modules_before_the_cap(
     finally:
         sys.modules.pop("haute_preload_probe", None)
 
-    status, _result = results.get_nowait()  # type: ignore[misc]
+    status, _result = _past_ready(results)  # type: ignore[misc]
     assert status == "ok"
     assert loaded_at_cap == [True]
 
@@ -270,6 +289,7 @@ def test_a_preload_that_fails_is_a_curated_failure_before_any_cap(
         _protocol_entrypoint(
             results,
             queue.Queue(),
+            _go(),
             lambda runtime, request: ran.append(True),
             _request(),
             str(tmp_path / "artifacts"),
@@ -281,7 +301,7 @@ def test_a_preload_that_fails_is_a_curated_failure_before_any_cap(
     finally:
         sys.modules.pop("haute_failing_preload", None)
 
-    status, failure = results.get_nowait()  # type: ignore[misc]
+    status, failure = _past_ready(results)  # type: ignore[misc]
     assert status == "error"
     assert failure.terminal_reason == "error"
     assert failure.error_type == "ImportError"
@@ -312,10 +332,18 @@ def test_a_required_cap_the_host_cannot_install_is_a_contract_error(
     monkeypatch.setattr(NativeMemoryLease, "apply", refuse)
 
     _protocol_entrypoint(
-        results, queue.Queue(), _worker_with_progress, _request(), str(tmp_path), 128, True, 0
+        results,
+        queue.Queue(),
+        _go(),
+        _worker_with_progress,
+        _request(),
+        str(tmp_path),
+        128,
+        True,
+        0,
     )
 
-    status, failure = results.get_nowait()  # type: ignore[misc]
+    status, failure = _past_ready(results)  # type: ignore[misc]
     assert status == "error"
     assert failure.terminal_reason == "contract_error"
     assert failure.error_type == "NativeMemoryLimitUnsupportedError"
@@ -334,6 +362,7 @@ def test_a_thread_that_cannot_start_under_the_cap_is_a_memory_limit_failure(
     _protocol_entrypoint(
         results,
         progress,
+        _go(),
         _thread_starved_worker,
         _request(),
         str(tmp_path),
@@ -342,7 +371,7 @@ def test_a_thread_that_cannot_start_under_the_cap_is_a_memory_limit_failure(
         0,
     )
 
-    status, failure = results.get_nowait()  # type: ignore[misc]
+    status, failure = _past_ready(results)  # type: ignore[misc]
     assert status == "error"
     assert failure.terminal_reason == "memory_limited"
     assert failure.error_type == "MemoryError"
@@ -1027,3 +1056,61 @@ def test_worker_crash_is_contained_and_runs_parent_cleanup(tmp_path: Path) -> No
     assert exc_info.value.exitcode == 23
     assert cleaned == ["crash"]
     assert 1 + 1 == 2
+
+
+_MIB = 1024 * 1024
+
+
+@pytest.mark.parametrize(
+    "module", ["tests._spawned_heavy_import", "tests._spawned_without_native_cap"]
+)
+def test_a_protocol_worker_s_heavy_import_is_not_charged_to_its_job(
+    tmp_path: Path, module: str
+) -> None:
+    """A training child preloads a model library before its cap: the watchdog's baseline is
+    the child once ready, so a job that fits its growth budget is not stopped for the import."""
+    fixture = importlib.import_module(module)
+    result = run_worker_protocol(
+        fixture.allocate_in_protocol,
+        WorkerRequest("heavy", "training", {"mib": 150, "hold_seconds": 2.0}),
+        artifact_root=tmp_path / "artifacts",
+        artifact_kinds=frozenset(),
+        max_artifact_size_bytes=0,
+        config=IsolatedWorkerConfig(timeout_seconds=120, memory_limit_bytes=256 * _MIB),
+    )
+
+    assert result.metadata == {"mib": 150}
+
+
+def test_a_protocol_worker_without_a_native_cap_is_stopped_past_its_budget(
+    tmp_path: Path,
+) -> None:
+    from tests import _spawned_without_native_cap as fixture
+
+    with pytest.raises(IsolatedWorkerMemoryLimitExceededError):
+        run_worker_protocol(
+            fixture.allocate_in_protocol,
+            WorkerRequest("grows", "training", {"mib": 400, "hold_seconds": 5.0}),
+            artifact_root=tmp_path / "artifacts",
+            artifact_kinds=frozenset(),
+            max_artifact_size_bytes=0,
+            config=IsolatedWorkerConfig(timeout_seconds=120, memory_limit_bytes=128 * _MIB),
+        )
+
+
+def test_a_protocol_worker_that_never_reports_ready_fails_and_is_cleaned_up(
+    tmp_path: Path,
+) -> None:
+    from tests import _spawned_slow_import as fixture
+
+    started = time.monotonic()
+    with pytest.raises(IsolatedWorkerStartError, match="did not report ready"):
+        run_worker_protocol(
+            fixture.never_runs,
+            WorkerRequest("hangs", "training", {}),
+            artifact_root=tmp_path / "artifacts",
+            artifact_kinds=frozenset(),
+            max_artifact_size_bytes=0,
+            config=IsolatedWorkerConfig(timeout_seconds=120, startup_timeout_seconds=2),
+        )
+    assert time.monotonic() - started < 60

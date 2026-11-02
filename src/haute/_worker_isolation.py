@@ -24,6 +24,7 @@ from haute._native_memory_limit import (
     memory_error_for_thread_start_failure,
     native_memory_backend_scope,
     native_memory_caps_supported,
+    start_polars_thread_pools,
 )
 from haute._parent_watch import PARENT_PID_ENV, exit_with_parent
 from haute._polars_environment import release_polars_spill_dir
@@ -51,6 +52,17 @@ WorkerMemoryEnforcement = Literal["best_effort", "required"]
 _WORKER_MEMORY_ENFORCEMENT_ENV = "HAUTE_WORKER_MEMORY_ENFORCEMENT"
 
 
+#: How long a spawned one-shot or protocol worker may take, from its start, to import what
+#: it runs, start its Polars thread pools and attempt its native cap, before it reports
+#: ready. The heaviest supported set (Polars with CatBoost, LightGBM, XGBoost and the
+#: training worker) took 3.8 s on a development host; cold disks and hosted runtimes are
+#: slower, so the deadline leaves a wide margin and only catches a child that hangs.
+WORKER_STARTUP_TIMEOUT_SECONDS = 120.0
+#: The resident memory such a worker may reach before it reports ready. That same set held
+#: 212 MiB; a gibibyte is about five times it, and stops a startup that runs away.
+WORKER_STARTUP_RSS_CEILING_BYTES = 1024 * 1024 * 1024
+
+
 @dataclass(frozen=True, slots=True)
 class IsolatedWorkerConfig:
     """Runtime controls for one isolated worker process."""
@@ -70,10 +82,18 @@ class IsolatedWorkerConfig:
     # Variables set for the child at spawn only (for example a library's
     # import-time thread pool size); the parent's environment is unchanged.
     environment: Mapping[str, str] = field(default_factory=dict)
+    # The supervision of a one-shot or protocol worker until it reports ready, apart
+    # from the job's own growth allowance (``memory_limit_bytes``) after it.
+    startup_timeout_seconds: float = WORKER_STARTUP_TIMEOUT_SECONDS
+    startup_rss_ceiling_bytes: int = WORKER_STARTUP_RSS_CEILING_BYTES
 
     def __post_init__(self) -> None:
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+        if self.startup_timeout_seconds <= 0:
+            raise ValueError("startup_timeout_seconds must be positive")
+        if self.startup_rss_ceiling_bytes <= 0:
+            raise ValueError("startup_rss_ceiling_bytes must be positive")
         if self.memory_limit_bytes is not None and self.memory_limit_bytes <= 0:
             raise ValueError("memory_limit_bytes must be positive")
         if self.require_memory_limit and self.memory_limit_bytes is None:
@@ -416,13 +436,94 @@ class _WorkerRssWatchdog:
             )
 
 
+WorkerStartup = Literal["ready", "result", "exited"]
+
+
+def await_worker_ready(
+    process: BaseProcess,
+    result_queue: Any,
+    *,
+    is_ready: Callable[[Any], bool],
+    config: IsolatedWorkerConfig,
+    deadline: float | None,
+) -> tuple[WorkerStartup, Any]:
+    """Supervise a spawned worker until it reports ready (parent side).
+
+    Until then the child only imports what it runs, starts its thread pools and
+    attempts its native cap, so its resident memory is held under the startup
+    ceiling and the wait ends at the startup deadline, the job's *deadline* when
+    that is earlier, or its stop reason. Returns ``("ready", None)``; the first
+    message when it is not the ready one (a failure the child reported before it
+    was ready) as ``("result", message)``; or ``("exited", None)`` for a child
+    that ended without a word, which the caller classifies as it would after the job.
+    """
+    pid = process.pid
+    if pid is None:
+        raise IsolatedWorkerStartError(
+            "Isolated worker did not expose a process id after startup",
+            terminal_reason="error",
+        )
+    startup_deadline = time.monotonic() + config.startup_timeout_seconds
+    ends_at = startup_deadline if deadline is None else min(deadline, startup_deadline)
+    while True:
+        try:
+            message = result_queue.get(timeout=config.stop_poll_interval_seconds)
+        except queue.Empty:
+            message = None
+        if message is not None:
+            return ("ready", None) if is_ready(message) else ("result", message)
+        if not process.is_alive():
+            return "exited", None
+        rss_bytes = process_rss_bytes(pid)
+        if rss_bytes is not None and rss_bytes > config.startup_rss_ceiling_bytes:
+            _terminate_process(process)
+            exceeded = IsolatedWorkerMemoryLimitExceededError(
+                rss_bytes=rss_bytes, rss_limit_bytes=config.startup_rss_ceiling_bytes
+            )
+            exceeded.add_note("The worker exceeded its startup ceiling before it reported ready.")
+            raise exceeded
+        if config.stop_reason is not None and (reason := config.stop_reason()) is not None:
+            _terminate_process(process)
+            raise IsolatedWorkerStoppedError(terminal_reason=reason)
+        if time.monotonic() >= ends_at:
+            _terminate_process(process)
+            if deadline is not None and deadline <= startup_deadline:
+                raise IsolatedWorkerTimeoutError(
+                    timeout_seconds=cast(float, config.timeout_seconds)
+                )
+            raise IsolatedWorkerStartError(
+                "Isolated worker did not report ready within "
+                f"{config.startup_timeout_seconds:g} seconds",
+                terminal_reason="error",
+            )
+
+
+def prepare_worker_for_job(memory_limit_bytes: int | None) -> None:
+    """What a worker does before it reports ready (child side): start its Polars
+    thread pools, so their threads and arenas are in the baseline its parent samples
+    and its native cap measures, not in the job's growth."""
+    if memory_limit_bytes is not None:
+        start_polars_thread_pools()
+
+
+def report_worker_ready(result_queue: Any, message: Any, go: Any) -> None:
+    """Tell the parent this worker is ready, then wait until it has armed its watchdog
+    (child side). The job runs only after, so no allocation of it is in the baseline."""
+    result_queue.put(message)
+    go.wait()
+
+
 def _create_worker_rss_watchdog(
     process: BaseProcess,
     *,
     memory_limit_bytes: int | None,
     require_memory_limit: bool,
 ) -> _WorkerRssWatchdog:
-    """Resolve a per-request RSS growth cap after the spawned child exists."""
+    """Resolve a per-request RSS growth cap from a spawned child that reported ready.
+
+    The baseline is the child's resident memory once it is ready: its imports,
+    thread pools and native cap, but none of its job.
+    """
     if memory_limit_bytes is None:
         return _WorkerRssWatchdog(None, None, require_memory_limit, False)
     pid = process.pid
@@ -724,11 +825,13 @@ def run_isolated_worker(
 
     ctx = mp.get_context("spawn")
     result_queue: mp.Queue[bytes] = create_worker_queue(ctx, 1)
+    go = ctx.Event()
     process = ctx.Process(
         target=_isolated_worker_entrypoint,
         name=worker_config.process_name,
         args=(
             result_queue,
+            go,
             function,
             args,
             kwargs,
@@ -750,16 +853,33 @@ def run_isolated_worker(
                 f"Failed to start isolated worker: {exc}",
             ) from exc
 
-        rss_watchdog = _create_worker_rss_watchdog(
-            process,
-            memory_limit_bytes=worker_config.memory_limit_bytes,
-            require_memory_limit=worker_config.require_memory_limit,
+        deadline = (
+            None
+            if worker_config.timeout_seconds is None
+            else time.monotonic() + worker_config.timeout_seconds
         )
+        startup, early = await_worker_ready(
+            process,
+            result_queue,
+            is_ready=lambda raw: _is_ready_payload(process, raw),
+            config=worker_config,
+            deadline=deadline,
+        )
+        rss_watchdog = _WorkerRssWatchdog(None, None, worker_config.require_memory_limit, False)
+        if startup == "ready":
+            rss_watchdog = _create_worker_rss_watchdog(
+                process,
+                memory_limit_bytes=worker_config.memory_limit_bytes,
+                require_memory_limit=worker_config.require_memory_limit,
+            )
+            go.set()
         queued_payload = _wait_for_worker(
             process,
             worker_config,
             result_queue,
             rss_watchdog,
+            deadline=deadline,
+            queued_payload=None if early is None else _decode_worker_payload(early),
         )
 
         # A feeder flush failure can leave a complete-looking payload in the
@@ -860,6 +980,7 @@ def run_isolated_worker(
 
 def _isolated_worker_entrypoint(
     result_queue: mp.Queue[bytes],
+    go: Any,
     function: Callable[..., Any],
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
@@ -875,6 +996,7 @@ def _isolated_worker_entrypoint(
     try:
         configure_process_high_qos()
         start_worker_queue_feeder(result_queue)
+        prepare_worker_for_job(memory_limit_bytes)
         if memory_limit_bytes is not None:
             applied = lease.apply(memory_limit_bytes, required=require_memory_limit)
     except BaseException as exc:
@@ -884,6 +1006,9 @@ def _isolated_worker_entrypoint(
         result_queue.close()
         result_queue.join_thread()
         return
+    report_worker_ready(
+        result_queue, pickle.dumps(_ready_message(), protocol=pickle.HIGHEST_PROTOCOL), go
+    )
     with native_memory_backend_scope(lease.backend if applied else None, lease):
         try:
             envelope = ("ok", function(*args, **kwargs))
@@ -899,6 +1024,18 @@ def _isolated_worker_entrypoint(
         result_queue.put(payload)
         result_queue.close()
         result_queue.join_thread()
+
+
+def _ready_message() -> tuple[str, int]:
+    return ("ready", os.getpid())
+
+
+def _is_ready_payload(process: BaseProcess, raw: Any) -> bool:
+    """Whether a one-shot worker's first message is its ready report."""
+    try:
+        return bool(pickle.loads(raw) == ("ready", process.pid))
+    except BaseException:
+        return False
 
 
 def _worker_error_envelope(exc: BaseException) -> tuple[str, tuple[str, str, str]]:
@@ -958,9 +1095,10 @@ def _wait_for_worker(
     config: IsolatedWorkerConfig,
     result_queue: mp.Queue[bytes],
     rss_watchdog: _WorkerRssWatchdog,
+    *,
+    deadline: float | None,
+    queued_payload: tuple[str, Any] | None = None,
 ) -> tuple[str, Any] | None:
-    deadline = None if config.timeout_seconds is None else time.monotonic() + config.timeout_seconds
-    queued_payload: tuple[str, Any] | None = None
     while process.is_alive():
         rss_watchdog.checkpoint()
         if queued_payload is None:

@@ -89,7 +89,7 @@ def _run_polars_pool_queries() -> None:
         )
 
 
-def _start_polars_thread_pools() -> None:
+def start_polars_thread_pools() -> None:
     """Start every Polars pool thread, and its allocator arena, once per process.
 
     ``RLIMIT_AS`` counts reserved address space. Started after the cap, the pools'
@@ -499,7 +499,7 @@ class NativeMemoryLease:
         # between (a dedicated worker) must be able to raise its ceiling again.
         soft, hard = self._rlimit_original
         infinity = resource_api.RLIM_INFINITY
-        _start_polars_thread_pools()
+        start_polars_thread_pools()
         baseline = _native_baseline_bytes()
         ceiling = baseline + growth_bytes + address_space_allowance_bytes
         if hard != infinity:

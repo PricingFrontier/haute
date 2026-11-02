@@ -10,6 +10,7 @@ import hashlib
 import importlib
 import math
 import multiprocessing as mp
+import os
 import pickle
 import queue
 import re
@@ -45,8 +46,12 @@ from haute._worker_isolation import (
     _create_worker_rss_watchdog,
     _run_cleanup_callbacks,
     _terminate_process,
+    _WorkerRssWatchdog,
+    await_worker_ready,
     create_worker_queue,
+    prepare_worker_for_job,
     process_memory_caps_supported,
+    report_worker_ready,
     start_process_with_environment,
     start_worker_queue_feeder,
 )
@@ -354,12 +359,14 @@ def run_worker_protocol(
     ctx = mp.get_context("spawn")
     result_queue: Any = create_worker_queue(ctx, 1)
     progress_queue: Any = create_worker_queue(ctx, WORKER_EVENT_QUEUE_CAPACITY)
+    go = ctx.Event()
     process = ctx.Process(
         target=_protocol_entrypoint,
         name=worker_config.process_name,
         args=(
             result_queue,
             progress_queue,
+            go,
             function,
             request,
             str(root),
@@ -384,11 +391,23 @@ def run_worker_protocol(
             start_process_with_environment(process, worker_config.environment)
         except Exception as exc:  # pragma: no cover - multiprocessing dependent
             raise IsolatedWorkerStartError(f"Failed to start isolated worker: {exc}") from exc
-        rss_watchdog = _create_worker_rss_watchdog(
+        startup, early = await_worker_ready(
             process,
-            memory_limit_bytes=worker_config.memory_limit_bytes,
-            require_memory_limit=worker_config.require_memory_limit,
+            result_queue,
+            is_ready=lambda message: message == ("ready", process.pid),
+            config=worker_config,
+            deadline=deadline,
         )
+        rss_watchdog = _WorkerRssWatchdog(None, None, worker_config.require_memory_limit, False)
+        if startup == "ready":
+            rss_watchdog = _create_worker_rss_watchdog(
+                process,
+                memory_limit_bytes=worker_config.memory_limit_bytes,
+                require_memory_limit=worker_config.require_memory_limit,
+            )
+            go.set()
+        elif early is not None:
+            queued_result = _validate_result_envelope(early)
         while process.is_alive():
             rss_watchdog.checkpoint()
             if not progress_ended:
@@ -562,6 +581,7 @@ def build_artifact_manifest(
 def _protocol_entrypoint(
     result_queue: Any,
     progress_queue: Any,
+    go: Any,
     function: WorkerFunction,
     request: WorkerRequest,
     artifact_root: str,
@@ -589,12 +609,14 @@ def _protocol_entrypoint(
             except Exception as preload_error:
                 result_queue.put(("error", _preload_failure_payload(module, preload_error)))
                 return
+        prepare_worker_for_job(memory_limit_bytes)
         if memory_limit_bytes is not None:
             applied = lease.apply(
                 memory_limit_bytes,
                 required=require_memory_limit,
                 address_space_allowance_bytes=address_space_allowance_bytes,
             )
+        report_worker_ready(result_queue, ("ready", os.getpid()), go)
         with native_memory_backend_scope(lease.backend if applied else None, lease):
             result = function(runtime, request)
         if isinstance(result, WorkerFailurePayload):

@@ -1113,7 +1113,7 @@ delegated cgroup-v2 child with a finite `memory.max` and otherwise applies
 job-memory commit limit, so descendants cannot each consume the complete admitted
 budget. Limits are growth budgets: the native baseline is measured before the
 hard ceiling is installed. The `RLIMIT_AS` fallback first runs
-`_start_polars_thread_pools()` once per process — one small query on each Polars engine,
+`start_polars_thread_pools()` once per process — one small query on each Polars engine,
 so every pool thread and its allocator arena exist — and only then reads the address-space
 baseline; its ceiling is that baseline plus the growth budget plus the lease's
 `address_space_allowance_bytes` (zero except for the training and dispersion fits' protocol
@@ -1168,6 +1168,32 @@ returned `True`; the scope also exposes the lease itself, so
 inside a capped call (`None` elsewhere). Independently, the parent samples child RSS and
 terminates it when the configured cap is crossed; this watchdog is secondary
 defence and observability, never evidence that a hard kernel cap exists.
+
+**Readiness.** A one-shot (`run_isolated_worker`) or protocol (`run_worker_protocol`)
+child imports what it runs, starts its Polars thread pools (`prepare_worker_for_job`,
+when a memory limit is configured) and attempts its native cap, then reports ready
+(`report_worker_ready`: `("ready", pid)` on its result queue) and waits on a `go` event
+before it runs the job. The parent supervises that startup with `await_worker_ready`: the
+wait ends at `IsolatedWorkerConfig.startup_timeout_seconds` (default
+`WORKER_STARTUP_TIMEOUT_SECONDS`, 120 s), or the job's own earlier deadline, raising
+`IsolatedWorkerStartError` ("did not report ready") or the job's timeout; at the stop
+reason; and the child's RSS must stay under `startup_rss_ceiling_bytes` (default
+`WORKER_STARTUP_RSS_CEILING_BYTES`, 1 GiB), or it is terminated with
+`IsolatedWorkerMemoryLimitExceededError` noting the startup ceiling. The heaviest supported
+import set (Polars with CatBoost, LightGBM, XGBoost and the training worker) held 212 MiB
+after 3.8 s on a development host, which the defaults clear by about five and thirty
+times. Once the child is ready the parent samples its RSS as the watchdog's baseline
+(`_create_worker_rss_watchdog`), so the job's growth allowance is measured from the child
+with its imports, as its native cap is, and no allocation of the job is in the baseline;
+then it sets `go`. A failure the child reports before it is ready (a required cap it could
+not install, a preload it could not import) is its result, and no watchdog is armed; a
+child that ends without a word is classified as it would be after the job. Readiness never
+disables supervision: when the ready child's RSS cannot be sampled, a required limit
+without an address-space cap still fails with `IsolatedWorkerMemoryLimitUnsupportedError`.
+`NativeMemoryLease.baseline_bytes` is never read as RSS: it is address space under
+`RLIMIT_AS`, private commit under a Windows Job Object and cgroup usage under a cgroup.
+The warm pool and dedicated workers sample a child that is already warm and have no
+separate handshake.
 `process_memory_caps_supported()` therefore means a native hard cap is available,
 not merely that RSS can be sampled. The child calls the target function and
 putting `("ok", result)` or `("error", (type, message, traceback))` on a
@@ -2992,6 +3018,13 @@ present a structural or schema result as execution evidence.
   rejection, Linux/Windows aggregate enforcement, active-backend scoping, lease
   cleanup, and fork-safe ownership contracts, and the model-thread allowance's fixed
   part plus its per-CPU part.
+- `tests/test_worker_isolation.py` and `tests/test_worker_protocol.py` — also, with real
+  workers, that a child holding 160 MiB from its import runs a 150 MiB job under a 256 MiB
+  growth budget with the host's native cap and without one, that without a native cap the
+  watchdog still stops a job past its budget, that a child past its startup ceiling before
+  it is ready is stopped, and that one whose import hangs fails at its startup deadline;
+  the fixture modules (`tests/_spawned_heavy_import.py`, `tests/_spawned_without_native_cap.py`,
+  `tests/_spawned_slow_import.py`) act only in a spawned worker.
 - `tests/test_parent_watch.py` — every kind of worker ends when its server process is killed,
   and a process waiting on its parent's exit holds no more handles or descriptors afterwards
   than before.
