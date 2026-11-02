@@ -149,10 +149,11 @@ def standalone_project_root_scope(source_file: str | Path | None) -> Iterator[Pa
 
     ``Pipeline.run()`` and ``score()`` run outside any execution entry point, so
     without this their node loaders would anchor to the working directory. A
-    pipeline outside the current project runs in the Haute project
-    (``haute.toml``) that holds it, or, a loose script in no project, in its own
-    folder. An execution that already scoped a root (deploy's validated one)
-    keeps it.
+    pipeline runs in the nearest Haute project (``haute.toml``) that holds its
+    file, whatever the working directory; a script in no project falls back to
+    ``_infer_project_root``'s rule (the current project if it holds the file,
+    else the file's folder). An execution that already scoped a root (deploy's
+    validated one) keeps it.
     """
     active = _RUNTIME_PROJECT_ROOT.get()
     if active is not None:
@@ -165,11 +166,11 @@ def standalone_project_root_scope(source_file: str | Path | None) -> Iterator[Pa
 
 
 def _enclosing_haute_project(source_file: str | Path | None) -> Path | None:
-    """The Haute project holding a pipeline outside the current project, if there is one."""
+    """The nearest Haute project holding a pipeline file, if there is one."""
     if not source_file:
         return None
     source = Path(_normalise_path_text(source_file))
-    if not source.is_absolute() or source.resolve().is_relative_to(_get_project_root().resolve()):
+    if not source.is_absolute():
         return None
     from haute._project import get_project_root
     from haute.errors import ConfigError

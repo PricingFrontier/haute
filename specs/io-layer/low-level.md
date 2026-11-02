@@ -182,7 +182,8 @@ platforms, and on Windows with long paths on, nothing is renamed.
    and runtime-input fingerprint, the node builders, the standalone sidecar run, the
    standalone `Pipeline.run()` and `score()` (which scope the runtime root from the pipeline's
    file through `standalone_project_root_scope` unless an execution already scoped one: the
-   current project, else the Haute project holding the file, else, a loose script, its own
+   nearest Haute project (`haute.toml`) holding the file, whatever the working directory;
+   a script in no project keeps the current project if it holds the file, else its own
    folder), the explicit snapshot build, the preview request's path check and the API Input's schema
    inference, so one locator names one file at every seam. Deploy bundles a Data Input's
    file by its own rule, the pipeline directory first ([deploy](../deploy/low-level.md)).

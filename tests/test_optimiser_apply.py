@@ -1614,12 +1614,16 @@ class TestArtifactPathAnchoring:
             self._load(raw, pipelines)
 
 
+@pytest.mark.parametrize("working_directory", ["project_parent", "elsewhere"])
 def test_a_standalone_run_finds_the_projects_artifact_from_any_working_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, working_directory: str
 ) -> None:
-    """OPT-R06: a saved pipeline run on its own anchors its project-relative
-    artifact (the path the save returns) to the Haute project holding it,
-    whatever the working directory; nothing sets the project root first."""
+    """OPT-R06: a saved pipeline run in a fresh process anchors its
+    project-relative artifact (the path the save returns) to the Haute project
+    holding it, whatever the working directory; nothing sets the root first."""
+    import subprocess
+    import sys
+
     project = tmp_path / "project"
     pipeline_root = project / "rating"
     (project / ".git").mkdir(parents=True)
@@ -1652,18 +1656,18 @@ def test_a_standalone_run_finds_the_projects_artifact_from_any_working_directory
         "def scored(): ...\n\n\n"
         '@pipeline.optimiser_apply(config="config/apply_optimisation/apply.json")\n'
         "def apply(scored): ...\n\n\n"
-        'pipeline.connect("scored", "apply")\n'
+        'pipeline.connect("scored", "apply")\n\n'
+        'frame = pipeline.run(source="batch").lazy().collect().sort("quote_id")\n'
+        'print(frame["quote_id"].to_list(), "optimal_scenario_value" in frame.columns)\n'
     )
     main = pipeline_root / "main.py"
     main.write_text(source, encoding="utf-8")
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    monkeypatch.chdir(elsewhere)
-    namespace: dict[str, object] = {"__file__": str(main)}
-    exec(compile(source, str(main), "exec"), namespace)
+    cwd = tmp_path if working_directory == "project_parent" else tmp_path / "elsewhere"
+    cwd.mkdir(exist_ok=True)
 
-    frame = namespace["pipeline"].run(source="batch")  # type: ignore[attr-defined]
+    completed = subprocess.run(
+        [sys.executable, str(main)], cwd=cwd, capture_output=True, text=True, check=False
+    )
 
-    result = frame.lazy().collect().sort("quote_id")
-    assert result["quote_id"].to_list() == ["q1", "q2"]
-    assert "optimal_scenario_value" in result.columns
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip().splitlines()[-1] == "['q1', 'q2'] True"
