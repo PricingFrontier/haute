@@ -793,6 +793,8 @@ class SavePipelineService:
         self._validate_optimiser_input_selectors(flattened)
         self._validate_declared_config_keys(graph)
         self._validate_strict_node_configs(graph)
+        # The sidecar paths a save writes: a reserved device name or two paths one file.
+        self._collect_node_configs_recursive(graph)
         self._validate_quote_input_tables_do_not_shadow_nodes(graph)
         self._validate_global_constants(graph)
         py_path = self._resolve_source_file(source_file)

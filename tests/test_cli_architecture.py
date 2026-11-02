@@ -1179,6 +1179,62 @@ class TestHandleRunCallable:
         assert walk.call_args.kwargs["source"] == "batch"
         assert walk.call_args.kwargs["target_node_id"] == "premium"
 
+    def test_a_defect_inside_the_walk_keeps_its_traceback(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The walk names the node a defect surfaced at, and the defect still propagates."""
+        from haute._graph_walker import _Walk
+        from haute.cli._run import RunConfig, handle_run
+
+        with (
+            patch.object(_Walk, "_as_frame", side_effect=TypeError("internal builder defect")),
+            pytest.raises(TypeError, match="internal builder defect"),
+        ):
+            handle_run(RunConfig(pipeline_file=self._pipeline(tmp_path), node="doubled"))
+
+        assert "\u2717 source: internal builder defect" in capsys.readouterr().err
+
+    def test_a_failure_while_collecting_names_the_frame(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from haute.cli._run import RunConfig, handle_run
+
+        pipeline = self._pipeline(tmp_path)
+        text = pipeline.read_text(encoding="utf-8")
+        pipeline.write_text(
+            text.replace(
+                'source.with_columns(y=pl.col("x") * 2)',
+                'source.with_columns(y=pl.col("x").cast(pl.String).str.replace("1", "bad")'
+                ".cast(pl.Int64))",
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(SystemExit):
+            handle_run(RunConfig(pipeline_file=pipeline, node="doubled"))
+
+        captured = capsys.readouterr()
+        assert "\u2713 doubled: 2 cols" in captured.out
+        assert "Error collecting the output of doubled: " in captured.err
+
+    def test_a_refused_admission_is_one_line(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from haute.cli._run import RunConfig, handle_run
+        from haute.errors import InsufficientMemoryError
+
+        refused = InsufficientMemoryError("Not enough memory to run the pipeline now.")
+        with (
+            patch(
+                "haute._execution_admission.create_admitted_execution_context",
+                side_effect=refused,
+            ),
+            pytest.raises(SystemExit),
+        ):
+            handle_run(RunConfig(pipeline_file=self._pipeline(tmp_path)))
+
+        assert "Error: Not enough memory to run the pipeline now." in capsys.readouterr().err
+
     def test_a_pipeline_without_an_output_node_names_both_remedies(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:

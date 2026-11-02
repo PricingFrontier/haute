@@ -2060,13 +2060,22 @@ def pre_commit_hook() -> str:
 # Only what is staged is formatted and checked: a file's unstaged changes stay out of the
 # commit. A problem `ruff check --fix` cannot fix stops the commit.
 
-files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.py')
+# core.quotePath=false lists a non-ASCII name as it is; git still quotes a name holding a
+# quote, a backslash or a control character, which this hook refuses rather than misread.
+files=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACMR -- '*.py')
 [ -z "$files" ] && exit 0
 
 work=$(mktemp -d) || exit 1
 trap 'rm -rf "$work"' EXIT
 status=0
 while IFS= read -r file; do
+    case $file in
+        '"'*)
+            echo "pre-commit: rename $file: its name holds a character git quotes" >&2
+            status=1
+            continue
+            ;;
+    esac
     git show ":$file" > "$work/staged" || {{ status=1; continue; }}
     if ! uv run ruff check --fix --stdin-filename "$file" < "$work/staged" > "$work/checked" ||
         ! uv run ruff format --stdin-filename "$file" < "$work/checked" > "$work/fixed"

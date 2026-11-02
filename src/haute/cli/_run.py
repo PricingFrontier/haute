@@ -44,7 +44,8 @@ def _frames(node_id: str, output: Any) -> list[tuple[str, pl.LazyFrame | pl.Data
 
 
 def _fail(message: str) -> NoReturn:
-    click.echo(message, err=True)
+    if message:
+        click.echo(message, err=True)
     raise SystemExit(1)
 
 
@@ -103,9 +104,14 @@ def handle_run(config: RunConfig) -> None:
     name = graph.pipeline_name or filepath.stem
     click.echo(f"Pipeline: {name} ({len(graph.nodes)} nodes), source {config.source!r}")
 
-    context = create_admitted_execution_context(
-        operation="cli_run", profile=ExecutionProfile.LAZY_SINK
-    )
+    try:
+        context = create_admitted_execution_context(
+            operation="cli_run", profile=ExecutionProfile.LAZY_SINK
+        )
+    except EXPECTED_FAILURES as e:
+        _fail(f"Error: {e}")
+    # A pipeline's data failing is a Polars error; it is expected as Haute's own are.
+    expected: tuple[type[Exception], ...] = (*EXPECTED_FAILURES, pl.exceptions.PolarsError)
     try:
         try:
             preamble_ns = _compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
@@ -134,16 +140,24 @@ def handle_run(config: RunConfig) -> None:
                 if config.rows is not None:
                     frame = frame.head(config.rows)
                 if isinstance(frame, pl.LazyFrame):
-                    frame = streaming_collect(frame, execution_context=context)
+                    try:
+                        frame = streaming_collect(frame, execution_context=context)
+                    except expected as e:
+                        # The plan fails as a whole: no node is to blame, only the frame.
+                        _fail(f"Error collecting the output of {label}: {e}")
                 collected.append((label, frame))
         except Exception as e:
-            # A failure the walk attributes to a node is the pipeline's: its code or its data.
+            # The walk names the node a failure came from, whatever the failure; only an
+            # expected one ends there, and anything else keeps its traceback.
             failed = failing_node(e)
             if failed is not None:
                 line = _extract_error_line(e)
-                _fail(f"  \u2717 {failed}{'' if line is None else f' (line {line})'}: {e}")
-            if isinstance(e, (*EXPECTED_FAILURES, pl.exceptions.PolarsError)):
-                _fail(f"Error executing pipeline: {e}")
+                click.echo(
+                    f"  \u2717 {failed}{'' if line is None else f' (line {line})'}: {e}",
+                    err=True,
+                )
+            if isinstance(e, expected):
+                _fail("" if failed is not None else f"Error executing pipeline: {e}")
             raise
     finally:
         context.release_admission(preserve_primary_error=True)

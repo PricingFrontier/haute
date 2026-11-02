@@ -533,7 +533,9 @@ a tag moved to other code never runs in a job holding the deploy's secrets;
 `scripts/lint_pins.py`'s action rule holds the generated workflows to it. `pre_commit_hook`
 fixes (`ruff check --fix`) then formats (`ruff format`) each staged Python file's staged
 content through ruff's standard input and writes the result back to the index
-(`git update-index --cacheinfo`), so an unstaged hunk of a partially staged file stays out
+(`git update-index --cacheinfo`). It lists the staged files with `core.quotePath=false`, so a
+non-ASCII name is read as it is, and refuses a name git still quotes (one holding a quote, a
+backslash or a control character), asking for a rename, so an unstaged hunk of a partially staged file stays out
 of the commit; a file with nothing unstaged takes the result in the working tree too
 (`git checkout-index`). A problem `ruff check --fix` cannot fix exits non-zero and stops the
 commit.

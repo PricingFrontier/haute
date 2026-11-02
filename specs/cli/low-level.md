@@ -85,7 +85,7 @@ reported. The CLI does not print schema warnings.
 |---|---|---|
 | `haute` | `--version`; `--help`. | Both print and exit 0. Unknown commands/options are Click usage errors (exit 2). |
 | `haute init` | `--automated`/`--workbench` (how the project prices; asked at a terminal, else automated); `--ci` choice: `github` (the default), `gitlab`, `azure-devops`, `none`; `--target` choice, an automated project's: `databricks` (the default), `container`, `azure-container-apps`, `aws-ecs`, `gcp-run`; `--host` choice, a workbench project's: `azure-container-apps` (the default, the only host); `--store` choice, a workbench project's: `sqlserver`, `postgresql` (no default); `--sign-in` choice, a workbench project's: `password`, `entra`, `service-principal` (no default). The `--target` help labels `azure-container-apps`, `aws-ecs` and `gcp-run` build and push only; the planned `sagemaker` and `azure-ml` targets are not offered. At a terminal each answer a flag does not give is asked as a numbered list, its default the answer Enter takes; on a new project a workbench project's database and sign-in have none, so an answer must be picked. In a project with a `haute.toml` each default is the project's current answer instead, and a question it holds no answer to has none, save the host's. | Success 0. An existing `haute.toml` that does not read as TOML exits 1, before any question. Invalid choices exit 2 before the handler. Without a terminal, a question without a default and without its flag (a new workbench project's `--store` or `--sign-in`, or on a re-run any the project holds no answer to) exits 2 naming the flag, as does `--target` with `--workbench` or `--host`, `--store` or `--sign-in` with an automated project. File/TOML/scaffold write errors are not converted into a fallback. |
-| `haute run [PIPELINE_FILE]` | Optional path; absent input uses `resolve_pipeline_file` project/discovery rules. `--node TEXT` (a node id to run to instead of the output node); `--source TEXT` (default `live`); `--rows INTEGER` (minimum `1`; collect only the output's first rows). | Missing/ambiguous file, a `haute.toml` that is malformed or whose `[project].pipeline` leaves the project (`ConfigError`), parse failure, empty graph, no output node without `--node` (or several), a `--node` the graph lacks, a failure the walk attributes to a node, or an expected execution failure (`EXPECTED_FAILURES` or a Polars error) exits 1; any other exception propagates with its traceback. Success exits 0 after printing the output. |
+| `haute run [PIPELINE_FILE]` | Optional path; absent input uses `resolve_pipeline_file` project/discovery rules. `--node TEXT` (a node id to run to instead of the output node); `--source TEXT` (default `live`); `--rows INTEGER` (minimum `1`; collect only the output's first rows). | Missing/ambiguous file, a `haute.toml` that is malformed or whose `[project].pipeline` leaves the project (`ConfigError`), parse failure, empty graph, no output node without `--node` (or several), a `--node` the graph lacks, an admission refusal, or an expected failure (`EXPECTED_FAILURES` or a Polars error), whether the walk attributes it to a node (printed `✗ <node> (line N): <error>` first) or it arises collecting the output, exits 1; any other exception propagates with its traceback, after the `✗` line when the walk names its node. Success exits 0 after printing the output. |
 | `haute lint [PIPELINE_FILE]` | Optional path resolved exactly as `run`. | Missing/ambiguous file, a `haute.toml` that is malformed or whose `[project].pipeline` leaves the project (`ConfigError`), parse failure, or empty graph exits 1; so does any collected problem: an error diagnostic of the editor document, a save-time validation refusal, or a structural issue. Save warnings are printed. A clean graph exits 0. |
 | `haute train TRAINING_SCRIPT` | Required positional path. | Omission is a Click exit-2 usage error. Missing/unsafe/unloadable script, missing `job`, script exception, or `job.run` failure exits 1; successful training exits 0. |
 | `haute serve` | `--host TEXT` (CLI → `[server].host` → `localhost`); `--port INTEGER` (effective default `8000`, not shown by current help); `--no-browser`. Port range is not Click-validated: negative/out-of-range integers reach socket setup and may raise rawly. | Port conflict or missing production static build exits 1; malformed `haute.toml` propagates `ConfigError`. A browser-launch failure prints the manual URL but leaves the running server path intact. |
@@ -168,8 +168,12 @@ walked node from its plan's `collect_schema()` (a multi-frame result one line pe
 collects only the target, through `streaming_collect` (`head(rows)` first with `--rows`); a
 node whose result is already a DataFrame (a node whose builder materialises, a Quote
 Response assembling its response among them) is printed as it is. A failure the walk or a
-schema read attributes to a node (`errors.failing_node`) prints `✗ <node> (line N): <error>`
-and exits 1. The admission is released on every path.
+schema read attributes to a node (`errors.failing_node`) prints `✗ <node> (line N): <error>`;
+attribution says where a failure surfaced, not that it was expected, so it exits 1 only for
+an expected failure (`EXPECTED_FAILURES` or a Polars error) and otherwise propagates with its
+traceback. A failure while collecting the target, which no node is to blame for, prints
+`Error collecting the output of <frame>: <error>` and exits 1. An admission refusal is one
+`Error:` line and exit 1. The admission is released on every path.
 
 **`lint`**: resolves the pipeline file and parses it as the editor loads it
 (`routes._helpers.parse_pipeline_to_graph`, strict, under the root the editor saves it in: the
@@ -181,8 +185,8 @@ document's error diagnostics (`load_pipeline_editor_document`), each as
 damaged sidecar), plus one for a document that is not ready without one; the first refusal of
 `SavePipelineService(root, pipeline_root=<file's folder>).validate_graph`, the save's dry run,
 in the save's own words (executable and support-code names, singletons, sink edges, Edge Join
-configs, optimiser selectors, declared config keys, strict node configs, Quote Input tables
-shadowing nodes, global constants); and, on the flattened graph, edges referencing missing node
+configs, optimiser selectors, declared config keys, strict node configs, the sidecar paths a
+save writes, Quote Input tables shadowing nodes, global constants); and, on the flattened graph, edges referencing missing node
 ids and, for multi-node graphs, orphan nodes with no edges at all. The document's warning
 diagnostics and the save's warnings are printed as `!` lines and fail nothing.
 

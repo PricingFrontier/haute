@@ -729,7 +729,7 @@ def test_owner_and_two_instances_deliver_distinct_rows_through_round_trip(
         == "rating_ie__finish"
     )
     assert execute_graph(flatten_graph(dissolved_graph))["consumer"].preview == expected
-    run = CliRunner().invoke(cli, ["run", "main.py"], catch_exceptions=False)
+    run = CliRunner().invoke(cli, ["run", "main.py", "--node", "consumer"], catch_exceptions=False)
     assert run.exit_code == 0, run.output
     for value in (11, 21, 31):
         assert str(value) in run.output

@@ -1866,6 +1866,16 @@ class TestPreCommitHookFormatsWhatIsStaged:
         assert module.read_text(encoding="utf-8") == "x = 1\n"
         assert git_run(repo, "status", "--porcelain", "--", "pricing.py") == ""
 
+    def test_a_non_ascii_file_name_is_formatted(self, repository: tuple[Path, dict[str, str]]):
+        repo, env = repository
+        (repo / "café.py").write_text("x  =  1\n", encoding="utf-8", newline="\n")
+        git_run(repo, "add", "café.py")
+
+        result = self._commit(repo, env)
+
+        assert result.returncode == 0, result.stderr
+        assert git_run(repo, "show", "HEAD:café.py") == "x = 1"
+
     def test_a_problem_ruff_cannot_fix_stops_the_commit(
         self, repository: tuple[Path, dict[str, str]]
     ):

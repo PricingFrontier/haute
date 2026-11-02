@@ -167,6 +167,23 @@ class TestLintAppliesTheEditorsSave:
         assert f"✗ {refused.value}" in result.output
         assert "reads global constant(s) ['rate']" in result.output
 
+    def test_a_node_whose_sidecar_is_a_reserved_device_name_fails(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        from tests.conftest import write_data_input_config
+
+        config = write_data_input_config(tmp_path, "normal_name", "data.parquet")
+        source = _PROBE.replace(
+            "@pipeline.polars\ndef source() -> pl.LazyFrame:\n"
+            '    return pl.LazyFrame({"x": [1, 2]})',
+            f'@pipeline.data_input(config="{config}")\ndef CON():\n    """Read data."""',
+        ).replace("source", "CON")
+
+        result = runner.invoke(cli, ["lint", str(self._write(tmp_path, source))])
+
+        assert result.exit_code == 1, result.output
+        assert "CON.json" in result.output
+
     def test_a_statement_a_save_would_drop_is_named_with_its_line(
         self, runner: CliRunner, tmp_path: Path
     ) -> None:
