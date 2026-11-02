@@ -585,8 +585,11 @@ most: a silent wrong answer here mis-prices real policies.
   error envelopes: oversized bodies → 413, malformed `Content-Length` → 400, JSON syntax
   errors → 422, admission/memory-limit rejection → 507, cancelled execution →
   499, bounded-streaming-unsupported → 422, and other caught runtime failures → 500 with
-  `error_code: "deploy_internal_error"` for anything else, logged via
-  `logger.exception`. The MLflow `pyfunc` path (`_model_code.py`) has no equivalent
+  `error_code: "deploy_internal_error"` for anything else. A 500 never carries the
+  exception's text, which can hold file paths and internal names: it gives a fixed message
+  and the request's `request_id`, and the failure is logged via `logger.exception` with that
+  id, so an operator finds the detail from the id a client reports. Every response carries
+  its request's id as the `X-Request-ID` header, a fresh one per request. The MLflow `pyfunc` path (`_model_code.py`) has no equivalent
   envelope — exceptions propagate to whatever the Databricks serving runtime does with
   an unhandled `predict()` exception. Invalid UTF-8 currently escapes the structured body
   parser, and invalid array element shapes can fail later during Polars materialisation.

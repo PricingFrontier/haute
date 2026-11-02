@@ -548,7 +548,8 @@ class TestGeneratedAppBatchPath:
             (
                 BatchScoreOutcome(failure_kind="error", detail="boom"),
                 500,
-                {"error_code": "deploy_internal_error", "error": "boom"},
+                # The detail stays in the log, under the request id the envelope names.
+                {"error_code": "deploy_internal_error"},
             ),
         ],
         ids=["contract", "bounded", "memory", "cancelled", "error"],
@@ -568,7 +569,11 @@ class TestGeneratedAppBatchPath:
         response = TestClient(module.app).post("/quote", json=[{"age": 30}, {"age": 31}])
 
         assert response.status_code == status
-        assert response.json() == expected
+        body = response.json()
+        if status == 500:
+            assert body.pop("request_id") == response.headers["X-Request-ID"]
+            assert "boom" not in body.pop("error")
+        assert body == expected
         harness.assert_cleaned_up()
 
     @pytest.mark.parametrize(
@@ -726,10 +731,9 @@ class TestGeneratedAppBatchPath:
         )
 
         assert response.status_code == 500
-        assert response.json() == {
-            "error_code": "deploy_internal_error",
-            "error": "staging disk vanished",
-        }
+        assert response.json()["error_code"] == "deploy_internal_error"
+        assert response.json()["request_id"] == response.headers["X-Request-ID"]
+        assert "staging disk vanished" not in response.text
         harness.assert_cleaned_up()
 
     def test_health_reports_batch_enforcement_and_execution_policy(
@@ -1354,7 +1358,7 @@ class TestBatchCleanupFailsLoud:
         assert response.status_code == 500
         body = response.json()
         assert body["error_code"] == "deploy_internal_error"
-        assert "temporary directory" in body["error"]
+        assert body["request_id"] == response.headers["X-Request-ID"]
         assert len(harness.contexts[0].release_calls) == 1
         monkeypatch.undo()
         shutil.rmtree(harness.plan.temp_dir, ignore_errors=True)
@@ -1363,6 +1367,7 @@ class TestBatchCleanupFailsLoud:
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         module = _load_app(tmp_path)
         harness = _BatchHarness(module, monkeypatch)
@@ -1376,10 +1381,15 @@ class TestBatchCleanupFailsLoud:
         )
         self._break_rmtree(monkeypatch)
 
-        response = TestClient(module.app).post("/quote", json=[{"age": 30}, {"age": 31}])
+        with caplog.at_level("ERROR", logger="haute.deploy.container"):
+            response = TestClient(module.app).post("/quote", json=[{"age": 30}, {"age": 31}])
 
         assert response.status_code == 500
-        assert "temporary directory" in response.json()["error"]
+        [record] = caplog.records
+        assert record.getMessage() == (
+            f"deploy_quote_batch_cleanup_failed request_id={response.json()['request_id']}"
+        )
+        assert "temporary directory" in str(record.exc_info[1])
         assert len(harness.contexts[0].release_calls) == 1
         monkeypatch.undo()
         shutil.rmtree(harness.plan.temp_dir, ignore_errors=True)

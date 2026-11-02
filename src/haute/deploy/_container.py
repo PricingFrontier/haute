@@ -377,6 +377,7 @@ def _generate_app_source(model_name: str, port: int) -> str:
 import json
 import logging
 import tempfile
+import uuid
 from pathlib import Path
 
 import polars as pl
@@ -519,6 +520,38 @@ app = FastAPI(
     version=_manifest.get("haute_version", "0.0.0"),
 )
 
+#: A 500's message. The failure's detail (a path, an internal name) stays in the
+#: service's log, under the request id the envelope names.
+_INTERNAL_ERROR_MESSAGE = (
+    "The quote could not be scored. The service's log holds the detail under this request_id."
+)
+
+
+@app.middleware("http")
+async def _request_id(request: Request, call_next):
+    """Give each request an id, sent back as X-Request-ID, that its log lines carry."""
+    request.state.request_id = uuid.uuid4().hex
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request.state.request_id
+    return response
+
+
+def _internal_error(request: Request, event: str) -> JSONResponse:
+    """Log the failure being handled under the request's id and answer a 500 naming it.
+
+    Never the exception's text: it can carry file paths and internal identifiers.
+    """
+    request_id = request.state.request_id
+    logger.exception("%s request_id=%s", event, request_id)
+    return JSONResponse(
+        status_code=500,
+        content={{
+            "error_code": "deploy_internal_error",
+            "error": _INTERNAL_ERROR_MESSAGE,
+            "request_id": request_id,
+        }},
+    )
+
 
 @app.get("/health")
 def health() -> dict:
@@ -641,7 +674,7 @@ def _materialize_batch_ndjson(plan, result):
         raise
 
 
-def _batch_error_response(exc):
+def _batch_error_response(request, exc):
     if exc.kind in {{"contract", "bounded"}}:
         if exc.payload is not None:
             return JSONResponse(status_code=422, content=exc.payload)
@@ -665,11 +698,7 @@ def _batch_error_response(exc):
                 "reason": exc.detail,
             }},
         )
-    logger.exception("deploy_quote_batch_failed")
-    return JSONResponse(
-        status_code=500,
-        content={{"error_code": "deploy_internal_error", "error": exc.detail}},
-    )
+    return _internal_error(request, "deploy_quote_batch_failed")
 
 
 async def _quote_batch(request: Request, rows: list):
@@ -742,13 +771,9 @@ async def _quote_batch(request: Request, rows: list):
         if is_public_contract_error(exc):
             response = JSONResponse(status_code=422, content=exc.to_payload())
         else:
-            logger.exception("deploy_quote_batch_failed")
-            response = JSONResponse(
-                status_code=500,
-                content={{"error_code": "deploy_internal_error", "error": str(exc)}},
-            )
+            response = _internal_error(request, "deploy_quote_batch_failed")
     except BatchScoreError as exc:
-        response = _batch_error_response(exc)
+        response = _batch_error_response(request, exc)
     except (
         IsolatedWorkerMemoryLimitExceededError,
         IsolatedWorkerMemoryLimitUnsupportedError,
@@ -782,25 +807,13 @@ async def _quote_batch(request: Request, rows: list):
                 ),
             )
         else:
-            logger.exception("deploy_quote_batch_failed")
-            response = JSONResponse(
-                status_code=500,
-                content={{"error_code": "deploy_internal_error", "error": str(exc)}},
-            )
-    except IsolatedWorkerError as exc:
-        logger.exception("deploy_quote_batch_failed")
-        response = JSONResponse(
-            status_code=500,
-            content={{"error_code": "deploy_internal_error", "error": str(exc)}},
-        )
-    except Exception as exc:
+            response = _internal_error(request, "deploy_quote_batch_failed")
+    except IsolatedWorkerError:
+        response = _internal_error(request, "deploy_quote_batch_failed")
+    except Exception:
         # Same contract as the live path: an unexpected parent-side failure is
         # logged and reported as the internal-error envelope, never a bare 500.
-        logger.exception("deploy_quote_batch_failed")
-        response = JSONResponse(
-            status_code=500,
-            content={{"error_code": "deploy_internal_error", "error": str(exc)}},
-        )
+        response = _internal_error(request, "deploy_quote_batch_failed")
     except BaseException as exc:
         primary_error = exc
         raise
@@ -808,17 +821,10 @@ async def _quote_batch(request: Request, rows: list):
         if plan is not None:
             try:
                 plan.cleanup(primary_error=primary_error)
-            except BatchScoreCleanupError as cleanup_error:
+            except BatchScoreCleanupError:
                 # The request rows and the scored parquet are still on disk;
                 # that is a data-retention defect even after a good score.
-                logger.exception("deploy_quote_batch_cleanup_failed")
-                response = JSONResponse(
-                    status_code=500,
-                    content={{
-                        "error_code": "deploy_internal_error",
-                        "error": str(cleanup_error),
-                    }},
-                )
+                response = _internal_error(request, "deploy_quote_batch_cleanup_failed")
     return response
 
 
@@ -932,23 +938,9 @@ async def quote(request: Request) -> JSONResponse:
     except HauteError as exc:
         if is_public_contract_error(exc):
             return JSONResponse(status_code=422, content=exc.to_payload())
-        logger.exception("deploy_quote_failed")
-        return JSONResponse(
-            status_code=500,
-            content={{
-                "error_code": "deploy_internal_error",
-                "error": str(exc),
-            }},
-        )
-    except Exception as exc:
-        logger.exception("deploy_quote_failed")
-        return JSONResponse(
-            status_code=500,
-            content={{
-                "error_code": "deploy_internal_error",
-                "error": str(exc),
-            }},
-        )
+        return _internal_error(request, "deploy_quote_failed")
+    except Exception:
+        return _internal_error(request, "deploy_quote_failed")
 '''
 
 

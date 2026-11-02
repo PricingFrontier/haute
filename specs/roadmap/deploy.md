@@ -15,7 +15,6 @@ MLflow target and the impact analysis. Current behaviour is specified in
 |---|---|---:|---|
 | DEP-R09 | Planned | P2 | The container image and the Databricks model install a recorded dependency closure resolved for their target Python and platform. |
 | DEP-R11 | Planned | P2 | Impact analysis fails on a row-count mismatch instead of pairing the wrong quotes, and a mistyped production URL is not a first deploy. |
-| DEP-R15 | Planned | P3 | The served error envelopes carry a correlation id rather than the exception text. |
 | DEP-R16 | Decision | P3 | A quote whose production value is zero and whose staging value is not is reported, not a failure of the whole impact analysis. |
 
 ## Planned improvements
@@ -117,20 +116,6 @@ produce a labelled skip; authentication failures never produce that skip.
 **Evidence:** `src/haute/deploy/_impact.py::build_report` and
 `::score_http_endpoint_batched`; `src/haute/cli/_impact.py::_is_http_not_found` and
 `::_impact_http`.
-
-### DEP-R15 — Error envelopes without exception text
-**Why:** The generated container's 500 envelopes return `str(exc)` to the API client,
-which can carry file paths and internal identifiers; the exception is already logged.
-
-**Plan:** Return a fixed message with the request's correlation id and keep the detail in
-the log.
-
-**Acceptance:** No 500 envelope body contains a file-system path; the log line for the
-request carries the id the envelope names.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/deploy/_container.py::_generate_app_source`.
 
 ### DEP-R16 — Zero production baselines in the impact report
 **Why:** One quote whose production value is 0 and whose staging value is not fails the

@@ -528,6 +528,12 @@ an independently relocatable contract. A bundled `utility` gets its own `COPY` i
 searches the working directory too. Spawned batch workers inherit the parent's `sys.path`.
 
 **Generated container HTTP runtime (`_container.py::_generate_app_source`)**
+0. An HTTP middleware gives every request a fresh id (`uuid4().hex`, on
+   `request.state.request_id`) and sends it back as the `X-Request-ID` header. Every 500
+   goes through `_internal_error`, which logs the failure in flight with
+   `logger.exception("<event> request_id=<id>")` and answers
+   `{"error_code": "deploy_internal_error", "error": <a fixed message>, "request_id": <id>}`,
+   never the exception's text.
 1. Startup loads `deploy_manifest.json`, reconstructs `PipelineGraph`, and resolves the
    request-body limit. `GET /health` returns status, model/version, deployed-node count,
    the manifest input/output schemas,
@@ -984,12 +990,12 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 | `DeployError` (capped schema dry-run) | `deploy/_schema.py::infer_output_schema` when the fallback's worker fails: a `BatchScoreError` from the child, or any `IsolatedWorker*Error` (`IsolatedWorkerMemoryLimitUnsupportedError` on a host without native caps included) | Propagates from `resolve_config()`; names the blocking node/operator from the original group-by rejection and states that the served batch path could not be proven. |
 | `RuntimeError` (startup) | Generated `app.py`'s `_require_fail_closed_batch_enforcement` at module load: a `warned` execution policy with `HAUTE_WORKER_MEMORY_ENFORCEMENT` other than `required`, or `required` on a host where `process_memory_caps_supported()` is `False` | Uncaught — the service refuses to start rather than failing every batch request. |
 | `IsolatedWorkerMemoryLimitUnsupportedError` | `run_isolated_worker` under `required` enforcement on a host that cannot install a native cap | Caught in `_quote_batch` → HTTP 507 with `reason: "native_memory_cap_unavailable"`. |
-| `BatchScoreCleanupError` | `_batch_scoring.py::_remove_batch_temp_dir` (temp directory removal failed with no primary error in flight) | Caught in `_quote_batch`'s `finally`, logged `deploy_quote_batch_cleanup_failed`, replaces the computed response with HTTP 500 `deploy_internal_error`. With a primary error in flight it is attached to that error as a note instead. |
+| `BatchScoreCleanupError` | `_batch_scoring.py::_remove_batch_temp_dir` (temp directory removal failed with no primary error in flight) | Caught in `_quote_batch`'s `finally`, logged `deploy_quote_batch_cleanup_failed` with the request id, replaces the computed response with HTTP 500 `deploy_internal_error` naming that id. With a primary error in flight it is attached to that error as a note instead. |
 | `BatchScoreError` | `_batch_scoring.py::accept_batch_outcome` (classified child failure, wrong outcome type, missing/unreadable/row-count-mismatched result parquet) | Caught in `_quote_batch` → 422 (`contract`/`bounded`), 507 (`memory`), 499 (`cancelled`), 500 (`error`). |
 | `IsolatedWorkerMemoryLimitExceededError` / `IsolatedWorkerMemoryLimitUnsupportedError` / memory-bound `IsolatedWorkerCrashedError` / memory-typed `IsolatedWorkerRemoteError` | `_worker_isolation.run_isolated_worker` supervising the batch child | Caught in `_quote_batch` → HTTP 507 with `isolated_worker_memory_detail(...)`. |
 | `IsolatedWorkerTimeoutError` | Batch worker exceeded `deploy_batch_timeout_seconds()` | Caught in `_quote_batch` → HTTP 504 `deploy_batch_timeout`. |
-| Any other `IsolatedWorkerError` | Batch worker supervision | Caught in `_quote_batch`, logged `deploy_quote_batch_failed`, HTTP 500 `deploy_internal_error`. |
-| Any other non-Haute `Exception` | Runtime scoring inside `/quote` (live path) or parent-side batch supervision in `_quote_batch` (typed execution and public-contract Haute errors are mapped to 499/507/422 above and never reach here) | Caught by the container's catch-all, logged via `logger.exception("deploy_quote_failed")` (live) or `logger.exception("deploy_quote_batch_failed")` (batch, after `BatchScorePlan.cleanup`), returned as HTTP 500 with `error_code: "deploy_internal_error"`. The MLflow `pyfunc` predict path has no equivalent catch-all. |
+| Any other `IsolatedWorkerError` | Batch worker supervision | Caught in `_quote_batch`, logged `deploy_quote_batch_failed` with the request id, HTTP 500 `deploy_internal_error` naming it. |
+| Any other non-Haute `Exception` | Runtime scoring inside `/quote` (live path) or parent-side batch supervision in `_quote_batch` (typed execution and public-contract Haute errors are mapped to 499/507/422 above and never reach here) | Caught by the container's catch-all, logged by `_internal_error` as `deploy_quote_failed` (live) or `deploy_quote_batch_failed` (batch, after `BatchScorePlan.cleanup`) with the request id, returned as HTTP 500 with `error_code: "deploy_internal_error"`, a fixed message and the `request_id` the log line carries, never the exception's text. The MLflow `pyfunc` predict path has no equivalent catch-all. |
 
 `build_and_push_image` and `deploy_to_mlflow` both stage in `owned_build_dir`, which removes
 the build's own directory on *every* exception type (including
@@ -1055,7 +1061,8 @@ what they cover:
   kept), a shipped build leaving nothing behind and staging under the project from another
   cwd; generation and import of the
   actual generated `app.py`; `/health` and `/quote` requests through FastAPI `TestClient`;
-  admission, cancellation, memory and bounded-streaming error mappings; body-limit env
+  admission, cancellation, memory and bounded-streaming error mappings; a 500 naming the
+  request id its log line and `X-Request-ID` carry and not the exception's text (a path); body-limit env
   precedence and streamed-byte enforcement; JSON response truncation/envelope boundaries;
   NDJSON streaming; Dockerfile dependency pins and build-directory cleanup.
 - **`test_deploy_project_modules.py`** — scores a pipeline whose preamble imports

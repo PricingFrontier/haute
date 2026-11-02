@@ -570,8 +570,41 @@ class TestGenerateAppSource:
         assert response.status_code == 500
         body = response.json()
         assert body["error_code"] == "deploy_internal_error"
-        assert "corrupt model artifact" in body["error"]
         assert body != {"error": "Validation error"}
+
+    def test_a_500_names_its_request_id_and_never_the_exception_text(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """DEP-R15: the envelope carries an id the log line carries too, not the detail."""
+        module = _load_generated_app(
+            tmp_path,
+            monkeypatch,
+            pl.DataFrame({"premium": [100.0]}),
+        )
+
+        def fail_score_graph(**_kwargs):
+            raise RuntimeError("cannot open /srv/models/motor/secret_model.cbm")
+
+        monkeypatch.setattr(module, "score_graph", fail_score_graph)
+        client = TestClient(module.app, raise_server_exceptions=False)
+
+        with caplog.at_level("ERROR", logger="haute.deploy.container"):
+            failed = client.post("/quote", json={"age": 30})
+        healthy = client.get("/health")
+
+        assert failed.status_code == 500
+        body = failed.json()
+        assert "/srv/models" not in failed.text
+        assert body["error_code"] == "deploy_internal_error"
+        assert body["request_id"] == failed.headers["X-Request-ID"]
+        [record] = caplog.records
+        assert body["request_id"] in record.getMessage()
+        assert "/srv/models/motor/secret_model.cbm" in str(record.exc_info[1])
+        # Every response names its request; each request gets its own id.
+        assert healthy.headers["X-Request-ID"] not in {"", body["request_id"]}
 
     def test_quote_rejects_oversized_content_length_before_json_materialisation(
         self,
@@ -908,9 +941,11 @@ class TestGenerateAppSource:
 
         assert response.status_code == 500
         assert response.json()["error_code"] == "deploy_internal_error"
-        assert "late stream failure" in response.json()["error"]
+        assert "late stream failure" not in response.text
         assert cleanup_calls == [True]
-        log_failure.assert_called_once_with("deploy_quote_failed")
+        log_failure.assert_called_once_with(
+            "%s request_id=%s", "deploy_quote_failed", response.json()["request_id"]
+        )
 
     def test_ndjson_materialization_runs_off_event_loop(
         self,
