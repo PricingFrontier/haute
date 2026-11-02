@@ -1499,8 +1499,8 @@ Out of scope:
   release is also the image's build context, the container's Dockerfile copying it,
   and `haute app build --image TAG` builds the image with Docker; the image installs
   what a scoring container installs and the quote store's packages, SQLAlchemy and
-  Alembic, with the driver of each provider the release's environments declare (pyodbc and
-  Microsoft ODBC Driver 18 for `sqlserver`, psycopg for `postgresql`, and azure-identity
+  Alembic, with the driver of each provider the release's environments declare (mssql-python,
+  which carries ODBC Driver 18, for `sqlserver`, psycopg for `postgresql`, and azure-identity
   for a Microsoft Entra ID sign-in), pinned as the scoring runtime is, nothing more.
   `haute app build --push` builds that image as `<registry>/<name>:<short commit>`, the
   registry `[deploy.container] registry` names, which it refuses to run without, as it does
@@ -2213,7 +2213,7 @@ Out of scope:
   A project's quotes live in the environments its `haute.toml` declares (`dev`, `staging`,
   `prod`), each a `[workbench.store.<name>]` table naming its database's
   provider: `sqlserver` (SQL Server 2019 and later, Azure SQL Database and Azure SQL Managed
-  Instance, through pyodbc and Microsoft ODBC Driver 18), `postgresql` (PostgreSQL and its
+  Instance, through mssql-python, which carries ODBC Driver 18), `postgresql` (PostgreSQL and its
   hosted forms, Azure Database for PostgreSQL, Amazon RDS and Aurora, Cloud SQL and
   Databricks Lakebase, through psycopg) or `sqlite`, a file on the host, which takes no
   sign-in. A server's environment says how a hosted app signs in, `auth`, naming the variable
