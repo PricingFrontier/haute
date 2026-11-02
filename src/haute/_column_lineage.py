@@ -1531,13 +1531,7 @@ def _parse_group_by_agg(
 
     expressions: list[tuple[str, frozenset[str]]] = []
     aggregate_items: list[SelectorItem] = []
-    positional: list[ast.AST] = []
-    for expression in aggregate_call.args:
-        if isinstance(expression, (ast.List, ast.Tuple)):
-            positional.extend(expression.elts)
-        else:
-            positional.append(expression)
-    for positional_expression in positional:
+    for positional_expression in _spread_expressions(aggregate_call.args):
         aggregate_item = _selector_expression_item(
             positional_expression, selector_aliases, method="aggregate"
         )
@@ -3458,6 +3452,17 @@ def _dropped_columns(call: ast.Call) -> frozenset[str] | None:
     return parsed.subset_columns
 
 
+def _spread_expressions(arguments: Iterable[ast.expr]) -> list[ast.expr]:
+    """Positional expression arguments with a literal list or tuple spread into its items."""
+    items: list[ast.expr] = []
+    for argument in arguments:
+        if isinstance(argument, (ast.List, ast.Tuple)):
+            items.extend(argument.elts)
+        else:
+            items.append(argument)
+    return items
+
+
 def _literal_frame_columns(node: ast.AST) -> list[str] | None:
     """Return the columns of an inline ``pl.DataFrame({...})`` / ``pl.LazyFrame({...})``."""
     while (
@@ -3655,6 +3660,8 @@ def carried_column_proof(
     join_keys: dict[str, frozenset[str]] = {}
     # The inputs in the frame so far: a restriction applies to these only.
     present: list[str] = []
+    # A grouping wrote an aggregate whose output name the syntax does not fix.
+    unnamed_outputs = False
     restricted_to: dict[str, frozenset[str]] = {}
     dropped_from: dict[str, frozenset[str]] = {}
 
@@ -3694,10 +3701,12 @@ def carried_column_proof(
         if root is None:
             return None
         if root == "df" and root_input is None:
+            # Code reading its one input as ``df`` (Explore, builder post-code).
             if len(input_set) != 1:
                 return None
-            root = next(iter(input_set))
-        if root != "df":
+            root_input = next(iter(input_set))
+            present.append(root_input)
+        elif root != "df":
             if root not in names or root_input is not None:
                 return None
             root_input = aliases.get(root, root)
@@ -3825,8 +3834,14 @@ def carried_column_proof(
                 right_columns: list[str] | None
                 if isinstance(right, ast.Name):
                     # A non-root input joined twice has two rows behind one output
-                    # row; its carried values would mix them.
-                    if right.id not in names or aliases.get(right.id, right.id) in join_keys:
+                    # row; its carried values would mix them. An aggregate whose
+                    # name the syntax does not fix may share a name with one of
+                    # its columns.
+                    if (
+                        right.id not in names
+                        or aliases.get(right.id, right.id) in join_keys
+                        or unnamed_outputs
+                    ):
                         return None
                     right_input = aliases.get(right.id, right.id)
                     join_keys[right_input] = frozenset()
@@ -3890,6 +3905,17 @@ def carried_column_proof(
                 ):
                     return None
                 restrict(set(group_keys))
+                aggregate_call = calls[index + 1]
+                for keyword in aggregate_call.keywords:
+                    if keyword.arg is None:
+                        return None
+                    assigned.add(keyword.arg)
+                for argument in _spread_expressions(aggregate_call.args):
+                    output = _expression_output(argument)
+                    if output is None:
+                        unnamed_outputs = True
+                    else:
+                        assigned.add(output[0])
                 whole_groups = rows_intact and not grouped
                 grouped = True
                 rows_intact = False

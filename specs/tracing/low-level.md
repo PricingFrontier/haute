@@ -490,7 +490,9 @@ the limited preview shows rather than independent source samples.
      assigned) with `how` of `inner`, `left`, `semi`, `anti`, or `cross` records its literal
      `on` keys as the same-name keys of that joined input; a non-root input joined twice
      fails the proof;
-   - a literal `group_by(...).agg(...)` carries only its keys of the inputs in the frame; a literal boolean
+   - a literal `group_by(...).agg(...)` carries only its keys of the inputs in the frame and
+     assigns each aggregate's output name; an aggregate whose name the syntax does not fix
+     (`pl.len()` unaliased) fails the proof if a named input is joined after it; a literal boolean
      `maintain_order` keyword is allowed, and any other keyword (a named computed key)
      fails the proof. The proof reports `whole_groups` when it is the program's only
      grouping and nothing before it filters, slices, deduplicates, selects, or joins rows,

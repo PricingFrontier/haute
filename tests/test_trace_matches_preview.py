@@ -1448,6 +1448,34 @@ class TestLimitedPreviewTrace:
         assert single.omissions == []
         assert _step_by_id(single, "src").output_values == {"quote_id": "b", "amount": 5.0}
 
+    def test_an_explore_grouping_reports_the_rows_it_aggregates(self, tmp_path):
+        from haute._types import GraphNode, NodeData
+
+        path = tmp_path / "claims.parquet"
+        pl.DataFrame({"id": [1, 1], "amount": [0, 10]}).write_parquet(path)
+        explore = GraphNode(
+            id="claims",
+            data=NodeData(
+                label="claims",
+                nodeType="explore",
+                config={"code": "df = df.group_by('id').agg(pl.col('amount').sum())"},
+            ),
+        )
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(path)), explore],
+                "edges": [_edge("src", "claims")],
+            }
+        )
+
+        row, result = self._trace(graph, "claims", 0, row_limit=5, column=None)
+
+        # The total 10 also equals the second row's amount; it is not that row.
+        assert row == {"id": 1, "amount": 10}
+        assert [(omission.node_id, omission.reason) for omission in result.omissions] == [
+            ("src", "aggregated_rows")
+        ]
+
     @pytest.mark.parametrize(
         "code",
         [

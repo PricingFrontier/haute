@@ -2952,14 +2952,14 @@ def test_cardinality_rejects_a_computed_column_selector() -> None:
         (
             "df = src.group_by('region').agg(pl.col('x').sum())",
             ("src",),
-            set(),
+            {"x"},
             {},
             {"region"},
         ),
         (
             "df = src.group_by(['region'], maintain_order=True).agg([pl.len().alias('n')])",
             ("src",),
-            set(),
+            {"n"},
             {},
             {"region"},
         ),
@@ -3039,7 +3039,7 @@ def test_carried_proof_keeps_only_the_columns_a_select_or_drop_leaves(
     [
         "df = src.select('id').join(other, on='id')",
         "df = src.drop('c').join(other, on='id')",
-        "df = src.group_by('id').agg(pl.len()).join(other, on='id')",
+        "df = src.group_by('id').agg(pl.len().alias('n')).join(other, on='id')",
     ],
 )
 def test_carried_proof_restricts_only_the_inputs_in_the_frame_when_it_runs(code: str) -> None:
@@ -3052,6 +3052,34 @@ def test_carried_proof_restricts_only_the_inputs_in_the_frame_when_it_runs(code:
     assert proof.carries("rate", "other")
     assert proof.carries("c", "other")
     assert not proof.carries("c", "src")
+
+
+def test_carried_proof_reads_the_implicit_df_input_as_its_root() -> None:
+    from haute._column_lineage import carried_column_proof
+
+    proof = carried_column_proof("df = df.group_by('id').agg(pl.col('amount').sum())", ("df",))
+
+    assert proof is not None
+    assert proof.carried_only == {"id"}
+    assert proof.whole_groups
+
+
+def test_carried_proof_keeps_an_aggregate_from_identifying_a_later_joined_input() -> None:
+    from haute._column_lineage import carried_column_proof
+
+    named = carried_column_proof(
+        "df = src.group_by('id').agg(pl.col('amount').sum().alias('rate')).join(other, on='id')",
+        ("src", "other"),
+    )
+    unnamed = carried_column_proof(
+        "df = src.group_by('id').agg(pl.len()).join(other, on='id')", ("src", "other")
+    )
+
+    assert named is not None
+    assert not named.carries("rate", "other")
+    assert named.carries("id", "other")
+    # ``pl.len()``'s output name is not in the syntax, so it could be any column.
+    assert unnamed is None
 
 
 @pytest.mark.parametrize(
