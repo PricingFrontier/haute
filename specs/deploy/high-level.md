@@ -179,7 +179,8 @@ than silently disabling the gate. Every quote is scored through the resolved gra
 test-quote row wraps its request as `input`, with an optional `expected` output and
 `tolerance_pct` and any `_`-prefixed notes; a row without `input`, or with any other
 top-level key, is refused naming the row, and any row whose actual output falls outside
-tolerance fails the deploy. A `test_quotes.dir` that is not a string, or is an empty one,
+tolerance fails the deploy. Each file is read once, and every row that leaves out a column
+the request requires is named in the report, not only the first. A `test_quotes.dir` that is not a string, or is an empty one,
 is refused when `haute.toml` loads, never read as the default folder. The starter JSON quote `haute init` writes takes the row shape,
 so a new project's test quotes parse before the analyst replaces them. A workbench
 project, which `haute deploy` refuses, checks its test quotes in `haute app build`:

@@ -17,7 +17,6 @@ MLflow target and the impact analysis. Current behaviour is specified in
 | DEP-R11 | Planned | P2 | Impact analysis fails on a row-count mismatch instead of pairing the wrong quotes, and a mistyped production URL is not a first deploy. |
 | DEP-R12A | Planned | P2 | Each build owns a fresh directory under the project and ships only its own artefacts. |
 | DEP-R12B | Planned | P3 | The output-schema cache lives under the project root with one entry per fingerprint. |
-| DEP-R14 | Planned | P3 | Validation parses each test-quote file once and reports every row with missing columns. |
 | DEP-R15 | Planned | P3 | The served error envelopes carry a correlation id rather than the exception text. |
 | DEP-R16 | Decision | P3 | A quote whose production value is zero and whose staging value is not is reported, not a failure of the whole impact analysis. |
 | DEP-R17 | Planned | P2 | Changing Accept changes framing and row limits, not OUTPUT null/empty-field semantics. |
@@ -171,23 +170,6 @@ schema cache atomically only under the resolved project.
 
 **Evidence:** `src/haute/deploy/_schema.py::infer_output_schema`;
 `src/haute/_file_ops.py::atomic_write_text`.
-
-### DEP-R14 — Validation reads each test-quote file once
-**Why:** `validate_deploy` parses every test-quote file for the column pre-check and
-`score_test_quotes` parses it again; the pre-check stops at the first row with missing
-columns, so later rows' problems are not in the one aggregated report the specification
-promises.
-
-**Plan:** Parse once and pass the cases to `score_test_quotes`; report every row with
-missing columns.
-
-**Acceptance:** A file with two rows missing columns names both rows in one
-`DeployError`; each file is read once per validation.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/deploy/_validators.py::validate_deploy`,
-`::score_test_quotes` and `::load_test_quote_file`.
 
 ### DEP-R15 — Error envelopes without exception text
 **Why:** The generated container's 500 envelopes return `str(exc)` to the API client,

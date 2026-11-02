@@ -285,6 +285,51 @@ def test_validate_deploy_lets_a_workbench_quote_leave_a_table_out(tmp_path: Path
     )
 
 
+def test_validation_names_every_row_missing_columns_reading_each_file_once(
+    tmp_path: Path,
+) -> None:
+    """DEP-R14: one report holds every row's missing columns, and a file is read once."""
+    import haute.deploy._validators as validators
+
+    quotes_dir = tmp_path / "quotes"
+    quotes_dir.mkdir()
+    _write_json(
+        quotes_dir / "golden.json",
+        [
+            {"input": {"VehPower": 7}},
+            {"input": {"VehPower": 7, "Area": "C"}},
+            {"input": {"Area": "C"}},
+        ],
+    )
+    _write_json(quotes_dir / "other.json", [{"input": {"VehPower": 5, "Area": "B"}}])
+    resolved = _resolved_with_quotes(quotes_dir)
+    reads: list[str] = []
+    read_user_text = validators.read_user_text
+
+    def counting_read(path: Path) -> str:
+        reads.append(Path(path).name)
+        return read_user_text(path)
+
+    with (
+        patch.object(validators, "read_user_text", side_effect=counting_read),
+        patch("haute.deploy._validators.score_graph") as score_graph,
+    ):
+        score_graph.return_value = pl.DataFrame({"premium": [70.0]})
+        with pytest.raises(DeployError) as refused:
+            validate_deploy(resolved)
+
+    errors = refused.value.context["test_quote_errors"]
+    assert errors == [
+        "test quote 'golden.json' row 0 failed: missing required input column(s) ['Area']; "
+        "provided columns ['VehPower'].",
+        "test quote 'golden.json' row 2 failed: missing required input column(s) "
+        "['VehPower']; provided columns ['Area'].",
+    ]
+    assert sorted(reads) == ["golden.json", "other.json"]
+    # The file holding the misfits is not scored; the other one is, once.
+    assert score_graph.call_count == 1
+
+
 def test_score_test_quotes_reports_expected_output_drift(tmp_path: Path) -> None:
     quotes_dir = tmp_path / "quotes"
     quotes_dir.mkdir()

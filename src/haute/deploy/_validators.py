@@ -137,9 +137,7 @@ def test_quote_requests(directory: Path) -> list[dict[str, Any]]:
 
     Raises ``ValueError`` when a file cannot be read as test quotes.
     """
-    return [
-        case.input for path in test_quote_files(directory) for case in _load_test_quote_cases(path)
-    ]
+    return [row for path in test_quote_files(directory) for row in load_test_quote_file(path)]
 
 
 def _is_numeric(value: Any) -> bool:
@@ -646,32 +644,30 @@ def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> li
         # out has no rows, a one-row one its row of nulls), and its reader
         # refuses a quote that does not fit, naming the spot, when it is
         # scored below, so its cases are not held to the columns here.
+        #
+        # Each file is read once: the cases the pre-check reads are the ones scored. A
+        # file whose rows miss columns names every such row and is not scored, since its
+        # request would only be refused on the first of them.
         required_cols = set(resolved.input_schema or {})
         reads_quotes = _reads_one_quote_per_request(resolved)
         for jf in test_quote_files(tq_dir):
+            started = time.perf_counter()
             try:
-                cleaned = load_test_quote_file(jf)
+                cases = _load_test_quote_cases(jf)
             except Exception as exc:
                 test_quote_errors.append(f"test quote {jf.name!r} failed: could not parse ({exc})")
                 continue
-            if reads_quotes:
+            missing_rows = (
+                [] if reads_quotes else _rows_missing_columns(jf.name, cases, required_cols)
+            )
+            if missing_rows:
+                test_quote_errors.extend(missing_rows)
                 continue
-            for row in cleaned:
-                missing = sorted(required_cols - set(row))
-                if missing:
-                    test_quote_errors.append(
-                        f"test quote {jf.name!r} failed: missing required input "
-                        f"column(s) {missing}; provided columns {sorted(row)}."
-                    )
-                    break
-
-        # Actual scoring pass — surfaces runtime errors.
-        quote_results = score_test_quotes(resolved, tq_dir)
-        for q in quote_results:
-            if q.get("status") == "error":
-                test_quote_errors.append(
-                    f"test quote {q.get('file', '<unknown>')!r} failed: {q.get('error', '')}"
-                )
+            # Actual scoring pass — surfaces runtime errors.
+            result = _score_test_quote_cases(resolved, jf.name, cases, started=started)
+            quote_results.append(result)
+            if result["status"] == "error":
+                test_quote_errors.append(f"test quote {jf.name!r} failed: {result['error']}")
 
     if errors or test_quote_errors:
         logger.warning(
@@ -690,6 +686,20 @@ def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> li
     # are empty (the branch above raises otherwise), so validation passed.
     logger.info("validation_passed")
     return quote_results
+
+
+def _rows_missing_columns(name: str, cases: list[_TestQuoteCase], required: set[str]) -> list[str]:
+    """One message per row of the test-quote file *name* whose input leaves out a column
+    the request requires, naming the row, the missing columns and those it gives."""
+    messages = []
+    for row_index, case in enumerate(cases):
+        missing = sorted(required - set(case.input))
+        if missing:
+            messages.append(
+                f"test quote {name!r} row {row_index} failed: missing required input "
+                f"column(s) {missing}; provided columns {sorted(case.input)}."
+            )
+    return messages
 
 
 def _reads_one_quote_per_request(resolved: ResolvedDeploy) -> bool:
@@ -738,6 +748,30 @@ def score_test_quote_file(resolved: ResolvedDeploy, jf: Path) -> TestQuoteResult
     """Score one test-quote file as :func:`score_test_quotes` scores each: its cases
     priced and each expected output compared, answering its result (``status`` ``ok`` or
     ``error`` with why); never raises for the file."""
+    started = time.perf_counter()
+    try:
+        cases = _load_test_quote_cases(jf)
+    except Exception as exc:
+        return _test_quote_result(jf.name, started, error=exc)
+    return _score_test_quote_cases(resolved, jf.name, cases, started=started)
+
+
+def _test_quote_result(
+    name: str, started: float, *, rows: int = 0, error: Exception | None = None
+) -> TestQuoteResult:
+    return {
+        "file": name,
+        "rows": rows,
+        "status": "ok" if error is None else "error",
+        "time_ms": round((time.perf_counter() - started) * 1000, 1),
+        "error": "" if error is None else str(error),
+    }
+
+
+def _score_test_quote_cases(
+    resolved: ResolvedDeploy, name: str, cases: list[_TestQuoteCase], *, started: float
+) -> TestQuoteResult:
+    """The result of the test-quote file *name*'s parsed *cases*, priced and checked."""
     one_quote_per_request = _reads_one_quote_per_request(resolved)
     # A Quote Input with tables reads its quotes as their records, as served.
     as_records = reads_records(resolved.pruned_graph, resolved.input_node_ids)
@@ -756,9 +790,7 @@ def score_test_quote_file(resolved: ResolvedDeploy, jf: Path) -> TestQuoteResult
             request_rows=resolved.request_rows,
         )
 
-    t0 = time.perf_counter()
     try:
-        cases = _load_test_quote_cases(jf)
         if not cases:
             rows = 0
         elif one_quote_per_request:
@@ -776,19 +808,5 @@ def score_test_quote_file(resolved: ResolvedDeploy, jf: Path) -> TestQuoteResult
             rows = output.height
 
     except Exception as exc:
-        elapsed = (time.perf_counter() - t0) * 1000
-        return {
-            "file": jf.name,
-            "rows": 0,
-            "status": "error",
-            "time_ms": round(elapsed, 1),
-            "error": str(exc),
-        }
-    elapsed = (time.perf_counter() - t0) * 1000
-    return {
-        "file": jf.name,
-        "rows": rows,
-        "status": "ok",
-        "time_ms": round(elapsed, 1),
-        "error": "",
-    }
+        return _test_quote_result(name, started, error=exc)
+    return _test_quote_result(name, started, rows=rows)

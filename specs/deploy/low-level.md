@@ -440,19 +440,22 @@ project's own keeps from the quote's identity refused through `identity_clashes`
 form naming a table or column its schema does not hold refused through
 `unresolved_references`, naming each file, place and name), then — if
 `config.test_quotes_dir` is configured — requires an existing directory containing at
-least one `*.json` file and, for a Quote Input, pre-checks every quote's rows
-against the required input-schema columns (catching a missing column before scoring even
-starts, since a passthrough graph wouldn't otherwise surface it; a Workbench Input's quotes
-may leave a table out, and its reader refuses a quote that does not fit when it is scored),
-then calls
-`score_test_quotes()` with `config.output_fields` to score the same projection served at
-runtime and collect per-file errors (a Quote Input's cases as one request when its
+least one `*.json` file, then reads each file once (`_load_test_quote_cases`; a file that
+cannot be read is reported and not scored) and, for a Quote Input, pre-checks every row
+against the required input-schema columns (`_rows_missing_columns`: every row that leaves
+one out is named, with its index, the missing columns and those it gives, and its file is
+not scored, since its request would only be refused on the first; catching a missing column
+before scoring even starts, since a passthrough graph wouldn't otherwise surface it; a
+Workbench Input's quotes may leave a table out, and its reader refuses a quote that does not
+fit when it is scored), then scores the cases it read (`_score_test_quote_cases`, the step
+`score_test_quote_file` runs after reading a file) with `config.output_fields`, the same
+projection served at runtime, and collects per-file errors (a Quote Input's cases as one request when its
 `request_rows` answers several quotes in request order, and otherwise one request each, as a
 Workbench Input's always are, since it reads one quote per request, each case's expected
 output compared with its own request's one row and reported by its row in the file;
 [workbench](../workbench/low-level.md)). All
 structural, form + test-quote errors are combined into one `DeployError` if any exist.
-On success, `validate_deploy()` returns that exact per-file result list so a
+On success, `validate_deploy()` returns the per-file results of that one scoring pass so a
 presentation caller can render timings/status without executing the scorer again.
 `score_test_quotes()` remains a result-producing helper and returns an empty list when
 called directly without a usable directory; `validate_deploy()` owns enforcement of the
@@ -1135,6 +1138,7 @@ what they cover:
   (Databricks, container, platform-container, planned/`NotImplementedError`,
   unknown/`ValueError`) and `DeployResult` field population.
 - **`test_deploy_expected_output_validation.py`** — canonical test-quote envelope parsing,
+  every row of a file that misses columns named in one report with each file read once,
   tolerance comparison (numeric, boolean, Decimal,
   large-integer zero-tolerance), missing-expected-column and row-count-mismatch failure
   modes, malformed golden-row rejection, and end-to-end `validate_deploy` blocking on drift.

@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 import os
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 
@@ -26,7 +26,7 @@ from haute.deploy._config import (
 )
 from haute.deploy._project_modules import ProjectModules
 from haute.deploy._request_rows import RequestRows
-from haute.deploy._validators import validate_deploy
+from haute.deploy._validators import _TestQuoteCase, validate_deploy
 from tests._deploy_helpers import artifact_digests, resolved_paths
 
 _MINIMAL_LIVE_QUOTE = (
@@ -554,13 +554,19 @@ class TestValidateDeploy:
         ]
 
         with patch(
-            "haute.deploy._validators.score_test_quotes",
-            return_value=quote_results,
+            "haute.deploy._validators._score_test_quote_cases",
+            return_value=quote_results[0],
         ) as scorer:
             result = validate_deploy(resolved)
 
-        assert result is quote_results
-        scorer.assert_called_once_with(resolved, tmp_path)
+        assert result == quote_results
+        # The cases the pre-check read are the ones scored: the file is read once.
+        scorer.assert_called_once_with(
+            resolved,
+            "quote.json",
+            [_TestQuoteCase(input={"col": 1}, expected=None, tolerance_pct=0.0)],
+            started=ANY,
+        )
 
     def test_failed_quote_warns_once_and_raises_from_the_same_scoring_pass(
         self,
@@ -590,15 +596,15 @@ class TestValidateDeploy:
 
         with (
             patch(
-                "haute.deploy._validators.score_test_quotes",
-                return_value=quote_results,
+                "haute.deploy._validators._score_test_quote_cases",
+                return_value=quote_results[0],
             ) as scorer,
             patch("haute.deploy._validators.logger.warning") as warning,
             pytest.raises(DeployError, match="schema mismatch"),
         ):
             validate_deploy(resolved)
 
-        scorer.assert_called_once_with(resolved, tmp_path)
+        assert scorer.call_count == 1
         warning.assert_called_once_with(
             "validation_failed",
             structural_errors=0,
