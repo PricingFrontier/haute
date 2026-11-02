@@ -8,6 +8,7 @@
 | `src/haute/_git_core.py` | Sole Git command and repository-mutation boundary: exception taxonomy, prompt-proof subprocess adapters, fetch serialization, ref validation and branch-pair naming (`_free_pair_name`), guardrails, the compensation of a failed mutation (`_compensate`), immutable object/ref queries, content-addressed primitive caches (including parsed graph-log rows), and the tree fence every working-tree-rewriting command runs through (`_rewrite_tree`, `_tracked_changes`, `GitFilesInUseError`). Domain modules depend on this layer; it depends on none of them. |
 | `src/haute/_git_setup.py` | Repository and clone setup: repository readiness, identity, default/working-branch association, unborn-repository seeding, and Git preferences. |
 | `src/haute/_git_transactions.py` | Working/ledger branch-pair transactions: path-scoped saves, invariant checks, the sweep of unrecorded project files, milestone merge/ref transaction, version restore, and branch creation/fork replay with compensating rollback. |
+| `src/haute/_lint_refusal.py` | `explain_lint_refusal`: a milestone refused by the scaffolded pre-commit hook, said node by node from ruff's concise diagnostics (`lint_problems`, `LintProblem`), each line quoted, with the fix-or-`noqa` instruction and `REFUSAL_GUIDE_URL`; nothing for output holding no diagnostic. |
 | `src/haute/_git_read_models.py` | Immutable panel read models for repository/working-branch readiness and managed working-branch listings, and the project-file reads behind the Pipeline files panel: `pipeline_file_states` (how each file in a folder stands against version history: `new`, `changed` or `ignored`) and `ignore_rule` (the `.gitignore` rule that ignores a path). It performs no mutation or fetch. |
 | `src/haute/_git_history.py` | Immutable history projection and safe historical materialisation: milestones, ledger saves, commit context, forest topology, use of the core's object-addressed log cache, and bounded archive extraction. |
 | `src/haute/_git_remote.py` | Deliberate remote synchronization and transport: remote configuration/listing, clone/bundle flows, pair divergence, fetch, push/bootstrap, fast-forward, and branch-away resolution. It uses the core command boundary and never owns clone-state files. |
@@ -216,10 +217,9 @@ current) → `git status --porcelain -- <paths>` to check anything in *paths* ac
 changed (idempotent no-op returns `None`; a status git cannot answer raises `GitError`,
 never reads as no change) → `git add -- <paths>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
 <paths>` (pathspec-scoped, so it commits only those paths' working-tree state regardless of
-what else the user may have pre-staged) → returns the new SHA. The `git commit` runs the project's hooks (a pre-commit hook may
-rewrite and restage a file, so the commit holds its bytes), except with
-`run_hooks=False`, which passes `--no-verify` for a save the milestone's own hook pass
-covers. Every path reaches Git as a
+what else the user may have pre-staged) → returns the new SHA. The `git commit` passes
+`--no-verify`: a save runs none of the project's hooks, which run at a milestone over every
+save it records. Every path reaches Git as a
 `:(literal)` pathspec, so a filename holding `*`, `?` or `[` names only itself, as in the
 unborn-repo seed. A canvas save passes no
 message, so the default names the changed files; an assistant apply passes its change
@@ -244,7 +244,7 @@ file, so one an earlier run wrote and nobody committed is taken too) and the oth
 re-run wrote, those Git does not track yet, in one save whose default message names them:
 untracked (`git ls-files --others --exclude-standard -z` on their literal paths) or staged as
 an addition against `HEAD` and never committed (`git diff --cached --name-only
---diff-filter=A`), as a capture whose commit a hook refused leaves its files, so the next run
+--diff-filter=A`), as a capture whose commit failed leaves its files, so the next run
 still takes them. Their changes to tracked files, and the workflows they prune, are left on
 disk for review and the milestone's sweep. Since `commit_save` checks the ledger out, the
 capture is made only while the checkout is on the chosen working branch's ledger; on any other
@@ -334,7 +334,16 @@ hook run --ignore-missing` (git 2.36 or later; an older git with a hook installe
 with "This project has a <hook> hook, and running it needs git 2.36 or later. Update git,
 then commit again."), bounded by `_HOOK_TIMEOUT_SECONDS` (300 s). A hook that exits non-zero
 refuses the milestone with "The project's <hook> hook refused the milestone: <the end of what
-it printed>", nothing recorded; `commit-msg` gets the message in a file and may rewrite it,
+it printed>", nothing recorded, except a `pre-commit` refusal whose output holds ruff's
+concise diagnostics (`<path>:<line>:<column>: <code> <message>`, paths relative to the
+repository's top level), which `haute._lint_refusal.explain_lint_refusal` says instead: "the
+project's pre-commit hook found <n> problem(s) to fix first:", one line per problem (at most
+five, the rest counted) naming the node whose decorated top-level function on `pipeline` or
+`submodel` holds the line, or the file and line outside one, with the line quoted (cut to 60
+characters) and ruff's message and code, then "Change each line, save, and commit again. To
+keep a line as it is, end it with `# noqa: <code>` (its code). More: <docs URL>"
+(`REFUSAL_GUIDE_URL`); output holding no such line, another hook's or ruff failing to run,
+keeps the generic refusal; `commit-msg` gets the message in a file and may rewrite it,
 and a message it empties is refused. HEAD returns to the ledger in a `finally`, whatever
 ended the hooks (an interrupt included), before the scratch files are removed; a return that
 fails is `GitTransactionError`. What `pre-commit` left changed
@@ -496,7 +505,7 @@ folder (`_refuse_unversionable`): "<path> (<size>) is too large for version hist
 takes files up to 100 MiB. Move it to the project's data/ folder, which stays on this machine,
 and try again." A larger file the pathspecs leave out is never a candidate. The matched files are added with
 `:(literal)` prefixes so a filename containing glob characters can't re-expand the pathspec.
-An empty result still commits (`--allow-empty`) to establish the root. A `git commit` failure whose
+An empty result still commits (`--allow-empty`) to establish the root. The root commit passes `--no-verify`: like a save, it runs none of the project's hooks. A `git commit` failure whose
 stderr mentions missing author identity is translated to a `GitDomainError` steering the
 user to set identity first; anything else re-raises as a plain `GitError`. The whole
 *post-seed pair-creation* path (branch checkout, ledger spawn, state write) is wrapped so any

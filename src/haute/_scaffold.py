@@ -2045,20 +2045,23 @@ PRE_COMMIT_HOOK_MARK = "# Haute pre-commit hook"
 
 
 def pre_commit_hook() -> str:
-    """Generate a Git pre-commit hook that formats and checks the staged Python with ruff.
+    """Generate a Git pre-commit hook that fixes, formats and checks the staged Python.
 
-    Each staged file's staged content is fixed and formatted through ruff's standard input
-    and written back to the index, so an unstaged hunk of a partially staged file stays out
-    of the commit; a file with nothing unstaged takes the result in the working tree too. A
-    problem ``ruff check --fix`` cannot fix stops the commit.
+    Each staged file's staged content goes through ruff's standard input: the fixes ruff
+    makes safely, then its formatting, are written back to the index, so an unstaged hunk
+    of a partially staged file stays out of the commit, and a file with nothing unstaged
+    takes the result in the working tree too. The result is then checked, and each problem
+    left, printed as ``<file>:<line>:<column>: <code> <message>`` of the content written, stops
+    the commit, as does ruff failing to run.
     """
     return f"""\
 #!/bin/sh
-{PRE_COMMIT_HOOK_MARK} - format and check the staged Python with ruff.
+{PRE_COMMIT_HOOK_MARK} - fix, format and check the staged Python with ruff.
 # Installed by `haute init`. To reinstall: cp .githooks/pre-commit .git/hooks/
 #
-# Only what is staged is formatted and checked: a file's unstaged changes stay out of the
-# commit. A problem `ruff check --fix` cannot fix stops the commit.
+# Only what is staged is changed: a file's unstaged changes stay out of the commit. A
+# problem ruff cannot fix safely stops the commit; fix it, or end its line with
+# `# noqa: <code>` to keep it as it is.
 
 # core.quotePath=false lists a non-ASCII name as it is; git still quotes a name holding a
 # quote, a backslash or a control character, which this hook refuses rather than misread.
@@ -2077,20 +2080,25 @@ while IFS= read -r file; do
             ;;
     esac
     git show ":$file" > "$work/staged" || {{ status=1; continue; }}
-    if ! uv run ruff check --fix --stdin-filename "$file" < "$work/staged" > "$work/checked" ||
+    if ! uv run ruff check --fix --exit-zero --quiet --stdin-filename "$file" \\
+            < "$work/staged" > "$work/checked" ||
         ! uv run ruff format --stdin-filename "$file" < "$work/checked" > "$work/fixed"
     then
-        echo "pre-commit: ruff stopped the commit at $file" >&2
+        echo "pre-commit: ruff could not fix and format $file" >&2
         status=1
         continue
     fi
-    cmp -s "$work/staged" "$work/fixed" && continue
-    # Nothing unstaged: the working tree takes the result as the index does.
-    git diff --quiet -- "$file" && whole=yes || whole=no
-    mode=$(git ls-files --stage -- "$file" | cut -d ' ' -f 1)
-    blob=$(git hash-object -w --stdin < "$work/fixed") &&
-        git update-index --cacheinfo "$mode,$blob,$file" || {{ status=1; continue; }}
-    [ "$whole" = yes ] && git checkout-index --force -- "$file"
+    if ! cmp -s "$work/staged" "$work/fixed"; then
+        # Nothing unstaged: the working tree takes the result as the index does.
+        git diff --quiet -- "$file" && whole=yes || whole=no
+        mode=$(git ls-files --stage -- "$file" | cut -d ' ' -f 1)
+        blob=$(git hash-object -w --stdin < "$work/fixed") &&
+            git update-index --cacheinfo "$mode,$blob,$file" || {{ status=1; continue; }}
+        [ "$whole" = yes ] && git checkout-index --force -- "$file"
+    fi
+    # What is left, at the lines of the content just written.
+    uv run ruff check --quiet --output-format=concise --stdin-filename "$file" \\
+        < "$work/fixed" >&2 || status=1
 done <<EOF
 $files
 EOF

@@ -59,7 +59,8 @@ Out of scope, owned elsewhere:
   is refused. Every new project gets a blank `rating/` pipeline package, `.env.example`,
   test-quote fixtures, CI/CD workflow files for the chosen provider (each GitHub action
   pinned to a commit), a git pre-commit hook that fixes and formats only what is staged and
-  stops a commit on a problem ruff cannot fix,
+  stops a commit (a milestone, or a person's own `git commit`; never a save) on a problem
+  ruff cannot fix safely,
   and `.gitignore` guard entries; a starter file of `rating/` or `tests/` is written only
   where the folder has none, so a `rating/main.py` already there is kept and the summary
   names what was kept, and no workflow already in the folder is pruned. The hook is installed in `.git/hooks/` too inside a git repository,

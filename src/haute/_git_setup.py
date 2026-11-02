@@ -309,7 +309,8 @@ def set_working_branch(
             ok_diff, _ = _run_git_ok("diff", "--cached", "--quiet", cwd=cwd)
             commit_extra = ["--allow-empty"] if ok_diff else []
             try:
-                _run_git("commit", *commit_extra, "-m", "Initial commit", cwd=cwd)
+                # Haute's own commit, as a save is: the project's hooks run at a milestone.
+                _run_git("commit", "--no-verify", *commit_extra, "-m", "Initial commit", cwd=cwd)
             except GitError as exc:
                 stderr = str(exc)
                 if any(

@@ -433,6 +433,42 @@ class TestMilestoneMerge:
         assert _git(repo, "rev-parse", WORKING) == working_tip
         assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
 
+    def test_a_ruff_refusal_names_the_node_the_line_and_what_to_do(self, repo: Path) -> None:
+        """The scaffolded hook's report (``<file>:<line>:<col>: <code> <message>``) is said
+        in the editor's terms: the node, the line quoted, and how to fix or keep it."""
+        from haute._git_state import write_working_branch
+        from haute._lint_refusal import REFUSAL_GUIDE_URL
+
+        write_working_branch(repo, WORKING)
+        pipeline = (
+            "import haute\n"
+            "import polars as pl\n\n"
+            'pipeline = haute.Pipeline("rated")\n\n\n'
+            "@pipeline.polars\n"
+            "def priced(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+            '    check = df.filter(pl.col("x") > 0)\n'
+            "    return df\n"
+        )
+        _write_and_save(repo, WORKING, {"main.py": pipeline})
+        install_hook(
+            repo,
+            "pre-commit",
+            "#!/bin/sh\n"
+            "echo 'main.py:9:5: F841 Local variable `check` is assigned to but never used' >&2\n"
+            "exit 1\n",
+        )
+
+        with pytest.raises(GitDomainError) as refused:
+            commit_milestone("Rated", repo, cwd=repo)
+
+        assert str(refused.value).splitlines() == [
+            "the project's pre-commit hook found 1 problem to fix first:",
+            '- Node `priced`: `check = df.filter(pl.col("x") > 0)` - Local variable `check` '
+            "is assigned to but never used (F841)",
+            "Change each line, save, and commit again. To keep a line as it is, end it with "
+            f"`# noqa: F841` (its code). More: {REFUSAL_GUIDE_URL}",
+        ]
+
     @pytest.mark.parametrize("failure", ["an interrupt", "a cleanup failure"])
     def test_head_returns_to_the_ledger_whatever_ends_the_hooks(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch, failure: str

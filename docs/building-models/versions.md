@@ -12,11 +12,42 @@ The panel lists the saves since the last milestone in a highlighted box, then th
 milestones. Opening a milestone shows the saves in it. Each row's commit code is a short ID
 for that save or milestone.
 
-Saves and milestones run your project's git hooks, as `git commit` does. The pre-commit hook
-`haute init` sets up formats the Python you save, and the editor shows the formatted file.
-At **Commit a milestone** the hooks check everything the milestone records; if one refuses,
-nothing is committed and the message says why. A copy of the project you clone gets the
-same hook once you choose your working branch.
+A save is recorded exactly as you wrote it. Your project's git hooks run at **Commit a
+milestone**, as `git commit` would run them, over everything the milestone records. The
+pre-commit hook `haute init` sets up fixes and formats the Python with ruff, and what it
+changes is recorded as one more save before the milestone. A copy of the project you clone
+gets the same hook once you choose your working branch.
+
+## When a milestone is refused
+
+If a hook refuses, nothing is committed and your saves are untouched. When the refusal comes
+from the pre-commit hook, the message lists each problem by the node whose code holds it
+(or by file and line outside a node), quoting the line:
+
+```
+Node `priced`: `check = df.filter(pl.col("x") > 0)` - Local variable `check` is assigned
+to but never used (F841)
+```
+
+These are problems ruff cannot fix for you, because the fix depends on what you meant.
+Open the node, change the line, save, and commit again. The common ones:
+
+| Code | What it means | What to do |
+|---|---|---|
+| F841 | A variable is set but never used. | Delete the line, or use the variable. |
+| F821 | A name is used that nothing defines, usually a typo. | Correct the name. The pipeline would fail on it when run. |
+| E711 | `== None` or `!= None`. | In a Polars expression use `pl.col("x").is_null()` or `.is_not_null()`; for a Python value use `is None`. |
+| E712 | `== True` or `== False`. | In a Polars expression compare the column itself, or use `~`; for a Python value use `if x:` or `is True`. |
+| E741 | A variable named `l`, `O` or `I`. | Rename it. |
+| E722 | A bare `except:`. | Name the exceptions to catch, such as `except ValueError:`. |
+
+To keep a line as it is, end it with `# noqa: ` and its code, such as `# noqa: F841`. To
+change which problems ruff checks for the whole project, edit the `[tool.ruff]` table in
+`pyproject.toml`. The project's CI runs the same check on every pull request, so a problem
+left here also fails there.
+
+If the message instead says ruff could not run, the hook could not start `uv run ruff`:
+check that uv is installed and that `uv sync` succeeds in the project folder.
 
 ## Going back to a version
 

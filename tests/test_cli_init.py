@@ -1920,6 +1920,25 @@ class TestPreCommitHookFormatsWhatIsStaged:
         result = self._commit(repo, env)
 
         assert result.returncode != 0
-        assert "F821" in result.stderr
-        assert "ruff stopped the commit at pricing.py" in result.stderr
+        # At the lines of the content the hook wrote: the problem line, after formatting.
+        assert "pricing.py:2:12: F821 Undefined name `undefined_rate`" in result.stderr
         assert git_run(repo, "rev-parse", "HEAD") == head
+
+    def test_safe_fixes_are_kept_when_a_problem_stops_the_commit(
+        self, repository: tuple[Path, dict[str, str]]
+    ):
+        repo, env = repository
+        module = repo / "pricing.py"
+        module.write_text(
+            "import os\n\n\ndef price():\n    return undefined_rate\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        git_run(repo, "add", "pricing.py")
+
+        result = self._commit(repo, env)
+
+        assert result.returncode != 0
+        # The unused import went; the reported line is the file's as it now is.
+        assert module.read_text(encoding="utf-8") == "def price():\n    return undefined_rate\n"
+        assert "pricing.py:2:12: F821" in result.stderr

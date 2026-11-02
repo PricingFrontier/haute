@@ -236,8 +236,8 @@ def capture_new_files(project_dir: Path, written: Sequence[str]) -> None:
     Commit takes a new file only in the pipeline folder (specs/git-integration), so a
     workflow a newer Haute adds, or ``connections.toml``, would otherwise never reach version
     history, and a branch could merge without its deploy workflow. "Not tracked yet" is
-    untracked, or staged as an addition but never committed, as a capture whose commit a hook
-    refused leaves its files. What Haute changed in tracked files is left on disk, for review
+    untracked, or staged as an addition but never committed, as a capture whose commit
+    failed leaves its files. What Haute changed in tracked files is left on disk, for review
     and the next Commit. Recording checks the ledger out, so it is made only while the
     checkout is on the working branch's ledger, never from under another branch, whose files
     it would replace. A capture skipped (no working branch chosen, the checkout elsewhere, no
