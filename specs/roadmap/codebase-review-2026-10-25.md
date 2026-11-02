@@ -250,7 +250,7 @@ production:
 | CLI | PM-35 | `CLI-R04` |
 | CLI | PM-27, PM-31, PM-32, PM-33 | `CLI-R05` |
 | CLI | PM-29 (templates), PM-30 | `CLI-R06` |
-| Execution engine | the preamble `sys.path` edit | `EXEC-R17` (Decision) |
+| Execution engine | the preamble `sys.path` edit | `EXEC-R17` |
 | IO layer | CIO-5, CIO-11 | `IO-R06` |
 | Background jobs | WRK-2 | `ROAD-WORKER-06` |
 | Background jobs | WRK-5, WRK-6, WRK-11, WRK-14 | `ROAD-WORKER-07` |
