@@ -9,7 +9,6 @@ lets callers import utilities without pulling the full model module.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from hashlib import blake2b
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -75,21 +74,37 @@ def upstream_subgraph(graph: PipelineGraph, node_id: str) -> PipelineGraph:
     )
 
 
+def _edge_id_field(value: str) -> str:
+    if value == "":
+        raise ValueError("An edge id cannot be minted from an empty endpoint or handle.")
+    return value.replace("~", "~0").replace("-", "~1")
+
+
 def _edge_id(
     source: str,
     target: str,
     source_port: str | None = None,
     target_port: str | None = None,
 ) -> str:
-    """Return a stable React Flow edge id for an edge's endpoints and handles."""
-    if source_port is None and target_port is None:
-        return f"e_{source}_{target}"
-    if target_port is None:
-        payload = "\0".join((source, target, source_port or "")).encode()
-    else:
-        payload = "\0".join((source, target, source_port or "", target_port)).encode()
-    digest = blake2b(payload, digest_size=6).hexdigest()
-    return f"e_{source}_{target}_{digest}"
+    """The edge's id: an injective encoding of its four-field identity.
+
+    Each present field is escaped (``~`` as ``~0``, ``-`` as ``~1``) and joined
+    with ``-`` after ``e``; absent trailing handles are left off and an absent
+    source handle before a target handle is empty. Distinct connections
+    therefore never share an id, whatever their names: ``base`` to
+    ``rates_apply`` is ``e-base-rates_apply`` and ``base_rates`` to ``apply`` is
+    ``e-base_rates-apply``. The browser mints the same id
+    (``frontend/src/utils/flowElements.ts::edgeId``), so a connection keeps its
+    id through save and reload; ``tests/fixtures/ui_contracts/edge_ids.json``
+    holds both to it.
+    """
+    fields = [_edge_id_field(source), _edge_id_field(target)]
+    if target_port is not None:
+        fields.append("" if source_port is None else _edge_id_field(source_port))
+        fields.append(_edge_id_field(target_port))
+    elif source_port is not None:
+        fields.append(_edge_id_field(source_port))
+    return "-".join(["e", *fields])
 
 
 def is_frame_label(label: str) -> bool:

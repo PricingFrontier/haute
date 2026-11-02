@@ -3,6 +3,9 @@ import { createElement } from "react"
 import { renderHook, render, screen, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import useKeyboardShortcuts from "../useKeyboardShortcuts"
+import useGraphCanvasState from "../useGraphCanvasState"
+import useGraphStore, { resetGraphStoreForTests } from "../../stores/useGraphStore"
+import { appEdge } from "../../utils/flowElements"
 import ModalShell from "../../components/ModalShell"
 import useUIStore from "../../stores/useUIStore"
 import useToastStore from "../../stores/useToastStore"
@@ -1018,5 +1021,66 @@ describe("useKeyboardShortcuts", () => {
     ]
     expect(remainingNodes.map((node) => node.id)).toEqual(["owner", "b", "c"])
     expect(remainingEdges.map((edge) => edge.id)).toEqual(["e_owner_b"])
+  })
+})
+
+describe("useKeyboardShortcuts paste on the graph store", () => {
+  beforeEach(() => {
+    resetGraphStoreForTests()
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.clearAllMocks()
+  })
+
+  it("Ctrl+V keeps a two-frame Quote Input's parallel connections distinct through delete and undo", async () => {
+    const quote = makeNode("quote", "apiInput", {
+      data: {
+        label: "Quote Input",
+        config: { tables: [{ label: "policy", emit: true }, { label: "risks", emit: true }] },
+      },
+      selected: true,
+    })
+    const price = makeNode("price", "polars", { data: { label: "Price" }, selected: true })
+    // Mounted first: the canvas seeds the store with its initial graph.
+    const canvas = renderHook(() => useGraphCanvasState()).result
+    act(() => {
+      useGraphStore.getState().setNodesAndEdges([quote, price], [
+        appEdge({ source: "quote", target: "price", sourceHandle: "policy" }),
+        appEdge({ source: "quote", target: "price", sourceHandle: "risks" }),
+      ])
+    })
+    // The live graph, one object per store state, as the canvas hands it over.
+    let graph = { nodes: [] as Node[], edges: [] as Edge[] }
+    const graphRef = {
+      get current() {
+        const { nodes, edges } = useGraphStore.getState()
+        if (graph.nodes !== nodes || graph.edges !== edges) graph = { nodes, edges }
+        return graph
+      },
+    }
+    const params = makeParams({
+      graphRef: graphRef as unknown as ReturnType<typeof makeParams>["graphRef"],
+      setNodesAndEdges: canvas.current.setNodesAndEdges,
+    })
+    renderHook(() => useKeyboardShortcuts(params))
+
+    fireKey("c", { ctrlKey: true })
+    act(() => { useGraphStore.getState().setNodesAndEdges([], []) })
+    fireKey("v", { ctrlKey: true })
+    await waitFor(() => expect(useGraphStore.getState().edges).toHaveLength(2))
+
+    const pasted = useGraphStore.getState().edges
+    expect(pasted.map((edge) => edge.sourceHandle)).toEqual(["policy", "risks"])
+    expect(new Set(pasted.map((edge) => edge.id)).size).toBe(2)
+    const [policy, risks] = pasted
+
+    act(() => { canvas.current.onEdgesChange([{ type: "remove", id: policy.id }]) })
+    expect(useGraphStore.getState().edges).toEqual([risks])
+
+    act(() => { canvas.current.undo() })
+    expect(useGraphStore.getState().edges).toEqual([policy, risks])
   })
 })

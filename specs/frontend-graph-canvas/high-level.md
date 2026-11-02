@@ -880,9 +880,22 @@ candidate, with the error toast.
 
 ## Failure model
 
-> NOTE: Distinct parsed or pasted connections can share an id.
-> [NAME-10](../roadmap/name-collisions.md#name-10--every-distinct-connection-has-a-distinct-identity) owns this gap.
-
+- A connection's id is a pure, injective function of its four-field identity
+  (source, target, source handle, target handle): `e`, then each present field
+  with `~` escaped as `~0` and `-` as `~1`, joined by `-`, an absent trailing
+  handle left off and an absent source handle before a target handle left
+  empty. The server (`haute._graph_utils._edge_id`) and the browser
+  (`edgeId` in `frontend/src/utils/flowElements.ts`) mint it identically,
+  held to one shared fixture (`tests/fixtures/ui_contracts/edge_ids.json`), so
+  distinct connections never share an id whatever their node names
+  (`base` → `rates_apply` and `base_rates` → `apply`), and an id survives
+  parse, save, reload and a ready document's recovery snapshot unchanged. Paste
+  mints each copied connection's id through the same function from its new
+  endpoints and its original handles, so a two-frame Quote Input's parallel
+  connections stay two after a paste, deleting one leaves the other, and one
+  undo restores exactly the deleted one. A degraded document's recovery
+  connections keep their own `edge:` ids, which also count each duplicate
+  declaration.
 - `NodePanel` separates the recovery diagnostic boundary from healthy editor input-identity
   derivation: inspecting an `unavailable` node, or a `blocked` node that is not actively
   scoped-editing with resolvable upstream input identities, renders `RecoveryNodePanel`

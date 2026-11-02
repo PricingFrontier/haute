@@ -71,7 +71,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/utils/validateConfigRefs.ts` | `validateConfigRefs`/`formatConfigRefWarnings` — flags submodel occurrence `instanceOf` fields pointing at non-existent owner occurrences; edge-name selectors are validated against their target's exact incoming-edge identities instead. |
 | `frontend/src/utils/layout.ts` | `getLayoutedElements` plus `nodeIdsNeedingLayout`/`mergeLayoutedNodePositions` for partial imported-graph layout; finite positions including the origin are authoritative. Also owns `clusterSnap`/`alignPositions` coordinate snapping. |
 | `frontend/src/utils/connectionValidation.ts` | `isPipelineConnectionValid` — the graph-level `isValidConnection` React Flow validator, including ordinary executable input-name uniqueness, generic-submodel-input name lookup/allocation policy, strict public-port validation and one-binding-per-input enforcement, and null-API-handle rejection in every gesture direction. |
-| `frontend/src/utils/flowElements.ts` | `appNode`/`appEdge`/`nodeLabel`/`edgeId`/`deselectNodes`/`selectOnlyNode` — node/edge factories and id/selection helpers. |
+| `frontend/src/utils/flowElements.ts` | `appNode`/`appEdge`/`nodeLabel`/`edgeId`/`deselectNodes`/`selectOnlyNode` — node/edge factories and id/selection helpers. `edgeId` is the injective four-field edge id the server's `_edge_id` also mints (high-level, Failure model); it refuses an empty endpoint or handle. |
 | `frontend/src/utils/flowHandles.ts` | Owns the interaction-only `SUBMODEL_INPUT_HANDLE` and `DEFAULT_TARGET_HANDLE` sentinels; `normalizeDefaultTargetHandle` collapses React Flow's synthetic ordinary target id to `null`. |
 | `frontend/src/utils/nodeTypes.ts` | Canvas metadata derived from shared `types/node.ts::PIPELINE_NODE_TYPES`: `NODE_TYPE_META` and lookups (`SOURCE_ONLY_TYPES`, `SINK_ONLY_TYPES`, `SINGLETON_TYPES`, `PALETTE_TYPES`, `nodeTypeIcons`/`nodeTypeColors`/`nodeTypeLabels`, `PILL_TYPES`), the request inputs (`REQUEST_INPUT_TYPES`, `isRequestInputType`) and their shared singleton slot (`singletonTypesOccupiedBy`, `singletonLimitMessage`). The `polars` type is named Transform (badge `TRANSFORM`) wherever the editor names a type, including a new node's generated label; its type id, decorator and config directory stay `polars`. |
 | `frontend/src/utils/apiInputPorts.ts` | Mirrors backend API-input frame identity and resolves authoritative executable names across ordinary nodes and public submodel labels while retaining public-port ids as boundary handles; also owns label validation, conservative rename updates, and orphan-handle pruning. |
@@ -1628,7 +1628,10 @@ again through the editor and save paths.
     one resolve-before-commit transaction: cloned node identities and internal
     edge identities come from the authoritative resolver, while rejection,
     malformed results, superseding requests, and intervening graph edits are
-    visible atomic no-ops.
+    visible atomic no-ops. On the real graph store, a copied, deleted and
+    pasted two-frame Quote Input keeps its two parallel connections under
+    distinct ids; removing one through the canvas's edge changes leaves the
+    other, and one undo restores exactly the removed one.
   - The Edge Join insertion feedback component is covered with React Testing
     Library: a compatible candidate exposes one named polite status and the
     derived edge receives the candidate class; clearing or invalidating the
@@ -1826,8 +1829,10 @@ again through the editor and save paths.
   - `frontend/src/utils/__tests__/connectionValidation.test.ts` — edge-join output-to-default-input
     allowed; self-loops rejected; incomplete connections rejected.
   - `frontend/src/utils/__tests__/flowElements.test.ts` — node creation from type metadata defaults;
-    metadata-name-based label generation; deterministic edge ids and
-    normalised handle fields; non-mutating deselect/select-only-node
+    metadata-name-based label generation; edge ids equal to the shared
+    fixture's (`tests/fixtures/ui_contracts/edge_ids.json`, which
+    `tests/test_graph_utils.py` holds the server to) and distinct across it,
+    normalised handle fields and refused empty fields; non-mutating deselect/select-only-node
     helpers.
   - `frontend/src/utils/__tests__/nodeTypes.test.ts` — every `NODE_TYPES` value present (exact count);
     `NODE_TYPE_META` completeness and 1:1 coverage; the Model Training description naming

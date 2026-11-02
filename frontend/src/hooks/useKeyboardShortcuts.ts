@@ -5,6 +5,7 @@ import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { isProtectedSubmodelNodeData, nodeData } from "../types/node"
+import { edgeId } from "../utils/flowElements"
 import { NODE_TYPES, isSingletonType, singletonTypesOccupiedBy, type NodeTypeValue } from "../utils/nodeTypes"
 import { requestSubmodelCreation } from "../utils/submodelCreation"
 import { hasModifier, inModalDialog, isTypingTarget, saveCommittingField } from "./keyboardTargets"
@@ -283,7 +284,13 @@ export default function useKeyboardShortcuts({
           const newSource = idMap.get(ed.source)
           const newTarget = idMap.get(ed.target)
           if (!newSource || !newTarget) return []
-          return [{ ...ed, id: `e-${newSource}-${newTarget}`, source: newSource, target: newTarget }]
+          const identity = {
+            source: newSource,
+            target: newTarget,
+            sourceHandle: ed.sourceHandle ?? null,
+            targetHandle: ed.targetHandle ?? null,
+          }
+          return [{ ...ed, ...identity, id: edgeId(identity) }]
         })
         const requestSerial = ++pasteRequestSerialRef.current
         void resolveGraphIdentities(newNodes, newEdges).then((resolved) => {

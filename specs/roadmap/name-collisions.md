@@ -15,7 +15,6 @@ and their editor surfaces in
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | NAME-09 | Planned | P3 | Editors that set an input binding show its name violations as it is edited. |
-| NAME-10 | Planned | P1 | Parsing, recovery and paste mint unambiguous edge identities, including parallel frame connections. |
 
 ## Planned improvements
 
@@ -48,29 +47,3 @@ port editor. Fixing the name clears each.
 `src/haute/_support_code_names.py::support_code_violations`;
 `frontend/src/utils/apiInputPorts.ts::apiInputLabelIssue`;
 `frontend/src/utils/editorIdentities.ts`.
-
-### NAME-10 — Every distinct connection has a distinct identity
-
-**Why:** Parser concatenation gives `base -> rates_apply` and `base_rates -> apply` the same
-edge id. Healthy recovery copies that id into the recovery identity, which browser document
-validation refuses as a duplicate. Separately, copying a valid two-frame Quote Input and its
-consumer, deleting them and pasting creates two edges with one id because paste uses endpoints
-only. The real keyboard/store deletion witness removes both when one duplicate-id edge is
-selected.
-
-**Plan:** Use a shared, unambiguous identity contract over the complete connection identity
-(endpoints and applicable source/target handles/ports), or a separately unique stable id. Apply
-it at parser, recovery, paste and other creation boundaries; reject collisions before
-publishing a document. Specify which identity survives a round trip and keep the edge/recovery
-identity relationship consistent.
-
-**Acceptance:** Both colliding-name parser edges load in the editor; a valid policy/risks pair
-survives copy/delete/paste with distinct ids. Selecting/deleting one connection preserves the
-other, and one undo restores exactly the deleted connection. Repeat across parse/save/reload
-and recovery. Do not prove uniqueness using endpoint-only examples.
-
-**Dependencies:** None. Recovery ids are minted once per graph by
-`_pipeline_recovery._recovery_ids`; an edge identity contract follows the same path.
-
-**Evidence:** `src/haute/_graph_utils.py::_edge_id`; `src/haute/_pipeline_recovery.py::_canonical_snapshot`;
-`frontend/src/types/pipelineDocument.ts::parseRecoveryGraph`; `frontend/src/hooks/useKeyboardShortcuts.ts::useKeyboardShortcuts.handler` (paste branch).

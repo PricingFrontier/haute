@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import polars as pl
 import pytest
 
+from haute._graph_utils import _edge_id
 from haute.execution import execute_lazy_graph
 from haute.graph_utils import (
     GraphNode,
@@ -16,6 +20,36 @@ from haute.graph_utils import (
     topo_sort_ids,
 )
 from tests.conftest import make_edge as _e
+
+_EDGE_ID_CASES = json.loads(
+    (Path(__file__).parent / "fixtures" / "ui_contracts" / "edge_ids.json").read_text("utf-8")
+)["cases"]
+
+
+class TestEdgeId:
+    """The edge id both stacks mint: an injective encoding of the four-field identity."""
+
+    @pytest.mark.parametrize("case", _EDGE_ID_CASES, ids=lambda case: case["id"])
+    def test_matches_the_shared_contract(self, case: dict[str, str | None]) -> None:
+        assert (
+            _edge_id(case["source"], case["target"], case["sourceHandle"], case["targetHandle"])
+            == case["id"]
+        )
+
+    def test_distinct_connections_never_share_an_id(self) -> None:
+        ids = [case["id"] for case in _EDGE_ID_CASES]
+        assert len(set(ids)) == len(ids)
+
+    @pytest.mark.parametrize(
+        ("source", "target", "source_port", "target_port"),
+        [("", "b", None, None), ("a", "", None, None), ("a", "b", "", None), ("a", "b", None, "")],
+    )
+    def test_an_empty_field_is_refused(
+        self, source: str, target: str, source_port: str | None, target_port: str | None
+    ) -> None:
+        with pytest.raises(ValueError, match="empty"):
+            _edge_id(source, target, source_port, target_port)
+
 
 # ---------------------------------------------------------------------------
 # _sanitize_func_name
