@@ -111,6 +111,43 @@ def test_cardinality_analysis_fails_closed_for_row_expanding_expressions(code: s
 @pytest.mark.parametrize(
     "code",
     [
+        "df = rows.select(pl.lit(series))",
+        "df = rows.select(pl.lit(pl.Series([1, 2, 3, 4, 5])).alias('x'))",
+        "df = rows.select(pl.all().is_null(), pl.lit(series).alias('x'))",
+        "df = rows.select(pl.col('a').sum(), pl.lit(series).alias('x'))",
+        "df = rows.select(pl.col('a').mean().alias('m'), pl.lit(series).alias('x'))",
+    ],
+)
+def test_cardinality_analysis_fails_closed_for_a_selected_lit_of_a_non_literal(code: str) -> None:
+    """A select of ``pl.lit`` holding a Series takes the Series' length, which can be
+    longer than the frame, unless a row-local expression of a named column holds it to
+    the frame's height; an aggregate of a column is one row and broadcasts. A literal
+    scalar or list is one row."""
+    result = analyze_polars_cardinality(code, {"rows": 3})
+
+    assert not result.supported
+    assert result.reason == "row_expansion_unbounded"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "df = rows.select(pl.lit([1, 2]).alias('pair'), pl.lit(-1).alias('flag'))",
+        "df = rows.select(pl.col('a'), pl.lit(series).alias('x'))",
+        "df = rows.select('a', pl.lit(series).alias('x'))",
+        "df = rows.select((pl.col('a') * 2).alias('b'), pl.lit(series).alias('x'))",
+        "df = rows.with_columns(pl.lit(BASE_RATE).alias('base'))",
+    ],
+)
+def test_cardinality_analysis_keeps_a_lit_that_cannot_outgrow_the_frame(code: str) -> None:
+    """A Series beside a column of the frame, or added as a column, must match the frame's
+    height (or be one row), so it cannot outgrow it."""
+    assert analyze_polars_cardinality(code, {"rows": 3}).output_upper_bound == 3
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
         "df = rows.select(pl.lit(1).alias('value'))",
         "df = rows.select(pl.len().alias('row_count'))",
         "df = rows.with_columns(pl.lit(1).alias('value'))",

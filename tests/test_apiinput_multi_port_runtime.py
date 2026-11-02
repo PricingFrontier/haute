@@ -1202,6 +1202,23 @@ def test_port_label_selects_requested_frame_for_preview(isolated_root) -> None:
     assert set(api.frame_columns) == {"policies", "drivers"}
 
 
+def test_a_port_label_the_source_does_not_emit_fails_the_target_naming_its_tables(
+    isolated_root,
+) -> None:
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+    graph = PipelineGraph(nodes=[_api_input_node("api", config)], edges=[])
+
+    api = execute_graph(graph, target_node_id="api", port_label="claims")["api"]
+
+    assert api.status == "error"
+    assert (
+        api.error == "api has no table 'claims' to preview; its tables are 'policies', 'drivers'."
+    )
+
+
 def test_distinct_port_labels_dont_collide_in_preview_cache(isolated_root) -> None:
     """CACHE-KEY CORRECTNESS (the main risk): two sequential previews of the
     SAME (graph, node, row_limit) but DIFFERENT ``port_label`` must return

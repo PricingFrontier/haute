@@ -2698,68 +2698,6 @@
       "title": "ExecutionAdmissionPayload",
       "type": "object"
     },
-    "ExecutionCacheProofMissReasonCountsPayload": {
-      "properties": {
-        "artifact_integrity_schema_failure": {
-          "minimum": 0,
-          "title": "Artifact Integrity Schema Failure",
-          "type": "integer"
-        },
-        "metadata_source_mismatch": {
-          "minimum": 0,
-          "title": "Metadata Source Mismatch",
-          "type": "integer"
-        },
-        "proof_unavailable": {
-          "minimum": 0,
-          "title": "Proof Unavailable",
-          "type": "integer"
-        },
-        "unreadable_artifact": {
-          "minimum": 0,
-          "title": "Unreadable Artifact",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "metadata_source_mismatch",
-        "artifact_integrity_schema_failure",
-        "unreadable_artifact",
-        "proof_unavailable"
-      ],
-      "title": "ExecutionCacheProofMissReasonCountsPayload",
-      "type": "object"
-    },
-    "ExecutionCacheProofPayload": {
-      "properties": {
-        "direct_fallbacks": {
-          "minimum": 0,
-          "title": "Direct Fallbacks",
-          "type": "integer"
-        },
-        "hits": {
-          "minimum": 0,
-          "title": "Hits",
-          "type": "integer"
-        },
-        "miss_reason_counts": {
-          "$ref": "#/$defs/ExecutionCacheProofMissReasonCountsPayload"
-        },
-        "misses": {
-          "minimum": 0,
-          "title": "Misses",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "hits",
-        "misses",
-        "direct_fallbacks",
-        "miss_reason_counts"
-      ],
-      "title": "ExecutionCacheProofPayload",
-      "type": "object"
-    },
     "ExecutionColumnWidthsCollectionPayload": {
       "properties": {
         "items": {
@@ -3243,19 +3181,6 @@
           ],
           "default": null
         },
-        "bytes_read": {
-          "anyOf": [
-            {
-              "minimum": 0,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Bytes Read"
-        },
         "bytes_written": {
           "anyOf": [
             {
@@ -3269,8 +3194,10 @@
           "default": null,
           "title": "Bytes Written"
         },
-        "cache_proof": {
-          "$ref": "#/$defs/ExecutionCacheProofPayload"
+        "cache_direct_fallbacks": {
+          "minimum": 0,
+          "title": "Cache Direct Fallbacks",
+          "type": "integer"
         },
         "cancellation_latency_ms": {
           "anyOf": [
@@ -3827,8 +3754,7 @@
         "column_widths",
         "requested_column_width_total",
         "physically_scanned_column_width_total",
-        "cache_proof",
-        "bytes_read",
+        "cache_direct_fallbacks",
         "bytes_written",
         "estimated_bytes",
         "raw_estimated_bytes",
@@ -3857,42 +3783,6 @@
     },
     "ExecutionStageMetricsPayload": {
       "properties": {
-        "bytes_read": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Bytes Read"
-        },
-        "bytes_written": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Bytes Written"
-        },
-        "columns_scanned": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Columns Scanned"
-        },
         "elapsed_ms": {
           "default": 0.0,
           "title": "Elapsed Ms",
@@ -3946,30 +3836,6 @@
           "default": "",
           "title": "Profile",
           "type": "string"
-        },
-        "rows_in": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Rows In"
-        },
-        "rows_out": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Rows Out"
         },
         "rss_delta_bytes": {
           "anyOf": [
@@ -4037,11 +3903,6 @@
         "rss_end_bytes",
         "rss_delta_bytes",
         "rss_peak_bytes",
-        "rows_in",
-        "rows_out",
-        "bytes_read",
-        "bytes_written",
-        "columns_scanned",
         "n_collects",
         "n_checkpoints"
       ],

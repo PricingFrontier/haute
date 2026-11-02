@@ -73,14 +73,16 @@ def handle_run(config: RunConfig) -> None:
         nid: res for nid, res in results.items() if nid not in graph._submodel_shared_bindings
     }
 
-    # Report per-node results
+    # Report per-node results by node id: a parsed node's id is its function's name, and
+    # a submodel occurrence's names the occurrence its label does not.
     errors = 0
     for nid, res in results.items():
         if res.status == "ok":
             click.echo(f"  \u2713 {nid}: {res.row_count:,} rows \u00d7 {res.column_count} cols")
         else:
             errors += 1
-            click.echo(f"  \u2717 {nid}: {res.error or 'unknown error'}")
+            line = "" if res.error_line is None else f" (line {res.error_line})"
+            click.echo(f"  \u2717 {nid}{line}: {res.error or 'unknown error'}")
 
     if errors:
         click.echo(f"\n{errors} node(s) failed.", err=True)

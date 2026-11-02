@@ -135,11 +135,17 @@ builders as source parsing and therefore reports positional parameter-name edges
 Keyword-only parameters are configuration and never become graph edges.
 
 **Standalone execution.** `Pipeline.run()` and `Pipeline.score(df)` are a self-contained
-executor over the live decorator graph (distinct from the full graph executor used for
+executor over the live decorator graph (each refusing a pipeline with no nodes, "Pipeline has
+no nodes") (distinct from the full graph executor used for
 deployment/preview, which operates on the parsed `GraphNode`/`GraphEdge` representation
 instead). They topologically sort the registered nodes and edges, run each node with its
 wired-in DataFrame(s) — a transform's function directly, a configured node's work through its
-decorator and then its hook, if it has one — and resolve which node's output to return: an explicit
+decorator and then its hook, if it has one — and resolve which node's output to return.
+Like the graph walker, they never resolve a Source Switch's inactive branch: an edge into a
+switch from an input its sidecar maps to another source (`score()` runs as `live`) is
+inactive, a node whose every outgoing edge is inactive or leads to such a node is not run
+(nor seeded), and the switch receives `None` for that input. A switch whose map does not name
+the run's source keeps every edge and refuses the run itself. Of the output node, an explicit
 response node (`@pipeline.output` or `@pipeline.workbench_output`) wins if there is exactly one;
 two raise, naming both; otherwise the single node with no
 outgoing edge is used; anything more ambiguous than that raises, naming every candidate.

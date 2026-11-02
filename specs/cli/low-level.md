@@ -72,7 +72,9 @@ invocation form the user selected.
 Every subcommand also exposes Click's eager `--help` option, which prints usage and exits 0
 without validating required positional arguments.
 
-`haute run` reports expanded executable nodes and previews the last executable
+`haute run` reports expanded executable nodes by id (a parsed node's id is its function's
+name; a submodel occurrence's qualifies it with the occurrence), a failed node with its error
+and, when the executor located it, `(line N)` of its code, and previews the last executable
 result. Metadata-only submodel occurrence entries carry schema warnings, not
 rows, and are excluded from both selections. The CLI does not print schema warnings.
 
@@ -472,7 +474,7 @@ Key files and what they cover:
 - `test_submodel_instances.py` — real `haute run` reports and final preview with
   occurrence warning entries in either result order; only executable nodes appear.
 - `test_cli.py` — end-to-end `CliRunner` coverage per command (`--version`, `init`, `run`, `lint`,
-  `smoke`, `serve`), plus real-subprocess parity coverage for `python -m haute`, and a command
+  `smoke`, `serve`; `run` naming a failed node with its line), plus real-subprocess parity coverage for `python -m haute`, and a command
   piped under a locale that is not UTF-8 writing its marks in UTF-8, an encoding
   `PYTHONIOENCODING` chose kept with a mark it lacks shown as `?`, and a stream a caller put
   in the process's place left alone; uses a shared `project_dir` fixture that builds a real

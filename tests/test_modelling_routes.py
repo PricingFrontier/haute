@@ -2007,7 +2007,9 @@ class TestEstimateEndpoint:
         assert resp.status_code == 422
         detail = resp.json()["detail"]
         assert detail.startswith("Evaluation preview failed: ")
-        assert "phantom" in detail
+        # Its contract claims it reads no input, so the source is scanned without the
+        # target; the declared output the run reads ('y') is the one it did not create.
+        assert "'prep' did not create the column 'y'" in detail
 
     def test_estimate_maps_polars_missing_column_to_422(self, client, training_data):
         """Post-load code naming a column the source lacks is a 422, never a 500."""

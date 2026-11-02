@@ -721,9 +721,27 @@ class GraphFingerprintMemo:
     tool can preserve both size and mtime while changing bytes. Keep this memo
     scoped to one immutable request/operation and use fresh content hashes for
     independent calls.
+
+    Signing a lineage's nodes reads the same graph and inputs once per node, so
+    a memo also keeps, for the graphs and nodes it has seen, the canonical
+    execution graph and each node's runtime-input entry. Those read the
+    filesystem: a memo reads each once, and a caller that must see an input
+    change (after preparing inputs, or to prove one did not move) uses a fresh
+    memo.
     """
 
     utility_file_hashes: dict[_UtilityFileStatKey, str] = field(default_factory=dict)
+    # id(graph) -> (graph, its canonical execution graph); the graph is held so
+    # its id cannot be reused while the memo lives.
+    canonical_graphs: dict[int, tuple[PipelineGraph, PipelineGraph]] = field(default_factory=dict)
+    # node id -> (node, source file, runtime-input entry) for the node object it read.
+    runtime_input_entries: dict[str, tuple[GraphNode, str | None, Mapping[str, object]]] = field(
+        default_factory=dict
+    )
+    # The canonical graph_node and graph_edge records of the node and edge
+    # objects it has seen; an edge's also keeps its canonical JSON, its sort key.
+    graph_node_records: dict[str, tuple[GraphNode, Any]] = field(default_factory=dict)
+    graph_edge_records: dict[str, tuple[GraphEdge, Any, str]] = field(default_factory=dict)
 
 
 def canonical_json(value: Any) -> str:
@@ -859,7 +877,10 @@ def _sort_key(value: Any) -> tuple[str, Any]:
     )
 
 
-def _graph_base_fingerprint(graph: PipelineGraph) -> str:
+def _graph_base_fingerprint(
+    graph: PipelineGraph,
+    memo: GraphFingerprintMemo | None = None,
+) -> str:
     """Compute the base structural digest of a graph (node configs + edges).
 
     The result is memoised once per :class:`PipelineGraph` instance via the
@@ -869,37 +890,20 @@ def _graph_base_fingerprint(graph: PipelineGraph) -> str:
     ``model_copy(update=...)`` idiom: ``model_copy`` produces a new instance
     and clears the memo (see ``PipelineGraph._HAUTE_CACHED_PROPERTY_NAMES``),
     so a structurally-different graph never serves a stale digest.
+
+    With *memo*, each node's and edge's record is canonicalised once for every
+    graph the memo fingerprints, as signing each node of a lineage needs.
     """
-    nodes: list[dict[str, object]] = []
-    for n in sorted(graph.nodes, key=lambda n: n.id):
-        nodes.append(
-            checked_cache_identity_record(
-                CacheIdentityRecord.GRAPH_NODE,
-                {
-                    "id": n.id,
-                    "label": n.data.label,
-                    "nodeType": str(n.data.nodeType),
-                    "config": _node_config_for_execution_fingerprint(n),
-                },
-            )
-        )
+    nodes = [_canonical_node_record(n, memo) for n in sorted(graph.nodes, key=lambda n: n.id)]
     # Handles select which frame/role reaches a consumer. Edge IDs are canvas
     # identity only, so endpoint/handle tuples define execution wiring.
-    edges = sorted(
-        (
-            checked_cache_identity_record(
-                CacheIdentityRecord.GRAPH_EDGE,
-                {
-                    "source": edge.source,
-                    "sourceHandle": edge.sourceHandle,
-                    "target": edge.target,
-                    "targetHandle": edge.targetHandle,
-                },
-            )
-            for edge in graph.edges
-        ),
-        key=canonical_json,
-    )
+    edges = [
+        record
+        for record, _text in sorted(
+            (_canonical_edge_record(edge, memo) for edge in graph.edges),
+            key=lambda item: item[1],
+        )
+    ]
     inputs = checked_cache_inputs(
         CacheConsumer.GRAPH_STRUCTURE,
         {
@@ -907,7 +911,51 @@ def _graph_base_fingerprint(graph: PipelineGraph) -> str:
             "edges": edges,
         },
     )
-    return content_hash_bytes(inputs.canonical_bytes)
+    # Every record is already canonical, so the payload is not walked again.
+    return content_hash_bytes(_canonical_dumps(inputs.payload).encode("utf-8"))
+
+
+def _canonical_node_record(node: GraphNode, memo: GraphFingerprintMemo | None) -> Any:
+    if memo is not None:
+        known = memo.graph_node_records.get(node.id)
+        if known is not None and known[0] is node:
+            return known[1]
+    record = _canonicalise(
+        checked_cache_identity_record(
+            CacheIdentityRecord.GRAPH_NODE,
+            {
+                "id": node.id,
+                "label": node.data.label,
+                "nodeType": str(node.data.nodeType),
+                "config": _node_config_for_execution_fingerprint(node),
+            },
+        )
+    )
+    if memo is not None:
+        memo.graph_node_records[node.id] = (node, record)
+    return record
+
+
+def _canonical_edge_record(edge: GraphEdge, memo: GraphFingerprintMemo | None) -> tuple[Any, str]:
+    if memo is not None:
+        known = memo.graph_edge_records.get(edge.id)
+        if known is not None and known[0] is edge:
+            return known[1], known[2]
+    record = _canonicalise(
+        checked_cache_identity_record(
+            CacheIdentityRecord.GRAPH_EDGE,
+            {
+                "source": edge.source,
+                "sourceHandle": edge.sourceHandle,
+                "target": edge.target,
+                "targetHandle": edge.targetHandle,
+            },
+        )
+    )
+    text = _canonical_dumps(record)
+    if memo is not None:
+        memo.graph_edge_records[edge.id] = (edge, record, text)
+    return record, text
 
 
 def _node_config_for_execution_fingerprint(node: GraphNode) -> dict[str, Any]:
@@ -1406,7 +1454,7 @@ def graph_fingerprint(
     The constant is read **dynamically** on every call so tests (and
     emergency cache-busts) can monkeypatch it without re-importing.
     """
-    base = graph._haute_base_fingerprint
+    base = graph._haute_base_fingerprint if memo is None else _graph_base_fingerprint(graph, memo)
     context_fingerprint = preamble_execution_fingerprint(
         graph.preamble,
         pipeline_dir=_pipeline_dir(graph),

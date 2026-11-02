@@ -456,9 +456,8 @@ export interface ExplorePivotMemberKey {
 }
 export interface ExecutionMetricsPayload {
   admission: ExecutionAdmissionPayload | null;
-  bytes_read: number | null;
   bytes_written: number | null;
-  cache_proof: ExecutionCacheProofPayload;
+  cache_direct_fallbacks: number;
   cancellation_latency_ms: number | null;
   checkpoint_count: number;
   chunk_count: number;
@@ -534,18 +533,6 @@ export interface ExecutionAdmissionPayload {
   reason: string;
   rss_at_admission_bytes: number | null;
   rss_limit_bytes: number | null;
-}
-export interface ExecutionCacheProofPayload {
-  direct_fallbacks: number;
-  hits: number;
-  miss_reason_counts: ExecutionCacheProofMissReasonCountsPayload;
-  misses: number;
-}
-export interface ExecutionCacheProofMissReasonCountsPayload {
-  artifact_integrity_schema_failure: number;
-  metadata_source_mismatch: number;
-  proof_unavailable: number;
-  unreadable_artifact: number;
 }
 export interface ExecutionColumnWidthsCollectionPayload {
   /**
@@ -726,9 +713,6 @@ export interface SharedSnapshotSeedPayload {
   node_id: string;
 }
 export interface ExecutionStageMetricsPayload {
-  bytes_read: number | null;
-  bytes_written: number | null;
-  columns_scanned: number | null;
   elapsed_ms: number;
   job_id: string | null;
   n_checkpoints: number;
@@ -737,8 +721,6 @@ export interface ExecutionStageMetricsPayload {
   node_id: string | null;
   operation: string;
   profile: string;
-  rows_in: number | null;
-  rows_out: number | null;
   rss_delta_bytes: number | null;
   rss_end_bytes: number | null;
   rss_peak_bytes: number | null;

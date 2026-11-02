@@ -630,7 +630,20 @@ WHITELIST_PROOF_CASES: dict[str, WhitelistProofCase] = {
         _proves(("df", "rename")),
     ),
     "df_select": WhitelistProofCase(
-        "df = source.select(pl.col('i'), pl.col('f'))", ("i", "f"), _proves(("df", "select"))
+        "df = source.select(pl.col('i'), pl.col('f'))",
+        ("i", "f"),
+        _proves(("df", "select", "named_column")),
+    ),
+    # A literal broadcasts to the column read by name, in each slice as in the whole.
+    "df_select_named_column_beside_literal": WhitelistProofCase(
+        "df = source.select('i', r=pl.lit(1))",
+        ("i", "r"),
+        _proves(("df", "select", "named_column")),
+    ),
+    "df_select_selectors_only": WhitelistProofCase(
+        "df = source.select(pl.all().is_null())",
+        ("i", "f", "s", "d"),
+        _proves(("df", "select", "selector_rooted")),
     ),
     "df_with_columns": WhitelistProofCase(
         "df = source.with_columns(r=pl.col('i') * 2)",

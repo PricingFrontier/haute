@@ -25,6 +25,7 @@ import polars as pl
 
 from haute._cardinality import join_cardinality_upper_bound, normalise_join_validation
 from haute._edge_join import narrow_join_parent_demand
+from haute._polars_call_shapes import is_literal_collection, is_literal_scalar
 from haute._polars_operations import unbounded_expansion_expression_methods
 from haute._polars_selectors import (
     LiteralSelector,
@@ -221,7 +222,7 @@ _JOIN_ASOF_KEYWORDS = frozenset(
         "check_sortedness",
     }
 )
-_SELECT_METHODS = frozenset({"select", "select_seq"})
+SELECT_METHODS = frozenset({"select", "select_seq"})
 _SUPPORTED_JOIN_HOW = frozenset({"inner", "left", "semi", "anti"})
 _CARDINALITY_JOIN_HOW = frozenset({"inner", "left", "right", "full", "semi", "anti", "cross"})
 _SCHEMA_DEPENDENT_PL_CALLS = frozenset(
@@ -867,6 +868,104 @@ def _is_frame_length_range(call: ast.Call) -> bool:
     if start is None or end is None:
         return False
     return end[0] - start[0] == 1 and end[1] - start[1] <= 0
+
+
+def _reads_a_named_column(argument: ast.expr, *, positional: bool) -> bool:
+    """Whether a selection argument reads one column by its literal name.
+
+    A bare string is a column name in a selection, positionally or as a named
+    expression, and so is each string of a positional list. Inside an expression,
+    the column-lineage walk names the columns ``pl.col`` and the helpers that read
+    strings as columns refer to. ``*`` and ``^...$`` are selector syntax, not names.
+    """
+    if _literal_column_name(argument) is not None:
+        return True
+    if positional and isinstance(argument, ast.List | ast.Tuple):
+        return any(_literal_column_name(element) is not None for element in argument.elts)
+    return bool(_referenced_columns(argument))
+
+
+def column_free_select_argument(
+    call: ast.Call, *, selector_aliases: frozenset[str] = frozenset()
+) -> ast.expr | None:
+    """The first argument that stops a selection keeping its input's rows, or None.
+
+    The caller has already proven every argument row-local. A selection then emits
+    one row per input row when one argument reads a column by name: that column has
+    the frame's height (or the read fails) and every other argument broadcasts to it.
+    Without one, a selection keeps the rows only when every argument starts from a
+    selector, which expands to columns of the frame's height or to no column at all.
+    A literal emits one row whatever the input height, so beside nothing but
+    selectors (which may match nothing) or alone it is the blocker: written a slice at
+    a time it would give one row per slice, and a deployed batch one row in all.
+    """
+    arguments = [
+        *((argument, True) for argument in call.args),
+        *((keyword.value, False) for keyword in call.keywords),
+    ]
+    if any(
+        _reads_a_named_column(argument, positional=positional) for argument, positional in arguments
+    ):
+        return None
+    for argument, _positional in arguments:
+        if (
+            literal_selector(argument, aliases=selector_aliases) is None
+            and selector_root(argument, aliases=selector_aliases) is None
+        ):
+            return argument
+    return None
+
+
+def _keeps_the_frame_height(
+    argument: ast.expr, *, positional: bool, aliases: frozenset[str]
+) -> bool:
+    """Whether a selection argument is a column of the frame's height.
+
+    A column read by name is, and so is a row-local expression of named columns.
+    An aggregate of a column is one row, and a selector may match no column.
+    """
+    if _literal_column_name(argument) is not None:
+        return True
+    if positional and isinstance(argument, ast.List | ast.Tuple):
+        return any(_literal_column_name(element) is not None for element in argument.elts)
+    if not _referenced_columns(argument):
+        return False
+    from haute.chunking import classify_row_local_expression
+
+    return classify_row_local_expression(ast.unparse(argument), selector_aliases=aliases).eligible
+
+
+def _selects_a_lit_of_unknown_length(call: ast.Call, aliases: frozenset[str]) -> bool:
+    """Whether a selection holds ``pl.lit`` of a value that is not a literal, with
+    nothing holding it to the frame's height.
+
+    ``pl.lit`` of a Series is a column of the Series' length. Beside a column of the
+    frame's height it must match that height (or be one row); beside nothing but
+    one-row values (literals, aggregates) or selectors that may match nothing, the
+    selection takes its length, which can outgrow the frame. A literal scalar or a
+    literal list is one row.
+    """
+    arguments = [
+        *((argument, True) for argument in call.args),
+        *((keyword.value, False) for keyword in call.keywords),
+    ]
+    if any(
+        _keeps_the_frame_height(argument, positional=positional, aliases=aliases)
+        for argument, positional in arguments
+    ):
+        return False
+    for argument, _positional in arguments:
+        for child in ast.walk(argument):
+            if not isinstance(child, ast.Call) or _polars_call_name(child) != "lit":
+                continue
+            value = (
+                child.args[0]
+                if child.args
+                else next((kw.value for kw in child.keywords if kw.arg == "value"), None)
+            )
+            if value is not None and not (is_literal_scalar(value) or is_literal_collection(value)):
+                return True
+    return False
 
 
 def _expression_has_unbounded_row_effect(node: ast.AST) -> bool:
@@ -2005,13 +2104,16 @@ def _parse_call_sequence(
             continue
         if method == "agg":
             return [], _ParseFailure("orphan_aggregate", method)
-        if method in _SELECT_METHODS:
-            if cardinality_only and any(
-                _expression_has_unbounded_row_effect(expression)
-                for expression in [
-                    *call.args,
-                    *(keyword.value for keyword in call.keywords),
-                ]
+        if method in SELECT_METHODS:
+            if cardinality_only and (
+                any(
+                    _expression_has_unbounded_row_effect(expression)
+                    for expression in [
+                        *call.args,
+                        *(keyword.value for keyword in call.keywords),
+                    ]
+                )
+                or _selects_a_lit_of_unknown_length(call, selector_aliases)
             ):
                 return [], _ParseFailure("row_expansion_unbounded", method)
             normalised = _normalise_expression_outputs(

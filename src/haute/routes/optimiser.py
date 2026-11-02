@@ -27,7 +27,9 @@ from haute._file_ops import atomic_write_text
 from haute._interactive_workers import (
     InteractiveWorkerCrashedError,
     InteractiveWorkerMemoryLimitError,
+    InteractiveWorkerProtocolError,
     InteractiveWorkerRemoteError,
+    InteractiveWorkerStartError,
     InteractiveWorkerStoppedError,
     InteractiveWorkerTimeoutError,
     interactive_worker_pool,
@@ -49,7 +51,7 @@ from haute._ratebook_collar import (
 from haute._rating import is_rating_dtype_descriptor
 from haute._sandbox import _get_project_root, contained_path
 from haute._types import RatebookSolveResultLike, SolveResultLike
-from haute._worker_isolation import resolve_worker_memory_enforcement
+from haute._worker_isolation import IsolatedWorkerHostError, resolve_worker_memory_enforcement
 from haute.errors import RequestRefusedError
 from haute.routes._frontier_point_summary import frontier_point_library_row
 from haute.routes._job_lifecycle import require_job_status
@@ -90,6 +92,7 @@ from haute.routes._optimiser_solver import _job_elapsed_seconds
 from haute.routes._optimiser_worker import OptimiserEstimateOutcome, optimiser_estimate_worker
 from haute.routes._synchronous_analysis import run_until_disconnected
 from haute.routes.pipeline import (
+    _INTERNAL_ERROR_DETAIL,
     _interactive_affinity_key,
     _prepare_runtime_graph,
     _raise_interactive_remote_http_error,
@@ -214,6 +217,14 @@ def _optimiser_input_metrics_in_worker(
         _raise_interactive_worker_crash_http_error(exc, operation="optimiser_estimate")
     except InteractiveWorkerRemoteError as exc:
         _raise_interactive_remote_http_error(exc, operation="optimiser_estimate")
+    except (InteractiveWorkerStartError, IsolatedWorkerHostError) as exc:
+        # No worker could run the estimate: the host, not the request, is at fault,
+        # and the next request starts the worker again.
+        logger.warning("optimiser_estimate_worker_unavailable", error=str(exc))
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+    except InteractiveWorkerProtocolError as exc:
+        logger.error("optimiser_estimate_worker_protocol_failed", error=str(exc))
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
     if not isinstance(outcome, OptimiserEstimateOutcome):
         raise RuntimeError(f"Optimiser estimate worker returned {type(outcome).__name__}")
     if outcome.failure is not None:

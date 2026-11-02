@@ -53,7 +53,7 @@ class TestRenameAndSelectInteraction:
             "column_renames": {"a.b": "ab", "c.d": "cd"},
         }
         # Select first (keeps a.b and c.d), then rename
-        selected = _apply_selected_columns(df, config)
+        selected = _apply_selected_columns(df, config, node_label="node")
         renamed = _apply_column_renames(selected, config)
         assert set(renamed.columns) == {"ab", "cd"}
 
@@ -65,6 +65,6 @@ class TestRenameAndSelectInteraction:
             "selected_columns": ["proposer.gender"],
             "column_renames": {"proposer.gender": "gender"},
         }
-        selected = _apply_selected_columns(df, config)
+        selected = _apply_selected_columns(df, config, node_label="node")
         renamed = _apply_column_renames(selected, config)
         assert renamed.columns == ["gender"]

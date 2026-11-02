@@ -54,19 +54,20 @@ def _protocol_probe(_runtime: Any, _request: Any) -> Any:
 
 
 def _start_with_automatic_policy(
-    kind: str, results: Any, progress: Any, requests: Any, artifact_root: str
+    kind: str, results: Any, progress: Any, requests: Any, artifact_root: str, go: Any
 ) -> None:
     _policy(reset=True)
     if kind == "isolated":
         from haute._worker_isolation import _isolated_worker_entrypoint
 
-        _isolated_worker_entrypoint(results, _policy, (), {}, None)
+        _isolated_worker_entrypoint(results, go, _policy, (), {}, None)
     elif kind == "protocol":
         from haute._worker_protocol import WorkerRequest, _protocol_entrypoint
 
         _protocol_entrypoint(
             results,
             progress,
+            go,
             _protocol_probe,
             WorkerRequest("probe", "probe", {}),
             artifact_root,
@@ -83,9 +84,11 @@ def test_spawned_worker_enables_high_qos_before_user_work(kind: str, tmp_path: P
     parent_policy = _policy()
     context = multiprocessing.get_context("spawn")
     results, progress, requests = (context.Queue() for _ in range(3))
+    go = context.Event()
+    go.set()
     process = context.Process(
         target=_start_with_automatic_policy,
-        args=(kind, results, progress, requests, str(tmp_path)),
+        args=(kind, results, progress, requests, str(tmp_path), go),
     )
     process.start()
     try:
@@ -102,6 +105,8 @@ def test_spawned_worker_enables_high_qos_before_user_work(kind: str, tmp_path: P
                 assert pickle.loads(results.get(timeout=30)) == ("released", job_id, "ok", None)
             requests.put(pickle.dumps(("shutdown",)))
         else:
+            ready = results.get(timeout=30)
+            assert (pickle.loads(ready) if kind == "isolated" else ready)[0] == "ready"
             envelope = results.get(timeout=30)
             if kind == "isolated":
                 envelope = pickle.loads(envelope)

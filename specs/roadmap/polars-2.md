@@ -73,7 +73,7 @@ probes; `tests/test_ram_estimate.py`;
 ### PL2-18 — Worker caps start from a Polars 2 baseline
 **Why:** Under `RLIMIT_AS` a worker starts both Polars engines' thread pools
 before it measures the cap's baseline, so the cap counts only what the job
-allocates (`_start_polars_thread_pools`). Polars 2.0 starts its out-of-core
+allocates (`start_polars_thread_pools`). Polars 2.0 starts its out-of-core
 cleaner thread lazily, on the first spill, and dropped memory-mapping from
 Parquet scans, so the address space a worker reserves after its baseline may
 differ, and a thread that cannot start under the cap is a memory-limit
@@ -90,7 +90,7 @@ on every CI platform.
 
 **Dependencies:** None.
 
-**Evidence:** `src/haute/_native_memory_limit.py::_start_polars_thread_pools`;
+**Evidence:** `src/haute/_native_memory_limit.py::start_polars_thread_pools`;
 `tests/test_native_memory_limit.py`; `tests/test_worker_isolation.py`.
 
 ### PL2-21 — Structured inputs and Data Inputs can carry a JSON object as a Map column

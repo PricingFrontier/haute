@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from haute._executable_names import executable_name_violations, format_name_violations
+from haute._sandbox import _get_project_root
 from haute._submodel_instances import (
     expand_submodel_instances,
     resolve_submodel_instances,
@@ -55,8 +56,7 @@ def flatten_executable_graph(
     violations = executable_name_violations(graph)
     if violations:
         raise ParseError(format_name_violations(violations))
-    # The project is the working directory, as it is for the rest of the server.
-    return with_form_tables(flatten_graph(graph), project_root=Path.cwd(), form=form)
+    return with_form_tables(flatten_graph(graph), project_root=_get_project_root(), form=form)
 
 
 def flatten_with_form_tables(graph: PipelineGraph, *, project_root: Path) -> PipelineGraph:

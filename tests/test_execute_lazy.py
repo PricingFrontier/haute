@@ -35,7 +35,9 @@ from haute._types import (
     NodeType,
     PipelineGraph,
 )
+from haute.errors import ContractMismatchError, NodeConfigError, failing_node
 from haute.execution import execute_lazy_graph
+from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -44,6 +46,13 @@ from haute.execution import execute_lazy_graph
 
 def _e(src: str, tgt: str) -> GraphEdge:
     return GraphEdge(id=f"e_{src}_{tgt}", source=src, target=tgt)
+
+
+def _output_node(nid: str, fields: list[str]) -> GraphNode:
+    return GraphNode(
+        id=nid,
+        data=NodeData(label=nid, nodeType=NodeType.OUTPUT, config=make_output_config(fields)),
+    )
 
 
 def _port_edge(src: str, tgt: str, port: str) -> GraphEdge:
@@ -327,6 +336,7 @@ class TestPreparedExecution:
             enforce_contracts=False,
             execution_context=None,
             needed_columns={},
+            produced_columns={},
         )
         source_frame = pl.DataFrame({"x": [1]}).lazy()
 
@@ -352,10 +362,32 @@ class TestPreparedExecution:
             enforce_contracts=False,
             execution_context=None,
             needed_columns={},
+            produced_columns={},
         )
 
         with pytest.raises(ValueError, match="transform"):
             runner.invoke(runner.open("transform"))
+
+    def test_node_boundary_runner_checks_only_the_declared_outputs_its_builder_produces(self):
+        """A source asked for one of its declared columns (a projected scan) owes only that
+        one; a declared column it was asked for and did not create still fails."""
+        source = _source_node("source")
+        source.data.config["contract"] = {"inputs": [], "outputs": ["x", "y", "z"]}
+        graph = PipelineGraph(nodes=[source], edges=[])
+        prepared = _prepare_execution(PreparedExecutionRequest(graph=graph))
+        runner = NodeBoundaryRunner(
+            prepared=prepared,
+            funcs={"source": (lambda: pl.DataFrame({"x": [1]}).lazy(), True)},
+            enforce_contracts=True,
+            execution_context=None,
+            needed_columns={"source": frozenset({"x"})},
+            produced_columns={"source": frozenset({"x"})},
+        )
+
+        boundary = runner.open("source")
+        runner.assert_outputs(boundary, frozenset({"x"}))
+        with pytest.raises(ContractMismatchError, match="x"):
+            runner.assert_outputs(boundary, frozenset())
 
     def test_node_boundary_runner_skips_contract_assertions_when_disabled(self, monkeypatch):
         graph = PipelineGraph(
@@ -372,6 +404,7 @@ class TestPreparedExecution:
             enforce_contracts=False,
             execution_context=None,
             needed_columns={},
+            produced_columns={},
         )
         boundary = runner.open("transform")
         assert boundary.check_contract is False
@@ -1053,7 +1086,7 @@ class TestApplySelectedColumns:
     def test_lazyframe_selects_valid_columns(self):
         """LazyFrame: only valid selected_columns are kept."""
         lf = pl.DataFrame({"a": [1], "b": [2], "c": [3]}).lazy()
-        result = _apply_selected_columns(lf, {"selected_columns": ["a", "c"]})
+        result = _apply_selected_columns(lf, {"selected_columns": ["a", "c"]}, node_label="node")
         assert isinstance(result, pl.LazyFrame)
         df = result.collect()
         assert df.columns == ["a", "c"]
@@ -1061,47 +1094,50 @@ class TestApplySelectedColumns:
     def test_dataframe_selects_valid_columns(self):
         """DataFrame: only valid selected_columns are kept."""
         df = pl.DataFrame({"a": [1], "b": [2], "c": [3]})
-        result = _apply_selected_columns(df, {"selected_columns": ["a", "c"]})
+        result = _apply_selected_columns(df, {"selected_columns": ["a", "c"]}, node_label="node")
         assert isinstance(result, pl.DataFrame)
         assert result.columns == ["a", "c"]
 
     def test_no_selected_columns_returns_unchanged(self):
         """Missing or None selected_columns returns the frame unchanged."""
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
-        result = _apply_selected_columns(lf, {})
+        result = _apply_selected_columns(lf, {}, node_label="node")
         schema = result.collect_schema().names()
         assert schema == ["a", "b"]
 
     def test_empty_selected_columns_returns_unchanged(self):
         """Empty list selected_columns returns the frame unchanged."""
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
-        result = _apply_selected_columns(lf, {"selected_columns": []})
+        result = _apply_selected_columns(lf, {"selected_columns": []}, node_label="node")
         schema = result.collect_schema().names()
         assert schema == ["a", "b"]
 
     def test_all_columns_selected_returns_unchanged(self):
         """When all columns are in selected_columns, no projection is applied."""
         df = pl.DataFrame({"a": [1], "b": [2]})
-        result = _apply_selected_columns(df, {"selected_columns": ["a", "b"]})
+        result = _apply_selected_columns(df, {"selected_columns": ["a", "b"]}, node_label="node")
         # Should be the exact same object (no unnecessary projection)
         assert result.columns == ["a", "b"]
 
     def test_nonexistent_columns_ignored(self):
         """Columns in selected_columns that don't exist are silently skipped."""
         df = pl.DataFrame({"a": [1], "b": [2]})
-        result = _apply_selected_columns(df, {"selected_columns": ["a", "missing"]})
+        result = _apply_selected_columns(
+            df, {"selected_columns": ["a", "missing"]}, node_label="node"
+        )
         assert result.columns == ["a"]
 
-    def test_all_nonexistent_returns_unchanged(self):
-        """If no selected_columns exist in the frame, frame is unchanged."""
+    def test_all_nonexistent_is_refused_naming_the_node(self):
+        """A selection none of whose columns exist would keep every column: refused."""
         df = pl.DataFrame({"a": [1], "b": [2]})
-        result = _apply_selected_columns(df, {"selected_columns": ["x", "y"]})
-        assert result.columns == ["a", "b"]
+        with pytest.raises(NodeConfigError, match="'node'.*'x', 'y'") as raised:
+            _apply_selected_columns(df, {"selected_columns": ["x", "y"]}, node_label="node")
+        assert raised.value.setting == "selected_columns"
 
     def test_preserves_data_values(self):
         """Verify data integrity after column filtering."""
         df = pl.DataFrame({"a": [10, 20], "b": [30, 40], "c": [50, 60]})
-        result = _apply_selected_columns(df, {"selected_columns": ["a", "c"]})
+        result = _apply_selected_columns(df, {"selected_columns": ["a", "c"]}, node_label="node")
         assert result["a"].to_list() == [10, 20]
         assert result["c"].to_list() == [50, 60]
 
@@ -1199,6 +1235,58 @@ class TestExecuteLazyDelegatesToBuildFuncs:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+class TestOptionalInputsRelaxOnlyTheirOwnEdges:
+    """A column one node reads only where it exists is dropped from the edges that feed
+    that node, never from another node's edge that requires a column of that name."""
+
+    @staticmethod
+    def _graph(*, with_polars_reader: bool) -> PipelineGraph:
+        from haute._contracts import (
+            _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
+            _DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY,
+        )
+
+        score = GraphNode(
+            id="score",
+            data=NodeData(
+                label="score",
+                nodeType=NodeType.MODEL_SCORE,
+                config={
+                    "output_column": "prediction",
+                    _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY: ["age"],
+                    _DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY: ["exposure"],
+                },
+            ),
+        )
+        nodes = [_source_node("src"), score, _output_node("priced", ["prediction"])]
+        edges = [_e("src", "score"), _e("score", "priced")]
+        if with_polars_reader:
+            code = "df = src.with_columns(doubled=pl.col('exposure') * 2)"
+            nodes += [_transform_node("calc", code=code), _output_node("out", ["doubled"])]
+            edges += [_e("src", "calc"), _e("calc", "out")]
+        return PipelineGraph(nodes=nodes, edges=edges)
+
+    @staticmethod
+    def _build(node: GraphNode, **kwargs):
+        if node.id == "src":
+            return node.id, lambda: pl.LazyFrame({"age": [30, 40]}), True
+        if node.id == "score":
+            return node.id, lambda frame: frame.with_columns(prediction=pl.col("age") * 2), False
+        if node.id == "calc":
+            return node.id, lambda frame: frame.with_columns(doubled=pl.col("exposure") * 2), False
+        return node.id, lambda frame: frame, False
+
+    def test_a_model_score_alone_prices_without_the_exposure(self):
+        outputs, *_ = execute_lazy_graph(self._graph(with_polars_reader=False), self._build)
+        assert outputs["score"].collect()["prediction"].to_list() == [60, 80]
+
+    def test_a_polars_node_that_needs_the_column_is_refused_at_its_edge_by_name(self):
+        with pytest.raises(ContractMismatchError) as raised:
+            execute_lazy_graph(self._graph(with_polars_reader=True), self._build)
+        assert raised.value.context["node_id"] == "calc"
+        assert raised.value.context["missing"] == ["exposure"]
+
+
 class TestSelectedColumnsInPaths:
     """Verify selected_columns filtering works in both lazy and eager execution."""
 
@@ -1215,6 +1303,24 @@ class TestSelectedColumnsInPaths:
         df = outputs["t"].collect()
         # Only "x" should survive (not "y" which is added by transform)
         assert df.columns == ["x"]
+
+    def test_a_selection_whose_columns_are_all_gone_fails_naming_the_node(self):
+        """An upstream rename leaves a node's selection naming no column it receives:
+        the run fails naming the node and the columns instead of keeping every column."""
+        g = PipelineGraph(
+            nodes=[
+                _source_node("s"),
+                _transform_node("t", label="Pricing", selected_columns=["renamed_x"]),
+            ],
+            edges=[_e("s", "t")],
+        )
+        with pytest.raises(NodeConfigError, match="'Pricing'.*'renamed_x'") as raised:
+            execute_lazy_graph(g, _simple_build_fn)
+        assert failing_node(raised.value) == "t"
+
+        # A preview answers it as the node setting to fix (HTTP 422), like any NodeConfigError.
+        with pytest.raises(NodeConfigError, match="'Pricing'"):
+            walk_graph(g, _simple_build_fn, policy=CollectPolicy.display(record_failures=True))
 
     def test_eager_path_applies_selected_columns(self):
         """A display walk applies selected_columns using _apply_selected_columns."""

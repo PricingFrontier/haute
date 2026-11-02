@@ -483,3 +483,186 @@ def test_a_read_constant_re_signs_its_lineage_and_leaves_others_alone(project: P
 
     assert _signature(declare(graph, rate=2.5, other=1.0)) != baseline
     assert _signature(declare(graph, rate=2.0, other=9.0)) == baseline
+
+
+def _signing_corpus(project: Path) -> list[tuple[PipelineGraph, tuple[str, ...]]]:
+    """Graphs whose every node a resolution signs, with the sources each is read under.
+
+    Relative input paths (which canonicalisation rewrites), a snapshot-backed CSV
+    input, wired handles, a read Global Constant, nested non-ASCII configuration
+    with floats, a file-sourced Model Score and a live switch.
+    """
+    from haute._types import GlobalConstant
+
+    (project / "claims.csv").write_text("id,claim\n1,2.5\n", encoding="utf-8")
+    pl.DataFrame({"id": [1], "premium": [1.0]}).write_parquet(project / "batch.parquet")
+    joined = PipelineGraph(
+        nodes=[
+            _node(
+                "quotes",
+                NodeType.DATA_INPUT,
+                {
+                    "inputType": "file",
+                    "format": "parquet",
+                    "mode": "scan",
+                    "path": "quotes.parquet",
+                },
+            ),
+            _node(
+                "claims",
+                NodeType.DATA_INPUT,
+                {"inputType": "file", "format": "csv", "mode": "scan", "path": "claims.csv"},
+            ),
+            _node(
+                "joined",
+                NodeType.POLARS,
+                {
+                    "code": "df = quotes.join(claims, how='cross').with_columns("
+                    "r=pl.lit(global_constants.rate) * factor)",
+                    "keyword_parameters": [
+                        {"name": "factor", "default": 1.25},
+                        {"name": "label", "default": "Région ☃"},
+                    ],
+                },
+            ),
+            _node(
+                "rated",
+                NodeType.RATING_STEP,
+                {
+                    "tables": [
+                        {
+                            "name": "t",
+                            "factors": ["region"],
+                            "entries": [{"region": "Nörd", "value": 1.5}],
+                        }
+                    ]
+                },
+            ),
+            _node(
+                "scored",
+                NodeType.MODEL_SCORE,
+                {
+                    "sourceType": "file",
+                    "model_path": "model.cbm",
+                    "output_column": "prediction",
+                    "task": "regression",
+                },
+            ),
+            _node(
+                "model",
+                NodeType.MODELLING,
+                {
+                    "target": "claim",
+                    "params": {"learning_rate": 0.05, "nested": {"a": [1, 2.5, "é"]}},
+                    "feature_columns": ["Région", "âge"],
+                },
+            ),
+        ],
+        edges=[
+            GraphEdge(id="e1", source="quotes", target="joined", targetHandle="quotes"),
+            GraphEdge(id="e2", source="claims", target="joined", targetHandle="claims"),
+            GraphEdge(id="e3", source="joined", target="rated"),
+            GraphEdge(id="e4", source="rated", target="scored"),
+            GraphEdge(id="e5", source="scored", target="model"),
+        ],
+        preamble="import polars as pl",
+        global_constants=[GlobalConstant(name="rate", type="float", value=1.1)],
+        source_file=str(project / "main.py"),
+    )
+    switched = PipelineGraph(
+        nodes=[
+            _node(
+                "quotes",
+                NodeType.DATA_INPUT,
+                {
+                    "inputType": "file",
+                    "format": "parquet",
+                    "mode": "scan",
+                    "path": "quotes.parquet",
+                },
+            ),
+            _node(
+                "batch_quotes",
+                NodeType.DATA_INPUT,
+                {"inputType": "file", "format": "parquet", "mode": "scan", "path": "batch.parquet"},
+            ),
+            _node(
+                "policies",
+                NodeType.LIVE_SWITCH,
+                {
+                    "input_scenario_map": {"quotes": "live", "batch_quotes": "batch"},
+                    "inputs": ["quotes", "batch_quotes"],
+                },
+            ),
+            _node("priced", NodeType.POLARS, {"code": "df = policies"}),
+        ],
+        edges=[
+            GraphEdge(id="s1", source="quotes", target="policies"),
+            GraphEdge(id="s2", source="batch_quotes", target="policies"),
+            GraphEdge(id="s3", source="policies", target="priced"),
+        ],
+        preamble="import polars as pl",
+        source_file=str(project / "main.py"),
+    )
+    return [(_graph(project), ("live",)), (joined, ("live",)), (switched, ("live", "batch"))]
+
+
+def test_a_resolution_s_memo_signs_every_node_exactly_as_a_fresh_signature_does(
+    project: Path,
+) -> None:
+    """The memo a resolution signs with changes no identity byte (CACHE-S17)."""
+    from haute._cache import GraphFingerprintMemo, graph_fingerprint
+    from haute._data_points import DataPointResolver
+    from haute._node_snapshots import NodeSnapshotStore
+
+    store = NodeSnapshotStore(project)
+    for graph, sources in _signing_corpus(project):
+        for source in sources:
+            resolver = DataPointResolver(graph, source=source, store=store)
+            memo = GraphFingerprintMemo()
+            for node in graph.nodes:
+                fresh = node_snapshot_signature(
+                    graph,
+                    node.id,
+                    source=source,
+                    semantics_class=BOUNDED_SEMANTICS_CLASS,
+                    enforce_contracts=True,
+                )
+                assert resolver.node_output_signature(node.id) == fresh, (source, node.id)
+            for _ in range(2):
+                assert graph_fingerprint(graph, memo=memo) == graph_fingerprint(graph)
+        assert graph_fingerprint(graph) == graph_fingerprint(graph.model_copy())
+
+
+def test_a_resolution_canonicalises_its_graph_and_reads_each_input_once(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Signing every node of a lineage reads its inputs once; a new resolution reads them again."""
+    import haute.execution as execution
+    from haute._data_points import DataPointResolver
+    from haute._node_snapshots import NodeSnapshotStore
+
+    calls = {"canonical": 0, "entries": []}
+    canonicalise = execution._canonical_dataframe_execution_graph
+    read_entry = execution._runtime_input_fingerprint_entry
+
+    def counted_canonical(graph: PipelineGraph) -> PipelineGraph:
+        calls["canonical"] += 1
+        return canonicalise(graph)
+
+    def counted_entry(graph: PipelineGraph, node: GraphNode) -> object:
+        calls["entries"].append(node.id)
+        return read_entry(graph, node)
+
+    monkeypatch.setattr(execution, "_canonical_dataframe_execution_graph", counted_canonical)
+    monkeypatch.setattr(execution, "_runtime_input_fingerprint_entry", counted_entry)
+    graph = _signing_corpus(project)[1][0]
+    store = NodeSnapshotStore(project)
+
+    for resolution in (1, 2):
+        resolver = DataPointResolver(graph, source="live", store=store)
+        for node in graph.nodes:
+            resolver.node_output_signature(node.id)
+
+        assert calls["canonical"] == resolution
+        assert sorted(calls["entries"]) == sorted(["claims", "quotes", "scored"] * resolution)

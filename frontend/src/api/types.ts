@@ -99,11 +99,6 @@ export interface ExecutionStageMetrics {
   rss_end_bytes: number | null
   rss_delta_bytes: number | null
   rss_peak_bytes: number | null
-  rows_in: number | null
-  rows_out: number | null
-  bytes_read: number | null
-  bytes_written: number | null
-  columns_scanned: number | null
   n_collects: number
   n_checkpoints: number
 }
@@ -201,18 +196,6 @@ export interface ExecutionColumnWidths {
   items: ExecutionColumnWidth[]
 }
 
-export interface ExecutionCacheProof {
-  hits: number
-  misses: number
-  direct_fallbacks: number
-  miss_reason_counts: {
-    metadata_source_mismatch: number
-    artifact_integrity_schema_failure: number
-    unreadable_artifact: number
-    proof_unavailable: number
-  }
-}
-
 export interface InputPreparationRecord {
   node_id: string
   identity_digest: string
@@ -302,8 +285,7 @@ export interface ExecutionMetrics {
   column_widths: ExecutionColumnWidths
   requested_column_width_total: number | null
   physically_scanned_column_width_total: number | null
-  cache_proof: ExecutionCacheProof
-  bytes_read: number | null
+  cache_direct_fallbacks: number
   bytes_written: number | null
   estimated_bytes: number | null
   raw_estimated_bytes: number | null

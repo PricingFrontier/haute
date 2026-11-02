@@ -34,7 +34,7 @@ def _write_output(
         json.dumps(
             {
                 "rows": result.to_dicts(),
-                "cache_proof": metrics["cache_proof"],
+                "cache_direct_fallbacks": metrics["cache_direct_fallbacks"],
                 "requested_column_width_total": metrics["requested_column_width_total"],
                 "physically_scanned_column_width_total": metrics[
                     "physically_scanned_column_width_total"
@@ -53,7 +53,7 @@ def main() -> int:
     config = json.loads(args.config.read_text(encoding="utf-8"))
     telemetry: list[dict[str, str | int | float | bool | None]] = []
     context = ExecutionContext(
-        operation="perf_restart_cache_proof",
+        operation="perf_restart_cache_reuse",
         profile=ExecutionProfile.PREVIEW_EAGER,
         telemetry_enabled=True,
         telemetry_sink=lambda event: telemetry.append(dict(event.attributes)),
