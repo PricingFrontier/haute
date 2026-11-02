@@ -740,7 +740,9 @@ def handle_init(config: InitConfig) -> None:
     # -- Resolve project name --------------------------------------------------
     # A re-run keeps the name haute.toml has, which names the model and the endpoint.
     pyproject_path = project_dir / "pyproject.toml"
-    name = project_dir.name.replace("-", "_").replace(" ", "_").lower()
+    # A package name (PEP 508) from the folder's: what it cannot hold becomes "_", and it
+    # starts and ends with a letter or digit, so ".my-project" is "my_project".
+    name = re.sub(r"[^a-z0-9.]+", "_", project_dir.name.lower()).strip("._")
 
     if pyproject_path.exists():
         with open(pyproject_path, "rb") as fh:
@@ -751,6 +753,11 @@ def handle_init(config: InitConfig) -> None:
         named = _table(previous, "project").get("name")
         if isinstance(named, str) and named:
             name = named
+    if not name:
+        raise click.ClickException(
+            f"The folder name {project_dir.name!r} gives no project name: it needs a letter "
+            "or digit. Rename the folder, or create pyproject.toml with a [project] name."
+        )
 
     # -- rating/workbench/'s paths, checked before anything is written ---------
     # A form folder already there is the analyst's form: never a blank one in its place.

@@ -116,7 +116,9 @@ analyst's sign-in, the last asked only when `connections.toml` is to be written,
 `_writes_connections`: there is none, or the connection of an environment the new
 `haute.toml` declares, `dev`, `staging` or `prod`, is on another database than the one
 answered, SQLite included), resolves the project name (on a re-run the
-existing `haute.toml`'s `[project] name`, else `pyproject.toml`'s, else the folder's),
+existing `haute.toml`'s `[project] name`, else `pyproject.toml`'s, else the folder's as a
+package name takes it: lower case, each run of characters other than letters, digits and
+`.` made `_`, and leading and trailing `.` and `_` dropped, a folder that leaves none refused),
 creates or patches `pyproject.toml` via `_ensure_haute_dependency`, which adds `haute`, or
 for a workbench project `haute[<database>,azure]` (the database's driver its release
 installs and the Azure management packages its rollout uses), when no `haute` requirement is

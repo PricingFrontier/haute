@@ -314,6 +314,37 @@ class TestInitCreatesProjectStructure:
         runner.invoke(cli, ["init"], catch_exceptions=False)
         assert not (tmp_path / ".git" / "hooks" / "pre-commit").exists()
 
+    @pytest.mark.parametrize(
+        ("folder", "named"),
+        [(".tmp-e2e-project", "tmp_e2e_project"), ("Motor Pricing!", "motor_pricing")],
+    )
+    def test_a_new_pyproject_is_named_as_a_package_name_must_be(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        folder: str,
+        named: str,
+    ):
+        project = tmp_path / folder
+        project.mkdir()
+        monkeypatch.chdir(project)
+        result = runner.invoke(cli, ["init"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        with open(project / "pyproject.toml", "rb") as fh:
+            assert tomllib.load(fh)["project"]["name"] == named
+
+    def test_a_folder_name_without_a_letter_or_digit_is_refused(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        project = tmp_path / "---"
+        project.mkdir()
+        monkeypatch.chdir(project)
+        result = runner.invoke(cli, ["init"])
+        assert result.exit_code == 1
+        assert "gives no project name" in result.output
+        assert not (project / "pyproject.toml").exists()
+
     @pytest.mark.parametrize("newline", ["\n", "\r\n"])
     def test_removes_root_main_py_from_uv_init(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, newline: str
