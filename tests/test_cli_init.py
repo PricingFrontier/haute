@@ -311,14 +311,44 @@ class TestInitCreatesProjectStructure:
         runner.invoke(cli, ["init"], catch_exceptions=False)
         assert not (tmp_path / ".git" / "hooks" / "pre-commit").exists()
 
+    @pytest.mark.parametrize("newline", ["\n", "\r\n"])
     def test_removes_root_main_py_from_uv_init(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, newline: str
     ):
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "main.py").write_text("print('hello from uv init')\n")
+        # Exactly what uv 0.9 writes for a project named my-proj.
+        placeholder = (
+            'def main():\n    print("Hello from my-proj!")\n\n\n'
+            'if __name__ == "__main__":\n    main()\n'
+        )
+        (tmp_path / "main.py").write_bytes(placeholder.replace("\n", newline).encode())
         result = runner.invoke(cli, ["init"], catch_exceptions=False)
         assert not (tmp_path / "main.py").exists()
-        assert "removed root main.py" in result.output.lower()
+        assert "Removed root main.py, uv init's placeholder" in result.output
+        assert (tmp_path / "rating" / "main.py").exists()
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            # The placeholder edited by the team: no longer uv's.
+            'def main():\n    print("Hello from my-proj!")\n    run_batch()\n\n\n'
+            'if __name__ == "__main__":\n    main()\n',
+            "import haute\n\npipeline = haute.Pipeline('legacy')\n",
+        ],
+    )
+    def test_keeps_a_root_main_py_the_team_wrote(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        content: str,
+    ):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "main.py").write_text(content, encoding="utf-8", newline="\n")
+        result = runner.invoke(cli, ["init"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / "main.py").read_text(encoding="utf-8") == content
+        assert "Kept root main.py: it is not uv init's placeholder." in result.output
         assert (tmp_path / "rating" / "main.py").exists()
 
     def test_creates_pyproject_toml_if_missing(

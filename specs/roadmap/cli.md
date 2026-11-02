@@ -11,7 +11,6 @@ packages come from the [25 October 2026 codebase review](codebase-review-2026-10
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CLI-R01 | Planned | P1 | A first `haute init` removes a root `main.py` only when it is the `uv init` placeholder. |
 | CLI-R02 | Planned | P2 | `haute run` walks the pipeline lazily to its output node under the batch profile, with a named source, instead of materialising every node in memory. |
 | CLI-R03 | Planned | P2 | `haute lint` applies the editor's save-time validation, so CI's lint step refuses what the editor would refuse. |
 | CLI-R04 | Planned | P3 | `haute init` edits `pyproject.toml` through `tomlkit` instead of a hand-written TOML scanner. |
@@ -20,20 +19,6 @@ packages come from the [25 October 2026 codebase review](codebase-review-2026-10
 | CLI-R07 | Planned | P2 | `haute impact` confines `impact_dataset` to the project root and preserves non-string scalar fields from `test_quotes_dir`, and `haute lint` and `haute run` catch `ConfigError` from `resolve_pipeline_file`. |
 
 ## Planned improvements
-
-### CLI-R01 — A root `main.py` kept unless it is the placeholder
-**Why:** `handle_init` deletes any root `main.py`, on the specification's reasoning that
-`uv init` recreates that placeholder whenever it runs, so a `main.py` the team wrote at the
-root of an existing repository is lost when `haute init` sets the project up.
-
-**Plan:** Remove a root `main.py` only when it is the `uv init` placeholder byte for byte,
-and update the CLI specification's reasoning.
-
-**Acceptance:** A first `init` next to a non-placeholder `main.py` keeps it and says so.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/cli/_init_cmd.py::handle_init`; `src/haute/cli/_ci.py::handle_ci_update`.
 
 ### CLI-R02 — `haute run` as a lazy walk
 **Why:** `handle_run` calls `execute_graph(graph)` with no target and no row limit, which

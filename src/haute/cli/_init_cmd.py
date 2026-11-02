@@ -946,6 +946,24 @@ def _answers(
 # ── The scaffold ───────────────────────────────────────────────────────
 
 
+#: The root ``main.py`` ``uv init`` writes, whatever the project's name.
+_UV_INIT_PLACEHOLDER = re.compile(
+    re.escape('def main():\n    print("Hello from ')
+    + r'[^"\\\n]+'
+    + re.escape('!")\n\n\nif __name__ == "__main__":\n    main()\n')
+)
+
+
+def _is_uv_init_placeholder(path: Path) -> bool:
+    """Whether *path* holds exactly what ``uv init`` writes as a root ``main.py``, its
+    project name aside; a checkout's CRLF line endings count as its LF ones."""
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return _UV_INIT_PLACEHOLDER.fullmatch(text.replace("\r\n", "\n")) is not None
+
+
 def _is_haute_hook(path: Path) -> bool:
     """Whether the git hook at *path* is Haute's, of any version: it holds the comment that
     marks Haute's hook. Another is the team's own, which ``haute init`` leaves as it is."""
@@ -1083,11 +1101,17 @@ def handle_init(config: InitConfig) -> None:
     # -- Directories -----------------------------------------------------------
     (project_dir / "data").mkdir(exist_ok=True)
 
-    # -- Remove the root placeholder created by tools such as ``uv init`` ------
+    # -- Remove the root placeholder ``uv init`` writes, and only that ----------
     root_main = project_dir / "main.py"
-    if root_main.exists():
-        root_main.unlink()
-        click.echo("  Removed root main.py (Haute uses rating/main.py).")
+    if root_main.is_file():
+        if _is_uv_init_placeholder(root_main):
+            root_main.unlink()
+            click.echo("  Removed root main.py, uv init's placeholder (Haute uses rating/main.py).")
+        else:
+            click.echo(
+                "  Kept root main.py: it is not uv init's placeholder. "
+                "The pipeline is rating/main.py."
+            )
 
     # -- rating/ and tests/ - a new project's starter files ---------------------
     # Each is written only where there is none, and a re-run writes none: the pipeline, its

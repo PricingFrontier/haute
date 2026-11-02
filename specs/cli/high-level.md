@@ -104,10 +104,11 @@ Out of scope, owned elsewhere:
   otherwise it is kept and the sign-in is not asked, a `--sign-in` given then answering
   nothing. A path of
   the form folder reached through a link or junction refuses the init before anything is
-  written. A root `main.py` is
-  always deleted: `uv init` recreates that placeholder every time it runs, and a Haute project's
-  real entry point is `rating/main.py`, so the root file is a tooling artifact — never user
-  content — and removing it keeps the entry point unambiguous. No `prompts/` directory or
+  written. A root `main.py` that is
+  exactly the placeholder `uv init` writes, its project name aside, is deleted: a Haute
+  project's entry point is `rating/main.py`, and removing the placeholder keeps it
+  unambiguous. Any other root `main.py` is the team's, in a repository Haute is set up in,
+  so it is kept and the summary says so. No `prompts/` directory or
   starter nodes/sidecars are generated.
 - `haute run [pipeline_file]` executes a pipeline end-to-end through the same
   parse → flatten → `execute_graph` path the GUI uses (each submodel occurrence runs as its
