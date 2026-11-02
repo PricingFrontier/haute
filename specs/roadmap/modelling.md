@@ -11,16 +11,16 @@ six trained families (CatBoost, GLM through RustyStats, XGBoost, LightGBM,
 EBM and t-boost) are in scope only for what each backend exposes to a caller
 that must bound memory; their losses, tuning and evaluation are out of scope.
 The GLM distributions that `MOD-M01` names in its acceptance are the subject
-of that package, not a tuning choice.
+of that package, not a tuning choice. `MOD-R11` comes from the family memory
+measurement and covers the memory Haute's own evaluation planning takes.
 
 Today a training fit that exceeds its memory budget terminates: bounded
 streaming mode is refused outright (`BoundedMemoryUnsupportedError`, shown as
 "Training cannot run in bounded streaming mode"), and a budget overrun
 surfaces `memory_limited` with reduce-your-data guidance. `MOD-M01` and
-`MOD-M02` add a degrade-gracefully path. `MOD-M01`'s engagement and home were decided on
-2 November 2026 and it waits on RustyStats; `MOD-M02` is a `Decision` package that needs an
-explicit product choice before implementation. The design decisions belong to each
-implementation cycle, not to this page. Where this page names
+`MOD-M02` add a degrade-gracefully path. Both were decided on 2 November 2026: `MOD-M01`
+waits on RustyStats, and `MOD-M02` is XGBoost's exact external memory, engaging the same way.
+The remaining design decisions belong to each implementation cycle, not to this page. Where this page names
 a tolerance, a bound or a cap, the decision sets its value and the modelling
 low-level specification records it before implementation starts.
 
@@ -52,14 +52,15 @@ the up-front estimate, never as a restart.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | MOD-M01 | Deferred | P3 | Exact chunked GLM fitting under a memory budget, once RustyStats fits out of core. |
-| MOD-M02 | Decision | P3 | A low-memory boosted-tree fitting mode under an explicit user choice. |
+| MOD-M02 | Planned | P3 | An XGBoost job too large for memory trains on every row through XGBoost's external memory, giving the same model. |
+| MOD-R11 | Planned | P2 | Evaluation planning and the split hold their memberships as row labels, not as Python integers for every position. |
 
 ## Planned improvements
 
-`MOD-M02`'s implementation reuses the chunk admission, batch reading and
-result-metadata surfaces that `MOD-M01` builds, so its implementation follows
-`MOD-M01`. Its first decision input, a measurement of XGBoost's
-external-memory mode, does not need any of that and can start first.
+`MOD-M02` builds the batch reading and result-metadata surfaces itself, since
+`MOD-M01` waits on RustyStats; `MOD-M01`'s Haute half reuses them later. `MOD-R11`
+comes first: until planning stops costing twice the frame, a low-memory fit saves
+nothing a job can use.
 
 ### MOD-M01 — Adaptive GLM fitting (exact, chunked)
 **Why:** GLM fitting by iteratively reweighted least squares (IRLS) is
@@ -142,7 +143,7 @@ existing chunk planning and admission budgets.
 streaming refusal in `src/haute/routes/_training_preparation.py` and its
 message in `src/haute/routes/_training_worker.py`.
 
-### MOD-M02 — Low-memory boosted-tree mode
+### MOD-M02 — XGBoost trains through external memory when it will not fit
 **Why:** An exact chunked boosted fit is not ruled out by the mathematics.
 Histogram-based gradient and hessian accumulation is a sum over rows, so with
 the bin cuts fixed up front by the same quantile sketch the in-memory path
@@ -191,52 +192,77 @@ on-disk cache took about 83 bytes per row, `on_host=True` behaved as `on_host=Fa
 the CPU, and the fit took 1.16 to 1.42 times as long. External memory therefore lowers
 XGBoost's peak about fourfold without changing the model, but does not bound it.
 
-**Plan:** Decision first, and it is a product choice as much as an
-architectural one. The first call, per family, is whether an exact chunked
-path is reachable: for XGBoost by the measurement above, for the others only
-by building tree construction. Where it is, that reshapes this package
-rather than delivering it. The approximate variants are chunk-sequential
-boosting continuation, a bagged partition ensemble, and guided downsampling
-beyond the existing automatic downsample. Reduced-capacity fitting on the
-full data (fewer trees, shallower depth, coarser bins) is not a low-memory
-mode, because the resident frame and the per-row gradient buffers do not
-shrink with model capacity; it belongs here only as a quality lever for a
-job whose data fits but whose training overhead does not.
+**Decision (2 November 2026):** XGBoost's external memory is the low-memory path, and
+the only one this package delivers: it is exact, so a model trained through it is the
+model the in-memory fit would have produced. It takes `MOD-M01`'s engagement: an XGBoost
+job whose up-front estimate says the in-memory fit will not fit trains on every row
+through `ExtMemQuantileDMatrix` instead of being downsampled, the result, model card and
+MLflow run record that it did, and a checkpoint overrun or a dead worker still ends
+`memory_limited` with no restart. The estimate is used as it stands; its per-family
+calibration stays with `PL2-17`, which will move the point where this engages. The
+approximate variants (chunk-sequential continuation, bagged partition ensembles, guided
+downsampling beyond the automatic downsample) for CatBoost, LightGBM, EBM and t-boost are
+not pursued.
 
-Engagement is split in two. Approximate fitting is enabled only by explicit
-configuration, and the result, model card and MLflow metadata are stamped as
-approximate; the up-front estimate and the checkpoint never turn an exact
-request into an approximate model. Once an approximate mode is enabled, the
-estimate sizes its chunks or partitions and the checkpoint may terminate it
-at a boundary Haute owns (between chunks of a continuation, between members
-of an ensemble); work inside a backend fit has no such boundary and is sized
-from the estimate alone. An exact external-memory path, if one is adopted,
-takes `MOD-M01`'s engagement decision rather than this one.
+**Plan:** Build the batch reading this needs rather than waiting for `MOD-M01`'s Haute
+half, which will reuse it: a `DataIter` over the sunk training parquet's row groups for
+the training partition (and the validation partition when early stopping runs), with the
+same encoding, categorical levels, weights and offset margin the in-memory `matrix`
+applies, and the cache under the job's artifact directory, removed with it. Settle in the
+low-level specification the batch size, `max_bin` (the in-memory default), the cache
+location and lifetime, and how the choice reaches the worker (the training request
+records it; the fit never decides it on its own). Stamp the engagement in `TrainResponse`,
+the model card and the candidate run. The stages outside the fit that still hold the
+frame bound what the mode saves: evaluation planning and the split (`MOD-R11`) and the
+diagnostics' partition read; measure the end-to-end peak with the family memory probe
+before and after, and state in the specification what the mode does and does not bound.
 
-**Acceptance:** The mode is opt-in configuration, and a run without it never
-produces an approximate model. The approximation is stamped in the training
-result, model card and MLflow metadata. For each family the variant
-supports, representative regression and classification fixtures meet a
-non-inferiority bound the decision fixes on the family's primary holdout
-metric against the full-data fit, measured on the same rows and features,
-and a directional-agreement criterion where proximal simulation depends on
-it; a variant that misses the bound is not shipped. The measurement is
-recorded as a performance artifact rather than run in the ordinary test
-lanes, so the bound is a release criterion, not a per-commit gate.
-Memory-bound tests prove bounded peak RSS. Should the decision adopt an exact
-path for a family, the approximation stamp falls away for that family and a
-family-specific equivalence criterion replaces the non-inferiority bound:
-fixed seeds and deterministic settings, identical preprocessing and cuts,
-prediction and objective-history agreement under stated absolute and
-relative tolerances, and tree-structure equality only if the backend promises
-it.
+**Acceptance:** On fixtures with a fixed seed, an external-memory fit and an in-memory fit
+of the same job produce identical predictions and objective history (the measurement
+found them bit-identical; a looser tolerance needs a stated reason), for regression and
+classification, with weights and an offset. A job whose estimate does not fit trains on
+every row through external memory and its result, model card and MLflow run say so; a
+job that fits trains in memory as before. The end-to-end peak at a size the in-memory
+path exceeds is recorded by the family memory probe as a performance artifact. The cache
+is gone after success, failure and cancellation.
 
-**Dependencies:** `MOD-M01`'s chunk admission, batch reading and
-result-metadata surfaces, for the implementation; nothing, for the XGBoost
-external-memory measurement. The model-card and result metadata surface.
+**Dependencies:** `MOD-R11` for the end-to-end saving (planning and the split hold the
+frame-sized memberships today); `PL2-17` for where the estimate engages it. Nothing for
+the fit itself.
 
-**Evidence:** `src/haute/modelling/_algorithms.py`;
-`src/haute/modelling/_xgboost.py`; `src/haute/modelling/_lightgbm.py`;
-`src/haute/modelling/_ebm.py`; `src/haute/modelling/_training_job.py`;
-`src/haute/modelling/_model_card.py`; `src/haute/_ram_estimate.py` (the
-existing downsample decision).
+**Evidence:** `src/haute/modelling/_xgboost.py`; `src/haute/modelling/_training_job.py`;
+`src/haute/routes/_training_lifecycle.py`; `src/haute/modelling/_model_card.py`;
+`src/haute/_ram_estimate.py` (the existing downsample decision);
+`tests/performance/test_training_family_memory_perf.py`.
+
+### MOD-R11 — Evaluation planning and the split hold memberships compactly
+**Why:** Before any fit, Haute's own evaluation planning and split raised the peak by
+about 1.0 GB at 1.6M rows, about 2.2 times the 436 MiB frame, in every family the family
+memory probe measured. The in-memory `EvaluationPlan` holds the development and final-test
+positions and every validation fit's train and validation positions as tuples of Python
+integers, about 36 bytes per row per membership, and `generate_evaluation_plan` builds,
+shuffles and filters Python lists of every position; the plan file is compact since
+`MOD-R03`, but the plan in memory is not. A low-memory fit (`MOD-M01`, `MOD-M02`) saves
+nothing a job can use while planning alone costs twice the frame.
+
+**Plan:** First measure how much of the rise is the plan and how much the split's row
+order and partition masks, from the probe's per-stage peaks. Then hold the plan in memory
+as its per-row group labels (the schema-2 encoding) and each fit's groups, build
+`final_mask`, `selection_mask` and `saved_selection_mask` from the labels with NumPy, give
+row counts without materialising positions, and generate plans with NumPy arrays rather
+than Python lists, keeping every plan the current code generates identical (the canonical
+order, the seeded streams and the golden vector).
+
+**Acceptance:** Every existing evaluation-plan test passes unchanged in what it asserts,
+including reproducibility under row permutation and the golden fold vector; a plan
+generated, saved and reloaded equals the original; at 1.6M rows with five folds,
+planning and the split raise the probe's peak by under a quarter of what they do now,
+recorded as a performance artifact.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/modelling/_evaluation.py::EvaluationPlan`;
+`src/haute/modelling/_evaluation.py::generate_evaluation_plan`;
+`src/haute/modelling/_training_job.py::TrainingJob._build_evaluation_plan`;
+`src/haute/modelling/_training_job.py::TrainingJob._split_data`;
+`tests/performance/test_training_family_memory_perf.py`.
