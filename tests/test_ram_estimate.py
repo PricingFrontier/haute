@@ -15,6 +15,7 @@ from structlog.testing import capture_logs
 from haute._polars_io_registry import data_input_is_direct
 from haute._polars_utils import read_parquet_metadata
 from haute._ram_estimate import (
+    _OVERHEAD_MULTIPLIER,
     MaterialisationEstimate,
     MaterialisationEstimateState,
     RamEstimate,
@@ -587,6 +588,96 @@ def _build_dummy_node_fn(
         return inputs[0] if inputs else pl.LazyFrame()
 
     return label, transform_fn, False
+
+
+class TestWidthsFollowTheLineage:
+    """A node's width is its own output's, from its lineage over its inputs, and a nested
+    column is measured rather than assumed one 8-byte value."""
+
+    ROWS = 1000
+
+    @staticmethod
+    def _frames() -> dict[str, pl.DataFrame]:
+        rows = TestWidthsFollowTheLineage.ROWS
+        return {
+            "narrow": pl.DataFrame({"id": range(rows), "a": [float(i) for i in range(rows)]}),
+            "wide": pl.DataFrame(
+                {"id": range(rows), **{f"w{i}": [float(i)] * rows for i in range(500)}}
+            ),
+            "nested": pl.DataFrame(
+                {
+                    "id": range(rows),
+                    "items": [[float(j) for j in range(50)]] * rows,
+                    "tags": [["x" * 20] * 5] * rows,
+                }
+            ),
+        }
+
+    def _estimated_input_bytes(self, tmp_path: Path, code: str, right: str) -> float:
+        for name, frame in self._frames().items():
+            frame.write_parquet(tmp_path / f"{name}.parquet")
+        left_node = _make_source_node(
+            node_id="left",
+            label="left",
+            node_type="dataInput",
+            config=_ready_file_input_config(tmp_path / "narrow.parquet"),
+        )
+        right_node = _make_source_node(
+            node_id="right",
+            label="right",
+            node_type="dataInput",
+            config=_ready_file_input_config(tmp_path / f"{right}.parquet"),
+        )
+        node = _make_transform_node(node_id="t", label="t", config={"code": code})
+        model = _make_modelling_node()
+        graph = PipelineGraph(
+            nodes=[left_node, right_node, node, model],
+            edges=[
+                GraphEdge(id="e1", source="left", target="t"),
+                GraphEdge(id="e2", source="right", target="t"),
+                GraphEdge(id="e3", source="t", target=model.id),
+            ],
+        )
+        estimate = estimate_safe_training_rows(graph, model.id)
+        assert estimate.estimated_bytes is not None
+        return estimate.estimated_bytes / _OVERHEAD_MULTIPLIER
+
+    @pytest.mark.parametrize(
+        ("code", "right", "actual"),
+        [
+            pytest.param(
+                "df = left.join(right, on='id', how='left', validate='1:1')",
+                "wide",
+                lambda f: f["narrow"].join(f["wide"], on="id"),
+                id="widened",
+            ),
+            pytest.param(
+                "df = left.join(right, on='id', how='left', validate='1:1')",
+                "nested",
+                lambda f: f["narrow"].join(f["nested"], on="id"),
+                id="nested",
+            ),
+            pytest.param("df = right", "wide", lambda f: f["wide"], id="the-input-it-takes"),
+        ],
+    )
+    def test_the_estimate_is_within_a_factor_of_two_of_the_frame(
+        self, tmp_path: Path, code: str, right: str, actual
+    ) -> None:
+        measured = actual(self._frames()).estimated_size()
+        estimated = self._estimated_input_bytes(tmp_path, code, right)
+        assert measured / 2 <= estimated <= measured * 2, (estimated, measured)
+
+    def test_a_nested_column_is_measured(self, tmp_path: Path) -> None:
+        path = tmp_path / "nested.parquet"
+        self._frames()["nested"].write_parquet(path)
+        node = _make_source_node(node_type="dataInput", config=_ready_file_input_config(path))
+
+        metadata = _detailed_source_metadata_for_node(node)
+
+        assert metadata is not None
+        widths = _source_column_base_widths((metadata,))
+        assert widths["items"] >= 50 * 8
+        assert widths["tags"] >= 5 * 20
 
 
 class TestEstimateSafeTrainingRows:

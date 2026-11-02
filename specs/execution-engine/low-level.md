@@ -194,7 +194,17 @@
   requires `None` and a reason. One strategy request shares a single graph index
   across all of its materialisation boundaries, memoises metadata/schema lookups,
   accounts conservatively for variable-width columns, and lets unexpected failures
-  propagate.
+  propagate. A column's width comes from its type (`_fixed_width_bytes`: one to 32 bytes
+  for each fixed-width Arrow or Polars type, read from the type's own name before its
+  parameters); any other type (text, binary, a dictionary, every nested type) is variable
+  width and measured, from the column's uncompressed Parquet size and a bounded head probe
+  of the rows, never assumed to be one 8-byte value. A node's columns are its own output's:
+  a Polars node with code resolves them from its column lineage over its inputs' resolved
+  columns (`_resolve_code_node_columns`), a column it keeps by name keeping its input's
+  width and any other (a join's suffixed column, a computed one) sized as the widest input
+  column the lineage says it alone reads; when the lineage cannot follow the code, a node
+  with several inputs is sized as all of them. A node that is neither (nor an Edge Join, nor
+  a selection) takes its input's columns, walking up to a sized source.
 - **`RowCardinalityAnalysis`** (`_column_lineage.py`, frozen dataclass) — the
   fail-closed row analogue of column lineage for a linear Polars program. It reports
   the output and peak finite upper bounds plus operation evidence, or the exact
@@ -3060,6 +3070,10 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   **`test_training_memory_safety.py`** — exercise `_execution_admission` indirectly
   through the route/service layers that construct admitted contexts for real
   operations (training, optimiser setup, deploy).
+- **`test_ram_estimate.py`** — also that a training estimate after a join widening a two-column
+  frame to 502, after a join with nested list columns, and of a node taking the second of two
+  inputs is within a factor of two of the frame's measured size, and that a nested column's
+  width is measured.
 - **`test_column_lineage.py`** — also that a column-free `select` of `pl.lit` holding a
   non-literal is `row_expansion_unbounded` while a literal, a lit beside a named column and a
   `with_columns` lit keep the bound; `test_polars_operations.py` that `cut` is registered
