@@ -776,12 +776,12 @@ class TestInferOutputSchema:
         cache_dir = tmp_path / ".haute_cache"
         cache_dir.mkdir()
         cache_file = cache_dir / "output_schema.json"
-        cached = {"fingerprint": fp, "schema": {"premium": "Float64", "factor": "Int64"}}
+        cached = {"entries": {fp: {"premium": "Float64", "factor": "Int64"}}}
         cache_file.write_text(json.dumps(cached))
 
         # Should return cached schema without calling score_graph
         with patch("haute.deploy._scorer.score_graph") as mock_score:
-            result = infer_output_schema(graph, "out", ["src"])
+            result = infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
 
         mock_score.assert_not_called()
         assert result == {"premium": "Float64", "factor": "Int64"}
@@ -838,7 +838,7 @@ class TestInferOutputSchema:
         mock_result = pl.DataFrame({"result": [42.0]})
 
         with patch("haute.deploy._scorer.score_graph", return_value=mock_result):
-            result = infer_output_schema(graph, "out", ["src"])
+            result = infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
 
         assert result == {"result": "Float64"}
 
@@ -895,7 +895,7 @@ class TestInferOutputSchema:
             patch("haute.deploy._schema.logger") as mock_logger,
             patch("haute.deploy._scorer.score_graph", return_value=mock_result),
         ):
-            infer_output_schema(graph, "out", ["src"])
+            infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
 
         # Find the corrupt_schema_cache warning call
         warning_calls = [
@@ -953,7 +953,7 @@ class TestInferOutputSchema:
         mock_result = pl.DataFrame({"premium": [100.0]})
 
         with patch("haute.deploy._scorer.score_graph", return_value=mock_result):
-            result = infer_output_schema(graph, "out", ["src"])
+            result = infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
 
         assert result == {"premium": "Float64"}
 
@@ -961,7 +961,7 @@ class TestInferOutputSchema:
         cache_file = tmp_path / ".haute_cache" / "output_schema.json"
         assert cache_file.exists()
         cached = json.loads(cache_file.read_text())
-        assert cached["schema"] == {"premium": "Float64"}
+        assert list(cached["entries"].values()) == [{"premium": "Float64"}]
 
     def test_stale_cache_fingerprint_recomputes(self, tmp_path, monkeypatch):
         """Stale fingerprint in cache causes recomputation."""
@@ -1009,13 +1009,13 @@ class TestInferOutputSchema:
         cache_dir = tmp_path / ".haute_cache"
         cache_dir.mkdir()
         cache_file = cache_dir / "output_schema.json"
-        cached = {"fingerprint": "wrong_fingerprint", "schema": {"old_col": "String"}}
+        cached = {"entries": {"wrong_fingerprint": {"old_col": "String"}}}
         cache_file.write_text(json.dumps(cached))
 
         mock_result = pl.DataFrame({"premium": [100.0]})
 
         with patch("haute.deploy._scorer.score_graph", return_value=mock_result) as mock_score:
-            result = infer_output_schema(graph, "out", ["src"])
+            result = infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
 
         mock_score.assert_called_once()
         assert result == {"premium": "Float64"}
@@ -1043,7 +1043,7 @@ class TestInferOutputSchema:
             patch("haute.deploy._schema.logger") as mock_logger,
             patch("haute.deploy._scorer.score_graph", return_value=mock_result),
         ):
-            result = infer_output_schema(graph, "out", ["src"])
+            result = infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
 
         # Schema still returned truthfully despite the write failure.
         assert result == {"premium": "Float64"}
@@ -1066,10 +1066,10 @@ class TestInferOutputSchema:
         ``canonical_json``), which runs *before* the cache-write ``try`` — so
         that RuntimeError would propagate regardless of the ``except`` clause
         and the test would pass even against the pre-fix ``except Exception``.
-        Once ``score_graph`` is mocked, the cache write is the only
-        ``Path.write_text`` call left in ``infer_output_schema``, so patching
-        the write site pins the fix precisely. Asserting ``score_graph`` ran
-        proves the error came from the cache write, not from fingerprinting.
+        Once ``score_graph`` is mocked, the cache's ``atomic_write_text`` is the
+        write left in ``infer_output_schema``, so patching the write site pins the
+        fix precisely. Asserting ``score_graph`` ran proves the error came from the
+        cache write, not from fingerprinting.
         """
         from haute.deploy._schema import infer_output_schema
 
@@ -1083,12 +1083,12 @@ class TestInferOutputSchema:
         with (
             patch("haute.deploy._scorer.score_graph", mock_score),
             patch(
-                "pathlib.Path.write_text",
+                "haute.deploy._schema.atomic_write_text",
                 side_effect=RuntimeError("serialisation bug"),
             ),
             pytest.raises(RuntimeError, match="serialisation bug"),
         ):
-            infer_output_schema(graph, "out", ["src"])
+            infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
 
         # score_graph runs after graph_fingerprint and before the cache write,
         # so its having been called exactly once proves fingerprinting finished
@@ -4158,17 +4158,6 @@ class TestLoadEnv:
         assert os.environ["HAUTE_TEST_KEEP"] == "original"
 
 
-def _force_schema_cache_miss(tmp_path, monkeypatch) -> None:
-    """Point the on-disk output-schema cache at an empty temp location."""
-    from haute.deploy import _schema
-
-    monkeypatch.setattr(
-        _schema,
-        "_SCHEMA_CACHE_FILE",
-        str(tmp_path / "schema_cache" / "output_schema.json"),
-    )
-
-
 _STUB_EXECUTION_POLICY = {
     "schema_version": 1,
     "profile": "deploy_batch",
@@ -4319,7 +4308,6 @@ class TestResolveConfigEdgeCases:
         """
         from haute.deploy._config import ContainerConfig, DeployConfig, resolve_config
 
-        _force_schema_cache_miss(tmp_path, monkeypatch)
         # The capped dry-run really spawns; the child derives its project root
         # from the working directory it inherits.
         monkeypatch.chdir(tmp_path)
@@ -4361,7 +4349,6 @@ class TestResolveConfigEdgeCases:
         from haute.deploy._config import DeployConfig, resolve_config
         from haute.errors import DeployError
 
-        _force_schema_cache_miss(tmp_path, monkeypatch)
         graph = self._conservative_deploy_graph(tmp_path)
         config = DeployConfig(
             pipeline_file=self._tmp_pipeline_file(tmp_path),

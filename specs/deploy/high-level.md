@@ -447,7 +447,11 @@ approving it.
   dry-run cache key folds in `artifact_identity_fingerprint()` — the runtime fingerprint
   of every bundled artefact's resolved path, size, mtime, and shared content signature — so retraining a model in
   place under an unchanged `run_id`/`version="latest"` config still busts the cache
-  instead of baking a stale `ModelSignature` into the manifest.
+  instead of baking a stale `ModelSignature` into the manifest. The cache is the
+  project's (`<project root>/.haute_cache/output_schema.json`, wherever the deploy runs
+  from), holds one entry per fingerprint, so a project deploying several pipelines reuses
+  each unchanged one's, and is written atomically, so an interrupted or concurrent build
+  never leaves a partial file.
 - **Pipeline-relative source paths become container-relative manifest paths.**
   `_bundler.py::_resolve_path` deliberately prefers a source path resolved against the
   pipeline file's directory over one resolved against the developer process's working

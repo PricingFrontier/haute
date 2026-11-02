@@ -1156,15 +1156,6 @@ class TestPrepareAndAccept:
 # ---------------------------------------------------------------------------
 
 
-def _force_schema_cache_miss(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Point the on-disk output-schema cache at an empty temp location."""
-    monkeypatch.setattr(
-        _schema,
-        "_SCHEMA_CACHE_FILE",
-        str(tmp_path / "schema_cache" / "output_schema.json"),
-    )
-
-
 @pytest.mark.usefixtures("_widen_sandbox_root")
 class TestOutputSchemaConservativeFallback:
     def test_cache_miss_proves_the_schema_in_the_real_capped_worker(
@@ -1174,7 +1165,6 @@ class TestOutputSchemaConservativeFallback:
     ) -> None:
         """A real spawn: nothing is patched across the process boundary."""
         graph = _write_policy_sample(tmp_path, _conservative_graph())
-        _force_schema_cache_miss(tmp_path, monkeypatch)
         # The spawned child computes its own project root from the working
         # directory it inherits, so the sample must live inside it.
         monkeypatch.chdir(tmp_path)
@@ -1190,7 +1180,7 @@ class TestOutputSchemaConservativeFallback:
 
         monkeypatch.setattr(_schema, "run_isolated_worker", recording_runner)
 
-        schema = infer_output_schema(graph, "out", ["quotes"])
+        schema = infer_output_schema(graph, "out", ["quotes"], project_root=tmp_path)
 
         # The OUTPUT node maps the aggregation only; the dtype comes from the
         # parquet the worker actually wrote.
@@ -1240,7 +1230,6 @@ class TestOutputSchemaConservativeFallback:
                 ]
             }
         )
-        _force_schema_cache_miss(tmp_path, monkeypatch)
         monkeypatch.chdir(tmp_path)
         spawns: list[str] = []
         real_runner = _schema.run_isolated_worker
@@ -1251,7 +1240,7 @@ class TestOutputSchemaConservativeFallback:
 
         monkeypatch.setattr(_schema, "run_isolated_worker", recording_runner)
 
-        schema = infer_output_schema(graph, "out", ["quotes"])
+        schema = infer_output_schema(graph, "out", ["quotes"], project_root=tmp_path)
 
         assert spawns == [DEPLOY_BATCH_PROCESS_NAME]
         assert schema == {"total": "Float64"}
@@ -1262,7 +1251,6 @@ class TestOutputSchemaConservativeFallback:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         graph, output_id = _fixture_graph()
-        _force_schema_cache_miss(tmp_path, monkeypatch)
         dry_runs: list[int] = []
         spawns: list[str] = []
         real_dry_run = _schema._dry_run_output_schema
@@ -1278,7 +1266,7 @@ class TestOutputSchemaConservativeFallback:
         monkeypatch.setattr(_schema, "_dry_run_output_schema", counting_dry_run)
         monkeypatch.setattr(_schema, "run_isolated_worker", recording_runner)
 
-        schema = infer_output_schema(graph, output_id, ["quotes"])
+        schema = infer_output_schema(graph, output_id, ["quotes"], project_root=tmp_path)
 
         assert schema
         assert len(dry_runs) == 1
@@ -1290,7 +1278,6 @@ class TestOutputSchemaConservativeFallback:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         graph = _write_policy_sample(tmp_path, _conservative_graph())
-        _force_schema_cache_miss(tmp_path, monkeypatch)
 
         def unsupported_runner(_function, *_args, config):
             raise IsolatedWorkerMemoryLimitUnsupportedError(
@@ -1300,7 +1287,7 @@ class TestOutputSchemaConservativeFallback:
         monkeypatch.setattr(_schema, "run_isolated_worker", unsupported_runner)
 
         with pytest.raises(DeployError) as error:
-            infer_output_schema(graph, "out", ["quotes"])
+            infer_output_schema(graph, "out", ["quotes"], project_root=tmp_path)
 
         message = str(error.value)
         assert "hard-capped batch worker" in message
@@ -1315,7 +1302,6 @@ class TestOutputSchemaConservativeFallback:
     ) -> None:
         """The worker ran but could not produce the rows — e.g. it hit its cap."""
         graph = _write_policy_sample(tmp_path, _conservative_graph())
-        _force_schema_cache_miss(tmp_path, monkeypatch)
 
         def failing_runner(_function, *_args, config):
             return BatchScoreOutcome(
@@ -1327,7 +1313,7 @@ class TestOutputSchemaConservativeFallback:
         monkeypatch.setattr(_schema, "run_isolated_worker", failing_runner)
 
         with pytest.raises(DeployError) as error:
-            infer_output_schema(graph, "out", ["quotes"])
+            infer_output_schema(graph, "out", ["quotes"], project_root=tmp_path)
 
         message = str(error.value)
         assert "agg" in message

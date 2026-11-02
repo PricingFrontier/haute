@@ -1369,14 +1369,14 @@ class TestSchema:
         assert "VehPower" in schema
         assert "Area" in schema
 
-    def test_infer_output_schema(self, full_graph: dict) -> None:
+    def test_infer_output_schema(self, full_graph: dict, tmp_path: Path) -> None:
         from haute.deploy._pruner import find_output_node, prune_for_deploy
         from haute.deploy._schema import infer_output_schema
 
         output_id = find_output_node(full_graph)
         pruned, _kept, _removed = prune_for_deploy(full_graph, output_id)
 
-        schema = infer_output_schema(pruned, output_id, ["quotes"])
+        schema = infer_output_schema(pruned, output_id, ["quotes"], project_root=tmp_path)
 
         assert isinstance(schema, dict)
         assert len(schema) > 0
@@ -1397,7 +1397,7 @@ class TestSchema:
 
 
 class TestValidators:
-    def test_validate_passes_for_good_config(self, full_graph: dict) -> None:
+    def test_validate_passes_for_good_config(self, full_graph: dict, tmp_path: Path) -> None:
         from haute.deploy._bundler import collect_artifacts
         from haute.deploy._config import DeployConfig, ResolvedDeploy
         from haute.deploy._project_modules import ProjectModules
@@ -1411,7 +1411,7 @@ class TestValidators:
         pruned, _kept, removed = prune_for_deploy(full_graph, output_id)
         artifacts = collect_artifacts(pruned, ["quotes"], FIXTURE_DIR)
         input_schema = infer_input_schema(pruned, "quotes")
-        output_schema = infer_output_schema(pruned, output_id, ["quotes"])
+        output_schema = infer_output_schema(pruned, output_id, ["quotes"], project_root=tmp_path)
 
         config = DeployConfig(
             pipeline_file=PIPELINE_FILE,
@@ -1435,7 +1435,7 @@ class TestValidators:
 
         validate_deploy(resolved)
 
-    def test_score_test_quotes(self, full_graph: dict) -> None:
+    def test_score_test_quotes(self, full_graph: dict, tmp_path: Path) -> None:
         from haute.deploy._bundler import collect_artifacts
         from haute.deploy._config import DeployConfig, ResolvedDeploy
         from haute.deploy._project_modules import ProjectModules
@@ -1449,7 +1449,7 @@ class TestValidators:
         pruned, _kept, removed = prune_for_deploy(full_graph, output_id)
         artifacts = collect_artifacts(pruned, ["quotes"], FIXTURE_DIR)
         input_schema = infer_input_schema(pruned, "quotes")
-        output_schema = infer_output_schema(pruned, output_id, ["quotes"])
+        output_schema = infer_output_schema(pruned, output_id, ["quotes"], project_root=tmp_path)
 
         config = DeployConfig(
             pipeline_file=PIPELINE_FILE,
@@ -1538,12 +1538,22 @@ allow_aggregate_statistics = false
         with pytest.raises(ValueError, match=r"\[assistant\.egress\] unknown key 'allow_rows'"):
             DeployConfig.from_toml(path)
 
-    def test_resolve_config(self) -> None:
-        """Integration test — resolves using fixture pipeline (has output node)."""
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_resolve_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Integration test — resolves using fixture pipeline (has output node).
+
+        A copy of the fixtures: resolution writes its schema cache under the project.
+        """
+        import shutil
+
         from haute.deploy._config import DeployConfig, resolve_config
 
+        shutil.copytree(
+            FIXTURE_DIR, tmp_path / "fixtures", ignore=shutil.ignore_patterns("__pycache__")
+        )
+        monkeypatch.chdir(tmp_path)
         config = DeployConfig(
-            pipeline_file=PIPELINE_FILE,
+            pipeline_file=PIPELINE_FILE.relative_to(PIPELINE_FILE.parts[0]),
             model_name="test-model",
         )
         resolved = resolve_config(config)

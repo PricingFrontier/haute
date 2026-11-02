@@ -459,11 +459,11 @@ def test_a_quote_input_without_a_root_table_cannot_answer_in_order(sample):
     assert [refusal.node_id for refusal in refusals] == ["out"]
 
 
-def test_the_dry_run_reads_the_sample_s_first_quote_into_the_tables(sample):
+def test_the_dry_run_reads_the_sample_s_first_quote_into_the_tables(sample, tmp_path):
     graph = _graph(sample)
 
     assert _read_sample_row(graph, ["request"]) == QuoteRequest((QUOTES[0],))
-    assert infer_output_schema(graph, "out", ["request"]) == {
+    assert infer_output_schema(graph, "out", ["request"], project_root=tmp_path) == {
         "quote_id": "Int64",
         "region": "String",
         "drivers": "List(Struct({'age': Int64, 'band': String}))",
@@ -490,9 +490,9 @@ def test_an_xml_sample_s_single_driver_is_a_list_of_one_in_the_dry_run(
     assert _read_sample_row(graph, ["request"]) == QuoteRequest(
         ({"quote_id": "3", "region": "N", "drivers": [{"age": "61"}]},)
     )
-    assert infer_output_schema(graph, "out", ["request"])["drivers"] == (
-        "List(Struct({'age': String, 'band': String}))"
-    )
+    assert infer_output_schema(graph, "out", ["request"], project_root=haute_scratch)[
+        "drivers"
+    ] == ("List(Struct({'age': String, 'band': String}))")
 
 
 def _load_app(root: Path, graph: PipelineGraph) -> Any:

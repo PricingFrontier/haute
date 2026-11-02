@@ -966,6 +966,7 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
                 output_node_id,
                 deploy_inputs,
                 artifact_paths=artifact_paths,
+                project_root=project_root,
             )
         if config.output_fields is not None:
             fields = config.output_fields

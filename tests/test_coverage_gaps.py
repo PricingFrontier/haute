@@ -632,7 +632,7 @@ class TestInferOutputSchemaEdgeCases:
         )
 
         with pytest.raises(ValueError, match="No API input nodes"):
-            infer_output_schema(graph, "out", [])
+            infer_output_schema(graph, "out", [], project_root=tmp_path)
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_cache_write_failure_does_not_raise(self, monkeypatch, tmp_path):
@@ -671,7 +671,7 @@ class TestInferOutputSchemaEdgeCases:
             patch("haute.deploy._scorer.score_graph", return_value=mock_result),
             patch("haute.deploy._schema.Path.write_text", side_effect=OSError("read-only")),
         ):
-            result = infer_output_schema(graph, "out", ["src"])
+            result = infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
 
         # Should still return the computed schema despite cache write failure
         assert result == {"result": "Float64"}
@@ -703,7 +703,7 @@ class TestInferOutputSchemaEdgeCases:
         )
 
         with pytest.raises(ValueError, match="no path"):
-            infer_output_schema(graph, "out", ["src"])
+            infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
 
 
 class TestInferInputSchemaEdgeCases:

@@ -15,7 +15,6 @@ MLflow target and the impact analysis. Current behaviour is specified in
 |---|---|---:|---|
 | DEP-R09 | Planned | P2 | The container image and the Databricks model install a recorded dependency closure resolved for their target Python and platform. |
 | DEP-R11 | Planned | P2 | Impact analysis fails on a row-count mismatch instead of pairing the wrong quotes, and a mistyped production URL is not a first deploy. |
-| DEP-R12B | Planned | P3 | The output-schema cache lives under the project root with one entry per fingerprint. |
 | DEP-R15 | Planned | P3 | The served error envelopes carry a correlation id rather than the exception text. |
 | DEP-R16 | Decision | P3 | A quote whose production value is zero and whose staging value is not is reported, not a failure of the whole impact analysis. |
 | DEP-R17 | Planned | P2 | Changing Accept changes framing and row limits, not OUTPUT null/empty-field semantics. |
@@ -119,26 +118,6 @@ produce a labelled skip; authentication failures never produce that skip.
 **Evidence:** `src/haute/deploy/_impact.py::build_report` and
 `::score_http_endpoint_batched`; `src/haute/cli/_impact.py::_is_http_not_found` and
 `::_impact_http`.
-
-### DEP-R12B — A project-scoped output-schema cache
-**Why:** `.haute_cache/output_schema.json` is relative to the process cwd, stores
-one entry overwritten by whichever pipeline deployed last (causing avoidable cache
-misses and placing generated files outside the resolved project), and is written
-directly via `cache_path.write_text(...)` rather than `atomic_write_text(...)`, so
-concurrent or interrupted builds can leave a partial JSON cache file.
-
-**Plan:** Root the cache at the resolved project, keep one entry per validated
-fingerprint while preserving the existing freshness checks, and write the cache file
-via `atomic_write_text`.
-
-**Acceptance:** Alternating between two unchanged pipelines reuses both entries;
-changing a pipeline invalidates its entry. A dry run from another cwd writes the
-schema cache atomically only under the resolved project.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/deploy/_schema.py::infer_output_schema`;
-`src/haute/_file_ops.py::atomic_write_text`.
 
 ### DEP-R15 — Error envelopes without exception text
 **Why:** The generated container's 500 envelopes return `str(exc)` to the API client,
