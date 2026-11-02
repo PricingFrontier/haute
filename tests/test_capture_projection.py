@@ -1045,6 +1045,7 @@ def _run_planned(
     required: dict[str, Any] | None = None,
     source: str = "live",
     generations: dict[str, Path] | None = None,
+    enforce_contracts: bool = True,
 ) -> tuple[dict[str, pl.DataFrame], dict[str, list[str]], dict[str, CaptureKind]]:
     """Execute *graph* toward *target* under a seed plan, as every bounded caller runs.
 
@@ -1080,6 +1081,7 @@ def _run_planned(
                 execution_context=context,
                 prepare_inputs=False,
                 snapshot_plan=plan,
+                enforce_contracts=enforce_contracts,
             )
             frames = {
                 node_id: frame.collect()
@@ -1529,8 +1531,16 @@ class TestCaptureProjection:
                 return node.id, lambda frame: frame.select("band"), False
             return node.id, lambda left, right: left.join(right, on="band"), False
 
+        # The node's own output check would see the violation first.
         with pytest.raises(ContractMismatchError, match="lacks columns"):
-            _run_planned(tmp_path, graph, build_fn, target="sink", required={"sink": {"band"}})
+            _run_planned(
+                tmp_path,
+                graph,
+                build_fn,
+                target="sink",
+                required={"sink": {"band"}},
+                enforce_contracts=False,
+            )
 
     def test_case_distinct_node_ids_capture_separately(self, tmp_path):
         """Case-insensitive filesystems must not alias separate graph nodes' captures."""

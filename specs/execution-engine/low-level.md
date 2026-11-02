@@ -6,10 +6,10 @@
 |---|---|
 | `src/haute/_cpu_performance.py` | Process-local Windows HighQoS read/set/verify policy, invoked at CLI, server and worker startup; preserves unrelated power-policy bits and reports unsupported or rejected native operations. |
 | `src/haute/executor.py` | GUI-facing eager entry point: `execute_graph()` (preview, with the `_preview_cache` `LRUCache`), `write_data_output()` (batch/data-output writes), preamble compilation + single-flight cache (`_compile_preamble`), preview-column projection/schema-warning assembly, and output-destination containment. |
-| `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points (and `plan_projection`, the projection half of `plan_execution_strategy`, for a caller that needs another execution's per-node column demand without planning or admitting it), runtime-input fingerprints, `preview_lineage_cache_key`, and `PREVIEW_EXECUTION_SEMANTICS_VERSION`. It is the stable application import boundary, but is not currently a thin re-export module. |
+| `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points, runtime-input fingerprints, `preview_lineage_cache_key`, and `PREVIEW_EXECUTION_SEMANTICS_VERSION`. It is the stable application import boundary, but is not currently a thin re-export module. |
 | `src/haute/_path_resolution.py` | Cross-component dependency owned by [sandbox-security](../sandbox-security/low-level.md); canonical local-runtime-path resolution: separator normalization, project/pipeline candidate choice, symlink-aware containment, selected-external-pipeline root inference, and the context-local root used by eager/lazy builders. |
 | `src/haute/_execute_lazy.py` | Node-boundary machinery the graph walker uses: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), and `_PlannedCaptures` (seed-plan closures and captures), with the contract, column-shaping, recipe and runtime-demand helpers each node step uses, and the recorded-failure line helpers `_extract_error_line` and `_located_step`. |
-| `src/haute/_graph_walker.py` | The graph walker: `walk_graph(graph, build_node_fn, *, policy: CollectPolicy, ...)` walks a graph once and returns a `WalkResult` (each built node's frame, the prepared order, parents, names, and the join and write recipes and pre-shaping frames it built). `WalkRequest` holds the execution-independent inputs, `CollectPolicy` what the walk collects, at which row and column limits, whether it records node failures, and its purpose (`WalkPurpose.SINK` hands lazy frames to a sink; `WalkPurpose.DISPLAY` reports schemas and collects for a person; `WalkPurpose.CHUNK` walks a chain one start frame at a time and has no production caller since the chunked runner was deleted; `WalkPurpose.MEASURE` builds a lineage as a display walk does but, at each checked node, collects the caller's `MeasurementQueries` over its input frames and then its output ports, each cut to a row bound, and returns one `NodeMeasurement` per checked node, never a frame, with each failure an `AttributedFailure` naming the node it is attributed to). The Data Output sink, every lazy execution through the execution facade, the preview, the trace and the assistant's data check walk through it. `prepare_walk(...)` prepares a chunk walk once and `PreparedWalk.run(start_frames)` walks it per start frame; `project_output` narrows a node's output to a demand in schema order. No function in the module exceeds a cyclomatic complexity of 15, held by ruff's C901 rule scoped to this module alone. |
+| `src/haute/_graph_walker.py` | The graph walker: `walk_graph(graph, build_node_fn, *, policy: CollectPolicy, ...)` walks a graph once and returns a `WalkResult` (each built node's frame, the prepared order, parents, names, and the join and write recipes and pre-shaping frames it built). `WalkRequest` holds the execution-independent inputs, `CollectPolicy` what the walk collects, at which row and column limits, whether it records node failures, and its purpose (`WalkPurpose.SINK` hands lazy frames to a sink; `WalkPurpose.DISPLAY` reports schemas and collects for a person; `WalkPurpose.MEASURE` builds a lineage as a display walk does but, at each checked node, collects the caller's `MeasurementQueries` over its input frames and then its output ports, each cut to a row bound, and returns one `NodeMeasurement` per checked node, never a frame, with each failure an `AttributedFailure` naming the node it is attributed to). The Data Output sink, every lazy execution through the execution facade, the preview, the trace and the assistant's data check walk through it. No function in the module exceeds a cyclomatic complexity of 15, held by ruff's C901 rule scoped to this module alone. |
 | `src/haute/_contracts.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution consumes the shared column-contract model and registry lookup. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution reads the canonical node registry. |
 | `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, profile-independent projection decisions, fan-in edge demands, materialisation/opaque boundaries, derivation of each code node's recompute facts (`recompute_facts_by_node(...)`), demand-only source-scan projection (a node's configured column selection bounds what may be demanded but is never pushed into or validated against a physical read), and bounded strategy diagnostics. |
@@ -27,7 +27,7 @@
 | `src/haute/_node_apply.py` | Config-driven implementations of External File object loading (`load_external_object_from_config`, after `validate_external_file_config` refuses an empty `path` or a missing or unsupported `fileType` with a `ConfigSettingError` naming the setting, the check Recover reports too), `liveSwitch` input selection, `scenarioExpander` row expansion (`expand_scenarios_from_config`, and `expand_scenarios_bounded` for the interactive form a preview row limit reaches through), `optimiserApply` artifact dispatch, output response-document assembly (`assemble_output_from_config`), and a Workbench Input's frames and a Workbench Output's tables (`resolve_workbench_input_from_config`, `assemble_workbench_output_from_config`: given a config, the one a run gives the node with its tables; given a sidecar path, as generated code passes it, the sidecar read and given the tables of the form folder of the project holding `base_dir`, through `_workbench_node_config`, and `workbench_input_ports_from_config` the ports alone, the sample unread) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
 | `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`, declaring every type's recompute cost (`recompute_cost=`); owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component, and `pass_through_selected_edge` / `PASS_THROUGH_NODE_TYPES`, which state the incoming edge a pass-through node's built function returns. A node built without an input (an unconnected Rating Step, Banding, Scenario Expander, Model Score or Optimiser Apply, an unsaved Data Input, and the deploy scorer's external and model placeholders) starts from `pl.LazyFrame()`, which has no rows, and so returns none: a constant it adds gives no row either (Polars 1 invented one). It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). A stepped Polars transform's function carries `transform_fn.failed_step`, which replays the schemas of the steps' prefixes on the run's input frames to name the step a run failed on and, for something Polars 2 refuses only on rows, what to change (`_failed_step`, `StepFailure`). |
 | `src/haute/_node_builder.py` | `NodeBuildHooks` and `wrap_builder`, the interception seam used by deploy scoring while preserving the canonical runtime builders. |
-| `src/haute/_topo.py` | Strict `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), explicit `topo_sort_ids_filtered` (opt-in subset traversal returning both the order and every dropped edge/endpoint), `canonical_topological_order` (the same graphlib sorter driven lexically: the smallest ready node id always comes next, so it is independent of input order; projection diagnostics rank nodes by it), and `ancestors` (a node and its ancestors over reversed edges, walked by `upstream_node_ids`). The default sorter never silently ignores an unknown endpoint. It is the one topological sort; `_find_cycle_nodes` peels in-degrees only to report every node in a cycle. |
+| `src/haute/_topo.py` | Strict `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), `canonical_topological_order` (the same graphlib sorter driven lexically: the smallest ready node id always comes next, so it is independent of input order; projection diagnostics rank nodes by it), and `ancestors` (a node and its ancestors over reversed edges, walked by `upstream_node_ids`). The default sorter never silently ignores an unknown endpoint. It is the one topological sort; `_find_cycle_nodes` peels in-degrees only to report every node in a cycle. |
 | `src/haute/graph_utils.py` | Canonical outward re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. Low-level engine modules import canonical graph models from `_types.py` and pure helpers from `_graph_utils.py` directly; importing back through this heavyweight facade would re-enter `_execute_lazy.py` and create an execution/RAM-estimation cycle. |
 | `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids` (the one ancestor walk, over any parents mapping, in depth-first preorder from the node's parents; `ancestors`, the trace waterfall's lineage check, the recovery route's ancestor closure and the optimiser's upstream node-type search all use it), `_sanitize_func_name`, `edge_input_name` (the single edge->input-name derivation: apiInput-frame edge -> its frame label verbatim, submodel-output edge -> its sanitised public output port name from an owner and, from an instance, the instance's sanitised name (one output) or `<instance>_<port>` (several), else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `resolve_orig_source_names`, and edge-id construction. |
 | `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional address-space resource cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state; the shared supervisor helpers `isolated_worker_failure_is_memory()` (RSS breach, unsupported cap, memory-looking crash exit code, or a memory-typed remote exception) and `isolated_worker_memory_detail()` (the closed memory-limit payload whose reason is one of worker_rss_limit_exceeded, native_memory_cap_unavailable, worker_may_have_exceeded_memory_limit, or worker_memory_limit) that the Data Output writer, training preparation, and the deployed batch path all map their 507 outcomes through. |
@@ -82,8 +82,12 @@
   `(source_node_id, target_node_id)` pair; the mappings accept complete keys only.
   `ProjectionPlan.demand_for_edge()` is the runtime lookup.
   The plan also carries `needed_by_node`, materialisation/opaque boundaries,
-  `optional_columns` (the union of every planned node's `Contract.optional_inputs`)
-  and bounded diagnostics.
+  `optional_by_edge` (per edge, the demanded columns only optional readers ask for through
+  it) and bounded diagnostics. When any planned node has `Contract.optional_inputs`,
+  `compute_prepared_plan` runs its sweep a second time with every contract's optional
+  inputs left out (`_READS_OPTIONAL_INPUTS`, read by `_node_column_contract`); an edge's
+  optional columns are its demand less that sweep's demand for it. A graph with no optional
+  reader is swept once.
 - **`ColumnLineageAnalysis`** (`src/haute/_column_lineage.py`, frozen dataclass) —
   the reusable result of parsing a Polars node's linear frame program. It reports an
   exact output schema when proven, per-input backward demands when proven, a closed
@@ -151,15 +155,13 @@
   neither engine rebuilds these indexes.
 - **`NodeBoundaryRunner` / `NodeBoundary`** (`_execute_lazy.py`) — request-local
   shared node orchestration. It resolves the effective contract once when a node
-  boundary opens, records the common execution checkpoint/column-demand metrics,
+  boundary opens, narrowing its declared outputs to the columns the builder was asked
+  to produce when the plan asks for some (a source scanning only what the execution
+  reads owes only those), records the common execution checkpoint/column-demand metrics,
   routes source frames from the prepared incoming edges, invokes the registered
   callable, and applies identical input/output contract assertions. Eager-only
   materialisation, lazy-only checkpoint/cache policy, and preview-only error
   swallowing remain outside the runner and therefore remain explicit.
-- **`FilteredTopology`** (`_topo.py`, frozen dataclass) — result of the explicitly
-  named filtered traversal: ordered known node IDs plus every dropped edge and
-  the deterministic set of unknown endpoint IDs. `topo_sort_ids` instead raises
-  `UnknownEdgeEndpointError` before sorting when an edge names an unknown node.
 - **`ChunkLocalDecision`** (`chunking.py`, frozen dataclass) — one classification:
   `eligible`, `reason` (a closed vocabulary: `eligible`, `empty_code`, `no_frame_names`,
   `syntax_error`, or the walk's rejection reason), `blocking_operator`, and the 1-based
@@ -170,7 +172,8 @@
   `stop_poll_interval_seconds`, `process_name`, `address_space_allowance_bytes`,
   `preload_modules` (module names the protocol worker imports before installing its cap;
   empty by default), `environment` (variables set for the child at spawn only, through
-  `start_process_with_environment`; the parent's environment is restored); validates positivity
+  `start_process_with_environment`, by the one-shot and the protocol worker alike; the parent's
+  environment is restored); validates positivity
   in `__post_init__`.
 - **`RamEstimate`** (`_ram_estimate.py`, frozen dataclass) — `safe_row_limit`,
   `total_rows`, `estimated_bytes`, `available_bytes`, `bytes_per_row`,
@@ -189,7 +192,19 @@
   requires `None` and a reason. One strategy request shares a single graph index
   across all of its materialisation boundaries, memoises metadata/schema lookups,
   accounts conservatively for variable-width columns, and lets unexpected failures
-  propagate.
+  propagate. A column's width comes from its type (`_fixed_width_bytes`: one to 32 bytes
+  for each fixed-width Arrow or Polars type, read from the type's own name before its
+  parameters); any other type (text, binary, a dictionary, every nested type) is variable
+  width and measured, from the column's uncompressed Parquet size and a bounded head probe
+  of the rows, never assumed to be one 8-byte value. A node's columns are its own output's:
+  a Polars node with code resolves them from its column lineage over its inputs' resolved
+  columns (`_resolve_code_node_columns`), a column it outputs under an input column's name
+  sized as that column and any other (a join's suffixed column, a computed one) as the
+  widest input column the lineage says it alone reads, and neither less than one 8-byte
+  value, since the lineage cannot tell a carried column from one the code recomputed
+  wider (a one-byte column cast to eight bytes); when the lineage cannot follow the code,
+  a node with several inputs is sized as all of them. A node that is neither (nor an Edge Join, nor
+  a selection) takes its input's columns, walking up to a sized source.
 - **`RowCardinalityAnalysis`** (`_column_lineage.py`, frozen dataclass) — the
   fail-closed row analogue of column lineage for a linear Polars program. It reports
   the output and peak finite upper bounds plus operation evidence, or the exact
@@ -217,7 +232,12 @@
   `pl.int_range(pl.len() + 100)` (a hundred rows more than the input from a
   `select`), `pl.int_range(pl.len(), 100)`, `pl.int_range(0, pl.len() - 1)`, a
   literal-only range, any keyword argument (`step`, `dtype`), and any other bound
-  expression keep the constructor's `row_expansion_unbounded` verdict. Cardinality analysis
+  expression keep the constructor's `row_expansion_unbounded` verdict. `pl.lit` is
+  allow-listed, but `pl.lit` of anything but a literal scalar or list (a preamble Series,
+  say) is `row_expansion_unbounded` in a `select` that may not keep its rows by the chunk
+  classifier's rule (`column_free_select_argument`): there it takes the Series' length,
+  while beside a column read by name, or in `with_columns`, it must match the frame's
+  height or be one row. Cardinality analysis
   shares the lineage parser but never an input schema,
   so it cannot resolve an omitted `on` list from upstream columns.
 - **Available RAM** (`_host_memory.available_ram_bytes`) — reads
@@ -347,15 +367,18 @@ therefore carries the immutable `ExecutionStrategyResult` that produced it; a fu
 installs that result on the new `ExecutionContext`, preserving the same visible bounded
 diagnostic and provenance without re-planning. The current context still reports its
 own admission metrics, while the cached diagnostic describes the execution that created
-the cached data. A miss or partial extension always plans against the current context
-before any execution. On a full hit, cached `eager_outputs`/`errors`/`timings` are served directly.
-On a partial hit (same graph, new target needs more materialised nodes), calls
-`_eager_execute()` for only the newly-needed portion and merges into the cached entry
-— fresh outputs win over stale cached ones for any overlapping node id, and a node
-that re-executed successfully clears any stale cached error. On a full miss, executes
-from scratch. `_eager_execute()` compiles the preamble (`_compile_preamble`, tolerant
-of failure — the error is attached only to nodes whose builder actually consumes the
-preamble namespace) and runs a display walk (`walk_graph` with
+the cached data. A miss always plans against the current context before any
+execution. On a full hit, cached `eager_outputs`/`errors`/`timings` are served directly.
+An entry under the request's key that lacks a node or column the request needs (the key
+names the target, so only an entry stored under a forced key can) is a miss
+(`preview_cache_miss` with `partial=True`): the request executes in full and its result
+replaces the entry, nothing merged from the old one. There is no cache extension: one
+would have to run the whole graph anyway, since the eager executor seeds from no cached
+frame. `_eager_execute()` compiles the preamble (`_compile_preamble`, tolerant
+of failure: the walk then builds through `_refusing_code_without_preamble`, which gives
+every node that runs code, a `POLARS` node or one with code of its own, a function raising
+the preamble's error as an `ExecutionError`, so it is recorded on that node without its
+code running and without the preamble's line as its error line) and runs a display walk (`walk_graph` with
 `CollectPolicy.display(collect=materialize_node_ids, row_limit=..., column_limits_by_node=...,
 record_failures=True)`), returning its collected frames, run order, errors, timings and schemas.
 When the caller omits an execution context, `execute_graph()` creates its admitted
@@ -386,8 +409,7 @@ and executes, while corruption and every other storage error propagate. A plan w
 captures never stores under its pre-execution key: after executing, the core reads the
 runtime inputs again and stores nothing if they moved; otherwise it resolves the plan a
 new request would choose and stores under the key built from the first read and that
-plan's seeds only when every one is a generation it read. A partial hit under such a plan
-executes as a miss. The generations are recorded on the context
+plan's seeds only when every one is a generation it read. The generations are recorded on the context
 (`record_preview_seed_plan`) for the response's `seed_plan`.
 
 An API input bundle containing exactly one labelled frame has one canonical flat
@@ -395,14 +417,16 @@ frame, so that frame remains the node's ordinary preview without requiring
 `port_label`. A valid multi-frame target with no `port_label` has no canonical flat
 frame to preview. Its `NodeResult` is therefore `status="ok"` with empty flat
 `columns` and `preview`, while `frame_columns` carries every labelled frame schema.
-Supplying `port_label` selects exactly that frame for the flat preview; unknown
-labels fail clearly and never fall back to an arbitrary first frame. Supplying
+Supplying `port_label` selects exactly that frame for the flat preview; a label the
+target does not emit fails the target as an unknown `port_labels` label does, naming the
+tables it has, and never falls back to an arbitrary first frame. Supplying
 `port_labels` instead previews each of those frames from the same run into the
 target's `port_previews` (a `PortPreview` each, its rows through `_frame_preview`, as
 the flat preview's are, and its columns through the same column reading, read from the
 frame since a bundle records no flat schema of its own), so each is
 what a `port_label` preview of that frame alone answers; a label the target does not
-emit fails the target ("<node> has no table '<label>' to preview."). The frames asked
+emit fails the target ("<node> has no table '<label>' to preview; its tables are
+'<a>', '<b>'."). The frames asked
 for are not in the cache key: the bundle holds every frame whichever are previewed.
 
 Before fingerprinting or building functions,
@@ -427,9 +451,8 @@ graph-shape contracts for exactly the executed subset (routes can submit raw fro
 graphs that bypass the parser), normalises required-column seeds, fixes the active
 strict/degraded contract policy, and builds child, full-parent, and incoming-edge
 indexes. Ancestor/live-switch filtering is explicit in `prepare_graph`; the strict
-topological sorter receives only the resulting relevant edges. Code that intentionally
-sorts a node subset with a broader edge set must call `topo_sort_ids_filtered` and
-inspect its dropped-edge evidence.
+topological sorter receives only the resulting relevant edges. A node subset sorted with a
+broader edge set is refused (`UnknownEdgeEndpointError`); a caller filters the edges first.
 
 **Automatic input preparation.** Between `_prepare_execution()` and strategy planning, the
 lazy engine calls `haute._input_preparation.prepare_input_snapshots()` over the pruned
@@ -477,7 +500,16 @@ are never capped. A materialised node collects its own plan limited to
 `row_limits_by_node[node]`, or `row_limit` when unset, after projection and column-limit
 selection (each frame of a multi-frame node), and a limited collection never feeds a
 consumer, nor one narrower than the columns its consumers need: consumers then read the
-node's uncapped plan, which `WalkResult.frames` also exposes.
+node's uncapped plan, which `WalkResult.frames` also exposes. A frame several edges read is
+handed to each as it is, never through `cache()`. Polars scopes a cache to one query, so it
+shares no computation between separate collections. Within one query, common-subplan
+elimination computes a simple diamond's shared frame once, but not a frame shared again
+below another shared frame (a nested diamond), which each unshared path recomputes, as a
+write of the same graph does. The walker still adds no cache there: a cache keeps a
+preview's row limit from reaching the source and holds a materialised copy of the frame
+against the preview's budget, and the engine prefers the smaller peak to the single
+computation. Consumers of a collected node share its DataFrame instead,
+when it holds every row and column they need.
 
 Under a leased `snapshot_plan` (`haute._seed_plans`, resolved for this exact execution
 by `_check_snapshot_plan`) a display walk runs only the plan's seeds and executed nodes,
@@ -513,8 +545,11 @@ A recorded failure's error line (`WalkResult.error_lines`, which the preview res
 every node's output in every execution profile. Source builders never push it into the
 physical read and never validate it against the file schema, so a Data Input's post-load
 code may add or consume any column — a column the code creates can be selected — and a
-stale selection is simply absent from the output rather than fatal, identically in preview
-and bounded profiles. A node may deselect or rename a column it creates: its output contract
+stale selected column is simply absent from the output rather than fatal, identically in
+preview and bounded profiles. A selection none of whose columns the frame still has (an
+upstream rename) is refused as a `NodeConfigError` on `selected_columns` naming the node and
+the columns: keeping every column instead would silently widen the node's output. Projection's
+static output schema (`_configured_output_schema`) proves none for such a selection. A node may deselect or rename a column it creates: its output contract
 describes what its builder creates, so every walk checks it against the frame the node
 returned, before the node's own selection and renames, while the node's reported, cached and
 downstream columns are the shaped ones. A builder that fails to create a promised column
@@ -658,7 +693,7 @@ hands over its write's digests the same way:
   times the time (five and twenty million rows against 2.4 million), the trade this
   writer makes. The whole-join native path below applies to ordered joins too.
 - **Sliced**: a sliceable frame is written one `slice(offset, chunk_rows)` per part.
-- **Input-sliced** (`recipe=WriteRecipe(input, fn, finish, reason, blocking_operator)`): when the frame itself is not sliceable, but the node is proven chunk-local, the recipe applies its builder function and post-shaping to each `slice(offset, chunk_rows)` of `recipe.input`. Before writing, equivalence between `recipe.native()` and `frame` is verified by schema and `explain(optimized=False)` (two in-memory frames of equal schema being indistinguishable this way). If `recipe.input` is not sliceable, the write falls back to native with `input_not_sliceable`. A rejected recipe (no function) falls back to native carrying the decision's reason and blocking operator.
+- **Input-sliced** (`recipe=WriteRecipe(input, fn, finish, reason, blocking_operator)`): when the frame itself is not sliceable, but the node is proven chunk-local, the recipe applies its builder function and post-shaping to each `slice(offset, chunk_rows)` of `recipe.input`. Before writing, equivalence between `recipe.native()` and `frame` is verified by schema and `explain(optimized=False)` (two in-memory frames of equal schema being indistinguishable this way). If `recipe.input` is not sliceable, the write falls back to native with `input_not_sliceable`. A rejected recipe (no function) falls back to native carrying the decision's reason and blocking operator. A `select` that reads no input column (`df.select(pl.lit(1).alias('one'))`) is one row whatever its input, so the classifier refuses it with `column_free_select` and it is written natively, never one row per slice.
 - **Native**: anything else is one native sink into `part-00000.parquet`.
 
 Precedence is explicit: a join recipe first, then `sliced` when the frame is sliceable, then
@@ -680,8 +715,12 @@ that shapes its columns, its frame before that step. Beside edge joins, the lazy
 write recipes for single-input `NodeType.POLARS` nodes by classifying their code with
 `classify_chunk_local_polars_code` (with bound source frame names and preamble selector aliases)
 using the prepared boundary's source nodes directly. Missing source nodes are invalid prepared
-state and must fail, never silently omit a recipe input name. A legacy single-frame API builder
-with a null handle still follows the shared builder's existing unnamed-input behavior.
+state and must fail, never silently omit a recipe input name. An edge from a request input
+(API, Quote or Workbench Input) with no `sourceHandle` names no table: `_build_funcs` gives its
+consumer a function that raises `ConfigError` naming the consumer and the input instead of
+building it, since the builder binds names to frames by position and the edge's frame would
+reach it without a name. A multi-frame input's edge fails first, when the consumer's frame is
+picked, naming the tables it has.
 The recipe composes the node's column shaping step as finish; an ineligible node carries the decision's
 reason and blocking operator without a function, and `write_recipes` hands them to callers that
 write a node in full (`_PlannedCaptures.capture` composing its own column step, and
@@ -815,10 +854,12 @@ column required only by that broader demand is absent from the actual runtime sc
 is removed from the edge projections and the capture is written without it. A missing
 capture-only column never fails otherwise-valid runtime execution; a missing
 runtime-required column still raises the typed contract mismatch at the first proven
-boundary. A column in the plan's `optional_columns` (one a node reads only where it exists,
-such as a Model Score's exposure offset) is demanded like any other, so projection keeps it where a
-parent has it, but it is never runtime-required: an edge whose parent lacks it drops it from
-the projection instead of failing.
+boundary. A column in an edge's `optional_by_edge` (one only nodes that read it where it
+exists, such as a Model Score's exposure offset, ask for through that edge) is demanded like
+any other, so projection keeps it where a parent has it, but it is not runtime-required there:
+the edge drops it from the projection instead of failing. Another node that requires a column
+of the same name (a Polars node computing from the exposure) keeps it required on its own
+edges, so a parent that lacks it is refused there by name.
 
 **Planned executions (`snapshot_plan`).** A sink walk given a leased
 [seed plan](../caching/low-level.md#seed-plans) runs exactly that plan. The plan must have
@@ -867,9 +908,8 @@ artifact's directory, and the scorer's parts are published as the generation, ho
 columns the scorer wrote. A Model Score with its own post-processing is sunk like any other
 capture, from a parquet scan of its scored parts, so its write is sliced. A negotiated column the
 node does not produce is logged (`snapshot_capture_column_unavailable`) and dropped; a
-missing column the run itself reads raises `ContractMismatchError`. After the
-`snapshot_capture_before_publish` fault point and a second runtime-input check, the capture
-is published as an automatic generation whose `dependencies` are the closure the plan
+missing column the run itself reads raises `ContractMismatchError`. After the write and
+a second runtime-input check, the capture is published as an automatic generation whose `dependencies` are the closure the plan
 recorded for the node: every seed and published capture read upstream along effective
 edges, each with its own recorded dependencies, and for a capture that kept its own data,
 only what it was built from. Execution continues from the publication's frame. A superseded
@@ -903,6 +943,11 @@ format uses a bounded Polars sink. Writer-only formats and
 database outputs use `write_polars_output()`, whose `streaming_collect()` evaluates
 with Polars' streaming engine but returns a fully materialised `DataFrame` before the
 eager writer/database API is called; it never performs a second broad `.collect()`.
+A Polars error raised by the write is data-dependent (a strict cast meeting a bad value):
+it surfaces only when the write collects the plan, after every node was built, so no node
+was running. `prepare_data_output` raises it as an `ExecutionError` naming the Data Output
+("Writing Data Output 'X' failed while computing its rows: ..."), marked as that node's
+failure (`mark_failing_node`), with the Polars error as its cause.
 
 Every Data Output destination is resolved through the current I/O registry and contained
 inside the selected project root. When the root is not passed explicitly, it is inferred
@@ -1070,7 +1115,7 @@ delegated cgroup-v2 child with a finite `memory.max` and otherwise applies
 job-memory commit limit, so descendants cannot each consume the complete admitted
 budget. Limits are growth budgets: the native baseline is measured before the
 hard ceiling is installed. The `RLIMIT_AS` fallback first runs
-`_start_polars_thread_pools()` once per process — one small query on each Polars engine,
+`start_polars_thread_pools()` once per process — one small query on each Polars engine,
 so every pool thread and its allocator arena exist — and only then reads the address-space
 baseline; its ceiling is that baseline plus the growth budget plus the lease's
 `address_space_allowance_bytes` (zero except for the training and dispersion fits' protocol
@@ -1125,6 +1170,32 @@ returned `True`; the scope also exposes the lease itself, so
 inside a capped call (`None` elsewhere). Independently, the parent samples child RSS and
 terminates it when the configured cap is crossed; this watchdog is secondary
 defence and observability, never evidence that a hard kernel cap exists.
+
+**Readiness.** A one-shot (`run_isolated_worker`) or protocol (`run_worker_protocol`)
+child imports what it runs, starts its Polars thread pools (`prepare_worker_for_job`,
+when a memory limit is configured) and attempts its native cap, then reports ready
+(`report_worker_ready`: `("ready", pid)` on its result queue) and waits on a `go` event
+before it runs the job. The parent supervises that startup with `await_worker_ready`: the
+wait ends at `IsolatedWorkerConfig.startup_timeout_seconds` (default
+`WORKER_STARTUP_TIMEOUT_SECONDS`, 120 s), or the job's own earlier deadline, raising
+`IsolatedWorkerStartError` ("did not report ready") or the job's timeout; at the stop
+reason; and the child's RSS must stay under `startup_rss_ceiling_bytes` (default
+`WORKER_STARTUP_RSS_CEILING_BYTES`, 1 GiB), or it is terminated with
+`IsolatedWorkerMemoryLimitExceededError` noting the startup ceiling. The heaviest supported
+import set (Polars with CatBoost, LightGBM, XGBoost and the training worker) held 212 MiB
+after 3.8 s on a development host, which the defaults clear by about five and thirty
+times. Once the child is ready the parent samples its RSS as the watchdog's baseline
+(`_create_worker_rss_watchdog`), so the job's growth allowance is measured from the child
+with its imports, as its native cap is, and no allocation of the job is in the baseline;
+then it sets `go`. A failure the child reports before it is ready (a required cap it could
+not install, a preload it could not import) is its result, and no watchdog is armed; a
+child that ends without a word is classified as it would be after the job. Readiness never
+disables supervision: when the ready child's RSS cannot be sampled, a required limit
+without an address-space cap still fails with `IsolatedWorkerMemoryLimitUnsupportedError`.
+`NativeMemoryLease.baseline_bytes` is never read as RSS: it is address space under
+`RLIMIT_AS`, private commit under a Windows Job Object and cgroup usage under a cgroup.
+The warm pool and dedicated workers sample a child that is already warm and have no
+separate handshake.
 `process_memory_caps_supported()` therefore means a native hard cap is available,
 not merely that RSS can be sampled. The child calls the target function and
 putting `("ok", result)` or `("error", (type, message, traceback))` on a
@@ -1188,7 +1259,22 @@ bounded result queue. Each slot index has one scheduling lock, created with the 
 kept across worker generations: `run` takes its index's lock (counting itself as pending
 while it waits, under the pool's state lock) and then submits to the index's current
 slot, so a request that waited through a replacement submits to the replacement, which is
-installed while the job that ended the old worker still holds the lock.
+installed while the job that ended the old worker still holds the lock. A request's
+`timeout_seconds` sets one deadline for its wait for the lock and its job alike: a wait
+still held at the deadline raises `InteractiveWorkerTimeoutError`, and the wait also ends
+at the request's stop reason or the pool's shutdown, so a caller with no stop reason (the
+optimiser estimate) never waits unbounded. A worker is replaced only when its state is
+unknown or its memory was the failure: a timeout, a stop, a crash, a pre-emption, an RSS
+breach, a protocol, acknowledgement or release failure, or a remote error whose terminal
+reason is `memory_limited`. An ordinary remote error (a bad expression) is the job's: the
+worker answered it and was acknowledged and released, so it stays warm for the next
+request. A replacement that fails to start leaves the closed slot in place and its error
+as a note on the error the request ends with; the next request on the index starts the
+slot again under its lock (`_current_slot`), so one failed start costs one request, not
+the slot for the server's life. `_start_slot` creates its queues and progress cell inside
+the guard that closes what it opened on any failure, an `IsolatedWorkerHostError`
+included. The optimiser estimate route answers a worker that could not start, or a host
+that cannot start one, 503 with the reason, and a protocol failure an internal 500.
 `run_preemptible` (the assistant's data check) never waits and never starts the pool: it
 is refused at once (`InteractiveWorkerBusyError`) when the pool has not started, the lock
 is held or any interactive request is pending for the index, so a pre-empting request's
@@ -1330,11 +1416,14 @@ ways:
   dead with a structured `death` (`kind`, `exit_code`, `memory_evidence`) and raises the
   existing error; the owner decides what the death means. `terminate(reason)` bypasses any
   caller-side slot, sets the stop flag, then terminates → kills → joins and removes the
-  worker's private cgroups; it is idempotent.
+  worker's private cgroups; it is idempotent. `start` registers the worker, then opens its
+  queues and shared cells and spawns inside the one guard that terminates it on any failure,
+  so a failed allocation closes what was opened and leaves the registry.
 - **The child exits when the server does**, as every haute worker does (`_parent_watch`): the
   parent passes its pid and the child's watcher thread follows the parent *process* (Windows
   `OpenProcess(SYNCHRONIZE)` + `WaitForSingleObject`, Linux ≥ 5.3 `pidfd_open` + `poll`,
-  otherwise a one-second `getppid()` poll) and `os._exit`s when it is gone. `PR_SET_PDEATHSIG` is
+  otherwise a one-second `getppid()` poll) and `os._exit`s when it is gone; the wait closes the
+  process handle or pidfd it opened once the parent has gone. `PR_SET_PDEATHSIG` is
   not used: it follows the spawning thread, and sessions are spawned from short-lived job
   threads. The module
   registry holds every live worker; the server lifespan and `atexit` set shutdown fencing
@@ -1925,8 +2014,7 @@ present a structural or schema result as execution evidence.
   so callers must pass `node_ids` as an
   insertion-ordered sequence, never a `set`, or tie-break order becomes
   hash-randomisation-dependent across process runs. An unknown endpoint raises
-  `UnknownEdgeEndpointError`; an intentional subset traversal must instead call
-  `topo_sort_ids_filtered` and inspect its dropped-edge evidence. `CycleError` reports
+  `UnknownEdgeEndpointError`. `CycleError` reports
   every node participating in *any* cycle
   (via `_find_cycle_nodes`'s Kahn-style peel), not just the one `graphlib.CycleError`
   names.
@@ -1967,7 +2055,16 @@ present a structural or schema result as execution evidence.
   `join`, `join_asof`, `top_k`, `bottom_k`, `reverse`, `shift`, `explode`) — plus
   `materialising_expression_methods()` (`over`, `shift`, `diff`, `pct_change`,
   `bin_quantiles`, `bin_ranks`, `approx_quantile`),
-  matched receiver-aware in evaluation order. Every entry also carries
+  matched receiver-aware in evaluation order, in Polars nodes' code only. A canvas Edge Join
+  is not a planner boundary: its join is bounded by capture (a seed plan captures it into a
+  shared snapshot through its `JoinRecipe`) and by the chunked writer, which writes it in
+  keyed parts; an execution that captures nothing (caching off, deploy scoring) runs it as
+  Polars' streaming join under the run's admission. Making it a boundary would put every
+  deployed lookup join through an estimate, and refuse one whose estimate is unavailable on a
+  host without a hard cap (a Constant's cross join reports `target_schema_unavailable`).
+  Polars 2's deprecated binning spellings are registered as what they compute and run on
+  its in-memory engine only: `cut` (`bin_intervals`' alias) as row-local without a chunk
+  proof, `qcut` (`bin_quantiles`') as fan-in with an inherited, unmeasured streaming policy. Every entry also carries
   `costly_to_recompute: bool` and `slice_transparent: bool`. Class defaults are that
   `row_local` and `row_expanding` default cheap, while `order_dependent`, `fan_in_stateful`,
   and `opaque` entries must declare their cost explicitly, and construction raises for any
@@ -2226,17 +2323,28 @@ present a structural or schema result as execution evidence.
   format from the data and two chunks can infer differently. Methods whose validator
   admits more than one materially distinct shape declare those shapes in
   `_ADMITTED_CALL_SHAPES` (for example `expr.replace`: `mapping`, `old_new`; the
-  temporal parsers: `explicit_format_lenient`, `explicit_format_strict`), and the proof
+  temporal parsers: `explicit_format_lenient`, `explicit_format_strict`; `df.select`:
+  `named_column`, `selector_rooted`), and the proof
   inventory requires a chunked-equals-full proof per declared shape, comparing raised
-  exception classes as well as frames. `classify_chunk_local_polars_code(code, frame_names=...)`
+  exception classes as well as frames. A frame-level `select` (or `select_seq`) whose
+  arguments are all row-local is admitted only when it keeps its input's rows
+  (`_column_lineage.column_free_select_argument`, the one rule the deploy request-row proof
+  and the cardinality analysis share): one argument reads a column by its literal name (a bare
+  string, positionally or as a named expression, a positional list of them, or a
+  `pl.col`/horizontal-helper name inside an expression, never `*` or `^...$`), or every
+  argument starts from a selector (which expands to columns of the frame's height or to
+  none). Otherwise the first argument that is neither, typically a literal, is the
+  blocker: it is one row whatever the input height, so written a slice at a time it would
+  give one row per slice. `classify_chunk_local_polars_code(code, frame_names=...)`
   returns `ChunkLocalDecision(eligible, reason, blocking_operator, line, column)` with
   the closed reasons `eligible`, `empty_code`, `no_frame_names`, `syntax_error`,
   `unsupported_statement`, `assignment_not_frame_derived`,
   `frame_embedded_in_expression`, `unsupported_frame_method`,
   `unsupported_expression_method`, `unsupported_namespace_method`,
-  `unsupported_polars_function`, `unsupported_call_shape`, and
+  `unsupported_polars_function`, `unsupported_call_shape`, `column_free_select`, and
   `unsupported_expression`; the operator is the method, function, frame, or AST node
-  name that blocked the walk and the location is its 1-based source line and column.
+  name that blocked the walk (for `column_free_select`, the blocking argument's source)
+  and the location is its 1-based source line and column.
   The first blocking construct in source order wins: sibling children are visited by
   source position, so a dictionary value or a conditional body reports before a
   textually later key or test. `with_row_index`, forward or
@@ -2560,17 +2668,13 @@ present a structural or schema result as execution evidence.
   assembly/sink failures cannot alter execution status. New efficiency counters are
   additive: the existing V1 RSS, truncation, strategy, admission, streamability, and
   width-state attributes remain present.
-- **Efficiency evidence has closed reason sets.** `ExecutionContext` retains bounded
-  counters for cache proof hits, misses, and direct fallbacks. Since API Input tables
-  moved to the input-snapshot store only a direct fallback (a standalone shred) has a
-  producer; hits and misses stay zero until a cache-proof boundary records them. Miss reasons are a
-  closed enum (metadata/source mismatch, artifact integrity/schema failure,
-  unreadable artifact, and proof unavailable); unknown strings are rejected at the
-  recording boundary. Every metrics payload carries the cache-proof counters and
-  their reason-code breakdown — the field is required on both the backend response
-  model and the frontend guard, and `misses` must equal the closed reason-count
-  total — plus aggregate
-  requested/scanned widths and estimate calibration. A width total is emitted only
+- **Efficiency evidence carries only counters something records.** `ExecutionContext`
+  counts direct cache fallbacks (a standalone JSON/XML shred that bypassed the input-snapshot
+  store); every metrics payload carries that count as `cache_direct_fallbacks`, required on
+  both the backend response model and the frontend guard, plus aggregate
+  requested/scanned widths and estimate calibration. No payload carries a field that is
+  always null or zero: there are no cache-proof hit/miss counters, no payload-level bytes
+  read, and no per-stage row, byte or column counters. A width total is emitted only
   when that width is known for every recorded node; partial evidence remains `null`
   rather than looking like a deceptively narrow complete total. They never include cache paths,
   source identities, column names, graph ids, or exception messages.
@@ -2621,10 +2725,10 @@ present a structural or schema result as execution evidence.
   reaches the parent of an interactive worker or a spawned evaluation case intact.
 - `PreambleError` (`haute.errors`, extends `ExecutionError`) — preamble compile/exec
   failure with stable public code `preamble_failed` and optional public
-  `source_line`. Interactive preview catches it inside `_eager_execute` and
-  attaches it only to `POLARS`/`LIVE_SWITCH` nodes rather than aborting the whole
-  preview; every non-preview profile propagates it through the shared HTTP/job
-  contract-error adapter.
+  `source_line`. Interactive preview catches it inside `_eager_execute` and fails
+  only the nodes that run code with it, never running them, rather than aborting the
+  whole preview; a Source Switch runs no code and is unaffected. Every non-preview
+  profile propagates it through the shared HTTP/job contract-error adapter.
 - `PreviewProjectionError` (`executor.py`, extends `HauteValidationError`, a
   `ValueError` subclass) — a requested
   preview-column projection references columns not present on the target frame.
@@ -2648,12 +2752,10 @@ present a structural or schema result as execution evidence.
   cyclic graph, listing every participating node.
 - `UnknownEdgeEndpointError` (`_topo.py`, extends `HauteError`) — strict topology
   input contains an edge whose source or target is absent from `node_ids`. It carries
-  deterministic `unknown_node_ids` and dropped-edge evidence. Intentional subset
-  traversal uses `topo_sort_ids_filtered` instead and receives the same evidence in
-  its return value.
+  deterministic `unknown_node_ids` and dropped-edge evidence.
 - `ContractMismatchError` (`haute.errors`, extends `HauteError`) — raised by
   missing input/output columns and checkpoint/eager projection mismatches in
-  `_execute_lazy.py` and the graph walker, and by the walker's `project_output` for a chunk;
+  `_execute_lazy.py` and the graph walker;
   it is re-raised with `SchemaMismatchError` even while a preview records node failures.
   The boundary checks (`_assert_inputs_satisfy_contract`,
   `_assert_outputs_satisfy_contract`) raise its subclass `ContractColumnsMissingError`,
@@ -2793,7 +2895,8 @@ present a structural or schema result as execution evidence.
   a listed generation propagating from a cache hit without executing, an input changed
   after a capture storing nothing, an input changed after the re-check keying the entry
   by the inputs executed, a post-capture plan naming an unread generation storing
-  nothing, a partial hit under captures executing as a miss, an undeclared-dtype CSV API
+  nothing, a partial hit under captures executing as a miss (as every partial hit does,
+  reporting the generations of the plan it ran under), an undeclared-dtype CSV API
   Input seeding and capturing nothing, a killed worker's capture staging removed, the
   preview-inputs endpoint listing only what the seeded execution reads and never an
   unused unbuildable input, the key of a preview seeding nothing equalling one without a
@@ -2911,12 +3014,23 @@ present a structural or schema result as execution evidence.
 - `tests/test_polars_operations.py` — the operation registry against the installed Polars: every registered operation exists on it (a `then`, `otherwise` or `agg` on the chain object Polars returns), an entry naming a removed operation is reported, every public expression method, frame method, `pl` function and namespace method is registered or recorded in the reviewed `tests/polars_unregistered_operations.json`, so an upgrade that adds or removes one fails until it is reviewed, and Polars' own `Expr.meta.is_row_separable()` agrees with every row-local entry and with no fan-in or order-dependent one, each built from its admitted shape (`tests/_polars_operation_samples.py`; five entries Polars builds from the column's dtype are recorded as unjudged); and the operation registry's invariants (frozen, unique receiver-aware keys, import-time validation of class/policy/expansion, a boundary without a memory factor, and a streaming policy carrying one), the consistency of every analyser's derived vocabulary with the registry, the derived boundary sets (`materialising_frame_methods`, `materialising_expression_methods`), and representative snippets per class proving the chunk classifier and the lineage/cardinality analyser agree with the registered class.
 - `tests/test_polars_compatibility_corpus.py` — the version-pinned compatibility corpus: `tests/polars_compatibility_corpus.json` records, for representative shapes across every maintained namespace, the classification they receive today (lineage support, cardinality availability, chunk eligibility, and the planner strategy under an admitted context) together with the pinned Polars version; the test fails on any difference, so a Polars upgrade or analyser change cannot silently turn a working shape into a rejection, and every change to the corpus is a reviewed edit of that file. A registry policy change regenerates the corpus, and only the operators whose evidence changed may move.
 - `tests/test_interactive_route_isolation.py` — preview and trace routes execute serialisable production targets through the spawn-worker boundary.
-- `tests/test_interactive_worker_pool.py` — warm interactive-worker pool readiness, protocol, timeout, cancellation, RSS-limit, replacement, and execution-mode contracts.
+- `tests/test_interactive_worker_pool.py` — warm interactive-worker pool readiness, protocol, timeout, cancellation, RSS-limit, replacement, and execution-mode contracts, including with real workers that a remote `ValueError` leaves the same worker pid, that a child growing past its growth cap is replaced and the next request served, that the next request after one failed replacement starts the slot again, and that a wait for a held slot ends at the request's deadline; `tests/test_optimiser_routes.py` that the estimate route answers start and host failures 503 and a protocol failure 500.
 - `tests/test_native_memory_limit.py` — native-backend selection, strict-policy
   rejection, Linux/Windows aggregate enforcement, active-backend scoping, lease
   cleanup, and fork-safe ownership contracts, and the model-thread allowance's fixed
   part plus its per-CPU part.
-- `tests/test_worker_protocol.py` — also that `_protocol_entrypoint` imports every
+- `tests/test_worker_isolation.py` and `tests/test_worker_protocol.py` — also, with real
+  workers, that a child holding 160 MiB from its import runs a 150 MiB job under a 256 MiB
+  growth budget with the host's native cap and without one, that without a native cap the
+  watchdog still stops a job past its budget, that a child past its startup ceiling before
+  it is ready is stopped, and that one whose import hangs fails at its startup deadline;
+  the fixture modules (`tests/_spawned_heavy_import.py`, `tests/_spawned_without_native_cap.py`,
+  `tests/_spawned_slow_import.py`) act only in a spawned worker.
+- `tests/test_parent_watch.py` — every kind of worker ends when its server process is killed,
+  and a process waiting on its parent's exit holds no more handles or descriptors afterwards
+  than before.
+- `tests/test_worker_protocol.py` — also that a real protocol worker starts with its
+  configured `environment` while the parent never holds it, that `_protocol_entrypoint` imports every
   `preload_modules` entry before `NativeMemoryLease.apply()`, and that a failed preload is
   the curated failure above, with the library's text only in its `error` field and traceback,
   no cap installed and the job's function never run.
@@ -2937,22 +3051,32 @@ present a structural or schema result as execution evidence.
 - `tests/test_extract_column_refs.py` — extraction of referenced columns across empty/minimal, selected/excluded, and node-config shapes.
 - `tests/test_graph_input_identity.py` — edge-derived pipeline input-name derivation contract across source handles and graph edges.
 - `tests/test_polars_backend_strategy_contract.py` — execution-strategy planning, boundedness/diagnostics payloads, projection, and error contracts, including the cross-profile table that plans each admitted Polars shape (row-preserving, row-reducing, bounded-expansion, and audited string/temporal predicates ahead of a group-by) under every `ExecutionProfile` with the real estimator and requires identical strategy diagnostics apart from the profile itself; it also proves that an unavailable estimate becomes the `warned` `full-width-conservative` strategy under an active native cap (`native_memory_backend_scope`) and the typed `materialisation_estimate_unavailable` rejection without one, with admission and headroom failures unchanged in both. It also covers every newly admitted boundary operator: `sort`, `unique`, `join`, `join_asof`, `top_k`, `bottom_k`, `reverse`, `shift`, an `over` inside `with_columns`, and `shift`, `diff`, and `pct_change` columns inside `with_columns` each plan `materialisation-boundary` with a positive estimate and identical diagnostics on every profile; `explode` plans `warned` `full-width-conservative` under a native cap and rejects without one; and `unpivot`, `rolling`, and `merge_sorted` plan no boundary at all. A `diff` built inside a user helper is still a boundary (its estimate unavailable, so conservative under a cap and rejected without one), while a `list` namespace method reached through an alias is not.
-- `tests/test_data_io_nodes.py` — sink execution and publication: the isolated output worker's admission release and failure classification, atomic staging/commit, overwrite and race handling, and the end-to-end group-by sink, including a conservative (`warned`) run whose written frame equals plain Polars and whose metrics payload carries the warned strategy.
+- `tests/test_executor.py` and `tests/test_apiinput_multi_port_runtime.py` — a preview whose
+  preamble fails fails each Polars node with the preamble's error while a Source Switch
+  previews, and a `port_label` the target does not emit fails it naming its tables.
+- `tests/test_data_io_nodes.py` — sink execution and publication: a cast failing only on the data naming the Data Output being written, the isolated output worker's admission release and failure classification, atomic staging/commit, overwrite and race handling, and the end-to-end group-by sink, including a conservative (`warned`) run whose written frame equals plain Polars and whose metrics payload carries the warned strategy.
 - `tests/test_scenario_propagation.py` — active scenario propagation through routes, executor, builders, and live-switch pruning.
 - `tests/test_streaming_collect_contract.py` — static contract that bounded callers use `streaming_collect` across execution/deploy/training/optimiser modules.
 
 Tests live in `tests/` (flat layout, no package-per-component subdirectories).
 
-- **`test_execute_lazy.py`** — the core suite: `_prune_live_switch_edges`, shared
+- **`test_graph_walker.py`** — also that a display walk computes a producer two branches of
+  one collected query read once, with no `cache()` in its consumers' plans.
+- **`test_execute_lazy.py`** — the core suite: a Model Score reading the exposure optionally
+  prices without it while a Polars node beside it that requires it is refused at its edge by
+  name, `_prune_live_switch_edges`, shared
   `PreparedExecution`/`NodeBoundaryRunner` preparation and routing parity,
   lazy execution through `execute_lazy_graph`, `_build_funcs`, display walks (recorded
-  vs. raised failures, timings, memory accounting), `_apply_selected_columns`, and full-versus-planned equivalence for every admitted boundary operator —
+  vs. raised failures, timings, memory accounting), `_apply_selected_columns` (a selection
+  whose columns are all gone refused naming the node, in a sink walk and a preview), and full-versus-planned equivalence for every admitted boundary operator —
   a graph executed through the real admitted executor equals the plain lazy result on
   ordering (`sort`, `reverse`, `top_k`), schema, row multiplicity (`unique`, a
   duplicate-key `join`, `explode`), and both ports' retained columns for a join.
 - **`test_execute_lazy_contracts.py`** / **`test_execute_lazy_contract_coverage.py`**
-  — column-contract enforcement at node boundaries on both paths, including the
-  contract-resolution-degradation behaviour.
+  — column-contract enforcement at node boundaries on both paths, including a caller of
+  `execute_lazy_graph` that does not pass `enforce_contracts`, and the
+  contract-resolution-degradation behaviour. `test_snapshot_seeding.py` fails the consumer of a
+  request input's edge that names no table, never running it.
 - **`test_graph_walker.py`** — the shared walker's policies, including a node's own
   shaping against its output contract on display and lazy walks: a Scenario Expander
   may deselect or rename the column it creates, a consumer of the deselected column
@@ -3003,13 +3127,25 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   **`test_training_memory_safety.py`** — exercise `_execution_admission` indirectly
   through the route/service layers that construct admitted contexts for real
   operations (training, optimiser setup, deploy).
+- **`test_ram_estimate.py`** — also that a training estimate after a join widening a two-column
+  frame to 502, after a join with nested list columns, and of a node taking the second of two
+  inputs is within a factor of two of the frame's measured size, and that a nested column's
+  width is measured.
+- **`test_column_lineage.py`** — also that a column-free `select` of `pl.lit` holding a
+  non-literal is `row_expansion_unbounded` while a literal, a lit beside a named column and a
+  `with_columns` lit keep the bound; `test_polars_operations.py` that `cut` is registered
+  row-local and `qcut` fan-in, neither chunk-proven nor measured.
 - **`test_chunk_local_classifier.py`** — the retained classifiers' decision contract:
   comments and string literals cannot change eligibility, every rejection names its
   operator, closed reason, and source location (the textually first blocking construct),
   namespace admissions and group-by evidence are receiver-specific, every registered
-  materialisation-boundary operator is not chunk-local, and the row-semantics mode admits
+  materialisation-boundary operator is not chunk-local, a `select` that reads no input
+  column by name (a literal alone, or beside selectors that may match nothing) is refused
+  as `column_free_select` naming the literal while one reading a named column or only
+  selectors stays eligible, and the row-semantics mode admits
   registered row-local operations chunking has not proven while naming the operator of
-  anything that needs other rows.
+  anything that needs other rows. `test_chunked_writes.py` writes a corpus of selects a
+  slice at a time and gets each one's native height.
 - **`tests/test_output_schema_only.py`** — the schema-only OUTPUT contract: a
   tripwire over every document shape (flat, nested objects, one array level, two
   array levels, a multi-port parent with sibling child arrays) proving a

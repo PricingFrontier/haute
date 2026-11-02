@@ -327,11 +327,6 @@
         "rss_end_bytes": 1800,
         "rss_delta_bytes": 800,
         "rss_peak_bytes": 1800,
-        "rows_in": 10,
-        "rows_out": 2,
-        "bytes_read": 512,
-        "bytes_written": 128,
-        "columns_scanned": 4,
         "n_collects": 1,
         "n_checkpoints": 2
       }
@@ -377,18 +372,7 @@
     },
     "requested_column_width_total": null,
     "physically_scanned_column_width_total": null,
-    "cache_proof": {
-      "hits": 1,
-      "misses": 2,
-      "direct_fallbacks": 1,
-      "miss_reason_counts": {
-        "metadata_source_mismatch": 1,
-        "artifact_integrity_schema_failure": 0,
-        "unreadable_artifact": 0,
-        "proof_unavailable": 1
-      }
-    },
-    "bytes_read": null,
+    "cache_direct_fallbacks": 1,
     "bytes_written": null,
     "estimated_bytes": null,
     "raw_estimated_bytes": null,

@@ -105,3 +105,55 @@ def test_every_spawn_records_the_servers_pid_for_its_worker() -> None:
     assert recorded == str(os.getpid())
     # The spawn's override is restored: the server itself carries no parent pid.
     assert os.environ.get(PARENT_PID_ENV) is None
+
+
+_WAITER = textwrap.dedent(
+    """
+    import os, sys
+    from pathlib import Path
+    from haute._parent_watch import wait_for_process_exit
+
+    def held():
+        if sys.platform == "win32":
+            import psutil
+            return psutil.Process().num_handles()
+        return len(os.listdir("/proc/self/fd"))
+
+    parent, result = int(sys.argv[1]), Path(sys.argv[2])
+    # Load what the wait and the count use once, so only what the wait holds is counted.
+    import ctypes, select, subprocess
+    finished = subprocess.Popen([sys.executable, "-c", "pass"])
+    finished.wait()
+    wait_for_process_exit(finished.pid)
+    held()
+    before = held()
+    print("WAITING", flush=True)
+    wait_for_process_exit(parent)
+    result.write_text(str(held() - before), encoding="utf-8")
+    """
+)
+
+_WAITERS_PARENT = textwrap.dedent(
+    """
+    import os, subprocess, sys
+    waiter = subprocess.Popen(
+        [sys.executable, "-c", {waiter!r}, str(os.getpid()), {result!r}],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert waiter.stdout.readline().strip() == "WAITING"
+    """
+)
+
+
+def test_waiting_for_a_process_to_exit_keeps_no_handle_open(tmp_path: Path) -> None:
+    """The wait opens a process handle (Windows) or a pidfd (Linux) on the parent it
+    watches, and closes it once the parent has gone."""
+    result = tmp_path / "held.txt"
+    script = _WAITERS_PARENT.format(waiter=_WAITER, result=str(result))
+    subprocess.run([sys.executable, "-c", script], check=True, timeout=60)
+
+    deadline = time.monotonic() + 30
+    while not result.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert result.read_text(encoding="utf-8") == "0"

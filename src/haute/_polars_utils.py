@@ -263,6 +263,47 @@ def bounded_collect_batches(
             shutil.rmtree(staging, ignore_errors=True)
 
 
+def _validate_scan_declarations(
+    input_lf: pl.LazyFrame,
+    *,
+    schema: pl.Schema,
+    generated_columns: Collection[str],
+    required_input_columns: Collection[str] | None,
+    input_schema: pl.Schema | None,
+) -> tuple[frozenset[str], list[str], frozenset[str]]:
+    """Check a Python scan's declared columns against its input and output schemas.
+
+    Returns the generated columns, the input's column names, and the input
+    columns the transform reads (every input column when undeclared).
+    """
+    generated = frozenset(generated_columns)
+    if input_schema is None:
+        input_schema = input_lf.collect_schema()
+    mismatched_carried = sorted(
+        name
+        for name, dtype in schema.items()
+        if name not in generated and input_schema.get(name) != dtype
+    )
+    if mismatched_carried:
+        raise ValueError(
+            f"non-generated scan columns must be input columns of the same dtype: "
+            f"{mismatched_carried}"
+        )
+    unknown_generated = generated - set(schema.names())
+    if unknown_generated:
+        raise ValueError(
+            f"generated columns are absent from the scan schema: {sorted(unknown_generated)}"
+        )
+    input_names = input_schema.names()
+    required = frozenset(input_names if required_input_columns is None else required_input_columns)
+    unknown_required = required - set(input_names)
+    if unknown_required:
+        raise ValueError(
+            f"required input columns are absent from the input: {sorted(unknown_required)}"
+        )
+    return generated, input_names, required
+
+
 def row_local_python_scan(
     input_lf: pl.LazyFrame,
     transform: Callable[[pl.DataFrame], pl.DataFrame],
@@ -309,31 +350,13 @@ def row_local_python_scan(
     """
     context = execution_context or current_execution_context()
     caller_context = contextvars.copy_context()
-    generated = frozenset(generated_columns)
-    if input_schema is None:
-        input_schema = input_lf.collect_schema()
-    mismatched_carried = sorted(
-        name
-        for name, dtype in schema.items()
-        if name not in generated and input_schema.get(name) != dtype
+    generated, input_names, required = _validate_scan_declarations(
+        input_lf,
+        schema=schema,
+        generated_columns=generated_columns,
+        required_input_columns=required_input_columns,
+        input_schema=input_schema,
     )
-    if mismatched_carried:
-        raise ValueError(
-            f"non-generated scan columns must be input columns of the same dtype: "
-            f"{mismatched_carried}"
-        )
-    unknown_generated = generated - set(schema.names())
-    if unknown_generated:
-        raise ValueError(
-            f"generated columns are absent from the scan schema: {sorted(unknown_generated)}"
-        )
-    input_names = input_schema.names()
-    required = frozenset(input_names if required_input_columns is None else required_input_columns)
-    unknown_required = required - set(input_names)
-    if unknown_required:
-        raise ValueError(
-            f"required input columns are absent from the input: {sorted(unknown_required)}"
-        )
 
     def frames(
         with_columns: list[str] | None,
@@ -419,31 +442,13 @@ def fanout_python_scan(
         raise ValueError(f"fanout must be a positive integer, got {fanout!r}")
     context = execution_context or current_execution_context()
     caller_context = contextvars.copy_context()
-    generated = frozenset(generated_columns)
-    if input_schema is None:
-        input_schema = input_lf.collect_schema()
-    mismatched_carried = sorted(
-        name
-        for name, dtype in schema.items()
-        if name not in generated and input_schema.get(name) != dtype
+    generated, input_names, required = _validate_scan_declarations(
+        input_lf,
+        schema=schema,
+        generated_columns=generated_columns,
+        required_input_columns=required_input_columns,
+        input_schema=input_schema,
     )
-    if mismatched_carried:
-        raise ValueError(
-            f"non-generated scan columns must be input columns of the same dtype: "
-            f"{mismatched_carried}"
-        )
-    unknown_generated = generated - set(schema.names())
-    if unknown_generated:
-        raise ValueError(
-            f"generated columns are absent from the scan schema: {sorted(unknown_generated)}"
-        )
-    input_names = input_schema.names()
-    required = frozenset(input_names if required_input_columns is None else required_input_columns)
-    unknown_required = required - set(input_names)
-    if unknown_required:
-        raise ValueError(
-            f"required input columns are absent from the input: {sorted(unknown_required)}"
-        )
 
     def frames(
         with_columns: list[str] | None,

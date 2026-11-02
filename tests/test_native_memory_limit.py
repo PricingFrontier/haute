@@ -289,7 +289,7 @@ def test_rlimit_starts_polars_pools_before_measuring_the_baseline(
         setrlimit=setrlimit,
     )
     monkeypatch.setattr(native, "_rlimit_as_supported", lambda: True)
-    monkeypatch.setattr(native, "_start_polars_thread_pools", lambda: events.append("pools"))
+    monkeypatch.setattr(native, "start_polars_thread_pools", lambda: events.append("pools"))
     monkeypatch.setattr(native, "_native_baseline_bytes", baseline)
     monkeypatch.setitem(sys.modules, "resource", fake_resource)
 
@@ -303,8 +303,8 @@ def test_polars_pools_start_once_per_process(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(native, "_polars_thread_pools_started", False)
     monkeypatch.setattr(native, "_run_polars_pool_queries", lambda: runs.append(1))
 
-    native._start_polars_thread_pools()
-    native._start_polars_thread_pools()
+    native.start_polars_thread_pools()
+    native.start_polars_thread_pools()
 
     assert runs == [1]
 
@@ -988,7 +988,7 @@ def test_rlimit_reapplied_without_restore_can_raise_its_ceiling_again(
         setrlimit=setrlimit,
     )
     monkeypatch.setattr(native, "_rlimit_as_supported", lambda: True)
-    monkeypatch.setattr(native, "_start_polars_thread_pools", lambda: None)
+    monkeypatch.setattr(native, "start_polars_thread_pools", lambda: None)
     monkeypatch.setattr(native, "_native_baseline_bytes", lambda: 100)
     monkeypatch.setitem(sys.modules, "resource", fake_resource)
     lease = native.NativeMemoryLease()

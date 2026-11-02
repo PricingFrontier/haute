@@ -484,7 +484,7 @@ def test_a_preview_of_a_table_the_workbench_output_does_not_fill_says_so(project
     )["response"]
 
     assert previewed.status == "error"
-    assert previewed.error == "response has no table 'missing' to preview."
+    assert previewed.error.startswith("response has no table 'missing' to preview; its tables")
 
 
 def test_the_preview_route_answers_every_table_asked_for_from_one_request(

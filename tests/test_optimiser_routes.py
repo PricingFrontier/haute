@@ -1662,6 +1662,52 @@ class TestEstimateRoute:
         assert resp.status_code == 422
         assert "bounded streaming mode" in resp.json()["detail"]
 
+    @pytest.mark.parametrize(
+        ("failure", "status"),
+        [
+            pytest.param(
+                "start",
+                503,
+                id="worker-did-not-start",
+            ),
+            pytest.param("host", 503, id="host-cannot-start-workers"),
+            pytest.param("protocol", 500, id="worker-protocol-failure"),
+        ],
+    )
+    def test_estimate_answers_a_worker_that_could_not_run_it(
+        self, client, scored_data, monkeypatch: pytest.MonkeyPatch, failure: str, status: int
+    ) -> None:
+        """The warm pool's start, host and protocol failures are answered as such, never
+        a bare internal error."""
+        import haute._interactive_workers as interactive
+        from haute._worker_isolation import IsolatedWorkerHostError
+
+        errors = {
+            "start": interactive.InteractiveWorkerStartError(
+                "Failed to start interactive worker 0: not ready", terminal_reason="error"
+            ),
+            "host": IsolatedWorkerHostError("the resource tracker died"),
+            "protocol": interactive.InteractiveWorkerProtocolError(
+                "Interactive worker returned a malformed result envelope",
+                terminal_reason="contract_error",
+            ),
+        }
+
+        class _FailingPool:
+            def run(self, *_args: object, **_kwargs: object) -> object:
+                raise errors[failure]
+
+        monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "process")
+        monkeypatch.setattr("haute.routes.optimiser.interactive_worker_pool", _FailingPool)
+        resp = client.post(
+            "/api/optimiser/estimate",
+            json={"graph": _make_optimiser_graph(scored_data), "node_id": "opt"},
+        )
+
+        assert resp.status_code == status, resp.text
+        if status == 503:
+            assert str(errors[failure]) in resp.json()["detail"]
+
     def test_estimate_maps_admission_failure_to_memory_limit_response(
         self,
         client,

@@ -90,7 +90,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P2 | Shared-flight operation TimeoutError is mistaken for a polling timeout; completed work spins until cancellation. | [ROAD-WORKER-09](background-jobs-api.md#road-worker-09--completed-operation-timeouts-are-terminal-failures) | Real SharedFlights and LatestWinsQueue with controlled failure/cancellation. |
 | P2 | Returning from a failed directory to a cached parent leaves the error hiding the files. | [FNED-R02](frontend-node-editors.md#fned-r02--drafts-in-step-with-the-document-errors-with-their-detail), extended | Actual FileBrowser and settings cache, list transport substituted. |
 | P2 | Use detected schema applies A's completed schema into B while B loads. | [FNED-R06](frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft), extended | Actual DataInputEditor/hooks, API transport substituted. |
-| P2 | Deployment proves a literal-only select preserves request order, then fails a three-quote request with one row. | [EXEC-R09](execution-engine.md#exec-r09--column-free-selects-are-not-row-local), extended | Actual row proof and score_graph. Existing chunk row-count corruption stays P1; this added deployment failure is loud. |
 | P2 | Late GLM dispersion estimate for A overwrites manually chosen theta 7 in newer target B with 3. | [FMOU-R06](frontend-modelling-optimiser-ui.md#fmou-r06--dispersion-estimates-belong-to-the-initiating-training-draft) | Actual GLMTargetConfig, only the estimate promise substituted. |
 | P2 | JSON omits an all-null nested pricing object while NDJSON returns pricing:null for the same quote. | [DEP-R17](deploy.md#dep-r17--json-and-ndjson-preserve-the-same-output-document) | Real generated FastAPI app, request shredder, scorer, assembler and materializer; no scorer mock. Batch variant is source-supported. |
 | P2 | A utility file load replaces a newer selection and can discard the old file's draft typed after its initial flush when autosave later fails. | [FGC-R08](frontend-graph-canvas.md#fgc-r08--utility-navigation-preserves-drafts-across-pending-reads) | Actual UtilityPanel/debounce, textarea editor and transport seams; two controlled interleavings independently reproduced. |
@@ -238,8 +237,6 @@ adds a finding group or changes the 42-group count.
 | sandbox project globals | Duplicate **PCFG-R04**. |
 | Assistant bounds, blocking tools, factual context, tool hygiene and provider handling | Duplicates **ASSIST-55**, **ASSIST-57**, **ASSIST-58**, **ASSIST-59**, **ASSIST-54** respectively. The recipe-consolidation note names no additional behavior. |
 | CLI/init/deploy existing gaps | Duplicates **DEP-R11** for impact alignment, **DEP-R12A** for build ownership, **DEP-R09** for dependency closure, and **CLI-R01**, **CLI-R04**, **CLI-R06** for init overwrite, TOML mutation and hook behavior. The scratch shorthand DEP-R12 predates its split; generic CLI errors/eager reads name no additional concrete case. |
-| inactive source-switch branch | Duplicate **EXEC-R14**. |
-| Literal-only chunked selects | Duplicate **EXEC-R09**; the deployed request-order witness is included in its accepted extension above. |
 | Model diagnostic weights | Duplicate **MOD-R05**. |
 | Hosted sign-in headers | Duplicate **WB-25**. |
 | Asynchronous assistant tool blocking | Duplicate **ASSIST-57**. |
@@ -265,7 +262,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | edge ID collisions | **NAME-10**. |
 | failed new solve identity | **FSH-R12**. |
 | pyfunc classifier output shape | **MSC-11**. |
-| literal select row proof | **EXEC-R09**. |
 | predicted output signature dtype | **MOD-R09** after requested split; formerly bundled MOD-R05. |
 | “PDP integer grids … pending contract test” | **MOD-R05**. The copied note belongs to `modelling/_metrics.py::compute_pdp`, not `_gpu.py` or `_shap.py`; it is not a separate unresolved GPU contract concern. |
 | completed TimeoutError retry loop | **ROAD-WORKER-09** after requested split; formerly bundled ROAD-WORKER-07. |

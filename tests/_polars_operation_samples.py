@@ -23,6 +23,8 @@ SAMPLES: dict[tuple[str, str | None, str], str] = {
     ("expr", None, "bin_quantiles"): "pl.col('a').bin_quantiles([0.5], labels=['lo', 'hi'])",
     ("expr", None, "bin_ranks"): "pl.col('a').bin_ranks([0.5], labels=['lo', 'hi'])",
     ("expr", None, "cast"): "pl.col('a').cast(pl.Float64)",
+    ("expr", None, "cut"): "pl.col('a').cut([1, 2])",
+    ("expr", None, "qcut"): "pl.col('a').qcut(2)",
     ("expr", None, "ewm_mean"): "pl.col('a').ewm_mean(alpha=0.5)",
     ("expr", None, "fill_nan"): "pl.col('a').fill_nan(0.0)",
     ("expr", None, "fill_null"): "pl.col('a').fill_null(0)",

@@ -29,7 +29,12 @@ from haute._native_memory_limit import native_memory_backend_scope
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._registry import NODE_REGISTRY, ensure_registry_ready
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
-from haute.errors import GroupByExecutionUnsupportedError, SchemaMismatchError
+from haute.errors import (
+    ExecutionError,
+    GroupByExecutionUnsupportedError,
+    SchemaMismatchError,
+    failing_node,
+)
 from haute.executor import (
     DataOutputDestinationExistsError,
     DataOutputDurabilityError,
@@ -1057,6 +1062,45 @@ class TestExecuteSinkDataOutput:
         )
         with pytest.raises(PolarsIoConfigError, match="Supported formats"):
             write_data_output(graph, "dout")
+
+    def test_a_failure_surfacing_at_the_write_names_the_data_output(self, haute_scratch) -> None:
+        """A cast fails on the data only when the write collects the plan, so no node was
+        running when Polars raised: the write names the Data Output it was writing."""
+        src_path = haute_scratch / "in.parquet"
+        pl.DataFrame({"code": ["1", "2", "x"]}).write_parquet(src_path)
+        graph = PipelineGraph(
+            nodes=[
+                _ready_data_input_node(
+                    "din", {"inputType": "file", "format": "parquet", "path": str(src_path)}
+                ),
+                GraphNode(
+                    id="cast",
+                    data=NodeData(
+                        label="cast",
+                        nodeType=NodeType.POLARS,
+                        config={"code": "df = din.with_columns(pl.col('code').cast(pl.Int64))"},
+                    ),
+                ),
+                GraphNode(
+                    id="dout",
+                    data=NodeData(
+                        label="Monthly extract",
+                        nodeType=NodeType.DATA_OUTPUT,
+                        config={
+                            "outputType": "file",
+                            "format": "parquet",
+                            "path": str(haute_scratch / "out.parquet"),
+                        },
+                    ),
+                ),
+            ],
+            edges=[_edge("din", "cast"), _edge("cast", "dout")],
+        )
+
+        with pytest.raises(ExecutionError, match="'Monthly extract'") as raised:
+            write_data_output(graph, "dout")
+        assert failing_node(raised.value) == "dout"
+        assert isinstance(raised.value.__cause__, pl.exceptions.PolarsError)
 
     def test_non_output_node_is_rejected_before_execution(self) -> None:
         graph = PipelineGraph(

@@ -211,6 +211,55 @@ def test_a_live_switch_declaration_selects_the_active_scenarios_input(tmp_path: 
     assert _collect(namespace["pipeline"].run(source="batch")).to_dicts() == [{"source": "batch"}]
 
 
+def test_run_and_score_never_resolve_a_source_switch_s_inactive_branch(tmp_path: Path) -> None:
+    """The walker prunes the inactive branch before it builds anything; a standalone run
+    does too, so a batch Data Input nobody can read in production is never opened live."""
+    switch = write_node_config(
+        tmp_path,
+        NodeType.LIVE_SWITCH,
+        "switch",
+        {"input_scenario_map": {"quotes": "live", "cleaned": "batch"}},
+    )
+    namespace = _run_file(
+        tmp_path,
+        "import haute\n"
+        "import polars as pl\n\n"
+        'pipeline = haute.Pipeline("p")\n'
+        "opened = []\n\n\n"
+        "@pipeline.api_input\n"
+        "def quotes() -> pl.LazyFrame:\n"
+        '    opened.append("quotes")\n'
+        '    return pl.LazyFrame({"source": ["live"]})\n\n\n'
+        "@pipeline.polars\n"
+        "def history() -> pl.LazyFrame:\n"
+        '    opened.append("history")\n'
+        '    return pl.LazyFrame({"source": ["batch"]})\n\n\n'
+        "@pipeline.polars\n"
+        "def cleaned(history: pl.LazyFrame) -> pl.LazyFrame:\n"
+        '    opened.append("cleaned")\n'
+        "    return history\n\n\n"
+        f'@pipeline.live_switch(config="{switch}")\n'
+        "def switch(quotes, cleaned): ...\n\n\n"
+        'pipeline.connect("quotes", "switch")\n'
+        'pipeline.connect("history", "cleaned")\n'
+        'pipeline.connect("cleaned", "switch")\n',
+    )
+    pipeline, opened = namespace["pipeline"], namespace["opened"]
+
+    assert _collect(pipeline.run(source="live")).to_dicts() == [{"source": "live"}]
+    assert opened == ["quotes"]
+
+    opened.clear()
+    assert _collect(pipeline.score(pl.DataFrame({"source": ["scored"]}))).to_dicts() == [
+        {"source": "scored"}
+    ]
+    assert opened == []
+
+    opened.clear()
+    assert _collect(pipeline.run(source="batch")).to_dicts() == [{"source": "batch"}]
+    assert opened == ["history", "cleaned"]
+
+
 def test_an_edge_join_declaration_joins_its_base_and_join_inputs(tmp_path: Path) -> None:
     namespace = _run_file(
         tmp_path,

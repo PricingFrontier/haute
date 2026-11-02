@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import os
 import pickle
 import shutil
@@ -89,6 +90,13 @@ def _sleep_for(seconds: float) -> None:
     time.sleep(seconds)
 
 
+def _go() -> threading.Event:
+    """The parent's go-ahead, already given: an in-process entrypoint runs its job at once."""
+    go = threading.Event()
+    go.set()
+    return go
+
+
 class _EntrypointQueue:
     """Small child-queue fake that records its explicit feeder shutdown."""
 
@@ -101,7 +109,11 @@ class _EntrypointQueue:
         self.values.append(value)
 
     def get_nowait(self) -> bytes:
-        return self.values.pop(0)
+        """The next payload past the child's ready report."""
+        value = self.values.pop(0)
+        if pickle.loads(value)[0] == "ready":
+            return self.values.pop(0)
+        return value
 
     def close(self) -> None:
         self.closed += 1
@@ -538,6 +550,9 @@ def test_unexpected_parent_failure_terminates_child_and_runs_cleanup(
         def Queue(self, maxsize: int) -> FakeQueue:  # noqa: N802 - multiprocessing API
             return FakeQueue()
 
+        def Event(self) -> threading.Event:  # noqa: N802 - multiprocessing API
+            return threading.Event()
+
         def Process(self, **kwargs: object) -> FakeProcess:  # noqa: N802 - multiprocessing API
             self.process = FakeProcess(**kwargs)
             return self.process
@@ -546,8 +561,11 @@ def test_unexpected_parent_failure_terminates_child_and_runs_cleanup(
     cleaned: list[str] = []
     monkeypatch.setattr("haute._worker_isolation.mp.get_context", lambda _method: context)
     monkeypatch.setattr(
+        "haute._worker_isolation.await_worker_ready", lambda *_a, **_k: ("ready", None)
+    )
+    monkeypatch.setattr(
         "haute._worker_isolation._wait_for_worker",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("parent polling failed")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("parent polling failed")),
     )
 
     with pytest.raises(RuntimeError, match="parent polling failed"):
@@ -589,6 +607,9 @@ def test_start_failure_preserves_typed_error_and_runs_cleanup(
     class FakeContext:
         def Queue(self, maxsize: int) -> FakeQueue:  # noqa: N802 - multiprocessing API
             return FakeQueue()
+
+        def Event(self) -> threading.Event:  # noqa: N802 - multiprocessing API
+            return threading.Event()
 
         def Process(self, **kwargs: object) -> UnstartedProcess:  # noqa: N802
             return UnstartedProcess()
@@ -637,12 +658,20 @@ def test_one_shot_join_cleans_exact_dead_worker_native_resources(
         def Queue(self, maxsize: int) -> FakeQueue:  # noqa: N802
             return FakeQueue()
 
+        def Event(self) -> threading.Event:  # noqa: N802 - multiprocessing API
+            return threading.Event()
+
         def Process(self, **_kwargs: object) -> Process:  # noqa: N802
             return Process()
 
     cleaned: list[int] = []
     monkeypatch.setattr("haute._worker_isolation.mp.get_context", lambda _method: Context())
-    monkeypatch.setattr("haute._worker_isolation._wait_for_worker", lambda *_args: ("ok", 7))
+    monkeypatch.setattr(
+        "haute._worker_isolation.await_worker_ready", lambda *_a, **_k: ("ready", None)
+    )
+    monkeypatch.setattr(
+        "haute._worker_isolation._wait_for_worker", lambda *_args, **_kwargs: ("ok", 7)
+    )
     monkeypatch.setattr("haute._worker_isolation.cleanup_private_cgroups_for_pid", cleaned.append)
 
     assert run_isolated_worker(lambda: 7) == 7
@@ -676,11 +705,19 @@ def test_one_shot_rejects_queued_payload_when_child_exits_nonzero(
         def Queue(self, maxsize: int) -> Queue:  # noqa: N802 - multiprocessing API
             return Queue()
 
+        def Event(self) -> threading.Event:  # noqa: N802 - multiprocessing API
+            return threading.Event()
+
         def Process(self, **_kwargs: object) -> Process:  # noqa: N802
             return Process()
 
     monkeypatch.setattr("haute._worker_isolation.mp.get_context", lambda _method: Context())
-    monkeypatch.setattr("haute._worker_isolation._wait_for_worker", lambda *_args: ("ok", 7))
+    monkeypatch.setattr(
+        "haute._worker_isolation.await_worker_ready", lambda *_a, **_k: ("ready", None)
+    )
+    monkeypatch.setattr(
+        "haute._worker_isolation._wait_for_worker", lambda *_args, **_kwargs: ("ok", 7)
+    )
 
     with pytest.raises(IsolatedWorkerCrashedError) as exc_info:
         run_isolated_worker(lambda: 7)
@@ -715,13 +752,19 @@ def test_one_shot_notes_native_cleanup_failure_without_masking_remote_error(
         def Queue(self, maxsize: int) -> Queue:  # noqa: N802 - multiprocessing API
             return Queue()
 
+        def Event(self) -> threading.Event:  # noqa: N802 - multiprocessing API
+            return threading.Event()
+
         def Process(self, **_kwargs: object) -> Process:  # noqa: N802
             return Process()
 
     monkeypatch.setattr("haute._worker_isolation.mp.get_context", lambda _method: Context())
     monkeypatch.setattr(
+        "haute._worker_isolation.await_worker_ready", lambda *_a, **_k: ("ready", None)
+    )
+    monkeypatch.setattr(
         "haute._worker_isolation._wait_for_worker",
-        lambda *_args: ("error", ("ValueError", "bad", "traceback")),
+        lambda *_args, **_kwargs: ("error", ("ValueError", "bad", "traceback")),
     )
     monkeypatch.setattr(
         "haute._worker_isolation.cleanup_private_cgroups_for_pid",
@@ -1028,6 +1071,7 @@ def test_isolated_entrypoint_applies_native_lease_before_callable(
 
     isolation_mod._isolated_worker_entrypoint(
         results,
+        _go(),
         lambda value, *, increment: value + increment,
         (2,),
         {"increment": 3},
@@ -1057,6 +1101,7 @@ def test_isolated_entrypoint_serialises_child_failure(monkeypatch: pytest.Monkey
 
     isolation_mod._isolated_worker_entrypoint(
         results,
+        _go(),
         _raise_value_error,
         ("child boom",),
         {},
@@ -1090,6 +1135,7 @@ def test_isolated_entrypoint_exposes_native_backend_only_during_callable(
 
     isolation_mod._isolated_worker_entrypoint(
         results,
+        _go(),
         native.current_native_memory_backend,
         (),
         {},
@@ -1119,7 +1165,7 @@ def test_isolated_entrypoint_leaves_native_lease_active_until_process_teardown(
         ),
     )
 
-    isolation_mod._isolated_worker_entrypoint(results, lambda: "result", (), {}, 128, True)
+    isolation_mod._isolated_worker_entrypoint(results, _go(), lambda: "result", (), {}, 128, True)
 
     assert pickle.loads(results.get_nowait()) == ("ok", "result")
     assert events == ["apply"]
@@ -1155,9 +1201,10 @@ def test_isolated_worker_starts_its_result_feeder_before_the_cap(
         NativeMemoryLease, "apply", lambda self, *_a, **_k: events.append("cap") or False
     )
 
-    isolation_mod._isolated_worker_entrypoint(RecordingQueue(), int, ("7",), {}, 128, False)
+    isolation_mod._isolated_worker_entrypoint(RecordingQueue(), _go(), int, ("7",), {}, 128, False)
 
-    assert events == ["feeder", "cap", "put"]
+    # The ready report, then the result.
+    assert events == ["feeder", "cap", "put", "put"]
 
 
 def test_memory_limited_exitcode_classification_is_platform_independent() -> None:
@@ -1686,7 +1733,7 @@ def test_worker_entrypoint_reports_native_setup_failure(monkeypatch: pytest.Monk
         "apply",
         lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("cap")),
     )
-    isolation._isolated_worker_entrypoint(queue, lambda: 1, (), {}, 10, True)
+    isolation._isolated_worker_entrypoint(queue, _go(), lambda: 1, (), {}, 10, True)
     assert queue.actions == ["put", "close", "join"]
     assert pickle.loads(queue.value)[0] == "error"
 
@@ -1793,6 +1840,7 @@ def test_isolated_entrypoint_exposes_no_backend_when_best_effort_apply_fails(
 
     isolation_mod._isolated_worker_entrypoint(
         results,
+        _go(),
         current_native_memory_backend,
         (),
         {},
@@ -1889,3 +1937,96 @@ def test_every_multiprocessing_spawn_goes_through_the_environment_helper() -> No
 
     assert len(offenders) == 1, offenders
     assert offenders[0].startswith("_worker_isolation.py:"), offenders
+
+
+# ---------------------------------------------------------------------------
+# The readiness handshake: the watchdog's baseline is the ready child's
+# ---------------------------------------------------------------------------
+
+_MIB = 1024 * 1024
+
+
+@pytest.mark.parametrize(
+    "module", ["tests._spawned_heavy_import", "tests._spawned_without_native_cap"]
+)
+def test_a_heavy_import_is_not_charged_to_the_job(module: str) -> None:
+    """The child holds 160 MiB from its imports, then its job 150 MiB under a 256 MiB growth
+    budget: the watchdog's baseline is the child once ready, imports included, so the job
+    fits, with the host's native cap and without one."""
+    allocate = importlib.import_module(module).allocate
+    assert (
+        run_isolated_worker(
+            allocate,
+            150,
+            2.0,
+            config=IsolatedWorkerConfig(timeout_seconds=120, memory_limit_bytes=256 * _MIB),
+        )
+        == 150
+    )
+
+
+def test_without_a_native_cap_the_watchdog_still_stops_a_job_past_its_budget() -> None:
+    """The job's own allocations come after the baseline is sampled, so they count."""
+    from tests import _spawned_without_native_cap as fixture
+
+    with pytest.raises(IsolatedWorkerMemoryLimitExceededError):
+        run_isolated_worker(
+            fixture.allocate,
+            400,
+            5.0,
+            config=IsolatedWorkerConfig(timeout_seconds=120, memory_limit_bytes=128 * _MIB),
+        )
+
+
+def test_a_worker_past_its_startup_ceiling_before_it_is_ready_is_stopped() -> None:
+    from tests import _spawned_heavy_import as fixture
+
+    with pytest.raises(IsolatedWorkerMemoryLimitExceededError) as raised:
+        run_isolated_worker(
+            fixture.allocate,
+            1,
+            config=IsolatedWorkerConfig(
+                timeout_seconds=120,
+                memory_limit_bytes=256 * _MIB,
+                startup_rss_ceiling_bytes=64 * _MIB,
+            ),
+        )
+    assert any("startup ceiling" in note for note in raised.value.__notes__)
+
+
+def test_a_ready_report_from_a_worker_past_its_startup_ceiling_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ready message and an over-ceiling footprint arrive together: the footprint is
+    checked before it becomes the job's baseline."""
+    import haute._worker_isolation as isolation
+
+    stopped: list[object] = []
+    process = SimpleNamespace(pid=123, is_alive=lambda: True)
+    ready_queue = SimpleNamespace(get=lambda timeout: "ready")
+    monkeypatch.setattr(isolation, "process_rss_bytes", lambda _pid: 65 * _MIB)
+    monkeypatch.setattr(isolation, "_terminate_process", stopped.append)
+
+    with pytest.raises(IsolatedWorkerMemoryLimitExceededError) as raised:
+        isolation.await_worker_ready(
+            process,
+            ready_queue,
+            is_ready=lambda message: message == "ready",
+            config=IsolatedWorkerConfig(timeout_seconds=120, startup_rss_ceiling_bytes=64 * _MIB),
+            deadline=None,
+        )
+
+    assert stopped == [process]
+    assert any("startup ceiling" in note for note in raised.value.__notes__)
+
+
+def test_a_worker_that_never_reports_ready_fails_at_its_startup_deadline() -> None:
+    from tests import _spawned_slow_import as fixture
+
+    started = time.monotonic()
+    with pytest.raises(IsolatedWorkerStartError, match="did not report ready within 2 seconds"):
+        run_isolated_worker(
+            fixture.never_runs,
+            config=IsolatedWorkerConfig(timeout_seconds=120, startup_timeout_seconds=2),
+        )
+    assert time.monotonic() - started < 60

@@ -1044,6 +1044,7 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _run_id = config.get("run_id", "")
     _registered_model = config.get("registered_model", "")
     _config_captured = dict(config)
+    _schema_only = ctx.schema_only
 
     # Determine if we have a valid source configured
     if _artifact_path and not _source_type:
@@ -1073,6 +1074,7 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             *dfs,
             config=_config_captured,
             source_names=_source_names,
+            schema_only=_schema_only,
         )
 
     return ctx.func_name, optimiser_apply_fn, False
@@ -1665,13 +1667,17 @@ def _dispatch_apply(
     artifact: dict[str, Any],
     version_col: str,
     optimised_value_col: str = "",
+    *,
+    schema_only: bool = False,
 ) -> _Frame:
     """Route to the correct apply function based on artifact mode."""
     mode = artifact.get("mode", "online")
     version = artifact.get("version", "")
     if mode == "ratebook":
         return _apply_ratebook(lf, artifact, version, version_col, optimised_value_col)
-    return _apply_online(lf, artifact, version, version_col, optimised_value_col)
+    return _apply_online(
+        lf, artifact, version, version_col, optimised_value_col, schema_only=schema_only
+    )
 
 
 def _apply_online(
@@ -1680,13 +1686,17 @@ def _apply_online(
     version: str,
     version_col: str,
     optimised_value_col: str = "",
+    *,
+    schema_only: bool = False,
 ) -> _Frame:
     """Apply online optimisation: Lagrangian argmax with stored lambdas.
 
     Sum constraints choose each quote's scenario independently, so the result is
     a per-quote Python scan: a limited preview applies to the first quotes in
     the result's order only. Ratio constraints linearise against the whole
-    apply-time frame, so their apply always reads every input row.
+    apply-time frame, so their apply always reads every input row, except under
+    a *schema_only* walk, which reads no rows: it checks the apply's columns are
+    there and returns an empty frame of the apply's schema.
     """
     qid_col = artifact.get("quote_id", "quote_id")
     step_col = artifact.get("scenario_index", "scenario_index")
@@ -1720,22 +1730,21 @@ def _apply_online(
 
     if isinstance(lf, pl.DataFrame):
         return apply(lf.lazy()).lazy()
+    schema = online_apply_output_schema(
+        artifact,
+        version=version,
+        version_col=version_col,
+        optimised_value_col=optimised_value_col,
+    )
     if has_ratio_constraint(constraints):
+        if schema_only:
+            lf.select(read_columns).collect_schema()
+            return pl.LazyFrame(schema=schema)
         return apply(lf).lazy()
 
     from haute._polars_utils import key_prefix_python_scan
 
-    return key_prefix_python_scan(
-        lf,
-        apply,
-        schema=online_apply_output_schema(
-            artifact,
-            version=version,
-            version_col=version_col,
-            optimised_value_col=optimised_value_col,
-        ),
-        key_column=qid_col,
-    )
+    return key_prefix_python_scan(lf, apply, schema=schema, key_column=qid_col)
 
 
 def has_ratio_constraint(constraints: dict[str, Any]) -> bool:
@@ -1774,7 +1783,11 @@ def online_apply_output_schema(
     version_col: str,
     optimised_value_col: str = "",
 ) -> pl.Schema:
-    """Return the exact schema a sum-constraint online apply emits."""
+    """Return the exact schema an online apply emits.
+
+    One ``optimal_<name>`` per constraint, by name; a ratio constraint's
+    numerator and denominator follow, each once, in the constraints' order.
+    """
     constraints = artifact.get("constraints") or {}
     columns: dict[str, pl.DataType] = {
         name: dtype
@@ -1785,6 +1798,10 @@ def online_apply_output_schema(
     columns["optimal_objective"] = pl.Float32()
     for name in sorted(constraints):
         columns[f"optimal_{name}"] = pl.Float32()
+    for spec in constraints.values():
+        if isinstance(spec, dict) and {"numerator", "denominator"}.issubset(spec):
+            for component in (spec["numerator"], spec["denominator"]):
+                columns.setdefault(f"optimal_{component}", pl.Float32())
     if version:
         columns[version_col] = pl.String()
     return pl.Schema(columns)

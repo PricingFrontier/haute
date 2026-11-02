@@ -662,7 +662,7 @@ def test_fresh_process_restart_reads_published_tables_and_safe_telemetry(
     expected_rows = [{"id": row["id"], "amount": row["amount"]} for row in records]
     assert first["rows"] == second["rows"] == expected_rows
     for result in (first, second):
-        assert result["cache_proof"]["direct_fallbacks"] == 0
+        assert result["cache_direct_fallbacks"] == 0
         assert len(result["telemetry"]) == 1
         terminal = result["telemetry"][0]
         assert terminal["cache_direct_fallbacks"] == 0
@@ -680,7 +680,7 @@ def test_fresh_process_restart_reads_published_tables_and_safe_telemetry(
                 "scale": "ci-restart",
                 "input": {"rows": len(records), "source_bytes": source_bytes},
                 "product_metrics": {
-                    "cache_direct_fallbacks": first["cache_proof"]["direct_fallbacks"],
+                    "cache_direct_fallbacks": first["cache_direct_fallbacks"],
                     "cache_artifact_bytes": cache_artifact_bytes,
                 },
                 "payload_bytes": len(orjson.dumps(first["rows"])),

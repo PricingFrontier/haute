@@ -357,6 +357,24 @@ def _run_configured_work(
     )
 
 
+def live_switch_routes(
+    *, name: str, config: Mapping[str, Any], fn: Callable[..., Any], pipeline_dir: str = "."
+) -> tuple[list[str], dict[str, str]]:
+    """A Source Switch's input names, in connection order, and its input-to-source map.
+
+    The names are its function's positional parameters, which its run binds to its
+    frames in that order; the map is its sidecar's ``input_scenario_map``.
+    """
+    from haute._config_io import load_node_config
+
+    settings = load_node_config(
+        _sidecar(config, NodeType.LIVE_SWITCH, name),
+        base_dir=pipeline_directory(fn, name, pipeline_dir),
+    )
+    positional, _keyword_only = _parameters(fn)
+    return positional, dict(settings.get("input_scenario_map") or {})
+
+
 def run_configured_node(
     node_type: NodeType,
     kind: FunctionKind,

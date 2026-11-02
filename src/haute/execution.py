@@ -35,7 +35,6 @@ from haute._cache import (
 )
 from haute._estimate_calibration import calibrate_materialisation_bytes
 from haute._execution_context import ExecutionContext, ExecutionProfile
-from haute._global_constants import node_code_globals
 from haute._graph_utils import upstream_node_ids
 from haute._hashing import HASH_ALGO, content_hash_bytes
 from haute._json_shred._source_proof import file_signature
@@ -99,7 +98,6 @@ __all__ = [
     "MaterialisationEstimate",
     "ProjectionPlan",
     "ProjectionRequest",
-    "build_linear_execution_chain_functions",
     "canonical_dataframe_execution_graph",
     "dataframe_frame_input_fingerprint",
     "dataframe_graph_input_fingerprint",
@@ -107,7 +105,6 @@ __all__ = [
     "execute_lazy_graph",
     "plan_prepared_execution_strategy",
     "plan_execution_strategy",
-    "plan_projection",
     "preview_lineage_cache_key",
     "prune_source_switch_edges",
     "ratebook_factor_required_columns",
@@ -296,21 +293,6 @@ def plan_execution_strategy(
     if execution_context is not None:
         execution_context.projection_plan = result
     return result
-
-
-def plan_projection(request: ProjectionRequest) -> ProjectionPlan:
-    """Return the column demand *request*'s execution plans at every node.
-
-    The projection half of :func:`plan_execution_strategy`, for a caller that
-    needs another execution's demand — auto-range captures the columns the
-    following solve reads — without planning, estimating, or admitting it.
-    """
-    prepared = prepare_graph(
-        request.graph,
-        request.target_node_id,
-        source=request.source,
-    )
-    return _prepared_projection_plan(prepared, request)[1]
 
 
 def _prepared_projection_plan(
@@ -1370,7 +1352,7 @@ def execute_lazy_graph(
     target_node_id: str | None = None,
     preamble_ns: dict[str, Any] | None = None,
     source: str = "live",
-    enforce_contracts: bool = False,
+    enforce_contracts: bool = True,
     preserve_node_ids: set[str] | frozenset[str] | None = None,
     required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
     execution_context: ExecutionContext | None = None,
@@ -1442,85 +1424,4 @@ def prune_source_switch_edges(
         node_map,
         source,
         submodels=submodels,
-    )
-
-
-def build_linear_execution_chain_functions(
-    graph: PipelineGraph,
-    build_node_fn: Callable[..., Any],
-    *,
-    target_node_id: str,
-    base_node_id: str,
-    chain_node_ids: Iterable[str],
-    preamble_ns: dict[str, Any] | None = None,
-    routing_source: str = "batch",
-    build_source: str = "live",
-    required_output_columns_by_node: Mapping[str, frozenset[str] | set[str] | None] | None = None,
-    reuse_model_score_functions: bool = False,
-    execution_profile: ExecutionProfile | None = None,
-) -> dict[str, tuple[Callable[..., Any], bool]]:
-    """Build executable functions for a single-parent chain.
-
-    Chunked auto-range executes the expensive scenario-expanded chain one
-    chunk at a time.  This helper makes that shape explicit at the execution
-    boundary: graph routing is prepared once, then the requested chain is
-    rewired so its first node consumes the already-produced base chunk.
-    """
-    chain_ids = list(chain_node_ids)
-    if not chain_ids:
-        return {}
-
-    from haute._execute_lazy import _build_funcs
-
-    prepared = prepare_graph(
-        graph,
-        target_node_id,
-        source=routing_source,
-    )
-    node_map = prepared.node_map
-    id_to_name = prepared.id_to_name
-    relevant_edges = prepared.relevant_edges
-    missing = [node_id for node_id in (base_node_id, *chain_ids) if node_id not in node_map]
-    if missing:
-        raise ValueError(
-            "Linear execution chain references node IDs that are not in the prepared graph: "
-            f"{missing}"
-        )
-
-    chain_parents: dict[str, list[str]] = {}
-    parent_id = base_node_id
-    for chain_id in chain_ids:
-        chain_parents[chain_id] = [parent_id]
-        parent_id = chain_id
-
-    incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
-    for edge in relevant_edges:
-        incoming_edges_by_target.setdefault(edge.target, []).append(edge)
-    all_incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
-    for edge in graph.edges:
-        all_incoming_edges_by_target.setdefault(edge.target, []).append(edge)
-
-    reuse_loaded_model_by_node = (
-        {
-            chain_id: True
-            for chain_id in chain_ids
-            if node_map[chain_id].data.nodeType == NodeType.MODEL_SCORE
-        }
-        if reuse_model_score_functions
-        else None
-    )
-    return _build_funcs(
-        chain_ids,
-        node_map,
-        id_to_name,
-        graph.parents_of,
-        build_node_fn,
-        incoming_edges_by_target=incoming_edges_by_target,
-        all_incoming_edges_by_target=all_incoming_edges_by_target,
-        all_node_map=graph.node_map,
-        preamble_ns=node_code_globals(preamble_ns, graph, routing_source),
-        source=build_source,
-        required_output_columns_by_node=required_output_columns_by_node,
-        reuse_loaded_model_by_node=reuse_loaded_model_by_node,
-        execution_profile=execution_profile,
     )

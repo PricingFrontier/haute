@@ -35,6 +35,7 @@ from haute._standalone_nodes import (
     FunctionKind,
     function_kind,
     is_configured,
+    live_switch_routes,
     run_configured_node,
     seeded_workbench_input_ports,
 )
@@ -638,6 +639,42 @@ class Pipeline(NodeRegistry):
         base_index, join_index = resolve_edge_join_role_indices(target_handles)
         return [incoming[base_index], incoming[join_index]]
 
+    def _inactive_switch_edges(self, source: str) -> frozenset[RegisteredEdge]:
+        """The edges into a Source Switch from an input another source routes.
+
+        A switch whose map names *source* passes on only the input mapped to it, so
+        the walker prunes the others before it builds anything; a switch whose map
+        does not name *source* keeps every edge and refuses the run itself.
+        """
+        inactive: set[RegisteredEdge] = set()
+        for node in self._nodes:
+            if node.node_type is not NodeType.LIVE_SWITCH or not is_configured(
+                node.node_type, node.config
+            ):
+                continue
+            names, routes = live_switch_routes(
+                name=node.name, config=node.config, fn=node.fn, pipeline_dir=node.pipeline_dir
+            )
+            if source not in routes.values():
+                continue
+            for name, edge in zip(names, self._get_input_edges(node.name), strict=False):
+                if routes.get(name, source) != source:
+                    inactive.add(edge)
+        return frozenset(inactive)
+
+    def _unreached(self, order: list[Node], inactive: frozenset[RegisteredEdge]) -> frozenset[str]:
+        """The nodes whose every outgoing edge is inactive or leads to such a node.
+
+        They feed only a switch's inactive branch, so the run never resolves them. A
+        node with no outgoing edge at all is a leaf the run keeps.
+        """
+        unreached: set[str] = set()
+        for node in reversed(order):
+            outgoing = [edge for edge in self._edges if edge.source == node.name]
+            if outgoing and all(edge in inactive or edge.target in unreached for edge in outgoing):
+                unreached.add(node.name)
+        return frozenset(unreached)
+
     @staticmethod
     def _workbench_quote(order: list[Node], outputs: Mapping[str, Any]) -> Any:
         """The Workbench Input's frames by table as the run holds them, or None without one."""
@@ -809,19 +846,25 @@ class Pipeline(NodeRegistry):
         n: Node,
         outputs: dict[str, Any],
         constants: GlobalConstantsNamespace | None = None,
+        inactive: frozenset[RegisteredEdge] = frozenset(),
     ) -> None:
         """Resolve *n*'s wired inputs from *outputs* and store its result.
 
         Shared by :meth:`run` and :meth:`score`.  Fails loud when the node
         has no inbound edges and does not run unconnected, when an upstream
-        result is missing.
+        result is missing. A Source Switch's *inactive* inputs arrive as
+        ``None``: the switch passes on only the input its source maps to.
         """
         input_edges = self._get_input_edges(n.name)
         if not input_edges and not n.runs_unconnected:
             raise ValueError(
                 f"Node '{n.name}' has no inbound edges. Use pipeline.connect() to wire it up."
             )
-        missing = [edge.source for edge in input_edges if edge.source not in outputs]
+        missing = [
+            edge.source
+            for edge in input_edges
+            if edge not in inactive and edge.source not in outputs
+        ]
         if missing:
             raise ValueError(
                 f"Node '{n.name}' is missing input(s) from: {missing}. "
@@ -830,7 +873,9 @@ class Pipeline(NodeRegistry):
         from haute._execute_lazy import _pick_source_frame
 
         input_dfs: list[pl.DataFrame] = [
-            cast(
+            cast(pl.DataFrame, None)
+            if edge in inactive
+            else cast(
                 pl.DataFrame,
                 _pick_source_frame(
                     outputs[edge.source],
@@ -870,12 +915,16 @@ class Pipeline(NodeRegistry):
             order = self._topo_order()
             constants = self._run_constants(source)
             outputs: dict[str, Any] = {}
+            inactive = self._inactive_switch_edges(source)
+            unreached = self._unreached(order, inactive)
 
             for n in order:
+                if n.name in unreached:
+                    continue
                 if n.is_source:
                     outputs[n.name] = n._invoke((), constants)
                 else:
-                    self._execute_transform(n, outputs, constants)
+                    self._execute_transform(n, outputs, constants, inactive)
 
             response = as_response(
                 outputs[self._resolve_output_node(order).name],
@@ -924,6 +973,8 @@ class Pipeline(NodeRegistry):
         """
         from haute._model_scorer import _scenario_ctx
 
+        if not self._nodes and not self._submodel_registrations:
+            raise ValueError("Pipeline has no nodes")
         if self._submodel_registrations:
             return self._with_submodels_expanded().score(df)
         _token = _scenario_ctx.set("live")
@@ -931,8 +982,11 @@ class Pipeline(NodeRegistry):
             order = self._topo_order()
             constants = self._run_constants("live")
             outputs: dict[str, Any] = {}
+            inactive = self._inactive_switch_edges("live")
+            unreached = self._unreached(order, inactive)
 
-            sources = [n for n in order if n.is_source]
+            # A source only a switch's inactive branch reads is neither seeded nor run.
+            sources = [n for n in order if n.is_source and n.name not in unreached]
             deploy_inputs = [n for n in sources if n.is_deploy_input]
             if len(deploy_inputs) > 1:
                 raise ExecutionError(
@@ -998,9 +1052,9 @@ class Pipeline(NodeRegistry):
                     outputs[n.name] = n._invoke((), constants)
 
             for n in order:
-                if n.is_source:
+                if n.is_source or n.name in unreached:
                     continue
-                self._execute_transform(n, outputs, constants)
+                self._execute_transform(n, outputs, constants, inactive)
 
             # The quote's identity is the quote_details frame given, by its port when one
             # bare frame seeds the one port connected.
