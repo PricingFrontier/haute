@@ -25,7 +25,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Hashable
 from concurrent.futures import CancelledError, Future
-from concurrent.futures import TimeoutError as FutureTimeoutError
+from concurrent.futures import wait as wait_for_futures
 from typing import Generic, TypeVar
 
 from haute._execution_context import ExecutionCancellationToken
@@ -95,10 +95,13 @@ class FlightSubscription(Generic[T]):
             if cancellation_token is not None and cancellation_token.cancelled:
                 self.detach()
                 cancellation_token.throw_if_cancelled(operation)
-            try:
-                return self._flight.outcome.result(timeout=_WAIT_SLICE_SECONDS)
-            except FutureTimeoutError:
+            outcome = self._flight.outcome
+            # Wait, then read: the run's own TimeoutError has the type of an expired
+            # ``result(timeout=...)``, and must end the wait as the run's outcome.
+            if not wait_for_futures((outcome,), timeout=_WAIT_SLICE_SECONDS).done:
                 continue
+            try:
+                return outcome.result()
             except CancelledError:
                 # Only a dropped waiter's outcome is cancelled, and only once its
                 # last subscriber has left; a subscriber still waiting never sees it.

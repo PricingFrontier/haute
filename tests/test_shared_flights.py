@@ -155,6 +155,51 @@ class TestSharedFlights:
         assert staying.wait(operation="q") == "kept"
 
 
+def _subscriber(scheduler: str) -> Callable[[Callable[[ExecutionCancellationToken], str]], Any]:
+    """Subscribe to one key of a fresh scheduler of the named kind."""
+    if scheduler == "shared":
+        flights: SharedFlights[str, str] = SharedFlights()
+        return lambda run: flights.subscribe("k", run)
+    queue: LatestWinsQueue[str, str, str] = LatestWinsQueue()
+    return lambda run: queue.subscribe("job", "k", run)
+
+
+@pytest.mark.parametrize("scheduler", ["shared", "latest"])
+def test_an_operation_timeout_reaches_every_waiter_as_itself(scheduler: str) -> None:
+    """A run's own TimeoutError is its outcome, not a wait that expired (Python 3.11+)."""
+    subscribe = _subscriber(scheduler)
+    started = threading.Event()
+    release = threading.Event()
+    raised = TimeoutError("the solve ran out of time")
+
+    def timing_out(_token: ExecutionCancellationToken) -> str:
+        started.set()
+        assert release.wait(_WAIT)
+        raise raised
+
+    first = subscribe(timing_out)
+    assert started.wait(_WAIT)
+    second = subscribe(timing_out)
+    tokens = (ExecutionCancellationToken(), ExecutionCancellationToken())
+    waiters = [
+        _in_thread(
+            lambda subscription=subscription, token=token: subscription.wait(token, operation="q")
+        )
+        for subscription, token in zip((first, second), tokens, strict=True)
+    ]
+    release.set()
+
+    for thread, outcome in waiters:
+        thread.join(_WAIT)
+        assert not thread.is_alive(), "a waiter kept polling a finished run"
+        assert outcome.get("error") is raised
+    assert not any(token.cancelled for token in tokens)
+
+    retry = _Gate("retried")
+    retry.release.set()
+    assert subscribe(retry).wait(operation="q") == "retried"
+
+
 class TestLatestWinsQueue:
     def test_one_run_per_group_and_the_replaced_waiter_is_refused(self) -> None:
         """A runs; B waits; C replaces B (409-shaped); C runs after A; B never runs."""

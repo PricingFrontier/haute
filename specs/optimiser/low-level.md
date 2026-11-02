@@ -1334,7 +1334,7 @@ whose message already names every problem and the remedy.
   `Cancelled` without a haute cancel reaches the caller unchanged; a retained point answers
   while another point runs, without cancelling it.
   `tests/test_shared_flights.py` covers `SharedFlights` and `LatestWinsQueue` directly, including
-  the `cancel_abandoned` mode. In process mode, `tests/test_optimiser_solver_session.py` checks
+  the `cancel_abandoned` mode and a run's own `TimeoutError` reaching every waiter as itself. In process mode, `tests/test_optimiser_solver_session.py` checks
   that leaving a point cancels its apply inside the session: with a stand-in command and with the
   real `apply_point`, which must stop on price-contour's token. The artifact directory is
   removed, nothing is adopted, and the session keeps its runtime and applies the next point. A
@@ -1900,7 +1900,10 @@ error. The run executes on its own thread. Each caller waits on its own `FlightS
 a caller whose cancellation token fires (a client that disconnected) detaches only itself, and
 when the last subscriber detaches the run's token is cancelled and its key released, so a later
 identical query starts afresh. A finished run's key is released at once: results are not
-cached.
+cached. A subscription waits for the run to finish before it reads the outcome, so a run that
+raised `TimeoutError` (the type an expired `Future.result(timeout=...)` raises since Python 3.11)
+reaches every waiter as that error at once; it is the run's outcome, not a wait that expired.
+The same subscription serves `LatestWinsQueue`.
 
 **Point materialisation.** `OptimiserFrontierService.request_point_apply(job_id, point_index)`
 validates the job (completed) and the point:
