@@ -130,7 +130,10 @@ reached through a link refused through `ordinary_path_problem`; the `[mlflow]` t
 - **Impact dataclasses** (`src/haute/deploy/_impact.py`) — `ColumnStats` (per-output-column change
   statistics: mean/median/p5/p25/p75/p95 percent change, staging/prod means, total
   premium change), `SegmentRow` (per-categorical-value breakdown), `ImpactReport`
-  (top-level result: row counts, `column_stats`, `segments`, `is_first_deploy` flag).
+  (top-level result: `total_rows`, `sampled_rows`, `column_stats`, `segments`, and
+  `first_deploy`, why production was not compared, `None` for a comparison);
+  `ImpactEndpointError` (an endpoint that did not answer: `url`, `status`) and
+  `ImpactAlignmentError` (a count other than one prediction per quote).
 - **Deploy manifest** (`_utils.py::build_manifest`) — the canonical JSON schema shared by
   every target and the generated runtime code (`_container.py`'s `app.py` template,
   `_model_code.py`'s `HauteModel.load_context`): `haute_version`, `polars_version`
@@ -824,12 +827,16 @@ not exist, listing the catalogs the token can see (many workspaces have no `main
    if collection itself raised, so cleanup failures during error unwinding are logged
    rather than masking the original exception.
 
-**Impact analysis (`src/haute/deploy/_impact.py::build_report`)** — takes two prediction lists (Databricks
+**Impact analysis (`src/haute/deploy/_impact.py::build_report`)** — `_run_batched` checks each
+batch's answer as it arrives (`_batch_predictions`: quote envelopes unwrapped, a single value
+accepted only for a one-quote batch, and any count but one prediction per quote sent an
+`ImpactAlignmentError` naming the batch and both counts), and the HTTP scorer raises
+`ImpactEndpointError` (its `url` and `status`) for an error status or no answer (`URLError`,
+timeout). `build_report` takes the two prediction lists (Databricks
 SDK responses or HTTP `/quote` JSON, both normalised through
 `_normalise_http_prediction_payload` / `_unwrap_prediction_envelopes` to handle the
-`{rows, row_count, ...}` quote-envelope shape transparently), aligns both lists and the
-sampled input to their common length *before* building DataFrames while preserving the
-original sampled-row count (`failed_rows = sampled_rows - scored`),
+`{rows, row_count, ...}` quote-envelope shape transparently), refuses with
+`ImpactAlignmentError` unless both hold one row per sampled quote (nothing is truncated),
 computes per-numeric-column `ColumnStats`, and — for the first numeric column only —
 a `_segment_breakdown` over every categorical (`Utf8`, 2–50 unique values) input column
 with at least 10 rows per segment value, keeping the top 10 by absolute mean change,
@@ -915,10 +922,9 @@ JSON have separate structured payloads. A body exactly at the configured limit i
   values are accepted only when staging equals production exactly; otherwise the change
   raises `ValueError`. `_CHANGE_EPSILON` applies to changed-row counting and the aggregate
   total-zero comparison, not this row-level equality test.
-- **Prediction/input length mismatch in impact reports** is truncated (not padded or
-  errored): `scored = min(len(staging_preds), len(prod_preds))`, with the shortfall
-  recorded as `failed_rows`, before DataFrames are built — avoiding materialising rows
-  that will be discarded.
+- **Prediction/input length mismatch in impact reports** is refused, never truncated or
+  padded: rows pair by position, so a batch with a missing middle prediction, or a short batch
+  and a long one whose totals match, would compare the wrong quotes.
 - **Model/contract artefact caches are freshness-gated and per-key-locked**
   (`src/haute/_stat_gated_cache.py::StatGatedCache`, instantiated in `_scorer.py`
   as `_local_model_cache`), so concurrent `/quote` requests on container start
@@ -1194,7 +1200,9 @@ what they cover:
   `TestBugB4PrunerUsesOriginalEdges` and `TestBugB10LexicographicVersionComparison`
   regression classes.
 - **`test_impact.py`** — dedicated impact arithmetic, prediction-envelope
-  normalization, row-alignment/shortfall accounting, segment selection, and
+  normalization, alignment refusals (a missing middle prediction, a short and a long batch with
+  matching totals, a scalar for a multi-quote batch, either side short in `build_report`), the
+  typed endpoint errors naming the address, segment selection, and
   terminal/Markdown report formatting.
 - **`test_deploy_mlflow_gaps.py`**, **`test_deploy_validators_gaps.py`** — targeted
   gap-filling for branches not hit by the main suites (progress callbacks, artefact copy,

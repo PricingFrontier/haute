@@ -395,7 +395,11 @@ both a staging and a production endpoint (Databricks serving or a container's `/
 HTTP endpoint), computes per-column percent-change statistics and categorical-segment
 breakdowns, and renders a terminal or Markdown report. This is advisory, not a deploy
 gate — it exists so a human reviewer can see exactly what a release changes before
-approving it.
+approving it. The quotes are paired by position, so every batch must be answered with one
+prediction per quote sent and every source must hold one row per sampled quote: any other
+count fails the analysis rather than comparing the wrong quotes. Production is left out only
+on an authoritative record that it has never been released (see [cli](../cli/high-level.md)),
+never because it could not be reached.
 
 ## Design rationale
 

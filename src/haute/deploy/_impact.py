@@ -58,11 +58,29 @@ class ImpactReport:
     dataset_path: str
     total_rows: int
     sampled_rows: int
-    scored_rows: int
-    failed_rows: int
     column_stats: list[ColumnStats]
     segments: dict[str, list[SegmentRow]]
-    is_first_deploy: bool = False
+    first_deploy: str | None = None
+    """Why production was not compared, when it was not: an authoritative record that
+    production has never been released. ``None`` for a comparison."""
+
+
+class ImpactEndpointError(RuntimeError):
+    """An endpoint impact scores through did not answer: an HTTP error status, or no
+    answer at all (unreachable, timed out). Never evidence that production is absent."""
+
+    def __init__(self, url: str, problem: str, *, status: int | None = None) -> None:
+        super().__init__(f"{url}: {problem}")
+        self.url = url
+        self.status = status
+
+
+class ImpactAlignmentError(ValueError):
+    """An endpoint answered with another number of predictions than quotes it was sent.
+
+    Impact pairs staging's, production's and the dataset's rows by position, so any
+    other count would compare the wrong quotes; it compares none instead.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +116,13 @@ def _run_batched(
     Returns
     -------
     list
-        Concatenated predictions from all batches.
+        Concatenated predictions from all batches, one per record, in order.
+
+    Raises
+    ------
+    ImpactAlignmentError
+        A batch answered with another number of predictions than quotes it was sent,
+        checked batch by batch before anything is paired.
     """
     all_preds: list = []
     n_batches = math.ceil(len(records) / batch_size)
@@ -107,12 +131,31 @@ def _run_batched(
         num = i // batch_size + 1
         if progress:
             progress(f"    batch {num}/{n_batches}")
-        preds = score_fn(batch)
-        if isinstance(preds, list):
-            all_preds.extend(preds)
-        else:
-            all_preds.append(preds)
+        all_preds.extend(
+            _batch_predictions(score_fn(batch), sent=len(batch), batch=f"{num} of {n_batches}")
+        )
     return all_preds
+
+
+def _batch_predictions(preds: object, *, sent: int, batch: str) -> list:
+    """*preds*, a batch's answer, as one prediction per quote sent, its quote envelopes
+    unwrapped; a single value answers only a one-quote batch."""
+    if isinstance(preds, list):
+        rows = _unwrap_prediction_envelopes(preds)
+    elif sent == 1:
+        rows = [preds]
+    else:
+        raise ImpactAlignmentError(
+            f"Batch {batch} sent {sent} quotes but the endpoint answered with a single "
+            "value, not one prediction per quote."
+        )
+    if len(rows) != sent:
+        raise ImpactAlignmentError(
+            f"Batch {batch} sent {sent} quotes but the endpoint answered {len(rows)} "
+            "predictions; impact compares quotes by position, so it compares none rather "
+            "than the wrong ones."
+        )
+    return rows
 
 
 def score_endpoint_batched(
@@ -160,7 +203,13 @@ def score_http_endpoint_batched(
                 result = _json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"HTTP {exc.code} from {quote_url}: {error_body}") from exc
+            raise ImpactEndpointError(
+                quote_url, f"HTTP {exc.code}: {error_body}", status=exc.code
+            ) from exc
+        except OSError as exc:
+            # Unreachable, refused or timed out: no answer, which proves nothing.
+            reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+            raise ImpactEndpointError(quote_url, f"no answer ({reason})") from exc
         return _normalise_http_prediction_payload(result, source=quote_url)
 
     return _run_batched(records, _score, batch_size, progress)
@@ -447,18 +496,21 @@ def build_report(
     dataset_path: str,
     total_rows: int,
 ) -> ImpactReport:
-    """Compare staging and production predictions and build an impact report."""
+    """Compare staging and production predictions and build an impact report.
+
+    The three row sources pair by position, so each must hold one row per sampled quote;
+    any other count raises :class:`ImpactAlignmentError` rather than comparing the
+    wrong quotes.
+    """
     staging_preds = _unwrap_prediction_envelopes(staging_preds)
     prod_preds = _unwrap_prediction_envelopes(prod_preds)
 
-    # Align all three row sources even when both endpoints drop the same
-    # number of rows. Keep the original sampled count for the report.
     sampled_rows = len(input_df)
-    scored = min(len(staging_preds), len(prod_preds), sampled_rows)
-    failed = sampled_rows - scored
-    staging_preds = staging_preds[:scored]
-    prod_preds = prod_preds[:scored]
-    input_df = input_df.head(scored)
+    if len(staging_preds) != sampled_rows or len(prod_preds) != sampled_rows:
+        raise ImpactAlignmentError(
+            f"Impact compares {sampled_rows} quotes, but staging answered "
+            f"{len(staging_preds)} and production {len(prod_preds)}."
+        )
 
     stg_df = _preds_to_df(staging_preds)
     prd_df = _preds_to_df(prod_preds)
@@ -471,7 +523,9 @@ def build_report(
 
     primary = num_cols[0] if num_cols else None
     segments = (
-        _segment_breakdown(stg_df, prd_df, input_df, primary) if primary and scored > 0 else {}
+        _segment_breakdown(stg_df, prd_df, input_df, primary)
+        if primary and sampled_rows > 0
+        else {}
     )
 
     return ImpactReport(
@@ -481,8 +535,6 @@ def build_report(
         dataset_path=dataset_path,
         total_rows=total_rows,
         sampled_rows=sampled_rows,
-        scored_rows=scored,
-        failed_rows=failed,
         column_stats=stats,
         segments=segments,
     )
@@ -518,13 +570,11 @@ def format_terminal(report: ImpactReport) -> str:
     if report.sampled_rows < report.total_rows:
         sample = f" ({_fmt_int(report.sampled_rows)} of {_fmt_int(report.total_rows)} sampled)"
     lines.append(f"  Dataset:     {report.dataset_path}{sample}")
-    if report.failed_rows > 0:
-        lines.append(f"  ⚠ {_fmt_int(report.failed_rows)} rows failed to score")
     lines.append("=" * w)
 
-    if report.is_first_deploy:
+    if report.first_deploy is not None:
         lines.append("")
-        lines.append("  First deployment - no production endpoint to compare.")
+        lines.append(f"  First deployment - production not compared: {report.first_deploy}")
         lines.append("  Staging predictions scored successfully.")
         lines.append("")
         return "\n".join(lines)
@@ -587,13 +637,11 @@ def format_markdown(report: ImpactReport) -> str:
     if report.sampled_rows < report.total_rows:
         sample = f" ({report.sampled_rows:,} of {report.total_rows:,} sampled)"
     lines.append(f"**Dataset:** `{report.dataset_path}`{sample}  ")
-    if report.failed_rows > 0:
-        lines.append(f"⚠️ **{report.failed_rows:,} rows** failed to score  ")
 
-    if report.is_first_deploy:
+    if report.first_deploy is not None:
         lines.append("")
         lines.append(
-            "> First deployment - no production endpoint to compare."
+            f"> First deployment - production not compared: {report.first_deploy}"
             " Staging predictions scored successfully."
         )
         lines.append("")

@@ -14,7 +14,6 @@ MLflow target and the impact analysis. Current behaviour is specified in
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | DEP-R09 | Planned | P2 | The container image and the Databricks model install a recorded dependency closure resolved for their target Python and platform. |
-| DEP-R11 | Planned | P2 | Impact analysis fails on a row-count mismatch instead of pairing the wrong quotes, and a mistyped production URL is not a first deploy. |
 | DEP-R16 | Decision | P3 | A quote whose production value is zero and whose staging value is not is reported, not a failure of the whole impact analysis. |
 
 ## Planned improvements
@@ -85,37 +84,6 @@ in the target installation, not just identical install command text.
 `::_conda_env`.
 
 Resolver reference: [uv platform-specific resolution](https://docs.astral.sh/uv/concepts/resolution/).
-
-### DEP-R11 — Impact analysis compares the right quotes
-**Why:** `build_report` pairs staging and production predictions by position and
-silently truncates the three row sources to the shortest, so an endpoint that answered
-fewer rows than it was sent shifts every later pair and the report compares the wrong
-quotes, counting the difference as "failed rows". For the HTTP transport, "no production
-yet" is detected by matching the text `HTTP 404` in a `RuntimeError` message, so a
-mistyped production URL passes as a first deployment and the impact step goes green with
-nothing compared.
-
-**Plan:** Check each response batch before concatenation: require exactly one prediction
-per sent quote, permitting a scalar only for a one-quote batch. Fail with the batch and
-expected/actual counts, and remove `build_report`'s truncation. Check final totals too.
-Raise typed transport errors carrying status and URL. For HTTP, require explicit
-`haute impact --first-deploy` intent to skip an absent production baseline; generated CI
-must opt in for that release, never persist the bypass as a default. A registry-backed
-target may instead use an authoritative not-found result. Authentication failures,
-unexpected 404s, timeouts and unreachable endpoints fail closed; `/health` failure is
-not evidence of a first deploy. Report an intentional skip explicitly.
-
-**Acceptance:** A missing middle prediction fails before any positional comparison;
-one short and one long batch fail even when totals match; a scalar for a multi-quote
-batch fails. A 404 or unreachable production endpoint without first-deploy intent fails
-naming the URL. Explicit first-deploy intent and authoritative registry absence each
-produce a labelled skip; authentication failures never produce that skip.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/deploy/_impact.py::build_report` and
-`::score_http_endpoint_batched`; `src/haute/cli/_impact.py::_is_http_not_found` and
-`::_impact_http`.
 
 ### DEP-R16 — Zero production baselines in the impact report
 **Why:** One quote whose production value is 0 and whose staging value is not fails the

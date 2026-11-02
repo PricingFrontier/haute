@@ -1694,6 +1694,18 @@ class TestDatabricksReleaseAndDeployJobs:
         [tag] = [step for step in steps if step.get("displayName") == "Tag release"]
         assert tag["env"]["DATABRICKS_MLFLOW_TOKEN"] == "$(DATABRICKS_MLFLOW_TOKEN)"
 
+    def test_impact_reads_the_release_tags_the_production_job_pushes(self) -> None:
+        """DEP-R11: impact's first-deploy record is origin's deploy/ tags, so its job can
+        read origin: Azure DevOps keeps the pipeline's token only when asked."""
+        from haute._scaffold import RELEASE_TAG_PREFIX
+
+        assert f'TAG="{RELEASE_TAG_PREFIX}' in _release_tag_script("container", "")
+        assert f'git tag "{RELEASE_TAG_PREFIX}v' in _release_tag_script("databricks", "")
+        azure = yaml.safe_load(azure_devops_yml("container"))
+        [impact] = [s for s in azure["stages"] if s["stage"] == "ImpactAnalysis"]
+        steps = impact["jobs"][0]["steps"]
+        assert steps[0] == {"checkout": "self", "persistCredentials": True}
+
     def test_a_container_tag_step_is_given_no_secrets(self) -> None:
         workflow = yaml.safe_load(github_deploy_prod_yml("container"))
         steps = workflow["jobs"]["deploy-production"]["steps"]

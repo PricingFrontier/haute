@@ -5167,14 +5167,13 @@ class TestRunBatched:
         results = _run_batched(records, lambda batch: batch, batch_size=100, progress=None)
         assert results == [1, 2, 3]
 
-    def test_scalar_return_appended(self):
-        """Scalar results (not lists) should be appended, not extended."""
-        from haute.deploy._impact import _run_batched
+    def test_a_scalar_answers_a_one_quote_batch_only(self):
+        """DEP-R11: a scalar is one quote's prediction; for two quotes it is refused."""
+        from haute.deploy._impact import ImpactAlignmentError, _run_batched
 
-        records = [1, 2, 3]
-        results = _run_batched(records, lambda batch: sum(batch), batch_size=2, progress=None)
-        # Batch 1: [1,2] -> sum=3, Batch 2: [3] -> sum=3
-        assert results == [3, 3]
+        assert _run_batched([3], lambda batch: sum(batch), batch_size=2, progress=None) == [3]
+        with pytest.raises(ImpactAlignmentError, match="single value"):
+            _run_batched([1, 2, 3], lambda batch: sum(batch), batch_size=2, progress=None)
 
     def test_progress_called(self):
         from haute.deploy._impact import _run_batched
@@ -5287,61 +5286,34 @@ class TestBuildReport:
         )
 
         assert report.pipeline_name == "test"
-        assert report.scored_rows == 2
-        assert report.failed_rows == 0
+        assert report.sampled_rows == 2
         assert len(report.column_stats) >= 1
         assert report.column_stats[0].name == "premium"
 
-    def test_mismatched_lengths_truncated(self):
-        from haute.deploy._impact import build_report
+    def test_a_count_other_than_the_quotes_is_refused(self):
+        """DEP-R11: one endpoint answering fewer rows never shifts the pairs."""
+        from haute.deploy._impact import ImpactAlignmentError, build_report
 
         stg = [{"premium": 110.0}, {"premium": 220.0}, {"premium": 330.0}]
         prd = [{"premium": 100.0}, {"premium": 200.0}]
         input_df = pl.DataFrame({"age": [25, 30, 35]})
 
-        report = build_report(
-            stg,
-            prd,
-            input_df,
-            pipeline_name="test",
-            staging_endpoint="stg",
-            prod_endpoint="prod",
-            dataset_path="d.parquet",
-            total_rows=3,
-        )
-
-        assert report.scored_rows == 2
-        assert report.failed_rows == 1
-        assert report.sampled_rows == 3
-
-    def test_equal_prediction_lengths_shorter_than_inputs_stay_aligned(self):
-        """Both endpoints can drop the same row; segment inputs still align."""
-        from haute.deploy._impact import build_report
-
-        stg = [{"premium": float(i + 101)} for i in range(11)]
-        prd = [{"premium": float(i + 100)} for i in range(11)]
-        input_df = pl.DataFrame({"segment": ["A"] * 10 + ["B"] * 2})
-
-        report = build_report(
-            stg,
-            prd,
-            input_df,
-            pipeline_name="test",
-            staging_endpoint="stg",
-            prod_endpoint="prod",
-            dataset_path="d.parquet",
-            total_rows=12,
-        )
-
-        assert report.sampled_rows == 12
-        assert report.scored_rows == 11
-        assert report.failed_rows == 1
-        assert "segment" in report.segments
+        with pytest.raises(ImpactAlignmentError, match="staging answered 3 and production 2"):
+            build_report(
+                stg,
+                prd,
+                input_df,
+                pipeline_name="test",
+                staging_endpoint="stg",
+                prod_endpoint="prod",
+                dataset_path="d.parquet",
+                total_rows=3,
+            )
 
     def test_empty_predictions(self):
         from haute.deploy._impact import build_report
 
-        input_df = pl.DataFrame({"age": [25]})
+        input_df = pl.DataFrame({"age": []}, schema={"age": pl.Int64})
         report = build_report(
             [],
             [],
@@ -5350,10 +5322,10 @@ class TestBuildReport:
             staging_endpoint="stg",
             prod_endpoint="prod",
             dataset_path="d.parquet",
-            total_rows=1,
+            total_rows=0,
         )
 
-        assert report.scored_rows == 0
+        assert report.sampled_rows == 0
         assert len(report.column_stats) == 0
 
 
@@ -5387,8 +5359,6 @@ class TestFormatTerminal:
             dataset_path="data.parquet",
             total_rows=100,
             sampled_rows=100,
-            scored_rows=100,
-            failed_rows=0,
             column_stats=[stats],
             segments={},
         )
@@ -5409,11 +5379,9 @@ class TestFormatTerminal:
             dataset_path="d.parquet",
             total_rows=10,
             sampled_rows=10,
-            scored_rows=10,
-            failed_rows=0,
             column_stats=[],
             segments={},
-            is_first_deploy=True,
+            first_deploy="no production release is recorded.",
         )
 
         output = format_terminal(report)
@@ -5429,33 +5397,12 @@ class TestFormatTerminal:
             dataset_path="d.parquet",
             total_rows=1000,
             sampled_rows=100,
-            scored_rows=100,
-            failed_rows=0,
             column_stats=[],
             segments={},
         )
 
         output = format_terminal(report)
         assert "100 of 1,000 sampled" in output
-
-    def test_failed_rows_warning(self):
-        from haute.deploy._impact import ImpactReport, format_terminal
-
-        report = ImpactReport(
-            pipeline_name="test",
-            staging_endpoint="stg",
-            prod_endpoint="prod",
-            dataset_path="d.parquet",
-            total_rows=10,
-            sampled_rows=10,
-            scored_rows=8,
-            failed_rows=2,
-            column_stats=[],
-            segments={},
-        )
-
-        output = format_terminal(report)
-        assert "2 rows failed" in output
 
 
 class TestFormatMarkdown:
@@ -5488,8 +5435,6 @@ class TestFormatMarkdown:
             dataset_path="data.parquet",
             total_rows=100,
             sampled_rows=100,
-            scored_rows=100,
-            failed_rows=0,
             column_stats=[stats],
             segments={},
         )
@@ -5511,11 +5456,9 @@ class TestFormatMarkdown:
             dataset_path="d.parquet",
             total_rows=10,
             sampled_rows=10,
-            scored_rows=10,
-            failed_rows=0,
             column_stats=[],
             segments={},
-            is_first_deploy=True,
+            first_deploy="no production release is recorded.",
         )
 
         output = format_markdown(report)

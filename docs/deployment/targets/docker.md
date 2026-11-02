@@ -114,7 +114,7 @@ endpoint_url = "https://motor-pricing-staging.example.com"
 endpoint_url = "https://motor-pricing.example.com"
 ```
 
-Until the staging address is set, the smoke step stops with "No staging endpoint URL configured". Without a production address, the impact step reports a first deployment instead of a comparison.
+Until the staging address is set, the smoke step stops with "No staging endpoint URL configured". Until production is first released, the impact step reports a first deployment instead of a comparison: it reads that from your repository, where the production job tags each release `deploy/...`. After the first release, production must answer at its address; an unset address, an error status (404 included) or no answer fails the step.
 
 ---
 

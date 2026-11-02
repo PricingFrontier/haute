@@ -223,7 +223,6 @@ production:
 | Area | Findings | Package |
 |---|---|---|
 | Deploy | PM-16 | `DEP-R09` |
-| Deploy | PM-37, PM-38 | `DEP-R11` |
 | Deploy | PM-39 | `DEP-R16` (Decision) |
 | CLI | PM-34 | `CLI-R01` |
 | CLI | EXE-1 | `CLI-R02` |

@@ -490,7 +490,8 @@ placeholder, the example workspace; never a usable default such as an AWS region
 `deploy/v<version>` with the version `haute status --version-only` reads from the registry
 (`_release_tag_script`), and a read that fails, or prints anything but a version number, fails
 the step rather than tagging `deploy/vunknown`; Azure DevOps' production checkout sets
-`persistCredentials: true` so the tag push authenticates. A Databricks deploy job may run 60
+`persistCredentials: true` so the tag push authenticates, and its impact job's checkout does too,
+so `haute impact` can read origin's `deploy/` tags (`RELEASE_TAG_PREFIX`, the prefix both share). A Databricks deploy job may run 60
 minutes and any other 15 (`_deploy_timeout_minutes`), longer than a Databricks deploy's wait
 for its endpoint. GitLab's file keeps `.cache/uv` between runs and sets `UV_CACHE_DIR` to
 `$CI_PROJECT_DIR/.cache/uv` in its top-level `variables:`, one path (`_GITLAB_UV_CACHE`), so

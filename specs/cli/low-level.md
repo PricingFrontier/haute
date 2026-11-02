@@ -369,12 +369,18 @@ with none named, compares the test quotes' requests (`test_quote_requests`, as s
 one quote per request as smoke sends them (an endpoint a Workbench Input answers takes exactly
 one), with segments from their top-level text fields, and says so (BUG-23: the scaffold's default
 sample sat in the gitignored `data/`); dispatches to
-`_impact_databricks`/`_impact_http` based on `resolve_transport(...).kind`; Databricks probes
-the production endpoint first, while HTTP treats a missing production URL as first deploy and
-otherwise discovers absence only when scoring yields HTTP 404. Both score staging and, when
-present, production, then build an `ImpactReport` — a first-deploy
-variant with empty comparison data when there is no production endpoint yet, otherwise a full
-`build_report` diff; prints the terminal report, always writes `impact_report.md`, and additionally
+`_impact_databricks`/`_impact_http` based on `resolve_transport(...).kind`, each returning the
+staging and production predictions and, when production was not compared, why. Databricks probes
+the production endpoint first and skips it only on the SDK's `NotFound`/`ResourceDoesNotExist`.
+HTTP first reads whether production has been released (`_production_released`:
+`git ls-remote --tags origin 'refs/tags/deploy/*'` through `_git_core._run_git_ok` in the project
+root, `RELEASE_TAG_PREFIX` from `haute._scaffold`; a failure to read exits 1); with no release it
+scores staging alone and records the skip, and with one it requires
+`[ci.production] endpoint_url` (exit 1 naming the key) and scores production, any
+`ImpactEndpointError` propagating. Both then build an `ImpactReport` — a first-deploy
+variant (`first_deploy`, the reason) with empty comparison data, otherwise a full
+`build_report` diff; an `ImpactEndpointError` or `ImpactAlignmentError` from scoring or the report
+exits 1 printing it, and writes no report; prints the terminal report, always writes `impact_report.md`, and additionally
 appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
 
 ## Edge cases and invariants
@@ -444,10 +450,9 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
   override so fall back to default") from `tomllib.TOMLDecodeError` (raised as `haute.errors.ConfigError`
   — a malformed `haute.toml` must not silently resolve to the loopback default, since that could mask
   a typo like a botched `0.0.0.0`).
-- `_impact._is_databricks_not_found` / `_is_http_not_found` are the only points where an exception
-  is reclassified as "expected" (first-deploy) rather than propagated; both inspect the exception
-  shape narrowly (MRO class-name match; `RuntimeError` message containing `"HTTP 404"`) rather than
-  catching broadly.
+- `_impact._is_databricks_not_found` is the only point where an exception is reclassified as
+  "expected" (first deploy) rather than propagated, matching the SDK's class names across the MRO;
+  an HTTP target's first deploy is read from origin's release tags, never from an error.
 - `_deploy.handle_deploy`'s target-dispatch step distinguishes `ImportError` (missing optional
   extra — tells the user which `uv add haute[...]` to run), `NotImplementedError` (target not yet
   supported), and `DeployError` (expected target/configuration or operational failure). It has no
@@ -535,8 +540,10 @@ Key files and what they cover:
   single-source-of-truth staging suffix resolution for `impact`.
 - `test_cli_fail_loudly.py` — TOML-aware `pyproject.toml` parsing edge cases, structural (not
   substring) `haute` dependency detection, the exact wording of the missing-static-build install
-  instruction, CI-provider detection, `serve` port-conflict detection, `impact`'s prod-exists
-  failing loudly on non-404 errors.
+  instruction, CI-provider detection, `serve` port-conflict detection, `impact` skipping
+  production only on the workspace's NotFound or, over HTTP, against a real local origin with no
+  `deploy/` tag (production then never contacted), and after a tagged release failing on a 404, an
+  authentication failure, a timeout, no answer, an unset address or tags it cannot read.
 - `test_workbench_rollout.py` — `haute app rollout` end to end through the CLI against a fake
   host and transport (specs/workbench, Testing).
 - `test_workbench_impact.py` — `haute app impact` end to end through the CLI against fake
