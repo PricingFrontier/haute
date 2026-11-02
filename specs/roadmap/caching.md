@@ -25,7 +25,7 @@ measured limits of the existing consumers.
 | Aim | Current behaviour | Gap |
 |---|---|---|
 | One store, every consumer | Node outputs, input snapshots (including each emitting table of a structured API Input, prepared automatically), and analyses share `.haute_cache`; previews, bounded runs, explicit builds, and traces run under one seed plan. | — |
-| No duplicated runs | A bounded run seeds from any fresh covering generation and captures a join, fan-out, join feeder, batch Model Score, or consumed producer only where recomputing it costs more than the cache round trip, and records why it skipped the others; a preview seeds the same way and captures only the joins and costly full-input work it must compute in full. A chain of plain transforms is recomputed by every preview and bounded run by design, because recomputing it costs less than the cache round trip. Each capture publishes as soon as it is written, so a run that fails or is cancelled later keeps what it had already published. A preview served from the response cache reports its generations as seeded, and the canvas raises the node-data epoch only for a capture generation it has not seen, so a repeat preview costs no refetch. | Two consumers that resolve the same cold capture point at the same time, or an explicit build and an automatic capture of one node, both compute it; the publication lock decides only who publishes (`CACHE-S19`). |
+| No duplicated runs | A bounded run seeds from any fresh covering generation and captures a join, fan-out, join feeder, batch Model Score, or consumed producer only where recomputing it costs more than the cache round trip, and records why it skipped the others; a preview seeds the same way and captures only the joins and costly full-input work it must compute in full. A chain of plain transforms is recomputed by every preview and bounded run by design, because recomputing it costs less than the cache round trip. Each capture publishes as soon as it is written, so a run that fails or is cancelled later keeps what it had already published. A preview served from the response cache reports its generations as seeded, and the canvas raises the node-data epoch only for a capture generation it has not seen, so a repeat preview costs no refetch. | — |
 | Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. A preview says when a node was not cached and how to fix it. | A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). |
 | Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A node with one input whose code is provably row-local, or a Data Input whose post-load code is, is written a slice of its input (or source scan) at a time where a capture, an explicit build or a Data Output writes it, so its memory does not grow with the input. A pass-through node carries its parent's recipe forward, and training preparation writes its prepared parquet through the same bounded writer, slicing the frame or the recipe's input and recording which. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | Full joins rescan the base once per lookup chunk (`CACHE-S18`; measured 24-Sep-2026 and not yet worth building). |
 | Failures are recoverable | A corrupt generation is reported, never silently repaired, and names the node whose cache to clear or rebuild; a plan whose inputs moved stops, before collection and again if they move before a capture publishes. | — |
@@ -35,13 +35,12 @@ measured limits of the existing consumers.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | CACHE-S13 | Planned | P3 | A capturing preview finishes as a job instead of dying at the interactive timeout. Unproven: no measured preview approaches the timeout (re-measured 24-Sep-2026). |
-| CACHE-S19 | Deferred | P3 | Two consumers that need the same cold capture compute it once. |
 | CACHE-S18 | Planned | P3 | Full joins are written with a bounded number of scans. Measured 24-Sep-2026: about 2 s over native at 10M × 10M rows, so not yet worth building. |
 
 ## Planned improvements
 
 `CACHE-S18` is gated on a measurement named in its own entry rather than
-started on the strength of its shape; `CACHE-S19` remains deferred. `CACHE-S13` is also measurement-gated:
+started on the strength of its shape. `CACHE-S13` is also measurement-gated:
 no measured preview approaches its timeout. What is left is measured
 against cost rather than shape. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
@@ -119,8 +118,8 @@ materialised point below it records it (a seed generation's or an input
 snapshot's metadata, including an API Input table's, or a direct Parquet
 footer), summed over the capture's inputs; the plan's estimate is the sum
 over its capture points; an input with no recorded row count makes the
-estimate `unavailable`. The route resolves the plan once with waiting
-disabled (`CACHE-S19`) and dispatches on what that resolution reports,
+estimate `unavailable`. The route resolves the plan once and
+dispatches on what that resolution reports,
 before anything blocks: a plan whose estimate is `unavailable` or at least
 `HAUTE_PREVIEW_CAPTURE_JOB_ROWS` (default one million), or whose first
 resolution finds a capture point another run has claimed, runs under the
@@ -162,116 +161,6 @@ no budget that refuses a capture.
 `_pipeline_time_limit`); `src/haute/routes/_background_jobs.py`;
 `src/haute/_seed_plans.py` (`SeedPlanDecision`); `src/haute/schemas.py`;
 `frontend/src/hooks/usePipelineAPI.ts`; `frontend/src/stores/useNodeDataStore.ts`.
-
-### CACHE-S19 — One computation per cold capture point
-
-**Why:** A seed plan decides its captures from store metadata, and the run
-computes each capture before it takes the identity's publication lock
-(`src/haute/_node_snapshots.py`, `publish_node_output`). Two consumers that
-resolve the same cold identity at the same time, a preview and a training run
-on one lineage, both compute it in full; the lock only decides which
-publishes and the other keeps its artifact as `superseded`. Only explicit
-node-data builds join a running build (`src/haute/routes/_node_data_service.py`,
-`run`). The aim's "computed once" therefore holds after publication, not
-during it.
-
-**Deferred 20-Sep-2026.** The server never has concurrent users, so the only
-way two consumers reach one cold identity at once is one person's own
-overlapping work — a preview while their training job runs, which is the case
-this entry names. That can happen, but it is rarer than two people, and the
-measurement below says it does not happen at all in practice. Against that,
-this is the most dangerous change left in the component: it alters behaviour
-under the store's lease lock, where a mistake is a cross-process data hazard
-rather than a slow write. The value is small, the risk is the largest here,
-and the lock discipline it would change is currently correct.
-
-**Activation trigger:** a real project's logs show
-`node_snapshot_capture_superseded` outside a deliberately constructed race —
-that is, one person's overlapping operations actually colliding on a cold
-identity often enough to be worth the risk. If it is built, it gets its own
-review rather than a share of a batch.
-
-**The measurement.** The duplicate computation
-this removes already announces itself: a losing publication logs
-`node_snapshot_capture_superseded` and records `outcome: "superseded"`. Tallied
-over the seeding, node-data, Data Output, training and cross-process suites:
-157 published against 6 superseded, and every one of those six comes from a
-test that constructs the race on purpose. So in ordinary operation the case is
-rare, while this is the most correctness-sensitive package left — it changes
-what happens under the store's lease lock, where a mistake is a cross-process
-data hazard rather than a slow write.
-
-That is not a retirement: a test suite does not run a preview and a training
-job against one cold lineage the way two people sharing a project do, and this
-repository's runs cannot measure that. It is a gate. The event is already
-logged, so counting it in a real project's logs answers the question at no
-cost, and the work should wait for that count rather than be built on the
-strength of the shape alone. If it is built, it gets its own review: claims
-under the lease lock are not a package to fold into a batch.
-
-Its stated dependency on `CACHE-S13` is soft and should not block it. This
-package's own plan has a route that must answer promptly open with waiting
-disabled, so without `CACHE-S13` the policy is simply that a preview never
-waits — it computes as it does today and the claim holder publishes — which
-loses nothing against today and keeps the value for the consumers that do run
-long: training, a Data Output, and an explicit build.
-
-**Plan:** Add cross-process in-flight **claims** to the store, settled when
-a plan opens and never during execution, so every plan that runs is one
-resolution that passed ancestry agreement whole. A claim is a per-identity
-lock file plus `.inflight/<identity digest>.json` recording the columns the
-claimant will write, its process token, and its deadline; a dead process
-token releases a claim as it releases a lease marker. `open_seed_plan`
-resolves, then under the store's lease lock compares each capture point
-(automatic captures and an explicit build's own node alike) against live
-claims: a claim whose columns cover the point's negotiated demand makes the
-point **awaited**; when nothing is awaited the plan claims every capture point
-it owns under the same lock and proceeds. Whether a plan waits is the
-caller's policy: a route that must answer promptly opens with waiting
-disabled and, on an awaited point, returns at once so `CACHE-S13` can hand
-the request to a job; a job or a spawned worker opens with waiting enabled.
-A plan that awaits anything and may wait takes no claims, releases its seed
-leases, waits on the awaited claims' locks up to its deadline, and resolves
-again from scratch, so the published generation is
-seeded through the same walk, negotiation, and ancestry agreement as any
-other seed, and a diamond whose ancestor was refreshed while the waiter
-waited drops the stale seed exactly as it does today; if the claimant
-published nothing, the point is cold on re-resolution and the waiter claims
-and computes it. Because a plan holds claims only when it awaits nothing,
-two plans cannot wait on each other. A `refresh` request never awaits and its
-claim records `refresh`; a claim that does not cover the demand is not
-joined, and an explicit build, which writes every column, awaits only a
-claim that writes every column. Claims are released on publication,
-supersession, failure, cancellation, and plan close. Waits are recorded in
-the execution metrics (`shared_snapshot_waits`, with the awaited identity,
-the claimant's token, and the wait time) and shown as "waiting for another
-run's cache" in the preview panel and job status.
-
-**Acceptance:** `tests/test_node_snapshot_cross_process.py` proves two
-processes opening plans on one cold identity perform one build and both read
-its generation; that an explicit build and an automatic capture racing on one
-identity perform one build, whichever claims first; that a claimant's failure
-or cancellation lets the waiter claim and build; that a narrower claim is not
-joined; that a refresh does not wait; that a dead claimant's claim is
-released; and, for a diamond `A → B`, `A → C`, `B, C → D`, that a waiter
-whose first resolution seeded `A` at one generation re-resolves after `A` is
-refreshed and `B` is published from the new generation, and neither reads
-`B` beside the old `A` nor publishes `D` from mixed generations.
-`tests/test_seed_plans.py` covers the awaited decision, that a plan with
-awaits holds no claims, and that a plan without awaits claims every capture
-point it owns; a route test proves the waiting state in a job's status.
-
-**Owning specifications:** [IO layer](../io-layer/low-level.md#node-output-snapshots)
-(in-flight claims); [caching](../caching/low-level.md#seed-plans) (claims
-and waits at plan open); [server API](../server-api/low-level.md#node-data-builds)
-(explicit builds joining claims, execution metrics).
-
-**Dependencies:** `CACHE-S13`, whose dispatch sends a preview that waited to
-the job path so it is not bounded by the interactive timeout.
-
-**Evidence:** `src/haute/_node_snapshots.py`; `src/haute/_seed_plans.py`;
-`src/haute/_execute_lazy.py` (`_PlannedCaptures`);
-`src/haute/_execution_context.py`.
 
 ### CACHE-S18 — Bounded scans in full joins
 
