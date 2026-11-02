@@ -1171,20 +1171,17 @@ describe("useNodeResultsStore", () => {
         offset: 0,
         preview_row_count: 1,
         preview_row_limit: 100,
-        frontier_generation: 0,
         error: null,
       }
     }
 
-    function frontierResult(generation: number): OptimiserSolveResult {
+    function frontierResult(): OptimiserSolveResult {
       return makeSolveResult({
-        frontier_generation: generation,
         frontier: makeFrontier({
           points: [onlinePoint(150), onlinePoint(160)],
           point_summaries: [pointSummary(), pointSummary({ total_objective: 160 })],
           n_points: 2,
           points_returned: 2,
-          frontier_generation: generation,
         }),
       })
     }
@@ -1205,20 +1202,19 @@ describe("useNodeResultsStore", () => {
       return useNodeResultsStore.getState().optimiserApplyCache.map((entry) => entry.key)
     }
 
-    it("derives the node's current identity from its job, frontier generation and selection", () => {
-      solve("n1", "j1", frontierResult(3))
-      expect(currentIdentity("n1")).toEqual({ jobId: "j1", frontierGeneration: 3, target: 0, query: QUERY })
+    it("derives the node's current identity from its job and selection", () => {
+      solve("n1", "j1", frontierResult())
+      expect(currentIdentity("n1")).toEqual({ jobId: "j1", target: 0, query: QUERY })
 
       useNodeResultsStore.getState().selectFrontierPoint("n1", null)
-      expect(currentIdentity("n1")).toEqual({ jobId: "j1", frontierGeneration: 3, target: "solved", query: QUERY })
+      expect(currentIdentity("n1")).toEqual({ jobId: "j1", target: "solved", query: QUERY })
     })
 
     it("keys every part of the identity, the full query included", () => {
-      const base = { jobId: "j1", frontierGeneration: 0, target: "solved" as const, query: QUERY }
+      const base = { jobId: "j1", target: "solved" as const, query: QUERY }
       const keys = new Set([
         optimiserApplyKey(base),
         optimiserApplyKey({ ...base, jobId: "j2" }),
-        optimiserApplyKey({ ...base, frontierGeneration: 1 }),
         optimiserApplyKey({ ...base, target: 0 }),
         optimiserApplyKey({ ...base, query: { ...QUERY, offset: 100 } }),
         optimiserApplyKey({ ...base, query: { ...QUERY, sort_by: "optimal_objective" } }),
@@ -1228,17 +1224,17 @@ describe("useNodeResultsStore", () => {
           query: { ...QUERY, filters: { ...QUERY.filters, analysis_equals: { region: "North" } } },
         }),
       ])
-      expect(keys.size).toBe(8)
+      expect(keys.size).toBe(7)
     })
 
     it("canonicalises the query, so key order never splits one query into two entries", () => {
       const reordered = Object.fromEntries(Object.entries(QUERY).reverse()) as OptimiserApplyQuery
-      const base = { jobId: "j1", frontierGeneration: 0, target: "solved" as const }
+      const base = { jobId: "j1", target: "solved" as const }
       expect(optimiserApplyKey({ ...base, query: reordered })).toBe(optimiserApplyKey({ ...base, query: QUERY }))
     })
 
     it("stores a response for the current identity and drops one for a target no longer shown", () => {
-      solve("n1", "j1", frontierResult(0))
+      solve("n1", "j1", frontierResult())
       const s = useNodeResultsStore.getState()
       const pointZero = currentIdentity("n1")
 
@@ -1250,45 +1246,38 @@ describe("useNodeResultsStore", () => {
       expect(useNodeResultsStore.getState().optimiserApplyCache[0].response.row_count).toBe(1)
     })
 
-    it("drops a late response from an earlier job or frontier generation", () => {
-      solve("n1", "j1", frontierResult(0))
+    it("drops a late response from an earlier job", () => {
+      solve("n1", "j1", frontierResult())
       const earlierJob = currentIdentity("n1")
-      solve("n1", "j1", frontierResult(1))
-      const earlierGeneration = currentIdentity("n1")
-      solve("n1", "j2", frontierResult(1))
+      solve("n1", "j2", frontierResult())
       const s = useNodeResultsStore.getState()
 
       expect(s.recordOptimiserApply("n1", earlierJob, applyResponse(1))).toBe(false)
-      expect(s.recordOptimiserApply("n1", earlierGeneration, applyResponse(1))).toBe(false)
       expect(s.recordOptimiserApply("n2", currentIdentity("n1"), applyResponse(1))).toBe(false)
       expect(cachedKeys()).toEqual([])
     })
 
-    it("keeps the node's entries for the same job and generation, and clears them on a new job or recompute", () => {
-      solve("n1", "j1", frontierResult(0))
-      solve("n2", "j9", frontierResult(0))
+    it("keeps the node's entries for the same job, and clears them on a new job", () => {
+      solve("n1", "j1", frontierResult())
+      solve("n2", "j9", frontierResult())
       const s = useNodeResultsStore.getState()
       const n1 = currentIdentity("n1")
       const n2 = currentIdentity("n2")
       s.recordOptimiserApply("n1", n1, applyResponse(1))
       s.recordOptimiserApply("n2", n2, applyResponse(2))
 
-      // Re-installing the same job and generation keeps the entry.
-      solve("n1", "j1", frontierResult(0))
+      // Re-installing the same job keeps the entry.
+      solve("n1", "j1", frontierResult())
       expect(cachedKeys()).toEqual([optimiserApplyKey(n1), optimiserApplyKey(n2)])
 
-      // A recompute (same job, next generation) clears only that node.
-      solve("n1", "j1", frontierResult(1))
-      expect(cachedKeys()).toEqual([optimiserApplyKey(n2)])
-
-      s.recordOptimiserApply("n1", currentIdentity("n1"), applyResponse(3))
-      solve("n1", "j3", frontierResult(0))
+      // A new job clears only that node.
+      solve("n1", "j3", frontierResult())
       expect(cachedKeys()).toEqual([optimiserApplyKey(n2)])
     })
 
     it("clears a node's entries when its solve fails or its results are cleared", () => {
-      solve("n1", "j1", frontierResult(0))
-      solve("n2", "j2", frontierResult(0))
+      solve("n1", "j1", frontierResult())
+      solve("n2", "j2", frontierResult())
       const s = useNodeResultsStore.getState()
       s.recordOptimiserApply("n1", currentIdentity("n1"), applyResponse(1))
       s.recordOptimiserApply("n2", currentIdentity("n2"), applyResponse(2))
@@ -1329,14 +1318,6 @@ describe("useNodeResultsStore", () => {
       expect(keys).not.toContain(optimiserApplyKey(identities[1]))
       expect(keys).toContain(optimiserApplyKey(identities[0]))
       expect(keys.at(-1)).toBe(optimiserApplyKey(currentIdentity("n1")))
-    })
-
-    it("refuses a result whose frontier reports a different generation", () => {
-      const s = useNodeResultsStore.getState()
-      s.startSolveJob("n1", "j1", "Optimiser", {}, "h", "live", 0)
-      const result = frontierResult(2)
-      expect(() => s.completeSolveJob("n1", { ...result, frontier: { ...result.frontier!, frontier_generation: 1 } }))
-        .toThrow("Optimiser frontier generation 1 does not match its result's generation 2")
     })
   })
 
@@ -2050,18 +2031,15 @@ describe("useNodeResultsStore", () => {
     })
 
     // ────────────────────────────────────────────────────────────
-    // Select responses are fenced by job and frontier generation.
-    // A recompute reuses the job id and the point indices, so a late
-    // reply for generation 1's point 0 must never land on generation
-    // 2's point 0 (or on another job's).
+    // Select responses are fenced by job: a late reply for one job's
+    // point 0 must never land on another job's point 0.
     // ────────────────────────────────────────────────────────────
 
-    function completeRatebookGeneration(jobId: string, generation: number, pointObjective: number) {
+    function completeRatebookSolve(jobId: string, pointObjective: number) {
       const s = useNodeResultsStore.getState()
       s.startSolveJob("n1", jobId, "Node 1", {}, "h1", "live", 0)
       s.completeSolveJob("n1", makeSolveResult({
         mode: "ratebook",
-        frontier_generation: generation,
         frontier: makeFrontier({
           points: [onlinePoint(pointObjective), onlinePoint(pointObjective + 10)],
           point_summaries: [
@@ -2072,7 +2050,6 @@ describe("useNodeResultsStore", () => {
           points_returned: 2,
           constraint_names: ["premium"],
           swept_axes: ["premium"],
-          frontier_generation: generation,
         }),
       }))
     }
@@ -2086,41 +2063,12 @@ describe("useNodeResultsStore", () => {
       ["recordFrontierPointSummary", (response: ReturnType<typeof makeFrontierSelect>) => (
         useNodeResultsStore.getState().recordFrontierPointSummary("n1", "j1", 0, response)
       )],
-    ] as const)("%s drops a late reply from an earlier frontier generation of the same job", (_name, write) => {
-      completeRatebookGeneration("j1", 1, 100)
-      // The recompute keeps the job and point 0 is selected again, now worth 200.
-      completeRatebookGeneration("j1", 2, 200)
-      const before = useNodeResultsStore.getState().solveResults["n1"]
-      expect(before.selectedPointIndex).toBe(0)
-      expect(before.result?.total_objective).toBe(200)
-
-      write(makeFrontierSelect({
-        point_index: 0,
-        frontier_generation: 1,
-        total_objective: 100,
-        factor_tables: staleTables,
-      }))
-
-      const after = useNodeResultsStore.getState().solveResults["n1"]
-      expect(after).toBe(before)
-      expect(after.result?.total_objective).toBe(200)
-      expect(after.frontier!.point_summaries[0].total_objective).toBe(200)
-      expect(after.frontier!.frontier_generation).toBe(2)
-    })
-
-    it.each([
-      ["updateFrontierAfterSelect", (response: ReturnType<typeof makeFrontierSelect>) => (
-        useNodeResultsStore.getState().updateFrontierAfterSelect("n1", "j1", 0, response)
-      )],
-      ["recordFrontierPointSummary", (response: ReturnType<typeof makeFrontierSelect>) => (
-        useNodeResultsStore.getState().recordFrontierPointSummary("n1", "j1", 0, response)
-      )],
-    ] as const)("%s drops a reply from a generation the node has not installed yet", (_name, write) => {
-      completeRatebookGeneration("j1", 1, 100)
+    ] as const)("%s drops a reply for a job the node has moved past", (_name, write) => {
+      completeRatebookSolve("j1", 100)
+      completeRatebookSolve("j2", 200)
       const before = useNodeResultsStore.getState().solveResults["n1"]
 
-      // The server recomputed first: its generation 2 point 0 is not the node's point 0.
-      write(makeFrontierSelect({ point_index: 0, frontier_generation: 2, total_objective: 300, factor_tables: staleTables }))
+      write(makeFrontierSelect({ point_index: 0, total_objective: 100, factor_tables: staleTables }))
 
       expect(useNodeResultsStore.getState().solveResults["n1"]).toBe(before)
     })
@@ -2132,28 +2080,10 @@ describe("useNodeResultsStore", () => {
       ["recordFrontierPointSummary", (response: ReturnType<typeof makeFrontierSelect>) => (
         useNodeResultsStore.getState().recordFrontierPointSummary("n1", "j1", 0, response)
       )],
-    ] as const)("%s drops a reply for a job the node has moved past, even at the same generation", (_name, write) => {
-      completeRatebookGeneration("j1", 1, 100)
-      completeRatebookGeneration("j2", 1, 200)
-      const before = useNodeResultsStore.getState().solveResults["n1"]
+    ] as const)("%s installs a reply for the node's current job", (_name, write) => {
+      completeRatebookSolve("j1", 200)
 
-      write(makeFrontierSelect({ point_index: 0, frontier_generation: 1, total_objective: 100, factor_tables: staleTables }))
-
-      expect(useNodeResultsStore.getState().solveResults["n1"]).toBe(before)
-    })
-
-    it.each([
-      ["updateFrontierAfterSelect", (response: ReturnType<typeof makeFrontierSelect>) => (
-        useNodeResultsStore.getState().updateFrontierAfterSelect("n1", "j1", 0, response)
-      )],
-      ["recordFrontierPointSummary", (response: ReturnType<typeof makeFrontierSelect>) => (
-        useNodeResultsStore.getState().recordFrontierPointSummary("n1", "j1", 0, response)
-      )],
-    ] as const)("%s installs a reply for the node's current job and generation", (_name, write) => {
-      completeRatebookGeneration("j1", 1, 100)
-      completeRatebookGeneration("j1", 2, 200)
-
-      write(makeFrontierSelect({ point_index: 0, frontier_generation: 2, total_objective: 205, factor_tables: staleTables }))
+      write(makeFrontierSelect({ point_index: 0, total_objective: 205, factor_tables: staleTables }))
 
       const cached = useNodeResultsStore.getState().solveResults["n1"]
       expect(cached.selectedPointIndex).toBe(0)

@@ -29,8 +29,6 @@ from haute.errors import GroupByExecutionUnsupportedError, RequestRefusedError
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import (
     OptimiserSolveService,
-    _memory_limit_message,
-    _normalise_memory_limit_payload,
     _optional_positive_int,
 )
 from haute.routes._optimiser_solver import SolveContext
@@ -40,6 +38,7 @@ from tests.conftest import (
     make_graph,
     make_ready_file_input_config,
 )
+from tests.optimiser_fixtures import setup_launch_context
 
 _TERMINAL_STATUSES = {"completed", "error", "contract_error", "cancelled", "memory_limited"}
 
@@ -482,7 +481,7 @@ def test_solve_worker_records_public_contract_errors() -> None:
         ),
     ):
         service._launch_background(
-            SolveContext(job_id=job_id, node_id="opt", mode="online"),
+            setup_launch_context(service, job_id),
             config={},
             quote_grid=object(),
             ratebook_factors_handle=None,
@@ -493,35 +492,8 @@ def test_solve_worker_records_public_contract_errors() -> None:
     assert job["error_code"] == "group_by_execution_unsupported"
 
 
-def test_memory_limit_helpers_cover_unstructured_and_absent_values() -> None:
-    assert _normalise_memory_limit_payload("memory exhausted") == {
-        "message": "memory exhausted",
-        "error_code": "memory_limit",
-    }
+def test_optional_positive_int_leaves_an_absent_value_absent() -> None:
     assert _optional_positive_int(None, field="timeout") is None
-    assert _memory_limit_message({}) == "Auto-range exceeded its memory budget."
-
-
-def test_memory_limit_message_prefers_the_curated_http_payload_wording() -> None:
-    """The shared memory-limit mapping stamps the curated Auto-range message; the
-    job's terminal message must reuse it rather than the generic fallback."""
-    from haute._execution_context import ExecutionMemoryLimitExceededError
-    from haute.routes._contract_errors import memory_limit_http_exception
-
-    exc = ExecutionMemoryLimitExceededError(
-        "frontier_auto_range",
-        rss_bytes=2048,
-        limit_bytes=1024,
-        reason="process_rss_limit_exceeded",
-        rss_limit_bytes=1024,
-    )
-    detail = memory_limit_http_exception(exc, operation_noun="Auto-range").detail
-    assert isinstance(detail, dict)
-    message = _memory_limit_message(_normalise_memory_limit_payload(detail))
-    assert message == detail["message"]
-    assert message.startswith("Auto-range needs more memory than this server allows")
-    assert "2.0 KiB used, 1.0 KiB allowed" in message
-    assert "frontier_auto_range" not in message
 
 
 # ---------------------------------------------------------------------------

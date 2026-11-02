@@ -346,33 +346,28 @@ A completed solve with frontier points selects point 0.
 `updateFrontierAfterSelect(nodeId, jobId, pointIndex, response)` is the
 network-driven counterpart used after an explicit backend
 `/optimiser/frontier/select` (ratebook materialisation); it validates the
-echoed `point_index` matches the request, drops the response unless its job
-and `frontier_generation` are the node's installed ones (`jobId`,
-`originalResult.frontier_generation`: a recompute keeps the job and reuses
-point indices for other points, so a late reply from an earlier generation,
-or one from a generation not yet installed, describes another point), stores the response
+echoed `point_index` matches the request, drops the response unless its job is the node's installed one, stores the response
 as that point's summary (so later re-selecting that point doesn't need
 another round trip), and — critically — if the user has since selected a
 *different* point while the request was in flight, it keeps the stored
 summary but does not regress the displayed `result`/`selectedPointIndex` to
 the stale response's point (the "stale-response guard").
 `recordFrontierPointSummary(nodeId, jobId, pointIndex, response)` (Export's
-factor-table load) applies the same job and generation fence, stores the
+factor-table load) applies the same job fence, stores the
 point's summary and never changes the selection.
 
 **Optimiser apply cache** (`optimiserApplyCache`, `recordOptimiserApply`,
 `touchOptimiserApply`, `optimiserApplyIdentityFor`, `optimiserApplyKey`): the
 `/apply` per-quote responses, at most `MAX_CACHED_OPTIMISER_APPLY` (16)
 entries in least-recently-used order, each keyed by the full request identity
-`(jobId, frontierGeneration, target: "solved" | pointIndex, canonical query)`
+`(jobId, target: "solved" | pointIndex, canonical query)`
 and owned by one node. `optimiserApplyIdentityFor(cached, query)` derives a
 node's current identity from its cached solve (`jobId`,
-`originalResult.frontier_generation`, `selectedPointIndex`).
+`selectedPointIndex`).
 `recordOptimiserApply` stores a response only when that identity is still the
 node's current one and returns whether it did; otherwise the response is late
 and dropped. `completeSolveJob` keeps only the node's entries for the
-installed `(jobId, frontierGeneration)` (so a new job or a recomputed frontier
-refetches), and `failSolveJob`, clearing the node's results and solve-cache
+installed `jobId` (so a new job refetches), and `failSolveJob`, clearing the node's results and solve-cache
 eviction drop all the node's entries. `touchOptimiserApply` marks a hit most
 recently used. See the
 [optimiser UI spec](../frontend-modelling-optimiser-ui/low-level.md#edge-cases-and-invariants).

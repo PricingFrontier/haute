@@ -45,7 +45,7 @@
   specifically to reject two "equal" callables from different registration sites —
   see `TestJobStoreTTL::test_distinct_equal_artifact_cleaners_are_rejected`).
 - **Heavy-object keys** — `_DEFAULT_HEAVY_OBJECT_KEYS = ("solver", "solve_result",
-  "quote_grid")` and `_HEAVY_OBJECT_KEYS = (*_DEFAULT_HEAVY_OBJECT_KEYS, "factors_df",
+  "quote_grid")` and `_HEAVY_OBJECT_KEYS = (*_DEFAULT_HEAVY_OBJECT_KEYS,
   "ratebook_factor_contexts", "solver_session")`. A heavy value may own a process (the
   optimiser's `SolverSession`); such a value implements `HeavyResource.release()`. Every
   path that removes a heavy value — the heavy TTL timer and lazy sweep,

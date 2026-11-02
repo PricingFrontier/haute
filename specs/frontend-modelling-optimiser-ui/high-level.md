@@ -579,7 +579,7 @@ server over every quote: sortable headers, presets ("Highest adjustment", "Lowes
 analysis value, the scenario value marked up or down against 1.0 by a glyph and words as well
 as colour, and a pager stating "Showing a–b of M matching (of N)"; columns are named in
 neutral scenario terms; reopening Quotes for the same target shows the loaded detail again
-without a new request, and a new solve or a recomputed frontier loads it afresh. Quotes and Rates
+without a new request, and a new solve loads it afresh. Quotes and Rates
 failures offer **Retry**. Rates lays out like AvE: factors ranked by rate spread (how far their rates move from 1.0, weighted by quotes) with search, beside the selected factor's rate bars in banding order with an aligned quote-count strip, a focusable detail line per level, and a values table of Level | Rate | vs neutral 1.0 (%) | Quotes | Share; the chosen factor survives tab switches. Summary's ratebook beeswarm fits the pane's width, says when it shows only the top 8 of N factors (with a Top 8 / All toggle), names categorical levels in words as well as colour, and has a values table. Adjustments shows how the optimiser adjusted the book relative to the base price, for the
 solved result or the selected frontier point: one bar per scenario value of the solve's grid
 (values nobody chose included, as empty bars), labelled by the value, on an axis named

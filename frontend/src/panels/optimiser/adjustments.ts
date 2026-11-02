@@ -2,9 +2,9 @@
 
 import type { OptimiserAdjustmentReport, OptimiserAdjustmentWeighting } from "../../api/types"
 
-/** A point report's identity: point indices mean something only within one job and generation. */
-export function pointAdjustmentKey(jobId: string, frontierGeneration: number, pointIndex: number): string {
-  return `${jobId}:${frontierGeneration}:${pointIndex}`
+/** A point report's identity: point indices mean something only within one job. */
+export function pointAdjustmentKey(jobId: string, pointIndex: number): string {
+  return `${jobId}:${pointIndex}`
 }
 
 export const NO_UNADJUSTED_NOTE = "The scenario grid has no 1.0 step, so no quote is unadjusted."

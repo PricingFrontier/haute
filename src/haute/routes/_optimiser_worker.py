@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import shutil
 import tempfile
 import time
 from collections.abc import Iterator, Mapping
@@ -57,6 +56,7 @@ from haute.routes._job_lifecycle import TERMINAL_REASONS, TerminalReason
 from haute.routes._job_store import get_job_store
 from haute.routes._optimiser_input import (
     ESTIMATE_MAPPED_ERRORS,
+    OptimiserSetupError,
     estimate_failure_http_exception,
 )
 from haute.schemas import (
@@ -203,18 +203,10 @@ def worker_scratch_directory() -> Iterator[str]:
     was terminated; a removal failure is logged, never raised over the job's
     own outcome.
     """
-    path = tempfile.mkdtemp(prefix="haute_optimiser_worker_")
-    try:
-        yield path
-    finally:
-        try:
-            shutil.rmtree(path)
-        except OSError as cleanup_exc:
-            logger.warning(
-                "optimiser_worker_scratch_cleanup_failed",
-                path=path,
-                error=str(cleanup_exc),
-            )
+    from haute.routes._optimiser_artifacts import scratch_directory
+
+    with scratch_directory("worker_") as directory:
+        yield str(directory)
 
 
 @contextlib.contextmanager
@@ -258,32 +250,70 @@ def _private_auto_range_job(store: JobStore, request: FrontierAutoRangeWorkerReq
     return job_id
 
 
-def _failure_before_job_mapping(
+SETUP_OPERATION_NOUN = "Optimiser setup"
+AUTO_RANGE_OPERATION_NOUN = "Auto-range"
+
+
+def classify_optimiser_failure(
     exc: BaseException,
     *,
     operation_noun: str,
+    log_event: str,
+    **log_context: Any,
 ) -> OptimiserWorkerFailure:
-    """Classify a child failure that no job failure mapping recorded.
+    """The one classification of an optimiser setup or auto-range failure.
 
-    Only the worker's own start-up (its execution context, the re-plan) can
-    fail before a job step's mapping runs.
+    A memory refusal or overrun is ``memory_limited`` (507) with the curated
+    message naming *operation_noun*; a refusal is ``contract_error`` for a
+    4xx and ``error`` otherwise; a public contract error keeps its own
+    reason; a pipeline that cannot run bounded is a 422 ``contract_error``.
+    Anything else, a library or Polars ``ValueError`` among them, is a
+    server fault: an ``error`` whose HTTP detail is fixed and whose cause is
+    logged as *log_event*. A replayed child failure is already classified.
+    Stops and cancellations are the caller's, never a failure.
     """
-    from haute.routes._contract_errors import memory_limit_refusal
+    from haute.errors import BoundedMemoryUnsupportedError
+    from haute.routes._contract_errors import (
+        PUBLIC_CONTRACT_ERROR_TYPES,
+        contract_error_job_fields,
+        contract_error_terminal_reason,
+        memory_limit_refusal,
+    )
 
-    if isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
-        detail = memory_limit_refusal(exc, operation_noun="Auto-range").detail
+    if isinstance(exc, OptimiserWorkerFailureError):
+        return exc.failure
+    if isinstance(exc, OptimiserSetupError):
         return OptimiserWorkerFailure(
-            terminal_reason="memory_limited",
-            message=str(detail.get("message", detail)) if isinstance(detail, dict) else "",
-            fields={"error_code": "memory_limit", "http_status_code": 507, "error_detail": detail},
+            terminal_reason=exc.reason, message=exc.message, fields=dict(exc.fields)
         )
+    if isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
+        detail = memory_limit_refusal(exc, operation_noun=operation_noun).detail
+        return _memory_failure(detail, operation_noun=operation_noun)
     if isinstance(exc, RequestRefusedError):
+        if exc.status_code == 507 and isinstance(exc.detail, Mapping):
+            if exc.detail.get("error_code") == "memory_limit":
+                return _memory_failure(exc.detail, operation_noun=operation_noun)
         reason: TerminalReason = "contract_error" if 400 <= exc.status_code < 500 else "error"
         return OptimiserWorkerFailure(
             terminal_reason=reason,
             message=str(exc.detail),
             fields={"http_status_code": exc.status_code, "error_detail": exc.detail},
         )
+    if isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES):
+        return OptimiserWorkerFailure(
+            terminal_reason=contract_error_terminal_reason(exc),
+            message=str(exc),
+            fields=contract_error_job_fields(exc),
+        )
+    if isinstance(exc, BoundedMemoryUnsupportedError):
+        detail = f"{operation_noun} cannot run in bounded streaming mode: {exc}"
+        logger.warning(f"{log_event}_bounded_streaming_unsupported", error=str(exc), **log_context)
+        return OptimiserWorkerFailure(
+            terminal_reason="contract_error",
+            message=detail,
+            fields={"http_status_code": 422, "error_detail": detail},
+        )
+    logger.error(log_event, error=str(exc), exc_info=exc, **log_context)
     return OptimiserWorkerFailure(
         terminal_reason="error",
         message=f"{operation_noun} failed: {exc}",
@@ -291,6 +321,27 @@ def _failure_before_job_mapping(
             "http_status_code": 500,
             "error_detail": f"{operation_noun} failed. Check the server logs for details.",
         },
+    )
+
+
+def _memory_failure(detail: object, *, operation_noun: str) -> OptimiserWorkerFailure:
+    """A 507 memory failure; its message is the curated one the refusal carries."""
+    payload = (
+        {str(key): value for key, value in detail.items()}
+        if isinstance(detail, Mapping)
+        else {"message": str(detail)}
+    )
+    payload.setdefault("error_code", "memory_limit")
+    message = payload.get("message")
+    if not isinstance(message, str) or not message:
+        reason = payload.get("reason")
+        message = f"{operation_noun} exceeded its memory budget" + (
+            f" ({reason})." if isinstance(reason, str) and reason else "."
+        )
+    return OptimiserWorkerFailure(
+        terminal_reason="memory_limited",
+        message=message,
+        fields={"error_code": "memory_limit", "http_status_code": 507, "error_detail": payload},
     )
 
 
@@ -303,7 +354,9 @@ def _recorded_failure(
 ) -> OptimiserWorkerFailure:
     record = store.require_job(job_id)
     if record.get("status") == "running":
-        return _failure_before_job_mapping(exc, operation_noun=operation_noun)
+        return classify_optimiser_failure(
+            exc, operation_noun=operation_noun, log_event="optimiser_worker_failed", job_id=job_id
+        )
     return OptimiserWorkerFailure.from_job_record(record)
 
 
@@ -357,7 +410,7 @@ def materialise_solve_input_worker(
             raise memory_error from None
         return SolveInputWorkerOutcome(
             execution_metrics=context.metrics_payload() if context is not None else None,
-            failure=_recorded_failure(store, job_id, exc, operation_noun="Optimiser setup"),
+            failure=_recorded_failure(store, job_id, exc, operation_noun=SETUP_OPERATION_NOUN),
         )
     finally:
         store.delete_job(job_id)
@@ -405,7 +458,7 @@ def frontier_auto_range_worker(
             raise memory_error from None
         return FrontierAutoRangeWorkerOutcome(
             execution_metrics=context.metrics_payload() if context is not None else None,
-            failure=_recorded_failure(store, job_id, exc, operation_noun="Frontier auto range"),
+            failure=_recorded_failure(store, job_id, exc, operation_noun=AUTO_RANGE_OPERATION_NOUN),
         )
     finally:
         store.delete_job(job_id)

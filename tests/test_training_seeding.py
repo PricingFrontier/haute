@@ -1200,12 +1200,7 @@ def test_no_bounded_caller_creates_a_checkpoint_directory(
         "haute_frontier_range_",
         "haute_sink_",
     )
-    assert [
-        name
-        for name in created
-        if name.startswith(checkpoint_prefixes)
-        and not name.startswith("haute_frontier_range_parts_")
-    ] == []
+    assert [name for name in created if name.startswith(checkpoint_prefixes)] == []
 
 
 def test_consumed_select_below_a_rating_step_is_captured_and_seeded(

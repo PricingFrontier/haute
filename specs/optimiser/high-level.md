@@ -69,7 +69,7 @@ A solve is submitted asynchronously: the request returns a job id immediately, a
 polls a status endpoint until the job reaches a terminal state (`completed`, `error`,
 `contract_error`, `memory_limited`, `cancelled`, `superseded`, or `timed_out`). There is one
 process-wide blocking-solve slot, so a second solve is rejected while any solve is running,
-even for a different graph/node. Estimates, auto-range jobs, and frontier recomputes are
+even for a different graph/node. Estimates and auto-range jobs are
 non-blocking job types and do not reserve that global slot. Separately, a graph/node
 single-flight key prevents a solve setup and a background auto-range setup from overlapping
 for the same graph/node. A repeated background auto-range start with the same node id and graph
@@ -87,7 +87,7 @@ cap, as training preparation does: the worker writes the projected, validated so
 setup-owned Parquet file (or returns the auto-range totals), and the server process builds the
 quote grid from that file. A setup whose pipeline exceeds its memory budget therefore ends as a
 typed `memory_limited` job instead of growing the server, and cancelling setup terminates the
-worker. The grid build, the solve, the inline frontier, later frontier recomputes and frontier
+worker. The grid build, the solve, the inline frontier and frontier
 point applies then run in the job's *solver session*: one dedicated spawn worker per solve that
 holds the solver and quote grid for as long as the result keeps them, under a native memory cap
 re-sized before every command to what the machine can give at that moment and never lifted
@@ -104,20 +104,14 @@ stage. No optimiser path reads pipeline rows in the server process in process mo
 Once a solve completes, its lambdas, objective/constraint totals, convergence status, and (for
 ratebook) factor tables are available as a job summary. From there a user can:
 
-- Compute an efficient frontier — a grid of alternative constraint-threshold trade-off points —
-  over explicit or auto-estimated absolute threshold ranges, and select one point as the active
-  result without re-running the full solve. The server derives each returned point's summary
-  once, when it builds the frontier, and sends it with the points; selecting a point shows
-  exactly that summary, and the browser never derives one from a frontier row. Like the solve
-  itself, the sweep runs as a background
-  job: the request validates synchronously (runtime availability, range resolution, the
-  compute-budget cap) and returns a pollable frontier job id, and the caller polls a separate
-  frontier-status endpoint to a terminal state. Only one frontier sweep may be in flight per solve
-  job at a time; a second `/frontier` request against the same solve job while one is running is
-  rejected as a conflict. Admission is one locked check-and-create operation. A running sweep can
-  be stopped through `POST /frontier/cancel/{job_id}`; timeout polling requests the same
-  cooperative stop before publishing `timed_out`. A stopped sweep may never publish frontier data
-  to the parent solve job, even if the underlying solver call returns later.
+- Select one point of the efficient frontier — a grid of alternative constraint-threshold
+  trade-off points over the node's explicit or auto-estimated absolute threshold ranges, computed
+  with the solve — as the active result without re-running the solve. The server derives each
+  returned point's summary once, when it builds the frontier, and sends it with the points;
+  selecting a point shows exactly that summary, and the browser never derives one from a
+  frontier row. A job's frontier is fixed: nothing recomputes it, so a point index names the
+  same point for the job's life. Different ranges or resolution mean editing the node and
+  solving again.
 - Explore the per-quote chosen scenarios of the as-solved result or any frontier point, in both
   modes, one bounded page at a time: each quote's chosen scenario value, its objective and
   constraint values at that scenario, its analysis columns and, for a ratebook result,
@@ -241,7 +235,7 @@ Invariants:
   the grid's minimum and maximum ("at the edge of the scenario range"). The as-solved report is
   built when the solve completes; a point's is built on request from that point's per-quote
   choices and kept for the job's lifetime (at most 64 per job), so it is still served after the
-  grid is gone, until a frontier recompute replaces the points. It describes the solution only;
+  grid is gone. It describes the solution only;
   it never compares with current or deployed pricing. Online and ratebook results both carry it.
 - Where the optimiser adjusted is described by segment, for the as-solved result and any frontier
   point: per level of one key (an analysis column, or a ratebook result's rating factor labelled as
@@ -268,7 +262,7 @@ Invariants:
 - The quote-analysis side table is owned by solve setup until the completed job adopts it, and
   then by the job. It is deleted when setup or the solve fails, is cancelled, superseded or
   times out, when the job expires (24 hours after creation), or by startup reaping. Heavy-state
-  slimming, the slimming after a user action, and frontier recompute never touch it. A reader
+  slimming and the slimming after a user action never touch it. A reader
   holding a lease on it defers its deletion until the lease is released.
 - The scenario grid recorded at setup is immutable for the job's lifetime and is never
   re-derived from chosen rows. Two grids such as `[0.8, 1.0, 1.2, 1.4]` and
@@ -370,9 +364,8 @@ implementation of "how a scenario is scored."
 
 Response-size and compute budgets (frontier point count, apply preview row count, frontier
 solver-grid size) exist because both the frontier grid and the per-quote apply table can grow
-unboundedly with problem size. The frontier compute cap is checked before either frontier entry
-point invokes `price-contour`: both an explicit `/frontier` request and the optional frontier
-computed as part of a solve use the same growth formula and cap.
+unboundedly with problem size. The frontier compute cap is checked before the frontier computed as
+part of a solve invokes `price-contour`.
 
 Two further alternatives shape the frontier design. Treating frontier ranges as multipliers of
 a baseline was rejected for the reason above — a multiplier is ambiguous once constraints have
@@ -441,14 +434,9 @@ the solver ever runs, naming both the projected size and the cap. A pipeline tha
 bounded/streaming memory mode is rejected with a specific message rather than being forced
 through and failing deep inside the executor. A memory-admission failure (the executor's own
 budget controller refusing to reserve the memory a stage needs) surfaces as HTTP 507 on a
-synchronous request path; when it occurs inside asynchronous solve/frontier/auto-range work, the
-job instead transitions to `memory_limited` and exposes the failure through status polling. Once
-a frontier sweep has passed its synchronous validation and started as a background job, any
-failure inside the sweep itself (a lost race against a concurrent job-state change, an invalid
-persisted apply-artifact handle, an unclassified exception) is reported through the frontier
-job's own terminal status rather than as a synchronous HTTP error from the original `/frontier`
-request — the caller only learns of it by polling the frontier-status endpoint to a terminal
-state. Cancellation and timeout are terminal-state guards as well as user-visible labels: after
+synchronous request path; when it occurs inside asynchronous solve or auto-range work, the
+job instead transitions to `memory_limited` and exposes the failure through status polling.
+Cancellation and timeout are terminal-state guards as well as user-visible labels: after
 either transition, the worker checks the stop signal before any parent-job mutation and discards
 its late result.
 

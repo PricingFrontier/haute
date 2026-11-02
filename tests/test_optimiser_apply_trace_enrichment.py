@@ -1559,3 +1559,55 @@ def test_ratebook_trace_rejects_missing_or_malformed_collar(tmp_path, bounds, fr
     assert detail["status"] == "error"
     assert detail["error_type"] == "OptimiserApplyTraceError"
     assert fragment in detail["error"]
+
+
+@pytest.mark.parametrize("artifact", ["pipeline_relative", "outside"])
+def test_trace_reads_the_artifact_the_apply_runs_from_any_working_directory(
+    tmp_path, monkeypatch, artifact
+):
+    """OPT-R06: the trace resolves a file artifact like the apply does: a
+    pipeline-relative path loads whatever the working directory, and a path
+    outside the project root is refused before anything is read."""
+    from haute._path_resolution import RuntimePathOutsideProjectError
+    from haute._sandbox import set_project_root
+
+    project = tmp_path / "project"
+    pipelines = project / "pipelines"
+    pipelines.mkdir(parents=True)
+    _write_json(pipelines / "online.json", _online_artifact())
+    outside = _write_json(tmp_path / "outside.json", _online_artifact())
+    scored = project / "scored.parquet"
+    _scored_online_df().write_parquet(scored)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    set_project_root(project)
+    graph = _g(
+        {
+            "nodes": [
+                _source_node("scored", str(scored)),
+                _optimiser_apply_node(
+                    {
+                        "sourceType": "file",
+                        "artifact_path": "online.json" if artifact != "outside" else outside,
+                    }
+                ),
+            ],
+            "edges": [_edge("scored", "apply")],
+            "source_file": str(pipelines / "main.py"),
+        }
+    )
+
+    def trace() -> TraceResult:
+        return execute_trace(
+            graph, row_index=0, target_node_id="apply", column="optimal_scenario_value"
+        )
+
+    if artifact == "outside":
+        with pytest.raises(RuntimePathOutsideProjectError):
+            trace()
+        return
+    detail = _step_by_id(trace(), "apply").node_detail
+    assert detail is not None
+    assert detail["status"] == "ok"
+    assert detail["output"]["value"] == pytest.approx(1.1)

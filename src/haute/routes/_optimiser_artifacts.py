@@ -58,6 +58,14 @@ _QUOTE_ANALYSIS_ARTIFACT_ROOT_NAME = "haute/artifacts/v1/optimiser_quote_analysi
 _QUOTE_ANALYSIS_ARTIFACT_DIR_PREFIX = "analysis_"
 _QUOTE_ANALYSIS_FILENAME = "quote_analysis.parquet"
 _QUOTE_ANALYSIS_ARTIFACT_OWNER = "optimiser_quote_analysis"
+# Setup and request scratch: the solver input, a worker's temporary files, the
+# auto-range reducer's parts and the MLflow log's staging folder. Marked like
+# the artifacts, so a server crash mid-setup leaves nothing the next start
+# does not reap.
+_SCRATCH_ARTIFACT_ROOT_NAME = "haute/artifacts/v1/optimiser_scratch"
+_SCRATCH_ARTIFACT_OWNER = "optimiser_scratch"
+_SOLVER_INPUT_DIR_PREFIX = "input_"
+_SOLVER_INPUT_FILENAME = "solver_input.parquet"
 _ARTIFACT_STALE_SECONDS_ENV = "HAUTE_ARTIFACT_STALE_SECONDS"
 _DEFAULT_ARTIFACT_STALE_SECONDS = 86_400
 
@@ -72,6 +80,42 @@ def _ratebook_factors_artifact_root() -> Path:
 
 def _quote_analysis_artifact_root() -> Path:
     return (Path(tempfile.gettempdir()) / _QUOTE_ANALYSIS_ARTIFACT_ROOT_NAME).resolve()
+
+
+def _scratch_artifact_root() -> Path:
+    return (Path(tempfile.gettempdir()) / _SCRATCH_ARTIFACT_ROOT_NAME).resolve()
+
+
+def new_scratch_directory(prefix: str) -> Path:
+    """Create one marked scratch directory, which startup reaping removes if it is left."""
+    return create_owned_artifact_directory(
+        _scratch_artifact_root(), prefix, _SCRATCH_ARTIFACT_OWNER
+    )
+
+
+def remove_scratch_directory(directory: str | Path) -> None:
+    """Remove a scratch directory; a failed removal is logged, never raised."""
+    try:
+        shutil.rmtree(directory)
+    except FileNotFoundError:
+        return
+    except OSError as cleanup_exc:
+        logger.warning(
+            "optimiser_scratch_cleanup_failed",
+            path=str(directory),
+            error=str(cleanup_exc),
+            exc_info=True,
+        )
+
+
+@contextlib.contextmanager
+def scratch_directory(prefix: str) -> Iterator[Path]:
+    """A marked scratch directory that is removed on exit."""
+    directory = new_scratch_directory(prefix)
+    try:
+        yield directory
+    finally:
+        remove_scratch_directory(directory)
 
 
 def _prepare_apply_artifact_root() -> Path:
@@ -108,6 +152,7 @@ def reap_stale_optimiser_artifacts(
         ("apply", _apply_artifact_root(), _APPLY_ARTIFACT_OWNER),
         ("ratebook_factors", _ratebook_factors_artifact_root(), _RATEBOOK_FACTORS_ARTIFACT_OWNER),
         ("quote_analysis", _quote_analysis_artifact_root(), _QUOTE_ANALYSIS_ARTIFACT_OWNER),
+        ("scratch", _scratch_artifact_root(), _SCRATCH_ARTIFACT_OWNER),
     ):
         if root.is_dir():
             reports[name] = reap_stale_artifact_directories(root, owner, stale_after_seconds)
@@ -355,44 +400,6 @@ def _persist_apply_result_artifact(
     return handle
 
 
-def _persist_ratebook_factors_artifact(factors_df: Any) -> dict[str, Any] | None:
-    """Persist ratebook factors behind an explicit handle instead of the job dict."""
-    if factors_df is None:
-        return None
-
-    import polars as pl
-
-    if not isinstance(factors_df, pl.DataFrame):
-        return None
-
-    artifact_dir = create_owned_artifact_directory(
-        _prepare_ratebook_factors_artifact_root(),
-        _RATEBOOK_FACTORS_ARTIFACT_DIR_PREFIX,
-        _RATEBOOK_FACTORS_ARTIFACT_OWNER,
-    )
-    artifact_path = artifact_dir / _RATEBOOK_FACTORS_FILENAME
-    try:
-        factors_df.write_parquet(artifact_path)
-        metadata = read_parquet_metadata(artifact_path)
-        row_count = int(metadata["row_count"])
-        size_bytes = int(metadata["size_bytes"])
-        columns = list(factors_df.columns)
-    except BaseException:
-        shutil.rmtree(artifact_dir, ignore_errors=True)
-        raise
-
-    return {
-        "kind": _RATEBOOK_FACTORS_HANDLE_KIND,
-        "version": _ARTIFACT_HANDLE_VERSION,
-        "format": "parquet",
-        "path": str(artifact_path),
-        "directory": str(artifact_dir),
-        "row_count": row_count,
-        "size_bytes": size_bytes,
-        "columns": columns,
-    }
-
-
 def _new_ratebook_factors_directory() -> Path:
     """Create the marked artifact directory a setup worker persists ratebook factors into."""
     return create_owned_artifact_directory(
@@ -522,29 +529,6 @@ APPLY_RESULT_UNAVAILABLE_DETAIL = (
 )
 
 
-def _load_ratebook_factors_artifact(handle: dict[str, Any]) -> Any:
-    """Load persisted ratebook factors from a validated handle."""
-    import polars as pl
-
-    try:
-        artifact_path, _artifact_dir = _validate_ratebook_factors_artifact_handle(handle)
-    except ValueError as exc:
-        _log_artifact_load_failure("optimiser_ratebook_artifact_validation_failed", handle, exc)
-        raise ServiceFailedError(
-            "Optimiser ratebook factor artifact reference is invalid. Re-run the solve."
-        ) from exc
-    if not artifact_path.is_file():
-        logger.warning("optimiser_ratebook_artifact_missing", path=str(artifact_path))
-        raise GoneError(RATEBOOK_FACTORS_UNAVAILABLE_DETAIL)
-    try:
-        return pl.read_parquet(artifact_path)
-    except Exception as exc:
-        _log_artifact_load_failure("optimiser_ratebook_artifact_read_failed", handle, exc)
-        raise ServiceFailedError(
-            "Optimiser ratebook factor artifact is corrupt. Re-run the solve."
-        ) from exc
-
-
 RATEBOOK_FACTORS_UNAVAILABLE_DETAIL = (
     "Optimiser ratebook factor artifact is no longer available. Re-run the solve."
 )
@@ -570,12 +554,18 @@ def _ratebook_factors_path(handle: dict[str, Any]) -> Path:
 
 
 def _scan_ratebook_factors_artifact(handle: dict[str, Any]) -> Any:
-    """Return a lazy scan for a validated ratebook factor artifact."""
+    """Return a lazy scan for a validated ratebook factor artifact.
+
+    A corrupt parquet fails only when its schema is read, so the schema is
+    read here, inside the corrupt-artifact handler, as the apply scan does.
+    """
     import polars as pl
 
     artifact_path = _ratebook_factors_path(handle)
     try:
-        return pl.scan_parquet(artifact_path)
+        scan = pl.scan_parquet(artifact_path)
+        scan.collect_schema()
+        return scan
     except Exception as exc:
         _log_artifact_load_failure("optimiser_ratebook_artifact_scan_failed", handle, exc)
         raise ServiceFailedError(
@@ -614,30 +604,25 @@ def _cleanup_orphan_apply_result_artifact(
 
 
 def _new_solver_input_path() -> str:
-    """Create the empty, setup-owned parquet path the solver input is written to."""
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".parquet")
-    os.close(tmp_fd)
-    return tmp_path
+    """The setup-owned parquet path the solver input is written to, in its own scratch directory."""
+    return str(new_scratch_directory(_SOLVER_INPUT_DIR_PREFIX) / _SOLVER_INPUT_FILENAME)
 
 
 def _remove_solver_input(path: str) -> None:
-    """Remove a setup-owned solver-input parquet; a failed removal is logged, not raised."""
-    try:
-        Path(path).unlink(missing_ok=True)
-    except OSError as cleanup_exc:
-        logger.warning(
-            "optimiser_grid_temp_cleanup_failed",
-            path=path,
-            error=str(cleanup_exc),
-            exc_info=True,
-        )
+    """Remove a setup-owned solver input with its scratch directory; failures are logged."""
+    directory = Path(path).parent
+    if directory.parent.resolve() != _scratch_artifact_root() or not directory.name.startswith(
+        _SOLVER_INPUT_DIR_PREFIX
+    ):
+        raise ValueError(f"{path!r} is not a solver input this server created.")
+    remove_scratch_directory(directory)
 
 
 @contextlib.contextmanager
 def _range_parts_directory() -> Iterator[Path]:
     """A private directory the auto-range reducer spills bucket parts into, removed on exit."""
-    with tempfile.TemporaryDirectory(prefix="haute_frontier_range_parts_") as raw_dir:
-        yield Path(raw_dir)
+    with scratch_directory("range_parts_") as directory:
+        yield directory
 
 
 def frontier_point_unavailable_detail(

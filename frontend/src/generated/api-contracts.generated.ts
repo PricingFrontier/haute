@@ -1696,8 +1696,6 @@ export interface OptimiserStatusResponse {
 }
 export interface OptimiserFrontierResponse {
   constraint_names: string[];
-  frontier_generation: number | null;
-  job_id: string | null;
   n_points: number;
   point_summaries: OptimiserFrontierPointSummary[];
   points: (OptimiserOnlineFrontierPoint | OptimiserRatebookFrontierPoint)[];
@@ -1892,7 +1890,6 @@ export interface OptimiserSolveResult {
   };
   frontier: OptimiserFrontierResponse | null;
   frontier_error: string | null;
-  frontier_generation: number;
   history: OptimiserHistoryEntry[] | null;
   input_summary: OptimiserInputSummary;
   iterations: number | null;
@@ -2044,7 +2041,6 @@ export interface OptimiserApplyResponse {
   };
   error: string | null;
   from_artifact: boolean;
-  frontier_generation: number;
   matched_row_count: number;
   offset: number;
   preview: {
@@ -2079,25 +2075,6 @@ export interface OptimiserMlflowLogResponse {
   run_url: string | null;
   status: 'ok' | 'error';
   tracking_uri: string;
-}
-export interface OptimiserFrontierStatusResponse {
-  elapsed_seconds: number;
-  error_code: string | null;
-  error_detail:
-    | ExecutionMemoryLimitErrorPayload
-    | {
-        [k: string]: unknown;
-      }
-    | string
-    | null;
-  execution_metrics: ExecutionMetricsPayload | null;
-  http_status_code: number | null;
-  message: string;
-  progress: number;
-  result: OptimiserFrontierResponse | null;
-  status:
-    'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
-  terminal_reason: string | null;
 }
 export interface OptimiserFrontierAutoRangeStartResponse {
   error: string | null;
@@ -2155,7 +2132,6 @@ export interface OptimiserFrontierSelectResponse {
   factor_tables: {
     [k: string]: OptimiserFactorTableRow[];
   };
-  frontier_generation: number;
   history: OptimiserHistoryEntry[] | null;
   iterations: number | null;
   lambdas: {
@@ -2173,7 +2149,6 @@ export interface OptimiserFrontierSelectResponse {
 export interface OptimiserSegmentsResponse {
   binning: 'numeric' | 'categorical';
   diagnostics_errors: OptimiserDiagnosticError[];
-  frontier_generation: number;
   key: string;
   mean_scenario_value: number;
   n_levels: number;
@@ -2220,7 +2195,6 @@ export interface OptimiserSegmentFigures {
  * The keys of one target ranked by their adjustment spread (OPT-V11).
  */
 export interface OptimiserSegmentIndexResponse {
-  frontier_generation: number;
   keys: OptimiserSegmentIndexKey[];
   point_index: number | null;
   statistic: OptimiserSegmentIndexStatistic;

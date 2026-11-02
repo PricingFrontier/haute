@@ -1681,7 +1681,7 @@ class TestHeavyObjectLifecyclePolicy:
                     "solver": object(),
                     "solve_result": object(),
                     "quote_grid": object(),
-                    "factors_df": object(),
+                    "ratebook_factor_contexts": object(),
                     "result": {"total_objective": 123.0},
                     "frontier_data": {"n_points": 0},
                 },
@@ -1693,7 +1693,7 @@ class TestHeavyObjectLifecyclePolicy:
         assert "solver" in job
         assert "solve_result" in job
         assert "quote_grid" in job
-        assert "factors_df" in job
+        assert "ratebook_factor_contexts" in job
 
         with patch("haute.routes._job_store.time.time", return_value=102.0):
             job = store.get_job(job_id)
@@ -1702,7 +1702,7 @@ class TestHeavyObjectLifecyclePolicy:
         assert "solver" not in job
         assert "solve_result" not in job
         assert "quote_grid" not in job
-        assert "factors_df" not in job
+        assert "ratebook_factor_contexts" not in job
         assert job["status"] == "completed"
         assert job["config"] == {"objective": "loss"}
         assert job["result"] == {"total_objective": 123.0}
@@ -2314,7 +2314,7 @@ class TestHeavyObjectLifecyclePolicy:
             store,
             {
                 "status": "completed",
-                "factors_df": factors_df,
+                "ratebook_factor_contexts": factors_df,
                 "result": {"rows": 10},
             },
         )
@@ -2322,12 +2322,12 @@ class TestHeavyObjectLifecyclePolicy:
         updated = store.atomic_update_if_heavy_present(
             job_id,
             {"result": {"rows": 20}},
-            required_keys=("factors_df",),
+            required_keys=("ratebook_factor_contexts",),
             expected_status="completed",
         )
 
         assert updated is not None
-        assert updated["factors_df"] is factors_df
+        assert updated["ratebook_factor_contexts"] is factors_df
         assert updated["result"] == {"rows": 20}
 
     def test_guarded_atomic_update_refuses_unexpected_status(self) -> None:
@@ -2910,7 +2910,7 @@ class TestClearResultDataManualCleanup:
                 "solver": object(),  # heavy: Optimiser instance
                 "solve_result": object(),  # heavy: solve result with full DataFrame
                 "quote_grid": object(),  # heavy: QuoteGrid
-                "factors_df": object(),  # heavy: ratebook aligned factor frame
+                "ratebook_factor_contexts": object(),  # heavy: ratebook factor contexts
                 "result": {
                     "mode": "ratebook",
                     "total_objective": 1.05,
@@ -2927,7 +2927,7 @@ class TestClearResultDataManualCleanup:
         assert "solver" in job
         assert "solve_result" in job
         assert "quote_grid" in job
-        assert "factors_df" in job
+        assert "ratebook_factor_contexts" in job
 
         store.clear_result_data(job_id)
 
@@ -2936,7 +2936,7 @@ class TestClearResultDataManualCleanup:
         assert "solver" not in job
         assert "solve_result" not in job
         assert "quote_grid" not in job
-        assert "factors_df" not in job
+        assert "ratebook_factor_contexts" not in job
         assert job["status"] == "completed"
         assert job["result"]["converged"] is True
         assert job["config"]["objective"] == "income"

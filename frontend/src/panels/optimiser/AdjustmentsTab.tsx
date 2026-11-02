@@ -9,10 +9,8 @@
  * The solved result carries its report. A selected point's report is loaded
  * only while this view is open, through frontier select with
  * `include_adjustments`, in the Rates flow's pattern: one AbortController per
- * request and a request sequence, so a reply for a point, job or generation the
- * view has moved past is dropped, and a reply the server answered for another
- * generation than the one shown (it recomputed first) is reported, not kept. A
- * browser abort only discards the reply; a 409 replaced by another point's
+ * request and a request sequence, so a reply for a point or job the view has
+ * moved past is dropped. A browser abort only discards the reply; a 409 replaced by another point's
  * apply is reissued, not shown; a 410 says the point is gone, with no Retry;
  * anything else offers Retry. Loaded reports
  * belong to the preview's review (`pointReports`), so stepping back to a point
@@ -43,7 +41,6 @@ import {
   pointAdjustmentKey,
   rangeEdgeShare,
 } from "./adjustments"
-import { frontierGenerationMismatch } from "./optimiserHelpers"
 
 /** Loaded frontier point reports, keyed by `pointAdjustmentKey`. */
 export type PointAdjustmentReports = Readonly<Record<string, OptimiserAdjustmentReport>>
@@ -58,8 +55,6 @@ type PointLoadFailure = { key: string; gone: boolean; message: string }
 
 interface AdjustmentsTabProps {
   jobId: string
-  /** The solve's frontier generation: point indices are only meaningful within one. */
-  frontierGeneration: number
   /** The selected frontier point, or null for the solved result. */
   pointIndex: number | null
   /** The as-solved result: its report, or the diagnostic saying why it has none. */
@@ -71,14 +66,13 @@ interface AdjustmentsTabProps {
 
 export default function AdjustmentsTab({
   jobId,
-  frontierGeneration,
   pointIndex,
   solvedResult,
   pointReports,
   onPointReport,
   width,
 }: AdjustmentsTabProps) {
-  const pointKey = pointIndex === null ? null : pointAdjustmentKey(jobId, frontierGeneration, pointIndex)
+  const pointKey = pointIndex === null ? null : pointAdjustmentKey(jobId, pointIndex)
   const pointReport = pointKey === null ? undefined : pointReports[pointKey]
   const [failure, setFailure] = useState<PointLoadFailure | null>(null)
   // A replaced request is reissued by bumping the attempt.
@@ -103,11 +97,6 @@ export default function AdjustmentsTab({
     )
       .then((response) => {
         if (!isCurrent()) return
-        const mismatch = frontierGenerationMismatch(response.frontier_generation, frontierGeneration)
-        if (mismatch !== null) {
-          setFailure({ key: pointKey, gone: false, message: mismatch })
-          return
-        }
         if (response.adjustments === null) {
           setFailure({
             key: pointKey,
@@ -131,7 +120,7 @@ export default function AdjustmentsTab({
         })
       })
     return () => controller.abort()
-  }, [needsLoad, pointIndex, pointKey, jobId, frontierGeneration, attempt])
+  }, [needsLoad, pointIndex, pointKey, jobId, attempt])
 
   if (pointIndex !== null) {
     if (failed) {

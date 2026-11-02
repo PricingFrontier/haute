@@ -21,7 +21,7 @@ import pytest
 from fastapi import HTTPException
 
 from haute._execution_admission import ExecutionAdmissionError, IsolatedExecutionBudget
-from haute._execution_context import ExecutionProfile
+from haute._execution_context import ExecutionMemoryLimitExceededError, ExecutionProfile
 from haute._polars_utils import set_streaming_chunk_size
 from haute._sandbox import set_project_root
 from haute._worker_isolation import (
@@ -43,7 +43,7 @@ from haute.routes._optimiser_worker import (
     OptimiserWorkerFailure,
     SolveInputWorkerOutcome,
     SolveInputWorkerRequest,
-    _failure_before_job_mapping,
+    classify_optimiser_failure,
 )
 from haute.schemas import OptimiserFrontierAutoRangeRequest
 from tests.conftest import make_edge, make_graph
@@ -1014,20 +1014,66 @@ class TestFailureRecords:
                 507,
             ),
             (InvalidRequestError("bad config"), "contract_error", 400),
+            (RequestRefusedError("busy", status_code=409), "contract_error", 409),
             (RequestRefusedError("unavailable", status_code=503), "error", 503),
             (RuntimeError("plan changed"), "error", 500),
+            (ValueError("a Polars ValueError"), "error", 500),
         ],
-        ids=["admission", "refused_4xx", "refused_5xx", "unexpected"],
+        ids=["admission", "refused_4xx", "conflict", "refused_5xx", "unexpected", "bare_value"],
     )
-    def test_a_failure_before_any_job_mapping_is_classified_in_the_child(
+    def test_a_failure_is_classified_once_for_every_site(
         self, exc: BaseException, terminal_reason: str, status_code: int
     ) -> None:
-        failure = _failure_before_job_mapping(exc, operation_noun="Frontier auto range")
+        """OPT-R03: one classification; a 4xx is the request's, a library
+        ``ValueError`` the server's, never reported as the user's input."""
+        failure = classify_optimiser_failure(
+            exc, operation_noun="Auto-range", log_event="test_failure"
+        )
 
         assert failure.terminal_reason == terminal_reason
         assert failure.http_status_code == status_code
         if terminal_reason == "memory_limited":
             assert failure.fields["error_code"] == "memory_limit"
+
+    def test_an_unexpected_failure_keeps_its_cause_out_of_the_answer(self) -> None:
+        failure = classify_optimiser_failure(
+            ValueError("internal detail"), operation_noun="Auto-range", log_event="test_failure"
+        )
+
+        assert failure.message == "Auto-range failed: internal detail"
+        assert failure.http_detail == "Auto-range failed. Check the server logs for details."
+
+    @pytest.mark.parametrize("noun", ["Optimiser setup", "Auto-range"])
+    def test_a_memory_refusal_names_the_operation_that_was_refused(self, noun: str) -> None:
+        """OPT-R03: the setup worker's memory refusal names optimiser setup, not auto-range."""
+        exc = ExecutionMemoryLimitExceededError(
+            "optimiser_setup_worker",
+            rss_bytes=2048,
+            limit_bytes=1024,
+            reason="process_rss_limit_exceeded",
+            rss_limit_bytes=1024,
+        )
+
+        failure = classify_optimiser_failure(exc, operation_noun=noun, log_event="test_failure")
+
+        assert failure.terminal_reason == "memory_limited"
+        assert failure.message.startswith(noun)
+        assert failure.http_detail["message"] == failure.message
+
+    def test_a_memory_refusal_without_a_message_names_the_operation(self) -> None:
+        failure = classify_optimiser_failure(
+            RequestRefusedError(
+                {"error_code": "memory_limit", "reason": "rss_exceeds_memory_limit"},
+                status_code=507,
+            ),
+            operation_noun="Optimiser setup",
+            log_event="test_failure",
+        )
+
+        assert failure.terminal_reason == "memory_limited"
+        assert failure.message == (
+            "Optimiser setup exceeded its memory budget (rss_exceeds_memory_limit)."
+        )
 
 
 class TestPrivateRecords:

@@ -201,7 +201,6 @@ const RUNNING_JOB_NAMES: Readonly<Record<string, string>> = {
   frontier_auto_range: "Auto range",
   optimiser_solve: "Optimisation",
   optimiser_solve_worker: "Optimisation",
-  optimiser_frontier_recompute: "Frontier recompute",
   optimiser_estimate: "Solve estimate",
   training_job: "Model training",
   training_pipeline: "Model training",

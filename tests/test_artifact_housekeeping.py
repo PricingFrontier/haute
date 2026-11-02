@@ -377,8 +377,8 @@ def test_optimiser_artifact_creators_write_owner_markers(
     apply_handle = artifacts._persist_apply_result_artifact(
         SimpleNamespace(dataframe=pl.DataFrame({"value": [1]}))
     )
-    factors_handle = artifacts._persist_ratebook_factors_artifact(
-        pl.DataFrame({"factor": ["a"], "value": [1.0]})
+    factors_handle = artifacts._persist_ratebook_factors_lazy_artifact(
+        pl.DataFrame({"factor": ["a"], "value": [1.0]}).lazy()
     )
 
     assert apply_handle is not None
@@ -401,12 +401,13 @@ def test_optimiser_reaper_targets_only_owned_marked_roots(
     apply_root = tmp_path / "apply"
     factors_root = tmp_path / "factors"
     analysis_root = tmp_path / "analysis"
-    apply_root.mkdir()
-    factors_root.mkdir()
-    analysis_root.mkdir()
+    scratch_root = tmp_path / "scratch"
+    for root in (apply_root, factors_root, analysis_root, scratch_root):
+        root.mkdir()
     _marker(apply_root / "stale", owner="optimiser_apply")
     _marker(factors_root / "stale", owner="optimiser_ratebook_factors")
     _marker(analysis_root / "stale", owner="optimiser_quote_analysis")
+    _marker(scratch_root / "stale", owner="optimiser_scratch")
     # A marker owned by another family is not this root's to reap.
     _marker(analysis_root / "foreign", owner="optimiser_apply")
     unrelated = apply_root / "unrelated"
@@ -414,13 +415,57 @@ def test_optimiser_reaper_targets_only_owned_marked_roots(
     monkeypatch.setattr(artifacts, "_apply_artifact_root", lambda: apply_root)
     monkeypatch.setattr(artifacts, "_ratebook_factors_artifact_root", lambda: factors_root)
     monkeypatch.setattr(artifacts, "_quote_analysis_artifact_root", lambda: analysis_root)
+    monkeypatch.setattr(artifacts, "_scratch_artifact_root", lambda: scratch_root)
     reports = artifacts.reap_stale_optimiser_artifacts(0)
 
     assert reports["apply"]["removed"] == 1
     assert reports["ratebook_factors"]["removed"] == 1
     assert reports["quote_analysis"]["removed"] == 1
+    assert reports["scratch"]["removed"] == 1
     assert unrelated.exists()
     assert (analysis_root / "foreign").exists()
+
+
+def test_setup_scratch_left_by_a_killed_server_is_reaped_at_the_next_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OPT-R02: the solver input, a worker's scratch and the auto-range parts live
+    under the marked scratch root, so what a crash leaves behind is reaped."""
+    from haute.routes import _optimiser_artifacts as artifacts
+    from haute.routes._optimiser_worker import worker_scratch_directory
+
+    scratch_root = tmp_path / "scratch"
+    # Every root points here, so reaping at age 0 touches no other test's files.
+    monkeypatch.setattr(artifacts, "_scratch_artifact_root", lambda: scratch_root)
+    monkeypatch.setattr(artifacts, "_apply_artifact_root", lambda: tmp_path / "apply")
+    monkeypatch.setattr(artifacts, "_ratebook_factors_artifact_root", lambda: tmp_path / "f")
+    monkeypatch.setattr(artifacts, "_quote_analysis_artifact_root", lambda: tmp_path / "qa")
+    solver_input = Path(artifacts._new_solver_input_path())
+    worker_scratch = worker_scratch_directory()
+    worker_dir = Path(worker_scratch.__enter__())
+    parts = artifacts._range_parts_directory()
+    parts_dir = parts.__enter__()
+    # The server dies here: no context exits and nothing is removed.
+    left = {solver_input.parent, worker_dir, parts_dir}
+    assert {path.parent for path in left} == {scratch_root}
+
+    reports = artifacts.reap_stale_optimiser_artifacts(0)
+
+    assert reports["scratch"]["removed"] == 3
+    assert not any(path.exists() for path in left)
+
+
+def test_optimiser_modules_create_no_unmarked_temporary_files() -> None:
+    """OPT-R02: every optimiser scratch file goes through the marked root."""
+    routes = Path(__file__).resolve().parents[1] / "src" / "haute" / "routes"
+    modules = [routes / "optimiser.py", *sorted(routes.glob("_optimiser*.py"))]
+    offenders = [
+        f"{module.name}: {name}"
+        for module in modules
+        for name in ("mkstemp", "mkdtemp", "TemporaryDirectory", "NamedTemporaryFile")
+        if name in module.read_text(encoding="utf-8")
+    ]
+    assert offenders == []
 
 
 def test_optimiser_reaper_rejects_invalid_stale_configuration(

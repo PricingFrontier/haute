@@ -30,9 +30,7 @@ from haute.routes._optimiser_artifacts import (
     _cleanup_apply_result_artifact,
     _cleanup_orphan_apply_result_artifact,
     _cleanup_ratebook_factors_artifact,
-    _load_ratebook_factors_artifact,
     _persist_apply_result_artifact,
-    _persist_ratebook_factors_artifact,
     _persist_ratebook_factors_lazy_artifact,
     _ratebook_factors_artifact_root,
     _scan_apply_result_artifact,
@@ -326,34 +324,6 @@ def _factors_handle(**overrides: object) -> dict[str, object]:
     return base
 
 
-def test_persist_ratebook_factors_returns_none_for_none() -> None:
-    """A ``None`` factors frame short-circuits before any tempdir is made."""
-    assert _persist_ratebook_factors_artifact(None) is None
-
-
-def test_persist_ratebook_factors_returns_none_for_non_dataframe() -> None:
-    """A non-DataFrame (e.g. a LazyFrame or list) is refused, not persisted."""
-    assert _persist_ratebook_factors_artifact([1, 2, 3]) is None
-
-
-def test_persist_ratebook_factors_cleans_up_dir_when_write_fails() -> None:
-    """A write_parquet failure must rmtree the temp factors dir and re-raise."""
-    df = pl.DataFrame({"quote_id": ["q1"], "region": ["north"]})
-
-    created_dirs: list[Path] = []
-
-    def _capture_then_fail(self: pl.DataFrame, path: Any, *args: Any, **kwargs: Any) -> None:
-        created_dirs.append(Path(path).parent)
-        raise OSError("disk full")
-
-    with patch.object(pl.DataFrame, "write_parquet", _capture_then_fail):
-        with pytest.raises(OSError, match="disk full"):
-            _persist_ratebook_factors_artifact(df)
-
-    assert created_dirs, "write_parquet should have been called"
-    assert not created_dirs[0].exists(), "temp factors dir must be removed on failure"
-
-
 def test_persist_ratebook_factors_lazy_cleans_up_dir_when_sink_fails() -> None:
     """A bounded_sink failure must rmtree the temp factors dir and re-raise."""
     lf = pl.DataFrame({"quote_id": ["q1"], "region": ["north"]}).lazy()
@@ -379,7 +349,7 @@ def test_persist_ratebook_factors_lazy_happy_path_roundtrips() -> None:
     try:
         assert handle["kind"] == _RATEBOOK_FACTORS_HANDLE_KIND
         assert handle["row_count"] == 2
-        loaded = _load_ratebook_factors_artifact(handle)
+        loaded = _scan_ratebook_factors_artifact(handle).collect()
         assert loaded.sort("quote_id").to_dicts() == [
             {"quote_id": "q1", "region": "n"},
             {"quote_id": "q2", "region": "s"},
@@ -409,49 +379,6 @@ def test_validate_ratebook_factors_rejects_wrong_filename() -> None:
         good_dir.rmdir()
 
 
-def test_load_ratebook_factors_rejects_invalid_handle() -> None:
-    """An invalid (relative-path) handle surfaces as a 500, not a raw ValueError."""
-    bad = _factors_handle(directory="relative", path="relative/factors.parquet")
-    with pytest.raises(RequestRefusedError) as exc_info:
-        _load_ratebook_factors_artifact(bad)
-    assert exc_info.value.status_code == 500
-    assert exc_info.value.detail == (
-        "Optimiser ratebook factor artifact reference is invalid. Re-run the solve."
-    )
-
-
-def test_load_ratebook_factors_reports_missing_artifact() -> None:
-    """A validated handle whose file was deleted reports an expired-artifact 410."""
-    df = pl.DataFrame({"quote_id": ["q1"], "region": ["north"]})
-    handle = _persist_ratebook_factors_artifact(df)
-    assert handle is not None
-    try:
-        Path(str(handle["path"])).unlink()
-        with pytest.raises(RequestRefusedError) as exc_info:
-            _load_ratebook_factors_artifact(handle)
-        assert exc_info.value.status_code == 410
-        assert exc_info.value.detail == (
-            "Optimiser ratebook factor artifact is no longer available. Re-run the solve."
-        )
-    finally:
-        _cleanup_ratebook_factors_artifact(handle)
-
-
-def test_load_ratebook_factors_rejects_corrupt_parquet() -> None:
-    """A valid-shaped handle pointing at non-parquet bytes raises a corrupt 500."""
-    df = pl.DataFrame({"quote_id": ["q1"], "region": ["north"]})
-    handle = _persist_ratebook_factors_artifact(df)
-    assert handle is not None
-    try:
-        Path(str(handle["path"])).write_bytes(b"not a parquet file")
-        with pytest.raises(RequestRefusedError) as exc_info:
-            _load_ratebook_factors_artifact(handle)
-        assert exc_info.value.status_code == 500
-        assert "corrupt" in str(exc_info.value.detail)
-    finally:
-        _cleanup_ratebook_factors_artifact(handle)
-
-
 def test_scan_ratebook_factors_rejects_invalid_handle() -> None:
     """The lazy-scan helper also maps a bad handle to a 500."""
     bad = _factors_handle(directory="relative", path="relative/factors.parquet")
@@ -466,7 +393,7 @@ def test_scan_ratebook_factors_rejects_invalid_handle() -> None:
 def test_scan_ratebook_factors_reports_missing_artifact() -> None:
     """A validated handle whose file was deleted reports an expired-artifact 410."""
     df = pl.DataFrame({"quote_id": ["q1"], "region": ["north"]})
-    handle = _persist_ratebook_factors_artifact(df)
+    handle = _persist_ratebook_factors_lazy_artifact(df.lazy())
     assert handle is not None
     try:
         Path(str(handle["path"])).unlink()
@@ -483,7 +410,7 @@ def test_scan_ratebook_factors_reports_missing_artifact() -> None:
 def test_scan_ratebook_factors_happy_path_returns_lazyframe() -> None:
     """The happy path returns a lazy scan that collects back to the source rows."""
     df = pl.DataFrame({"quote_id": ["q1", "q2"], "region": ["n", "s"]})
-    handle = _persist_ratebook_factors_artifact(df)
+    handle = _persist_ratebook_factors_lazy_artifact(df.lazy())
     assert handle is not None
     try:
         scan = _scan_ratebook_factors_artifact(handle)
@@ -498,7 +425,7 @@ def test_scan_ratebook_factors_happy_path_returns_lazyframe() -> None:
 def test_orphan_cleanup_dispatches_to_ratebook_factors_cleaner() -> None:
     """A ratebook-factors handle routes through the factors cleaner branch."""
     df = pl.DataFrame({"quote_id": ["q1"], "region": ["north"]})
-    handle = _persist_ratebook_factors_artifact(df)
+    handle = _persist_ratebook_factors_lazy_artifact(df.lazy())
     assert handle is not None
     factors_dir = Path(str(handle["directory"]))
     assert factors_dir.exists()

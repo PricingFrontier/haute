@@ -11136,11 +11136,6 @@
           "title": "From Artifact",
           "type": "boolean"
         },
-        "frontier_generation": {
-          "minimum": 0,
-          "title": "Frontier Generation",
-          "type": "integer"
-        },
         "matched_row_count": {
           "minimum": 0,
           "title": "Matched Row Count",
@@ -11196,7 +11191,6 @@
         "offset",
         "preview_row_count",
         "preview_row_limit",
-        "frontier_generation",
         "error"
       ],
       "title": "OptimiserApplyResponse",
@@ -11771,31 +11765,6 @@
           "title": "Constraint Names",
           "type": "array"
         },
-        "frontier_generation": {
-          "anyOf": [
-            {
-              "minimum": 0,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Frontier Generation"
-        },
-        "job_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Job Id"
-        },
         "n_points": {
           "default": 0,
           "title": "N Points",
@@ -11865,9 +11834,7 @@
         "constraint_names",
         "swept_axes",
         "points_limit",
-        "points_truncated",
-        "frontier_generation",
-        "job_id"
+        "points_truncated"
       ],
       "title": "OptimiserFrontierResponse",
       "type": "object"
@@ -11978,11 +11945,6 @@
           "title": "Factor Tables",
           "type": "object"
         },
-        "frontier_generation": {
-          "minimum": 0,
-          "title": "Frontier Generation",
-          "type": "integer"
-        },
         "history": {
           "anyOf": [
             {
@@ -12080,135 +12042,10 @@
         "adjustments",
         "clamp_rate",
         "combined_factor_bounds",
-        "frontier_generation",
         "diagnostics_errors",
         "error"
       ],
       "title": "OptimiserFrontierSelectResponse",
-      "type": "object"
-    },
-    "OptimiserFrontierStatusResponse": {
-      "properties": {
-        "elapsed_seconds": {
-          "default": 0.0,
-          "title": "Elapsed Seconds",
-          "type": "number"
-        },
-        "error_code": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Error Code"
-        },
-        "error_detail": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ExecutionMemoryLimitErrorPayload"
-            },
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Error Detail"
-        },
-        "execution_metrics": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ExecutionMetricsPayload"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "http_status_code": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Http Status Code"
-        },
-        "message": {
-          "default": "",
-          "title": "Message",
-          "type": "string"
-        },
-        "progress": {
-          "default": 0.0,
-          "title": "Progress",
-          "type": "number"
-        },
-        "result": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/OptimiserFrontierResponse"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "status": {
-          "enum": [
-            "running",
-            "completed",
-            "error",
-            "cancelled",
-            "superseded",
-            "timed_out",
-            "memory_limited",
-            "contract_error"
-          ],
-          "title": "Status",
-          "type": "string"
-        },
-        "terminal_reason": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Terminal Reason"
-        }
-      },
-      "required": [
-        "status",
-        "progress",
-        "message",
-        "elapsed_seconds",
-        "result",
-        "terminal_reason",
-        "error_code",
-        "http_status_code",
-        "error_detail",
-        "execution_metrics"
-      ],
-      "title": "OptimiserFrontierStatusResponse",
       "type": "object"
     },
     "OptimiserHistoryEntry": {
@@ -12877,11 +12714,6 @@
       "additionalProperties": false,
       "description": "The keys of one target ranked by their adjustment spread (OPT-V11).",
       "properties": {
-        "frontier_generation": {
-          "minimum": 0,
-          "title": "Frontier Generation",
-          "type": "integer"
-        },
         "keys": {
           "items": {
             "$ref": "#/$defs/OptimiserSegmentIndexKey"
@@ -12907,7 +12739,6 @@
       },
       "required": [
         "point_index",
-        "frontier_generation",
         "statistic",
         "keys"
       ],
@@ -13114,11 +12945,6 @@
           "title": "Diagnostics Errors",
           "type": "array"
         },
-        "frontier_generation": {
-          "minimum": 0,
-          "title": "Frontier Generation",
-          "type": "integer"
-        },
         "key": {
           "title": "Key",
           "type": "string"
@@ -13192,7 +13018,6 @@
         "weight",
         "weight_label",
         "point_index",
-        "frontier_generation",
         "n_quotes",
         "n_levels",
         "mean_scenario_value",
@@ -13363,11 +13188,6 @@
           "default": null,
           "title": "Frontier Error"
         },
-        "frontier_generation": {
-          "minimum": 0,
-          "title": "Frontier Generation",
-          "type": "integer"
-        },
         "history": {
           "anyOf": [
             {
@@ -13515,7 +13335,6 @@
         "frontier",
         "frontier_error",
         "selected_frontier_point",
-        "frontier_generation",
         "input_summary",
         "diagnostics_errors",
         "scenario_grid",
@@ -20209,9 +20028,6 @@
     "OptimiserFrontierSelectResponse": {
       "$ref": "#/$defs/OptimiserFrontierSelectResponse"
     },
-    "OptimiserFrontierStatusResponse": {
-      "$ref": "#/$defs/OptimiserFrontierStatusResponse"
-    },
     "OptimiserMlflowLogResponse": {
       "$ref": "#/$defs/OptimiserMlflowLogResponse"
     },
@@ -20519,7 +20335,6 @@
     "OptimiserApplyResponse",
     "OptimiserSaveResponse",
     "OptimiserMlflowLogResponse",
-    "OptimiserFrontierStatusResponse",
     "OptimiserFrontierAutoRangeStartResponse",
     "OptimiserFrontierAutoRangeStatusResponse",
     "OptimiserFrontierSelectResponse",
@@ -20642,7 +20457,6 @@
       "OptimiserApplyResponse",
       "OptimiserSaveResponse",
       "OptimiserMlflowLogResponse",
-      "OptimiserFrontierStatusResponse",
       "OptimiserFrontierAutoRangeStartResponse",
       "OptimiserFrontierAutoRangeStatusResponse",
       "OptimiserFrontierSelectResponse",

@@ -8,6 +8,7 @@ from typing import Any, cast
 import polars as pl
 
 from haute._builders import (
+    _configured_pipeline_dir,
     _prepare_online_apply_frame,
     _select_optimiser_apply_input,
     _split_ratebook_level,
@@ -16,6 +17,7 @@ from haute._builders import (
 )
 from haute._json_safe import to_json_safe
 from haute._logging import get_logger
+from haute._node_apply import load_configured_optimiser_artifact
 from haute._price_contour import price_contour
 from haute._ratebook_collar import (
     COMBINED_FACTOR_BOUNDS_KEY,
@@ -76,31 +78,20 @@ def explain_optimiser_apply_from_config(
 
 
 def _load_artifact_from_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Load the node's configured artifact — file, or MLflow on its destination.
+    """Load the node's configured artifact through the runtime apply's own loader.
 
-    MLflow source types load from the node's ``mlflow_destination``
-    (absent = auto), exactly as the runtime apply and the deploy scorer do,
-    so a trace explains the artifact the apply actually ran against.
+    File artifacts resolve by the one anchoring rule (project root, then the
+    pipeline directory, never outside the root) and MLflow sources load from
+    the node's ``mlflow_destination`` (absent = auto), exactly as the runtime
+    apply and the deploy scorer do, so a trace explains the artifact the apply
+    actually ran against.
     """
-    source_type = str(config.get("sourceType", "") or "")
-    if source_type in {"run", "registered"}:
-        from haute._optimiser_io import load_mlflow_optimiser_artifact
-
-        return load_mlflow_optimiser_artifact(
-            source_type=source_type,
-            run_id=str(config.get("run_id", "") or ""),
-            registered_model=str(config.get("registered_model", "") or ""),
-            version=str(config.get("version", "latest") or "latest"),
-            alias=str(config.get("alias", "") or ""),
-            destination=str(config.get("mlflow_destination", "") or ""),
+    artifact = load_configured_optimiser_artifact(config, base_dir=_configured_pipeline_dir())
+    if artifact is None:
+        raise OptimiserApplyTraceError(
+            "optimiserApply trace requires a configured file or MLflow artifact source"
         )
-    if source_type == "file" and config.get("artifact_path"):
-        from haute._optimiser_io import load_optimiser_artifact
-
-        return load_optimiser_artifact(str(config["artifact_path"]))
-    raise OptimiserApplyTraceError(
-        "optimiserApply trace requires a configured file or MLflow artifact source"
-    )
+    return artifact
 
 
 def _select_frame_from_inputs(

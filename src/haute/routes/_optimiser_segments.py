@@ -22,7 +22,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
-from haute.errors import ConflictError, RequestRefusedError, UnprocessableError
+from haute.errors import RequestRefusedError, UnprocessableError
 from haute.routes._optimiser_adjustments import (
     BASE_PRICE,
     QUOTES_WEIGHT,
@@ -79,7 +79,7 @@ MAX_FACTOR_SEGMENT_KEYS = 30
 """The most rating factors that can be broken down; later ones are listed as unavailable."""
 
 SEGMENT_INDEXES_KEY = "segment_indexes"
-"""The job field caching indexes by ``(frontier_generation, point_index)``."""
+"""The job field caching indexes by ``point_index`` (``None`` for the as-solved result)."""
 
 MAX_CACHED_SEGMENT_INDEXES = 64
 """The most indexes one job keeps; the oldest is dropped first."""
@@ -572,7 +572,6 @@ def segments_response(
     weight: str,
     *,
     point_index: int | None,
-    frontier_generation: int,
 ) -> OptimiserSegmentsResponse:
     """The typed breakdown of one segment reducer's levels under *weight*.
 
@@ -645,7 +644,6 @@ def segments_response(
             "weight": weight,
             "weight_label": label,
             "point_index": point_index,
-            "frontier_generation": frontier_generation,
             "n_quotes": n_quotes,
             "n_levels": result.total,
             "mean_scenario_value": math.fsum(float(row[_SV_SUM]) for row in rows) / n_quotes,
@@ -690,7 +688,6 @@ def ranked_index(
     keys: Iterable[tuple[OptimiserSegmentKey, float | None]],
     *,
     point_index: int | None,
-    frontier_generation: int,
 ) -> OptimiserSegmentIndexResponse:
     """The index: available keys by spread descending (then key), then the unavailable ones."""
     entries = [key.model_dump() | {"spread": spread} for key, spread in keys]
@@ -702,7 +699,6 @@ def ranked_index(
     return OptimiserSegmentIndexResponse.model_validate(
         {
             "point_index": point_index,
-            "frontier_generation": frontier_generation,
             "statistic": {"label": SPREAD_LABEL, "description": SPREAD_DESCRIPTION},
             "keys": [*available, *unavailable],
         }
@@ -710,8 +706,8 @@ def ranked_index(
 
 
 def cache_segment_index(
-    indexes: Mapping[tuple[int, int | None], Any], key: tuple[int, int | None], index: Any
-) -> dict[tuple[int, int | None], Any]:
+    indexes: Mapping[int | None, Any], key: int | None, index: Any
+) -> dict[int | None, Any]:
     """*indexes* with *index* stored as the newest under *key*, at most 64 kept."""
     return cache_point_report(indexes, key, index, limit=MAX_CACHED_SEGMENT_INDEXES)
 
@@ -759,8 +755,6 @@ class SegmentQueries:
         token: ExecutionCancellationToken,
     ) -> OptimiserSegmentsResponse:
         """One key's breakdown for the target; an unknown or unavailable key or weight is a 422."""
-        from haute.routes._optimiser_frontier import _frontier_generation_or_raise
-
         job = self._store.require_completed_job(job_id)
         spec = _choice_spec(job)
         keys = {key.key: key for key in _catalogue(job)}
@@ -781,33 +775,20 @@ class SegmentQueries:
                 f"Segments can be weighted by {[QUOTES_WEIGHT, *spec.value_columns]}; got "
                 f"{weight!r}.",
             )
-        generation = _frontier_generation_or_raise(job)
         try:
             result = self._query(job_id, point_index, key, weight, token)
         except SegmentLevelsExceededError as exc:
             raise _unprocessable(
                 "segment_key_unavailable", f"{key.key!r} cannot be broken down: {exc}"
             ) from None
-        self._require_generation(job_id, generation)
-        return segments_response(
-            result,
-            spec,
-            key,
-            weight,
-            point_index=point_index,
-            frontier_generation=generation,
-        )
+        return segments_response(result, spec, key, weight, point_index=point_index)
 
     def index(
         self, job_id: str, point_index: int | None, token: ExecutionCancellationToken
     ) -> OptimiserSegmentIndexResponse:
         """The target's keys ranked by adjustment spread: cached, else one query per key."""
-        from haute.routes._optimiser_frontier import _frontier_generation_or_raise
-
         job = self._store.require_completed_job(job_id)
-        generation = _frontier_generation_or_raise(job)
-        cache_key = (generation, point_index)
-        cached = (job.get(SEGMENT_INDEXES_KEY) or {}).get(cache_key)
+        cached = (job.get(SEGMENT_INDEXES_KEY) or {}).get(point_index)
         if cached is not None:
             return OptimiserSegmentIndexResponse.model_validate(cached)
         spec = _choice_spec(job)
@@ -821,23 +802,16 @@ class SegmentQueries:
             except SegmentLevelsExceededError as exc:
                 entries.append((_key(key.key, key.source, key.binning, str(exc)), None))
                 continue
-            breakdown = segments_response(
-                result,
-                spec,
-                key,
-                QUOTES_WEIGHT,
-                point_index=point_index,
-                frontier_generation=generation,
-            )
+            breakdown = segments_response(result, spec, key, QUOTES_WEIGHT, point_index=point_index)
             entries.append((key, segment_spread(breakdown)))
-        index = ranked_index(entries, point_index=point_index, frontier_generation=generation)
+        index = ranked_index(entries, point_index=point_index)
         with self._frontier.parent_lock(job_id):
-            latest = self._require_generation(job_id, generation)
+            latest = self._store.require_completed_job(job_id)
             self._store.atomic_update(
                 job_id,
                 {
                     SEGMENT_INDEXES_KEY: cache_segment_index(
-                        latest.get(SEGMENT_INDEXES_KEY) or {}, cache_key, index.model_dump()
+                        latest.get(SEGMENT_INDEXES_KEY) or {}, point_index, index.model_dump()
                     )
                 },
                 expected_status="completed",
@@ -858,15 +832,3 @@ class SegmentQueries:
             segment_reducer(key, weight),
             cancellation_token=token,
         )
-
-    def _require_generation(self, job_id: str, generation: int) -> Mapping[str, Any]:
-        """The job, which must still be at *generation*: else the frontier-changed 409."""
-        from haute.routes._optimiser_frontier import (
-            _FRONTIER_CHANGED_DETAIL,
-            _frontier_generation_or_raise,
-        )
-
-        latest = self._store.require_completed_job(job_id)
-        if _frontier_generation_or_raise(latest) != generation:
-            raise ConflictError(_FRONTIER_CHANGED_DETAIL)
-        return latest
