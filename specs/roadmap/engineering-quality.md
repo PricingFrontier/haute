@@ -10,7 +10,11 @@ specified in
 [23 September 2026 codebase review](codebase-review-2026-09-23.md).
 `ENGQ-R11` comes from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md), which also added
-evidence to `ENGQ-R01` and `ENGQ-R05`.
+evidence to `ENGQ-R01` and `ENGQ-R05`. `ROAD-WORKER-05`, also from the 23 September
+review, moved here when the background-jobs roadmap retired (2 November 2026); its
+behaviour is specified by the
+[background-jobs](../background-jobs/high-level.md) and
+[execution-engine](../execution-engine/high-level.md) specifications.
 
 ## Priorities
 
@@ -19,6 +23,7 @@ evidence to `ENGQ-R01` and `ENGQ-R05`.
 | ENGQ-R01 | Planned | P3 | Production code that nothing calls, or only tests call, is removed. |
 | ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
 | ENGQ-R11 | Decision | P2 | Mutation witnesses cover the rating step and deploy scoring, the modules whose silent failure changes a price, or the specification says why the three JSON-boundary targets suffice. |
+| ROAD-WORKER-05 | Planned | P3 | One worker primitive and one worker-failure taxonomy serve one-shot, pooled and job workers. |
 
 ## Planned improvements
 
@@ -122,3 +127,37 @@ use, or state in the specification why the three targets suffice.
 
 **Evidence:** `mutation/targets.json`, `pyproject.toml`, `src/haute/_rating.py`,
 `src/haute/deploy/_scorer.py`, `specs/engineering-quality/high-level.md`.
+
+### ROAD-WORKER-05 — One worker primitive and one failure taxonomy
+**Why:** Three subprocess mechanisms carry parallel error hierarchies. The
+one-shot `run_isolated_worker` has ten `IsolatedWorker*Error` classes; the warm
+`InteractiveWorkerPool` has ten `InteractiveWorker*Error` classes, six of which mirror
+them (start, timeout, stopped, memory limit, crashed, remote), and the dedicated worker
+reuses them; and the versioned job transport `run_worker_protocol` adds its own. The async
+adapter, the job supervisor and the thread timeout helper sit on top. Each taxonomy is
+mapped to HTTP status separately; a remote exception's terminal reason is already one
+rule (`remote_failure_terminal_reason`, from the child's own `MemoryError` check). This
+package comes from the [23 September 2026 codebase review](codebase-review-2026-09-23.md).
+
+**Plan:** Make the warm pool the single primitive, with one-shot work as a
+pool slot that is retired after one use, and the versioned transport as the
+message format every worker speaks. Replace the parallel hierarchies with one
+worker-failure family mapped once to HTTP and job states.
+
+**Acceptance:** One worker-failure hierarchy exists and one mapping to HTTP
+and job terminal states; preview, trace, Explore, JSON-cache, output-write,
+training and deploy batch workers use the same primitive; the existing
+supervision, timeout, memory-limit and crash-classification tests pass
+against it.
+
+**Dependencies:** None. The optimiser's input estimate already runs on the
+warm interactive worker pool. `PCFG-R04` and `API-R03` wait on it in the
+[delivery plan](delivery-plan.md), so the worker request format changes once.
+
+**Evidence:** `src/haute/_worker_isolation.py::run_isolated_worker`;
+`src/haute/_interactive_workers.py::InteractiveWorkerPool`;
+`src/haute/_worker_protocol.py::run_worker_protocol`;
+`src/haute/routes/_background_jobs.py::IsolatedJobSupervisor`;
+`src/haute/routes/_isolated_worker_async.py`; `src/haute/routes/_timeouts.py`;
+`src/haute/_dedicated_workers.py::DedicatedWorker` (the optimiser's solver session,
+which already reuses the warm pool's error family).

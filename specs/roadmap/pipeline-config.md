@@ -76,7 +76,7 @@ context and no worker mutates a process global; a worker request made after
 an MLflow settings update uses the new destination; the `chdir` ratchet is at
 zero; the identical helper copies are gone.
 
-**Dependencies:** `ROAD-WORKER-05` (background jobs), so the worker request
+**Dependencies:** `ROAD-WORKER-05` (engineering quality), so the worker request
 format changes once. Most resolvers sit in files the execution, caching,
 optimiser and assistant work also touch (`executor`, `_cache`,
 `routes/input_cache`, `_input_preparation`, `_data_points`, `assistant`).
