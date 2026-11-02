@@ -364,7 +364,7 @@ _WALKTHROUGH_GUESSES = [
                 }
             ]
         },
-        "at most one open-ended boundary",
+        "breakpoint rules[0] requires boundary",
         "Ordered {boundary, label} rows",
         id="banding-interval-rows",
     ),

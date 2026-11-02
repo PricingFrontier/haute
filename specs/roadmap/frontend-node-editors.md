@@ -48,7 +48,7 @@ with an unknown key is refused by the editor as by the backend; jscpd reports
 none of the pairs; knip reports none of the exports; a range of 0.2–0.9 suggests
 about ten bands.
 
-**Dependencies:** `EDA-R02` requires the defaulted card fields on the backend.
+**Dependencies:** None; the backend already requires every card field it once defaulted.
 
 **Evidence:** `frontend/src/panels/editors/polarsSteps/PolarsStepsEditor.tsx`;
 `frontend/src/panels/editors/explorePivots/placements.ts::futurePlacementFields`;

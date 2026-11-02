@@ -420,7 +420,14 @@ def _validate_axis_placements(
                 for member_index, member in enumerate(members)
             ]
         elif zone == "rows":
-            sort = copied.get("sort", "ascending")
+            if "sort" not in copied:
+                raise ConfigError(
+                    "Explore pivot row sort is required.",
+                    context=context,
+                    index=card_index,
+                    placement_index=placement_index,
+                )
+            sort = copied["sort"]
             if not isinstance(sort, str) or sort not in PIVOT_SORT_DIRECTIONS:
                 raise ConfigError(
                     "Explore pivot row has an unsupported sort direction.",
@@ -536,7 +543,15 @@ def _validate_values(
             index=card_index,
             label="value display name",
         )
-        sort_rows = copied.get("sort_rows", "none")
+        for required, label in (("sort_rows", "row sort"), ("color_scale", "colour scale")):
+            if required not in copied:
+                raise ConfigError(
+                    f"Explore pivot value {label} is required.",
+                    context=context,
+                    index=card_index,
+                    value_index=value_index,
+                )
+        sort_rows = copied["sort_rows"]
         if not isinstance(sort_rows, str) or sort_rows not in PIVOT_VALUE_SORTS:
             raise ConfigError(
                 "Explore pivot value has an unsupported row sort.",
@@ -545,7 +560,7 @@ def _validate_values(
                 value_index=value_index,
                 sort_rows=sort_rows,
             )
-        color_scale = copied.get("color_scale", "none")
+        color_scale = copied["color_scale"]
         if not isinstance(color_scale, str) or color_scale not in PIVOT_COLOR_SCALES:
             raise ConfigError(
                 "Explore pivot value has an unsupported colour scale.",

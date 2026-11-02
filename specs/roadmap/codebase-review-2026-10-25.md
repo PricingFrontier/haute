@@ -261,7 +261,6 @@ production:
 | Assistant | ASB-4, ASB-5, ASB-6, ASB-8, ASB-9 | `ASSIST-58` |
 | Assistant | ASB-3, ASB-7, ASB-11 | `ASSIST-59` |
 | Explore / EDA | SUB-5, SUB-6, SUB-7, SUB-10 | `EDA-R01` |
-| Explore / EDA | SUB-8, SUB-9, SUB-12 | `EDA-R02` |
 | Frontend shared | FSA-1, FSA-2, FSA-8, FSA-10 | `FSH-R05` |
 | Frontend shared | FSA-3, FSA-4, FSA-5, FSA-6, FSA-7, FSA-9, FSA-12 | `FSH-R06` |
 | Frontend shared | FSB-1, FSB-2, FSB-10, FSB-12, FSB-15 | `FSH-R07` |
@@ -302,8 +301,7 @@ browser's hand-written contract mirrors (`API-R03`), the results store's optimis
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
 (`ENGQ-R01`); the dead
 `submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
-utilities (`ENGQ-R01`); the pivot editor writing the
-fields the backend defaults (`EDA-R02`); a second fabricated
+utilities (`ENGQ-R01`); a second fabricated
 train-failure sentinel (`FSH-R06`); the browser's frontier
 generation fences that only ever see generation 0 (`OPT-R04`), the optimiser
 panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and
