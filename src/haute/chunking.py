@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
+from haute._column_lineage import SELECT_METHODS, column_free_select_argument
 from haute._polars_call_shapes import (
     is_literal_collection,
     is_literal_scalar,
@@ -35,7 +36,6 @@ __all__ = [
     "classify_row_local_expression",
     "is_chunk_local_polars_code",
 ]
-
 
 # ---------------------------------------------------------------------------
 # Chunk-local user-code whitelist (PATH_TO_HIGHEST_STANDARD §A3).
@@ -226,6 +226,8 @@ _ADMITTED_CALL_SHAPES: Mapping[str, frozenset[str]] = MappingProxyType(
         "df.cast": frozenset({"non_categorical"}),
         "expr.cast": frozenset({"non_categorical"}),
         "df.fill_null": frozenset({"value"}),
+        # ``column_free_select_argument``: a column read by name, or selectors only.
+        "df.select": frozenset({"named_column", "selector_rooted"}),
         "expr.fill_null": frozenset({"value"}),
         "expr.is_in": frozenset({"literal_collection", "typed_literal_list"}),
         "expr.replace": frozenset({"mapping", "old_new"}),
@@ -528,6 +530,11 @@ def _row_local_call_is_supported(
         trace=trace,
         selector_aliases=selector_aliases,
     )
+    if args_supported and receiver_derived and method_name in SELECT_METHODS:
+        blocker = column_free_select_argument(call, selector_aliases=selector_aliases)
+        if blocker is not None:
+            trace.record("column_free_select", ast.unparse(blocker), blocker)
+            return False, False
     return args_supported, receiver_derived
 
 

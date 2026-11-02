@@ -5,9 +5,10 @@ serialization, undo/redo cloning and dirty-state fingerprints. In particular,
 `__proto__`, `constructor`, and underscore-prefixed column names are own data
 properties, never prototype setters or editor metadata inside config payloads.
 Changing only such a field must change the persisted fingerprint.
-For a Polars config carrying `steps`, `code` and `_steps_error` are derived from
-those steps, so only these two fields are omitted from dirty fingerprints (also
-inside definitions). Request payloads and history snapshots still retain them.
+For a Polars config carrying `steps`, `code` is derived from those steps, so it is
+omitted from dirty fingerprints (also inside definitions), as is the node data's
+`editor` state, which the server derives beside the config. Request payloads and history
+snapshots still retain both.
 An atomic graph commit with an unchanged authored fingerprint updates live state
 without pushing history or clearing redo; this includes generated step-code refreshes.
 

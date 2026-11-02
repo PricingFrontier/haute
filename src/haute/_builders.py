@@ -53,6 +53,11 @@ from haute._execution_context import (
 )
 from haute._graph_utils import _sanitize_func_name, edge_input_name
 from haute._io import _select_columns
+from haute._keyword_parameters import (
+    keyword_parameter_values,
+    reject_input_named_keyword_parameters,
+    validate_keyword_parameters,
+)
 from haute._logging import get_logger
 from haute._node_apply import (
     apply_optimiser_apply_from_config,
@@ -1039,6 +1044,7 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _run_id = config.get("run_id", "")
     _registered_model = config.get("registered_model", "")
     _config_captured = dict(config)
+    _schema_only = ctx.schema_only
 
     # Determine if we have a valid source configured
     if _artifact_path and not _source_type:
@@ -1068,6 +1074,7 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             *dfs,
             config=_config_captured,
             source_names=_source_names,
+            schema_only=_schema_only,
         )
 
     return ctx.func_name, optimiser_apply_fn, False
@@ -1320,6 +1327,15 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
     _in_map = dict(config.get("inputMapping", {})) or None
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
+    keyword_parameters = validate_keyword_parameters(config, node_label=ctx.node.data.label)
+    # The signature's inputs are the logical names; a parameter shadows the
+    # physical alias the code is also given, as it does in the generated function.
+    reject_input_named_keyword_parameters(
+        keyword_parameters,
+        _orig_src if _orig_src is not None else _src_names,
+        node_id=ctx.node.id,
+        node_label=ctx.node.data.label,
+    )
 
     steps = config.get("steps")
     if isinstance(steps, list):
@@ -1348,6 +1364,7 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
                 dfs,
                 extra_ns=_preamble,
                 orig_source_names=_orig_src,
+                parameters=keyword_parameter_values(keyword_parameters),
             )
 
         def transform_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
@@ -1459,9 +1476,6 @@ def stepped_code_problem(
     """
     if node_type not in STEPPED_NODE_TYPES or not isinstance(config.get("steps"), list):
         return None
-    problem = config.get("_steps_error")
-    if problem is not None:
-        return str(problem)
     try:
         render_polars_steps(
             config["steps"], sorted(names), start=STEPPED_NODE_TYPES[node_type].start
@@ -1653,13 +1667,17 @@ def _dispatch_apply(
     artifact: dict[str, Any],
     version_col: str,
     optimised_value_col: str = "",
+    *,
+    schema_only: bool = False,
 ) -> _Frame:
     """Route to the correct apply function based on artifact mode."""
     mode = artifact.get("mode", "online")
     version = artifact.get("version", "")
     if mode == "ratebook":
         return _apply_ratebook(lf, artifact, version, version_col, optimised_value_col)
-    return _apply_online(lf, artifact, version, version_col, optimised_value_col)
+    return _apply_online(
+        lf, artifact, version, version_col, optimised_value_col, schema_only=schema_only
+    )
 
 
 def _apply_online(
@@ -1668,13 +1686,17 @@ def _apply_online(
     version: str,
     version_col: str,
     optimised_value_col: str = "",
+    *,
+    schema_only: bool = False,
 ) -> _Frame:
     """Apply online optimisation: Lagrangian argmax with stored lambdas.
 
     Sum constraints choose each quote's scenario independently, so the result is
     a per-quote Python scan: a limited preview applies to the first quotes in
     the result's order only. Ratio constraints linearise against the whole
-    apply-time frame, so their apply always reads every input row.
+    apply-time frame, so their apply always reads every input row, except under
+    a *schema_only* walk, which reads no rows: it checks the apply's columns are
+    there and returns an empty frame of the apply's schema.
     """
     qid_col = artifact.get("quote_id", "quote_id")
     step_col = artifact.get("scenario_index", "scenario_index")
@@ -1708,22 +1730,21 @@ def _apply_online(
 
     if isinstance(lf, pl.DataFrame):
         return apply(lf.lazy()).lazy()
+    schema = online_apply_output_schema(
+        artifact,
+        version=version,
+        version_col=version_col,
+        optimised_value_col=optimised_value_col,
+    )
     if has_ratio_constraint(constraints):
+        if schema_only:
+            lf.select(read_columns).collect_schema()
+            return pl.LazyFrame(schema=schema)
         return apply(lf).lazy()
 
     from haute._polars_utils import key_prefix_python_scan
 
-    return key_prefix_python_scan(
-        lf,
-        apply,
-        schema=online_apply_output_schema(
-            artifact,
-            version=version,
-            version_col=version_col,
-            optimised_value_col=optimised_value_col,
-        ),
-        key_column=qid_col,
-    )
+    return key_prefix_python_scan(lf, apply, schema=schema, key_column=qid_col)
 
 
 def has_ratio_constraint(constraints: dict[str, Any]) -> bool:
@@ -1762,7 +1783,11 @@ def online_apply_output_schema(
     version_col: str,
     optimised_value_col: str = "",
 ) -> pl.Schema:
-    """Return the exact schema a sum-constraint online apply emits."""
+    """Return the exact schema an online apply emits.
+
+    One ``optimal_<name>`` per constraint, by name; a ratio constraint's
+    numerator and denominator follow, each once, in the constraints' order.
+    """
     constraints = artifact.get("constraints") or {}
     columns: dict[str, pl.DataType] = {
         name: dtype
@@ -1773,6 +1798,10 @@ def online_apply_output_schema(
     columns["optimal_objective"] = pl.Float32()
     for name in sorted(constraints):
         columns[f"optimal_{name}"] = pl.Float32()
+    for spec in constraints.values():
+        if isinstance(spec, dict) and {"numerator", "denominator"}.issubset(spec):
+            for component in (spec["numerator"], spec["denominator"]):
+                columns.setdefault(f"optimal_{component}", pl.Float32())
     if version:
         columns[version_col] = pl.String()
     return pl.Schema(columns)

@@ -456,9 +456,8 @@ export interface ExplorePivotMemberKey {
 }
 export interface ExecutionMetricsPayload {
   admission: ExecutionAdmissionPayload | null;
-  bytes_read: number | null;
   bytes_written: number | null;
-  cache_proof: ExecutionCacheProofPayload;
+  cache_direct_fallbacks: number;
   cancellation_latency_ms: number | null;
   checkpoint_count: number;
   chunk_count: number;
@@ -534,18 +533,6 @@ export interface ExecutionAdmissionPayload {
   reason: string;
   rss_at_admission_bytes: number | null;
   rss_limit_bytes: number | null;
-}
-export interface ExecutionCacheProofPayload {
-  direct_fallbacks: number;
-  hits: number;
-  miss_reason_counts: ExecutionCacheProofMissReasonCountsPayload;
-  misses: number;
-}
-export interface ExecutionCacheProofMissReasonCountsPayload {
-  artifact_integrity_schema_failure: number;
-  metadata_source_mismatch: number;
-  proof_unavailable: number;
-  unreadable_artifact: number;
 }
 export interface ExecutionColumnWidthsCollectionPayload {
   /**
@@ -726,9 +713,6 @@ export interface SharedSnapshotSeedPayload {
   node_id: string;
 }
 export interface ExecutionStageMetricsPayload {
-  bytes_read: number | null;
-  bytes_written: number | null;
-  columns_scanned: number | null;
   elapsed_ms: number;
   job_id: string | null;
   n_checkpoints: number;
@@ -737,8 +721,6 @@ export interface ExecutionStageMetricsPayload {
   node_id: string | null;
   operation: string;
   profile: string;
-  rows_in: number | null;
-  rows_out: number | null;
   rss_delta_bytes: number | null;
   rss_end_bytes: number | null;
   rss_peak_bytes: number | null;
@@ -2697,6 +2679,7 @@ export interface UtilityReadResponse {
  * A written utility file, with its new revision and its save-ledger capture.
  */
 export interface UtilityWriteResponse {
+  content: string;
   git_sha: string | null;
   identity_required: boolean;
   import_line: string;
@@ -2723,6 +2706,7 @@ export interface UtilityDeleteResponse {
  */
 export interface WorkbenchStatusResponse {
   enabled: boolean;
+  environments: string[];
   form: string | null;
 }
 /**
@@ -3264,20 +3248,192 @@ export interface WorkbenchParamFileResponse {
   values: string[];
 }
 /**
- * The SQL for each hosted environment the project declares, and the default branch
- * whose form it starts from: null when it starts from none.
+ * The SQL for each environment the project declares, and the default branch whose form
+ * it starts from: null when it starts from none.
  */
 export interface WorkbenchStoreSqlResponse {
   branch: string | null;
   environments: WorkbenchStoreSqlEnvironment[];
 }
 /**
- * One hosted environment the project declares, its engine and the SQL for it.
+ * One environment the project declares, its engine and the SQL for it.
  */
 export interface WorkbenchStoreSqlEnvironment {
   name: string;
   provider: string;
   sql: string;
+}
+/**
+ * The tables an environment's database holds, read through its connection: each table
+ * holding the quote's identity, ``haute_activity`` among them. Names, kinds and counts
+ * alone, never a value, a location or a sign-in.
+ */
+export interface WorkbenchStoreCatalogueResponse {
+  environment: string;
+  tables: WorkbenchCatalogueTable[];
+}
+/**
+ * A table of the store's as an environment's database holds it: its columns, its primary
+ * key's columns, whether it refers by the identity to its quote's quote_details row, and
+ * the quotes holding a row in it, None when the table lacks a quote identity column.
+ */
+export interface WorkbenchCatalogueTable {
+  /**
+   * @maxItems 10000
+   */
+  columns: WorkbenchCatalogueColumn[];
+  name: string;
+  /**
+   * @maxItems 10000
+   */
+  primary_key: string[];
+  quotes: number | null;
+  refers: boolean;
+}
+/**
+ * A column as an environment's database holds it: its name, its kind (``boolean``,
+ * ``integer``, ``float``, ``datetime``, ``date``, ``string`` or another type's), its type as
+ * the database names it, whether it takes a null, its collation where it has one, and the
+ * quotes holding a value in it, None when the table lacks a quote identity column.
+ */
+export interface WorkbenchCatalogueColumn {
+  collation: string | null;
+  kind: string;
+  name: string;
+  nullable: boolean;
+  quotes: number | null;
+  type: string;
+}
+/**
+ * The form compared with an environment's tables: each difference, each extra, the
+ * pairings taken, whether the database matches the form, the SQL that brings its tables to
+ * the form, from what they hold, and the default branch whose form named renames, null
+ * when none did.
+ */
+export interface WorkbenchStoreCompareResponse {
+  branch: string | null;
+  differences: WorkbenchStoreDifference[];
+  extras: WorkbenchStoreExtra[];
+  matches: boolean;
+  renames: WorkbenchStoreRename[];
+  sql: string;
+}
+/**
+ * A way the database differs from the form: the form's table and column by id (no table
+ * for Haute's own haute_activity), its kind and what it is.
+ */
+export interface WorkbenchStoreDifference {
+  column: string | null;
+  kind: 'missing' | 'renamed' | 'type' | 'rows' | 'null' | 'key' | 'refers' | 'collation' | 'store';
+  message: string;
+  table: string | null;
+}
+/**
+ * A table of the store's, or a column of one of the form's tables, that the database
+ * holds and the form does not: its table's and its name there, the form's table's id when
+ * the table is the form's, and the quotes holding values in it, None when the table lacks a
+ * quote identity column.
+ */
+export interface WorkbenchStoreExtra {
+  column: string | null;
+  quotes: number | null;
+  table: string;
+  table_id: string | null;
+}
+/**
+ * A column of the form's table ``table`` (by id), ``column`` (by id), that the database
+ * holds as ``was``: the analyst's pairing of the two as a rename.
+ */
+export interface WorkbenchStoreRename {
+  column: string;
+  table: string;
+  was: string;
+}
+/**
+ * The test-quote folder's files by name, and the branch they were read on.
+ */
+export interface WorkbenchTestQuotesResponse {
+  branch: string;
+  quotes: WorkbenchTestQuoteSummary[];
+}
+/**
+ * A file of the test-quote folder: its name, its file's name, its revision (a digest of
+ * its bytes) and, for one the panel cannot open, why.
+ */
+export interface WorkbenchTestQuoteSummary {
+  file: string;
+  name: string;
+  problem: string | null;
+  revision: string;
+}
+/**
+ * A test quote written or deleted: the file as it now stands (None once deleted), and
+ * the write's capture on the save ledger.
+ */
+export interface WorkbenchTestQuoteWriteResponse {
+  git_sha: string | null;
+  identity_required: boolean;
+  quote: WorkbenchTestQuoteSummary | null;
+  uncaptured: string[];
+  warnings: string[];
+}
+/**
+ * A test quote's values as the sheets hold them, and each value it could not place.
+ */
+export interface WorkbenchTestQuoteOpenResponse {
+  not_opened: string[];
+  values: {
+    [k: string]: {
+      [k: string]: string | boolean;
+    }[];
+  };
+}
+/**
+ * A test quote priced and compared: its outcome (``unchanged``, ``moved``,
+ * ``no_longer_compares`` or ``failed``), its moves, the tables and columns its expected
+ * answer holds that the form no longer has, why, the file's revision it read, the basis it
+ * priced on and the branch.
+ */
+export interface WorkbenchTestQuoteRunResponse {
+  basis: string | null;
+  branch: string;
+  file: string;
+  moves: WorkbenchTestQuoteMove[];
+  name: string;
+  outcome: 'unchanged' | 'moved' | 'no_longer_compares' | 'failed';
+  removed: string[];
+  revision: string;
+  why: string | null;
+}
+/**
+ * A field of a test quote that moved: its table, its row (key values or position; null
+ * in a one-row table), its column (null for a row only one side holds, ``before`` and
+ * ``after`` then saying which), the expected value and the new.
+ */
+export interface WorkbenchTestQuoteMove {
+  after: unknown;
+  before: unknown;
+  column: string | null;
+  row: string | null;
+  table: string;
+}
+/**
+ * The test quotes accepted, as they now stand, those not, with why, and the capture.
+ */
+export interface WorkbenchTestQuotesAcceptResponse {
+  accepted: WorkbenchTestQuoteSummary[];
+  git_sha: string | null;
+  identity_required: boolean;
+  refused: WorkbenchTestQuoteRefusal[];
+  uncaptured: string[];
+  warnings: string[];
+}
+/**
+ * A test quote not accepted, and why.
+ */
+export interface WorkbenchTestQuoteRefusal {
+  file: string;
+  why: string;
 }
 /**
  * The underwriter app's release, and who the host signed in.
@@ -3533,4 +3689,34 @@ export interface WorkbenchAppQuoteAmend {
  */
 export interface WorkbenchAppQuoteNote {
   note: string;
+}
+/**
+ * Save the sample as saved: under a new ``name``, or over the test quote ``replace``
+ * names; with the branch and the form folder's revision the panel saved.
+ */
+export interface WorkbenchTestQuoteSaveRequest {
+  branch: string;
+  form_revision: string;
+  name?: string | null;
+  replace?: WorkbenchTestQuoteTarget | null;
+}
+/**
+ * A test quote's file, with the revision a decision about it was made on.
+ */
+export interface WorkbenchTestQuoteTarget {
+  file: string;
+  revision: string;
+}
+/**
+ * Accept the new answers of these test quotes, each at the revision its run read, on
+ * the basis the run priced on and the branch it was made on.
+ */
+export interface WorkbenchTestQuotesAcceptRequest {
+  basis: string;
+  branch: string;
+  /**
+   * @minItems 1
+   * @maxItems 10000
+   */
+  quotes: WorkbenchTestQuoteTarget[];
 }

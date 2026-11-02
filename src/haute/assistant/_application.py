@@ -904,7 +904,7 @@ def _prove_steps_survive_save(
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(sidecars[relative].encode("utf-8"))
             try:
-                reparsed = _resolve_node_skeleton(skeletons[func_name], base_dir)["config"]
+                resolved = _resolve_node_skeleton(skeletons[func_name], base_dir)
             except (ConfigError, ParseError) as exc:
                 raise AssistantOperationError(
                     "op_not_applied",
@@ -912,8 +912,9 @@ def _prove_steps_survive_save(
                     where={"node": node_id, "field": "steps"},
                     fix=_steps_fix(node),
                 ) from exc
-            if "_steps_discarded" in reparsed or reparsed.get("steps") != node.data.config["steps"]:
-                reason = reparsed.get("_steps_discarded") or "Its steps change on reparse."
+            discarded = resolved["editor"].steps_discarded
+            if discarded or resolved["config"].get("steps") != node.data.config["steps"]:
+                reason = discarded or "Its steps change on reparse."
                 raise AssistantOperationError(
                     "op_not_applied",
                     f"Node {node_id!r} would lose its steps on save: {reason}",

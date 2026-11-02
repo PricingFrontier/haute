@@ -2,7 +2,7 @@
 
 These exercise the mid-sequence failure paths in `haute._git` that never run on
 the happy path: the fork rollback (`_rollback_fork`), the parallel-fork lone-ref
-cleanup, the branch-away rollback (`_rollback_branch_away`), the branch-away
+cleanup, the branch-away rollback, the branch-away
 user-facing guard refusals, and the atomic-push / fast-forward error raises.
 
 The fixtures, helpers and tmp-repo conventions mirror ``test_git_engine.py``.
@@ -185,7 +185,7 @@ class TestRollbackFork:
 
 
 class TestRollbackBranchAway:
-    """`_rollback_branch_away`: a mid-sequence branch_away failure restores both
+    """A mid-sequence branch_away failure restores both
     lineages — the canonical name is not left half-repointed, and the dated
     set-aside name does not strand the original pair."""
 
@@ -342,8 +342,6 @@ class TestPushAndFastForwardRaises:
         commit_save(["rating.py"], WORKING, cwd=other)
         commit_milestone("remote m", other, cwd=other)
         push_working_pair("origin", other, cwd=other)
-
-        git_core._fetch_cooldowns.clear()
 
         # Catch-up first verifies the freshly fetched remote leg exists, then the
         # leg-state read resolves it again to classify the working branch as

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import pickle
+import threading
 from pathlib import Path
 
 import click
@@ -51,6 +52,12 @@ def test_cli_applies_unavailable_qos_before_subcommand(monkeypatch: pytest.Monke
     assert events == ["qos", "command"]
 
 
+def _go() -> threading.Event:
+    go = threading.Event()
+    go.set()
+    return go
+
+
 @pytest.mark.parametrize("entrypoint", ["isolated", "protocol", "interactive"])
 def test_child_entrypoints_apply_unavailable_qos_before_work(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, entrypoint: str
@@ -65,9 +72,10 @@ def test_child_entrypoints_apply_unavailable_qos_before_work(
             module, "configure_process_high_qos", lambda: events.append("qos") or "unavailable"
         )
         module._isolated_worker_entrypoint(
-            results, lambda: events.append("work") or "result", (), {}, None
+            results, _go(), lambda: events.append("work") or "result", (), {}, None
         )
-        assert pickle.loads(results.put_items[0]) == ("ok", "result")
+        assert pickle.loads(results.put_items[0])[0] == "ready"
+        assert pickle.loads(results.put_items[1]) == ("ok", "result")
     elif entrypoint == "protocol":
         import haute._worker_protocol as module
 
@@ -82,12 +90,14 @@ def test_child_entrypoints_apply_unavailable_qos_before_work(
         module._protocol_entrypoint(
             results,
             _Queue(),
+            _go(),
             work,
             module.WorkerRequest("id", "kind", {}),
             str(tmp_path),
             None,
         )
-        assert results.put_items[0][0] == "ok"  # type: ignore[index]
+        assert results.put_items[0][0] == "ready"  # type: ignore[index]
+        assert results.put_items[1][0] == "ok"  # type: ignore[index]
     else:
         import haute._interactive_workers as module
 

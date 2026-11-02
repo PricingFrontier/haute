@@ -276,7 +276,7 @@ def _remote_secrets_or_reason(remote: str, project_dir: Path) -> RemoteSecrets |
     github.com, since the secrets belong where the push lands. Then the project's
     settings, whose read failure raises :class:`_SettingsUnreadableError`.
     """
-    from haute._scaffold import ci_secret_names
+    from haute._scaffold import ci_credentials, ci_secret_names
     from haute.deploy._config import DeployConfig
 
     url = _git.remote_url(remote, cwd=project_dir)
@@ -305,14 +305,17 @@ def _remote_secrets_or_reason(remote: str, project_dir: Path) -> RemoteSecrets |
                 f"This project's CI provider is {config.ci.provider}: Haute sets the deploy's "
                 "secrets on GitHub only."
             )
-        names = tuple(ci_secret_names(config.target))
+        # The deploy target's, or a workbench project's app host's (a WorkbenchConfigError,
+        # a ConfigError, when it names none).
+        target = ci_credentials(project_dir, config.target)
+        names = tuple(ci_secret_names(target))
     except (OSError, ValueError, ConfigError, DeployError) as exc:
         raise _SettingsUnreadableError(
             f"Haute could not read this project's haute.toml and .env: {exc}", repository
         ) from exc
     if not names:
-        return f"The {config.target} target needs no CI secrets."
-    return RemoteSecrets(project_dir, config.target, repository, names)
+        return f"The {target} target needs no CI secrets."
+    return RemoteSecrets(project_dir, target, repository, names)
 
 
 def remote_secrets(remote: str, project_dir: Path) -> RemoteSecrets | None:

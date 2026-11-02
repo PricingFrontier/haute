@@ -104,10 +104,11 @@ Only a valid sidecar supplies source selection. Corrupt or unreadable content le
 bytes untouched, uses presentation-only default positions, degrades the document, and blocks
 preview because active-source state is untrusted. Recovery revisions hash raw dependency
 bytes and explicit missing sentinels rather than requiring a valid `PipelineGraph`.
-A module-level statement that a save would drop (see [codegen](../codegen/high-level.md)),
-in the pipeline file or in a registered submodel file the pipeline's parse reads, is an
-`unkept_module_statement` diagnostic on its file and lines, so the document is degraded until
-the statement moves between the imports and the constructor or into preserve markers. Save refuses a document that is not ready on disk with `409`, naming each diagnostic's
+A module-level statement or a comment that a save would drop (see
+[codegen](../codegen/high-level.md)), in the pipeline file or in a registered submodel file
+the pipeline's parse reads, is an `unkept_module_statement` diagnostic on its file and lines,
+so the document is degraded until the statement moves between the imports and the
+constructor or into preserve markers, or the comment moves there or into a node's code. Save refuses a document that is not ready on disk with `409`, naming each diagnostic's
 location, message and fix, and leaves the file untouched.
 Every mutation of a persisted document, including Save, names the `source_revision` it was
 based on and fails closed when the on-disk document has moved; initial creation names no
@@ -134,11 +135,17 @@ builders as source parsing and therefore reports positional parameter-name edges
 Keyword-only parameters are configuration and never become graph edges.
 
 **Standalone execution.** `Pipeline.run()` and `Pipeline.score(df)` are a self-contained
-executor over the live decorator graph (distinct from the full graph executor used for
+executor over the live decorator graph (each refusing a pipeline with no nodes, "Pipeline has
+no nodes") (distinct from the full graph executor used for
 deployment/preview, which operates on the parsed `GraphNode`/`GraphEdge` representation
 instead). They topologically sort the registered nodes and edges, run each node with its
 wired-in DataFrame(s) — a transform's function directly, a configured node's work through its
-decorator and then its hook, if it has one — and resolve which node's output to return: an explicit
+decorator and then its hook, if it has one — and resolve which node's output to return.
+Like the graph walker, they never resolve a Source Switch's inactive branch: an edge into a
+switch from an input its sidecar maps to another source (`score()` runs as `live`) is
+inactive, a node whose every outgoing edge is inactive or leads to such a node is not run
+(nor seeded), and the switch receives `None` for that input. A switch whose map does not name
+the run's source keeps every edge and refuses the run itself. Of the output node, an explicit
 response node (`@pipeline.output` or `@pipeline.workbench_output`) wins if there is exactly one;
 two raise, naming both; otherwise the single node with no
 outgoing edge is used; anything more ambiguous than that raises, naming every candidate.
@@ -204,11 +211,14 @@ The GUI's plural listing path applies the same strict configured-path checks
 but also returns additional valid root-level pipelines. It lists rather than
 chooses among them; the single-pipeline binding policy remains authoritative.
 
-`haute init` scaffolds a new project: `haute.toml`,
+`haute init` scaffolds a new project, asking at a terminal what its flags leave out
+([cli](../cli/high-level.md)): `haute.toml`,
 `.env.example`, CI workflow YAML for one of several CI providers, a valid blank pipeline and
-starter parse test, deploy-target-specific credentials and TOML sections for one of several
-supported deploy targets, and with `--workbench` the `[workbench]` table and a blank form
-folder, the pipeline folder's `workbench/` ([workbench](../workbench/high-level.md)). The blank pipeline declares its `Pipeline` object but no nodes. Init
+starter parse test, and, for an automated project, deploy-target-specific credentials and TOML
+sections for one of several supported deploy targets, or, for a workbench project, which hosts
+no scoring API, the `[workbench]` table with the app's host and the quote store's database,
+`[deploy.container]` for the app's image, the host's credentials, `connections.toml` and a
+blank form folder, the pipeline folder's `workbench/` ([workbench](../workbench/high-level.md)). The blank pipeline declares its `Pipeline` object but no nodes. Init
 removes a root `main.py`, creates no `prompts/` directory, and creates no node sidecars.
 
 **Project layout.** The pipeline folder, the folder holding `[project].pipeline` (`rating/`
@@ -258,9 +268,24 @@ production names an environment in `[ci.production] environment`; `haute ci upda
 the GitHub and GitLab production jobs under it, so the reviewers configured on it in the
 provider gate the deploy. Where the plan offers them: GitHub gives required reviewers to a
 private repository only on GitHub Enterprise, and GitLab's protected environments need Premium.
-Re-running `haute init --force` with a different
-`--ci` prunes the previously-chosen provider's workflow files before writing the new ones, so
-switching providers doesn't leave orphaned config behind.
+A workbench project's workflows are a set of their own, the same for every provider in
+shape: a validate job (lint, type check, test, pipeline lint, `haute app build`, keeping
+the test quotes' report as its artifact) on a pull request and on a push to the default
+branch that changes a release input; on that push a
+publish job that logs in to the registry with the app host's credentials, runs
+`haute app build --push`, which builds the underwriter app's image once, pushes it and prints
+the reference by digest it pushed, rolls the staging app to that reference with
+`haute app rollout staging --image` and runs `haute app impact`, keeping its
+`impact_report.md` as the job's artifact; and a production job, run by hand after the provider's
+approval (GitHub's `release-production.yml`, GitLab's manual `deploy-production` job, Azure
+DevOps' `DeployProduction` stage, triggered by hand, under its `production` environment),
+that rolls production to the release staging runs for the commit with `haute app rollout prod --from
+staging`. It has no endpoint deploy or smoke test, and its impact prices quotes
+production saved on both apps rather than a dataset on two endpoints
+([workbench](../workbench/high-level.md)). Re-running `haute init` with a different
+`--ci`, or for the other kind of project, prunes every workflow file Haute generated that the
+new set does not hold before writing the new ones, so switching providers doesn't leave
+orphaned config behind.
 
 Every emitted GitHub Actions, GitLab CI, and Azure DevOps workflow is a complete
 YAML document, not a template fragment that only looks plausible in Markdown.
@@ -426,8 +451,8 @@ computed column whose dtype is not propagated, lineage fails closed exactly as t
 same hand-written selector would. The node data
 model enforces
 one invariant on construction: a `polars` config that carries `steps` always carries the
-rendering of those steps as its `code`, or an empty `code` plus an editor-state
-`_steps_error` message when they cannot be rendered, so every consumer that reads
+rendering of those steps as its `code`, or an empty `code` plus a `steps_error` message
+in the editor state it carries beside the config when they cannot be rendered, so every consumer that reads
 transform code (execution, chunk-local classification, projection, estimation, tracing, codegen)
 sees the same program without knowing about steps and a stale `code` in a browser
 payload is overwritten on ingress; in-process config replacement uses the validated
@@ -440,9 +465,9 @@ parsing loads it, renders its steps against the function's parameter names, and
 compares the result with the code extracted from the body before the node model is
 built: an identical body keeps the node in step mode; a different body, or a body that
 is not empty while the steps cannot be rendered, discards the steps (the body was edited
-by hand), marks the config with an editor-state `_steps_discarded` reason and an
-editor-state `_discarded_sidecar` path that the stale-sidecar sweep baseline includes so
-the file is retired on the next save, and logs a warning; an empty body with
+by hand), records in the node's editor state a `steps_discarded` reason and a
+`discarded_sidecar` path that the stale-sidecar sweep baseline includes so the file is
+retired on the next save, and logs a warning; an empty body with
 unrenderable steps keeps the steps, because that is how an incomplete step list is
 saved. A sidecar whose `steps` value is not a list fails the parse with a `ConfigError`.
 
@@ -458,7 +483,7 @@ to empty code without error, because the node then simply keeps its base behavio
 `join`/`concat` references are checked against the surface's eligible input names.
 Explore is the one stepped type with no config folder: its steps travel as a `steps=`
 decorator argument beside its overview, pivot and chart cards, are reconciled against
-the body exactly as a sidecar's are, and leave no `_discarded_sidecar` marker when a
+the body exactly as a sidecar's are, and leave no discarded sidecar when a
 hand edit discards them (there is no file to retire).
 One table (`STEPPED_NODE_TYPES` in `haute._polars_steps`) maps every stepped node type
 to its start mode and its input eligibility: `edges` for a transform and for an
@@ -483,10 +508,10 @@ naming the setting, never as an internal error. The planner and estimator, which
 whether they can plan the node, still see it as a `ValueError`. The node-data invariant, the sidecar filter and the reconcile rule
 apply to every stepped type: a Data Input's `steps` persist in its required
 `config/data_input/<name>.json` sidecar beside its source settings, `code` is always
-their rendering (or empty plus `_steps_error`), and on load the parser compares the
+their rendering (or empty, with a steps error), and on load the parser compares the
 code extracted from the body with the rendering after the same extraction, so a
 rendering the extractor normalises (a lone `df = (df.head(2))` free-code step loses
-its brackets) still reloads in step mode; the `_discarded_sidecar` marker is set only
+its brackets) still reloads in step mode; a discarded sidecar is recorded only
 for the transform, whose sidecar is optional, while a Data Input's sidecar stays and
 is next written without `steps`. An unrenderable Data Input step list is saved
 as a hook whose body is the generated placeholder, so a standalone run raises rather
@@ -638,10 +663,12 @@ and owned by the team. Two explicit commands write it again, and nothing else do
 team's hand-edits to their workflow (extra jobs, custom notifications, org-specific runners)
 stay stable across unrelated `haute.toml` changes: `haute ci update` regenerates the chosen
 provider's files from the installed Haute's templates and the `[ci]` table (the staging
-deploy, smoke and impact steps pass the recorded suffix), overwriting hand-edits to those files
-and pruning another provider's; `haute init --force` is a full re-scaffold that prunes the
-previous provider's workflow files and rewrites the newly-chosen provider's from the
-templates.
+deploy, smoke and impact steps pass the recorded suffix), a workbench project's being the
+workbench's set for its `[workbench.app] host`, overwriting hand-edits to those files
+and pruning every other generated file; `haute init` in an initialised project asks its
+questions again, writes `haute.toml` afresh from the answers, prunes the previous provider's
+workflow files and rewrites the newly-chosen provider's from the templates, leaving the
+pipeline folder and the tests as they are.
 
 Sidecars are organised one type-folder per `NodeType` (`config/banding/`, `config/rating_step/`,
 etc.) rather than three alternatives considered and rejected: a single flat `config/` directory,
@@ -672,10 +699,14 @@ handling.
 
 ## Failure model
 
-> NOTE: The full review found keyword-only configuration defaults dropped during
-> round-trip, including a 120-to-90 result change.
-> [PCFG-R21](../roadmap/pipeline-config.md#pcfg-r21--node-signatures-retain-their-configuration-bindings)
-> tracks conservation of configuration bindings.
+A transform written as code keeps its keyword-only parameters with literal defaults
+(`def scaled(source, *, factor=1.2)`) through parse, the editor, save and every run, so the
+parameter, not a same-named preamble value, is what its body reads. A keyword-only form the
+pipeline file cannot carry back (a parameter without a default, a default that is not a
+scalar literal, a list or dict default included, a keyword-only parameter on any other node or on a stepped transform, apart
+from an External File hook's `obj`, or a `**kwargs` parameter) is a parse error naming the
+node, the parameter and its line, so the editor shows it and Save is refused rather than
+the next save dropping it.
 
 A `connect()` call that the live signature would refuse (an unknown keyword, a third
 positional argument, a value bound twice, a missing or non-string endpoint, a port that is

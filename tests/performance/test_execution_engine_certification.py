@@ -662,7 +662,7 @@ def test_fresh_process_restart_reads_published_tables_and_safe_telemetry(
     expected_rows = [{"id": row["id"], "amount": row["amount"]} for row in records]
     assert first["rows"] == second["rows"] == expected_rows
     for result in (first, second):
-        assert result["cache_proof"]["direct_fallbacks"] == 0
+        assert result["cache_direct_fallbacks"] == 0
         assert len(result["telemetry"]) == 1
         terminal = result["telemetry"][0]
         assert terminal["cache_direct_fallbacks"] == 0
@@ -680,7 +680,7 @@ def test_fresh_process_restart_reads_published_tables_and_safe_telemetry(
                 "scale": "ci-restart",
                 "input": {"rows": len(records), "source_bytes": source_bytes},
                 "product_metrics": {
-                    "cache_direct_fallbacks": first["cache_proof"]["direct_fallbacks"],
+                    "cache_direct_fallbacks": first["cache_direct_fallbacks"],
                     "cache_artifact_bytes": cache_artifact_bytes,
                 },
                 "payload_bytes": len(orjson.dumps(first["rows"])),
@@ -911,8 +911,8 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
     # Admission, the seed plan's resolution, the post-capture key, and
     # execution each prepare the graph. The seed plan is the fourth: a
     # preview resolves what it can read from the shared node-output store
-    # before it runs. `CACHE-S17` is the package for collapsing these onto
-    # one prepared graph, and its entry records the measurement.
+    # before it runs. Collapsing these onto one prepared graph was measured
+    # at about 3 ms a preview and not built: signing was the planning cost.
     assert prepare_calls == 4
     # Even treating every preparation call as removable gives the candidate
     # its most favourable possible comparison. It still must clear the same

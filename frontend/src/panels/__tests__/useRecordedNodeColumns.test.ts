@@ -54,7 +54,7 @@ describe("useRecordedNodeColumns", () => {
     expect(hook.result.current).toEqual(SCORED)
 
     hook.rerender({
-      nodeData: edited({ output_column: "prediction", code: "", steps: [], _steps_error: "Step 1: needs a formula." }),
+      nodeData: edited({ output_column: "prediction", code: "", steps: [] }),
       source: "live",
     })
     expect(hook.result.current).toEqual(SCORED)

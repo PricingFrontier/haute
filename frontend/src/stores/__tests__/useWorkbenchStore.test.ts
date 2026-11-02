@@ -20,13 +20,17 @@ describe("useWorkbenchStore", () => {
     vi.restoreAllMocks()
   })
 
-  it("reads whether the project's workbench is enabled, and where its form is, from GET /api/workbench", async () => {
-    const fetchSpy = respond({ enabled: true, form: "rating/workbench" })
+  it("reads whether the project's workbench is enabled, where its form is and its environments, from GET /api/workbench", async () => {
+    const fetchSpy = respond({ enabled: true, form: "rating/workbench", environments: ["dev", "prod"] })
 
     await useWorkbenchStore.getState().load()
 
     expect(String(fetchSpy.mock.calls[0][0])).toContain("/api/workbench")
-    expect(useWorkbenchStore.getState()).toMatchObject({ enabled: true, formPath: "rating/workbench" })
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      enabled: true,
+      formPath: "rating/workbench",
+      environments: ["dev", "prod"],
+    })
     expect(useToastStore.getState().toasts).toEqual([])
   })
 
@@ -42,7 +46,7 @@ describe("useWorkbenchStore", () => {
   })
 
   it("leaves the store untouched while the workbench is not enabled, so the editor does not re-render", async () => {
-    respond({ enabled: false, form: null })
+    respond({ enabled: false, form: null, environments: [] })
     const listener = vi.fn()
     const unsubscribe = useWorkbenchStore.subscribe(listener)
 

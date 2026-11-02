@@ -1126,8 +1126,7 @@ class TestCommitAndMilestonesRoutes:
     ) -> None:
         # U4/D4: a milestone while behind the remote forks it → 409 with the fork
         # data; the deliberate allow_fork override then commits.
-        import haute._git as git_mod
-        from haute._git import commit_milestone, commit_save, fetch_pair, resolve_ledger
+        from haute._git import commit_milestone, commit_save, resolve_ledger
         from haute._git_state import write_working_branch
 
         self._set_branch(client)
@@ -1149,8 +1148,7 @@ class TestCommitAndMilestonesRoutes:
         commit_milestone("teammate milestone", other, cwd=other)
         _git(other, "push", "origin", "pricing-dev")
 
-        git_mod._fetch_cooldowns.clear()
-        fetch_pair("origin", "pricing-dev", cwd=tmp_path)
+        _git(tmp_path, "fetch", "origin")
 
         # A local pending save, then save&commit would fork.
         (tmp_path / "local.py").write_text("x = 1\n")

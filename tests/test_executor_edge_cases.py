@@ -28,6 +28,7 @@ from haute._types import (
     NodeData,
     NodeType,
 )
+from haute.errors import NodeConfigError
 from haute.executor import (
     _extract_column_refs,
     execute_graph,
@@ -276,42 +277,44 @@ class TestApplyColumnRenamesEdgeCases:
 class TestApplySelectedColumnsEdgeCases:
     def test_selects_specified_columns(self):
         df = pl.DataFrame({"a": [1], "b": [2], "c": [3]})
-        result = _apply_selected_columns(df, {"selected_columns": ["a", "c"]})
+        result = _apply_selected_columns(df, {"selected_columns": ["a", "c"]}, node_label="node")
         assert result.columns == ["a", "c"]
 
     def test_empty_list_returns_all_columns(self):
         df = pl.DataFrame({"a": [1], "b": [2]})
-        result = _apply_selected_columns(df, {"selected_columns": []})
+        result = _apply_selected_columns(df, {"selected_columns": []}, node_label="node")
         assert result.columns == ["a", "b"]
 
     def test_none_returns_all_columns(self):
         df = pl.DataFrame({"a": [1], "b": [2]})
-        result = _apply_selected_columns(df, {"selected_columns": None})
+        result = _apply_selected_columns(df, {"selected_columns": None}, node_label="node")
         assert result.columns == ["a", "b"]
 
     def test_missing_key_returns_all_columns(self):
         df = pl.DataFrame({"a": [1], "b": [2]})
-        result = _apply_selected_columns(df, {})
+        result = _apply_selected_columns(df, {}, node_label="node")
         assert result.columns == ["a", "b"]
 
     def test_invalid_column_names_filtered_out(self):
         df = pl.DataFrame({"a": [1], "b": [2]})
-        result = _apply_selected_columns(df, {"selected_columns": ["a", "nonexistent"]})
+        result = _apply_selected_columns(
+            df, {"selected_columns": ["a", "nonexistent"]}, node_label="node"
+        )
         assert result.columns == ["a"]
 
-    def test_all_invalid_returns_all_columns(self):
+    def test_all_invalid_is_refused(self):
         df = pl.DataFrame({"a": [1], "b": [2]})
-        result = _apply_selected_columns(df, {"selected_columns": ["x", "y", "z"]})
-        assert result.columns == ["a", "b"]
+        with pytest.raises(NodeConfigError, match="'x', 'y', 'z'"):
+            _apply_selected_columns(df, {"selected_columns": ["x", "y", "z"]}, node_label="node")
 
     def test_all_columns_selected_is_noop(self):
         df = pl.DataFrame({"a": [1], "b": [2]})
-        result = _apply_selected_columns(df, {"selected_columns": ["a", "b"]})
+        result = _apply_selected_columns(df, {"selected_columns": ["a", "b"]}, node_label="node")
         assert result.columns == ["a", "b"]
 
     def test_works_on_lazyframe(self):
         lf = pl.LazyFrame({"a": [1], "b": [2], "c": [3]})
-        result = _apply_selected_columns(lf, {"selected_columns": ["a", "c"]})
+        result = _apply_selected_columns(lf, {"selected_columns": ["a", "c"]}, node_label="node")
         assert isinstance(result, pl.LazyFrame)
         assert result.collect_schema().names() == ["a", "c"]
 
@@ -459,13 +462,17 @@ class TestPreambleFailureSourceNodesRun:
 class TestSelectedColumnsWithDuplicates:
     def test_duplicate_entries_no_error(self):
         df = pl.DataFrame({"a": [1], "b": [2], "c": [3]})
-        result = _apply_selected_columns(df, {"selected_columns": ["a", "a", "b"]})
+        result = _apply_selected_columns(
+            df, {"selected_columns": ["a", "a", "b"]}, node_label="node"
+        )
         assert "a" in result.columns
         assert "b" in result.columns
 
     def test_duplicate_entries_subset_no_error(self):
         df = pl.DataFrame({"a": [1], "b": [2], "c": [3], "d": [4]})
-        result = _apply_selected_columns(df, {"selected_columns": ["a", "a", "b"]})
+        result = _apply_selected_columns(
+            df, {"selected_columns": ["a", "a", "b"]}, node_label="node"
+        )
         assert set(result.columns) == {"a", "b"}
         assert "c" not in result.columns
         assert "d" not in result.columns

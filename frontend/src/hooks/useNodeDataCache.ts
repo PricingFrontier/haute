@@ -160,12 +160,13 @@ export default function useNodeDataCache({
   const reportDelegatedProgress = useNodeDataStore((s) => s.reportDelegatedProgress)
   const finishDelegatedBuild = useNodeDataStore((s) => s.finishDelegatedBuild)
 
+  const globalConstants = useGraphStore((s) => s.globalConstants)
   const identity = useMemo(
     () =>
       node
-        ? buildNodeDataCacheIdentity({ node, allNodes, edges, submodels, preamble })
+        ? buildNodeDataCacheIdentity({ node, allNodes, edges, submodels, preamble, globalConstants })
         : null,
-    [allNodes, edges, node, preamble, submodels],
+    [allNodes, edges, node, preamble, submodels, globalConstants],
   )
   const configHash = useMemo(
     () => (identity ? hashConfig({ graph: identity, source: activeSource }) : null),
@@ -218,7 +219,6 @@ export default function useNodeDataCache({
 
   // buildGraph reads the preamble and constants from the store; listing them
   // renews the callback, so an edit made after mount reaches the next request.
-  const globalConstants = useGraphStore((s) => s.globalConstants)
   const graphPayload = useCallback(
     () => {
       void globalConstants

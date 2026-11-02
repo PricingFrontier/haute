@@ -1,10 +1,11 @@
-import { Database, Eye, RotateCcw, Wrench } from "lucide-react"
+import { ClipboardCheck, Database, Eye, RotateCcw, Wrench } from "lucide-react"
 import ProjectControls from "../components/ProjectControls"
 import SourcePipelineControls from "../components/SourcePipelineControls"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import { ToolbarBrand, ToolbarButton, ToolbarColumn, UndoRedo, ZoomInOut } from "../haute-ui"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
+import useWorkbenchTestQuotesStore from "../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
 import { isNewQuoteSample, newQuoteSample } from "../utils/workbenchForm"
 import WorkbenchDisplay from "./WorkbenchDisplay"
@@ -32,7 +33,8 @@ interface WorkbenchToolbarProps {
  * Zoom In over Zoom Out, these three where the pipeline toolbar has them; Build over Preview;
  * Schema, opening and closing the schema's pane in either mode, over Display and the box of
  * the sheets' colours it opens, disabled in Preview; Reset, in Preview, starting the sample
- * again as a new quote, one undo step; in Preview, why pricing the sample last failed; and
+ * again as a new quote, one undo step, over Test quotes, in Preview, opening and closing the
+ * test quotes' panel; in Preview, why pricing the sample last failed; and
  * the project's controls, the host's and the same as the pipeline toolbar's: Save saves the
  * project, the form and then the pipeline, and Commit records a milestone after that save.
  */
@@ -56,6 +58,8 @@ export default function WorkbenchToolbar({
   const setSchemaOpen = useWorkbenchViewStore((s) => s.setSchemaOpen)
   const zoomBy = useWorkbenchViewStore((s) => s.zoomBy)
   const error = useWorkbenchPricingStore((s) => s.error)
+  const testQuotesOpen = useWorkbenchTestQuotesStore((s) => s.open)
+  const setTestQuotesOpen = useWorkbenchTestQuotesStore((s) => s.setOpen)
 
   return (
     <header role="toolbar" aria-label="Workbench toolbar" className="toolbar flex-wrap gap-y-2 [&>div]:shrink-0">
@@ -81,6 +85,15 @@ export default function WorkbenchToolbar({
         <ToolbarColumn>
           <ToolbarButton icon={RotateCcw} onClick={() => change(newQuoteSample)} disabled={!ready || !previewing || newQuote} title="Back to a new quote: the defaults alone">
             Reset
+          </ToolbarButton>
+          <ToolbarButton
+            icon={ClipboardCheck}
+            aria-pressed={previewing && testQuotesOpen}
+            onClick={() => setTestQuotesOpen(!testQuotesOpen)}
+            disabled={!ready || !previewing}
+            title="Quotes kept and priced again as the pipeline changes"
+          >
+            Test quotes
           </ToolbarButton>
         </ToolbarColumn>
         {previewing && error !== null && (

@@ -176,14 +176,11 @@ def _prepare_config_for_sidecar(
     # boundary refuses it too, so no path drops a user key and continues.
     reject_unrecognized_config_keys(node_type, config, node_label=node_label)
 
-    # Only the config record's own underscore properties are editor state.
-    # Nested mappings may contain arbitrary column names or user records.
-    # Type-specific serializers own cleanup of their nested editor records.
-    # The contract annotation lives on the decorator; a sidecar copy goes stale.
+    # Nested mappings may contain arbitrary column names or user records, and
+    # type-specific serializers own their nested records. The contract
+    # annotation lives on the decorator; a sidecar copy goes stale.
     filtered = {
-        k: deepcopy(v)
-        for k, v in config.items()
-        if k not in CODE_CONFIG_KEYS and k != "contract" and not k.startswith("_")
+        k: deepcopy(v) for k, v in config.items() if k not in CODE_CONFIG_KEYS and k != "contract"
     }
 
     if node_type == NodeType.BANDING:
@@ -377,7 +374,7 @@ def find_config_by_func_name(
         if candidate.is_file():
             try:
                 config = _normalise_loaded_config(_load_json_object(candidate), node_type)
-            except (json.JSONDecodeError, OSError, ValueError) as exc:
+            except (json.JSONDecodeError, OSError, ValueError, ConfigError) as exc:
                 logger.warning(
                     "config_recovery_failed",
                     func=func_name,

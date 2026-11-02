@@ -83,6 +83,19 @@ beforeEach(() => {
 })
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
+describe("pipeline document load", () => {
+  it("forgets the Banding rules a type switch set aside", async () => {
+    useUIStore.getState().setBandingRuleStash("band", 0, { breakpoints: [{ boundary: "20", label: "young" }] })
+
+    const hook = await loaded()
+    expect(useUIStore.getState().bandingRuleStash).toEqual({})
+
+    useUIStore.getState().setBandingRuleStash("band", 0, { categorical: [{ value: "A", assignment: "a" }] })
+    act(() => hook.result.current.adoptPipelineDocument(makePipelineEditorDocument(), null))
+    expect(useUIStore.getState().bandingRuleStash).toEqual({})
+  })
+})
+
 describe("submodel occurrence previews", () => {
   it("keeps the chosen public output after renaming an instance and refreshing", async () => {
     const hook = await loaded(fixture(true, true))

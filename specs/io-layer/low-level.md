@@ -339,7 +339,13 @@ inventory and consume physical disk space.
    and enters the store lease under that identity's coordination lock.
    Pointer, metadata, size/digest, footer, row count, and schema validation
    complete before the local `(identity, generation)` lease count is incremented
-   and the generation is exposed.
+   and the generation is exposed. A process checks a generation's part digests,
+   and reads its parts' footers and schemas, once while the parts' names, sizes,
+   modification times and digests and the row counts and columns its metadata
+   records are unchanged: the verified memo records the digests, and the described
+   memo records a generation only after its footers and schemas agreed with its
+   metadata, so a generation that failed them fails every later lease too. A
+   generation another Polars must re-describe is read again until it is.
 2. The generation supplies a Parquet `LazyFrame`. Inside an
    `ExecutionContext`, one idempotent release callback is registered with
    execution cleanup, so every plan derived during that request remains
@@ -518,7 +524,33 @@ generations to their owners when readable. Inventory takes no lock and mutates n
   decrements under the lease lock; at zero it removes the marker and
   retires the generation when it is no longer current and no live marker remains. A marker
   is live when it names this process with a non-zero in-process count, or when its token
-  file's lock cannot be acquired; a dead marker (and token file) is removed.
+  file's lock cannot be acquired; a dead marker (and token file) is removed. A token file a
+  sweep removes while the probe opens it reads as dead, since a sweep removes only a token
+  no process holds.
+- **Housekeeping.** A process's first store for a root also removes, once, through
+  `_file_lock.remove_unheld_lock_file`, which removes a lock file only when no process holds
+  or waits on it:
+  - every token file in `.processes` but this process's own that no process holds (its
+    process has exited), unless the file is younger than a minute, as one whose owner is
+    still creating it may be. A token's owner, once it holds the lock, checks that the path
+    still names its file and takes another token if a sweep removed it first, so no live
+    token reads as dead;
+  - every `publication-<digest>.lock` whose identity directory no longer exists.
+
+  The protocol never leaves two processes holding different files for one lock path.
+  `remove_unheld_lock_file` first requires a plain regular file reached through plain
+  directories up to `.haute_cache` (never a link, nor anything a link leads to). On POSIX it
+  removes the file while it holds the file's lock, and `FileLock.acquire`, after taking the
+  OS lock, checks that the path still names the file it locked (same device and inode; a
+  missing path does not); if not, it lets that file go and locks the path again. A file
+  removed, or removed and recreated, between its opening and that check
+  (`_LockFileReplacedError`) is opened again the same way. After five attempts it raises
+  `UnsafeCachePathError` rather than spin, since a sweep removes a lock file once. So a
+  process that opened the file before its removal gets the lock only after it, finds the path
+  no longer names its file, and joins whoever locks the file that does. Windows refuses to
+  delete a file any process has open, and a process opens a lock file before locking it, so
+  there the sweep deletes without locking and a refused deletion means the file is in use.
+  An entry that is not a token or identity name, or that is not a plain file, is left.
 - **Publication.** `stage_node_output(identity)` allocates a request-owned
   `NodeSnapshotArtifact` staging directory. `publish_node_output(identity, artifact,
   columns, dependencies, explicit, profile, refresh)` uses the digests recorded while the
@@ -576,7 +608,10 @@ generations to their owners when readable. Inventory takes no lock and mutates n
 
 ### Staging reclamation and publication
 
-Store construction examines only real, non-symlink `.staging-*` directories.
+Store construction examines only real, non-symlink `.staging-*` directories, and a
+process does so at most once every five minutes per root (or once per staging age, when
+that is shorter): the glob reads every identity directory, about 10 µs each (20 ms at 2,000
+identities), and a preview constructs stores repeatedly.
 For each it walks the tree without following symlinks and finds the newest
 activity time across the directory and its contents. A tree is removed only
 when that proof is readable and older than the configured threshold; a recent,
@@ -752,8 +787,8 @@ is no eager dataframe or collect-then-write fallback.
 - Clear removes the pointer first and retires only generations without live leases.
 - Startup never removes generations; it removes only staging older than the configured
   activity threshold, and inventory includes retained staging bytes.
-- Full artifact SHA-256 is verified once per stable generation stat gate per process rather
-  than once per lease.
+- Full artifact SHA-256 is verified, and part footers and schemas read, once per stable
+  generation stat gate per process rather than once per lease.
 - Partitioned Parquet sinks validate the final layout and preserve the previous published
   target if publication fails.
 - Direct bounded reads require declared CSV dtypes and refuse eager-only formats and eager
@@ -1002,8 +1037,9 @@ failure sections above are the maintained answers.
   does not promise the bounded row order and so shares no snapshot with them.
 - `tests/test_source_cache.py` covers canonical/redacted identity, atomic refresh,
   immutable generations, leases, corruption, no-budget retention, same-identity single flight,
-  age-gated staging reclamation, digest memoization, non-destructive
-  generation startup, and transient OS failures. A generation whose directory was deleted
+  age-gated staging reclamation, digest memoization, a second lease reading no part footer or
+  schema while a changed part is read again and a generation whose footers failed fails every
+  later lease, non-destructive generation startup, and transient OS failures. A generation whose directory was deleted
   reads as missing, a current lease raises `FileNotFoundError` and holds nothing, and a build
   replaces it. A refresh or clear while a reader holds a part open (Windows' refusals of the
   rename and the delete, simulated) leaves the superseded generation whole and raises nothing,
@@ -1152,8 +1188,23 @@ failure sections above are the maintained answers.
 - `tests/test_node_snapshot_cross_process.py` covers two worker processes publishing one
   identity once, a paused reader in another process keeping its generation through
   clear, a killed reader's dead marker allowing its generation to be cleared, a
-  writer whose columns miss a concurrently widened generation keeping its own artifact, and
-  lease/clear interleavings paused at their fault points.
+  writer whose columns miss a concurrently widened generation keeping its own artifact,
+  lease/clear interleavings paused at their fault points, and housekeeping: the first store
+  of a process removes an exited process's token and an orphaned publication lock while
+  keeping a young token, a live process's token, a held lock and an existing identity's
+  lock, and a publisher waiting on a lock file the sweep removes still excludes a second
+  publisher. `tests/test_file_lock.py` covers the protocol itself: a lock whose file was
+  removed, or removed and replaced, before it locked ends up locking the file the path
+  names, a lock file replaced while it was being opened is opened again, and one whose path
+  keeps naming another file raises after five attempts; a lock file behind a link (leaf or
+  directory), on POSIX and on the Windows branch, is never removed; an unheld lock file is removed and a held one kept; Windows deletes without
+  locking and treats a refused or missing file as not removed; and a process waiting on a
+  swept lock file excludes the next. `tests/test_source_cache.py` covers staging reclaimed at
+  most once per interval, a token whose file was swept before it locked being replaced, a
+  dead token removed while the sweep holds its lock and never through a linked `.processes`,
+  and entries that are not tokens or not plain files being left; `tests/test_node_snapshot_retention.py`
+  covers the same for publication locks, and clear reading a token the sweep removes while it
+  is probed as dead.
 - `tests/test_source_cache.py` additionally covers a build context with the parent-chosen
   pair staging under `.staging-<staging_token>` and publishing `generation_id`, beneath a
   temporary root long enough that a full-UUID staging name would exceed Windows'

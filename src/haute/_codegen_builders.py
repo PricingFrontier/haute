@@ -55,6 +55,10 @@ from haute._graph_utils import (
     duplicate_input_names,
     resolve_input_mapping_names,
 )
+from haute._keyword_parameters import (
+    reject_input_named_keyword_parameters,
+    validate_keyword_parameters,
+)
 from haute._polars_steps import (
     STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
     PolarsStepError,
@@ -97,12 +101,20 @@ FRAME = "pl.LazyFrame"
 # ---------------------------------------------------------------------------
 
 
+#: ``Param.default`` for a parameter without one.
+NO_DEFAULT: Any = object()
+
+
 @dataclass(frozen=True, slots=True)
 class Param:
-    """One function parameter; declarations leave ``annotation`` unset."""
+    """One function parameter; declarations leave ``annotation`` unset.
+
+    A ``default`` is a value ``_source_layout.literal`` can print.
+    """
 
     name: str
     annotation: str | None = None
+    default: object = NO_DEFAULT
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,7 +213,10 @@ def _starts_with_string(body: str) -> bool:
 
 
 def _param_doc(param: Param) -> Doc:
-    return param.name if param.annotation is None else f"{param.name}: {param.annotation}"
+    head = param.name if param.annotation is None else f"{param.name}: {param.annotation}"
+    if param.default is NO_DEFAULT:
+        return head
+    return [head, "=" if param.annotation is None else " = ", literal(param.default)]
 
 
 def render_node_source(
@@ -616,6 +631,10 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> NodeSource:
         if input_mapping is not None
         else source_names
     )
+    keyword_parameters = validate_keyword_parameters(config, node_label=node.data.label)
+    reject_input_named_keyword_parameters(
+        keyword_parameters, logical_source_names, node_id=node.id, node_label=node.data.label
+    )
     if isinstance(steps, list):
         # The sidecar owns the steps; the body is their rendering against the
         # generated parameter names, or the incomplete placeholder when they
@@ -653,6 +672,10 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> NodeSource:
         "polars",
         tuple(keywords),
         _params(logical_source_names, FRAME),
+        keyword_only=tuple(
+            Param(parameter["name"], default=parameter["default"])
+            for parameter in keyword_parameters
+        ),
         returns=FRAME,
         description=node.data.description,
         body=body,

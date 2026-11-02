@@ -442,7 +442,7 @@ failing turn, `data_findings` when that turn fails only there.
    SHA-256 of the canonical JSON of its parsed configuration.
 5. **Editor compatibility.** Every new node of a stepped type, and every node
    that was authored as steps before the turn, is authored as steps after it and
-   carries neither `_steps_error` nor `_steps_discarded`, so it opens in the
+   carries neither a steps error nor discarded steps in its editor state, so it opens in the
    step builder. A pre-existing code-mode node is not judged: switching modes
    is the analyst's action.
 6. **Execution.** Each golden node's executed output equals its golden.

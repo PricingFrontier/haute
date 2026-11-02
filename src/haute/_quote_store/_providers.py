@@ -1,6 +1,6 @@
 """The engines the quote store runs on (specs/workbench).
 
-``sqlite`` is dev's, a file on the analyst's laptop. ``sqlserver`` is SQL Server 2019 and
+``sqlite`` is a file the store's process reads. ``sqlserver`` is SQL Server 2019 and
 later, Azure SQL Database and Azure SQL Managed Instance, through pyodbc and Microsoft ODBC
 Driver 18 (:data:`SQLSERVER_DRIVER`); ``postgresql`` is PostgreSQL and its hosted forms (Azure
 Database for PostgreSQL, Amazon RDS and Aurora, Cloud SQL, Databricks Lakebase), through
@@ -10,8 +10,7 @@ migrate that fails part way changes nothing.
 A :class:`Provider` is what the store needs of one family past SQLAlchemy Core: the URL it
 makes from the server and database a host names (:func:`server_url`), how an app signs in to
 it (:class:`SignIn`, through :func:`make_server_engine`'s connect hook), the longest name it
-keeps whole (:func:`name_problems`), whether it changes the type of a column holding no value
-in place (:func:`retypes_in_place`), and the privileges a started app checks it holds
+keeps whole (:func:`name_problems`), and the privileges a started app checks it holds
 (:func:`missing_privileges`). The store's types on each engine are pinned where its tables are
 derived (:mod:`._schema`), so the SQL a plan prints is the SQL the connected engine runs. A
 sign-in's secret or token is handed to each connection as it is made: it is never in a URL,
@@ -23,6 +22,7 @@ from __future__ import annotations
 import struct
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from functools import cache
 from typing import TYPE_CHECKING, Any, Protocol
 
 from sqlalchemy import Connection, Engine, create_engine, event, text
@@ -35,8 +35,9 @@ if TYPE_CHECKING:
 SQLSERVER_DRIVER = "ODBC Driver 18 for SQL Server"
 #: The pyodbc connection attribute an Entra ID access token is handed in.
 SQL_COPT_SS_ACCESS_TOKEN = 1256
-#: The sign-ins that go through Microsoft Entra ID.
-ENTRA_SIGN_INS = frozenset({"managed-identity", "service-principal"})
+#: The sign-ins that go through Microsoft Entra ID: a hosted app's managed identity, a
+#: service principal, and the analyst's own sign-in, ``entra``, made in the browser.
+ENTRA_SIGN_INS = frozenset({"managed-identity", "service-principal", "entra"})
 #: The package an Entra ID sign-in needs besides the driver.
 ENTRA_PACKAGE = "azure-identity"
 
@@ -47,12 +48,22 @@ class TokenCredential(Protocol):
     def get_token(self, *scopes: str) -> Any: ...
 
 
+@cache
+def _analyst_credential() -> TokenCredential:
+    """The analyst's own Entra ID sign-in, made in the browser as a token is first asked
+    for, and kept for the process, so the editor and ``haute app serve`` ask once."""
+    from azure.identity import InteractiveBrowserCredential
+
+    return InteractiveBrowserCredential()
+
+
 @dataclass(frozen=True, slots=True)
 class SignIn:
-    """How an app signs in to a server database, as its environment declares it and its
-    host's variables hold what it needs: ``managed-identity`` (a user-assigned identity's
-    *client_id*, or none for the system-assigned one), ``service-principal`` (*tenant_id*,
-    *client_id* and its *secret*) or ``password`` (*username* and its *secret*). *username*
+    """How a process signs in to a server database, as its environment or connection says and
+    the variables it names hold what it needs: ``managed-identity`` (a hosted app's; a
+    user-assigned identity's *client_id*, or none for the system-assigned one),
+    ``service-principal`` (*tenant_id*, *client_id* and its *secret*), ``password``
+    (*username* and its *secret*) or ``entra`` (the analyst's own, in the browser). *username*
     is also the role an Entra ID sign-in takes on PostgreSQL. The secret is never shown."""
 
     auth: str
@@ -74,6 +85,8 @@ class SignIn:
                 f"Signing in with {self.auth} needs the {ENTRA_PACKAGE} package: install "
                 "haute[sqlserver] or haute[postgresql]."
             ) from exc
+        if self.auth == "entra":
+            return _analyst_credential()
         if self.auth == "service-principal":
             return ClientSecretCredential(
                 str(self.tenant_id), str(self.client_id), str(self.secret)
@@ -123,11 +136,6 @@ PROVIDERS: Mapping[str, Provider] = {
 }
 #: Each provider by the SQLAlchemy dialect its URLs name.
 _BY_DIALECT: Mapping[str, Provider] = {each.dialect: each for each in PROVIDERS.values()}
-
-
-def dialect_provider(dialect: str) -> Provider:
-    """The provider whose engines speak the SQLAlchemy dialect *dialect*."""
-    return _BY_DIALECT[dialect]
 
 
 def provider_of(url: str) -> Provider:
@@ -255,26 +263,10 @@ def name_problems(provider: Provider, names: Iterable[str]) -> list[str]:
     return problems
 
 
-#: The column types SQL Server cannot convert a date to or from, even with no value.
-_NOT_FROM_DATE = frozenset({"int", "float", "bool"})
-
-
-def retypes_in_place(provider: Provider, was: str, now: str) -> bool:
-    """Whether *provider* changes a column holding no value from the type *was* to *now* in
-    place: PostgreSQL always, taking every value as null; SQL Server where it converts the
-    pair, never between a date and a number or True/false; SQLite never, its column replaced."""
-    if provider.name == "postgresql":
-        return True
-    if provider.name == "sqlserver":
-        return not ({was, now} & {"date"} and {was, now} & _NOT_FROM_DATE)
-    return False
-
-
 def _privileges(schema: StoreSchema) -> list[tuple[str, str]]:
     """Each table of *schema* with each privilege a started app needs on it: quote_details read,
     written and changed, every other table of the form's read, written and emptied, and the
-    activity read and written. A server database holds no haute_store, which only dev's
-    SQLite file keeps."""
+    activity read and written."""
     needed: list[tuple[str, str]] = []
     for stored in schema.tables:
         kinds = (

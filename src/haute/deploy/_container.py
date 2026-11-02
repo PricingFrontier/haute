@@ -1241,6 +1241,28 @@ def _docker_push(image_tag: str) -> None:
         raise DeployError(f"Docker push failed:\n{result.stderr}")
 
 
+def _docker_repo_digest(image_tag: str) -> str:
+    """The reference by digest, ``<repository>@sha256:...``, that the registry holds for
+    *image_tag* once pushed: the one of ``docker image inspect``'s ``RepoDigests`` naming the
+    tag's repository. *image_tag* is ``<repository>:<tag>``, its tag holding no ``/``."""
+    repository = image_tag[: image_tag.rindex(":")]
+    result = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", image_tag],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if result.returncode != 0:
+        raise DeployError(f"Docker could not inspect {image_tag}:\n{result.stderr}")
+    digests = json.loads(result.stdout) or []
+    for digest in digests:
+        if digest.startswith(f"{repository}@"):
+            return str(digest)
+    raise DeployError(
+        f"Docker holds no digest of {repository} for {image_tag}: the push recorded none."
+    )
+
+
 # ── Helpers ─────────────────────────────────────────────────────────
 
 

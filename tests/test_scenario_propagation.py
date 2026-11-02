@@ -12,6 +12,7 @@ and column fetches failed silently.
 from __future__ import annotations
 
 import polars as pl
+import pytest
 
 import haute.projection as projection_planner
 from haute._execute_lazy import (
@@ -26,6 +27,7 @@ from haute._types import (
     NodeType,
     PipelineGraph,
 )
+from haute.errors import NodeConfigError
 from haute.execution import execute_lazy_graph
 
 # ---------------------------------------------------------------------------
@@ -353,16 +355,18 @@ class TestSelectedColumnsSilentDrop:
         from haute._execute_lazy import _apply_selected_columns
 
         df = pl.DataFrame({"a": [1], "b": [2]})
-        result = _apply_selected_columns(df, {"selected_columns": ["a", "missing_col"]})
+        result = _apply_selected_columns(
+            df, {"selected_columns": ["a", "missing_col"]}, node_label="node"
+        )
         assert result.columns == ["a"]
 
-    def test_all_nonexistent_returns_full_frame(self):
-        """If ALL selected columns are nonexistent, the full frame is returned."""
+    def test_all_nonexistent_is_refused(self):
+        """If ALL selected columns are nonexistent, the selection is refused."""
         from haute._execute_lazy import _apply_selected_columns
 
         df = pl.DataFrame({"a": [1], "b": [2]})
-        result = _apply_selected_columns(df, {"selected_columns": ["x", "y", "z"]})
-        assert result.columns == ["a", "b"]
+        with pytest.raises(NodeConfigError, match="no longer has any"):
+            _apply_selected_columns(df, {"selected_columns": ["x", "y", "z"]}, node_label="node")
 
 
 # ===========================================================================

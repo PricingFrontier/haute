@@ -10,7 +10,6 @@ from haute._topo import (
     ancestors,
     canonical_topological_order,
     topo_sort_ids,
-    topo_sort_ids_filtered,
 )
 from haute._types import GraphEdge
 
@@ -61,19 +60,6 @@ class TestTopoSortIds:
 
         assert exc_info.value.unknown_node_ids == ("x", "y")
         assert exc_info.value.dropped_edges == (edges[1],)
-
-    def test_explicit_filtered_sort_reports_every_dropped_endpoint(self):
-        edges = [
-            _e("a", "b"),
-            _e("ghost", "a"),
-            _e("b", "phantom"),
-        ]
-
-        result = topo_sort_ids_filtered(["a", "b"], edges)
-
-        assert result.order == ["a", "b"]
-        assert result.dropped_edges == tuple(edges[1:])
-        assert result.unknown_node_ids == ("ghost", "phantom")
 
     def test_duplicate_edges_handled(self):
         edges = [_e("a", "b"), _e("a", "b")]

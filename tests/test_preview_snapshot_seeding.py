@@ -2195,7 +2195,7 @@ def test_preview_cache_hit_refresh_race_evicts_stale_generation_and_reexecutes(
     assert pl.DataFrame(third["preview"])["band"].to_list() == [18]
 
 
-def test_an_extended_cache_hit_reports_the_current_plans_generations(
+def test_a_partial_cache_hit_runs_as_a_miss_reporting_the_current_plans_generations(
     project: Path, api: Any, builds: Counter[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import haute.executor as executor
@@ -2212,12 +2212,12 @@ def test_an_extended_cache_hit_reports_the_current_plans_generations(
     assert [g.kind for g in entry["seed_plan"]] == ["captured"]
     del entry["eager_outputs"]["banding"]
 
-    extend_events: list[dict[str, Any]] = []
+    miss_events: list[dict[str, Any]] = []
     real_debug = executor.logger.debug
 
     def recording_debug(event: str, *args: Any, **kwargs: Any) -> Any:
-        if event == "preview_cache_extend":
-            extend_events.append(kwargs)
+        if event == "preview_cache_miss":
+            miss_events.append(kwargs)
         return real_debug(event, *args, **kwargs)
 
     monkeypatch.setattr(executor.logger, "debug", recording_debug)
@@ -2225,7 +2225,9 @@ def test_an_extended_cache_hit_reports_the_current_plans_generations(
 
     second = _post_preview(api, graph, "banding")
 
-    assert len(extend_events) == 1
+    assert [event["partial"] for event in miss_events] == [True]
+    replaced = executor._preview_cache.get(key)
+    assert replaced is not None and "banding" in replaced["eager_outputs"]
     assert set(builds) == {"banding"}
     assert builds["banding"] == 1
     assert _plan_of(second) == [("join", "seeded")]

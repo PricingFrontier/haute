@@ -34,6 +34,26 @@ This gives you the same command sequence as GitHub Actions; a live release still
 Merge request → Validation → Merge → Staging → Smoke test → Impact analysis → [You review] → Production
 ```
 
+### Workbench projects
+
+A [workbench project](../../building-models/workbench.md) hosts no API: what it releases is
+the [underwriter app](../../building-models/workbench.md#the-underwriter-app). Its
+`.gitlab-ci.yml` has three stages instead: **validate**, which lints, type-checks and runs
+tests, then builds the app's release, which checks your pipeline and schema and scores your
+test quotes, on every merge request and on main; **publish**, on main only, which builds the
+app's image once, pushes it to the registry `[deploy.container]` names, rolls the staging
+app out to it and compares staging with production on saved quotes, keeping
+`impact_report.md` as the job's artifact; and **production**, a manual `deploy-production` job that rolls the production
+app out to the release staging runs. Each rollout checks the app and puts the previous
+release back when the new one fails
+([The underwriter app](../../building-models/workbench.md#the-underwriter-app)), and one
+rollout of an environment runs at a time. The publish and production jobs
+reads your host's variables, `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`,
+`AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`, and needs the privileged runner a
+container target does. Tick **Protect variable** on all four, not optionally: GitLab gives a
+project's variables to every job, so only protection keeps them from merge-request pipelines
+on unprotected branches.
+
 ---
 
 ## How it works, step by step

@@ -43,7 +43,7 @@ describe("buildExploreCacheIdentity", () => {
     const target = (node: SimpleNode) => (which === "explore" ? node : explore)
 
     // The render endpoint filling in the generated code is not a data change.
-    const rendered = stepped({ steps, code: "df = df.head(2)", _steps_error: "" })
+    const rendered = stepped({ steps, code: "df = df.head(2)" })
     expect(identity(target(rendered), nodes(rendered))).toEqual(
       identity(target(authored), nodes(authored)),
     )
@@ -90,6 +90,16 @@ describe("buildExploreCacheIdentity", () => {
     expect(identity(changedExplore)).not.toEqual(identity())
     expect(identity(explore, [changedSource, explore, downstream])).not.toEqual(identity())
     expect(identity(explore, [source, explore, downstream], "import pandas as pd")).not.toEqual(identity())
+  })
+
+  it("changes when a Global Constant changes", () => {
+    const constant = { name: "base_rate", type: "float" as const, split: false, value: "1.2", bySource: {} }
+    const withConstants = (globalConstants: (typeof constant)[]) =>
+      buildNodeDataCacheIdentity({ node: explore, allNodes: [source, explore, downstream], edges, globalConstants })
+
+    expect(withConstants([constant])).not.toEqual(withConstants([]))
+    expect(withConstants([{ ...constant, value: "1.3" }])).not.toEqual(withConstants([constant]))
+    expect(withConstants([constant])).toEqual(withConstants([{ ...constant }]))
   })
 })
 

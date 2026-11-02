@@ -860,7 +860,7 @@ class TestBuildApiInput:
                 required_output_columns=frozenset({"quote_id"}),
                 execution_profile=profile,
             )
-            frame = _apply_selected_columns(fn(), config)
+            frame = _apply_selected_columns(fn(), config, node_label="node")
             columns_by_profile[profile] = frame.collect_schema().names()
 
         assert columns_by_profile[ExecutionProfile.OPTIMISER_SOLVE.value] == ["quote_id"]
@@ -965,7 +965,9 @@ class TestBuildDataInputSelectedColumns:
             frame = fn()
             builder_columns_by_profile[profile] = set(frame.collect_schema().names())
             selected_by_profile[profile] = (
-                _apply_selected_columns(frame, node.data.config).collect_schema().names()
+                _apply_selected_columns(frame, node.data.config, node_label="node")
+                .collect_schema()
+                .names()
             )
 
         assert builder_columns_by_profile[ExecutionProfile.TRAINING_PREP.value] == {

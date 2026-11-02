@@ -17,8 +17,6 @@ from haute._graph_walker import (
     WalkRequest,
     WalkResult,
     _Walk,
-    prepare_walk,
-    project_output,
     walk_graph,
 )
 from haute._node_snapshots import NodeSnapshotStore
@@ -502,69 +500,6 @@ def test_collection_limits_are_positive_integers_keyed_by_node(
 
 
 # ---------------------------------------------------------------------------
-# Chunk walks: the chunked runner's per-chunk walk
-# ---------------------------------------------------------------------------
-
-
-def _chunk_chain() -> PipelineGraph:
-    return PipelineGraph(
-        nodes=[
-            _node("start", NodeType.DATA_INPUT),
-            _node("plus", NodeType.POLARS),
-            _node("times", NodeType.POLARS),
-        ],
-        edges=[_edge("start", "plus"), _edge("plus", "times")],
-    )
-
-
-def _counting_chain_builder(
-    built: list[str],
-) -> Callable[..., tuple[str, Callable[..., Any], bool]]:
-    def build(node: GraphNode, **_kwargs: Any) -> tuple[str, Callable[..., Any], bool]:
-        built.append(node.id)
-        if node.id == "plus":
-            return node.id, lambda frame: frame.with_columns(y=pl.col("x") + 1), False
-        return node.id, lambda frame: frame.with_columns(z=pl.col("y") * 10), False
-
-    return build
-
-
-def test_a_prepared_chunk_walk_builds_its_chain_once_and_walks_every_chunk() -> None:
-    built: list[str] = []
-    walk = prepare_walk(
-        _chunk_chain(),
-        _counting_chain_builder(built),
-        policy=CollectPolicy.chunk(),
-        target_node_id="times",
-        walk_node_ids=["plus", "times"],
-        output_demand={"plus": frozenset({"x", "y"}), "times": frozenset({"z"})},
-    )
-
-    first = walk.run({"start": pl.LazyFrame({"x": [1, 2], "unused": [0, 0]})})
-    second = walk.run({"start": pl.LazyFrame({"x": [5], "unused": [0]})})
-
-    # The start node's frame is each chunk; only the chain below it is built, once.
-    assert built == ["plus", "times"]
-    assert first.frames["times"].collect().to_dict(as_series=False) == {"z": [20, 30]}
-    assert second.frames["times"].collect().to_dict(as_series=False) == {"z": [60]}
-    assert first.frames["plus"].collect_schema().names() == ["x", "y"]
-
-
-def test_a_chunk_walk_refuses_a_demand_its_node_does_not_produce() -> None:
-    walk = prepare_walk(
-        _chunk_chain(),
-        _counting_chain_builder([]),
-        policy=CollectPolicy.chunk(),
-        target_node_id="times",
-        walk_node_ids=["plus", "times"],
-        output_demand={"plus": frozenset({"x", "absent"})},
-    )
-
-    with pytest.raises(ContractMismatchError, match="Chunk projection references columns"):
-        walk.run({"start": pl.LazyFrame({"x": [1]})})
-
-
-# ---------------------------------------------------------------------------
 # Failure paths every walk keeps
 # ---------------------------------------------------------------------------
 
@@ -730,12 +665,6 @@ def test_a_walk_refuses_a_node_whose_parent_frame_is_missing() -> None:
         walk._visit("child")
 
 
-def test_projecting_to_no_demand_keeps_the_frame() -> None:
-    frame = pl.LazyFrame({"x": [1]})
-
-    assert project_output(frame, None, node=_node("n", NodeType.POLARS)) is frame
-
-
 class _RowCounts:
     """Measurement queries that count rows and read every column."""
 
@@ -815,3 +744,49 @@ def test_a_measuring_policy_carries_queries_and_a_row_bound() -> None:
         CollectPolicy(purpose=WalkPurpose.DISPLAY, queries=_RowCounts())
     with pytest.raises(ValueError, match="row bound"):
         CollectPolicy(purpose=WalkPurpose.MEASURE, queries=_RowCounts())
+
+
+def test_a_display_walk_computes_a_shared_input_once_per_query_without_caching_it() -> None:
+    """Two branches of one collected query read one producer: it runs once, through
+    Polars' common-subplan elimination, with no ``cache()`` holding a copy of it."""
+    runs: list[int] = []
+
+    def expensive(frame: pl.DataFrame) -> pl.DataFrame:
+        runs.append(frame.height)
+        return frame.with_columns(y=pl.col("x") * 2)
+
+    def node(node_id: str, node_type: NodeType = NodeType.POLARS) -> GraphNode:
+        return GraphNode(id=node_id, data=NodeData(label=node_id, nodeType=node_type))
+
+    def build(built: GraphNode, **_kwargs: object) -> tuple[str, object, bool]:
+        steps = {
+            "src": lambda: pl.LazyFrame({"x": list(range(100))}),
+            "shared": lambda f: f.map_batches(expensive, schema={"x": pl.Int64, "y": pl.Int64}),
+            "low": lambda f: f.filter(pl.col("y") < 50),
+            "high": lambda f: f.filter(pl.col("y") >= 50).select(pl.col("x").alias("x_high")),
+            "both": lambda low, high: low.join(high, how="cross").head(3),
+        }
+        return built.id, steps[built.id], built.id == "src"
+
+    graph = PipelineGraph(
+        nodes=[
+            node("src", NodeType.DATA_INPUT),
+            *(node(n) for n in ("shared", "low", "high", "both")),
+        ],
+        edges=[
+            GraphEdge(id="1", source="src", target="shared"),
+            GraphEdge(id="2", source="shared", target="low"),
+            GraphEdge(id="3", source="shared", target="high"),
+            GraphEdge(id="4", source="low", target="both"),
+            GraphEdge(id="5", source="high", target="both"),
+        ],
+    )
+
+    result = walk_graph(
+        graph, build, policy=CollectPolicy.display(collect=["both"], record_failures=True)
+    )
+
+    assert result.errors == {}
+    assert result.collected["both"].height == 3
+    assert runs == [100]
+    assert "CACHE" not in result.frames["low"].explain(optimized=False)

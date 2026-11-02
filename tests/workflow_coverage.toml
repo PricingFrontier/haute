@@ -306,8 +306,8 @@ tests = [
   "tests/test_cli.py::TestVersion::test_version_flag",
   "tests/test_cli_init.py::TestInitCreatesProjectStructure::test_creates_haute_toml",
   "tests/test_cli_init.py::TestInitCreatesProjectStructure::test_creates_rating_directory",
-  "tests/test_cli_init.py::TestInitCreatesProjectStructure::test_haute_toml_already_exists_exits_with_error",
-  "tests/test_cli_init.py::TestInitForceReinit::test_force_reinit_prunes_stale_github_ci_files",
+  "tests/test_cli_init.py::TestInitAgain::test_the_project_is_left_and_haute_toml_written_afresh",
+  "tests/test_cli_init.py::TestInitAgain::test_a_re_run_prunes_stale_github_ci_files",
   "tests/test_starter_pipeline_e2e.py::test_scaffolded_starter_test_passes_for_blank_pipeline",
   "tests/test_cli_serve.py::TestServe::test_plain_serve_uses_localhost_for_bind_and_browser",
   "tests/test_cli_serve.py::TestServe::test_dev_mode_starts_vite_and_uvicorn",
@@ -333,9 +333,9 @@ tests = [
 invariant = "A fresh install answers through both entry points; init scaffolds a complete project and refuses to overwrite one without --force; serve binds localhost, refuses an occupied port, states its defaults in help, and its registered signal handlers terminate the child and exit; run reports missing files, parse errors and node failures with exit code 1; a missing optional dependency names the exact install command; and the hosted bootstrap seeds a volatile project only when unbound, never reseeds a restored or present project, and gates the boot when the restore fails. The real start/readiness/stop lifecycle is exercised by scripts/init_smoke.py in the init-smoke CI lane."
 
 [scenarios.evidence]
-commit = "f8af18c67"
+commit = "86bca15c2"
 command = 'uv run pytest tests/test_cli.py tests/test_cli_init.py tests/test_cli_serve.py tests/test_cli_fail_loudly.py tests/test_starter_pipeline_e2e.py tests/test_optional_dependency_matrix.py tests/test_hatch_build.py tests/test_hosted.py tests/test_databricks_routes_auth.py -q -n 4'
-result = "281 passed, 4 skipped in 22.30s"
+result = "340 passed, 4 skipped in 30.38s"
 
 [[scenarios]]
 id = "W01-S02"

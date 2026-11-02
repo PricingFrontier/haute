@@ -26,7 +26,7 @@ measured limits of the existing consumers.
 |---|---|---|
 | One store, every consumer | Node outputs, input snapshots (including each emitting table of a structured API Input, prepared automatically), and analyses share `.haute_cache`; previews, bounded runs, explicit builds, and traces run under one seed plan. | — |
 | No duplicated runs | A bounded run seeds from any fresh covering generation and captures a join, fan-out, join feeder, batch Model Score, or consumed producer only where recomputing it costs more than the cache round trip, and records why it skipped the others; a preview seeds the same way and captures only the joins and costly full-input work it must compute in full. A chain of plain transforms is recomputed by every preview and bounded run by design, because recomputing it costs less than the cache round trip. Each capture publishes as soon as it is written, so a run that fails or is cancelled later keeps what it had already published. A preview served from the response cache reports its generations as seeded, and the canvas raises the node-data epoch only for a capture generation it has not seen, so a repeat preview costs no refetch. | Two consumers that resolve the same cold capture point at the same time, or an explicit build and an automatic capture of one node, both compute it; the publication lock decides only who publishes (`CACHE-S19`). |
-| Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. A preview says when a node was not cached and how to fix it. | A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). Every preview prepares the graph several times and signs every lineage node per resolution (`CACHE-S17`). |
+| Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. A preview says when a node was not cached and how to fix it. | A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). |
 | Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A node with one input whose code is provably row-local is written a slice of its input at a time where a capture or an explicit build writes it, so its memory does not grow with the input. A pass-through node carries its parent's recipe forward, and training preparation writes its prepared parquet through the same bounded writer, slicing the frame or the recipe's input and recording which. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | Full joins rescan the base once per lookup chunk (`CACHE-S18`; measured 24-Sep-2026 and not yet worth building). |
 | Failures are recoverable | A corrupt generation is reported, never silently repaired, and names the node whose cache to clear or rebuild; a plan whose inputs moved stops, before collection and again if they move before a capture publishes. | — |
 
@@ -37,20 +37,15 @@ measured limits of the existing consumers.
 | CACHE-S13 | Planned | P3 | A capturing preview finishes as a job instead of dying at the interactive timeout. Unproven: no measured preview approaches the timeout (re-measured 24-Sep-2026). |
 | CACHE-S19 | Deferred | P3 | Two consumers that need the same cold capture compute it once. |
 | CACHE-S22 | Planned | P3 | The shapes that cannot carry a write recipe at all can. |
-| CACHE-S17 | Planned | P3 | Planning cost stays flat as graphs grow, a lease validates each part once per process, and the store's bookkeeping files are swept. |
 | CACHE-S18 | Planned | P3 | Full joins are written with a bounded number of scans. Measured 24-Sep-2026: about 2 s over native at 10M × 10M rows, so not yet worth building. |
-| CACHE-S25 | Planned | P3 | Cache identity hashes the whole canonical node config instead of classifying every field. |
-| CACHE-S26 | Planned | P1 | `LRUCache.put` evicts an existing key when a replacement value exceeds `max_bytes`, and `buildNodeDataCacheIdentity` includes `globalConstants` in the frontend node-data identity. |
 
 ## Planned improvements
 
-Delivery order is `CACHE-S17` → `CACHE-S22` → `CACHE-S18`, each gated on a
+Delivery order is `CACHE-S22` → `CACHE-S18`, each gated on a
 measurement named in its own entry rather than started on the strength of its
 shape; `CACHE-S19` remains deferred. `CACHE-S13` is also measurement-gated:
-no measured preview approaches its timeout. `CACHE-S25`, from the
-[23 September 2026 codebase review](codebase-review-2026-09-23.md), sits
-outside that order: it follows the pipeline-config package `PCFG-R08`. What
-is left is measured against cost rather than shape. A package must not bypass
+no measured preview approaches its timeout. What is left is measured
+against cost rather than shape. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
 specified. Every package builds on the node-output snapshot store (signature,
 slot index, column widening, retention, cross-process leases, and the
@@ -114,7 +109,7 @@ Raising the timeout alone is not the cheap first step it looks like: the
 route dispatches the preview to a worker before any plan exists, because the
 plan is opened inside the worker (`routes/pipeline.py`, `timeout_seconds=`),
 so the route cannot tell a capturing preview from any other without resolving
-the plan itself, which is the work `CACHE-S17` is trying to remove. Giving
+the plan itself, a resolution of its own (about 0.05 s of signing at 80 nodes). Giving
 every shared-snapshot preview the sink timeout is possible but makes a hung
 preview take 300 seconds to fail, so it is a decision to take deliberately,
 not a free win.
@@ -318,77 +313,6 @@ it.
 
 **Evidence:** `src/haute/chunking.py`; `src/haute/_builders.py` (a Data Input's scan).
 
-### CACHE-S17 — Flat planning and housekeeping cost
-
-**Why:** One preview prepares the graph in admission, in every resolution
-round, in the post-capture key, and in execution, and every resolution signs
-each node-output node in the lineage with a fresh upstream fingerprint. Every
-lease reads each part's Parquet footer, Arrow schema, and Polars schema: the
-verified-generation memo skips only the digest check, not these reads. Each
-process that leases creates a token file under `.processes`, and each
-identity ever published a lock file under `.locks`; nothing sweeps either.
-
-**Measured 20-Sep-2026, and the quadratic claim did not hold.** Seed-plan
-resolution over a chain of row-local nodes, three runs each, best of three:
-10 nodes 0.142s, 20 nodes 0.257s, 40 nodes 0.738s, 80 nodes 1.235s. Eight times
-the nodes costs 8.7 times the time and the per-node cost is flat at 13–18ms, so
-growth is linear, not quadratic. What the measurement does support is the
-absolute cost: 15ms per node, paid again in admission, in each resolution
-round, in the post-capture key and in execution, is over a second of planning
-for an eighty-node graph before anything is read. The memoisation half of this
-package is justified by that.
-
-The once-per-process retired-directory sweep is delivered: it globbed the whole
-store on every store construction, and a preview builds several. The store-walk
-half this package once planned is obsolete. It kept byte and generation totals
-in a store-level summary, with intent records for crash recovery, so that
-publication could admit against the cache budgets without walking every
-generation. The budgets are removed, and publication no longer walks the
-store to admit against totals or look for eviction candidates. Two walks
-remain: the on-demand cache inventory, and the stale-staging cleanup, which
-globs every identity's staging directories and walks each one it finds on
-every store construction.
-
-**Plan:** Keep one prepared graph and its structural facts (order, effective
-edges, pass-through edges, materialising operators, projection inputs) across
-lease attempts and preparation rounds, while every node signature and
-identity is recomputed after any preparation, because a signature signs the
-input generations preparation may have moved; derive per-node lineage
-fingerprints from one canonical-graph pass memoised by node id within a
-single resolution. Have the verified-generation memo cover the footer and
-schema checks, so a lease validates each part once per process. Count the
-stale-staging cleanup in the per-preview store operations, and if it shows,
-run it at most once per interval per process, as the retired-directory sweep
-already runs once per process. At the once-per-process cleanup, sweep token
-files whose process is dead and
-publication lock files whose identity no longer exists. Remove a lock file
-only under a protocol that cannot leave two processes holding different files
-for one identity, and state that protocol in the IO-layer specification.
-
-**Acceptance:** The artifact records the before and after measurements and
-the store's operation count per preview; `tests/performance/` gains the
-planning benchmark; a test proves a second lease of a verified generation
-reads no part footer or schema, and that a generation whose files changed is
-validated again; `tests/test_node_snapshot_cross_process.py` proves the
-cleanup removes a dead process's token and an orphaned publication lock,
-keeps a live process's token and a held lock, and that a publisher racing the
-sweep still excludes a second publisher; the existing regression that a
-preview's capture moves to the prepared signature after an input build passes
-unchanged, as do the seed-plan, retention, and cross-process tests, because
-none of this changes what is read or written.
-
-**Owning specifications:** [caching](../caching/low-level.md#seed-plans);
-[IO layer](../io-layer/low-level.md#node-output-snapshots).
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_seed_plans.py` (`_Resolver`,
-`open_resolved_seed_plan`, `_open_preview_seed_plan`);
-`src/haute/_node_snapshots.py` (`__init__`, `_cleanup_retired`,
-`_publication_lock`); `src/haute/_source_cache.py` (`_own_token`,
-`_metadata_from_path`, `_cleanup_stale_staging`); `tests/test_seed_plans.py` (prepared-signature
-regression).
-
 ### CACHE-S18 — Bounded scans in full joins
 
 **Why:** A full join's unmatched pass (`src/haute/_chunked_writes.py`,
@@ -463,68 +387,3 @@ joins).
 **Dependencies:** None.
 
 **Evidence:** `src/haute/_chunked_writes.py`.
-
-### CACHE-S25 — Hash the whole canonical node config
-**Why:** The cache-identity framework declares a versioned field set for nine
-consumers and classifies every node-config field as included or excluded,
-failing on any unclassified field. Most of that classification exists to keep
-editor-only state (column lists, schema warnings, step errors) out of cache
-keys, because that state is stored inside the node config.
-
-**Plan:** Once `PCFG-R08` moves editor state out of the config, key execution
-caches on the complete canonical config and delete the per-field
-classification. Keep the consumer contracts only where a consumer genuinely
-needs a narrower identity, and say why in the specification.
-
-**Acceptance:** Any change to a persisted config field changes the execution
-identity without a classification table; editor-state changes do not; the
-cache-identity tests are reduced to the remaining consumer contracts.
-
-**Dependencies:** `PCFG-R08` (pipeline config).
-
-**Owning specifications:** [caching](../caching/low-level.md).
-
-**Evidence:** `src/haute/_cache.py::CacheConsumerContract`;
-`src/haute/_cache.py::_classify_config_fields`;
-`src/haute/_cache.py::validate_cache_config_field_classifications`;
-`tests/test_cache_identity_contract.py`.
-
-### CACHE-S26 — Evict oversized `LRUCache` replacements and include `globalConstants` in frontend node-data identity
-**Why:** Two cache-coherency defects allow stale data to survive an update:
-1. In `LRUCache.put`, when `size > self._max_bytes` and `key in self._data`, the
-   method logs `replaced_existing=True` and returns `False` before calling
-   `self._remove_key(key)`. Updating an existing key with a value larger than
-   `max_bytes` leaves the stale previous entry in the cache under `key`.
-2. On the backend, `node_snapshot_signature` includes `global_constants` via
-   `graph_fingerprint(lineage)`. On the frontend, `buildNodeDataCacheIdentity`
-   computes `configHash` from upstream node configs, `edges`, `submodels` and
-   `activeSource` while omitting `globalConstants`. Editing a Global Constant
-   therefore leaves `configHash` and `exploreConfigHash` unchanged in `NodePanel`,
-   `useNodeDataCache`, `useDataInputColumns` and `useWholeDataAnswer`, serving
-   stale node-data availability or invoking callbacks that closed over the old
-   `buildGraph`.
-
-**Plan:** Call `self._remove_key(key)` in `LRUCache.put` before returning `False`
-when `replaced_existing` is true. Include `globalConstants` in
-`buildNodeDataCacheIdentity` (and thread it from `useGraphStore` through
-`NodePanel`, `useNodeDataCache`, `useDataInputColumns` and `useWholeDataAnswer`)
-so frontend and backend node-data identities move together when a Global Constant
-changes.
-
-**Acceptance:** Putting a value smaller than `max_bytes` followed by an update for
-the same key larger than `max_bytes` returns `False` and removes the prior cached
-value (`cache.get(key) is None`). Editing a Global Constant changes
-`buildNodeDataCacheIdentity` for downstream nodes and refreshes `useNodeDataCache`
-and `useWholeDataAnswer` against the updated graph.
-
-**Dependencies:** None.
-
-**Owning specifications:** [caching](../caching/low-level.md);
-[frontend shared](../frontend-shared/low-level.md#the-shared-data-cache).
-
-**Evidence:** `src/haute/_lru_cache.py::LRUCache.put`;
-`frontend/src/panels/dataPointIdentity.ts::buildNodeDataCacheIdentity`;
-`frontend/src/hooks/useNodeDataCache.ts::useNodeDataCache`;
-`frontend/src/panels/NodePanel.tsx`;
-`frontend/src/hooks/useDataInputColumns.ts::useDataInputColumns`;
-`frontend/src/panels/editors/shared/useWholeDataAnswer.ts::useWholeDataAnswer`.

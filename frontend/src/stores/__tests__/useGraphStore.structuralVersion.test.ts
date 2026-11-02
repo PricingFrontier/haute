@@ -46,7 +46,7 @@ describe("useGraphStore structuralVersion", () => {
 
   it("keeps preview freshness through generated step-code refresh, but invalidates on authored edits", () => {
     const steps = [{ id: "s", kind: "source", input: "quotes" }]
-    const initial = makeNode("t", "polars", { data: { config: { steps, code: "old code", _steps_error: "old error" } } })
+    const initial = makeNode("t", "polars", { data: { config: { steps, code: "old code" } } })
     const store = useGraphStore.getState()
     store.setNodesRaw([initial])
     store.markSaved()

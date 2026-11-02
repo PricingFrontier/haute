@@ -44,6 +44,12 @@ In scope:
 - Post-deploy impact analysis: comparing staging vs production predictions over a sample
   dataset.
 
+A workbench project hosts no scoring API: what it releases is the underwriter app, whose
+release `haute app build` bundles through this component's resolution and validation, so
+`haute deploy` refuses in one, a dry run included, naming `haute app build`
+([workbench](../workbench/high-level.md)). A Workbench Input's deployment, below, is the
+bundle the app prices with.
+
 Out of scope (owned elsewhere):
 - Parsing the pipeline `.py` file into a `PipelineGraph` — see
   [pipeline-config](../pipeline-config/high-level.md).
@@ -174,7 +180,11 @@ test-quote row wraps its request as `input`, with an optional `expected` output 
 `tolerance_pct` and any `_`-prefixed notes; a row without `input`, or with any other
 top-level key, is refused naming the row, and any row whose actual output falls outside
 tolerance fails the deploy. The starter JSON quote `haute init` writes takes the row shape,
-so a new project's test quotes parse before the analyst replaces them. All failures — structural,
+so a new project's test quotes parse before the analyst replaces them. A workbench
+project, which `haute deploy` refuses, checks its test quotes in `haute app build`:
+the test quotes saved from Preview by the workbench's comparison, a moved output
+reported rather than failed, and any other file in the folder as here
+([workbench](../workbench/high-level.md), Test quotes). All failures — structural,
 form and test-quote — are collected and raised together as one `DeployError` so an
 operator sees the whole picture in one pass, not a fix-rerun-fix cycle.
 

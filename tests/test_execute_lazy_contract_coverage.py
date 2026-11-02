@@ -113,6 +113,25 @@ class TestLazyOutputContractViolation:
         assert exc_info.value.context["node_id"] == "t"
         assert "promised" in exc_info.value.context["missing"]
 
+    def test_contracts_are_enforced_when_the_caller_does_not_say(self):
+        """Every production caller enforces contracts; a caller omitting the flag does too."""
+
+        def build_fn(node: GraphNode, source_names=None, **kwargs):
+            if node.data.nodeType == NodeType.DATA_INPUT:
+                return node.id, lambda: pl.DataFrame({"x": [1, 2, 3]}).lazy(), True
+            return node.id, lambda *dfs: dfs[0], False
+
+        g = PipelineGraph(
+            nodes=[
+                _source_node("src"),
+                _transform_node("t", contract={"inputs": None, "outputs": ["promised"]}),
+            ],
+            edges=[_e("src", "t")],
+        )
+
+        with pytest.raises(ContractMismatchError, match="promised"):
+            execute_lazy_graph(g, build_fn)
+
     def test_produced_output_column_does_not_raise(self):
         """Control: when the node emits the promised column, no raise."""
 

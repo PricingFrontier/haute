@@ -10,6 +10,7 @@ import useNodeDataStore from "../../stores/useNodeDataStore"
 import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore"
 import { buildNodeDataCacheIdentity } from "../dataPointIdentity"
 import useSettingsStore from "../../stores/useSettingsStore"
+import useGraphStore from "../../stores/useGraphStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
@@ -1860,8 +1861,19 @@ describe("NodePanel", () => {
       expect(fetchExplorePivotMembers).toHaveBeenLastCalledWith(
         expect.objectContaining({ source: "batch", node_id: "explore_1" }),
       )
+      fetchExplorePivotMembers.mockClear()
+
+      // A Global Constant edit can change the explored frame, so it is part
+      // of the Explore identity too.
+      act(() => {
+        useGraphStore.setState({
+          globalConstants: [{ name: "base_rate", type: "float", split: false, value: "1.2", bySource: {} }],
+        })
+      })
+      expect(fetchExplorePivotMembers).toHaveBeenCalledTimes(1)
     } finally {
       simulatePickerRefetch.enabled = false
+      useGraphStore.setState({ globalConstants: [] })
     }
   })
 
@@ -3379,6 +3391,7 @@ describe("scoped editing in degraded documents", () => {
           source_span: null,
           diagnostic_ids: ["diag_unknown_decorator"],
           blocking_path: [],
+          editor: { steps_error: null, steps_discarded: null, discarded_sidecar: null },
           scoped_editable: false,
         },
         {
@@ -3399,6 +3412,7 @@ describe("scoped editing in degraded documents", () => {
           source_span: null,
           diagnostic_ids: ["diag_unknown_decorator"],
           blocking_path: ["source_a", "downstream"],
+          editor: { steps_error: null, steps_discarded: null, discarded_sidecar: null },
           scoped_editable: true,
         },
       ],

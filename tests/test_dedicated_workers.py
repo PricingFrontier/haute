@@ -452,6 +452,35 @@ def test_a_worker_terminated_before_it_starts_never_spawns() -> None:
     assert created.pid is None
 
 
+def test_a_start_whose_allocation_fails_releases_what_it_opened(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A start that fails after its first queue closes that queue and leaves the registry,
+    rather than leaking it and keeping a never-started worker registered."""
+    import haute._dedicated_workers as dedicated
+
+    open_dedicated_workers()
+    created = DedicatedWorker(owner="test", polars_threads=2, process_name="haute-test-alloc")
+    real_queue = dedicated.create_worker_queue
+    opened: list[object] = []
+
+    def second_queue_fails(ctx, maxsize):  # noqa: ANN001 - the helper's shape
+        if opened:
+            raise OSError("no more semaphores")
+        made = real_queue(ctx, maxsize)
+        opened.append(made)
+        return made
+
+    monkeypatch.setattr(dedicated, "create_worker_queue", second_queue_fails)
+    with pytest.raises(InteractiveWorkerStartError, match="no more semaphores"):
+        created.start(start_timeout_seconds=60)
+
+    assert created not in dedicated._REGISTRY
+    assert created.pid is None
+    with pytest.raises(ValueError, match="closed"):
+        opened[0].put_nowait("after the failed start")
+
+
 def test_a_worker_terminated_while_it_spawns_does_not_survive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

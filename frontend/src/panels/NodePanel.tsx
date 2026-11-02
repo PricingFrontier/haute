@@ -18,6 +18,7 @@ import {
   isSubmodelInstanceConfig,
   type HauteNodeData,
   type LoadAvailability,
+  type NodeEditorState,
   type PipelineGraph,
 } from "../types/node"
 import type { PipelineDiagnostic } from "../types/pipelineDocument"
@@ -25,6 +26,7 @@ import useUIStore, { type ExplorePane, type ModellingPane, type OptimiserPane } 
 import useNodeDataStore, { profileForConsumer } from "../stores/useNodeDataStore"
 import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
+import useGraphStore from "../stores/useGraphStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
 import { recoverySummaryKey, useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
@@ -967,6 +969,8 @@ function SchemaWarningBanner({
 
 type NodeEditorBodyProps = {
   nodeId: string
+  /** The server's editor state for the node, beside its config. */
+  editorState?: NodeEditorState
   documentReadOnly: boolean
   readOnly: boolean
   config: Record<string, unknown>
@@ -991,6 +995,7 @@ type NodeEditorBodyProps = {
 
 function NodeEditorBody({
   nodeId,
+  editorState,
   documentReadOnly,
   readOnly,
   config,
@@ -1034,6 +1039,7 @@ function NodeEditorBody({
         start={surface.start}
         nodeId={nodeId}
         codeHint={POLARS_TAB_HINTS[nodeType] ?? null}
+        editor={editorState}
       />
     )
   } else if (activeTab === "columns" && showColumnsTab) {
@@ -1198,6 +1204,7 @@ function NodePanelContent({
     setOptimiserPaneIssues({ nodeId, panes })
   }, [])
   const activeSource = useSettingsStore((s) => s.activeSource)
+  const globalConstants = useGraphStore((s) => s.globalConstants)
   const reservedApiInputFrameLabels = useDocumentStatusStore(
     (s) => s.capabilities?.reserved_api_input_frame_labels,
   )
@@ -1212,9 +1219,16 @@ function NodePanelContent({
   // picker never renders members from a superseded identity.
   const exploreConfigHash = useMemo(() => {
     if (!node || effectiveNodeType(node) !== NODE_TYPES.EXPLORE) return null
-    const identity = buildNodeDataCacheIdentity({ node, allNodes, edges, submodels, preamble })
+    const identity = buildNodeDataCacheIdentity({
+      node,
+      allNodes,
+      edges,
+      submodels,
+      preamble,
+      globalConstants,
+    })
     return hashConfig({ graph: identity, source: activeSource })
-  }, [node, allNodes, edges, submodels, preamble, activeSource])
+  }, [node, allNodes, edges, submodels, preamble, globalConstants, activeSource])
 
   // The columns of the data this node reads, when another consumer of the
   // point has already established them; never a request of its own. Gated on
@@ -1306,11 +1320,6 @@ function NodePanelContent({
     return onUpdateNode(targetId, clearCachedResultShape({ ...target.data, config: { ...targetConfig, ...patch } }))
   }, [allNodes, documentReadOnly, onUpdateNode, readOnly, scopedSaving])
 
-  const configWithNodeId = useMemo(
-    () => ({ ...config, _nodeId: node.id }),
-    [config, node.id]
-  )
-
   const nodeMap = useMemo(() => Object.fromEntries(allNodes.map((n) => [n.id, n])), [allNodes])
   const selectedNodeId = node.id
   const upstreamEdges = useMemo(
@@ -1388,7 +1397,6 @@ function NodePanelContent({
       nodeType={nodeType as NodeTypeValue}
       readOnly={nodeType === NODE_TYPES.SUBMODEL && (effectiveReadOnly || documentReadOnly)}
       config={config}
-      configWithNodeId={configWithNodeId}
       node={node}
       onUpdateConfig={handleConfigUpdate}
       onReplaceConfig={handleConfigReplace}
@@ -1505,6 +1513,7 @@ function NodePanelContent({
 
       <NodeEditorBody
         nodeId={node.id}
+        editorState={(node.data as HauteNodeData).editor}
         documentReadOnly={documentReadOnly}
         readOnly={effectiveReadOnly}
         config={config}

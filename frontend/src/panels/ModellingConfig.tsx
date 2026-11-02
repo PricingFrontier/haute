@@ -71,6 +71,8 @@ import { TrainingActionsAndResults } from "./modelling/TrainingActionsAndResults
 import type { ReactElement } from "react"
 
 type Props = {
+  /** The node being configured: its training job, results and remembered pane. */
+  nodeId: string
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   upstreamColumns?: { name: string; dtype: string }[]
@@ -366,6 +368,7 @@ function TrainPane({
 }
 
 export default function ModellingConfig({
+  nodeId,
   config,
   onUpdate,
   upstreamColumns = [],
@@ -373,7 +376,6 @@ export default function ModellingConfig({
   onPaneIssuesChange,
 }: Props) {
   const { allNodes, edges, submodels, preamble, openNode } = useGraph()
-  const nodeId = String(config._nodeId ?? "")
   const setModellingPane = useUIStore((state) => state.setModellingPane)
   const reviewPane = (pane: ModellingPane) => setModellingPane(nodeId, pane)
   const trainJob = useNodeResultsStore((state) => state.trainJobs[nodeId])

@@ -1,5 +1,6 @@
 import { NODE_TYPES } from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
+import type { HauteNodeData } from "../types/node"
 import type { ExplorePane, ModellingPane, OptimiserPane } from "../stores/useUIStore"
 import {
   ApiInputEditor,
@@ -54,7 +55,6 @@ const EXPLORE_PANES = [
 export type NodeConfigEditorProps = {
   nodeType: NodeTypeValue
   config: Record<string, unknown>
-  configWithNodeId: Record<string, unknown>
   node: SimpleNode
   onUpdateConfig: OnUpdateConfig
   onReplaceConfig: OnReplaceConfig
@@ -104,7 +104,6 @@ function ReadOnlyConfigDump({ config }: { config: Record<string, unknown> }) {
 export function NodeConfigEditor({
   nodeType,
   config,
-  configWithNodeId,
   node,
   onUpdateConfig,
   onReplaceConfig,
@@ -177,7 +176,7 @@ export function NodeConfigEditor({
       if (activeExplorePane === "code") {
         return (
           <div id="explore-code-pane" role="tabpanel" aria-labelledby="explore-code-tab" data-testid="explore-code-pane" className="h-full min-h-0 flex flex-col">
-            <ExploreCodeEditor config={config} onUpdate={onUpdateConfig} onReplaceConfig={onReplaceConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} runError={runError} upstreamColumns={upstreamColumns} nodeId={node.id} nodeColumns={nodeColumns} />
+            <ExploreCodeEditor config={config} onUpdate={onUpdateConfig} onReplaceConfig={onReplaceConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} runError={runError} upstreamColumns={upstreamColumns} nodeId={node.id} nodeColumns={nodeColumns} editor={(node.data as HauteNodeData).editor} />
           </div>
         )
       }
@@ -208,10 +207,10 @@ export function NodeConfigEditor({
       return <ModelScoreEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} accentColor={accentColor} />
 
     case NODE_TYPES.MODELLING:
-      return <ModellingConfig config={configWithNodeId} onUpdate={onUpdateConfig} upstreamColumns={effectiveColumns} activePane={activeModellingPane} onPaneIssuesChange={onModellingPaneIssuesChange} />
+      return <ModellingConfig nodeId={node.id} config={config} onUpdate={onUpdateConfig} upstreamColumns={effectiveColumns} activePane={activeModellingPane} onPaneIssuesChange={onModellingPaneIssuesChange} />
 
     case NODE_TYPES.OPTIMISER:
-      return <OptimiserConfig config={configWithNodeId} onUpdate={onUpdateConfig} upstreamColumns={effectiveColumns} accentColor={accentColor} deferColumnFetch={selectedPreviewLoading} activePane={activeOptimiserPane} onPaneIssuesChange={onOptimiserPaneIssuesChange} onUpdateNodeConfig={onUpdateNodeConfig} />
+      return <OptimiserConfig nodeId={node.id} config={config} onUpdate={onUpdateConfig} upstreamColumns={effectiveColumns} accentColor={accentColor} deferColumnFetch={selectedPreviewLoading} activePane={activeOptimiserPane} onPaneIssuesChange={onOptimiserPaneIssuesChange} onUpdateNodeConfig={onUpdateNodeConfig} />
 
     case NODE_TYPES.OPTIMISER_APPLY:
       return <OptimiserApplyEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} accentColor={accentColor} />
@@ -220,7 +219,7 @@ export function NodeConfigEditor({
       return <ConstantEditor config={config} onUpdate={onUpdateConfig} />
 
     case NODE_TYPES.POLARS:
-      return <TransformEditor config={config} onUpdate={onUpdateConfig} onReplaceConfig={readOnly ? undefined : onReplaceConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} runError={runError} upstreamColumns={upstreamColumns} nodeId={node.id} nodeColumns={nodeColumns} />
+      return <TransformEditor config={config} onUpdate={onUpdateConfig} onReplaceConfig={readOnly ? undefined : onReplaceConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} runError={runError} upstreamColumns={upstreamColumns} nodeId={node.id} nodeColumns={nodeColumns} editor={(node.data as HauteNodeData).editor} />
 
     case NODE_TYPES.EDGE_JOIN:
       return <EdgeJoinEditor config={config} onUpdate={onUpdateConfig} nodeId={node.id} accentColor={accentColor} onDeleteInput={onDeleteEdge} onSwapInputs={onSwapEdgeJoinInputs ? () => onSwapEdgeJoinInputs(node.id) : undefined} />

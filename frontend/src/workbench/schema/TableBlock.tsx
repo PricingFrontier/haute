@@ -12,6 +12,7 @@ import { confirmed } from "../../stores/useQuestionStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { isIdentityColumn } from "../../utils/quoteIdentity"
 import { addSchemaColumn, buttonUses, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_MANAGED, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
+import { DatabaseMark } from "../StoreCompare"
 import { ColumnRow, StoreColumnRow } from "./ColumnRow"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
@@ -180,6 +181,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
           {count} {count === 1 ? "col" : "cols"}
           {problems.length > 0 && `, ${problems.length} ${problems.length === 1 ? "problem" : "problems"}`}
         </span>
+        <DatabaseMark table={table.id} />
         {!fixed && (
           <IconButton
             icon={Trash2}

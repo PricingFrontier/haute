@@ -14,6 +14,7 @@ const utilityModulePath = resolve(ratingDir, "utility", "browser_helpers.py")
 const gitMainPath = resolve(ratingDir, "main.py")
 const browserSubmodelPath = resolve(e2eProjectRoot, "rating", "modules", "browser_group.py")
 const selectAll = process.platform === "darwin" ? "Meta+A" : "Control+A"
+const save = process.platform === "darwin" ? "Meta+s" : "Control+s"
 
 /** Open the Utility pane on its fixed Imports entry, which edits the preamble. */
 async function openImports(page: Page): Promise<void> {
@@ -406,6 +407,8 @@ test.describe("core browser flows", () => {
         "    return value * 3",
       ].join("\n"),
     )
+    // The panel saves an edit when it closes, another file opens, or on Ctrl+S.
+    await page.keyboard.press(save)
 
     await expect
       .poll(() => readFileSync(utilityModulePath, "utf8"))

@@ -19,10 +19,8 @@ import polars as pl
 
 from haute._api_input_schema import is_json_api_input_path
 from haute._cache import (
-    CACHE_CONFIG_FIELD_CLASSIFICATIONS,
     CacheConsumer,
     CacheIdentityRecord,
-    CacheInputClass,
     GraphFingerprintMemo,
     LineageCacheKeyRequest,
     canonical_json,
@@ -37,7 +35,6 @@ from haute._cache import (
 )
 from haute._estimate_calibration import calibrate_materialisation_bytes
 from haute._execution_context import ExecutionContext, ExecutionProfile
-from haute._global_constants import node_code_globals
 from haute._graph_utils import upstream_node_ids
 from haute._hashing import HASH_ALGO, content_hash_bytes
 from haute._json_shred._source_proof import file_signature
@@ -101,7 +98,6 @@ __all__ = [
     "MaterialisationEstimate",
     "ProjectionPlan",
     "ProjectionRequest",
-    "build_linear_execution_chain_functions",
     "canonical_dataframe_execution_graph",
     "dataframe_frame_input_fingerprint",
     "dataframe_graph_input_fingerprint",
@@ -109,7 +105,6 @@ __all__ = [
     "execute_lazy_graph",
     "plan_prepared_execution_strategy",
     "plan_execution_strategy",
-    "plan_projection",
     "preview_lineage_cache_key",
     "prune_source_switch_edges",
     "ratebook_factor_required_columns",
@@ -129,10 +124,53 @@ _SOURCE_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
     NodeType.DATA_INPUT: "path",
     NodeType.EXTERNAL_FILE: "path",
 }
+# Beside its source file's field, the config fields that say which external
+# data or model a node reads: its runtime-input entry signs them beside the
+# state they name. Every other field reaches the identity through the
+# structural graph or lineage identity a runtime-input identity is paired with.
+_MLFLOW_SOURCE_CONFIG_FIELDS = (
+    "alias",
+    "artifact_path",
+    "mlflow_destination",
+    "registered_model",
+    "run_id",
+    "sourceType",
+    "version",
+)
+_RUNTIME_INPUT_CONFIG_FIELDS: dict[NodeType, tuple[str, ...]] = {
+    NodeType.DATA_INPUT: (
+        "code",
+        "connection",
+        "format",
+        "http_path",
+        "inputType",
+        "mode",
+        "query",
+        "table",
+        "uri",
+    ),
+    NodeType.EXTERNAL_FILE: ("code",),
+    NodeType.MODEL_SCORE: (
+        *_MLFLOW_SOURCE_CONFIG_FIELDS,
+        "code",
+        "feature_contract_path",
+        "model_path",
+    ),
+    NodeType.OPTIMISER_APPLY: (*_MLFLOW_SOURCE_CONFIG_FIELDS, "ratebook_input"),
+}
 # The node types whose runtime inputs an execution identity signs.
 _RUNTIME_INPUT_NODE_TYPES = frozenset(
     {*_SOURCE_PATH_CONFIG_BY_NODE_TYPE, NodeType.MODEL_SCORE, NodeType.OPTIMISER_APPLY}
 )
+
+
+def _runtime_input_config_fields(node_type: NodeType) -> tuple[str, ...]:
+    source_path = _SOURCE_PATH_CONFIG_BY_NODE_TYPE.get(node_type)
+    return (
+        *((source_path,) if source_path is not None else ()),
+        *_RUNTIME_INPUT_CONFIG_FIELDS.get(node_type, ()),
+    )
+
 
 _LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE: dict[NodeType, tuple[str, ...]] = {
     NodeType.API_INPUT: ("path",),
@@ -143,9 +181,29 @@ _LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE: dict[NodeType, tuple[str, ...]] =
 }
 
 
-def canonical_dataframe_execution_graph(graph: PipelineGraph) -> PipelineGraph:
-    """Resolve and contain every local runtime input before execution."""
+def canonical_dataframe_execution_graph(
+    graph: PipelineGraph,
+    *,
+    memo: GraphFingerprintMemo | None = None,
+) -> PipelineGraph:
+    """Resolve and contain every local runtime input before execution.
 
+    With *memo*, a graph it has already canonicalised is not resolved again.
+    """
+
+    if memo is not None:
+        known = memo.canonical_graphs.get(id(graph))
+        if known is not None and known[0] is graph:
+            return known[1]
+    canonical = _canonical_dataframe_execution_graph(graph)
+    if memo is not None:
+        # Canonicalising a canonical graph gives it back unchanged.
+        memo.canonical_graphs[id(graph)] = (graph, canonical)
+        memo.canonical_graphs[id(canonical)] = (canonical, canonical)
+    return canonical
+
+
+def _canonical_dataframe_execution_graph(graph: PipelineGraph) -> PipelineGraph:
     root = _infer_project_root(project_root=None, source_file=graph.source_file)
     pipeline_dir = _cache_pipeline_dir(graph)
     if pipeline_dir is None:
@@ -255,21 +313,6 @@ def plan_execution_strategy(
     if execution_context is not None:
         execution_context.projection_plan = result
     return result
-
-
-def plan_projection(request: ProjectionRequest) -> ProjectionPlan:
-    """Return the column demand *request*'s execution plans at every node.
-
-    The projection half of :func:`plan_execution_strategy`, for a caller that
-    needs another execution's demand — auto-range captures the columns the
-    following solve reads — without planning, estimating, or admitting it.
-    """
-    prepared = prepare_graph(
-        request.graph,
-        request.target_node_id,
-        source=request.source,
-    )
-    return _prepared_projection_plan(prepared, request)[1]
 
 
 def _prepared_projection_plan(
@@ -822,20 +865,6 @@ def _config_subset(config: Mapping[str, Any], keys: Iterable[str]) -> Mapping[st
     }
 
 
-def _runtime_input_config_fields(node_type: NodeType) -> tuple[str, ...]:
-    included_classes = {
-        CacheInputClass.SOURCE_SELECTION,
-        CacheInputClass.RUNTIME_FILES,
-        CacheInputClass.ARTIFACTS,
-        CacheInputClass.USER_CODE,
-    }
-    return tuple(
-        field_name
-        for field_name, classification in CACHE_CONFIG_FIELD_CLASSIFICATIONS[node_type].items()
-        if classification.input_class in included_classes
-    )
-
-
 def _local_runtime_input_path_fields(node: GraphNode) -> tuple[str, ...]:
     """Return config fields that cause reads from the local filesystem."""
     fields = list(_LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE.get(node.data.nodeType, ()))
@@ -993,6 +1022,20 @@ def _runtime_input_fingerprint_entry(
     )
 
 
+def _reused_runtime_input_entry(
+    graph: PipelineGraph,
+    node: GraphNode,
+    entries: dict[str, tuple[GraphNode, str | None, Mapping[str, object]]],
+) -> Mapping[str, object]:
+    # An entry reads the graph only through its source file.
+    known = entries.get(node.id)
+    if known is not None and known[0] is node and known[1] == graph.source_file:
+        return known[2]
+    entry = _runtime_input_fingerprint_entry(graph, node)
+    entries[node.id] = (node, graph.source_file, entry)
+    return entry
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeInputIdentity:
     """The runtime inputs of one scope, read once.
@@ -1053,7 +1096,30 @@ def dataframe_graph_input_identity(
 ) -> RuntimeInputIdentity:
     """Read the runtime inputs :func:`dataframe_graph_input_fingerprint` signs."""
 
-    graph = canonical_dataframe_execution_graph(graph)
+    return canonical_graph_input_identity(
+        canonical_dataframe_execution_graph(graph),
+        target_node_id=target_node_id,
+        source=source,
+        ignore_node_ids=ignore_node_ids,
+        memo=memo,
+    )
+
+
+def canonical_graph_input_identity(
+    graph: PipelineGraph,
+    *,
+    target_node_id: str | None,
+    source: str,
+    ignore_node_ids: Iterable[str] = (),
+    memo: GraphFingerprintMemo | None = None,
+    reuse_entries: bool = False,
+) -> RuntimeInputIdentity:
+    """:func:`dataframe_graph_input_identity` of a graph that is already canonical.
+
+    A subgraph of a canonical graph is canonical. With *reuse_entries*, a node's
+    runtime-input entry is read once per *memo*, as a resolution signing every
+    node of one lineage needs it.
+    """
     if target_node_id is not None and target_node_id not in graph.node_map:
         raise ValueError(f"Cannot fingerprint inputs for unknown node {target_node_id!r}")
     ignored = set(ignore_node_ids)
@@ -1074,8 +1140,11 @@ def dataframe_graph_input_identity(
             ],
         }
     )
+    entries = memo.runtime_input_entries if memo is not None and reuse_entries else None
     source_entries = [
         _runtime_input_fingerprint_entry(scoped_graph, node)
+        if entries is None
+        else _reused_runtime_input_entry(scoped_graph, node, entries)
         for node in sorted(scoped_graph.nodes, key=lambda item: item.id)
         if node.data.nodeType in _RUNTIME_INPUT_NODE_TYPES
     ]
@@ -1343,7 +1412,7 @@ def execute_lazy_graph(
     target_node_id: str | None = None,
     preamble_ns: dict[str, Any] | None = None,
     source: str = "live",
-    enforce_contracts: bool = False,
+    enforce_contracts: bool = True,
     preserve_node_ids: set[str] | frozenset[str] | None = None,
     required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
     execution_context: ExecutionContext | None = None,
@@ -1415,85 +1484,4 @@ def prune_source_switch_edges(
         node_map,
         source,
         submodels=submodels,
-    )
-
-
-def build_linear_execution_chain_functions(
-    graph: PipelineGraph,
-    build_node_fn: Callable[..., Any],
-    *,
-    target_node_id: str,
-    base_node_id: str,
-    chain_node_ids: Iterable[str],
-    preamble_ns: dict[str, Any] | None = None,
-    routing_source: str = "batch",
-    build_source: str = "live",
-    required_output_columns_by_node: Mapping[str, frozenset[str] | set[str] | None] | None = None,
-    reuse_model_score_functions: bool = False,
-    execution_profile: ExecutionProfile | None = None,
-) -> dict[str, tuple[Callable[..., Any], bool]]:
-    """Build executable functions for a single-parent chain.
-
-    Chunked auto-range executes the expensive scenario-expanded chain one
-    chunk at a time.  This helper makes that shape explicit at the execution
-    boundary: graph routing is prepared once, then the requested chain is
-    rewired so its first node consumes the already-produced base chunk.
-    """
-    chain_ids = list(chain_node_ids)
-    if not chain_ids:
-        return {}
-
-    from haute._execute_lazy import _build_funcs
-
-    prepared = prepare_graph(
-        graph,
-        target_node_id,
-        source=routing_source,
-    )
-    node_map = prepared.node_map
-    id_to_name = prepared.id_to_name
-    relevant_edges = prepared.relevant_edges
-    missing = [node_id for node_id in (base_node_id, *chain_ids) if node_id not in node_map]
-    if missing:
-        raise ValueError(
-            "Linear execution chain references node IDs that are not in the prepared graph: "
-            f"{missing}"
-        )
-
-    chain_parents: dict[str, list[str]] = {}
-    parent_id = base_node_id
-    for chain_id in chain_ids:
-        chain_parents[chain_id] = [parent_id]
-        parent_id = chain_id
-
-    incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
-    for edge in relevant_edges:
-        incoming_edges_by_target.setdefault(edge.target, []).append(edge)
-    all_incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
-    for edge in graph.edges:
-        all_incoming_edges_by_target.setdefault(edge.target, []).append(edge)
-
-    reuse_loaded_model_by_node = (
-        {
-            chain_id: True
-            for chain_id in chain_ids
-            if node_map[chain_id].data.nodeType == NodeType.MODEL_SCORE
-        }
-        if reuse_model_score_functions
-        else None
-    )
-    return _build_funcs(
-        chain_ids,
-        node_map,
-        id_to_name,
-        graph.parents_of,
-        build_node_fn,
-        incoming_edges_by_target=incoming_edges_by_target,
-        all_incoming_edges_by_target=all_incoming_edges_by_target,
-        all_node_map=graph.node_map,
-        preamble_ns=node_code_globals(preamble_ns, graph, routing_source),
-        source=build_source,
-        required_output_columns_by_node=required_output_columns_by_node,
-        reuse_loaded_model_by_node=reuse_loaded_model_by_node,
-        execution_profile=execution_profile,
     )

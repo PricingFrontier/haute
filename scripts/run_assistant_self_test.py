@@ -46,7 +46,7 @@ from haute._mlflow_utils import allow_file_store_if_local
 from haute._native_memory_limit import native_memory_backend_scope
 from haute._polars_steps import STEPPED_NODE_TYPES, is_stepped_config
 from haute._sandbox import bound_project_root
-from haute._types import SINK_ONLY_NODE_TYPES, NodeType
+from haute._types import SINK_ONLY_NODE_TYPES, NodeEditorState, NodeType
 from haute.assistant._config import (
     AssistantConfig,
     EgressPolicy,
@@ -291,6 +291,8 @@ class SelfTestGraph:
     node_types: Mapping[str, str]
     edges: tuple[tuple[str, str, str | None], ...]
     configs: Mapping[str, Mapping[str, Any]]
+    #: Each node's editor state, beside its config (``NodeData.editor``).
+    editors: Mapping[str, NodeEditorState]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1057,9 +1059,11 @@ def _editor_reasons(before: SelfTestGraph, after: SelfTestGraph) -> list[str]:
         config = after.configs[node]
         if not is_stepped_config(node_type, config):
             reasons.append(f"node {node} is not authored as steps")
-        for key in ("_steps_error", "_steps_discarded"):
-            if key in config:
-                reasons.append(f"node {node} carries {key}")
+        editor = after.editors[node]
+        if editor.steps_error is not None:
+            reasons.append(f"node {node} has steps that do not render")
+        if editor.steps_discarded is not None:
+            reasons.append(f"node {node} had its steps discarded")
     return reasons
 
 
@@ -1503,15 +1507,15 @@ def _read_graph(source_file: str) -> SelfTestGraph:
     each node's configuration as the parser reads it (what the editor opens)."""
 
     node_types, edges = _graph_structure(get_pipeline(source_file))
-    configs = {
-        node.id: dict(node.data.config) for node in parse_pipeline_to_graph(Path(source_file)).nodes
-    }
+    parsed = parse_pipeline_to_graph(Path(source_file)).nodes
+    configs = {node.id: dict(node.data.config) for node in parsed}
     if set(configs) != set(node_types):
         raise RuntimeError("the graph tool and the parser disagree on the saved nodes")
     return SelfTestGraph(
         node_types=MappingProxyType(node_types),
         edges=edges,
         configs=MappingProxyType(configs),
+        editors=MappingProxyType({node.id: node.data.editor for node in parsed}),
     )
 
 

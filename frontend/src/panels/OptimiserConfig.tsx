@@ -36,6 +36,8 @@ import { FieldHelpIcon } from "./modelling/FieldHelpIcon"
 import { shallowNodeDataHash } from "../utils/shallowNodeHash"
 
 type OptimiserConfigProps = {
+  /** The node being configured: its solve job, results and remembered pane. */
+  nodeId: string
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   upstreamColumns?: { name: string; dtype: string }[]
@@ -60,6 +62,7 @@ function singleFactorColumnsFromLevels(levels: Record<string, string[]>): string
 }
 
 export default function OptimiserConfig({
+  nodeId,
   config,
   onUpdate,
   upstreamColumns = [],
@@ -71,7 +74,6 @@ export default function OptimiserConfig({
 }: OptimiserConfigProps) {
   const { allNodes, edges, submodels } = useGraph()
   // ── Store-backed state (survives panel unmount) ──
-  const nodeId = config._nodeId as string
   const solveJob = useNodeResultsStore((s) => s.solveJobs[nodeId])
   const cachedResult = useNodeResultsStore((s) => s.solveResults[nodeId])
   const activeSource = useSettingsStore((s) => s.activeSource)

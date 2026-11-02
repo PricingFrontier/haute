@@ -8,11 +8,14 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 
 vi.mock("../../api/workbench", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../api/workbench")>()),
+  fetchStoreCompare: vi.fn(),
   fetchStoreSql: vi.fn(),
 }))
 
 import { ApiError } from "../../api/client"
-import { fetchStoreSql } from "../../api/workbench"
+import type { WorkbenchStoreCompareResponse } from "../../api/types"
+import { fetchStoreCompare, fetchStoreSql } from "../../api/workbench"
+import useStoreCompareStore from "../../stores/useStoreCompareStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import StoreSqlWindow from "../StoreSqlWindow"
 import { sheetForm } from "./fixtures"
@@ -34,6 +37,66 @@ describe("StoreSqlWindow", () => {
     cleanup()
     vi.clearAllMocks()
     vi.unstubAllGlobals()
+    useStoreCompareStore.getState().reset()
+  })
+
+  /** A comparison of the prod database, of the form the view holds and of `renames`. */
+  const comparedProd = (renames: { table: string; column: string; was: string }[]) => {
+    const form = useWorkbenchFormStore.getState().form
+    if (form === null) throw new Error("no form")
+    const answer = { differences: [], extras: [], renames, matches: false, sql: "-- from the prod database", branch: null }
+    useStoreCompareStore.setState({ environment: "prod", renames, compared: { status: "compared", form, renames, answer } })
+  }
+
+  it("starts from the tables Compare read, on its environment's tab, the other starts still offered", async () => {
+    vi.mocked(fetchStoreSql).mockResolvedValue(ANSWER)
+    comparedProd([])
+    render(<StoreSqlWindow onClose={vi.fn()} />)
+
+    expect(await screen.findByTestId("store-sql")).toHaveTextContent("ALTER TABLE policy ADD COLUMN seats BIGINT;")
+    fireEvent.click(screen.getByRole("tab", { name: /prod/ }))
+    expect(screen.getByTestId("store-sql")).toHaveTextContent("-- from the prod database")
+    const start = screen.getByRole("combobox")
+    expect(start).toHaveValue("database")
+    expect(screen.getByRole("option", { name: "The prod database" })).toBeInTheDocument()
+
+    fireEvent.change(start, { target: { value: "branch" } })
+    expect(screen.getByTestId("store-sql")).toHaveTextContent("ALTER TABLE policy ADD seats BIGINT NULL;")
+  })
+
+  it("offers no SQL from the database while a pairing made since is being compared", async () => {
+    vi.mocked(fetchStoreSql).mockResolvedValue(ANSWER)
+    let finishCompare: ((answer: WorkbenchStoreCompareResponse) => void) | undefined
+    vi.mocked(fetchStoreCompare).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishCompare = resolve
+        }),
+    )
+    comparedProd([])
+    useStoreCompareStore.setState({ read: { status: "read", tables: [] } })
+    const pairing = { table: "policy", column: "policy.state", was: "region" }
+    // The analyst pairs a column and the replacement comparison is still in flight.
+    useStoreCompareStore.getState().pair(pairing)
+    useStoreCompareStore.getState().compare(useWorkbenchFormStore.getState().form!)
+    render(<StoreSqlWindow onClose={vi.fn()} />)
+
+    await screen.findByTestId("store-sql")
+    fireEvent.click(screen.getByRole("tab", { name: /prod/ }))
+    expect(screen.getByTestId("store-sql")).not.toHaveTextContent("-- from the prod database")
+    expect(screen.queryByRole("option", { name: "The prod database" })).not.toBeInTheDocument()
+
+    finishCompare!({
+      differences: [],
+      extras: [],
+      renames: [pairing],
+      matches: false,
+      sql: "-- renamed in prod",
+      branch: null,
+    })
+    expect(await screen.findByRole("option", { name: "The prod database" })).toBeInTheDocument()
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "database" } })
+    expect(screen.getByTestId("store-sql")).toHaveTextContent("-- renamed in prod")
   })
 
   it("shows each environment's SQL for the form the view holds, from the default branch's form", async () => {

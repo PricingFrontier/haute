@@ -30,8 +30,6 @@ from pydantic import (
 from haute._execution_schemas import (
     DiagnosticCollectionState,  # noqa: F401
     ExecutionAdmissionPayload,  # noqa: F401
-    ExecutionCacheProofMissReasonCountsPayload,  # noqa: F401
-    ExecutionCacheProofPayload,  # noqa: F401
     ExecutionColumnWidthsCollectionPayload,  # noqa: F401
     ExecutionColumnWidthsPayload,  # noqa: F401
     ExecutionMemoryLimitErrorPayload,  # noqa: F401
@@ -55,7 +53,7 @@ from haute._pipeline_settings import (
     MAX_STREAMING_CHUNK_SIZE,
     MAX_TIME_LIMIT_MINUTES,
 )
-from haute._types import REQUEST_INPUT_NODE_TYPES, NodeType
+from haute._types import REQUEST_INPUT_NODE_TYPES, NodeEditorState, NodeType
 from haute._types import GlobalConstant as GlobalConstant  # noqa: F401
 from haute._types import GraphEdge as GraphEdge  # noqa: F401
 from haute._types import GraphNode as GraphNode  # noqa: F401
@@ -206,6 +204,8 @@ class WorkbenchStatusResponse(BaseModel):
     # The form folder's path from the project root (``rating/workbench`` in a new project);
     # null while the workbench is not enabled.
     form: str | None = None
+    # The quote store's environments haute.toml declares, by name, in its order.
+    environments: list[str] = []
 
 
 class WorkbenchStoreColumn(BaseModel):
@@ -232,7 +232,7 @@ class WorkbenchTablesResponse(BaseModel):
 
 
 class WorkbenchStoreSqlRequest(BaseModel):
-    """A form the Workbench view holds, saved or not, and where the SQL that brings a hosted
+    """A form the Workbench view holds, saved or not, and where the SQL that brings an
     environment's tables to it starts: the form as the project's default branch holds it, or
     none, for a database that holds no store yet."""
 
@@ -241,7 +241,7 @@ class WorkbenchStoreSqlRequest(BaseModel):
 
 
 class WorkbenchStoreSqlEnvironment(BaseModel):
-    """One hosted environment the project declares, its engine and the SQL for it."""
+    """One environment the project declares, its engine and the SQL for it."""
 
     name: str
     provider: str
@@ -249,11 +249,110 @@ class WorkbenchStoreSqlEnvironment(BaseModel):
 
 
 class WorkbenchStoreSqlResponse(BaseModel):
-    """The SQL for each hosted environment the project declares, and the default branch
-    whose form it starts from: null when it starts from none."""
+    """The SQL for each environment the project declares, and the default branch whose form
+    it starts from: null when it starts from none."""
 
     branch: str | None
     environments: list[WorkbenchStoreSqlEnvironment]
+
+
+class WorkbenchCatalogueColumn(BaseModel):
+    """A column as an environment's database holds it: its name, its kind (``boolean``,
+    ``integer``, ``float``, ``datetime``, ``date``, ``string`` or another type's), its type as
+    the database names it, whether it takes a null, its collation where it has one, and the
+    quotes holding a value in it, None when the table lacks a quote identity column."""
+
+    name: BoundedName
+    kind: BoundedName
+    type: BoundedName
+    nullable: bool
+    collation: BoundedName | None = None
+    quotes: int | None = None
+
+
+class WorkbenchCatalogueTable(BaseModel):
+    """A table of the store's as an environment's database holds it: its columns, its primary
+    key's columns, whether it refers by the identity to its quote's quote_details row, and
+    the quotes holding a row in it, None when the table lacks a quote identity column."""
+
+    name: BoundedName
+    columns: list[WorkbenchCatalogueColumn] = Field(max_length=MAX_REQUEST_ITEMS)
+    primary_key: list[BoundedName] = Field(max_length=MAX_REQUEST_ITEMS)
+    refers: bool
+    quotes: int | None = None
+
+
+class WorkbenchStoreCatalogueRequest(BaseModel):
+    """The environment whose database's tables to read, one ``haute.toml`` declares."""
+
+    environment: BoundedName
+
+
+class WorkbenchStoreCatalogueResponse(BaseModel):
+    """The tables an environment's database holds, read through its connection: each table
+    holding the quote's identity, ``haute_activity`` among them. Names, kinds and counts
+    alone, never a value, a location or a sign-in."""
+
+    environment: str
+    tables: list[WorkbenchCatalogueTable]
+
+
+class WorkbenchStoreRename(BaseModel):
+    """A column of the form's table ``table`` (by id), ``column`` (by id), that the database
+    holds as ``was``: the analyst's pairing of the two as a rename."""
+
+    table: BoundedName
+    column: BoundedName
+    was: BoundedName
+
+
+class WorkbenchStoreCompareRequest(BaseModel):
+    """A form the Workbench view holds, saved or not, compared with the tables an
+    environment's database holds, as ``POST /api/workbench/store-catalogue`` read them, with
+    the columns the analyst paired as renames."""
+
+    form: FormSpec
+    environment: BoundedName
+    tables: list[WorkbenchCatalogueTable] = Field(max_length=MAX_REQUEST_ITEMS)
+    renames: list[WorkbenchStoreRename] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
+
+
+class WorkbenchStoreDifference(BaseModel):
+    """A way the database differs from the form: the form's table and column by id (no table
+    for Haute's own haute_activity), its kind and what it is."""
+
+    table: str | None
+    column: str | None
+    kind: Literal[
+        "missing", "renamed", "type", "rows", "null", "key", "refers", "collation", "store"
+    ]
+    message: str
+
+
+class WorkbenchStoreExtra(BaseModel):
+    """A table of the store's, or a column of one of the form's tables, that the database
+    holds and the form does not: its table's and its name there, the form's table's id when
+    the table is the form's, and the quotes holding values in it, None when the table lacks a
+    quote identity column."""
+
+    table: str
+    column: str | None
+    table_id: str | None
+    quotes: int | None = None
+
+
+class WorkbenchStoreCompareResponse(BaseModel):
+    """The form compared with an environment's tables: each difference, each extra, the
+    pairings taken, whether the database matches the form, the SQL that brings its tables to
+    the form, from what they hold, and the default branch whose form named renames, null
+    when none did."""
+
+    differences: list[WorkbenchStoreDifference]
+    extras: list[WorkbenchStoreExtra]
+    renames: list[WorkbenchStoreRename]
+    matches: bool
+    sql: str
+    branch: str | None
 
 
 class WorkbenchFormFile(BaseModel):
@@ -324,6 +423,112 @@ RequestWorkbenchPricedTables = dict[
         Field(max_length=MAX_REQUEST_ITEMS),
     ],
 ]
+
+
+class WorkbenchTestQuoteSummary(BaseModel):
+    """A file of the test-quote folder: its name, its file's name, its revision (a digest of
+    its bytes) and, for one the panel cannot open, why."""
+
+    name: str
+    file: str
+    revision: str
+    problem: str | None = None
+
+
+class WorkbenchTestQuotesResponse(BaseModel):
+    """The test-quote folder's files by name, and the branch they were read on."""
+
+    branch: str
+    quotes: list[WorkbenchTestQuoteSummary]
+
+
+class WorkbenchTestQuoteTarget(BaseModel):
+    """A test quote's file, with the revision a decision about it was made on."""
+
+    file: BoundedName
+    revision: BoundedName
+
+
+class WorkbenchTestQuoteSaveRequest(BaseModel):
+    """Save the sample as saved: under a new ``name``, or over the test quote ``replace``
+    names; with the branch and the form folder's revision the panel saved."""
+
+    name: BoundedName | None = None
+    replace: WorkbenchTestQuoteTarget | None = None
+    branch: BoundedName
+    form_revision: BoundedName
+
+
+class WorkbenchTestQuoteWriteResponse(SaveCapture):
+    """A test quote written or deleted: the file as it now stands (None once deleted), and
+    the write's capture on the save ledger."""
+
+    quote: WorkbenchTestQuoteSummary | None = None
+
+
+class WorkbenchTestQuoteOpenRequest(BaseModel):
+    """The form the view holds, which a test quote is opened onto."""
+
+    form: FormSpec
+
+
+class WorkbenchTestQuoteOpenResponse(BaseModel):
+    """A test quote's values as the sheets hold them, and each value it could not place."""
+
+    values: WorkbenchValues
+    not_opened: list[str]
+
+
+class WorkbenchTestQuoteMove(BaseModel):
+    """A field of a test quote that moved: its table, its row (key values or position; null
+    in a one-row table), its column (null for a row only one side holds, ``before`` and
+    ``after`` then saying which), the expected value and the new."""
+
+    table: str
+    row: str | None
+    column: str | None
+    before: Any
+    after: Any
+
+
+class WorkbenchTestQuoteRunResponse(BaseModel):
+    """A test quote priced and compared: its outcome (``unchanged``, ``moved``,
+    ``no_longer_compares`` or ``failed``), its moves, the tables and columns its expected
+    answer holds that the form no longer has, why, the file's revision it read, the basis it
+    priced on and the branch."""
+
+    name: str
+    file: str
+    outcome: Literal["unchanged", "moved", "no_longer_compares", "failed"]
+    moves: list[WorkbenchTestQuoteMove] = Field(default_factory=list)
+    removed: list[str] = Field(default_factory=list)
+    why: str | None = None
+    revision: str
+    basis: str | None
+    branch: str
+
+
+class WorkbenchTestQuotesAcceptRequest(BaseModel):
+    """Accept the new answers of these test quotes, each at the revision its run read, on
+    the basis the run priced on and the branch it was made on."""
+
+    branch: BoundedName
+    basis: BoundedName
+    quotes: list[WorkbenchTestQuoteTarget] = Field(min_length=1, max_length=MAX_REQUEST_ITEMS)
+
+
+class WorkbenchTestQuoteRefusal(BaseModel):
+    """A test quote not accepted, and why."""
+
+    file: str
+    why: str
+
+
+class WorkbenchTestQuotesAcceptResponse(SaveCapture):
+    """The test quotes accepted, as they now stand, those not, with why, and the capture."""
+
+    accepted: list[WorkbenchTestQuoteSummary]
+    refused: list[WorkbenchTestQuoteRefusal]
 
 
 class WorkbenchAppQuoteStore(BaseModel):
@@ -1105,6 +1310,8 @@ class RecoveryPipelineNode(BaseModel):
     availability: PipelineElementAvailability
     display_position: dict[str, float]
     config: dict[str, Any] | None = None
+    # Beside the config, never in it (``NodeData.editor``).
+    editor: NodeEditorState = Field(default_factory=NodeEditorState)
     config_reference: str | None = None
     function_name: Annotated[str, Field(min_length=1)]
     default_input_name: Annotated[str, Field(min_length=1)] | None
@@ -3119,6 +3326,8 @@ class UtilityWriteResponse(SaveCapture):
     name: str = ""
     module: str = ""
     import_line: str = ""  # e.g. "from utility.features import *"
+    # The file as the save left it, a project hook's rewrite included, and its revision.
+    content: str
     revision: str
 
 
@@ -5589,7 +5798,6 @@ class GitLedgerSavesResponse(BaseModel):
 
 class GitBranchItem(BaseModel):
     name: str
-    is_yours: bool
     is_current: bool
     is_archived: bool
     last_commit_time: str = ""

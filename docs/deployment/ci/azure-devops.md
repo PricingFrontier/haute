@@ -34,6 +34,25 @@ This gives you the same command sequence as GitHub Actions and GitLab; a live re
 Pull request → Validation → Merge → Staging → Smoke test → Impact analysis → [Approval] → Production
 ```
 
+### Workbench projects
+
+A [workbench project](../../building-models/workbench.md) hosts no API: what it releases is
+the [underwriter app](../../building-models/workbench.md#the-underwriter-app). Its
+`azure-pipelines.yml` has three stages instead: **Validate**, which lints, type-checks and
+runs tests, then builds the app's release, which checks your pipeline and schema and scores
+your test quotes, on every pull request and on main; **Publish**, on main only, a deployment
+to the `staging` environment that builds the app's image once, pushes it to the registry
+`[deploy.container]` names, rolls the staging app out to it and compares staging with
+production on saved quotes, publishing `impact_report.md` as the `impact-report`
+artifact; and **DeployProduction**, a
+deployment to the `production` environment that you run by hand, which rolls the production
+app out to the release staging runs. Each rollout checks the app and puts the previous
+release back when the new one fails
+([The underwriter app](../../building-models/workbench.md#the-underwriter-app)). Add an
+**Exclusive lock** check to both environments so one rollout of each runs at a time. The
+stages read your host's variables from the `haute-credentials` group,
+`AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`.
+
 ---
 
 ## How it works, step by step

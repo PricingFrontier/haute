@@ -679,7 +679,7 @@ def _run_submodel_save(
     submitted_graph = submitted_graph.model_copy(update={"source_revision": "revision-after-save"})
     module_file = next(iter(submitted_graph.submodels.values())).file
     files = {
-        "main.py": '# newly generated parent\nimport haute\npipeline = haute.Pipeline("main")\n',
+        "main.py": 'import haute\n\n# newly generated parent\npipeline = haute.Pipeline("main")\n',
         module_file: "# new module\n",
     }
     from haute.routes import _helpers

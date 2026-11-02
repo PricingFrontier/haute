@@ -2,7 +2,8 @@
 the quotes the app keeps in the form's own tables, a save priced again on the server, the
 version every change names, operation keys that make a repeated write write once, the release
 a page was drawn for, writes from other sites refused, the quotes closed while the store's
-tables do not fit, and ``haute app serve`` with dev's store."""
+tables do not fit, and the app served on the analyst's machine as ``haute app serve`` serves
+it, on the dev environment's store."""
 
 from __future__ import annotations
 
@@ -23,12 +24,10 @@ from sqlalchemy.exc import OperationalError
 
 from haute import _workbench_app_quotes, _workbench_app_store
 from haute._quote_store import (
-    DEV,
     QuoteBook,
     QuoteStoreEnvironmentError,
     StoreLocation,
     open_book,
-    prepare_store,
     store_url,
 )
 from haute._sandbox import _get_project_root, set_project_root
@@ -52,6 +51,8 @@ from tests.test_workbench_routes import POLICY, PRICING, form
 
 #: The hosted environment the tests' releases declare, whose store a hosted app opens.
 TEST = "test"
+#: The environment ``haute app serve`` keeps its quotes in.
+DEV = "dev"
 ANA = {EASY_AUTH_NAME: "ana@example.com"}
 JO = {EASY_AUTH_NAME: "jo@example.com"}
 DETAILS = {"qd_quote_name": "Fleet", "qd_insured": "Acme", "qd_inception_date": "2026-11-01"}
@@ -116,18 +117,12 @@ def _write_release(
     return directory
 
 
-def _prepared(path: Path, release_dir: Path, environment: str = TEST) -> str:
-    """The URL of a store at *path* holding the tables of *release_dir*'s form: dev's made by
-    its planner, a hosted environment's from the SQL Haute writes, as the people who own its
-    database make them."""
-    url = store_url(path)
-    release, spec, _ = read_release(release_dir)
-    if environment == DEV:
-        prepare_store(url, spec, project=release.pipeline_name)
-    else:
-        hosted = Target("sqlite", url)
-        hosted.script(hosted.sql(spec))
-    return url
+def _prepared(path: Path, release_dir: Path) -> str:
+    """The URL of a store at *path* holding the tables of *release_dir*'s form, made from the
+    SQL Haute writes, as the people who own any environment's database make them."""
+    store = Target("sqlite", store_url(path))
+    store.make(read_release(release_dir)[1])
+    return store.url
 
 
 @pytest.fixture()
@@ -968,13 +963,14 @@ def test_an_app_on_a_database_without_its_forms_tables_starts_with_its_quotes_cl
         _prepared(tmp_path / "fresh.sqlite", release_dir)
         assert app.get("/api/app/release", headers=ANA).json()["quotes"]["open"] is True
         assert page.priced()["reference"]
-    # A dev store is checked against its record: a fresh file holds no store yet.
+    # Dev's store is checked as any environment's, and its refusal names dev's database.
     with TestClient(
         create_app(release_dir, store=StoreLocation(DEV, store_url(tmp_path / "dev.sqlite")))
     ) as dev:
         quotes = dev.get("/api/app/release", headers=ANA).json()["quotes"]
-        assert quotes["open"] is False
-        assert "holds no quote store yet" in quotes["message"]
+        assert (quotes["open"], quotes["error_code"]) == (False, "quote_store_mismatch")
+        assert "the table quote_details is missing" in quotes["differences"]
+        assert "Change the dev database's tables in SQL" in quotes["message"]
 
 
 def test_a_column_dropped_under_a_running_app_closes_its_quotes(page: Page, path: Path) -> None:
@@ -1100,14 +1096,12 @@ LOOPBACK = "http://127.0.0.1:8001"
 
 @pytest.fixture()
 def dev_url(release_dir: Path, tmp_path: Path) -> str:
-    return _prepared(tmp_path / "dev.sqlite", release_dir, environment=DEV)
+    return _prepared(tmp_path / "dev.sqlite", release_dir)
 
 
 def _quotes_kept(url: str, release_dir: Path) -> int:
-    release, spec, _ = read_release(release_dir)
-    with open_book(
-        url, spec, project=release.pipeline_name, environment=DEV, haute_version="9.9.9"
-    ) as book:
+    _, spec, _ = read_release(release_dir)
+    with open_book(url, spec, environment=DEV, haute_version="9.9.9") as book:
         return book.page(actor="ana@example.com", view="team").counts["team"]
 
 

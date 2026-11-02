@@ -1037,6 +1037,18 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/WorkbenchParamFileResponse"},
         },
     },
+    "/api/workbench/store-catalogue": {
+        "POST": {
+            "request_ref": "#/components/schemas/WorkbenchStoreCatalogueRequest",
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchStoreCatalogueResponse"},
+        },
+    },
+    "/api/workbench/store-compare": {
+        "POST": {
+            "request_ref": "#/components/schemas/WorkbenchStoreCompareRequest",
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchStoreCompareResponse"},
+        },
+    },
     "/api/workbench/store-sql": {
         "POST": {
             "request_ref": "#/components/schemas/WorkbenchStoreSqlRequest",
@@ -1051,6 +1063,40 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         "POST": {
             "request_ref": "#/components/schemas/WorkbenchFormTablesRequest",
             "success_schema": {"$ref": "#/components/schemas/WorkbenchTablesResponse"},
+        },
+    },
+    "/api/workbench/test-quotes": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuotesResponse"},
+        },
+        "POST": {
+            "request_ref": "#/components/schemas/WorkbenchTestQuoteSaveRequest",
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuoteWriteResponse"},
+        },
+    },
+    "/api/workbench/test-quotes/accept": {
+        "POST": {
+            "request_ref": "#/components/schemas/WorkbenchTestQuotesAcceptRequest",
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuotesAcceptResponse"},
+        },
+    },
+    "/api/workbench/test-quotes/{file}": {
+        "DELETE": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuoteWriteResponse"},
+        },
+    },
+    "/api/workbench/test-quotes/{file}/open": {
+        "POST": {
+            "request_ref": "#/components/schemas/WorkbenchTestQuoteOpenRequest",
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuoteOpenResponse"},
+        },
+    },
+    "/api/workbench/test-quotes/{file}/run": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchTestQuoteRunResponse"},
         },
     },
 }

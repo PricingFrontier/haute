@@ -275,9 +275,10 @@ and the action, never raw library text.
   both tips, and directs to resolve outside the app (v1).
 - Auth failure: message names the secret resource and env var to check,
   echoes no value.
-- Invalid binding target (not a git remote, unsupported scheme, or a
-  malformed `uc://` location): rejected at bind time with the accepted
-  forms stated.
+- Invalid binding target (not a git remote, unsupported scheme, a
+  malformed `uc://` location, a `file://` URL naming another host, or any
+  `file://` URL inside a Databricks App, whose disk a restart wipes):
+  rejected at bind time with the accepted forms stated.
 - Superseded writer (`uc://`): another container has published a newer
   generation — publishing stops terminally so nothing is overwritten;
   the message says the storage moved on and directs to a restart.

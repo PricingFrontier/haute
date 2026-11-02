@@ -27,9 +27,9 @@ running heavy work in a child process the parent can kill on timeout or memory l
   both eagerly (`executor.execute_graph` and `trace.execute_trace`, display walks of
   `_graph_walker.walk_graph`) and
   lazily (`execution.execute_lazy_graph`, a sink walk of `_graph_walker.walk_graph`).
-- The GUI preview cache — reusing materialised node outputs across clicks on the same
-  graph, extending the cache when a new target requires more of the graph, and
-  discarding entries once source data or graph shape changes.
+- The GUI preview cache — reusing materialised node outputs across repeats of the same
+  preview request, executing (and replacing the entry) when a request needs more than it
+  holds, and discarding entries once source data or graph shape changes.
 - Column-contract enforcement at node input/output boundaries (via `_contracts.py`'s
   `Contract`, consumed here) and the column-projection planning that lets captures
   and lazy scans avoid materialising unused columns.
@@ -108,9 +108,10 @@ running heavy work in a child process the parent can kill on timeout or memory l
 - **Preview execution** (`executor.execute_graph`) runs a graph eagerly up to an
   optional `target_node_id`, returning a `NodeResult` per executed node: status
   (`ok`/`error`), row/column counts, a bounded JSON preview of rows, schema, and
-  per-node timing/memory. Repeated calls against the *same* graph reuse previously
-  materialised node outputs from an in-process cache; calls that need more of the
-  graph than is cached extend the cache rather than starting over. Ordinary
+  per-node timing/memory. A repeated preview request reuses the node outputs its
+  first run materialised, from an in-process cache keyed by the request (its target,
+  row limit, columns and frame among it); a request its entry does not satisfy runs
+  as a miss and replaces the entry. Ordinary
   node-local failures are captured per-node (`status="error"`) rather than
   aborting the whole preview. Once
   a display walk is running, every `HauteError` with a stable public
@@ -121,8 +122,11 @@ running heavy work in a child process the parent can kill on timeout or memory l
   both through one explicit mismatch branch. The preview HTTP adapter converts
   either mismatch into the same in-situ `PreviewNodeResponse(status="error")`
   instead of a generic 500. Preamble compilation happens outside that core:
-  interactive preview attaches a `PreambleError` only to nodes that consume its
-  namespace, while non-preview execution propagates it.
+  when it fails, an interactive preview fails every node that runs code (a Polars
+  node, or any node with code of its own) with the preamble's error, without running
+  it against an empty namespace, while the nodes that run none (sources, model scoring,
+  a Source Switch) preview as usual and the nodes downstream of a failed one report
+  it as upstream; non-preview execution propagates it.
 - **Preview row limits apply at the previewed node.** Target-only preview applies
   `row_limit` once to the previewed node's collected output, with SQL `LIMIT` semantics:
   the rows shown are rows the unlimited run produces, and Polars decides how far upstream
@@ -218,7 +222,10 @@ running heavy work in a child process the parent can kill on timeout or memory l
   receiver-aware AST walk alone: comments and string literals cannot affect
   eligibility, a same-named method on another namespace does not inherit an
   admission, and every rejection is a structured decision naming the blocking
-  operator, a closed reason code, and the source line. A rejection never fails the
+  operator, a closed reason code, and the source line. A `select` is row-local only
+  when it reads an input column: a literal alone is one row whatever the input, so the
+  classifier refuses it, and deployed scoring's request-row proof uses the same rule.
+  A rejection never fails the
   pipeline; its consumer takes its whole-frame path (a write that is not input-sliced,
   an expression value not computed from one row, or a trace edge that is not
   row-aligned).
@@ -480,7 +487,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
   checks it at every checkpoint rather than polling continuously.
 - Column contracts are enforced at both input and output boundaries of every node
   whose builder declares a concrete (non-opaque) contract, on both the eager and lazy
-  paths, so a mismatch (missing column, wrong dtype on a join key) is detected at the
+  paths (`execute_lazy_graph` enforces them unless its caller says otherwise), so a mismatch (missing column, wrong dtype on a join key) is detected at the
   offending node rather than as an opaque Polars error three nodes later. Missing
   columns use `ContractMismatchError`; join-key dtype disagreement uses
   `SchemaMismatchError`. Both propagate identically through a display walk and
@@ -619,7 +626,7 @@ successful run does no extra work.
   published table generations, never the source.
   A full preview-cache hit also reuses the immutable strategy result that produced the
   cached frame, so it retains projection warnings and provenance without repeating
-  footer estimation. Any miss or cache extension plans afresh before materialisation.
+  footer estimation. Any miss plans afresh before materialisation.
 - **Materialise only at capture points.** A lazy frame read by several branches
   carries its whole upstream plan into each, and Polars' streaming engine accumulates
   memory across a chain of joins run as one query (pola-rs/polars#24206, open at
@@ -710,14 +717,16 @@ successful run does no extra work.
   cancellation latency from the first request, and release cleanup callbacks in
   reverse order plus admission exactly once. Production code carries no
   fault-injection points: a test that must fail or observe an execution at a named
-  boundary does so at that boundary's checkpoint, through a test-only context.
+  boundary does so at that boundary's checkpoint, through a test-only context, or by
+  patching the real operation at that boundary (a capture's interleaving tests pause
+  after its real write).
   Optional terminal telemetry is disabled by default; when enabled it emits at most
   one schema-versioned, allow-listed aggregate event per terminal status/reason,
   excluding identifiers, paths, columns, plans, messages, exception text, and user
   data. Telemetry failure cannot change execution status.
   The same evidence reports logical requested width versus physical scanned width,
-  cache-proof hit/miss/fallback counts by a closed reason code, projected versus
-  complete-width admission basis, and estimated-versus-observed memory. These are
+  the count of direct cache fallbacks, projected versus complete-width admission
+  basis, and estimated-versus-observed memory. These are
   aggregate counters only; paths, graph identifiers, column names, and row values
   remain excluded.
 - **The execution context is a thin composition.** Every execution surface takes one

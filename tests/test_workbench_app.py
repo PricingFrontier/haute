@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -15,7 +16,7 @@ from fastapi.testclient import TestClient
 
 import haute._workbench_app as workbench_app
 from haute._execution_admission import ExecutionAdmissionError
-from haute._quote_store import DEV, StoreLocation, prepare_store, store_url
+from haute._quote_store import StoreLocation, store_url
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute._workbench_app import (
@@ -37,6 +38,8 @@ from haute._workbench_form import (
 )
 from haute.deploy._utils import shipped_graph
 from haute.execution import ExecutionProfile
+from tests._git_helpers import git_run, init_repo
+from tests._store_servers import Target
 from tests._workbench_helpers import form_files, write_files
 from tests.test_workbench_routes import POLICY, PRICING, form
 
@@ -53,6 +56,8 @@ VALUES = {
 SIGNED_IN = {EASY_AUTH_NAME: "uw@example.com"}
 #: Where ``haute app serve`` is reached: served so, the app takes a loopback host alone.
 LOOPBACK = "http://127.0.0.1:8001"
+#: The environment ``haute app serve`` keeps its quotes in.
+DEV = "dev"
 
 
 #: The runtime a test release prices on, as a build reads it from the installed versions.
@@ -121,13 +126,18 @@ def release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     set_project_root(original)
 
 
+def _made(path: Path, directory: Path) -> str:
+    """The URL of a SQLite store at *path* holding the tables of the form of the release in
+    *directory*, made from the SQL Haute writes, as the people who own a database make them."""
+    store = Target("sqlite", store_url(path))
+    store.make(read_release(directory)[1])
+    return store.url
+
+
 def _store(directory: Path) -> StoreLocation:
-    """Dev's store for the release in *directory*, its tables the release's form's as
-    ``haute app serve`` keeps it, so the app's quotes are open."""
-    built, spec, _ = read_release(directory)
-    url = store_url(directory.parent / "store.sqlite")
-    prepare_store(url, spec, project=built.pipeline_name)
-    return StoreLocation(DEV, url)
+    """Dev's store for the release in *directory*, its tables the release's form's, so the
+    app's quotes are open."""
+    return StoreLocation(DEV, _made(directory.parent / "store.sqlite", directory))
 
 
 def _client(directory: Path, **options: Any) -> TestClient:
@@ -298,6 +308,32 @@ def test_the_health_check_answers_without_sign_in(release: Any) -> None:
 
     assert answered.status_code == 200
     assert answered.json() == {"status": "ok", "release": read_release(directory)[0].id}
+
+
+def test_the_rollouts_forged_principal_is_one_the_app_accepts(release: Any) -> None:
+    """``haute app rollout``'s check sends a whole principal, unsigned, which a host's sign-in
+    must refuse: the app itself accepts it when it reaches it unchanged, its roles read under
+    an edit role, so a host letting it through is caught (specs/workbench, Control flow 35)."""
+    from haute._workbench_rollout import forged_principal
+
+    directory = release()
+    write_release(
+        directory,
+        FormSpec.model_validate(FORM),
+        "azure-container-apps",
+        "Quotes.Edit",
+        runtime=RUNTIME,
+    )
+    client = _client(directory)
+
+    answered = client.get("/api/app/release", headers=forged_principal())
+
+    assert answered.status_code == 200, answered.text
+    assert answered.json()["principal"] == "haute-rollout-check"
+    assert answered.json()["can_edit"] is False
+    # A name alone would not do: under an edit role the app wants the principal's roles.
+    partial = {EASY_AUTH_NAME: forged_principal()["X-MS-CLIENT-PRINCIPAL-NAME"]}
+    assert client.get("/api/app/release", headers=partial).status_code == 401
 
 
 def test_azure_signs_in_the_principal_its_authentication_sets(release: Any) -> None:
@@ -654,7 +690,7 @@ def write_sheets(project: Path, tables: list[dict[str, Any]]) -> None:
 
 
 def test_a_project_builds_a_release_that_prices_as_its_pipeline(project: Path) -> None:
-    built = build_release(project, project / "build" / "app")
+    built = build_release(project, project / "build" / "app").release
 
     assert built.host == "azure-container-apps"
     assert built.pipeline_name == "main"
@@ -672,8 +708,8 @@ def test_a_project_builds_a_release_that_prices_as_its_pipeline(project: Path) -
     }
 
     # Built again, into the same directory or another, it is the same release.
-    assert build_release(project, project / "build" / "app").id == built.id
-    assert build_release(project, project / "elsewhere").id == built.id
+    assert build_release(project, project / "build" / "app").release.id == built.id
+    assert build_release(project, project / "elsewhere").release.id == built.id
 
 
 def test_a_project_naming_an_edit_role_builds_a_release_that_records_it(project: Path) -> None:
@@ -686,7 +722,7 @@ def test_a_project_naming_an_edit_role_builds_a_release_that_records_it(project:
         encoding="utf-8",
     )
 
-    built = build_release(project, project / "build" / "app")
+    built = build_release(project, project / "build" / "app").release
 
     assert built.edit_role == "Quotes.Edit"
     assert read_release(project / "build" / "app")[0].edit_role == "Quotes.Edit"
@@ -705,8 +741,8 @@ def test_the_same_project_checked_out_twice_builds_the_same_release(
         elif source.is_file():
             shutil.copy2(source, other / name)
 
-    here = build_release(project, project / "build" / "app")
-    there = build_release(other, other / "build" / "app")
+    here = build_release(project, project / "build" / "app").release
+    there = build_release(other, other / "build" / "app").release
 
     assert there.id == here.id
 
@@ -717,15 +753,14 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from haute._quote_store import DEV, StoreLocation, prepare_store, store_url
-from haute._workbench_app import create_app, read_release
+from haute._quote_store import StoreLocation, store_url
+from haute._workbench_app import create_app
 
 release = Path(sys.argv[1])
-built, form, _ = read_release(release)
+# Dev's tables, made from the SQL Haute writes before the child ran.
 url = store_url(release.parent / "store.sqlite")
-prepare_store(url, form, project=built.pipeline_name)
 client = TestClient(
-    create_app(release, local_principal="analyst@example.com", store=StoreLocation(DEV, url)),
+    create_app(release, local_principal="analyst@example.com", store=StoreLocation("dev", url)),
     base_url="http://127.0.0.1:8001",
 )
 revision = client.get("/api/app/form").json()["revision"]
@@ -760,6 +795,7 @@ def test_the_app_prices_on_the_utility_code_the_release_carries(project: Path) -
     build_release(project, release_dir)
     assert (release_dir / "utility.py").read_text(encoding="utf-8") == "RATE = 1\n"
     (project / "utility.py").write_text("RATE = 2\n", encoding="utf-8")
+    _made(release_dir.parent / "store.sqlite", release_dir)
     child = project / "price_from_the_project.py"
     child.write_text(_PRICE_FROM_THE_PROJECT, encoding="utf-8")
 
@@ -883,7 +919,7 @@ def test_an_earlier_release_is_replaced_only_once_its_successor_has_built(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     release_dir = project / "build" / "app"
-    earlier = build_release(project, release_dir)
+    earlier = build_release(project, release_dir).release
 
     def unwritten(*_: Any, **__: Any) -> Any:
         raise WorkbenchAppError("the release could not be written")
@@ -930,20 +966,47 @@ def test_the_app_commands_say_a_fault_and_print_no_traceback(project: Path) -> N
         assert isinstance(result.exception, SystemExit), result.exception
 
 
-def test_haute_app_serve_serves_the_release_on_loopback_as_the_analyst(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+#: The project's dev environment, on SQLite, as haute.toml declares it.
+DEV_DECLARED = '\n[workbench.store.dev]\nprovider = "sqlite"\n'
+#: Where dev's database is on the analyst's machine, as connections.toml says.
+DEV_CONNECTION = '[dev]\nprovider = "sqlite"\ndatabase = "quotes.sqlite"\n'
+
+
+def _serving(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """What ``haute app serve`` hands uvicorn, which serves nothing here, signed in as Ana."""
     import uvicorn
-    from click.testing import CliRunner
 
     import haute._git_setup as git_setup
-    from haute.cli import cli
 
     served: dict[str, Any] = {}
     monkeypatch.setattr(
         uvicorn, "run", lambda application, **options: served.update(app=application, **options)
     )
     monkeypatch.setattr(git_setup, "get_identity", lambda cwd=None: ("Ana", "ana@example.com"))
+    return served
+
+
+def _declare_dev(project: Path) -> None:
+    toml = project / "haute.toml"
+    toml.write_text(toml.read_text(encoding="utf-8") + DEV_DECLARED, encoding="utf-8")
+
+
+def test_haute_app_serve_serves_the_release_on_loopback_as_the_analyst(
+    project: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    from click.testing import CliRunner
+
+    import haute._git_setup as git_setup
+    from haute.cli import cli
+
+    served = _serving(monkeypatch)
+    # Dev declared, its connection a SQLite file whose tables were made from the SQL Haute
+    # writes, as the people who own any environment's database make them.
+    _declare_dev(project)
+    (project / "connections.toml").write_text(DEV_CONNECTION, encoding="utf-8")
+    elsewhere = tmp_path_factory.mktemp("release") / "app"
+    build_release(project, elsewhere)
+    _made(project / "quotes.sqlite", elsewhere)
 
     result = CliRunner().invoke(cli, ["app", "serve", "--port", "8123"])
 
@@ -951,8 +1014,9 @@ def test_haute_app_serve_serves_the_release_on_loopback_as_the_analyst(
     assert "Signed in as ana@example.com" in result.output
     assert (served["host"], served["port"]) == ("127.0.0.1", 8123)
     assert (project / ".haute" / "app" / "release" / "release.json").is_file()
-    assert (project / ".haute" / "app" / "store.sqlite").is_file()
-    assert "Quotes kept in .haute/app/store.sqlite" in result.output
+    assert "Quotes kept in the dev database (connections.toml [dev])" in result.output
+    # The quotes are kept in dev's database alone: serve makes no store of its own.
+    assert not (project / ".haute" / "app" / "store.sqlite").exists()
     with TestClient(served["app"], base_url=LOOPBACK) as client:
         signed_in = client.get("/api/app/release").json()
     assert (signed_in["principal"], signed_in["quotes"]["open"]) == ("ana@example.com", True)
@@ -967,6 +1031,58 @@ def test_haute_app_serve_serves_the_release_on_loopback_as_the_analyst(
     unnamed = CliRunner().invoke(cli, ["app", "serve"])
     assert unnamed.exit_code != 0
     assert "Set your git identity first" in unnamed.output
+
+
+def test_haute_app_serve_refuses_a_project_declaring_no_dev_environment(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from click.testing import CliRunner
+
+    from haute.cli import cli
+
+    served = _serving(monkeypatch)
+    (project / "connections.toml").write_text(DEV_CONNECTION, encoding="utf-8")
+
+    refused = CliRunner().invoke(cli, ["app", "serve"])
+
+    assert refused.exit_code == 1, refused.output
+    assert (
+        "haute.toml declares no dev environment ([workbench.store.dev]); it declares none."
+        in refused.output
+    )
+    assert "Traceback" not in refused.output
+    # Refused before anything is built or served.
+    assert not (project / ".haute" / "app" / "release").exists()
+    assert served == {}
+
+
+@pytest.mark.parametrize(
+    "connections",
+    [None, '[staging]\nprovider = "sqlite"\ndatabase = "staging.sqlite"\n'],
+    ids=["no file", "another environment's alone"],
+)
+def test_haute_app_serve_refuses_a_project_with_no_dev_connection(
+    project: Path, monkeypatch: pytest.MonkeyPatch, connections: str | None
+) -> None:
+    from click.testing import CliRunner
+
+    from haute.cli import cli
+
+    served = _serving(monkeypatch)
+    _declare_dev(project)
+    if connections is not None:
+        (project / "connections.toml").write_text(connections, encoding="utf-8")
+
+    refused = CliRunner().invoke(cli, ["app", "serve"])
+
+    assert refused.exit_code == 1, refused.output
+    assert (
+        "connections.toml has no [dev] connection: add one saying where the dev database is "
+        "and how you sign in to it." in refused.output
+    )
+    assert "Traceback" not in refused.output
+    assert not (project / ".haute" / "app" / "release").exists()
+    assert served == {}
 
 
 # ── The release's image ───────────────────────────────────────────────────
@@ -1045,11 +1161,11 @@ def _pin_base_image(project: Path) -> None:
 
 
 def test_a_pinned_base_image_makes_the_release_the_images_build_context(project: Path) -> None:
-    plain = build_release(project, project / "plain")
+    plain = build_release(project, project / "plain").release
     assert not (project / "plain" / "Dockerfile").exists()
     _pin_base_image(project)
 
-    built = build_release(project, project / "image")
+    built = build_release(project, project / "image").release
 
     dockerfile = (project / "image" / "Dockerfile").read_text(encoding="utf-8")
     assert dockerfile.startswith("FROM python:3.11.9-slim")
@@ -1104,6 +1220,134 @@ def test_haute_app_build_builds_the_image_with_docker(
     assert "Docker is not available here" in refused.output
 
 
+class _Docker:
+    """``docker`` as ``subprocess.run`` runs it in the container module: each command, the
+    images it pushed, and the digests ``docker image inspect`` reports for them."""
+
+    def __init__(self, *, digests: list[str] | None = None, push_fails: bool = False) -> None:
+        self.commands: list[list[str]] = []
+        self.digests = digests
+        self.push_fails = push_fails
+        # Every other program, git naming the commit among them, runs for real.
+        self.real = subprocess.run
+
+    def __call__(self, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if args[0] != "docker":
+            return self.real(args, **kwargs)
+        self.commands.append(list(args))
+        verb = args[1:3]
+        if verb[0] == "push" and self.push_fails:
+            return subprocess.CompletedProcess(args, 1, "", "denied: requested access")
+        if verb == ["image", "inspect"]:
+            tag = args[-1]
+            repository = tag[: tag.rindex(":")]
+            digests = (
+                self.digests if self.digests is not None else [f"{repository}@sha256:" + "a" * 64]
+            )
+            return subprocess.CompletedProcess(args, 0, json.dumps(digests), "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+
+_REGISTRY = (
+    '\n[deploy.container]\nregistry = "acr.example.io/pricing/"\n'
+    'base_image = "python:3.11.9-slim"\n'
+)
+
+
+def test_haute_app_build_push_publishes_the_image_and_prints_its_digest_last(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from click.testing import CliRunner
+
+    import haute.deploy._container as container
+    from haute.cli import cli
+
+    init_repo(project)
+    commit = git_run(project, "rev-parse", "--short", "HEAD")
+    docker = _Docker()
+    monkeypatch.setattr(container.subprocess, "run", docker)
+
+    # No registry: refused before anything is built.
+    _pin_base_image(project)
+    refused = CliRunner().invoke(cli, ["app", "build", "out", "--push"])
+    assert refused.exit_code != 0
+    assert "[deploy.container] registry is empty" in refused.output
+    assert docker.commands == []
+    assert not (project / "out").exists()
+
+    toml = project / "haute.toml"
+    toml.write_text(toml.read_text(encoding="utf-8").replace(PINNED, _REGISTRY), encoding="utf-8")
+    result = CliRunner().invoke(cli, ["app", "build", "out", "--push"])
+
+    assert result.exit_code == 0, result.output
+    # Tagged with the commit published.
+    tag = f"acr.example.io/pricing/motor:{commit}"
+    assert [command[1:3] for command in docker.commands] == [
+        ["info"],
+        ["build", "-t"],
+        ["push", tag],
+        ["image", "inspect"],
+    ]
+    assert docker.commands[1][3] == tag and docker.commands[3][-1] == tag
+    assert f"Image pushed: {tag}" in result.output
+    # The last line is what was published, by digest: what CI records and a host runs.
+    assert result.output.rstrip().splitlines()[-1] == (
+        "acr.example.io/pricing/motor@sha256:" + "a" * 64
+    )
+
+    both = CliRunner().invoke(cli, ["app", "build", "out", "--push", "--image", "x:1"])
+    assert both.exit_code == 2
+    assert "--image and --push each build the image" in both.output
+
+
+def test_the_published_image_is_named_after_its_commit_in_lower_case(tmp_path: Path) -> None:
+    (tmp_path / "main.py").write_text('import haute\n\npipeline = haute.Pipeline("p")\n')
+    toml = tmp_path / "haute.toml"
+    toml.write_text('[project]\nname = "Motor_Pricing"\npipeline = "main.py"\n')
+    with pytest.raises(WorkbenchAppError, match=r"\[deploy.container\] registry is empty"):
+        workbench_app.image_reference(tmp_path)
+
+    toml.write_text(toml.read_text() + '\n[deploy.container]\nregistry = "acr.example.io/"\n')
+    # Outside a repository git names no commit: never a tag that names none.
+    with pytest.raises(WorkbenchAppError, match="tagged with the commit it is built from"):
+        workbench_app.image_reference(tmp_path)
+
+    init_repo(tmp_path)
+    commit = git_run(tmp_path, "rev-parse", "--short", "HEAD")
+
+    # Docker takes no capital in a repository's name.
+    assert workbench_app.image_reference(tmp_path) == f"acr.example.io/motor_pricing:{commit}"
+
+
+@pytest.mark.parametrize(
+    ("docker", "said"),
+    [
+        (_Docker(push_fails=True), "Docker push failed"),
+        (_Docker(digests=["other.example.io/motor@sha256:" + "b" * 64]), "holds no digest"),
+        (_Docker(digests=[]), "holds no digest"),
+    ],
+    ids=["push-refused", "another-repository", "no-digest"],
+)
+def test_haute_app_build_push_fails_when_the_push_records_no_digest(
+    project: Path, monkeypatch: pytest.MonkeyPatch, docker: _Docker, said: str
+) -> None:
+    from click.testing import CliRunner
+
+    import haute.deploy._container as container
+    from haute.cli import cli
+
+    toml = project / "haute.toml"
+    toml.write_text(toml.read_text(encoding="utf-8") + _REGISTRY, encoding="utf-8")
+    init_repo(project)
+    monkeypatch.setattr(container.subprocess, "run", docker)
+
+    result = CliRunner().invoke(cli, ["app", "build", "out", "--push"])
+
+    assert result.exit_code == 1
+    assert said in result.output
+    assert "Traceback" not in result.output
+
+
 def test_the_release_prices_and_keeps_quotes_with_only_the_images_runtime_installed(
     project: Path,
 ) -> None:
@@ -1115,9 +1359,7 @@ def test_the_release_prices_and_keeps_quotes_with_only_the_images_runtime_instal
     import subprocess
     import sys
 
-    from haute._quote_store import store_url
     from haute._workbench_config import ENVIRONMENT_ENV, STORE_URL_ENV
-    from tests._store_servers import Target
     from tests.test_container_smoke_script import _modules_outside_the_image
 
     _pin_base_image(project)
@@ -1135,11 +1377,8 @@ def test_the_release_prices_and_keeps_quotes_with_only_the_images_runtime_instal
     blocked = _modules_outside_the_image(installed)
     assert "mlflow" in blocked
     assert not {"sqlalchemy", "alembic"} & set(blocked)
-    url = store_url(project / "store.sqlite")
-    built, form, _ = read_release(release_dir)
     # The hosted tables made from the SQL Haute writes, as their owners make them.
-    hosted = Target("sqlite", url)
-    hosted.script(hosted.sql(form))
+    url = _made(project / "store.sqlite", release_dir)
     child = project / "price_one_quote.py"
     child.write_text(_SLIM_RELEASE_CHILD, encoding="utf-8")
 

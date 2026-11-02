@@ -42,15 +42,66 @@ Out of scope, owned elsewhere:
   contracts, while identifying the chosen invocation form in usage text.
 - `haute --help` opens with the package's own description, `pyproject.toml`'s `description`,
   and so names no deploy target: Databricks is one of several.
-- `haute init [--target ...] [--ci ...] [--workbench] [--force]` scaffolds a new project in the
-  current directory: `haute.toml`, a blank `rating/` pipeline package, `.env.example`, test-quote
-  fixtures, CI/CD workflow files for the chosen provider, a git pre-commit hook, and `.gitignore`
-  guard entries; with `--workbench`, the `[workbench]` table in `haute.toml` and a blank form
-  folder, `rating/workbench/` ([workbench](../workbench/high-level.md)).
-  Refuses to run if `haute.toml` already exists unless `--force` is given, but for
-  `--workbench` alone, which in a project that has a `haute.toml` adds the `[workbench]`
-  table to it and writes the blank form folder in its pipeline folder, touching nothing
-  else, and refuses when the table or the folder is already there. Either way a path of
+- `haute init [--automated | --workbench] [--ci ...] [--target ...] [--host ...] [--store ...]
+  [--sign-in ...]` scaffolds a new project in the current directory, or sets an existing one
+  up again (below). At a terminal
+  it asks what its flags leave out, each question a numbered list to pick from, in turn: how
+  the project prices, automated (an API other systems call) or workbench (an app
+  underwriters price quotes in); where the repository is (GitHub, GitLab, Azure DevOps or
+  none); where it is hosted, an automated project among the deploy targets and a workbench
+  project among the underwriter app's hosts, a list of one, Azure Container Apps; and, for a
+  workbench project, which database holds the saved quotes (SQL Server or PostgreSQL) and
+  how the analyst signs in to it (a password, their Microsoft Entra ID sign-in or a service
+  principal). Without a terminal an unanswered question takes its default (automated,
+  GitHub, Databricks, a workbench project's one host), and a workbench project's database
+  and sign-in, which have none, are refused naming their flags; a flag of the other kind of
+  project (`--target` with `--workbench`, or `--host`, `--store` or `--sign-in` without it)
+  is refused. Every new project gets a blank `rating/` pipeline package, `.env.example`,
+  test-quote fixtures, CI/CD workflow files for the chosen provider, a git pre-commit hook,
+  and `.gitignore` guard entries; a starter file of `rating/` or `tests/` is written only
+  where the folder has none, so a `rating/main.py` already there is kept and the summary
+  names what was kept, and no workflow already in the folder is pruned. The hook is installed in `.git/hooks/` too inside a git repository,
+  unless a `pre-commit` there is not Haute's, which is left as it is and named. An automated project's `haute.toml` holds its deploy
+  target's settings and its workflows deploy the scoring endpoint. A workbench project hosts
+  no scoring API: its `haute.toml` holds `[deploy.container]`, the app image's base image,
+  registry and port, and no endpoint settings, and the `[workbench]` table with
+  `[workbench.app] host` and the quote store's `dev`, `staging` and `prod` on the database
+  chosen and `[workbench.app.staging]` and `[workbench.app.prod]`, the Container Apps each
+  hosted environment runs as, left for IT to fill in; it also gets a blank form folder,
+  `rating/workbench/`, and `connections.toml`, the
+  three environments' connections for the editor and `haute app serve`, on that database
+  with the analyst's sign-in, whose variables `.env.example` names beside the host's
+  credentials; and its workflows validate and publish the underwriter app
+  ([workbench](../workbench/high-level.md)). In a project that already has a `haute.toml`,
+  `haute init` sets the project up again. It asks the same questions, each defaulting to
+  the project's current answer: the kind of project from `[workbench] enabled`, the
+  repository from `[ci] provider`, the deploy target from `[deploy] target`, the app's
+  host from `[workbench.app] host`, the database from the quote store's environments'
+  `provider` and the sign-in from `connections.toml`'s connections. Enter, or a run
+  without a terminal, keeps what the project has; a question the project holds no answer
+  to (one it does not offer, or the other kind of project's) has no default there, save
+  the app's host, whose one choice is its default. A
+  `haute.toml` that does not read as TOML is refused, naming the error, before any
+  question. The re-run writes `haute.toml` afresh from the answers, keeping
+  `[project] name`; the previous file is left to git, and the summary says to copy back
+  from it what was set by hand, the `[mlflow]` settings saved from the app among them. It
+  writes the workflows (pruning every generated file the new set does not hold),
+  `.env.example` and the pre-commit hook again, reporting each as written, updated or
+  unchanged and each workflow it removed,
+  and writes nothing in `rating/` or `tests/`, which are the project's, beyond the
+  workbench's form folder when it has none. The kind of project may change: an automated
+  project set up as a workbench gets the blank form folder and `connections.toml` where
+  it has none, a workbench set up as an automated project keeps both, and either way the
+  pipeline keeps its input and output nodes, so the summary names the ones to replace (a
+  Quote Input and a Quote Response by a Workbench Input and a Workbench Output, or the
+  reverse). The `haute` requirement in `pyproject.toml` gains each extra the answers need
+  that it lacks, keeping its version, marker and other extras; none is taken away.
+  `connections.toml` is written, the sign-in asked, when there is none or when one of its
+  `dev`, `staging` or `prod` connections, those of the environments the new
+  `haute.toml` declares, is on another database than the one answered (SQLite
+  included), a changed quote store;
+  otherwise it is kept and the sign-in is not asked, a `--sign-in` given then answering
+  nothing. A path of
   the form folder reached through a link or junction refuses the init before anything is
   written. A root `main.py` is
   always deleted: `uv init` recreates that placeholder every time it runs, and a Haute project's
@@ -79,20 +130,27 @@ Out of scope, owned elsewhere:
   scores its test quotes, and deploys it to the configured target. Non-dry-run deploys are blocked
   outside a recognised CI environment, and one whose target's credentials are not all set stops
   before any other work, naming every missing one. A Databricks deploy returns once its endpoint
-  serves the new version, or fails with Databricks' reason when it cannot.
-- `haute ci secrets [--check] [--no-verify]` sets the CI secrets the deploy target needs on the
+  serves the new version, or fails with Databricks' reason when it cannot. A workbench project
+  hosts no scoring API, so in one `haute deploy` refuses before anything else, a dry run
+  included, naming `haute app build`, which validates and builds what it releases.
+- `haute ci secrets [--check] [--no-verify]` sets the CI secrets the deploy target needs, or in
+  a workbench project its `[workbench.app] host`, on the
   project's GitHub repository from `.env`, after checking Databricks accepts them; `--check`
   reports which are set. On GitLab and Azure DevOps it names the secrets to add by hand. The
   editor's Push does the same for a GitHub repository it first publishes to, before the push,
   and reports any a later Push finds missing so the push panel can offer to set them
   ([frontend git UI](../frontend-git-ui/high-level.md)); the editor sets only secrets the
   repository lacks, and the command is how a changed value reaches CI.
-- `haute ci update` rewrites the CI files `haute init` generated, and `.env.example`, for the
+- `haute ci update` rewrites the CI files `haute init` generated, and `.env.example`, with
+  the variables `connections.toml` names when the project has one, for the
   installed Haute and the project's `[ci]` table, so a project takes up fixed workflows, a
   changed `[ci.staging] endpoint_suffix`, or a `[ci.production] environment` whose reviewers
-  then gate production, without being initialised again.
-- `haute ci registry-host` prints the host of the registry a container target pushes to,
-  for the login step its generated deploy jobs run before `haute deploy`.
+  then gate production, without being initialised again. A workbench project's are the
+  workbench's set, for its `[workbench.app] host`, which it refuses to run without; an
+  automated project's are the scoring endpoint's, for its `[deploy] target`.
+- `haute ci registry-host` prints the host of the registry a container target, or a
+  workbench project's app image, pushes to, for the login step its generated jobs run
+  before `haute deploy` or `haute app build --push`.
 - `haute smoke [--endpoint-suffix]` sends each test quote in `tests/quotes/` to a live
   serving endpoint as a request of its own, as a pipeline reading one quote per request takes it, and
   holds each quote with an `expected` output to it as the deploy check does, walked into a
@@ -101,32 +159,60 @@ Out of scope, owned elsewhere:
   and the other quotes are still priced. HTTP health accepts any decodable 2xx JSON.
   An endpoint suffix is a Databricks naming override; HTTP targets reject it and direct operators
   to configure the complete staging endpoint URL instead.
-- `haute app build [OUTPUT] [--image TAG]` builds the workbench project's release for
+- `haute app build [OUTPUT] [--image TAG | --push]` builds the workbench project's release for
   the underwriter app into `OUTPUT` (`.haute/app/release` by default, which git
   ignores): the pipeline resolved,
-  validated and bundled as `haute deploy` does it, test quotes included, with the
-  sheets, what the release is and its entry point, and, with `[deploy.container]
+  validated and bundled as `haute deploy` does it, with the sheets, what the release is
+  and its entry point, its test quotes priced and compared (one that fails to price
+  failing the build, one whose outputs moved listed while the build passes, each in
+  `test_quotes_report.md`, written in the working directory whatever the outcome;
+  [workbench](../workbench/high-level.md), Test quotes), and, with `[deploy.container]
   base_image` set, the Dockerfile that makes it the image's build context, installing the
   driver of each provider the release's environments declare, pinned as installed where it
   builds (pyodbc and Microsoft's ODBC Driver 18 for `sqlserver`, psycopg for `postgresql`,
   azure-identity for a Microsoft Entra ID sign-in), a driver not installed there refused
-  naming it; `--image` builds that image with Docker. A directory that is or holds the
+  naming it; `--image` builds that image with Docker. `--push` builds it as
+  `<registry>/<name>:<short commit>`, the registry `[deploy.container] registry` names, which
+  it refuses to run without, as it does a project whose commit git cannot name, and the
+  project's name in lower case, as Docker takes a
+  repository's, pushes it there and prints the reference by digest that was pushed,
+  `<registry>/<name>@sha256:...`, as its last line, so the
+  workbench's CI publishes each release's image once and knows exactly what it published.
+  A directory that is or holds the
   project or the working
   directory, a file, and a directory holding anything but an earlier release are refused,
   as are a project without a workbench and sheets never saved; an earlier release is
   replaced only once the new one has built beside it, so a build that fails leaves it as
   it was.
+- `haute app rollout ENVIRONMENT (--image REFERENCE | --from ENVIRONMENT)` rolls a
+  workbench project's hosted app, the Container App `[workbench.app.<ENVIRONMENT>]` names, to
+  an image by digest in a maintenance window, checks the release there (it runs, the host's
+  sign-in stands in front of it, and its quotes are open), puts the previous release back
+  when the new one fails, and records the release that stays on the Container App as Azure
+  tags; `--from` rolls to the release another environment's app runs, when it runs the commit
+  checked out. It is what
+  the workbench's generated jobs run, signed in as their service principal, and exits 1 naming
+  what failed ([workbench](../workbench/high-level.md)).
+- `haute app impact [--sample N]` compares the release a workbench project's staging app
+  runs with production's on up to N of the final quotes production keeps (100 by
+  default), each priced on both apps through their own routes, on the output fields
+  the two releases share, and writes `impact_report.md`: the fields only one release
+  has, each quote whose prices moved and how, the quotes that no longer compare or
+  that the new release refuses. It changes nothing. It is what the workbench's
+  publish job runs after the staging rollout, signed in as its service principal, and
+  exits 1, the report written, when staging fails on a quote production prices or an app
+  cannot be reached or used ([workbench](../workbench/high-level.md)).
 - `haute app serve [--port PORT] [--static-dir DIR] [--reader]` builds the release
   under `.haute/app/release` and serves the underwriter app on `127.0.0.1` alone (port
   8001 by default), every request signed in as the analyst's git identity, able to
   change quotes unless `--reader` signs it in as one who reads them; without an identity
-  it refuses to start. It keeps the quotes saved in it in dev's quote store,
-  `.haute/app/store.sqlite`, which a rebuild leaves as it is: the form's own tables, brought
-  to the release's form as it starts by the store's planner in dev's mode, which drops what
-  the form removed and builds again what changed while holding values, naming each table
-  whose quotes' rows went and each column whose values went. No command changes a hosted
-  environment's tables: the people who own its database change them in SQL, starting from
-  the SQL the Workbench view's Build mode writes ([workbench](../workbench/high-level.md)).
+  it refuses to start. It keeps the quotes saved in it in the `dev` environment, at the
+  database `connections.toml`'s `[dev]` connection names, signed in as it says, refusing to
+  start while `haute.toml` declares no `dev` or the file holds no `[dev]`; the app checks
+  that database's tables as a hosted app checks its own, its quotes closed, naming each
+  difference, until they fit the release's form. No command changes any environment's
+  tables: the people who own its database change them in SQL, starting from the SQL the
+  Workbench view's schema pane writes ([workbench](../workbench/high-level.md)).
 - `haute status [model_name] [--version-only]` looks up a model's latest version/stage in the MLflow
   Model Registry.
 - `haute impact [--sample] [--batch-size] [--endpoint-suffix]` scores a configured safety dataset,

@@ -564,7 +564,7 @@ def _augment_starter_pipeline() -> None:
 def _scaffold_e2e_project() -> None:
     _reset_project_dir()
     os.chdir(E2E_PROJECT_DIR)
-    handle_init(InitConfig(target="databricks", ci="none", force=True))
+    handle_init(InitConfig(target="databricks", ci="none"))
     _augment_starter_pipeline()
 
     ids = list(range(1, 31))

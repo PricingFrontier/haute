@@ -1469,3 +1469,48 @@ def test_recover_keeps_the_input_a_submodel_port_feeds(tmp_path, kind):
     source = child.read_text(encoding="utf-8")
     assert "records" in source.split("def result(", 1)[1].split(")", 1)[0]
     assert kept in source
+
+
+def _transform_with_binding(root: Path, *, signature: str) -> Path:
+    """A transform made unavailable by a contract= that cannot be read."""
+    (root / "haute.toml").write_text('[project]\nname = "demo"\n')
+    parent = root / "main.py"
+    parent.write_text(
+        "import haute\nimport polars as pl\n"
+        'pipeline = haute.Pipeline("demo")\n'
+        "@pipeline.polars\ndef source():\n"
+        '    df = pl.LazyFrame({"x": [100.0]})\n    return df\n'
+        f"@pipeline.polars(contract=7)\ndef scaled({signature}):\n"
+        '    df = source.with_columns(y=pl.col("x") * factor)\n    return df\n',
+        encoding="utf-8",
+    )
+    return parent
+
+
+def test_recover_keeps_a_transforms_keyword_only_parameters(tmp_path):
+    parent = _transform_with_binding(tmp_path, signature="source, *, factor=1.2")
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+    scaled = next(node for node in document.nodes if node.authored_id == "scaled")
+    assert scaled.availability == "unavailable"
+
+    _apply(tmp_path, _request(tmp_path, "scaled", "recover"))
+
+    assert "def scaled(source: pl.LazyFrame, *, factor=1.2) -> pl.LazyFrame:" in (
+        parent.read_text(encoding="utf-8")
+    )
+
+
+def test_recover_reports_a_keyword_only_form_it_cannot_keep(tmp_path):
+    from haute._pipeline_repair import build_recover_unavailable_node_plan
+
+    _transform_with_binding(tmp_path, signature="source, *, factor")
+
+    plan = build_recover_unavailable_node_plan(
+        project_root=tmp_path, request=_request(tmp_path, "scaled", "recover")
+    )
+
+    (change,) = [
+        change for change in plan.response.field_changes if change.path == "/keyword_parameters"
+    ]
+    assert change.outcome == "removed"
+    assert "'factor' has no default" in change.reason

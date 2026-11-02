@@ -20,11 +20,20 @@ layer is primary and caching is a consumer.
 ## Key types and data structures
 
 - `CacheConsumerContract` and `CheckedCacheInputs` define exact, versioned key fields.
-- `CACHE_CONFIG_FIELD_CLASSIFICATIONS` classifies every recognised node config field as
-  execution input or rationale-bearing presentation exclusion; a stepped surface's
-  `steps` list is classified `user_code` beside its `code` (transform, Data Input, External File, Rating Step, Model Score, Scenario Expander, Explore).
+- `PRESENTATION_CONFIG_FIELDS` names the persisted config fields no execution reads; every
+  identity that covers a node's config signs the whole config but these (see
+  [Node config in identities](#node-config-in-identities)).
 - `GraphFingerprintMemo` pins utility-file hashes consistently within one request while the
-  shared content signature serves unchanged files across requests.
+  shared content signature serves unchanged files across requests. It also keeps, for the
+  graph, node and edge objects it has seen, the canonical execution graph, each node's
+  canonical `graph_node` record, each edge's canonical `graph_edge` record and its canonical
+  JSON, and (for signing) each node's runtime-input entry, so a resolution that signs every
+  node of a lineage canonicalises the graph, encodes each record and reads each input once,
+  not once per node it signs. A record is reused only for the same object, and an entry
+  only for the same node object under the same pipeline file. Reuse changes no digest byte.
+  A memo reads each input once, so a caller that must see an input move, after preparing
+  inputs or to prove one did not change, takes a fresh memo, as each resolution and the
+  post-capture key do.
 - `LineageCacheKeyRequest` carries graph, target node/port, upstream lineage, prepared
   runtime switch state, and utility-file evidence for `lineage_cache_key()`.
 - `LRUCache` stores values in an `OrderedDict` with timestamps, optional sizes, and pins.
@@ -76,6 +85,32 @@ is `node_id`, `node_type`, `config`, `files`;
 `None` throughout for a name the pipeline does not define); and `global_constant_value` v1 is
 `name`, `type`, `value`, `state` (a read constant resolved for one source, with `state` `set`,
 `missing` or `undefined`).
+
+### Node config in identities
+
+An identity that covers a node's configuration (`graph_structure` and the `graph_node`
+records `preview_trace` and the lineage fingerprint carry) signs the node's whole `config`,
+so a setting a node type declares is covered from the moment it is declared, with no
+registration. Editor state travels beside the config (`NodeData.editor`) and is never
+signed. Two kinds of field are left out, because their consumers need a narrower identity
+than the config (`PRESENTATION_CONFIG_FIELDS`):
+
+| Node types | Fields | Why they are left out |
+|---|---|---|
+| Model Score, Optimiser Apply | `experiment_id`, `experiment_name`, `run_name` | The MLflow picker writes the experiment it is browsing without changing the selected model, and execution finds the model by its stable ids (`run_id`, `registered_model`, `version`, `alias`). Signing them would recompute a scoring node, and everything captured below it, whenever someone browses. |
+| Explore | `overview`, `pivots`, `pivot_formulas`, `charts` | The cards present the explored frame; choosing one never changes it, as the browser's own node-data identity also assumes. |
+
+A runtime-input entry (`runtime_input_entry`) signs, beside the files and model state it
+reads, only the scalar config fields that say which external data, file or model a node
+reads (its source file's field from `execution._SOURCE_PATH_CONFIG_BY_NODE_TYPE` and the
+fields `_RUNTIME_INPUT_CONFIG_FIELDS` lists: an API Input's `path`; a Data Input's
+`code`, `connection`, `format`, `http_path`, `inputType`, `mode`, `path`, `query`, `table`
+and `uri`; an External File's `code` and `path`; a Model Score's or Optimiser Apply's MLflow
+source fields, with Model Score's `code`, `feature_contract_path` and `model_path` and
+Optimiser Apply's `ratebook_input`). It names external state, not the node, and is always
+paired with the structural or lineage identity that signs the rest of the config, so a field
+missing from that list can only leave the runtime-input fingerprint unchanged, never an
+identity stale.
 
 Each consumer also classifies all twelve logical input classes — node config,
 upstream lineage, edge wiring, user code, source selection, row limit,
@@ -291,7 +326,7 @@ writes a table, for the data-point `building` probe. Schema inference stays on
   structured API Input's emitting tables and their distinct identities (empty for any
   other node, or for a schema the node builder would reject).
 - `DataPointResolver(graph, source, store=NodeSnapshotStore, building=probe)` canonicalises
-  the graph once. `building(kind, digest)` reports a running build of the input-snapshot
+  the graph once and signs its nodes with one `GraphFingerprintMemo`. `building(kind, digest)` reports a running build of the input-snapshot
   identity digest (a Data Input's, or an API-input table's own) or the node-output identity
   digest.
   `resolve(point, demand)` returns a `PointResolution` (kind, state, demand, data version,
@@ -596,7 +631,7 @@ input, input snapshots, model contracts and graph structure exclude the class.
   encoding remains byte-stable so previously published `contract_hash` values
   continue to verify.
 - Every logical cache input is present exactly once; unknown fields fail.
-- LRU oversized rejection retains a previous same-key entry.
+- LRU oversized rejection evicts a previous same-key entry, pinned or not.
 - Freshness-gated caches never exceed `max_entries` after a completed insertion.
 - A proof or loaded value is never reused across a moved freshness token, and a token without
   a native revision, or a POSIX revision whose ctime is a whole second, is reused only for a
@@ -718,7 +753,11 @@ cache lifecycle changes.
   and a status probe returning `building` promptly while a build holds the cache locks.
 - `tests/test_node_snapshot_signature.py` covers the `node_snapshot_signature` field set
   and its invalidation matrix, including a submodel instance's expanded node following its
-  definition.
+  definition; that a resolution's memo signs every node of a corpus (relative paths, a
+  snapshot-backed input, wired handles, a read constant, nested non-ASCII configuration, a
+  file-sourced Model Score and a live switch under two sources) exactly as a fresh signature
+  does; and that a resolution canonicalises its graph and reads each input's entry once,
+  a new resolution reading them again.
 - `tests/test_analysis_results.py` covers a document served only for its own data version and
   removed once the point moves on, other kinds and analysis versions of the same point being
   kept, unparsable, mis-keyed, unknown-schema, and invalid-result documents being discarded
@@ -730,8 +769,11 @@ cache lifecycle changes.
   `tests/test_caching_correctness.py`, `tests/test_cache_unification.py`,
   `tests/test_graph_fingerprint_cached.py`, and `tests/test_hashing.py` cover canonical
   encoding, injectivity, field completeness, versioning, live switches, utility files,
-  memoisation, and shared primitive behaviour.
-- `tests/test_lru_cache.py` covers entry/byte/TTL eviction, pins, oversized retention,
+  memoisation, and shared primitive behaviour. `tests/test_cache_identity_contract.py` also
+  proves that every declared config field of every node type, and a field no table declares,
+  moves the execution identity, that exactly the specified presentation fields and editor
+  state leave it alone.
+- `tests/test_lru_cache.py` covers entry/byte/TTL eviction, pins, oversized rejection,
   non-promoting reads, and concurrency.
 - `tests/test_stat_gated_cache.py` covers hit/reload, LRU bounds, single flight, moving
   gates, exceptions, clear, and load-gate reclamation.
@@ -749,3 +791,6 @@ cache lifecycle changes.
   cover the inference route's errors and path confinement.
 - `tests/performance/test_cache_identity_perf.py` records bounded LRU/stat-gate and lineage
   key performance evidence.
+- `tests/performance/test_seed_plan_planning_perf.py` records cold and warm preview times for
+  10-, 40- and 80-transform lineages below a captured join, and asserts that the number of
+  graph canonicalisations and input-entry reads per preview does not grow with the lineage.

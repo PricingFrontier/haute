@@ -57,7 +57,9 @@ You pick your target once when you set up the project. The command is:
 haute init --target databricks
 ```
 
-`--ci` picks the CI/CD provider the workflow files are written for: `github` (the default), `gitlab`, `azure-devops`, or `none` for no workflow files.
+`--ci` picks the CI/CD provider the workflow files are written for: `github` (the default), `gitlab`, `azure-devops`, or `none` for no workflow files. Run it in a terminal without them and `haute init` asks, as numbered lists: how the project prices quotes, where your repository is, and where it is hosted.
+
+Answer **Automated** for a pipeline other systems call, which this page deploys. A **Workbench** project, where underwriters price quotes in an app, hosts no API: `haute deploy` refuses in one, and its workflows check and publish the [underwriter app](../building-models/workbench.md#the-underwriter-app) instead.
 
 This generates all the deployment files you need. You don't write them by hand - `haute init` creates them for you. Here's what your project folder looks like before and after:
 
@@ -107,7 +109,9 @@ my-project/
 ```
 <!-- scaffold-tree-after:end -->
 
-A root `main.py` left over from `uv init` is removed; Haute uses `rating/main.py` as the project pipeline. `pyproject.toml` is updated to list `haute` as a dependency. Existing shared files such as `.gitignore` are updated in place rather than replaced. If the project is already initialised (a `haute.toml` exists), `haute init` refuses to run unless you pass `--force`.
+A root `main.py` left over from `uv init` is removed; Haute uses `rating/main.py` as the project pipeline. `pyproject.toml` is updated to list `haute` as a dependency. Existing shared files such as `.gitignore` are updated in place rather than replaced, and a starter pipeline or test is written only where the folder has none, so a `rating/main.py` already there is kept.
+
+To change your answers later (another CI provider, another deploy target, or the other kind of project), run `haute init` again. It asks the same questions with your project's current answers as the defaults, then writes `haute.toml` afresh, the workflow files for your answers (removing the previous provider's) and `.env.example`. It never changes `rating/` or `tests/`. Anything you set in `haute.toml` yourself, such as the registry or the Databricks catalog, and the MLflow settings saved from the app, goes back to its default: copy what you need back from the previous version (`git diff haute.toml`).
 
 <!-- starter-pipeline-node-count:start -->
 The starter pipeline contains **0 nodes**, giving you a blank canvas.
@@ -241,7 +245,7 @@ A join keeps each quote's row when it starts from the quotes, is a left join (or
 
 Answered one at a time, each quote must still give one row, so that the answers line up with the quotes. A quote that gives no row or several (one a filter drops, say) fails the request with HTTP 422 (error code `quote_answer_rows`), naming its place in the request; sent on its own, it is answered with every row it gives. To decline a quote, keep its row and add a column saying so, for example `declined` set to true, instead of filtering the quote out.
 
-A deployment that answers the quotes one at a time scores its test quotes one request each. A [Workbench Input](../building-models/nodes/workbench-input.md) reads one quote per request, so its deployment refuses a request holding several.
+A deployment that answers the quotes one at a time scores its test quotes one request each. A [Workbench Input](../building-models/nodes/workbench-input.md) reads one quote per request; its project is not deployed but released as the [underwriter app](../building-models/workbench.md#the-underwriter-app), whose build scores each test quote as a request of its own.
 
 ---
 

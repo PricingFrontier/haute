@@ -387,6 +387,16 @@ def _examples():
     )
     variant.nodes[variant.nodes.index(polars)] = stepped
     yield "polars-steps", variant
+    # A transform written as code keeps its keyword-only parameters in its signature.
+    variant = graph.model_copy(deep=True)
+    polars = next(node for node in variant.nodes if node.data.nodeType == NodeType.POLARS)
+    assert "steps" not in polars.data.config
+    polars.data.config["keyword_parameters"] = [
+        {"name": "loading", "default": 1.05},
+        {"name": "region", "default": None},
+        {"name": "label", "default": "rated"},
+    ]
+    yield "polars-keyword-parameters", variant
     # A registered source names a version or an alias, never both.
     for node_type in (NodeType.MODEL_SCORE, NodeType.OPTIMISER_APPLY):
         variant = graph.model_copy(deep=True)
