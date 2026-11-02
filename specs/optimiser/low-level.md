@@ -970,8 +970,8 @@ the columns the artifact reads (`online_apply_read_columns`): the quote id, scen
 value, and objective, then the constraint columns (a ratio constraint's numerator and
 denominator). price-contour's native module converts every column it is handed and fails on
 some types the apply never reads: a Struct, Decimal, Int128 or Map column. So no other column
-reaches it, whichever walk runs the apply. A sink walk's planned demand narrows the input
-already; a display walk's (a preview, `haute run`) does not. The
+reaches it, whichever walk runs the apply. A sink walk's (`haute run` among them) planned
+demand narrows the input already; a display walk's (a preview) does not. The
 apply emits one row per quote in ascending order of the `Utf8` quote id, with the literal id
 column `quote_id` whatever the artifact names its input quote-id column. How the result is
 exposed depends on the artifact's constraints (`has_ratio_constraint`):

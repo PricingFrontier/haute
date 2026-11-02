@@ -39,7 +39,7 @@ Click an owner or instance on the canvas to preview its first declared output. T
 
 **Refresh** re-runs the output currently shown. Each output keeps its own cached preview and shows its own errors. Click a cell to trace that output and frame. A submodel with no public outputs has no preview. The Input and Output boundary nodes inside a submodel do not offer Refresh.
 
-`haute run` reports the rows and columns of each expanded internal node. Missing-column warnings appear in the instance's panel; the CLI does not print them or add a separate result row for the occurrence.
+`haute run` reports the columns of each expanded internal node it runs. Missing-column warnings appear in the instance's panel; the CLI does not print them or add a separate result row for the occurrence.
 
 ## Ports
 

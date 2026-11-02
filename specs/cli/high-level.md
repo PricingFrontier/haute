@@ -112,11 +112,16 @@ Out of scope, owned elsewhere:
   unambiguous. Any other root `main.py` is the team's, in a repository Haute is set up in,
   so it is kept and the summary says so. No `prompts/` directory or
   starter nodes/sidecars are generated.
-- `haute run [pipeline_file]` executes a pipeline end-to-end through the same
-  parse → flatten → `execute_graph` path the GUI uses (each submodel occurrence runs as its
-  definition's nodes, and a Workbench node takes its tables from the project's form folder,
-  [workbench](../workbench/high-level.md)), printing a per-node row/column summary and a
-  preview of the final node's output.
+- `haute run [pipeline_file] [--node NODE] [--source SOURCE] [--rows N]` runs a pipeline
+  to its output node (a Quote Response, a Workbench Output or a node marked as the output),
+  or to `--node`, as a batch run does: parsed and flattened as the editor's runs are (each
+  submodel occurrence runs as its definition's nodes, and a Workbench node takes its tables
+  from the project's form folder, [workbench](../workbench/high-level.md)), then walked once
+  as lazy plans under the `LAZY_SINK` profile and the named source (`live` by default), so
+  no node is materialised but the target, whose output alone is collected, all of it or its
+  first N rows. It prints each node walked with the columns its plan carries and the
+  target's output. A pipeline with no output node and no `--node` is refused, naming both
+  remedies.
 - `haute lint [pipeline_file]` checks a pipeline as the editor's save does, without
   executing anything, so the generated CI's lint step refuses what the editor would refuse
   to save. It strictly parses the pipeline and exits non-zero on syntax, configuration,
@@ -305,7 +310,8 @@ Invariants that hold across every command:
 
 - Depends on [pipeline-config](../pipeline-config/high-level.md) and
   [execution-engine](../execution-engine/high-level.md) for `run`/`lint` (`parse_pipeline_file`,
-  `execute_graph`).
+  `execute_lazy_graph`), and on [server-api](../server-api/high-level.md)'s save validation
+  (`SavePipelineService.validate_graph`) for `lint`.
 - Depends on [deploy](../deploy/high-level.md) for `deploy`/`smoke`/`impact`/`status`
   (`DeployConfig`, `resolve_config`, `validate_deploy`, `score_test_quotes`, `deploy_resolved`,
   `score_endpoint_batched`, `score_http_endpoint_batched`, `get_deploy_status`).

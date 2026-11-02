@@ -33,7 +33,7 @@ from __future__ import annotations
 import ast
 import inspect
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1082,44 +1082,122 @@ class TestHandleStatusCallable:
 
 
 class TestHandleRunCallable:
-    """``handle_run(config)`` executes a pipeline without Click."""
+    """``handle_run(config)`` walks a real pipeline lazily to its output, without Click."""
 
-    def test_run_executes_and_reports(
+    @staticmethod
+    def _pipeline(tmp_path: Path) -> Path:
+        import polars as pl
+
+        from haute._types import NodeType
+        from tests.conftest import make_output_config, write_node_config
+
+        data = tmp_path / "rows.parquet"
+        pl.DataFrame({"x": [1, 2, 3]}).write_parquet(data)
+        output_config = write_node_config(
+            tmp_path,
+            NodeType.OUTPUT,
+            "premium",
+            make_output_config(["x", "y"], source_port="doubled"),
+        )
+        pipeline = tmp_path / "lazy.py"
+        pipeline.write_text(
+            "import haute\n"
+            "import polars as pl\n\n"
+            'pipeline = haute.Pipeline("lazy")\n\n\n'
+            "@pipeline.polars\n"
+            "def source() -> pl.LazyFrame:\n"
+            f'    return pl.scan_parquet("{data.as_posix()}")\n\n\n'
+            "@pipeline.polars\n"
+            "def doubled(source: pl.LazyFrame) -> pl.LazyFrame:\n"
+            '    return source.with_columns(y=pl.col("x") * 2)\n\n\n'
+            f'@pipeline.output(config="{output_config}")\n'
+            "def premium(doubled: pl.LazyFrame) -> pl.LazyFrame: ...\n\n\n"
+            'pipeline.connect("source", "doubled")\n'
+            'pipeline.connect("doubled", "premium")\n',
+            encoding="utf-8",
+        )
+        return pipeline
+
+    def test_only_the_output_is_collected(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """handle_run builds a graph, executes it, and reports per-node results."""
-        import haute.cli._run as run_mod
-        from haute._types import GraphNode, NodeData, PipelineGraph
-        from haute.cli._run import handle_run
+        import polars as pl
 
-        config_cls = _find_config_class(run_mod, "run")
-        pipeline = _touch_pipeline(tmp_path, "simple.py")
-        config = config_cls(pipeline_file=pipeline)
+        from haute.cli._run import RunConfig, handle_run
 
-        graph = PipelineGraph(
-            nodes=[
-                GraphNode(
-                    id="a",
-                    data=NodeData(label="a", nodeType="dataInput", config={"path": "d.parquet"}),
-                ),
-            ],
-            edges=[],
+        pipeline = self._pipeline(tmp_path)
+        collected: list[list[str]] = []
+        collect = pl.LazyFrame.collect
+
+        def recording_collect(frame: pl.LazyFrame, *args: Any, **kwargs: Any) -> Any:
+            collected.append(frame.collect_schema().names())
+            return collect(frame, *args, **kwargs)
+
+        monkeypatch.setattr(pl.LazyFrame, "collect", recording_collect)
+
+        handle_run(RunConfig(pipeline_file=pipeline, node="doubled"))
+
+        out = capsys.readouterr().out
+        # Every node walked is reported from its lazy plan; one collection, the target's.
+        for node in ("source", "doubled"):
+            assert f"✓ {node}: 1 cols" in out or f"✓ {node}: 2 cols" in out
+        assert collected == [["x", "y"]]
+        assert "Output - doubled (3 rows):" in out
+
+    def test_the_default_target_is_the_output_node(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from haute.cli._run import RunConfig, handle_run
+
+        handle_run(RunConfig(pipeline_file=self._pipeline(tmp_path)))
+
+        out = capsys.readouterr().out
+        assert "✓ premium: 2 cols" in out
+        assert "Output - premium (3 rows):" in out
+
+    def test_rows_collects_only_the_first_rows_of_the_output(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from haute.cli._run import RunConfig, handle_run
+
+        handle_run(RunConfig(pipeline_file=self._pipeline(tmp_path), node="doubled", rows=2))
+
+        out = capsys.readouterr().out
+        assert "Output - doubled (2 rows, first 2):" in out
+        assert "premium" not in out
+
+    def test_the_source_reaches_the_walk(self, tmp_path: Path) -> None:
+        from haute.cli._run import RunConfig, handle_run
+        from haute.execution import execute_lazy_graph
+
+        with patch("haute.execution.execute_lazy_graph", wraps=execute_lazy_graph) as walk:
+            handle_run(RunConfig(pipeline_file=self._pipeline(tmp_path), source="batch"))
+
+        assert walk.call_args.kwargs["source"] == "batch"
+        assert walk.call_args.kwargs["target_node_id"] == "premium"
+
+    def test_a_pipeline_without_an_output_node_names_both_remedies(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from haute.cli._run import RunConfig, handle_run
+
+        pipeline = self._pipeline(tmp_path)
+        text = pipeline.read_text(encoding="utf-8")
+        pipeline.write_text(text[: text.index("@pipeline.output")], encoding="utf-8")
+        pipeline.write_text(
+            pipeline.read_text(encoding="utf-8") + 'pipeline.connect("source", "doubled")\n',
+            encoding="utf-8",
         )
 
-        ok_result = MagicMock()
-        ok_result.status = "ok"
-        ok_result.row_count = 10
-        ok_result.column_count = 4
-        ok_result.preview = None
+        with pytest.raises(SystemExit):
+            handle_run(RunConfig(pipeline_file=pipeline))
 
-        with (
-            patch("haute.parser.parse_pipeline_file", return_value=graph),
-            patch("haute.executor.execute_graph", return_value={"a": ok_result}),
-        ):
-            # Should not raise on a healthy single-node graph.
-            handle_run(config)
+        err = capsys.readouterr().err
+        assert "No output node found." in err
+        assert "--node" in err
 
 
 def _find_config_class(module: object, cmd: str) -> type:
@@ -1461,6 +1539,8 @@ class TestCliAutoDiscoveryEndToEnd:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``haute run`` in a dir with ``motor.py`` (no main.py) finds motor.py."""
+        import polars as pl
+
         from haute._types import GraphNode, NodeData, PipelineGraph
 
         monkeypatch.chdir(tmp_path)
@@ -1483,17 +1563,15 @@ class TestCliAutoDiscoveryEndToEnd:
             ],
             edges=[],
         )
-        ok_result = MagicMock()
-        ok_result.status = "ok"
-        ok_result.row_count = 10
-        ok_result.column_count = 4
-        ok_result.preview = None
 
         with (
             patch("haute.parser.parse_pipeline_file", return_value=graph) as parse_mock,
-            patch("haute.executor.execute_graph", return_value={"a": ok_result}),
+            patch(
+                "haute.execution.execute_lazy_graph",
+                return_value=({"a": pl.LazyFrame({"x": [1]})}, ["a"], {}, {}),
+            ),
         ):
-            result = runner.invoke(cli, ["run"])
+            result = runner.invoke(cli, ["run", "--node", "a"])
 
         assert result.exit_code == 0, result.output
         # The parse was driven by the auto-discovered motor.py — not a

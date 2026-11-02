@@ -10,7 +10,7 @@
 | `src/haute/cli/_helpers.py` | Cross-command utilities: `resolve_model_name`, `_open_browser`, `_node_env`, `_npm`, `_find_frontend_dir`, the `TransportInfo`/`resolve_transport` transport-dispatch helper, the shared `ENDPOINT_SUFFIX_HELP` string, and `EXPECTED_FAILURES`, the failures a command reports as one line (`HauteError`, `ValueError`, `OSError`). |
 | `src/haute/cli/_output.py` | `utf8_output`: the process's own stdout and stderr, when not UTF-8, written in UTF-8, or, when PYTHONIOENCODING chose the encoding or the stream is a terminal, kept with a mark it cannot hold replaced; a stream a caller put in the process's place left alone. |
 | `src/haute/cli/_init_cmd.py` | `haute init` — project scaffolding, or an existing project set up again (a workbench project given no starter test quote, an automated one its example in tests/quotes, each starter file written only where none is there and none on a re-run): `InitConfig`, the questions (`_answers`, which takes each answer its flags give and, through `_pick`, asks a numbered list for the rest while `InitConfig.interactive` says the command runs at a terminal, `_at_terminal`, each question's default from `_Defaults`, a new project's `NEW_PROJECT_DEFAULTS` or the project's current answers, `_current_answers`; without one a question with a default takes it and one without, the workbench's database and sign-in on a new project, is a usage error naming its flag, as is a flag of the other kind of project; the sign-in asked only when `connections.toml` is to be written, `_writes_connections`; the answers as `_Answers`), `handle_init`, TOML-aware `pyproject.toml` dependency injection (and the extras a workbench needs added to a `haute` requirement already listed), CI-provider file generation (`haute._scaffold.ci_files` for an automated project, `haute._scaffold.workbench_ci_files` for a workbench one, written by `write_generated_files`, which `haute ci update` shares) and pruning (`_prune_stale_ci_files`, every file Haute generates, `GENERATED_CI_FILES`, that the set written does not hold), a workbench project's `haute.toml` (`haute._scaffold.workbench_haute_toml`), form (written only when absent) and `connections.toml` (written when absent or when the `dev`, `staging` or `prod` connection in it is on another database than the one answered, SQLite included, since the quote store refuses a connection of another provider than its environment's, and only to an ordinary file's path, `_root_file_problem`; a `connections.toml` already there read first, `ConnectionsError` refused before anything is written) ([workbench](../workbench/low-level.md)) and `.env.example` (`haute._scaffold.app_env_example`), and next steps that name the CI secrets the first deploy or publication needs (`ci_secret_names`, of the target or of the app's host), with `haute ci secrets` on GitHub. |
-| `src/haute/cli/_run.py` | `haute run` — `RunConfig`, `handle_run`, parses + executes a pipeline and prints per-node results; a pipeline with a Workbench node is given its tables from the form folder of the project the file is in (`haute._workbench_nodes.with_form_tables`), a form that cannot be read reported as "Error reading the workbench's form: ...". |
+| `src/haute/cli/_run.py` | `haute run` — `RunConfig` (`pipeline_file`, `node`, `source`, `rows`), `handle_run`: parses a pipeline, walks it lazily to its output node or `--node` (`execution.execute_lazy_graph`, `LAZY_SINK`), prints each walked node's plan width and collects only the target's output; a pipeline with a Workbench node is given its tables from the form folder of the project the file is in (`haute._workbench_nodes.with_form_tables`), a form that cannot be read reported as "Error reading the workbench's form: ...". |
 | `src/haute/cli/_lint.py` | `haute lint` — `LintConfig`, `handle_lint`: the editor document's diagnostics, the editor's save-time validation (`SavePipelineService.validate_graph`) and structural checks of the flattened graph, without execution. |
 | `src/haute/cli/_train.py` | `haute train` — `TrainConfig`, `handle_train`, loads a training script as a module, runs its `job`, prints a live progress bar. |
 | `src/haute/cli/_serve.py` | `haute serve` — `ServeConfig`, `handle_serve`, host-safety checks, working-directory/editable-checkout frontend selection, dev/prod mode dispatch, Vite and uvicorn launch/cleanup. |
@@ -73,17 +73,19 @@ invocation form the user selected.
 Every subcommand also exposes Click's eager `--help` option, which prints usage and exits 0
 without validating required positional arguments.
 
-`haute run` reports expanded executable nodes by id (a parsed node's id is its function's
-name; a submodel occurrence's qualifies it with the occurrence), a failed node with its error
-and, when the executor located it, `(line N)` of its code, and previews the last executable
-result. Metadata-only submodel occurrence entries carry schema warnings, not
-rows, and are excluded from both selections. The CLI does not print schema warnings.
+`haute run` reports the executable nodes it walks by id (a parsed node's id is its
+function's name; a submodel occurrence's qualifies it with the occurrence), each with the
+width of its lazy plan (`N cols`, or `N cols carried` for an ancestor, which projection
+pushdown leaves only the columns the target needs), a failed node with its error and, when
+the executor located it, `(line N)` of its code, and then the target's collected output.
+Metadata-only submodel occurrence entries carry schema warnings, not frames, and are not
+reported. The CLI does not print schema warnings.
 
 | Command | Arguments and options | Exit and failure contract |
 |---|---|---|
 | `haute` | `--version`; `--help`. | Both print and exit 0. Unknown commands/options are Click usage errors (exit 2). |
 | `haute init` | `--automated`/`--workbench` (how the project prices; asked at a terminal, else automated); `--ci` choice: `github` (the default), `gitlab`, `azure-devops`, `none`; `--target` choice, an automated project's: `databricks` (the default), `container`, `azure-container-apps`, `aws-ecs`, `gcp-run`; `--host` choice, a workbench project's: `azure-container-apps` (the default, the only host); `--store` choice, a workbench project's: `sqlserver`, `postgresql` (no default); `--sign-in` choice, a workbench project's: `password`, `entra`, `service-principal` (no default). The `--target` help labels `azure-container-apps`, `aws-ecs` and `gcp-run` build and push only; the planned `sagemaker` and `azure-ml` targets are not offered. At a terminal each answer a flag does not give is asked as a numbered list, its default the answer Enter takes; on a new project a workbench project's database and sign-in have none, so an answer must be picked. In a project with a `haute.toml` each default is the project's current answer instead, and a question it holds no answer to has none, save the host's. | Success 0. An existing `haute.toml` that does not read as TOML exits 1, before any question. Invalid choices exit 2 before the handler. Without a terminal, a question without a default and without its flag (a new workbench project's `--store` or `--sign-in`, or on a re-run any the project holds no answer to) exits 2 naming the flag, as does `--target` with `--workbench` or `--host`, `--store` or `--sign-in` with an automated project. File/TOML/scaffold write errors are not converted into a fallback. |
-| `haute run [PIPELINE_FILE]` | Optional path; absent input uses `resolve_pipeline_file` project/discovery rules. | Missing/ambiguous file, a `haute.toml` that is malformed or whose `[project].pipeline` leaves the project (`ConfigError`), parse failure, empty graph, executor failure, or any node result with non-`ok` status exits 1; success exits 0 after the optional final preview. |
+| `haute run [PIPELINE_FILE]` | Optional path; absent input uses `resolve_pipeline_file` project/discovery rules. `--node TEXT` (a node id to run to instead of the output node); `--source TEXT` (default `live`); `--rows INTEGER` (minimum `1`; collect only the output's first rows). | Missing/ambiguous file, a `haute.toml` that is malformed or whose `[project].pipeline` leaves the project (`ConfigError`), parse failure, empty graph, no output node without `--node` (or several), a `--node` the graph lacks, a failure the walk attributes to a node, or an expected execution failure (`EXPECTED_FAILURES` or a Polars error) exits 1; any other exception propagates with its traceback. Success exits 0 after printing the output. |
 | `haute lint [PIPELINE_FILE]` | Optional path resolved exactly as `run`. | Missing/ambiguous file, a `haute.toml` that is malformed or whose `[project].pipeline` leaves the project (`ConfigError`), parse failure, or empty graph exits 1; so does any collected problem: an error diagnostic of the editor document, a save-time validation refusal, or a structural issue. Save warnings are printed. A clean graph exits 0. |
 | `haute train TRAINING_SCRIPT` | Required positional path. | Omission is a Click exit-2 usage error. Missing/unsafe/unloadable script, missing `job`, script exception, or `job.run` failure exits 1; successful training exits 0. |
 | `haute serve` | `--host TEXT` (CLI → `[server].host` → `localhost`); `--port INTEGER` (effective default `8000`, not shown by current help); `--no-browser`. Port range is not Click-validated: negative/out-of-range integers reach socket setup and may raise rawly. | Port conflict or missing production static build exits 1; malformed `haute.toml` propagates `ConfigError`. A browser-launch failure prints the manual URL but leaves the running server path intact. |
@@ -157,8 +159,17 @@ output nodes the pipeline still has, to replace. A root `main.py` is deleted and
 name contract without requiring execution data. Init creates neither `prompts/` nor node sidecars.
 
 **`run`**: resolves the pipeline file via `haute._project.resolve_pipeline_file`, calls
-`parse_pipeline_file(..., flatten=True)` then `execute_graph`, prints one line per node (row/column count or error),
-exits 1 if any node failed, then previews the last node's output as a `polars.DataFrame`.
+`parse_pipeline_file(..., flatten=True)` (a Workbench node given its form's tables), takes the
+target, `--node` or `deploy._pruner.find_output_node`'s one output node, and admits a
+`LAZY_SINK` execution context (`operation="cli_run"`). It compiles the preamble and walks the
+target's ancestors once with `execute_lazy_graph(graph, _build_node_fn,
+target_node_id=..., source=...)`, a sink walk that collects nothing, then prints one line per
+walked node from its plan's `collect_schema()` (a multi-frame result one line per frame), and
+collects only the target, through `streaming_collect` (`head(rows)` first with `--rows`); a
+node whose result is already a DataFrame (a node whose builder materialises, a Quote
+Response assembling its response among them) is printed as it is. A failure the walk or a
+schema read attributes to a node (`errors.failing_node`) prints `✗ <node> (line N): <error>`
+and exits 1. The admission is released on every path.
 
 **`lint`**: resolves the pipeline file and parses it as the editor loads it
 (`routes._helpers.parse_pipeline_to_graph`, strict, under the root the editor saves it in: the
@@ -480,8 +491,11 @@ sockets; other SDK/HTTP/uvicorn/subprocess/browser calls are mocked. Filesystem 
 pytest's `tmp_path`, and tests that need a specific cwd use `monkeypatch.chdir`.
 
 Key files and what they cover:
-- `test_submodel_instances.py` — real `haute run` reports and final preview with
-  occurrence warning entries in either result order; only executable nodes appear.
+- `test_submodel_instances.py` — real `haute run` reports, run to each occurrence's
+  scoring node: only executable nodes appear, with the columns each carries.
+- `test_cli_architecture.py::TestHandleRunCallable` — the real executor on a small pipeline:
+  only the target is collected, the output node is the default target, `--rows`, `--source`
+  reaching the walk, and the refusal without an output node.
 - `test_cli.py` — end-to-end `CliRunner` coverage per command (`--version`, `init`, `run`, `lint`,
   `smoke`, `serve`; `run` naming a failed node with its line), plus real-subprocess parity coverage for `python -m haute`, and a command
   piped under a locale that is not UTF-8 writing its marks in UTF-8, an encoding
