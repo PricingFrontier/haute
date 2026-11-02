@@ -599,6 +599,50 @@ class TestGenerateAppSource:
         # Every response names its request; each request gets its own id.
         assert healthy.headers["X-Request-ID"] not in {"", body["request_id"]}
 
+    def test_a_failure_no_route_handles_is_the_correlated_500(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """DEP-R15: an exception escaping the route still names its request id."""
+        module = _load_generated_app(tmp_path, monkeypatch, pl.DataFrame({"premium": [100.0]}))
+
+        def broken_framing(*_args, **_kwargs):
+            raise RuntimeError("frame builder broke at /srv/haute/app.py")
+
+        monkeypatch.setattr(module, "frame_rows", broken_framing)
+        client = TestClient(module.app, raise_server_exceptions=False)
+
+        with caplog.at_level("ERROR", logger="haute.deploy.container"):
+            failed = client.post("/quote", json={"age": 30})
+
+        assert failed.status_code == 500
+        assert "/srv/haute" not in failed.text
+        body = failed.json()
+        assert body["error_code"] == "deploy_internal_error"
+        assert body["request_id"] == failed.headers["X-Request-ID"]
+        [record] = caplog.records
+        assert record.getMessage() == f"deploy_request_failed request_id={body['request_id']}"
+
+    @pytest.mark.parametrize(
+        "body",
+        [b'{"age": ' + b"9" * 4400 + b"}", b"[" * 100_000 + b"]" * 100_000],
+        ids=["integer-past-the-digit-limit", "nesting-past-the-recursion-limit"],
+    )
+    def test_json_python_cannot_read_is_an_invalid_json_422(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: bytes
+    ) -> None:
+        module = _load_generated_app(tmp_path, monkeypatch, pl.DataFrame({"premium": [100.0]}))
+
+        response = TestClient(module.app).post(
+            "/quote", content=body, headers={"Content-Type": "application/json"}
+        )
+
+        assert response.status_code == 422
+        assert response.json()["error_code"] == "invalid_json"
+        assert response.headers["X-Request-ID"]
+
     def test_quote_rejects_oversized_content_length_before_json_materialisation(
         self,
         tmp_path: Path,

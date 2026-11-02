@@ -666,14 +666,17 @@ class TestInferOutputSchemaEdgeCases:
 
         mock_result = pl.DataFrame({"result": [42.0]})
 
-        # Make cache directory read-only to cause write failure
+        # The cache's one write fails as a read-only or full disk would.
         with (
             patch("haute.deploy._scorer.score_graph", return_value=mock_result),
-            patch("haute.deploy._schema.Path.write_text", side_effect=OSError("read-only")),
+            patch(
+                "haute.deploy._schema.atomic_write_text", side_effect=OSError("read-only")
+            ) as write,
         ):
             result = infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
 
         # Should still return the computed schema despite cache write failure
+        write.assert_called_once()
         assert result == {"result": "Float64"}
 
     def test_input_node_with_no_path_for_sample_raises(self, monkeypatch, tmp_path):

@@ -589,9 +589,15 @@ _INTERNAL_ERROR_MESSAGE = (
 
 @app.middleware("http")
 async def _request_id(request: Request, call_next):
-    """Give each request an id, sent back as X-Request-ID, that its log lines carry."""
+    """Give each request an id, sent back as X-Request-ID, that its log lines carry.
+
+    A failure no route handled is answered here as every other 500 is, naming the id.
+    """
     request.state.request_id = uuid.uuid4().hex
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        response = _internal_error(request, "deploy_request_failed")
     response.headers["X-Request-ID"] = request.state.request_id
     return response
 

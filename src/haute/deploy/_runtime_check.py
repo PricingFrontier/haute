@@ -6,8 +6,9 @@ bundle carries (``haute.deploy._lock``) and refuses the image unless:
 * every locked distribution is installed at its locked version, and nothing is installed
   that the lock, ``haute`` and the base image's own tooling do not account for;
 * every requirement of every locked distribution (its markers evaluated for this
-  interpreter, with the extras the lock's roots selected) is installed at a version it
-  admits, so a missing transitive dependency or an incompatible version is never silent;
+  interpreter, with the extras the lock's roots select and those a requirement names, such
+  as ``child[crypto]``, followed through the closure) is installed at a version it admits,
+  so a missing transitive dependency or an incompatible version is never silent;
 * ``haute``, installed without its dependencies, has each of its own requirements
   installed at a version it admits, or named in the record's ``haute_omitted``: the
   reviewed list of what a scoring container deliberately leaves out (the editor,
@@ -77,37 +78,76 @@ def runtime_problems(
         problems.append(f"{name} is installed but the lock does not hold it.")
     if "haute" not in installed:
         problems.append("haute is not installed.")
-    for name in sorted({*pins, "haute"} & set(installed)):
+    checked = sorted({*pins, "haute"} & set(installed))
+    requirements: dict[str, list[Requirement]] = {}
+    for name in checked:
+        requirements[name], unparsed = _parsed_requirements(installed[name])
+        problems.extend(unparsed)
+    active = _active_extras(requirements, extras)
+    for name in checked:
         problems.extend(
             _requirement_problems(
-                installed[name],
+                name,
+                _active(requirements[name], active.get(name, frozenset())),
                 installed,
-                extras=extras.get(name, frozenset()),
                 omitted=omitted if name == "haute" else frozenset(),
             )
         )
     return problems
 
 
-def _requirement_problems(
-    dist: metadata.Distribution,
-    installed: Mapping[str, metadata.Distribution],
-    *,
-    extras: frozenset[str],
-    omitted: frozenset[str],
-) -> list[str]:
+def _parsed_requirements(dist: metadata.Distribution) -> tuple[list[Requirement], list[str]]:
+    """*dist*'s requirements, and a problem for each that does not parse."""
     owner = _name(dist.metadata["Name"])
+    parsed: list[Requirement] = []
     problems: list[str] = []
     for line in dist.requires or ():
         try:
-            requirement = Requirement(line)
+            parsed.append(Requirement(line))
         except InvalidRequirement as exc:
             problems.append(f"{owner} declares a requirement that does not parse: {line} ({exc})")
-            continue
-        if requirement.marker is not None and not any(
-            requirement.marker.evaluate({"extra": extra}) for extra in ("", *extras)
-        ):
-            continue
+    return parsed, problems
+
+
+def _active(requirements: Iterable[Requirement], extras: frozenset[str]) -> list[Requirement]:
+    """The *requirements* this interpreter's markers select, with *extras* selected."""
+    return [
+        requirement
+        for requirement in requirements
+        if requirement.marker is None
+        or any(requirement.marker.evaluate({"extra": extra}) for extra in ("", *extras))
+    ]
+
+
+def _active_extras(
+    requirements: Mapping[str, list[Requirement]], roots: Mapping[str, frozenset[str]]
+) -> dict[str, frozenset[str]]:
+    """Each distribution's selected extras: those the roots select and those an active
+    requirement of another names (``child[crypto]``), followed through the closure."""
+    active = {name: set(extras) for name, extras in roots.items()}
+    changed = True
+    while changed:
+        changed = False
+        for name, declared in requirements.items():
+            for requirement in _active(declared, frozenset(active.get(name, ()))):
+                if not requirement.extras:
+                    continue
+                selected = active.setdefault(_name(requirement.name), set())
+                if not requirement.extras <= selected:
+                    selected |= requirement.extras
+                    changed = True
+    return {name: frozenset(extras) for name, extras in active.items()}
+
+
+def _requirement_problems(
+    owner: str,
+    requirements: Iterable[Requirement],
+    installed: Mapping[str, metadata.Distribution],
+    *,
+    omitted: frozenset[str],
+) -> list[str]:
+    problems: list[str] = []
+    for requirement in requirements:
         name = _name(requirement.name)
         required = installed.get(name)
         if required is None:

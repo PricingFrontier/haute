@@ -231,6 +231,32 @@ def test_a_root_s_extras_are_required_of_it(tmp_path: Path) -> None:
     }
 
 
+@pytest.mark.parametrize("installed", [None, "0.20"], ids=["missing", "incompatible"])
+def test_an_extra_a_dependency_requests_is_required_of_its_target(
+    tmp_path: Path, installed: str | None
+) -> None:
+    """starlette asks for anyio[trio]: anyio's trio requirement holds, though no root
+    selects that extra."""
+    site = _image(tmp_path)
+    shutil.rmtree(next(site.glob("starlette-*.dist-info")))
+    _install(site, "starlette", "0.48.0", "anyio[trio]>=3.6")
+    shutil.rmtree(next(site.glob("anyio-*.dist-info")))
+    _install(site, "anyio", "4.16.0", 'trio>=0.31; extra == "trio"')
+    pins = dict(_RECORD["pins"])
+    if installed is not None:
+        _install(site, "trio", installed)
+        pins["trio"] = installed
+
+    problems = _problems(site, {**_RECORD, "pins": pins})
+
+    requirement = 'trio>=0.31; extra == "trio"'
+    assert problems == [
+        f"anyio requires {requirement}, which is not installed."
+        if installed is None
+        else f"anyio requires {requirement}, but trio {installed} is installed."
+    ]
+
+
 def test_the_command_line_exits_non_zero_naming_each_problem(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -557,18 +557,21 @@ def test_json_and_ndjson_answer_with_the_same_rows(
     sample, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """DEP-R17: Accept changes the framing, never a row: a null premium leaves its pricing
-    object out, a quote without drivers its drivers, and a date reads as ISO text, in both."""
+    object out, a quote without drivers its drivers, a date reads as ISO text and a decimal
+    as its exact digits, in both."""
     graph = _graph(sample)
     priced = (
         "df = quote.with_columns("
         "premium=pl.when(pl.col('region') == 'N').then(None)"
-        ".otherwise(pl.col('quote_id') * 10.0), issued=pl.date(2026, 1, 1))"
+        ".otherwise(pl.col('quote_id') * 10.0), issued=pl.date(2026, 1, 1),"
+        " fee=pl.lit('12.34').cast(pl.Decimal(10, 2)))"
     )
     out = graph.node_map["out"]
     mapping = [
         _entry("priced", "quote_id", "$[:].quote_id"),
         _entry("priced", "premium", "$[:].pricing.premium"),
         _entry("priced", "issued", "$[:].issued"),
+        _entry("priced", "fee", "$[:].fee"),
         *(entry for entry in out.data.config["outputMapping"] if entry["source_port"] != "quote"),
     ]
     graph = PipelineGraph.model_validate(
@@ -606,10 +609,11 @@ def test_json_and_ndjson_answer_with_the_same_rows(
         lines = [json.loads(line) for line in as_ndjson.text.splitlines()]
         assert lines == as_json.json()["rows"]
 
+    fee = {"issued": "2026-01-01", "fee": "12.34"}
     assert lines == [
-        {"quote_id": 7, "issued": "2026-01-01", "pricing": {"premium": 70.0}, **_drivers(0)},
-        {"quote_id": 3, "issued": "2026-01-01", **_drivers(1)},
-        {"quote_id": 5, "issued": "2026-01-01", "pricing": {"premium": 50.0}},
+        {"quote_id": 7, **fee, "pricing": {"premium": 70.0}, **_drivers(0)},
+        {"quote_id": 3, **fee, **_drivers(1)},
+        {"quote_id": 5, **fee, "pricing": {"premium": 50.0}},
     ]
 
 

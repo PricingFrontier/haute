@@ -348,7 +348,8 @@ definition file's own preamble, would be refused like any other unbundled projec
   stable JSON envelope capped at 1,000 returned rows or streams all rows as ordered NDJSON
   when requested through `Accept`. Either way the rows are the OUTPUT document as
   `render_output_document` renders it (a null field and an empty collection left out, a
-  null inside an array kept) and encoded alike, a date or time as its ISO 8601 text, so
+  null inside an array kept) and encoded alike, a date or time as its ISO 8601 text and a
+  decimal as its exact digits, so
   `Accept` changes the framing and the row limit, never a row. NDJSON is collected into a bounded-memory spooled
   temporary file in Starlette's worker threadpool before response headers are sent, so
   the event loop remains responsive during scoring and a scoring failure produces the
@@ -596,8 +597,10 @@ most: a silent wrong answer here mis-prices real policies.
   id, so an operator finds the detail from the id a client reports. Every response carries
   its request's id as the `X-Request-ID` header, a fresh one per request. The MLflow `pyfunc` path (`_model_code.py`) has no equivalent
   envelope — exceptions propagate to whatever the Databricks serving runtime does with
-  an unhandled `predict()` exception. Invalid UTF-8 currently escapes the structured body
-  parser, and invalid array element shapes can fail later during Polars materialisation.
+  an unhandled `predict()` exception. A body that cannot be read as JSON (malformed, not
+  UTF-8, an integer past Python's digit limit, nesting past its recursion limit) is the
+  422 `invalid_json` envelope; invalid array element shapes can fail later during Polars
+  materialisation.
 - **Docker/subprocess failures** (`docker info`, `docker build`, `docker push`) raise
   `DeployError` with the captured stderr; a `DeployError` telling the caller to run in
   CI is raised specifically when Docker itself isn't available. The `haute deploy` CLI
@@ -670,7 +673,8 @@ Locking needs `uv` on the deploying host, which the generated CI installs.
   `--no-deps --require-hashes`, so a changed file fails the build, and then checks itself
   (`haute.deploy._runtime_check`): every locked distribution installed at its version and
   nothing else but haute and the base image's tooling; every requirement of every locked
-  distribution, under this interpreter's markers and the extras the roots selected,
+  distribution, under this interpreter's markers and the extras the roots and the closure's
+  own requirements select,
   installed at a version it admits; and each of haute's own requirements installed and
   admitted, or one of the reviewed omissions. A missing transitive dependency or an
   incompatible version fails the build. A rebuild of the bundle installs the same runtime.

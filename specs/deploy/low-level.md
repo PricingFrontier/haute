@@ -30,8 +30,8 @@ reached through a link refused through `ordinary_path_problem`; the `[mlflow]` t
 | `src/haute/deploy/_request_frame.py` | A flat Quote Input's served request framed by the manifest's `input_schema`: `request_frame_schema` (the rendered dtypes parsed by `parse_rendered_dtype`, an unsupported one refused as a `DeployError` naming the column), `frame_rows(rows, schema, *, omittable)` (each value through `_json_values.json_value`, an explicit null a typed null, an unknown key ignored, and a missing key refused as a `QuoteInputError` naming the quote and the column unless the column is in *omittable*, the manifest's omittable inputs, where it is a typed null) and `QuoteInputError` (error code quote_input_invalid, a public contract error naming the column, the quote and the value). |
 | `src/haute/_json_values.py` | JSON values checked against a declared Polars dtype, shared by the flat Quote Input's framing and the Workbench Input's reader: `json_value(value, dtype)` returns the value as the dtype holds it or raises `JsonValueError`; `REQUEST_DTYPES` names the supported dtype classes. |
 | `src/haute/deploy/_lock.py` | The one resolver of every deployment's dependency lock: `lock_requirements` runs `uv pip compile` (`uv_command`, refused when `uv` is not on PATH) for a target's Python and `TARGET_PLATFORM` (`x86_64-manylinux_2_28`; `DOCKER_PLATFORM` is the image's `linux/amd64`) with `--only-binary :all:` and `--generate-hashes`, optionally `--no-deps` and constraints, a failure a `DeployError` naming the target; `DependencyLock` holds the requirements (index options turned into credential-free provenance comments), `pins` and `provenance()`. |
-| `src/haute/deploy/_runtime_check.py` | The check a scoring image runs on its installed runtime (`python -m haute.deploy._runtime_check dependency_lock.json`): `runtime_problems` names every locked distribution missing or at another version, every installed one the lock, haute and the base image's tooling (`BASE_IMAGE_TOOLING`) do not account for, every requirement of a locked distribution (markers evaluated, the roots' `selected_extras` applied) not installed or not admitted, and each of haute's own not installed unless the record names it among haute's omissions. |
-| `src/haute/deploy/_response_json.py` | A deployed response's rows as JSON, one encoding for both response modes: `response_json` (compact UTF-8, a date, date-time or time as its ISO 8601 text, a NaN or infinity refused) and `ndjson_rows` (a frame's `render_output_document` rows, one line each). The generated app's JSON envelope and its NDJSON spools both encode through it. |
+| `src/haute/deploy/_runtime_check.py` | The check a scoring image runs on its installed runtime (`python -m haute.deploy._runtime_check dependency_lock.json`): `runtime_problems` names every locked distribution missing or at another version, every installed one the lock, haute and the base image's tooling (`BASE_IMAGE_TOOLING`) do not account for, every requirement of a locked distribution (markers evaluated, the extras the roots select, `selected_extras`, and those a requirement names, such as `child[crypto]`, followed through the closure by `_active_extras`) not installed or not admitted, and each of haute's own not installed unless the record names it among haute's omissions. |
+| `src/haute/deploy/_response_json.py` | A deployed response's rows as JSON, one encoding for both response modes: `response_json` (compact UTF-8, a date, date-time or time as its ISO 8601 text, a decimal as its exact digits in a string, a NaN or infinity refused) and `ndjson_rows` (a frame's `render_output_document` rows, one line each). The generated app's JSON envelope and its NDJSON spools both encode through it. |
 | `src/haute/deploy/_request_limits.py` | Deployed-container request-body size limiting: environment resolution, `Content-Length` and streamed-byte enforcement before JSON materialisation, and structured limit/header/parse errors. |
 
 ## Key types and data structures
@@ -550,7 +550,8 @@ searches the working directory too. Spawned batch workers inherit the parent's `
    goes through `_internal_error`, which logs the failure in flight with
    `logger.exception("<event> request_id=<id>")` and answers
    `{"error_code": "deploy_internal_error", "error": <a fixed message>, "request_id": <id>}`,
-   never the exception's text.
+   never the exception's text; the middleware answers so for an exception no route handled
+   (`deploy_request_failed`).
 1. Startup loads `deploy_manifest.json`, reconstructs `PipelineGraph`, and resolves the
    request-body limit. `GET /health` returns status, model/version, deployed-node count,
    the manifest input/output schemas,
@@ -578,9 +579,10 @@ searches the working directory too. Spawned batch workers inherit the parent's `
    `isolated_worker_memory_detail`).
 2. `POST /quote` reads JSON through `_request_limits.read_limited_json_body` before
    constructing a `DataFrame`. A JSON object becomes a one-row request; a JSON array is
-   used as the batch; any other JSON top-level value returns HTTP 400. A body that is not
-   UTF-8 is the structured `invalid_json` parse-error envelope (`UnicodeDecodeError` caught
-   with `json.JSONDecodeError`), answered 422.
+   used as the batch; any other JSON top-level value returns HTTP 400. A body Python cannot
+   read as JSON (malformed, not UTF-8, an integer past the interpreter's digit limit, or
+   nesting past its recursion limit: any `ValueError` or `RecursionError` from `json.loads`)
+   is the structured `invalid_json` parse-error envelope, answered 422.
 3. A flat Quote Input's single quote is framed by `_request_frame.frame_rows` against the
    manifest's `input_schema` (parsed once at startup by `request_frame_schema`) before
    admission, the body being size-capped already; a refusal is HTTP 422 with

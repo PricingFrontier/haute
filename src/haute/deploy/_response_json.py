@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, time
+from decimal import Decimal
 from typing import Any
 
 import polars as pl
@@ -19,9 +20,12 @@ from haute._output_assembler import render_output_document
 
 
 def _encode_value(value: object) -> str:
-    """A temporal value as its ISO 8601 text, the form a request carries one in."""
+    """A temporal value as its ISO 8601 text, the form a request carries one in, and a
+    decimal as its exact digits, which no JSON number could hold without rounding."""
     if isinstance(value, date | datetime | time):
         return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
