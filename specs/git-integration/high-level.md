@@ -77,6 +77,11 @@ of a git identity or of a chosen working branch, or fails, still lands on disk, 
 answer names the files it left off the ledger with a warning: no later save's pathspec takes
 them, so the editor keeps them and one capture route takes them once an identity is set or a
 branch chosen, and at each Save. A project with no repository owes nothing.
+Haute's own generators capture what they add the same way: `haute ci update` and `haute init`
+run again record each file they generate that Git does not track yet (one they just wrote,
+or one an earlier run wrote and nobody committed), a workflow or `connections.toml`, as one
+save, since Commit takes a new file only in the pipeline folder and would never take theirs; what they change in files Git already tracks stays on disk, for review and the next
+Commit. A capture they cannot make names the new files as not yet in version history.
 HEAD lives on the ledger during normal use, so
 the user is always looking at their latest saved state. "Commit" (a milestone) first
 sweeps into one final ledger save every modified file already tracked by Git and every new

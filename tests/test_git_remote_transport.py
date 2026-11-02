@@ -210,6 +210,16 @@ def _catch_up(project: Path) -> object:
     return fast_forward_pair("origin", project, cwd=project)
 
 
+def test_a_remote_read_the_analyst_started_waits_out_a_credential_helpers_sign_in() -> None:
+    # Git Credential Manager's first sign-in after a quiet spell took 12 to 13 seconds on an
+    # analyst's laptop, past the 10 a Push's inspection of the remote had: the Push said the
+    # remote could not be refreshed while git was about to answer. Every read held to this
+    # deadline is one the analyst started and waits on, as the publication itself is.
+    for module in (git_core, git_remote):
+        assert module._FETCH_TIMEOUT_SECONDS >= 60
+        assert module._FETCH_TIMEOUT_SECONDS == git_core._PUSH_TIMEOUT_SECONDS
+
+
 @pytest.mark.parametrize("action", [_push, _catch_up], ids=["push", "catch-up"])
 def test_a_hanging_transport_is_ended_with_its_children_at_the_deadline(
     remote: dict[str, Path],

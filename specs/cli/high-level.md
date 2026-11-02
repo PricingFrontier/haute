@@ -87,7 +87,8 @@ Out of scope, owned elsewhere:
   from it what was set by hand, the `[mlflow]` settings saved from the app among them. It
   writes the workflows (pruning every generated file the new set does not hold),
   `.env.example` and the pre-commit hook again, reporting each as written, updated or
-  unchanged and each workflow it removed,
+  unchanged and each workflow it removed, records each file it wrote or generates that Git
+  does not track yet in version history as a save, as `haute ci update` does,
   and writes nothing in `rating/` or `tests/`, which are the project's, beyond the
   workbench's form folder when it has none. The kind of project may change: an automated
   project set up as a workbench gets the blank form folder and `connections.toml` where
@@ -147,7 +148,14 @@ Out of scope, owned elsewhere:
   changed `[ci.staging] endpoint_suffix`, or a `[ci.production] environment` whose reviewers
   then gate production, without being initialised again. A workbench project's are the
   workbench's set, for its `[workbench.app] host`, which it refuses to run without; an
-  automated project's are the scoring endpoint's, for its `[deploy] target`.
+  automated project's are the scoring endpoint's, for its `[deploy] target`. A generated
+  file Git does not track yet, a workflow a newer Haute adds or one an earlier run left
+  uncommitted, is recorded in version history as a save on the working branch, so the next
+  Commit takes it: Commit takes a new
+  file only in the pipeline folder ([git integration](../git-integration/high-level.md)).
+  Without a chosen working branch or a git identity it names such files as not yet in
+  version history, for `git status`, which lists them where `git diff` does not. What it
+  changes in tracked files is left for review and the next Commit.
 - `haute ci registry-host` prints the host of the registry a container target, or a
   workbench project's app image, pushes to, for the login step its generated jobs run
   before `haute deploy` or `haute app build --push`.
