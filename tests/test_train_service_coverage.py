@@ -122,7 +122,6 @@ def _patch_execute_env():
     return (
         patch("haute.executor._build_node_fn", return_value=None),
         patch("haute.modelling._algorithms._mem_checkpoint"),
-        patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
         patch("haute.executor._preview_cache", MagicMock()),
         patch("haute.trace._cache", MagicMock()),
     )
@@ -241,7 +240,7 @@ class TestPreparationMissingTarget:
             # Returns the 4-tuple shape but with the target node absent.
             return ({}, [], {}, {})
 
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -251,7 +250,6 @@ class TestPreparationMissingTarget:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(_preparation_request(body, parquet_path))
 
@@ -301,7 +299,7 @@ class TestPreparationProjection:
         def lazy_returns_target(*args, **kwargs):
             return ({"n": lf}, [], {}, {})
 
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -313,7 +311,6 @@ class TestPreparationProjection:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(
                 _preparation_request(
@@ -357,7 +354,7 @@ class TestPreparationProjection:
         def lazy_returns_target(*args, **kwargs):
             return ({"n": lf}, [], {}, {})
 
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -369,7 +366,6 @@ class TestPreparationProjection:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(
                 _preparation_request(
@@ -617,7 +613,7 @@ class TestPreparationWithExecutionContext:
 
         context = _training_execution_context()
 
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -629,7 +625,6 @@ class TestPreparationWithExecutionContext:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(_preparation_request(body, parquet_path), context=context)
 
@@ -676,7 +671,7 @@ class TestPreparationWithExecutionContext:
         overrides = (
             {"project_to_keep_columns": True, "keep_columns": ["y", "x1"]} if projected else {}
         )
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -688,7 +683,6 @@ class TestPreparationWithExecutionContext:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(
                 _preparation_request(body, parquet_path, **overrides),
@@ -728,7 +722,7 @@ class TestPreparationWithExecutionContext:
         }
         context = _training_execution_context()
 
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -740,7 +734,6 @@ class TestPreparationWithExecutionContext:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(
                 _preparation_request(body, parquet_path, required_columns_by_node=demand),
@@ -769,7 +762,7 @@ class TestPreparationWithExecutionContext:
 
         demand = {"n": frozenset({"needed_col"})}
 
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -781,7 +774,6 @@ class TestPreparationWithExecutionContext:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(
                 _preparation_request(body, parquet_path, required_columns_by_node=demand)
@@ -810,7 +802,7 @@ class TestPreparationCleanupArms:
         def lazy_raises_contract_error(*args, **kwargs):
             raise PreambleError("invalid preamble", source_line=7)
 
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -820,7 +812,6 @@ class TestPreparationCleanupArms:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(_preparation_request(body, parquet_path))
 
@@ -851,7 +842,7 @@ class TestPreparationCleanupArms:
                 job_id="job",
             )
 
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -861,7 +852,6 @@ class TestPreparationCleanupArms:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(_preparation_request(body, parquet_path))
 
@@ -881,7 +871,7 @@ class TestPreparationCleanupArms:
         def lazy_raises_unsupported(*args, **kwargs):
             raise BoundedMemoryUnsupportedError("node X cannot stream")
 
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -891,7 +881,6 @@ class TestPreparationCleanupArms:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(_preparation_request(body, parquet_path))
 
@@ -922,7 +911,7 @@ class TestPreparationCleanupAbsentPaths:
         body = _source_only_request()
         parquet_path = tmp_path / "never_created.parquet"
 
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -932,7 +921,6 @@ class TestPreparationCleanupAbsentPaths:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(_preparation_request(body, parquet_path))
         assert not parquet_path.exists()
