@@ -1064,7 +1064,8 @@ describe("App integration - load a pipeline with nodes", () => {
     }
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [producer, stepped],
-      edges: [{ id: "e1", source: "prod", target: "t", sourceHandle: "output_1", targetHandle: null }],
+      // The server names the executable input of the edge it sends.
+      edges: [{ id: "e1", source: "prod", target: "t", sourceHandle: "output_1", targetHandle: null, data: { _inputName: "Model" } }],
       source_revision: "revision-test",
     }))
     render(<App />)
