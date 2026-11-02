@@ -1076,11 +1076,11 @@ describe("usePipelineAPI", () => {
       targetHandle: "in__score",
     }
     const params = makeParams()
-    params.graphRef.current = { nodes: [], edges: [boundaryEdge] }
-    useGraphStore.setState({ nodes: [], edges: [boundaryEdge], preamble: "" })
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    params.graphRef.current = { nodes: [], edges: [boundaryEdge] }
+    useGraphStore.setState({ nodes: [], edges: [boundaryEdge], preamble: "" })
     await act(async () => {
       await result.current.handleSave()
     })
@@ -1174,11 +1174,11 @@ describe("usePipelineAPI", () => {
     const savedNodes = [makeNode("n1", "polars", { data: { label: "Before save" } })]
     const editedNodes = [makeNode("n1", "polars", { data: { label: "Edited while saving" } })]
     const params = makeParams()
-    params.graphRef.current = { nodes: savedNodes, edges: [] }
-    useGraphStore.setState({ nodes: savedNodes, edges: [], preamble: "" })
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    params.graphRef.current = { nodes: savedNodes, edges: [] }
+    useGraphStore.setState({ nodes: savedNodes, edges: [], preamble: "" })
 
     await act(async () => {
       result.current.handleSave()
@@ -1218,11 +1218,11 @@ describe("usePipelineAPI", () => {
     const savedNode = makeNode("n1", "polars", { data: { label: "Transform", config } })
     const savedEdge = makeEdge("n1", "n2", { id: "e1", sourceHandle: "before" })
     const params = makeParams()
-    params.graphRef.current = { nodes: [savedNode], edges: [savedEdge] }
-    useGraphStore.setState({ nodes: [savedNode], edges: [savedEdge], preamble: "" })
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    params.graphRef.current = { nodes: [savedNode], edges: [savedEdge] }
+    useGraphStore.setState({ nodes: [savedNode], edges: [savedEdge], preamble: "" })
 
     await act(async () => {
       result.current.handleSave()
@@ -1403,9 +1403,9 @@ describe("usePipelineAPI", () => {
     })
     const graph = edgeJoinSaveGraph(config)
     const params = makeParams()
-    params.graphRef.current = graph
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    params.graphRef.current = graph
 
     await act(async () => {
       result.current.handleSave()
@@ -1443,9 +1443,9 @@ describe("usePipelineAPI", () => {
     })
     const graph = edgeJoinSaveGraph({ how: "left", on: ["policy_id"], maintainOrder: "left_right" })
     const params = makeParams()
-    params.graphRef.current = graph
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    params.graphRef.current = graph
 
     // Both inputs carry columns WITHOUT the configured key.
     const { activeSource } = useSettingsStore.getState()
@@ -1722,13 +1722,13 @@ describe("usePipelineAPI", () => {
       })
       const target = makeNode("claims")
       const params = makeParams()
-      params.graphRef.current = { nodes: [input, target], edges: [makeEdge(input.id, target.id)] }
       vi.mocked(previewInputs).mockResolvedValue({ input_node_ids: [input.id] })
       mockPreview.mockResolvedValue({
         node_id: "claims", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0,
       })
       const { result } = renderHook(() => usePipelineAPI(params))
       await waitFor(() => expect(result.current.loading).toBe(false), { timeout: CACHE_WAIT_TIMEOUT_MS })
+      params.graphRef.current = { nodes: [input, target], edges: [makeEdge(input.id, target.id)] }
       act(() => { result.current.fetchPreview(target, { debounceMs: 0 }) })
       await waitFor(
         () => expect(mockBuildInputCache).toHaveBeenCalledOnce(),
@@ -1800,13 +1800,13 @@ describe("usePipelineAPI", () => {
     const input = makeSnapshotInput()
     const target = makeNode("target")
     const params = makeParams()
+    vi.mocked(previewInputs).mockResolvedValue({ input_node_ids: [input.id] })
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
     params.graphRef.current = {
       nodes: [input, target],
       edges: [makeEdge(input.id, target.id)],
     }
-    vi.mocked(previewInputs).mockResolvedValue({ input_node_ids: [input.id] })
-    const { result } = renderHook(() => usePipelineAPI(params))
-    await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => {
       result.current.fetchPreview(target, { debounceMs: 0 })
@@ -1849,13 +1849,13 @@ describe("usePipelineAPI", () => {
     const aboveSeed = makeSnapshotInput("above-seed")
     const target = makeNode("target")
     const params = makeParams()
+    vi.mocked(previewInputs).mockResolvedValue({ input_node_ids: [read.id] })
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
     params.graphRef.current = {
       nodes: [read, aboveSeed, target],
       edges: [makeEdge(read.id, target.id), makeEdge(aboveSeed.id, target.id)],
     }
-    vi.mocked(previewInputs).mockResolvedValue({ input_node_ids: [read.id] })
-    const { result } = renderHook(() => usePipelineAPI(params))
-    await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => {
       result.current.fetchPreview(target, { debounceMs: 0 })
@@ -1917,13 +1917,13 @@ describe("usePipelineAPI", () => {
     const input = makeSnapshotInput()
     const target = makeNode("target")
     const params = makeParams()
+    vi.mocked(previewInputs).mockResolvedValue({ input_node_ids: [input.id] })
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
     params.graphRef.current = {
       nodes: [input, target],
       edges: [makeEdge(input.id, target.id)],
     }
-    vi.mocked(previewInputs).mockResolvedValue({ input_node_ids: [input.id] })
-    const { result } = renderHook(() => usePipelineAPI(params))
-    await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => {
       result.current.fetchPreview(target, { debounceMs: 0 })
@@ -2701,10 +2701,6 @@ describe("usePipelineAPI", () => {
     })
     const target = makeNode("target")
     const params = makeParams()
-    params.graphRef.current = {
-      nodes: [upstream, target],
-      edges: [{ id: "upstream-target", source: "upstream", target: "target" }],
-    }
 
     let resolveUpstream!: (value: Awaited<ReturnType<typeof previewNode>>) => void
     mockPreview.mockImplementation(({ nodeId }) => {
@@ -2725,6 +2721,10 @@ describe("usePipelineAPI", () => {
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    params.graphRef.current = {
+      nodes: [upstream, target],
+      edges: [{ id: "upstream-target", source: "upstream", target: "target" }],
+    }
     useGraphStore.getState().setNodesRaw([upstream, target])
 
     act(() => {
@@ -2828,10 +2828,6 @@ describe("usePipelineAPI", () => {
     })
     const target = makeNode("target")
     const params = makeParams()
-    params.graphRef.current = {
-      nodes: [upstream, target],
-      edges: [{ id: "upstream-target", source: "upstream", target: "target" }],
-    }
 
     let rejectUpstream!: (reason: unknown) => void
     mockPreview.mockImplementation(({ nodeId }) => {
@@ -2852,6 +2848,10 @@ describe("usePipelineAPI", () => {
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    params.graphRef.current = {
+      nodes: [upstream, target],
+      edges: [{ id: "upstream-target", source: "upstream", target: "target" }],
+    }
 
     act(() => {
       result.current.refreshPreview(target)
@@ -2924,10 +2924,6 @@ describe("usePipelineAPI", () => {
     const upstream = makeNode("upstream")
     const target = makeNode("target")
     const params = makeParams()
-    params.graphRef.current = {
-      nodes: [upstream, target],
-      edges: [{ id: "upstream-target", source: "upstream", target: "target" }],
-    }
 
     mockPreview.mockImplementation(({ nodeId, signal }) => {
       if (nodeId === "target") {
@@ -2951,6 +2947,10 @@ describe("usePipelineAPI", () => {
 
     const { result, unmount } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    params.graphRef.current = {
+      nodes: [upstream, target],
+      edges: [{ id: "upstream-target", source: "upstream", target: "target" }],
+    }
 
     act(() => {
       result.current.refreshPreview(target)
@@ -2998,13 +2998,13 @@ describe("usePipelineAPI", () => {
     )
     const upstreamNodes = upstreamIds.map((id) => makeNode(id))
     const params = makeParams()
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
     params.graphRef.current = {
       nodes: [target, ...upstreamNodes],
       edges: upstreamIds.map((id) => makeEdge(id, "target")),
     }
-
-    const { result } = renderHook(() => usePipelineAPI(params))
-    await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => {
       result.current.refreshPreview(target)
