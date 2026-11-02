@@ -905,6 +905,7 @@ class _Walk:
             enforce_contracts=self.request.enforce_contracts,
             execution_context=self.context,
             needed_columns=self.projection.needed_by_node,
+            produced_columns=self.projection.builder_needed,
         )
 
     def _build_funcs(self, build_order: list[str]) -> dict[str, tuple[Callable[..., Any], bool]]:

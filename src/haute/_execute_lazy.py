@@ -10,7 +10,7 @@ import contextlib
 import difflib
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import polars as pl
@@ -518,12 +518,14 @@ class NodeBoundaryRunner:
         enforce_contracts: bool,
         execution_context: ExecutionContext | None,
         needed_columns: Mapping[str, frozenset[str] | None],
+        produced_columns: Mapping[str, frozenset[str] | None],
     ) -> None:
         self.prepared = prepared
         self.funcs = funcs
         self.enforce_contracts = enforce_contracts
         self.execution_context = execution_context
         self.needed_columns = needed_columns
+        self.produced_columns = produced_columns
 
     def open(self, node_id: str) -> NodeBoundary:
         node = self.prepared.graph_plan.node_map[node_id]
@@ -541,6 +543,11 @@ class NodeBoundaryRunner:
             if self.enforce_contracts
             else None
         )
+        produced = self.produced_columns.get(node_id)
+        if contract is not None and contract.outputs is not None and produced is not None:
+            # A builder asked for some columns (a source scanning only what the
+            # execution reads) owes only the declared outputs among them.
+            contract = replace(contract, outputs=contract.outputs & produced)
         return NodeBoundary(
             node_id=node_id,
             node=node,

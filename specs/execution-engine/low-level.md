@@ -155,7 +155,9 @@
   neither engine rebuilds these indexes.
 - **`NodeBoundaryRunner` / `NodeBoundary`** (`_execute_lazy.py`) — request-local
   shared node orchestration. It resolves the effective contract once when a node
-  boundary opens, records the common execution checkpoint/column-demand metrics,
+  boundary opens, narrowing its declared outputs to the columns the builder was asked
+  to produce when the plan asks for some (a source scanning only what the execution
+  reads owes only those), records the common execution checkpoint/column-demand metrics,
   routes source frames from the prepared incoming edges, invokes the registered
   callable, and applies identical input/output contract assertions. Eager-only
   materialisation, lazy-only checkpoint/cache policy, and preview-only error

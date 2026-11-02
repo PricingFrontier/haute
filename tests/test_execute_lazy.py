@@ -336,6 +336,7 @@ class TestPreparedExecution:
             enforce_contracts=False,
             execution_context=None,
             needed_columns={},
+            produced_columns={},
         )
         source_frame = pl.DataFrame({"x": [1]}).lazy()
 
@@ -361,10 +362,32 @@ class TestPreparedExecution:
             enforce_contracts=False,
             execution_context=None,
             needed_columns={},
+            produced_columns={},
         )
 
         with pytest.raises(ValueError, match="transform"):
             runner.invoke(runner.open("transform"))
+
+    def test_node_boundary_runner_checks_only_the_declared_outputs_its_builder_produces(self):
+        """A source asked for one of its declared columns (a projected scan) owes only that
+        one; a declared column it was asked for and did not create still fails."""
+        source = _source_node("source")
+        source.data.config["contract"] = {"inputs": [], "outputs": ["x", "y", "z"]}
+        graph = PipelineGraph(nodes=[source], edges=[])
+        prepared = _prepare_execution(PreparedExecutionRequest(graph=graph))
+        runner = NodeBoundaryRunner(
+            prepared=prepared,
+            funcs={"source": (lambda: pl.DataFrame({"x": [1]}).lazy(), True)},
+            enforce_contracts=True,
+            execution_context=None,
+            needed_columns={"source": frozenset({"x"})},
+            produced_columns={"source": frozenset({"x"})},
+        )
+
+        boundary = runner.open("source")
+        runner.assert_outputs(boundary, frozenset({"x"}))
+        with pytest.raises(ContractMismatchError, match="x"):
+            runner.assert_outputs(boundary, frozenset())
 
     def test_node_boundary_runner_skips_contract_assertions_when_disabled(self, monkeypatch):
         graph = PipelineGraph(
@@ -381,6 +404,7 @@ class TestPreparedExecution:
             enforce_contracts=False,
             execution_context=None,
             needed_columns={},
+            produced_columns={},
         )
         boundary = runner.open("transform")
         assert boundary.check_contract is False
