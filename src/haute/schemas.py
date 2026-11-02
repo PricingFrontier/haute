@@ -55,7 +55,7 @@ from haute._pipeline_settings import (
     MAX_STREAMING_CHUNK_SIZE,
     MAX_TIME_LIMIT_MINUTES,
 )
-from haute._types import REQUEST_INPUT_NODE_TYPES, NodeType
+from haute._types import REQUEST_INPUT_NODE_TYPES, NodeEditorState, NodeType
 from haute._types import GlobalConstant as GlobalConstant  # noqa: F401
 from haute._types import GraphEdge as GraphEdge  # noqa: F401
 from haute._types import GraphNode as GraphNode  # noqa: F401
@@ -1312,6 +1312,8 @@ class RecoveryPipelineNode(BaseModel):
     availability: PipelineElementAvailability
     display_position: dict[str, float]
     config: dict[str, Any] | None = None
+    # Beside the config, never in it (``NodeData.editor``).
+    editor: NodeEditorState = Field(default_factory=NodeEditorState)
     config_reference: str | None = None
     function_name: Annotated[str, Field(min_length=1)]
     default_input_name: Annotated[str, Field(min_length=1)] | None

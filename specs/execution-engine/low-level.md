@@ -1871,6 +1871,12 @@ present a structural or schema result as execution evidence.
   next operation resolves a fresh fingerprint and therefore sees helper edits. There is no
   process-lifetime marker: a namespace is never reused across operations under a
   dependency identity other than the one it was compiled for.
+- **A transform's keyword-only parameters are bound like inputs.** `_build_transform`
+  validates the config's `keyword_parameters` (pipeline-config's keyword-only parameters),
+  and `_exec_user_code` binds their scalar values (`keyword_parameter_values`) after the
+  input frames, over the preamble and global constants, so the code reads a parameter, not a
+  same-named preamble value or the physical name an `inputMapping` renamed, as the generated
+  function does. A binding named like a logical input is a `ConfigError` naming the node.
 - **A Transform or Load File `inputMapping` preserves authored input identity across
   parent replacement.** Both are the surfaces whose code names its inputs
   (`stepped_surface_allows_input_references`). `resolve_orig_source_names` derives the current input names

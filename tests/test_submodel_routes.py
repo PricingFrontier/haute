@@ -673,6 +673,52 @@ class TestCreateSubmodel:
         assert not (tmp_path / "modules" / "pricing.py").exists()
         assert not (tmp_path / "config").exists()
 
+    @pytest.mark.parametrize(
+        ("occupied", "status"),
+        [
+            pytest.param("rating/modules/pricing.py", 409, id="beside-the-parent"),
+            pytest.param("modules/pricing.py", 200, id="beside-the-project-root"),
+        ],
+    )
+    def test_create_checks_module_collisions_beside_its_parent(
+        self, client: TestClient, tmp_path: Path, occupied: str, status: int
+    ) -> None:
+        """A parent outside the configured pipeline directory claims ``modules/``
+        beside itself, which is the one directory its no-clobber check reads."""
+        (tmp_path / "haute.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
+        module = tmp_path / occupied
+        module.parent.mkdir(parents=True)
+        module.write_text("# authored by hand\n", encoding="utf-8")
+
+        with _patch_parent_document(tmp_path, source_file="rating/main.py"):
+            response = client.post(
+                "/api/submodel/create", json=_create_body(source_file="rating/main.py")
+            )
+
+        assert response.status_code == status
+        if status == 409:
+            assert "'rating/modules/pricing.py' already exists" in response.json()["detail"]
+        assert module.read_text(encoding="utf-8") == "# authored by hand\n"
+
+    def test_create_reads_utility_helpers_beside_its_parent(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """The naming check reads a preserved block's utility import from beside
+        the parent, so a submodel named after a helper there is refused."""
+        (tmp_path / "haute.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
+        helpers = tmp_path / "rating" / "utility" / "helpers.py"
+        helpers.parent.mkdir(parents=True)
+        helpers.write_text("def pricing():\n    return 1\n", encoding="utf-8")
+        body = _create_body(source_file="rating/main.py")
+        body["preserved_blocks"] = ["from utility.helpers import *"]
+
+        with _patch_parent_document(tmp_path, source_file="rating/main.py"):
+            response = client.post("/api/submodel/create", json=body)
+
+        assert response.status_code == 400
+        assert "would break the pipeline's names" in response.json()["detail"]
+        assert "helpers" in response.json()["detail"]
+
 
 # ---------------------------------------------------------------------------
 # GET /api/submodel/{name}

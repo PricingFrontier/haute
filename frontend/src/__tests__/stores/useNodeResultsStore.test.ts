@@ -659,16 +659,9 @@ describe("useNodeResultsStore", () => {
       expect(hashConfig(a)).not.toBe(hashConfig(b))
     })
 
-    it("strips _nodeId, _columns, _schemaWarnings, and _availableColumns before hashing", () => {
+    it("hashes every key of the config, editor state having none in it", () => {
       const base = { solver: "glpk", tolerance: 0.01 }
-      const withInternals = {
-        ...base,
-        _nodeId: "n-42",
-        _columns: [{ name: "x", dtype: "float64" }],
-        _schemaWarnings: [{ column: "x", status: "missing" }],
-        _availableColumns: ["x", "y", "z"],
-      }
-      expect(hashConfig(base)).toBe(hashConfig(withInternals))
+      expect(hashConfig({ ...base, _columns: ["x"] })).not.toBe(hashConfig(base))
     })
 
     it("keeps reserved key spellings semantic below the root config", () => {

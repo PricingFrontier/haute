@@ -5,8 +5,8 @@ import { columnFingerprint } from "../utils/columnFingerprint"
 
 type Config = Record<string, unknown>
 
-/** The config a Polars pane writes: its code, its steps and the caches materialised from them. */
-const POLARS_PANE_KEYS: ReadonlySet<string> = new Set(["code", "steps", "_steps_error", "_steps_discarded"])
+/** The config a Polars pane writes: its code and its steps. */
+const POLARS_PANE_KEYS: ReadonlySet<string> = new Set(["code", "steps"])
 const NO_CONFIG: Config = {}
 
 type KeptColumns = { source: string; config: Config; fingerprint: string; columns: ColumnInfo[] }

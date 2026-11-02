@@ -62,10 +62,10 @@ export function isSteppedConfig(nodeType: string, config: unknown): boolean {
   return steppedSurfaceFor(nodeType) !== undefined && isPlainObject(config) && Array.isArray(config.steps)
 }
 
-/** Authored transform settings, excluding the caches materialised from steps. */
+/** Authored transform settings, excluding the code materialised from steps. */
 export function authoredPolarsConfig(config: Record<string, unknown>): Record<string, unknown> {
   if (!Array.isArray(config.steps)) return config
-  return Object.fromEntries(Object.entries(config).filter(([key]) => key !== "code" && key !== "_steps_error"))
+  return Object.fromEntries(Object.entries(config).filter(([key]) => key !== "code"))
 }
 
 /** Whether `config` belongs to an stepped transform. */

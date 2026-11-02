@@ -111,9 +111,6 @@ export type TrainingLineageInput = {
   global_constants_error?: string | null
 }
 
-/** Runtime-only config keys the canvas injects; they never describe the pipeline. */
-const RUNTIME_CONFIG_KEYS = ["_nodeId", "_columns", "_schemaWarnings", "_availableColumns"]
-
 const text = (value: unknown): string => (typeof value === "string" ? value : "")
 
 function canonical(value: unknown): unknown {
@@ -134,7 +131,6 @@ function nodeConfig(data: Record<string, unknown>): Record<string, unknown> {
   const raw = data.config
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {}
   const config = { ...(raw as Record<string, unknown>) }
-  for (const key of RUNTIME_CONFIG_KEYS) delete config[key]
   return data.nodeType === MODELLING_NODE_TYPE ? trainingIdentityConfig(config) : config
 }
 

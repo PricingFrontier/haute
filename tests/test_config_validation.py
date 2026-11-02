@@ -150,15 +150,13 @@ class TestUnrecognizedConfigKeys:
             == []
         )
 
-    def test_editor_state_and_body_code_are_not_config_keys(self):
-        """`_`-prefixed editor state and the `.py` body code are not persisted keys."""
-        assert (
-            unrecognized_config_keys(
-                NodeType.BANDING,
-                {"factors": [], "_columns": ["a"], "_nodeId": "n1", "code": "df = df"},
-            )
-            == []
-        )
+    def test_body_code_is_not_a_config_key_but_editor_state_is_undeclared(self):
+        """The `.py` body code is not a persisted key; editor state belongs beside the
+        config (`NodeData.editor`), so an `_`-prefixed key in it is undeclared."""
+        assert unrecognized_config_keys(NodeType.BANDING, {"factors": [], "code": "df = df"}) == []
+        assert unrecognized_config_keys(
+            NodeType.BANDING, {"factors": [], "_columns": ["a"], "_nodeId": "n1"}
+        ) == ["_columns", "_nodeId"]
 
     def test_the_removed_record_history_flag_is_undeclared(self):
         """Q5: every online solve records its history, so the flag is gone."""

@@ -77,7 +77,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 
 | Priority | Trigger and observed consequence | Owning package | Evidence and practical limit |
 |---|---|---|---|
-| P1 | A keyword-only factor default disappears on Save; a preamble name takes over and changes 120 to 90. | [PCFG-R21](pipeline-config.md#pcfg-r21--node-signatures-retain-their-configuration-bindings) | Actual original and regenerated functions, strict file parse. |
 | P1 | Parser endpoint concatenation and multi-frame paste mint duplicate edge ids; healthy recovery can be refused and deleting one duplicate deletes both. | [NAME-10](name-collisions.md#name-10--every-distinct-connection-has-a-distinct-identity) | Real parser/codegen and actual keyboard/store paste/delete. Healthy recovery rejection follows its duplicate-id validator; malformed documents were not assumed to load normally. |
 | P3 | Delete with a selected node and unrelated selected edge leaves the edge. | [FGC-R07](frontend-graph-canvas.md#fgc-r07--delete-removes-the-complete-eligible-selection) | Actual keyboard/store witness; the remaining edge stays visible and can be deleted again. Undo behavior is an acceptance requirement, not an executed assertion after the failure. |
 | P1 | Pending submodel drill-in replaces a newly loaded root with the old child and mismatched navigation context. | [FGC-R06](frontend-graph-canvas.md#fgc-r06--pending-submodel-navigation-belongs-to-its-document) | Actual navigation hook and stores, delayed layout. A subsequent destructive Save was not executed. |
@@ -209,7 +208,7 @@ adds a finding group or changes the 42-group count.
 | `_submodel_instances.py` merged support code / `_support_code_names.py` | **Ordinary strict-parse conflict is guarded; broader variant unverified.** A confirming case must pass strict parsing with two valid occurrence scopes and then show support-name rebinding after flatten/execution. Existing ordinary preamble rejection is not evidence that dynamic imports/all reuse scopes are safe; the note contains no such witness. |
 | `src/haute/modelling/_ebm.py` grouped categorical axis | **Unverified.** Fit/load a real EBM with multiple category labels sharing one bin; compare exported term labels/scores with native prediction for every grouped level. No completed reproduction or rebuttal was recorded. No GPU issue follows from this shared note. |
 | `src/haute/_rating.py` null-factor/miss handling | **Unverified contract question separate from accepted `value` collision.** Run a valid table containing a null level through ordinary lookup with each declared miss policy, compare with the specified null/missing behavior, and show an incorrect match/default/refusal. The note already says nulls are deliberately treated as misses; it does not prove that policy violates the contract. |
-| `src/haute/_api_input_schema.py` typed codec | **Partly duplicate / otherwise underspecified.** Persisted editor-only `origin`/`key` belongs to FNED-R01/PCFG-R08. Any other claim must first identify an exact unknown key or valid level/path shape, then demonstrate accepted data lost on codec round trip. The general note gives no other concrete case. |
+| `src/haute/_api_input_schema.py` typed codec | **Partly duplicate / otherwise underspecified.** Persisted editor-only `origin`/`key` belongs to FNED-R01. Any other claim must first identify an exact unknown key or valid level/path shape, then demonstrate accepted data lost on codec round trip. The general note gives no other concrete case. |
 | `.github/workflows/performance.yml` execution-engine-platform job | **Unverified.** Inspect or execute the exact macOS locked install and named certification tests, showing a required engine fails import/is skipped unexpectedly. No macOS execution or native dependency failure was recorded. Existing pin/coverage packages do not prove this platform-specific case. |
 | `hatch_build.py` frontend freshness input closure | **Unverified residual suspicion.** Identify a real imported frontend build dependency omitted from the hook's closure, modify it, then demonstrate a build incorrectly reuses stale output. The source note supplies no omitted file. The hook's machine-specific Node fallback, a separate defect, has been removed. |
 | Frontend scratch report; `SchemaTableCard.tsx` search state | **Unverified.** Apply a search while the schema exceeds its search-control threshold, refresh to fewer columns without remounting, and observe hidden search state continuing to filter with no visible way to clear it. The full report explicitly left this without a demonstrated transition. |
@@ -268,7 +267,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | tuning status fields | **MOD-R08**. |
 | edge ID collisions | **NAME-10**. |
 | failed new solve identity | **FSH-R12**. |
-| keyword-only defaults | **PCFG-R21**. |
 | pyfunc classifier output shape | **MSC-11**. |
 | literal select row proof | **EXEC-R09**. |
 | predicted output signature dtype | **MOD-R09** after requested split; formerly bundled MOD-R05. |
@@ -313,7 +311,7 @@ The latter has since been delivered. This was same-family review, not cross-fami
 
 The subsequent **cross-family review by Claude** checked the decisive code for all
 42 finding groups and reported no false positives; it did not check MOD-R05's integer
-PDP-label item. It reproduced MOD-R07, PCFG-R21, the parser half of NAME-10 and two
+PDP-label item. It reproduced MOD-R07, the parser half of NAME-10 and three
 findings since delivered, and supplied the hosted evidence for the core-only smoke finding, since delivered. This documentation
 follow-up incorporates its coverage qualifications, candidate dispositions, package
 splits, priorities, ownership, ordering and link corrections. Neither review approval

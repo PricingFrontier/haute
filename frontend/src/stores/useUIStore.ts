@@ -9,6 +9,10 @@
  */
 import { create } from "zustand"
 import type { ProjectFilePlace } from "../api/types"
+import type { BandingFactor, BandingMode } from "../types/banding"
+
+/** The rules a Banding factor had under each type, set aside when its type was switched. */
+export type BandingRuleStash = Partial<Record<BandingMode, BandingFactor["rules"]>>
 
 export type RatingStepEditorSection = "tables" | "combined"
 export type ExplorePane = "code" | "overview" | "pivots" | "charts" | "export"
@@ -98,6 +102,13 @@ interface UIState {
   setModellingPane: (nodeId: string, pane: ModellingPane) => void
   optimiserPanes: Record<string, OptimiserPane>
   setOptimiserPane: (nodeId: string, pane: OptimiserPane) => void
+  /** Banding rules a type switch set aside, by node and factor position, until the pipeline reloads. */
+  bandingRuleStash: Record<string, Record<number, BandingRuleStash>>
+  setBandingRuleStash: (nodeId: string, factor: number, stash: BandingRuleStash) => void
+  /** Forget one node's stash: its factors were removed or reordered. */
+  forgetBandingRuleStash: (nodeId: string) => void
+  /** Forget every stash: a pipeline document was loaded. */
+  clearBandingRuleStash: () => void
 
   // Hover highlight — when set, connected edges glow and unconnected nodes/edges dim
   hoveredNodeId: string | null
@@ -228,6 +239,19 @@ const useUIStore = create<UIState>()((set) => ({
   setOptimiserPane: (nodeId, pane) => set((state) => ({
     optimiserPanes: setNodeIdEntry(state.optimiserPanes, nodeId, pane),
   })),
+  bandingRuleStash: {},
+  setBandingRuleStash: (nodeId, factor, stash) => set((state) => ({
+    bandingRuleStash: setNodeIdEntry(state.bandingRuleStash, nodeId, {
+      ...state.bandingRuleStash[nodeId],
+      [factor]: stash,
+    }),
+  })),
+  forgetBandingRuleStash: (nodeId) => set((state) => {
+    const { [nodeId]: forgotten, ...rest } = state.bandingRuleStash
+    void forgotten
+    return { bandingRuleStash: rest }
+  }),
+  clearBandingRuleStash: () => set({ bandingRuleStash: {} }),
 
   // Hover highlight
   hoveredNodeId: null,

@@ -9,5 +9,4 @@ export type BandingFactor = {
   rules: (CategoricalRule | BreakpointRule)[]
   default?: string | null
   rightClosed?: boolean  // for breakpoint mode: whether upper bound is inclusive (default true)
-  _prevRules?: Partial<Record<BandingMode, (CategoricalRule | BreakpointRule)[]>>  // stash for type-toggle restore
 }

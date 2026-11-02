@@ -18,6 +18,7 @@ import {
   isSubmodelInstanceConfig,
   type HauteNodeData,
   type LoadAvailability,
+  type NodeEditorState,
   type PipelineGraph,
 } from "../types/node"
 import type { PipelineDiagnostic } from "../types/pipelineDocument"
@@ -968,6 +969,8 @@ function SchemaWarningBanner({
 
 type NodeEditorBodyProps = {
   nodeId: string
+  /** The server's editor state for the node, beside its config. */
+  editorState?: NodeEditorState
   documentReadOnly: boolean
   readOnly: boolean
   config: Record<string, unknown>
@@ -992,6 +995,7 @@ type NodeEditorBodyProps = {
 
 function NodeEditorBody({
   nodeId,
+  editorState,
   documentReadOnly,
   readOnly,
   config,
@@ -1035,6 +1039,7 @@ function NodeEditorBody({
         start={surface.start}
         nodeId={nodeId}
         codeHint={POLARS_TAB_HINTS[nodeType] ?? null}
+        editor={editorState}
       />
     )
   } else if (activeTab === "columns" && showColumnsTab) {
@@ -1257,11 +1262,6 @@ function NodePanelContent({
     return onUpdateNode(targetId, clearCachedResultShape({ ...target.data, config: { ...targetConfig, ...patch } }))
   }, [allNodes, documentReadOnly, onUpdateNode, readOnly, scopedSaving])
 
-  const configWithNodeId = useMemo(
-    () => ({ ...config, _nodeId: node.id }),
-    [config, node.id]
-  )
-
   // Compute input sources (must be before early return to satisfy hook ordering rules)
   const nodeMap = useMemo(() => Object.fromEntries(allNodes.map((n) => [n.id, n])), [allNodes])
   const selectedNodeId = node.id
@@ -1357,7 +1357,6 @@ function NodePanelContent({
       nodeType={nodeType as NodeTypeValue}
       readOnly={nodeType === NODE_TYPES.SUBMODEL && (effectiveReadOnly || documentReadOnly)}
       config={config}
-      configWithNodeId={configWithNodeId}
       node={node}
       onUpdateConfig={handleConfigUpdate}
       onReplaceConfig={handleConfigReplace}
@@ -1474,6 +1473,7 @@ function NodePanelContent({
 
       <NodeEditorBody
         nodeId={node.id}
+        editorState={(node.data as HauteNodeData).editor}
         documentReadOnly={documentReadOnly}
         readOnly={effectiveReadOnly}
         config={config}

@@ -44,7 +44,7 @@ from haute._code_extraction import _unwrap_chain_assignment, extract_user_code
 from haute._config_builder import _copy_config_keys, _resolve_node_config
 from haute._config_io import has_config_folder
 from haute._graph_builders import _build_edges, _build_rf_nodes, _extract_decorated_nodes
-from haute._types import NodeType
+from haute._types import NodeEditorState, NodeType
 from haute.errors import ParseError
 
 # ===========================================================================
@@ -519,12 +519,19 @@ class TestBuildEdges:
 class TestBuildRfNodes:
     def test_positions_and_labels(self):
         raw = [
-            {"func_name": "a", "node_type": "dataInput", "description": "desc A", "config": {}},
+            {
+                "func_name": "a",
+                "node_type": "dataInput",
+                "description": "desc A",
+                "config": {},
+                "editor": NodeEditorState(),
+            },
             {
                 "func_name": "b",
                 "node_type": "polars",
                 "description": "",
                 "config": {"code": "x"},
+                "editor": NodeEditorState(steps_discarded="Steps were discarded because x."),
             },
         ]
         nodes = _build_rf_nodes(raw)
@@ -534,13 +541,14 @@ class TestBuildRfNodes:
         assert nodes[0].data.description == "desc A"
         assert nodes[0].data.nodeType == "dataInput"
         assert nodes[1].data.nodeType == "polars"
+        assert nodes[1].data.editor.steps_discarded == "Steps were discarded because x."
         assert nodes[0].position == {"x": 0, "y": 0}
         assert nodes[1].position == {"x": 300, "y": 0}
 
     def test_custom_spacing(self):
         raw = [
-            {"func_name": "a", "node_type": "polars", "description": "", "config": {}},
-            {"func_name": "b", "node_type": "polars", "description": "", "config": {}},
+            {"func_name": n, "node_type": "polars", "description": "", "config": {}, "editor": e}
+            for n, e in (("a", NodeEditorState()), ("b", NodeEditorState()))
         ]
         nodes = _build_rf_nodes(raw, x_spacing=500)
         assert nodes[1].position == {"x": 500, "y": 0}
@@ -781,7 +789,7 @@ class TestResolveNodeConfig:
         sidecar.parent.mkdir(parents=True)
         sidecar.write_text(json.dumps(settings), encoding="utf-8")
 
-        resolved_type, config = _resolve_node_config(
+        resolved_type, config, _editor = _resolve_node_config(
             {"config": f"config/{folder}/node.json"},
             "...",
             [],
@@ -862,7 +870,7 @@ class TestResolveNodeConfig:
         cfg_dir.mkdir(parents=True)
         (cfg_dir / "rates.json").write_text('{"values": [{"name": "base", "value": "1"}]}')
 
-        node_type, config = _resolve_node_config(
+        node_type, config, _editor = _resolve_node_config(
             {"config": "config/constant/rates.json", "contract": "opaque"},
             "...",
             [],
@@ -926,7 +934,7 @@ class TestResolveNodeConfig:
 
     def test_polars_without_config_reference_builds_from_body(self):
         """Polars nodes keep code in the function body and need no sidecar."""
-        node_type, config = _resolve_node_config(
+        node_type, config, _editor = _resolve_node_config(
             {},
             "    return df",
             ["df"],
@@ -950,7 +958,7 @@ class TestResolveNodeConfig:
         cfg_file = cfg_dir / "my_source.json"
         cfg_file.write_text(json.dumps(cfg))
 
-        node_type, loaded = _resolve_node_config(
+        node_type, loaded, _editor = _resolve_node_config(
             {"config": "config/data_input/my_source.json"},
             "",
             [],
@@ -975,7 +983,7 @@ class TestResolveNodeConfig:
         cfg_file.write_text(json.dumps(cfg))
 
         body = '    """Load data."""\n    df = df.filter(pl.col(\'x\') > 0)\n    return df'
-        node_type, loaded = _resolve_node_config(
+        node_type, loaded, _editor = _resolve_node_config(
             {"config": "config/data_input/my_source.json"},
             body,
             ["df"],
@@ -1000,7 +1008,7 @@ class TestResolveNodeConfig:
         cfg_file.write_text(json.dumps(cfg))
 
         body = '    """Load data."""'
-        node_type, loaded = _resolve_node_config(
+        node_type, loaded, _editor = _resolve_node_config(
             {"config": "config/data_input/my_source.json"},
             body,
             [],
@@ -1036,7 +1044,7 @@ class TestResolveNodeConfig:
 
         body = '    """doc"""\n    ...'
 
-        node_type, config = _resolve_node_config(
+        node_type, config, _editor = _resolve_node_config(
             {"config": "config/banding/my_transform.json"},
             body,
             ["source"],

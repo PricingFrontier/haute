@@ -446,8 +446,8 @@ focus nor leaves stale callbacks.
   direct cross-store read at call time, not a subscription, so a stale
   read only happens if the caller doesn't re-invoke `getColumns` after a
   structural change.
-- **`hashConfig`** strips `_nodeId`/`_columns`/`_schemaWarnings`/
-  `_availableColumns` only from the root config, applies ordinary
+- **`hashConfig`** hashes the whole config (editor state travels beside it on the
+  node data, never in it), applies ordinary
   `JSON.stringify`/`JSON.parse` normalisation, recursively sorts object keys,
   preserves array order, and returns the canonical JSON string itself.
   Nested fields with the same names remain semantic. This exact identity is

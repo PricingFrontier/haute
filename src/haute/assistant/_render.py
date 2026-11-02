@@ -28,7 +28,7 @@ from haute._polars_steps import (
     PolarsStepError,
     render_node_steps,
 )
-from haute._types import GraphNode, NodeType, PipelineGraph
+from haute._types import GraphNode, NodeEditorState, NodeType, PipelineGraph
 from haute.assistant._catalog import capability_manifest
 from haute.assistant._config import EgressPolicy
 from haute.schemas import AssistantBuildPlan, AssistantChangeRecord, AssistantTurnOutcome
@@ -115,11 +115,13 @@ def _step_summary(step: object) -> StepSummary:
     return StepSummary(_text_field(step, "id"), kind, reads, intent)
 
 
-def node_authoring(node_type: NodeType, config: Mapping[str, Any]) -> Authoring | None:
+def node_authoring(
+    node_type: NodeType, config: Mapping[str, Any], editor: NodeEditorState
+) -> Authoring | None:
     """The authoring facts of a stepped-type node; None for any other type.
 
     A step list is judged as the saved config materialises it (`render_node_steps`), so
-    `incomplete` here is exactly a `_steps_error`.
+    `incomplete` here is exactly the editor state's `steps_error`.
     """
 
     if node_type not in STEPPED_NODE_TYPES:
@@ -141,7 +143,7 @@ def node_authoring(node_type: NodeType, config: Mapping[str, Any]) -> Authoring 
                 ),
             )
         return Authoring("stepped", summaries)
-    discarded = "_steps_discarded" in config
+    discarded = editor.steps_discarded is not None
     if str(config.get("code") or "").strip():
         return Authoring("code", steps_discarded=discarded)
     return Authoring("incomplete", steps_discarded=discarded)
@@ -221,7 +223,7 @@ def render_pipeline_graph(
             ),
         }
         if egress is not None:
-            authoring = node_authoring(node.data.nodeType, node.data.config)
+            authoring = node_authoring(node.data.nodeType, node.data.config, node.data.editor)
             if authoring is not None:
                 rendered["authoring"] = render_authoring(authoring, egress)
         nodes.append(rendered)

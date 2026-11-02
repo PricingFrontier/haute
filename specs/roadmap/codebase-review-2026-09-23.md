@@ -77,16 +77,13 @@ They have different semantics, and several depend on process cwd:
 ### 3.2 Frontend
 - **`useNodeResultsStore.ts` (1,568 lines)** mixes the store with 4 recency LRUs, module-level derived caches, validation and optimiser domain derivation.
 
-### 3.3 Across the stack
-- **Transient editor state stored inside node config.** Examples are `_columns` (470 frontend references), `_nodeId` (139), `_schemaWarnings`, `_availableColumns`, `_steps_error`, `_steps_discarded` and `_discarded_sidecar`. It is stripped out again by exclusion lists in `hashConfig` (`useNodeResultsStore.ts:326`), the backend cache-field classification, the sidecar allowlist and codegen. Give editor state its own channel beside `config`.
-
 ---
 
 ## 4. Over-engineered areas: strategic simplifications (these need a decision)
 
 ### 4.10 Other heavy-but-reasoned designs to keep an eye on — LOW
 - **Node registry.** `NODE_REGISTRY` covers only exec, codegen, contract and a few flags. `NodeType.RATING_STEP` is special-cased in 17 backend modules. A fuller `NodeSpec` (config model, builder, template, contract, projection transfer, trace enricher) would localise changes.
-- **Cache identity framework** (`_cache.py`, 1,639 lines). It has 9 consumer contracts and per-node-type field classification. Once editor state is out of `config` (§3.3), hashing the whole canonical config becomes enough.
+- **Cache identity framework** (`_cache.py`, 1,639 lines). It has 9 consumer contracts and per-node-type field classification. With editor state out of `config`, hashing the whole canonical config becomes enough.
 
 ---
 
@@ -133,7 +130,6 @@ owns no work; the packages carry the plan, acceptance and evidence.
 | §2.3 Unreferenced and test-only code | `ENGQ-R01` ([engineering quality](engineering-quality.md)) |
 | §3.1 Three worker mechanisms | `ROAD-WORKER-05` ([background jobs](background-jobs-api.md)) |
 | §3.2 Results store | `FSH-R03` ([frontend shared](frontend-shared.md)) |
-| §3.3 Editor state inside node config | `PCFG-R08` ([pipeline config](pipeline-config.md)) |
 | §4.10 Node registry | `PCFG-R09` ([pipeline config](pipeline-config.md)) |
 | §4.10 Cache identity framework | `CACHE-S25` ([caching](caching.md)) |
 | §5.1 Generated browser contract | `API-R03` ([server API](server-api.md)) |

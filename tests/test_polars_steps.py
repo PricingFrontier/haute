@@ -3282,12 +3282,12 @@ def _stepped(node_id: str, steps: list[dict[str, Any]], **extra: Any) -> GraphNo
 def test_node_data_materialises_code_from_steps() -> None:
     node = _stepped("t", GOLDEN_STEPS, code="df = stale")
     assert node.data.config["code"] == GOLDEN_CODE
-    assert "_steps_error" not in node.data.config
+    assert node.data.editor.steps_error is None
 
     broken = _stepped("t", [step("f", "filter", match="all", conditions=[])], code="df = stale")
     assert broken.data.config["code"] == ""
     assert (
-        broken.data.config["_steps_error"]
+        broken.data.editor.steps_error
         == "Step 1: The first step must choose the input to start from."
     )
 
@@ -3296,7 +3296,7 @@ def test_node_data_materialises_code_from_steps() -> None:
 
     replaced = broken.with_config({"steps": [source()], "code": "zzz"})
     assert replaced.data.config["code"] == "df = quotes"
-    assert "_steps_error" not in replaced.data.config
+    assert replaced.data.editor.steps_error is None
 
 
 def test_chunk_local_classifier_sees_materialised_code() -> None:
@@ -3751,7 +3751,7 @@ def test_codegen_parse_round_trip_reproduces_rendered_code(tmp_path: Path) -> No
     node = next(n for n in parsed.nodes if n.id == "t")
     assert node.data.config["steps"] == GOLDEN_STEPS
     assert node.data.config["code"] == GOLDEN_CODE
-    assert "_steps_discarded" not in node.data.config
+    assert node.data.editor.steps_discarded is None
 
 
 def test_a_stepped_transform_keeps_its_column_settings_in_its_sidecar(tmp_path: Path) -> None:
@@ -3795,7 +3795,7 @@ def test_free_code_executes_between_low_code_steps_and_round_trips(tmp_path: Pat
     node = next(n for n in parsed.nodes if n.id == "t")
     assert node.data.config["steps"] == steps
     assert node.data.config["code"] == expected_code
-    assert "_steps_discarded" not in node.data.config
+    assert node.data.editor.steps_discarded is None
     result = execute_graph(parsed, target_node_id="t", execution_context=_capped_context())["t"]
     assert result.status == "ok", result.error
     assert [c.name for c in result.columns] == ["adjusted"]
@@ -3849,8 +3849,38 @@ def test_parse_discards_steps_when_body_was_hand_edited(tmp_path: Path) -> None:
     node = next(n for n in parsed.nodes if n.id == "t")
     assert "steps" not in node.data.config
     assert node.data.config["code"] == GOLDEN_CODE.replace("0.12", "0.2")
-    assert node.data.config["_steps_discarded"].startswith("Steps were discarded because")
-    assert node.data.config["_discarded_sidecar"] == "config/polars/t.json"
+    assert node.data.editor.steps_discarded.startswith("Steps were discarded because")
+    assert node.data.editor.discarded_sidecar == "config/polars/t.json"
+    # PCFG-R08: the finding travels beside the config, which holds no editor key.
+    assert not any(key.startswith("_") for key in node.data.config)
+
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    (tmp_path / "haute.toml").write_text('[project]\nname = "main"\n', encoding="utf-8")
+    (tmp_path / "main.py").write_text(edited, encoding="utf-8")
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    shown = next(item for item in document.nodes if item.authored_id == "t")
+    assert shown.editor == node.data.editor
+    assert not any(key.startswith("_") for key in shown.config or {})
+
+
+def test_editor_state_is_derived_and_kept_beside_the_config() -> None:
+    """A stale steps error a request carries back is recomputed from the steps; the
+    parse's findings survive a config replacement, as they did inside the config."""
+    findings = {"steps_discarded": "Steps were discarded because x.", "discarded_sidecar": "a.json"}
+    echoed = NodeData(
+        nodeType="polars",
+        config={"steps": [source()]},
+        editor={"steps_error": "stale", **findings},
+    )
+    assert echoed.editor.steps_error is None
+    assert echoed.editor.steps_discarded == findings["steps_discarded"]
+
+    node = GraphNode(id="t", data=echoed)
+    broken = node.with_config({"steps": [step("f", "filter", match="all", conditions=[])]})
+    assert broken.data.editor.steps_error is not None
+    assert broken.data.editor.discarded_sidecar == "a.json"
+    assert broken.with_config({"code": "df = quotes"}).data.editor.steps_error is None
 
 
 def test_parse_keeps_steps_whose_body_is_the_same_program_in_an_older_style(
@@ -3872,7 +3902,7 @@ def test_parse_keeps_steps_whose_body_is_the_same_program_in_an_older_style(
     parsed = parse_pipeline_source(older, _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "t")
     assert node.data.config["steps"] == steps
-    assert "_steps_discarded" not in node.data.config
+    assert node.data.editor.steps_discarded is None
     assert node.data.config["code"] == render_polars_steps(steps, start="input").code
 
 
@@ -3909,7 +3939,7 @@ def test_parse_keeps_steps_saved_by_an_earlier_renderer(tmp_path: Path) -> None:
     parsed = parse_pipeline_source(earlier, _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "t")
     assert node.data.config["steps"] == GOLDEN_STEPS
-    assert "_steps_discarded" not in node.data.config
+    assert node.data.editor.steps_discarded is None
     assert node.data.config["code"] == GOLDEN_CODE
 
 
@@ -3935,7 +3965,7 @@ def test_parse_reads_a_sort_saved_before_sorts_kept_their_ties_order_as_free_cod
     parsed = parse_pipeline_source(unordered, _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "t")
     assert "steps" not in node.data.config
-    assert node.data.config["_steps_discarded"] == (
+    assert node.data.editor.steps_discarded == (
         "Steps were discarded because the function body no longer matches the rendered steps."
     )
     assert 'df = df.sort("premium", descending=True)' in node.data.config["code"]
@@ -4027,7 +4057,7 @@ def test_parse_discards_steps_for_a_body_no_spelling_of_them_renders(
     parsed = parse_pipeline_source(code.replace(old, new), _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "t")
     assert "steps" not in node.data.config
-    assert node.data.config["_steps_discarded"].startswith("Steps were discarded because")
+    assert node.data.editor.steps_discarded.startswith("Steps were discarded because")
 
 
 def test_parse_discards_steps_when_only_a_free_code_comment_was_edited(tmp_path: Path) -> None:
@@ -4042,7 +4072,7 @@ def test_parse_discards_steps_when_only_a_free_code_comment_was_edited(tmp_path:
     parsed = parse_pipeline_source(edited, _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "t")
     assert "steps" not in node.data.config
-    assert node.data.config["_steps_discarded"].startswith("Steps were discarded because")
+    assert node.data.editor.steps_discarded.startswith("Steps were discarded because")
 
 
 def test_free_code_trailing_whitespace_survives_ruff_format_with_its_steps(
@@ -4087,7 +4117,7 @@ def test_free_code_trailing_whitespace_survives_ruff_format_with_its_steps(
         parsed = parse_pipeline_source(body, _base_dir=tmp_path)
         node = next(n for n in parsed.nodes if n.id == "t")
         assert node.data.config["steps"] == steps
-        assert "_steps_discarded" not in node.data.config
+        assert node.data.editor.steps_discarded is None
     result = execute_graph(parsed, target_node_id="t", execution_context=_capped_context())["t"]
     assert result.status == "ok", result.error
     assert [row["note"] for row in result.preview] == ["first  \n   \nsecond"] * 2
@@ -4180,7 +4210,7 @@ def test_parse_keeps_incomplete_steps_saved_through_the_placeholder(tmp_path: Pa
     node = next(n for n in parsed.nodes if n.id == "t")
     assert node.data.config["steps"] == incomplete
     assert node.data.config["code"] == ""
-    assert node.data.config["_steps_error"] == "Step 2: Add at least one condition."
+    assert node.data.editor.steps_error == "Step 2: Add at least one condition."
 
 
 def test_parse_rejects_malformed_steps_sidecar(tmp_path: Path) -> None:
@@ -4268,7 +4298,7 @@ def test_hand_edit_then_load_then_save_retires_discarded_sidecar(project_root: P
     loaded = parse_pipeline_file(main)
     node = next(n for n in loaded.nodes if n.id == "t")
     assert "steps" not in node.data.config
-    assert node.data.config["_discarded_sidecar"] == "config/polars/t.json"
+    assert node.data.editor.discarded_sidecar == "config/polars/t.json"
     assert sidecar.exists()
 
     _save(project_root, loaded)
@@ -4352,7 +4382,7 @@ def test_node_scoped_save_updates_the_polars_sidecar(tmp_path: Path) -> None:
     reloaded = load_pipeline_editor_document(main, project_root=tmp_path)
     node = next(item for item in reloaded.nodes if item.authored_id == "transform")
     assert node.config["steps"] == new_steps
-    assert "_steps_discarded" not in node.config
+    assert node.editor.steps_discarded is None
 
 
 # ---------------------------------------------------------------------------
@@ -4927,13 +4957,12 @@ def test_node_data_materialises_data_input_steps() -> None:
         )
 
     assert node([]).data.config["code"] == ""
-    assert "_steps_error" not in node([]).data.config
+    assert node([]).data.editor.steps_error is None
     assert node([step("l", "limit", n=2)]).data.config["code"] == "df = df.head(2)"
     broken = node([source()])
     assert broken.data.config["code"] == ""
     assert (
-        broken.data.config["_steps_error"]
-        == "Step 1: This node starts from df; remove the start step."
+        broken.data.editor.steps_error == "Step 1: This node starts from df; remove the start step."
     )
     with pytest.raises(ValueError, match="must be a list"):
         node("not-a-list")
@@ -4953,12 +4982,11 @@ def test_node_data_materialises_data_input_steps() -> None:
     joined = node([join])
     assert joined.data.config["code"] == ""
     assert (
-        joined.data.config["_steps_error"]
-        == "Step 1: Unknown input 'rates'; connected inputs: none."
+        joined.data.editor.steps_error == "Step 1: Unknown input 'rates'; connected inputs: none."
     )
     stacked = node([step("c", "concat", inputs=["rates"], how="vertical")])
     assert stacked.data.config["code"] == ""
-    assert stacked.data.config["_steps_error"].startswith("Step 1: Unknown input 'rates'")
+    assert stacked.data.editor.steps_error.startswith("Step 1: Unknown input 'rates'")
 
     # A type outside the surface table keeps a `steps` key untouched; a
     # stepped type refuses anything but a list (the Scenario Expander's grid
@@ -5015,7 +5043,7 @@ def test_data_input_steps_execute_and_round_trip(tmp_path: Path) -> None:
     node = next(n for n in parsed.nodes if n.id == "quotes")
     assert node.data.config["steps"] == [step("l", "limit", n=2)]
     assert node.data.config["code"] == "df = df.head(2)"
-    assert "_steps_discarded" not in node.data.config
+    assert node.data.editor.steps_discarded is None
     reloaded = execute_graph(parsed)["quotes"]
     assert reloaded.status == "ok", reloaded.error
     assert len(reloaded.preview) == 2
@@ -5037,8 +5065,7 @@ def test_data_input_incomplete_steps_fail_on_every_path(tmp_path: Path) -> None:
     # Materialisation already refuses the reference (no eligible inputs).
     assert unknown.data.config["code"] == ""
     assert (
-        unknown.data.config["_steps_error"]
-        == "Step 1: Unknown input 'rates'; connected inputs: none."
+        unknown.data.editor.steps_error == "Step 1: Unknown input 'rates'; connected inputs: none."
     )
     graph = PipelineGraph(nodes=[unknown], edges=[])
 
@@ -5056,11 +5083,11 @@ def test_data_input_incomplete_steps_fail_on_every_path(tmp_path: Path) -> None:
     parsed = parse_pipeline_source(code, _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "quotes")
     assert node.data.config["steps"] == [join]
-    assert "_steps_discarded" not in node.data.config
+    assert node.data.editor.steps_discarded is None
     assert execute_graph(parsed)["quotes"].status == "error"
 
     broken = _stepped_input(quotes, [step("f", "filter", match="all", conditions=[])])
-    assert broken.data.config["_steps_error"] == "Step 1: Add at least one condition."
+    assert broken.data.editor.steps_error == "Step 1: Add at least one condition."
     broken_graph = PipelineGraph(nodes=[broken], edges=[])
     assert "Step 1: Add at least one condition." in str(execute_graph(broken_graph)["quotes"].error)
     broken_code = graph_to_code(broken_graph, pipeline_name="main")
@@ -5070,7 +5097,7 @@ def test_data_input_incomplete_steps_fail_on_every_path(tmp_path: Path) -> None:
     )
     assert reloaded.data.config["steps"] == broken.data.config["steps"]
     assert reloaded.data.config["code"] == ""
-    assert reloaded.data.config["_steps_error"] == "Step 1: Add at least one condition."
+    assert reloaded.data.editor.steps_error == "Step 1: Add at least one condition."
 
 
 def _bundled_scoring_graph(steps: list[dict[str, Any]]) -> PipelineGraph:
@@ -5169,8 +5196,8 @@ def test_data_input_hand_edit_discards_steps_without_sidecar_marker(tmp_path: Pa
     node = next(n for n in parsed.nodes if n.id == "quotes")
     assert "steps" not in node.data.config
     assert node.data.config["code"] == "df = df.head(3)"
-    assert node.data.config["_steps_discarded"].startswith("Steps were discarded because")
-    assert "_discarded_sidecar" not in node.data.config
+    assert node.data.editor.steps_discarded.startswith("Steps were discarded because")
+    assert node.data.editor.discarded_sidecar is None
 
 
 def test_data_input_free_code_with_redundant_parentheses_reloads_in_step_mode(
@@ -5187,7 +5214,7 @@ def test_data_input_free_code_with_redundant_parentheses_reloads_in_step_mode(
     node = next(n for n in parsed.nodes if n.id == "quotes")
     assert node.data.config["steps"] == steps
     assert node.data.config["code"] == "df = (df.head(2))"
-    assert "_steps_discarded" not in node.data.config
+    assert node.data.editor.steps_discarded is None
     result = execute_graph(parsed)["quotes"]
     assert result.status == "ok", result.error
     assert len(result.preview) == 2
@@ -5279,7 +5306,7 @@ def test_corpus_translations_reload_unchanged_on_a_data_input(
     )
     assert node.data.config["steps"] == steps, name
     assert node.data.config["code"] == expected, name
-    assert "_steps_discarded" not in node.data.config, name
+    assert node.data.editor.steps_discarded is None, name
 
 
 def test_data_input_free_code_opening_with_a_string_reloads_in_step_mode(tmp_path: Path) -> None:
@@ -5296,7 +5323,7 @@ def test_data_input_free_code_opening_with_a_string_reloads_in_step_mode(tmp_pat
     )
     assert node.data.config["steps"] == steps
     assert node.data.config["code"] == '"""Keep two rows."""\ndf = df.head(2)'
-    assert "_steps_discarded" not in node.data.config
+    assert node.data.editor.steps_discarded is None
 
 
 def test_data_input_generated_module_runs_standalone(tmp_path: Path) -> None:
@@ -5423,7 +5450,7 @@ def test_external_file_steps_reach_the_other_inputs_and_obj(tmp_path: Path) -> N
         node.data.config["code"]
         == render_polars_steps(steps, ["quotes", "rates"], start="frame").code
     )
-    assert "_steps_discarded" not in node.data.config
+    assert node.data.editor.steps_discarded is None
 
     # Free code reaches the loaded object as `obj`, as the code box always could.
     reaching = [
@@ -5452,7 +5479,7 @@ def test_external_file_unknown_input_and_input_mapping_fail_loudly(tmp_path: Pat
     unknown = _external_file(tmp_path, [join])
     # An edges surface renders without names at construction; the reference
     # is checked at build time against the connected edges.
-    assert "_steps_error" not in unknown.data.config
+    assert unknown.data.editor.steps_error is None
     graph = PipelineGraph(nodes=[quotes, unknown], edges=[make_edge("quotes", "ext")])
     result = execute_graph(graph, target_node_id="ext", execution_context=_capped_context())["ext"]
     assert result.status == "error"
@@ -5463,7 +5490,7 @@ def test_external_file_unknown_input_and_input_mapping_fail_loudly(tmp_path: Pat
     assert "\n    df = quotes\n    raise NotImplementedError(" in code
     assert INCOMPLETE_STEPS_MESSAGE in code
     assert node.data.config["steps"] == [join]
-    assert "_steps_discarded" not in node.data.config
+    assert node.data.editor.steps_discarded is None
 
     mapped = _external_file(tmp_path, [step("l", "limit", n=1)], inputMapping={"quotes": "quotes"})
     graph = PipelineGraph(nodes=[quotes, mapped], edges=[make_edge("quotes", "ext")])
@@ -5545,10 +5572,10 @@ def test_rating_step_steps_execute_and_round_trip(tmp_path: Path) -> None:
     assert "\n    df = df.head(2)\n    return df\n" in code
     assert node.data.config["steps"] == steps
     assert node.data.config["code"] == "df = df.head(2)"
-    assert "_steps_discarded" not in node.data.config
+    assert node.data.editor.steps_discarded is None
 
     broken = _rating_step([step("f", "filter", match="all", conditions=[])])
-    assert broken.data.config["_steps_error"] == "Step 1: Add at least one condition."
+    assert broken.data.editor.steps_error == "Step 1: Add at least one condition."
     graph = PipelineGraph(nodes=[quotes, broken], edges=[make_edge("quotes", "rated")])
     result = execute_graph(graph, target_node_id="rated", execution_context=_capped_context())[
         "rated"
@@ -5558,7 +5585,7 @@ def test_rating_step_steps_execute_and_round_trip(tmp_path: Path) -> None:
     code, node = _reparsed(tmp_path, graph, "rated")
     assert INCOMPLETE_STEPS_MESSAGE in code
     assert node.data.config["steps"] == broken.data.config["steps"]
-    assert node.data.config["_steps_error"] == "Step 1: Add at least one condition."
+    assert node.data.editor.steps_error == "Step 1: Add at least one condition."
 
 
 def test_scenario_expander_steps_execute_and_round_trip(tmp_path: Path) -> None:
@@ -5579,12 +5606,11 @@ def test_scenario_expander_steps_execute_and_round_trip(tmp_path: Path) -> None:
     assert "\n    df = df.head(4)\n    return df\n" in code
     assert node.data.config["steps"] == steps
     assert node.data.config["stepCount"] == 3
-    assert "_steps_discarded" not in node.data.config
+    assert node.data.editor.steps_discarded is None
 
     broken = _scenario_expander([source()])
     assert (
-        broken.data.config["_steps_error"]
-        == "Step 1: This node starts from df; remove the start step."
+        broken.data.editor.steps_error == "Step 1: This node starts from df; remove the start step."
     )
     graph = PipelineGraph(nodes=[quotes, broken], edges=[make_edge("quotes", "grid")])
     assert (
@@ -5614,10 +5640,10 @@ def test_model_score_steps_round_trip_and_fail_before_any_model_loads(
     assert "\n    df = df.head(2)\n    return df\n" in code
     assert node.data.config["steps"] == steps
     assert node.data.config["code"] == "df = df.head(2)"
-    assert "_steps_discarded" not in node.data.config
+    assert node.data.editor.steps_discarded is None
 
     broken = _model_score([step("f", "filter", match="all", conditions=[])])
-    assert broken.data.config["_steps_error"] == "Step 1: Add at least one condition."
+    assert broken.data.editor.steps_error == "Step 1: Add at least one condition."
     graph = PipelineGraph(nodes=[quotes, broken], edges=[make_edge("quotes", "scored")])
     result = execute_graph(graph, target_node_id="scored", execution_context=_capped_context())[
         "scored"
@@ -5693,16 +5719,16 @@ def test_recovery_and_save_report_incomplete_steps_on_every_surface(project_root
 
     pl.DataFrame({"premium": [1.0]}).write_parquet(project_root / "quotes.parquet")
     broken_steps = [step("f", "filter", match="all", conditions=[])]
-    # Raw sidecar-shaped candidates: no derived `_steps_error`, so recovery
-    # must render the steps itself to report the incomplete one.
+    # Raw sidecar-shaped candidates are not node data and carry no derived steps
+    # error, so recovery must render the steps itself to report the incomplete one.
     for node in (
         _rating_step(broken_steps),
         _scenario_expander(broken_steps),
         _model_score(broken_steps),
         _stepped_input(_ready_source("quotes", project_root / "quotes.parquet"), broken_steps),
     ):
-        raw = {k: v for k, v in node.data.config.items() if not k.startswith("_") and k != "code"}
-        assert "_steps_error" not in raw
+        assert node.data.editor.steps_error is not None
+        raw = {k: v for k, v in node.data.config.items() if k != "code"}
         issues = validate_recovery_config(node.data.nodeType, raw, input_names=None)
         assert any(issue.path == "/steps" and issue.code == "incomplete" for issue in issues), (
             node.data.nodeType
@@ -5789,7 +5815,7 @@ def test_frame_surface_free_code_with_redundant_parentheses_reloads_in_step_mode
     node = next(n for n in parse_pipeline_source(code, _base_dir=tmp_path).nodes if n.id == node_id)
     assert node.data.config["steps"] == steps, surface
     assert node.data.config["code"] == "df = (df.head(2))", surface
-    assert "_steps_discarded" not in node.data.config, surface
+    assert node.data.editor.steps_discarded is None, surface
 
 
 #: Every surface whose steps start from a frame the surface already bound to df.
@@ -5833,7 +5859,7 @@ def _assert_comment_first_steps_kept(main: Path, node_id: str, surface: str) -> 
     node = next(n for n in parse_pipeline_file(main).nodes if n.id == node_id)
     assert node.data.config["steps"] == [step("c", "free_code", code=_COMMENT_FIRST_CODE)], surface
     assert node.data.config["code"] == _COMMENT_FIRST_CODE, surface
-    assert "_steps_discarded" not in node.data.config, surface
+    assert node.data.editor.steps_discarded is None, surface
 
 
 @pytest.mark.parametrize("surface", _FRAME_START_SURFACES)
@@ -5918,7 +5944,7 @@ def test_explore_steps_execute_and_round_trip_through_the_decorator(tmp_path: Pa
     )
     assert node.data.config["steps"] == steps
     assert node.data.config["code"] == "df = df.head(2)"
-    assert "_steps_discarded" not in node.data.config
+    assert node.data.editor.steps_discarded is None
 
 
 def test_explore_steps_keep_their_cards_and_fail_loudly_when_incomplete(tmp_path: Path) -> None:
@@ -5939,7 +5965,7 @@ def test_explore_steps_keep_their_cards_and_fail_loudly_when_incomplete(tmp_path
     assert [pivot["id"] for pivot in node.data.config["pivots"]] == [pivots[0]["id"]]
 
     broken = _explore([step("f", "filter", match="all", conditions=[])])
-    assert broken.data.config["_steps_error"] == "Step 1: Add at least one condition."
+    assert broken.data.editor.steps_error == "Step 1: Add at least one condition."
     broken_graph = PipelineGraph(nodes=[quotes, broken], edges=[make_edge("quotes", "report")])
     result = execute_graph(
         broken_graph, target_node_id="report", execution_context=_capped_context()
@@ -5955,7 +5981,7 @@ def test_explore_steps_keep_their_cards_and_fail_loudly_when_incomplete(tmp_path
     )
     assert reloaded.data.config["steps"] == broken.data.config["steps"]
     assert reloaded.data.config["code"] == ""
-    assert reloaded.data.config["_steps_error"] == "Step 1: Add at least one condition."
+    assert reloaded.data.editor.steps_error == "Step 1: Add at least one condition."
 
 
 def test_explore_hand_edited_body_discards_its_steps(tmp_path: Path) -> None:
@@ -5970,9 +5996,9 @@ def test_explore_hand_edited_body_discards_its_steps(tmp_path: Path) -> None:
     )
     assert "steps" not in node.data.config
     assert node.data.config["code"] == "df = df.head(3)"
-    assert node.data.config["_steps_discarded"].startswith("Steps were discarded because")
+    assert node.data.editor.steps_discarded.startswith("Steps were discarded because")
     # Explore has no sidecar to retire.
-    assert "_discarded_sidecar" not in node.data.config
+    assert node.data.editor.discarded_sidecar is None
 
 
 # ---------------------------------------------------------------------------
@@ -6015,7 +6041,9 @@ def test_recovery_keeps_a_hand_edited_body_over_stale_steps(
     raw, changes = _recovered_settings(project_root, node_id)
     assert raw["code"] == "df = df.head(3)", surface
     assert "steps" not in raw, surface
-    assert raw["_steps_discarded"].startswith("Steps were discarded because"), surface
+    assert not any(key.startswith("_") for key in raw), surface
+    (discard,) = [change for change in changes if change.path == "/steps"]
+    assert discard.reason.startswith("Steps were discarded because"), surface
     assert any(change.path == "/steps" and change.outcome == "removed" for change in changes), (
         surface
     )
@@ -6045,7 +6073,7 @@ def test_recovery_keeps_steps_when_the_body_still_matches(project_root: Path, su
 
     raw, _changes = _recovered_settings(project_root, node_id)
     assert raw["steps"] == steps, surface
-    assert "_steps_discarded" not in raw, surface
+    assert not any(key.startswith("_") for key in raw), surface
 
 
 @pytest.mark.parametrize("surface", ("explore", "dataInput"))
@@ -6077,7 +6105,7 @@ def test_recovery_keeps_steps_when_it_drops_a_body_the_decorator_never_calls(
 
     raw, changes = _recovered_settings(project_root, node_id)
     assert raw["steps"] == steps, surface
-    assert "_steps_discarded" not in raw, surface
+    assert not any(key.startswith("_") for key in raw), surface
     reported = [(c.path, c.outcome) for c in changes if c.path in {"/code", "/steps"}]
     assert reported == [("/code", "removed")], surface
     recovered = GraphNode(
@@ -6326,7 +6354,7 @@ def test_frame_global_df_saves_as_incomplete_placeholder(tmp_path: Path) -> None
     offending_steps = [step("fc", "free_code", code="# a comment\nglobal df\ndf = df.head(2)")]
     graph, node_id = _surface_graph(tmp_path, "dataInput", offending_steps)
     validated_node = next(n for n in graph.nodes if n.id == node_id)
-    assert "_steps_error" in validated_node.data.config
+    assert validated_node.data.editor.steps_error is not None
     generated = graph_to_code(graph, pipeline_name="main")
     assert INCOMPLETE_STEPS_MESSAGE in generated
     compile(generated, "<generated>", "exec")
