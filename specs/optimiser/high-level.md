@@ -250,9 +250,11 @@ Invariants:
   scenario values). A key with too many levels to break down (an estimated 1,800 distinct values,
   exactly 2,000, or a value over 256 bytes; at most 30 rating factors) is listed as unavailable
   with its reason, never truncated silently.
-- Crash-surviving apply-result, ratebook-factor and quote-analysis directories carry distinct
-  versioned Haute ownership markers. Startup cleanup can remove only stale marked direct
-  children of those three dedicated roots; unmarked or foreign temporary data is never swept.
+- Crash-surviving apply-result, ratebook-factor and quote-analysis directories, and the
+  scratch directories setup and the MLflow log write, carry distinct versioned Haute ownership
+  markers naming the process that created them. Startup cleanup can remove only stale marked
+  direct children of those four dedicated roots whose creating process is no longer running;
+  unmarked or foreign temporary data, and a running server's files, are never swept.
 - Analysis columns never reach the solver. The quote grid is built from the solver columns
   only, so a solve with analysis columns has exactly the grid, totals and choices of the same
   solve without them.

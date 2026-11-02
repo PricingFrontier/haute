@@ -1612,3 +1612,58 @@ class TestArtifactPathAnchoring:
 
         with pytest.raises(RuntimePathOutsideProjectError):
             self._load(raw, pipelines)
+
+
+def test_a_standalone_run_finds_the_projects_artifact_from_any_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OPT-R06: a saved pipeline run on its own anchors its project-relative
+    artifact (the path the save returns) to the Haute project holding it,
+    whatever the working directory; nothing sets the project root first."""
+    project = tmp_path / "project"
+    pipeline_root = project / "rating"
+    (project / ".git").mkdir(parents=True)
+    (project / "haute.toml").write_text('[project]\nname = "nested"\n', encoding="utf-8")
+    (project / "data").mkdir()
+    _scored_df().write_parquet(project / "data" / "scored.parquet")
+    (project / "artifacts").mkdir()
+    (project / "artifacts" / "opt.json").write_text(
+        json.dumps(_make_online_artifact()), encoding="utf-8"
+    )
+    for folder, name, config in (
+        (
+            "data_input",
+            "scored",
+            {"inputType": "file", "format": "parquet", "path": "data/scored.parquet"},
+        ),
+        (
+            "apply_optimisation",
+            "apply",
+            {"sourceType": "file", "artifact_path": "artifacts/opt.json"},
+        ),
+    ):
+        config_dir = pipeline_root / "config" / folder
+        config_dir.mkdir(parents=True)
+        (config_dir / f"{name}.json").write_text(json.dumps(config), encoding="utf-8")
+    source = (
+        "import haute\n\n"
+        'pipeline = haute.Pipeline("nested")\n\n\n'
+        '@pipeline.data_input(config="config/data_input/scored.json")\n'
+        "def scored(): ...\n\n\n"
+        '@pipeline.optimiser_apply(config="config/apply_optimisation/apply.json")\n'
+        "def apply(scored): ...\n\n\n"
+        'pipeline.connect("scored", "apply")\n'
+    )
+    main = pipeline_root / "main.py"
+    main.write_text(source, encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    namespace: dict[str, object] = {"__file__": str(main)}
+    exec(compile(source, str(main), "exec"), namespace)
+
+    frame = namespace["pipeline"].run(source="batch")  # type: ignore[attr-defined]
+
+    result = frame.lazy().collect().sort("quote_id")
+    assert result["quote_id"].to_list() == ["q1", "q2"]
+    assert "optimal_scenario_value" in result.columns

@@ -190,12 +190,6 @@
 - **`JOB_STATUS_VALUES` / `JobStatus` / `FAILED_JOB_STATUSES` /
   `TERMINAL_JOB_STATUSES`** (`api/types.ts`) — the single runtime/type
   vocabulary for all job parsers and polling failure/terminal checks.
-- **`FrontierStatusResponse`** (`api/types.ts`): `{status: JobStatus,
-  progress, message, elapsed_seconds, result: FrontierResponse | null,
-  terminal_reason?, error_code?, http_status_code?, error_detail?,
-  execution_metrics?}` — the response from the frontier background-job
-  status endpoint. `FrontierResponse` has an optional `job_id` for the
-  `status === "started"` case.
 - **`NodeResultsState`**: the store's full shape — five result and job
   record pairs (`previews`, `solveResults` + `solveJobs`, `trainResults` + `trainJobs`,
   `exploreResults` + `exploreJobs`, `pivotResults` + `pivotJobs`), `pivotStartClaims`,

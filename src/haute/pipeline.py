@@ -30,6 +30,7 @@ from haute._global_constants import (
 )
 from haute._graph_utils import _edge_id, _sanitize_func_name, executable_input_name
 from haute._logging import get_logger
+from haute._path_resolution import standalone_project_root_scope
 from haute._standalone_nodes import (
     SOURCE_NODE_TYPES,
     FunctionKind,
@@ -912,25 +913,26 @@ class Pipeline(NodeRegistry):
 
         _token = _scenario_ctx.set(source)
         try:
-            order = self._topo_order()
-            constants = self._run_constants(source)
-            outputs: dict[str, Any] = {}
-            inactive = self._inactive_switch_edges(source)
-            unreached = self._unreached(order, inactive)
+            with standalone_project_root_scope(self._pipeline_file()):
+                order = self._topo_order()
+                constants = self._run_constants(source)
+                outputs: dict[str, Any] = {}
+                inactive = self._inactive_switch_edges(source)
+                unreached = self._unreached(order, inactive)
 
-            for n in order:
-                if n.name in unreached:
-                    continue
-                if n.is_source:
-                    outputs[n.name] = n._invoke((), constants)
-                else:
-                    self._execute_transform(n, outputs, constants, inactive)
+                for n in order:
+                    if n.name in unreached:
+                        continue
+                    if n.is_source:
+                        outputs[n.name] = n._invoke((), constants)
+                    else:
+                        self._execute_transform(n, outputs, constants, inactive)
 
-            response = as_response(
-                outputs[self._resolve_output_node(order).name],
-                quote_identity(self._workbench_quote(order, outputs)),
-            )
-            return _collect_standalone_output(response)
+                response = as_response(
+                    outputs[self._resolve_output_node(order).name],
+                    quote_identity(self._workbench_quote(order, outputs)),
+                )
+                return _collect_standalone_output(response)
         finally:
             _scenario_ctx.reset(_token)
 
@@ -979,91 +981,94 @@ class Pipeline(NodeRegistry):
             return self._with_submodels_expanded().score(df)
         _token = _scenario_ctx.set("live")
         try:
-            order = self._topo_order()
-            constants = self._run_constants("live")
-            outputs: dict[str, Any] = {}
-            inactive = self._inactive_switch_edges("live")
-            unreached = self._unreached(order, inactive)
+            with standalone_project_root_scope(self._pipeline_file()):
+                order = self._topo_order()
+                constants = self._run_constants("live")
+                outputs: dict[str, Any] = {}
+                inactive = self._inactive_switch_edges("live")
+                unreached = self._unreached(order, inactive)
 
-            # A source only a switch's inactive branch reads is neither seeded nor run.
-            sources = [n for n in order if n.is_source and n.name not in unreached]
-            deploy_inputs = [n for n in sources if n.is_deploy_input]
-            if len(deploy_inputs) > 1:
-                raise ExecutionError(
-                    "score() found multiple live input sources. Mark exactly "
-                    "one source with @pipeline.api_input, @pipeline.workbench_input "
-                    "or api_input=True.",
-                    sources=[n.name for n in deploy_inputs],
-                )
-            if not deploy_inputs and len(sources) > 1:
-                raise ExecutionError(
-                    "score() cannot infer which source receives the input "
-                    "DataFrame: no source is marked as the live input and there "
-                    "is more than one. Mark exactly one source with "
-                    "@pipeline.api_input or @pipeline.workbench_input.",
-                    sources=[n.name for n in sources],
-                )
+                # A source only a switch's inactive branch reads is neither seeded nor run.
+                sources = [n for n in order if n.is_source and n.name not in unreached]
+                deploy_inputs = [n for n in sources if n.is_deploy_input]
+                if len(deploy_inputs) > 1:
+                    raise ExecutionError(
+                        "score() found multiple live input sources. Mark exactly "
+                        "one source with @pipeline.api_input, @pipeline.workbench_input "
+                        "or api_input=True.",
+                        sources=[n.name for n in deploy_inputs],
+                    )
+                if not deploy_inputs and len(sources) > 1:
+                    raise ExecutionError(
+                        "score() cannot infer which source receives the input "
+                        "DataFrame: no source is marked as the live input and there "
+                        "is more than one. Mark exactly one source with "
+                        "@pipeline.api_input or @pipeline.workbench_input.",
+                        sources=[n.name for n in sources],
+                    )
 
-            seed_nodes = deploy_inputs or sources
-            seed_names = {n.name for n in seed_nodes}
-            for n in seed_nodes:
-                if n.node_type is NodeType.WORKBENCH_INPUT:
-                    self._check_seeded_workbench_input(n)
-            connected_ports = list(
-                dict.fromkeys(
-                    edge.source_port
-                    for edge in self._edges
-                    if edge.source in seed_names and edge.source_port is not None
+                seed_nodes = deploy_inputs or sources
+                seed_names = {n.name for n in seed_nodes}
+                for n in seed_nodes:
+                    if n.node_type is NodeType.WORKBENCH_INPUT:
+                        self._check_seeded_workbench_input(n)
+                connected_ports = list(
+                    dict.fromkeys(
+                        edge.source_port
+                        for edge in self._edges
+                        if edge.source in seed_names and edge.source_port is not None
+                    )
                 )
-            )
-            if isinstance(df, dict):
-                expected_ports = set(connected_ports)
-                supplied_ports = set(df)
-                if not expected_ports:
-                    unknown_ports = sorted(supplied_ports)
-                    raise ExecutionError(
-                        "score() received a frame dictionary for a source with no connected ports.",
-                        source_nodes=sorted(seed_names),
-                        unknown_ports=unknown_ports,
-                    )
-                missing_ports = sorted(expected_ports - supplied_ports)
-                unknown_ports = sorted(supplied_ports - expected_ports)
-                if missing_ports or unknown_ports:
-                    raise ExecutionError(
-                        "score() frame dictionary must match the connected source ports exactly.",
-                        connected_ports=connected_ports,
-                        missing_ports=missing_ports,
-                        unknown_ports=unknown_ports,
-                    )
-                seed_value: Any = df
-            else:
-                if len(connected_ports) > 1:
-                    raise ExecutionError(
-                        "score() cannot seed a bare DataFrame across multiple "
-                        "connected source ports; provide a frame dictionary.",
-                        connected_ports=connected_ports,
-                    )
-                seed_value = df
-            for n in sources:
-                if n.name in seed_names:
-                    outputs[n.name] = seed_value
+                if isinstance(df, dict):
+                    expected_ports = set(connected_ports)
+                    supplied_ports = set(df)
+                    if not expected_ports:
+                        unknown_ports = sorted(supplied_ports)
+                        raise ExecutionError(
+                            "score() received a frame dictionary for a source with no "
+                            "connected ports.",
+                            source_nodes=sorted(seed_names),
+                            unknown_ports=unknown_ports,
+                        )
+                    missing_ports = sorted(expected_ports - supplied_ports)
+                    unknown_ports = sorted(supplied_ports - expected_ports)
+                    if missing_ports or unknown_ports:
+                        raise ExecutionError(
+                            "score() frame dictionary must match the connected source "
+                            "ports exactly.",
+                            connected_ports=connected_ports,
+                            missing_ports=missing_ports,
+                            unknown_ports=unknown_ports,
+                        )
+                    seed_value: Any = df
                 else:
-                    # Not a deploy input - run its own load logic.
-                    outputs[n.name] = n._invoke((), constants)
+                    if len(connected_ports) > 1:
+                        raise ExecutionError(
+                            "score() cannot seed a bare DataFrame across multiple "
+                            "connected source ports; provide a frame dictionary.",
+                            connected_ports=connected_ports,
+                        )
+                    seed_value = df
+                for n in sources:
+                    if n.name in seed_names:
+                        outputs[n.name] = seed_value
+                    else:
+                        # Not a deploy input - run its own load logic.
+                        outputs[n.name] = n._invoke((), constants)
 
-            for n in order:
-                if n.is_source or n.name in unreached:
-                    continue
-                self._execute_transform(n, outputs, constants, inactive)
+                for n in order:
+                    if n.is_source or n.name in unreached:
+                        continue
+                    self._execute_transform(n, outputs, constants, inactive)
 
-            # The quote's identity is the quote_details frame given, by its port when one
-            # bare frame seeds the one port connected.
-            given = df if isinstance(df, dict) else dict.fromkeys(connected_ports[:1], df)
-            response = as_response(
-                outputs[self._resolve_output_node(order).name],
-                quote_identity(given),
-            )
-            return _collect_standalone_output(response)
+                # The quote's identity is the quote_details frame given, by its port when one
+                # bare frame seeds the one port connected.
+                given = df if isinstance(df, dict) else dict.fromkeys(connected_ports[:1], df)
+                response = as_response(
+                    outputs[self._resolve_output_node(order).name],
+                    quote_identity(given),
+                )
+                return _collect_standalone_output(response)
         finally:
             _scenario_ctx.reset(_token)
 

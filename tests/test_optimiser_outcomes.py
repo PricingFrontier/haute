@@ -519,6 +519,8 @@ class TestOwnership:
         monkeypatch.setattr(_optimiser_artifacts, "_scratch_artifact_root", lambda: tmp_path / "s")
         directory = _optimiser_artifacts._new_quote_analysis_directory()
         assert directory.parent == root
+        # After a restart the process that created the table is gone.
+        monkeypatch.setattr("haute._artifact_housekeeping._creator_is_running", lambda _m: False)
 
         reports = _optimiser_artifacts.reap_stale_optimiser_artifacts(0)
 

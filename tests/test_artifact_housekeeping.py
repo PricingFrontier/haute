@@ -426,33 +426,60 @@ def test_optimiser_reaper_targets_only_owned_marked_roots(
     assert (analysis_root / "foreign").exists()
 
 
-def test_setup_scratch_left_by_a_killed_server_is_reaped_at_the_next_start(
+def test_setup_scratch_lives_under_the_marked_scratch_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """OPT-R02: the solver input, a worker's scratch and the auto-range parts live
-    under the marked scratch root, so what a crash leaves behind is reaped."""
+    """OPT-R02: the solver input, a worker's scratch and the auto-range parts are
+    marked directories of the optimiser's scratch root, which startup reaps."""
     from haute.routes import _optimiser_artifacts as artifacts
     from haute.routes._optimiser_worker import worker_scratch_directory
 
     scratch_root = tmp_path / "scratch"
-    # Every root points here, so reaping at age 0 touches no other test's files.
     monkeypatch.setattr(artifacts, "_scratch_artifact_root", lambda: scratch_root)
-    monkeypatch.setattr(artifacts, "_apply_artifact_root", lambda: tmp_path / "apply")
-    monkeypatch.setattr(artifacts, "_ratebook_factors_artifact_root", lambda: tmp_path / "f")
-    monkeypatch.setattr(artifacts, "_quote_analysis_artifact_root", lambda: tmp_path / "qa")
     solver_input = Path(artifacts._new_solver_input_path())
-    worker_scratch = worker_scratch_directory()
-    worker_dir = Path(worker_scratch.__enter__())
-    parts = artifacts._range_parts_directory()
-    parts_dir = parts.__enter__()
-    # The server dies here: no context exits and nothing is removed.
-    left = {solver_input.parent, worker_dir, parts_dir}
-    assert {path.parent for path in left} == {scratch_root}
+    with worker_scratch_directory() as worker_dir, artifacts._range_parts_directory() as parts:
+        made = [solver_input.parent, Path(worker_dir), parts]
+        assert {path.parent for path in made} == {scratch_root}
+        markers = [json.loads((path / ".haute-artifact.json").read_text()) for path in made]
+        assert {marker["owner"] for marker in markers} == {"optimiser_scratch"}
+        assert {marker["pid"] for marker in markers} == {os.getpid()}
+    artifacts._remove_solver_input(str(solver_input))
+    assert list(scratch_root.iterdir()) == []
 
-    reports = artifacts.reap_stale_optimiser_artifacts(0)
 
-    assert reports["scratch"]["removed"] == 3
-    assert not any(path.exists() for path in left)
+def test_reaping_keeps_a_running_servers_files_and_removes_a_dead_ones(tmp_path: Path) -> None:
+    """A directory whose creator still runs is never reaped, at any age; one a
+    killed process left is reaped once stale."""
+    import subprocess
+    import sys
+
+    from haute._artifact_housekeeping import create_owned_artifact_directory
+
+    root = tmp_path / "scratch"
+    killed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import os, sys; from pathlib import Path; "
+            "from haute._artifact_housekeeping import create_owned_artifact_directory; "
+            "print(create_owned_artifact_directory("
+            "Path(sys.argv[1]), 'input_', 'optimiser_scratch')); "
+            "sys.stdout.flush(); os._exit(9)",
+            str(root),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert killed.returncode == 9, killed.stderr
+    abandoned = Path(killed.stdout.strip())
+    live = create_owned_artifact_directory(root, "input_", "optimiser_scratch")
+
+    report = reap_stale_artifact_directories(root, "optimiser_scratch", 0)
+
+    assert report["removed"] == 1
+    assert not abandoned.exists()
+    assert live.exists()
 
 
 def test_optimiser_modules_create_no_unmarked_temporary_files() -> None:
