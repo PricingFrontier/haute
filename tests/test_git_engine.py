@@ -359,7 +359,7 @@ class TestMilestoneMerge:
         real_run = git_core._run_git
 
         def fail_commit(*args: str, **kwargs: object) -> str:
-            if args[:1] == ("commit",):
+            if git_core._subcommand(args) == "commit":
                 raise GitError("injected commit failure")
             return real_run(*args, **kwargs)  # type: ignore[arg-type]
 
@@ -1541,6 +1541,20 @@ class TestSeedGitignoreGuards:
         missing = [rel for rel in legitimate if rel not in committed]
         assert not missing, f"legitimate scaffold files over-excluded: {missing}"
         assert ".gitignore" in committed
+
+
+class TestRootCommitRunsNoHook:
+    def test_the_root_commit_runs_none_of_the_projects_hooks(self, unborn_repo: Path) -> None:
+        """The root commit is Haute's own, as a save is: no hook refuses or runs on it."""
+        (unborn_repo / "haute.toml").write_text("[project]\n")
+        install_hook(unborn_repo, "pre-commit", "#!/bin/sh\nexit 1\n")
+        install_hook(unborn_repo, "prepare-commit-msg", "#!/bin/sh\nexit 1\n")
+        install_hook(unborn_repo, "post-commit", "#!/bin/sh\ntouch post-commit-ran\n")
+
+        set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        assert "haute.toml" in _git(unborn_repo, "show", "--name-only", "--format=", "main")
+        assert not (unborn_repo / "post-commit-ran").exists()
 
 
 class TestSetWorkingBranchUnbornNonDefault:
@@ -5322,3 +5336,19 @@ class TestGitSubprocessEncoding:
         assert git_core._run_git("hash-object", "--stdin", input_text="payload\n") == "�object"
         with pytest.raises(GitError, match="�diagnostic"):
             git_core._run_git("update-ref", "--stdin", input_text="create refs/test x\n")
+
+
+@pytest.mark.parametrize(
+    ("args", "named"),
+    [
+        (("commit", "-m", "x"), "commit"),
+        (("-c", "core.hooksPath=/dev/null", "commit", "-m", "x"), "commit"),
+        (("-c", "a=1", "-c", "b=2", "status"), "status"),
+    ],
+)
+def test_a_failure_names_the_git_subcommand_past_its_settings(
+    args: tuple[str, ...], named: str
+) -> None:
+    from haute._git_core import _subcommand
+
+    assert _subcommand(args) == named

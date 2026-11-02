@@ -479,11 +479,15 @@ def test_a_save_runs_none_of_the_projects_hooks(project: Path, refuses: bool) ->
     do: the hooks run when a milestone is made (specs/git-integration)."""
     hook = REWRITING_PRE_COMMIT_HOOK + ("exit 1\n" if refuses else "")
     install_hook(project, "pre-commit", hook)
+    # Hooks --no-verify would still run: one refusing the message, one leaving a mark.
+    install_hook(project, "prepare-commit-msg", "#!/bin/sh\nexit 1\n")
+    install_hook(project, "post-commit", "#!/bin/sh\ntouch post-commit-ran\n")
 
     response = SavePipelineService(project_root=project).save(_save_request(project, banding=True))
 
     written = (project / "main.py").read_text(encoding="utf-8")
     assert not written.endswith("# formatted\n")
+    assert not (project / "post-commit-ran").exists()
     assert response.git_sha is not None
     assert _blob(project, response.git_sha, "main.py") == written.rstrip("\n")
     assert not [warning for warning in response.warnings if "capture" in warning]

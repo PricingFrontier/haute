@@ -11,6 +11,7 @@ from pathlib import Path
 # explicitly into this domain's namespace so extracted functions retain their
 # original signatures and semantics without a facade dependency.
 from haute._git_core import (
+    NO_HOOKS,
     GitDomainError,
     GitError,
     _assert_eligible_working,
@@ -310,7 +311,7 @@ def set_working_branch(
             commit_extra = ["--allow-empty"] if ok_diff else []
             try:
                 # Haute's own commit, as a save is: the project's hooks run at a milestone.
-                _run_git("commit", "--no-verify", *commit_extra, "-m", "Initial commit", cwd=cwd)
+                _run_git(*NO_HOOKS, "commit", *commit_extra, "-m", "Initial commit", cwd=cwd)
             except GitError as exc:
                 stderr = str(exc)
                 if any(

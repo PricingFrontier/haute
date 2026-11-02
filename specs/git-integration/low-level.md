@@ -218,8 +218,9 @@ changed (idempotent no-op returns `None`; a status git cannot answer raises `Git
 never reads as no change) → `git add -- <paths>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
 <paths>` (pathspec-scoped, so it commits only those paths' working-tree state regardless of
 what else the user may have pre-staged) → returns the new SHA. The `git commit` passes
-`--no-verify`: a save runs none of the project's hooks, which run at a milestone over every
-save it records. Every path reaches Git as a
+`-c core.hooksPath=/dev/null` (`_git_core.NO_HOOKS`): a save runs none of the project's
+hooks, `prepare-commit-msg` and `post-commit` included (which `--no-verify` would still
+run); they run at a milestone over every save it records. Every path reaches Git as a
 `:(literal)` pathspec, so a filename holding `*`, `?` or `[` names only itself, as in the
 unborn-repo seed. A canvas save passes no
 message, so the default names the changed files; an assistant apply passes its change
@@ -505,7 +506,7 @@ folder (`_refuse_unversionable`): "<path> (<size>) is too large for version hist
 takes files up to 100 MiB. Move it to the project's data/ folder, which stays on this machine,
 and try again." A larger file the pathspecs leave out is never a candidate. The matched files are added with
 `:(literal)` prefixes so a filename containing glob characters can't re-expand the pathspec.
-An empty result still commits (`--allow-empty`) to establish the root. The root commit passes `--no-verify`: like a save, it runs none of the project's hooks. A `git commit` failure whose
+An empty result still commits (`--allow-empty`) to establish the root. The root commit takes `NO_HOOKS` too: like a save, it runs none of the project's hooks. A `git commit` failure whose
 stderr mentions missing author identity is translated to a `GitDomainError` steering the
 user to set identity first; anything else re-raises as a plain `GitError`. The whole
 *post-seed pair-creation* path (branch checkout, ledger spawn, state write) is wrapped so any

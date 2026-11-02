@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 # explicitly into this domain's namespace so extracted functions retain their
 # original signatures and semantics without a facade dependency.
 from haute._git_core import (
+    NO_HOOKS,
     CompensationStep,
     GitDomainError,
     GitError,
@@ -127,7 +128,7 @@ def commit_save(
     msg = message if message is not None else _generate_commit_message(changed)
     # `git commit -- <paths>` commits the working-tree state of exactly those
     # paths, bypassing unrelated index content the user may have pre-staged.
-    _run_git("commit", "--no-verify", "-m", msg, "--", *pathspecs, cwd=cwd)
+    _run_git(*NO_HOOKS, "commit", "-m", msg, "--", *pathspecs, cwd=cwd)
 
     sha = _run_git("rev-parse", "HEAD", cwd=cwd).strip()
     logger.info("save_committed", ledger=ledger, sha=sha, files=len(changed))
