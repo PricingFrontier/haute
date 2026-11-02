@@ -28,8 +28,10 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 directory, with different rules, several of them from the process's current
 directory: the sandbox root is the current directory captured on first use;
 the project module walks up for `haute.toml` and git, which is the resolver
-the specification describes; runtime execution uses a context variable; the
-route helper `pipeline_dir` returns the current directory even when
+the specification describes; runtime execution uses a context variable; the project `utility` finder
+searches the pipeline directory and then the current directory
+(`_project_imports.utility_search_dirs`, which the cache fingerprint and the deploy
+bundle share); the route helper `pipeline_dir` returns the current directory even when
 `haute.toml` is missing, only logging an error, which contradicts this
 component's rule that not being inside a project raises; the input-cache
 routes use the current directory; node data uses the sandbox root; and

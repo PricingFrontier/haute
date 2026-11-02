@@ -1234,18 +1234,17 @@ def _pipeline_dir(graph: PipelineGraph) -> Path | None:
 
 
 def _utility_search_path(pipeline_dir: str | Path | None) -> list[str]:
-    """Return the search path the executor uses to resolve the ``utility`` import.
+    """Return the search path the ``utility`` import resolves through.
 
-    Mirrors :func:`haute.executor._prioritise_preamble_import_paths`: the
-    pipeline directory and the current working directory are searched first,
-    then the rest of ``sys.path``.  Hashing whatever *this* path resolves keeps
-    the fingerprint aligned with the module that actually executes — a two-dir
-    scan silently misses a ``utility`` resolved elsewhere on ``sys.path``.
+    The project's ``utility`` finder searches the project's directories first
+    (:func:`haute._project_imports.utility_search_dirs`), and a project without a
+    ``utility`` leaves the name to ``sys.path``.  Hashing whatever *this* path
+    resolves keeps the fingerprint aligned with the module that actually executes —
+    a two-dir scan silently misses a ``utility`` resolved elsewhere on ``sys.path``.
     """
-    prioritised: list[str] = []
-    if pipeline_dir is not None:
-        prioritised.append(str(Path(pipeline_dir).resolve()))
-    prioritised.append(str(Path.cwd().resolve()))
+    from haute._project_imports import utility_search_dirs
+
+    prioritised = utility_search_dirs(pipeline_dir)
 
     seen = set(prioritised)
     ordered = list(prioritised)
@@ -1262,9 +1261,9 @@ def _utility_search_path(pipeline_dir: str | Path | None) -> list[str]:
 def _resolve_utility_locations(pipeline_dir: str | Path | None) -> list[Path] | None:
     """Resolve the top-level ``utility`` module/package the preamble will import.
 
-    Uses :class:`importlib.machinery.PathFinder` against the same prioritised
-    search path the executor installs at exec time, so the bytes we hash are the
-    bytes that will run.  ``PathFinder.find_spec`` performs pure resolution — it
+    Uses :class:`importlib.machinery.PathFinder` against the same search order the
+    ``utility`` import resolves through, so the bytes we hash are the bytes that will
+    run.  ``PathFinder.find_spec`` performs pure resolution — it
     neither imports the module nor mutates ``sys.modules`` — and we invalidate
     the finder caches first so a freshly created/edited ``utility`` is seen.
 

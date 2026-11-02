@@ -1,11 +1,11 @@
 """Project code a deploy bundle carries, and project imports it cannot.
 
-The executor puts the pipeline directory and the working directory first on
-``sys.path`` before it runs the preamble
-(:func:`haute.executor._prioritise_preamble_import_paths`), so a module found
-in either directory is project code. Deploy ships exactly one piece of it, the
-project's ``utility`` package, and every other project-local import would fail
-with ``ModuleNotFoundError`` in the served bundle, so validation refuses it.
+The project's ``utility`` package is the one piece of project code a preamble
+imports: the executor's finder answers it from the pipeline directory and the
+working directory (:func:`haute._project_imports.utility_search_dirs`), and deploy
+ships the same package. Any other module found in those directories is project code
+the bundle does not carry, which the editor does not import either, so validation
+refuses it.
 """
 
 from __future__ import annotations
@@ -18,9 +18,10 @@ from dataclasses import dataclass
 from importlib.machinery import PathFinder
 from pathlib import Path
 
+from haute._project_imports import UTILITY_PACKAGE, utility_search_dirs
 from haute.errors import DeployError
 
-UTILITY_PACKAGE = "utility"
+__all__ = ["UTILITY_PACKAGE", "ProjectModules", "resolve_project_modules"]
 
 
 @dataclass(frozen=True)
@@ -40,9 +41,10 @@ def resolve_project_modules(preamble: str, pipeline_dir: Path) -> ProjectModules
         DeployError: ``utility`` is a namespace package spanning both project
             directories, or a bundled ``utility`` file does not parse.
     """
-    # A pipeline directory that is also the working directory is one search
-    # entry: listing it twice would report one namespace package as split.
-    project_dirs = list(dict.fromkeys([str(pipeline_dir.resolve()), str(Path.cwd().resolve())]))
+    # The directories the executor's utility finder searches; a pipeline directory
+    # that is also the working directory is one entry, so one namespace package is
+    # never reported as split.
+    project_dirs = utility_search_dirs(pipeline_dir)
     importlib.invalidate_caches()
     utility = _project_utility(project_dirs)
 

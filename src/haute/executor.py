@@ -15,10 +15,8 @@ from __future__ import annotations
 import functools
 import gc
 import hashlib
-import importlib as _importlib
 import os
 import stat as stat_module
-import sys
 import threading
 import time
 import uuid
@@ -59,6 +57,7 @@ from haute._path_resolution import (
     runtime_project_root_scope,
 )
 from haute._pipeline_settings import project_pipeline_settings
+from haute._project_imports import bind_project_utility, evict_utility_modules
 from haute._registry import ensure_registry_ready
 from haute._sandbox import (
     compile_project_code,
@@ -130,11 +129,10 @@ PREVIEW_INITIAL_COLUMN_LIMIT = int_env(
 # inside importlib._bootstrap._load_unlocked.
 _preamble_lock = threading.Lock()
 
-# ``sys.path`` and ``sys.modules`` are process-global.  Utility-importing
-# preambles hold ``_preamble_lock`` for the full eviction/import/exec window.
-# Non-utility preambles still take the same lock for their short path
-# reprioritisation so they cannot change import precedence while a utility
-# preamble is paused between path setup and ``exec``.
+# ``sys.modules`` and the ``utility`` finder's binding are process-global.  A
+# compile holds ``_preamble_lock`` for the full bind/eviction/import/exec window,
+# so no other compile rebinds the finder or evicts ``utility`` while a preamble is
+# paused between them.
 #
 # Hot cache hits must NOT pass through this lock (pinned by
 # ``test_hot_cache_hit_does_not_wait_for_import_lock``): a slow preamble exec
@@ -262,58 +260,6 @@ _IS_WINDOWS = os.name == "nt"
 _WINDOWS_OUTPUT_SYNC_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8)
 
 
-def _utility_module_candidates(pipeline_dir_str: str | None) -> list[Path]:  # pragma: no mutate
-    bases: list[Path] = []
-    if pipeline_dir_str is not None:
-        bases.append(Path(pipeline_dir_str))
-    bases.append(Path.cwd().resolve())
-
-    seen: set[Path] = set()
-    candidates: list[Path] = []
-    for base in bases:
-        for candidate in (base / "utility.py", base / "utility"):
-            resolved = candidate.resolve()
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            candidates.append(resolved)
-    return candidates
-
-
-def _evict_utility_import_state(pipeline_dir_str: str | None) -> None:  # pragma: no mutate
-    """Discard utility import state before compiling a changed preamble key."""
-    _importlib.invalidate_caches()
-
-    for mod_name in [k for k in sys.modules if k == "utility" or k.startswith("utility.")]:
-        del sys.modules[mod_name]
-
-    for candidate in _utility_module_candidates(pipeline_dir_str):
-        if candidate.is_file():
-            pycache_dir = candidate.parent / "__pycache__"
-            if pycache_dir.is_dir():
-                for pyc in pycache_dir.glob(f"{candidate.stem}.*.pyc"):
-                    pyc.unlink()
-        elif candidate.is_dir():
-            for pycache_dir in candidate.rglob("__pycache__"):
-                if pycache_dir.is_dir():
-                    for pyc in pycache_dir.glob("*.pyc"):
-                        pyc.unlink()
-
-
-def _prioritise_preamble_import_paths(
-    cwd: str,
-    pipeline_dir_str: str | None,  # pragma: no mutate
-) -> None:
-    """Keep import resolution aligned with preamble dependency fingerprints."""
-    desired = [cwd]
-    if pipeline_dir_str is not None:
-        desired.insert(0, pipeline_dir_str)
-
-    for path in reversed(desired):
-        sys.path[:] = [existing for existing in sys.path if existing != path]
-        sys.path.insert(0, path)
-
-
 def _exec_preamble_namespace(preamble: str) -> dict[str, Any]:
     ns = safe_globals(pl=pl)
     base_keys = set(ns.keys())
@@ -426,19 +372,17 @@ def _compile_preamble_into_cell(
 ) -> dict[str, Any]:
     """Compile preamble bytes into a namespace. Caller holds ``_preamble_lock``.
 
-    The lock covers the entire path-prioritisation/import/exec window. Even
-    preambles without literal import statements execute with the ordinary
-    ``__import__`` and can consult process-global import state.
+    The lock covers the entire bind/eviction/import/exec window. Even preambles
+    without literal import statements execute with the ordinary ``__import__``
+    and can consult process-global import state.
     """
     validate_user_code(preamble)
-    imports_utility = preamble_imports_utility(preamble)
-    _prioritise_preamble_import_paths(cwd, pipeline_dir_str)
-    if imports_utility:
-        # Evict cached utility modules so digest-keyed cache misses pick up
-        # GUI edits. Clearing matching pyc files prevents same-size,
-        # same-mtime edits from being hidden by timestamp-based bytecode
-        # validation.
-        _evict_utility_import_state(pipeline_dir_str)
+    rebound = bind_project_utility(pipeline_dir_str, working_dir=cwd)
+    if rebound or preamble_imports_utility(preamble):
+        # A cache miss for a utility-importing preamble (a changed digest) or a
+        # newly bound project: the next import loads utility's source again, which
+        # the finder's loader always compiles, so no stale bytecode can stand in.
+        evict_utility_modules()
     return _exec_preamble_namespace(preamble)
 
 
@@ -481,13 +425,9 @@ def _compile_preamble(
     if not preamble or not preamble.strip():
         return {}
 
-    # Ensure project root is importable so `from utility.xxx import …` works
-    # even when the server process was spawned by uvicorn reload.  We add
-    # both cwd and the pipeline's parent directory because the ``utility/``
-    # folder may live next to the pipeline file (e.g. inside a ``rating/``
-    # subfolder) rather than at the project root.  These inserts are
-    # idempotent (gated on ``not in sys.path``) so the list doesn't grow
-    # on every call.
+    # ``utility`` is found beside the pipeline file (e.g. inside a ``rating/``
+    # subfolder), then in the working directory (``haute._project_imports``); both
+    # are part of the cache key, as two projects can share a preamble's text.
     import os
 
     cwd = os.getcwd()
@@ -522,8 +462,8 @@ def _compile_preamble(
         return ns
 
     # Single-flight population: first caller compiles under ``_preamble_lock``
-    # (which also serialises the process-global sys.path / sys.modules
-    # mutation); concurrent first-callers block, re-check, and return the
+    # (which also serialises the process-global finder binding and sys.modules
+    # eviction); concurrent first-callers block, re-check, and return the
     # SAME dict the winner stored — never a second exec producing a
     # semantically-equal-but-distinct namespace.
     with _preamble_lock:

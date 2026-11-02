@@ -378,11 +378,12 @@
    a side whose build raises `BoundedMemoryUnsupportedError` (`unproven`, too large to
    check). The proof and the checks finish as `RequestRows`, whose `checked_lookups` are
    the checks that passed.
-10. `resolve_project_modules(pruned_graph.preamble, pipeline_dir)`. The project directories
-   are the pipeline directory and the working directory, the two entries the executor
-   puts first on `sys.path` for the preamble
-   (`executor._prioritise_preamble_import_paths`), searched once when they are the same
-   directory. `utility` is looked up in those directories only
+10. `resolve_project_modules(pruned_graph.preamble, pipeline_dir)`, run first, after the
+   runtime path checks and before step 7, since nothing below may run the preamble before
+   its project imports are known. The project directories
+   are the pipeline directory and the working directory, the directories the executor's
+   `utility` finder searches (`_project_imports.utility_search_dirs`), searched once when
+   they are the same directory. `utility` is looked up in those directories only
    (`importlib.machinery.PathFinder.find_spec`). A match is the package directory or
    `utility.py` file to bundle, and a namespace package spanning two distinct directories
    is refused with `DeployError`. Bundled files are decoded as the import system decodes
@@ -390,7 +391,9 @@
    `from a.b import c`; relative imports skipped) in the preamble and in each `.py` file of
    a bundled package is then looked up the same way, skipping built-in and standard-library
    names and `utility` itself. Each one found is recorded as a message naming the module,
-   the importing file (the preamble, or `utility/<path>`) and its line. A bundled file that
+   the importing file (the preamble, or `utility/<path>`) and its line, and any found raise
+   one `DeployError` joining them: the pipeline cannot run without the module, here (the
+   executor's finder imports no project code but `utility`) or in the bundle. A bundled file that
    does not parse raises `DeployError` naming it. The pipeline's `modules/` folder is never
    bundled: the pruned graph is expanded, so it holds the submodels' own nodes, and its
    preamble never holds the pipeline file's `from modules import ...`, which the parser
@@ -489,8 +492,8 @@ The manifest paths are resolved by the generated runtime against the image's
 `WORKDIR /app`. `_container.py`'s `artifacts/<file>` remapping and the Dockerfile's
 `WORKDIR /app` plus `COPY artifacts/ artifacts/` must change together; neither side is
 an independently relocatable contract. A bundled `utility` gets its own `COPY` into
-`/app`, which `uvicorn app:app` puts on `sys.path`, and the preamble compile puts the
-working directory on it too. Spawned batch workers inherit the parent's `sys.path`.
+`/app`, which `uvicorn app:app` puts on `sys.path`, and the executor's `utility` finder
+searches the working directory too. Spawned batch workers inherit the parent's `sys.path`.
 
 **Generated container HTTP runtime (`_container.py::_generate_app_source`)**
 1. Startup loads `deploy_manifest.json`, reconstructs `PipelineGraph`, and resolves the
@@ -900,9 +903,9 @@ JSON have separate structured payloads. A body exactly at the configured limit i
   directory, but deploy's download/bundle path requires a file and local scoring supports
   `.cbm` and `.rsglm`; such pyfunc directories are not deployable through this path.
 - **Project-local preamble imports are not bundled, apart from `utility`.** The preamble
-  embedded in graph JSON still executes in the served model, so `validate_deploy` refuses any
-  other project-local import it makes (as `resolve_project_modules` records them) rather than
-  ship a bundle that cannot import it.
+  embedded in graph JSON still executes in the served model, so resolving the deploy refuses
+  any other project-local import it makes (as `resolve_project_modules` records them) rather
+  than ship a bundle that cannot import it; the editor does not import one either.
   The pipeline's `modules/` folder is never needed: the expanded graph carries the
   submodels' nodes, and the pipeline file's `from modules import ...` is not preamble.
 - **Request and response bounds are independent.** The request byte limit controls JSON
@@ -1006,7 +1009,7 @@ what they cover:
   `utility` through the built container bundle and through a saved pyfunc model, each in a
   separate process after the project's `utility` directory is deleted. It also checks that
   a project module outside `utility`, imported from the preamble or from a `utility` file,
-  is refused at validation naming the module and file, that a pipeline without
+  is refused when the deploy is resolved, naming the module and file, that a pipeline without
   project modules bundles none, and that a served haute wheel is logged under the model's
   `code/`, the path its `conda.yaml` and `requirements.txt` require it by.
 - **`test_container_smoke_script.py`** — covers the container deployment seam (`prepare_build_directory` writing artefacts and handling custom wheel requirements), `build_and_push_image` build-directory cleanup on Docker failure, the end-to-end `--serve-check` uvicorn subprocess smoke, and the scoring runtime: the generated app scores the smoke example's golden request in a fresh interpreter in which every package haute's dependencies provide and the Dockerfile does not install is unimportable.

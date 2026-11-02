@@ -3895,7 +3895,7 @@ class TestPreambleLockConcurrency:
         tmp_path,
         monkeypatch,
     ):
-        """A competing compile must not change sys.path during utility import."""
+        """A competing compile must not rebind the utility finder during another's import."""
         import threading
 
         import haute.executor as executor
@@ -3909,19 +3909,23 @@ class TestPreambleLockConcurrency:
             (util_dir / "__init__.py").write_text("", encoding="utf-8")
             (util_dir / "helpers.py").write_text(f"VALUE = {value!r}\n", encoding="utf-8")
 
-        original_evict = executor._evict_utility_import_state
+        original_evict = executor.evict_utility_modules
         a_waiting = threading.Event()
         b_started = threading.Event()
         release_a = threading.Event()
+        calls: list[None] = []
 
-        def delayed_evict(pipeline_dir_str):
-            original_evict(pipeline_dir_str)
-            if pipeline_dir_str == str(pipeline_a.resolve()):
+        def delayed_evict() -> None:
+            original_evict()
+            calls.append(None)
+            if len(calls) == 1:
+                # The first compile (A's) has bound the finder to its project and evicted
+                # utility; B must wait for A's import before it can rebind it.
                 a_waiting.set()
                 assert b_started.wait(2), "competing compile never started"
                 assert release_a.wait(2), "test did not release first compile"
 
-        monkeypatch.setattr(executor, "_evict_utility_import_state", delayed_evict)
+        monkeypatch.setattr(executor, "evict_utility_modules", delayed_evict)
         executor._compile_preamble.cache_clear()  # type: ignore[attr-defined]
 
         source = "from utility.helpers import VALUE\n"
@@ -4061,32 +4065,17 @@ class TestPreambleLockConcurrency:
         for ns in results:
             assert ns["VALUE"] == 42
 
-    def test_sys_path_insert_is_idempotent(self, tmp_path, monkeypatch):
-        """Multiple _compile_preamble calls should not keep appending the
-        same cwd to sys.path.
-
-        Real failure: sys.path grows unboundedly on every preview click,
-        slowing down all subsequent imports.
-        """
+    def test_compiles_leave_sys_path_unchanged(self, tmp_path, monkeypatch):
+        """A compile never edits sys.path, so repeated preview clicks cannot grow it."""
         import sys
 
         monkeypatch.chdir(tmp_path)
-
-        cwd = str(tmp_path)
-        # Remove cwd from sys.path first to get a clean state
-        while cwd in sys.path:
-            sys.path.remove(cwd)
+        before = list(sys.path)
 
         _compile_preamble("X = 1\n")
-        count_after_first = sys.path.count(cwd)
-
         _compile_preamble("Y = 2\n")
-        count_after_second = sys.path.count(cwd)
 
-        # Should not have added cwd again (it was already there from first call)
-        assert count_after_second == count_after_first, (
-            f"sys.path.insert duplicated cwd: {count_after_first} -> {count_after_second}"
-        )
+        assert sys.path == before
 
 
 # ---------------------------------------------------------------------------

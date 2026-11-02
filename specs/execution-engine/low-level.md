@@ -7,6 +7,7 @@
 | `src/haute/_cpu_performance.py` | Process-local Windows HighQoS read/set/verify policy, invoked at CLI, server and worker startup; preserves unrelated power-policy bits and reports unsupported or rejected native operations. |
 | `src/haute/executor.py` | GUI-facing eager entry point: `execute_graph()` (preview, with the `_preview_cache` `LRUCache`), `write_data_output()` (batch/data-output writes), preamble compilation + single-flight cache (`_compile_preamble`), preview-column projection/schema-warning assembly, and output-destination containment. |
 | `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points, runtime-input fingerprints, `preview_lineage_cache_key`, and `PREVIEW_EXECUTION_SEMANTICS_VERSION`. It is the stable application import boundary, but is not currently a thin re-export module. |
+| `src/haute/_project_imports.py` | The project's `utility` package imported without editing `sys.path`: `utility_search_dirs` (the pipeline directory, then the working directory, one entry when they coincide), the meta-path finder that answers `utility` and every `utility.*` name from the project `bind_project_utility` last bound (installed ahead of every other finder on first use), its source-only loader, and `evict_utility_modules`. The cache fingerprint (`src/haute/_cache.py`) and the deploy bundle (`src/haute/deploy/_project_modules.py`) read `utility` from the same directories. |
 | `src/haute/_path_resolution.py` | Cross-component dependency owned by [sandbox-security](../sandbox-security/low-level.md); canonical local-runtime-path resolution: separator normalization, project/pipeline candidate choice, symlink-aware containment, selected-external-pipeline root inference, and the context-local root used by eager/lazy builders. |
 | `src/haute/_execute_lazy.py` | Node-boundary machinery the graph walker uses: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), and `_PlannedCaptures` (seed-plan closures and captures), with the contract, column-shaping, recipe and runtime-demand helpers each node step uses, and the recorded-failure line helpers `_extract_error_line` and `_located_step`. |
 | `src/haute/_graph_walker.py` | The graph walker: `walk_graph(graph, build_node_fn, *, policy: CollectPolicy, ...)` walks a graph once and returns a `WalkResult` (each built node's frame, the prepared order, parents, names, and the join and write recipes and pre-shaping frames it built). `WalkRequest` holds the execution-independent inputs, `CollectPolicy` what the walk collects, at which row and column limits, whether it records node failures, and its purpose (`WalkPurpose.SINK` hands lazy frames to a sink; `WalkPurpose.DISPLAY` reports schemas and collects for a person; `WalkPurpose.MEASURE` builds a lineage as a display walk does but, at each checked node, collects the caller's `MeasurementQueries` over its input frames and then its output ports, each cut to a row bound, and returns one `NodeMeasurement` per checked node, never a frame, with each failure an `AttributedFailure` naming the node it is attributed to). The Data Output sink, every lazy execution through the execution facade, the preview, the trace and the assistant's data check walk through it. No function in the module exceeds a cyclomatic complexity of 15, held by ruff's C901 rule scoped to this module alone. |
@@ -1957,9 +1958,18 @@ present a structural or schema result as execution evidence.
   waits behind a slow compile in another thread) and populated under the coarser
   `_preamble_lock` with a double-check, so concurrent first-callers of the same key
   return the *same* namespace dict rather than each compiling their own. By default
-  each call recomputes the dependency fingerprint (`preamble_execution_fingerprint`) and
-  evicts stale `utility` module imports (plus matching `.pyc` files, since
-  same-size/same-mtime edits can hide behind bytecode-timestamp caching). A
+  each call recomputes the dependency fingerprint (`preamble_execution_fingerprint`). A
+  compile binds the project's `utility` finder (`_project_imports.bind_project_utility`)
+  to the pipeline directory and the working directory, and evicts every imported
+  `utility` module when the binding changed or the preamble imports `utility`; the
+  finder's loader compiles each `utility` module from its source and never reads or
+  writes bytecode, so a same-size, same-mtime edit, which changes the fingerprint, reaches
+  the next compile. `sys.path` is never edited: a helper that imports `utility` while
+  Polars collects resolves it through the finder, bound to the project whose preamble
+  was compiled last (a hot hit does not rebind it); a file beside the pipeline cannot
+  shadow an installed package; and a project module other than `utility` is not
+  importable, as it is not in a deploy bundle. A project without a `utility` leaves the
+  name to the normal import system, where a deploy runtime finds its bundled copy. A
   multi-chunk operation (data-output sink, optimiser estimate/solve/auto-range) resolves
   that fingerprint once at admission and passes it as `execution_fingerprint`, so every
   chunk of that operation reuses one namespace without re-hashing helper files, while the
