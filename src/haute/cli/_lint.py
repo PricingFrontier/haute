@@ -127,9 +127,7 @@ def handle_lint(config: LintConfig) -> None:
         raise SystemExit(1)
 
     name = graph.pipeline_name or filepath.stem
-    click.echo(
-        f"  ✓ Pipeline '{name}': {len(flattened.nodes)} nodes, {len(flattened.edges)} edges"
-    )
+    click.echo(f"  ✓ Pipeline '{name}': {len(flattened.nodes)} nodes, {len(flattened.edges)} edges")
     click.echo("  ✓ No issues found.")
 
 
