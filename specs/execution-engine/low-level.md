@@ -1966,9 +1966,13 @@ present a structural or schema result as execution evidence.
   writes bytecode, so a same-size, same-mtime edit, which changes the fingerprint, reaches
   the next compile. `sys.path` is never edited: a helper that imports `utility` while
   Polars collects resolves it through the finder, bound to the project whose preamble
-  was compiled last (a hot hit does not rebind it); a file beside the pipeline cannot
-  shadow an installed package; and a project module other than `utility` is not
-  importable, as it is not in a deploy bundle. A project without a `utility` leaves the
+  was compiled last (a hot hit does not rebind it; one process serves one project); and
+  Haute puts no project directory on the import path, so a file beside the pipeline cannot
+  shadow an installed package and no project module but `utility` is imported through
+  Haute, as only it is in a deploy bundle (a directory the interpreter itself puts on the
+  path, such as the working directory under `python -m`, imports as in any Python
+  process). A helper may import inside its body, which the preamble guard accepts. A
+  project without a `utility` leaves the
   name to the normal import system, where a deploy runtime finds its bundled copy. A
   multi-chunk operation (data-output sink, optimiser estimate/solve/auto-range) resolves
   that fingerprint once at admission and passes it as `execution_fingerprint`, so every

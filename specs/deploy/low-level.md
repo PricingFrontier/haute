@@ -392,8 +392,8 @@
    a bundled package is then looked up the same way, skipping built-in and standard-library
    names and `utility` itself. Each one found is recorded as a message naming the module,
    the importing file (the preamble, or `utility/<path>`) and its line, and any found raise
-   one `DeployError` joining them: the pipeline cannot run without the module, here (the
-   executor's finder imports no project code but `utility`) or in the bundle. A bundled file that
+   one `DeployError` joining them: the pipeline cannot run without the module, here (Haute
+   imports no project code but `utility`) or in the bundle. A bundled file that
    does not parse raises `DeployError` naming it. The pipeline's `modules/` folder is never
    bundled: the pruned graph is expanded, so it holds the submodels' own nodes, and its
    preamble never holds the pipeline file's `from modules import ...`, which the parser
@@ -905,7 +905,7 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 - **Project-local preamble imports are not bundled, apart from `utility`.** The preamble
   embedded in graph JSON still executes in the served model, so resolving the deploy refuses
   any other project-local import it makes (as `resolve_project_modules` records them) rather
-  than ship a bundle that cannot import it; the editor does not import one either.
+  than ship a bundle that cannot import it; Haute does not import one in the editor either.
   The pipeline's `modules/` folder is never needed: the expanded graph carries the
   submodels' nodes, and the pipeline file's `from modules import ...` is not preamble.
 - **Request and response bounds are independent.** The request byte limit controls JSON

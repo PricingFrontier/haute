@@ -316,7 +316,7 @@ bundle. The container copies it beside `app.py`, and the Databricks model logs i
 MLflow code path, so the served preamble imports the files that were validated. Any
 other static absolute import, in the preamble or in a bundled `utility` file, that
 resolves from the pipeline directory or the working directory is project code the bundle
-does not carry, and the editor does not import it either. Resolving the deploy refuses it,
+does not carry, and Haute does not import it in the editor either. Resolving the deploy refuses it,
 naming the module and the file that imports it. Imports that resolve from installed packages are for the serving environment to
 provide. The served preamble's names reach every code box, as in the editor: a bundled
 External File's code sees them beside `obj`, and a Model Score's code beside `model`.

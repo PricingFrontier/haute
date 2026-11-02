@@ -4,9 +4,11 @@ A preamble imports the project's ``utility`` package by name, and so can a helpe
 defines when Polars calls that helper while it collects, long after the preamble ran.
 A meta-path finder answers ``utility`` and every ``utility.*`` name from the project the
 executor last compiled a preamble for, so either import resolves to that project
-whenever it runs, and ``sys.path`` is never edited: a file beside the pipeline cannot
-shadow an installed package, and a project module outside ``utility`` is not
-importable, as it is not in a deploy bundle.
+whenever it runs, and ``sys.path`` is never edited: Haute puts no project directory
+on the import path, so a file beside the pipeline cannot shadow an installed package
+and no project module but ``utility`` is imported through Haute, as only it is in a
+deploy bundle. (A directory the interpreter itself puts on the path, such as the
+working directory under ``python -m``, imports as in any Python process.)
 
 The finder's loader compiles every ``utility`` module from its source and never reads
 or writes bytecode: a timestamp-validated ``.pyc`` can hide an edit that keeps the

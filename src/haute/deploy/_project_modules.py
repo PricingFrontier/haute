@@ -31,7 +31,8 @@ class ProjectModules:
     utility: Path | None
     """The ``utility`` package directory or ``utility.py`` file to bundle, if any."""
     unbundled_imports: tuple[str, ...]
-    """One validation message per project-local import the bundle does not carry."""
+    """One message per project-local import the bundle does not carry; resolving the deploy
+    refuses it with them, so a resolved deploy carries none."""
 
 
 def resolve_project_modules(preamble: str, pipeline_dir: Path) -> ProjectModules:

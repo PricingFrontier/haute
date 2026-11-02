@@ -62,7 +62,7 @@ def test_compiling_and_running_leave_sys_path_unchanged(
     assert sys.path == before
 
 
-def test_a_helper_importing_utility_at_collect_time_resolves_the_bound_project(
+def test_a_helper_importing_utility_at_collect_time_resolves_through_the_finder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A helper imports ``utility.sub`` only when Polars calls it, after the compile."""
@@ -90,6 +90,36 @@ def add_value(frame):
     )
 
     assert collected["v"].to_list() == [7]
+
+
+def test_a_deferred_utility_import_resolves_the_project_compiled_last(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The finder is bound to the project whose preamble was compiled last: a helper
+    project A's preamble defined imports project B's ``utility`` once B compiled after
+    it. One process serves one project, so the binding is that project's."""
+    monkeypatch.chdir(tmp_path)
+    helper = """
+def add_value(frame):
+    import utility.sub
+    return frame.with_columns(v=pl.lit(utility.sub.VALUE))
+"""
+    first = _project(
+        tmp_path / "a", {"rating/utility/__init__.py": "", "rating/utility/sub.py": "VALUE = 1\n"}
+    )
+    second = _project(
+        tmp_path / "b", {"rating/utility/__init__.py": "", "rating/utility/sub.py": "VALUE = 2\n"}
+    )
+    ns_first = _compile_preamble(helper, pipeline_dir=str(first))
+    _compile_preamble("from utility.sub import VALUE\n", pipeline_dir=str(second))
+
+    collected = (
+        pl.LazyFrame({"x": [1]})
+        .map_batches(ns_first["add_value"], schema={"x": pl.Int64, "v": pl.Int32})
+        .collect()
+    )
+
+    assert collected["v"].to_list() == [2]
 
 
 @pytest.mark.parametrize(
@@ -138,7 +168,9 @@ def test_utility_beside_the_pipeline_wins_over_one_at_the_working_directory(
 def test_a_local_module_outside_utility_is_not_importable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Only ``utility`` is project code a preamble imports, as only it is deployed."""
+    """Haute puts no project directory on the import path, so ``utility`` is the only
+    project code it imports, as only it is deployed. (The interpreter's own path is its
+    own: ``python -m`` adds the working directory, so the test leaves that entry out.)"""
     pipeline_dir = _project(tmp_path, {"rating/helpers.py": "VALUE = 1\n"})
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "path", [entry for entry in sys.path if entry not in ("", ".")])
