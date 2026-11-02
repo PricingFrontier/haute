@@ -11,7 +11,7 @@ import {
   LazyEditorBoundary,
 } from "./LazyNodeEditors"
 import { stepInputNames, steppedSurfaceFor } from "../utils/polarsStepInputs"
-import type { InputSource, SimpleNode, SimpleEdge, OnUpdateConfig, OnUpdateConfigResult, OnReplaceConfig } from "./editors"
+import type { InputSource, SimpleNode, SimpleEdge, OnUpdateConfig, OnUpdateConfigResult, OnReplaceConfig } from "./editors/_shared"
 import {
   effectiveNodeType,
   isSubmodelDefinition,

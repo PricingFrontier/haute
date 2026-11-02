@@ -31,7 +31,7 @@ import {
   WorkbenchOutputEditor,
 } from "./LazyNodeEditors"
 import type { LoadPivotFilterMembers } from "./editors/ExplorePivotsConfig"
-import type { InputSource, OnReplaceConfig, OnUpdateConfig, OnUpdateConfigResult, SimpleNode } from "./editors"
+import type { InputSource, OnReplaceConfig, OnUpdateConfig, OnUpdateConfigResult, SimpleNode } from "./editors/_shared"
 
 type Column = { name: string; dtype: string }
 
@@ -173,7 +173,7 @@ export function NodeConfigEditor({
       return <LiveSwitchEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} accentColor={accentColor} />
 
     case NODE_TYPES.DATA_INPUT:
-      return <DataInputEditor config={config} onUpdate={onUpdateConfig} onReplaceConfig={onReplaceConfig} accentColor={accentColor} errorLine={errorLine} />
+      return <DataInputEditor config={config} onUpdate={onUpdateConfig} onReplaceConfig={onReplaceConfig} accentColor={accentColor} />
 
     case NODE_TYPES.DATA_OUTPUT:
       return <DataOutputEditor config={config} onUpdate={onUpdateConfig} onReplaceConfig={onReplaceConfig} nodeId={node.id} accentColor={accentColor} />
@@ -195,7 +195,7 @@ export function NodeConfigEditor({
       )
 
     case NODE_TYPES.EXTERNAL_FILE:
-      return <ExternalFileEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} accentColor={accentColor} />
+      return <ExternalFileEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} accentColor={accentColor} />
 
     case NODE_TYPES.OUTPUT:
       return <OutputEditor config={config} onUpdate={onUpdateConfig} nodeId={node.id} />
@@ -207,10 +207,10 @@ export function NodeConfigEditor({
       return <ScenarioExpanderEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} upstreamColumns={upstreamColumns} />
 
     case NODE_TYPES.RATING_STEP:
-      return <RatingStepEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} upstreamColumns={upstreamColumns} previewRows={previewRows} accentColor={accentColor} errorLine={errorLine} nodeId={node.id} />
+      return <RatingStepEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} upstreamColumns={upstreamColumns} previewRows={previewRows} accentColor={accentColor} nodeId={node.id} />
 
     case NODE_TYPES.MODEL_SCORE:
-      return <ModelScoreEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} accentColor={accentColor} />
+      return <ModelScoreEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} accentColor={accentColor} />
 
     case NODE_TYPES.MODELLING:
       return <ModellingConfig nodeId={node.id} config={config} onUpdate={onUpdateConfig} upstreamColumns={effectiveColumns} activePane={activeModellingPane} onPaneIssuesChange={onModellingPaneIssuesChange} />

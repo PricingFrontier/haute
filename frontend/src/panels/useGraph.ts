@@ -8,7 +8,7 @@
  */
 
 import { createContext, useContext } from "react"
-import type { SimpleNode, SimpleEdge } from "./editors"
+import type { SimpleNode, SimpleEdge } from "./editors/_shared"
 
 /** Shape exposed by `useGraph()`. */
 export type GraphContextValue = {

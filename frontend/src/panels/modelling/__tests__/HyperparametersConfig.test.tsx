@@ -7,7 +7,7 @@ import {
 import { useState } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import type { OnUpdateConfig } from "../../editors"
+import type { OnUpdateConfig } from "../../editors/_shared"
 import { HyperparametersConfig } from "../HyperparametersConfig"
 import {
   formatHyperparameters,

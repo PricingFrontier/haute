@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef } from "react"
 
 import { nodeNameIssue } from "../utils/nodeNameValidation"
-import type { OnUpdateConfigResult } from "./editors"
+import type { OnUpdateConfigResult } from "./editors/_shared"
 
 export type NodePanelTab = "config" | "polars" | "columns"
 

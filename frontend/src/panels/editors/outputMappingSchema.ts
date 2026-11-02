@@ -101,8 +101,6 @@ export function emptyV2(): OutputConfigV2 {
  * `[1:2]`, filters `[?(...)]`, wildcards `[*]` / `.*`, descendant `..`, the bare
  * `*`.
  */
-const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*/
-
 export function validateOutputPath(path: string): string | null {
   // Delegate the accept/reject decision to the shared grammar core; re-skin its
   // backend-style messages as OUTPUT's existing user-facing strings so the
@@ -124,7 +122,3 @@ export function validateOutputPath(path: string): string | null {
   }
   return "Malformed output path."
 }
-
-// `NAME_RE` is retained for callers/tests that want to validate a bare
-// column-name segment; not used internally above.
-export { NAME_RE }

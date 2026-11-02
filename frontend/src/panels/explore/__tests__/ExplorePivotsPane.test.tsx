@@ -21,7 +21,7 @@ import useNodeResultsStore, {
   resetNodeResultsDerivedCaches,
 } from "../../../stores/useNodeResultsStore"
 import useSettingsStore from "../../../stores/useSettingsStore"
-import type { SimpleNode } from "../../editors"
+import type { SimpleNode } from "../../editors/_shared"
 import ExplorePivotsPane from "../ExplorePivotsPane"
 import {
   isPivotFormulaPlacement,

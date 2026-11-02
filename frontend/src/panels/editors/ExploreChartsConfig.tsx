@@ -61,7 +61,7 @@ import {
   ExploreConfigCardListHeader,
 } from "./ExploreConfigCardList"
 import { useGraph } from "../useGraph"
-import type { SimpleNode } from "../editors"
+import type { SimpleNode } from "../editors/_shared"
 import useAutoUpdateExplorePivots from "../explore/useAutoUpdateExplorePivots"
 import useExplorePivotActions from "../explore/useExplorePivotActions"
 import { apiErrorMessage } from "../../api/errors"

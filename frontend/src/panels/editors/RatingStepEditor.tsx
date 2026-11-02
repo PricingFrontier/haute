@@ -189,7 +189,6 @@ export default function RatingStepEditor({
   upstreamColumns?: RatingFactorColumn[]
   previewRows?: Record<string, unknown>[]
   accentColor: string
-  errorLine?: number | null
   nodeId?: string
 }) {
   const graph = useGraph()

@@ -13,7 +13,7 @@ import useNodeResultsStore, {
 } from "../../../stores/useNodeResultsStore"
 import useSettingsStore from "../../../stores/useSettingsStore"
 import useUIStore from "../../../stores/useUIStore"
-import type { SimpleNode } from "../../editors"
+import type { SimpleNode } from "../../editors/_shared"
 import ExploreChartsPane from "../ExploreChartsPane"
 import {
   createExploreChart,

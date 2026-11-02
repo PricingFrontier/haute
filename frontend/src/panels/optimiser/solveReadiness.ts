@@ -9,7 +9,7 @@
 import { edgeInputName } from "../../utils/apiInputPorts"
 import { configField } from "../../utils/configField"
 import { NODE_TYPES } from "../../utils/nodeTypes"
-import type { SimpleEdge, SimpleNode } from "../editors"
+import type { SimpleEdge, SimpleNode } from "../editors/_shared"
 import type { SolveIssue } from "./OptimiserSolveStatus"
 
 /** The solver's frontier workload cap: steps ** constraints solves (mirrors the backend). */

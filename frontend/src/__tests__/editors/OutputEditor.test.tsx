@@ -19,7 +19,7 @@ import { render as rtlRender, screen, fireEvent, cleanup, waitFor, within } from
 import { useState } from "react"
 import OutputEditor from "../../panels/editors/OutputEditor"
 import { GraphProvider } from "../../panels/GraphContext"
-import type { SimpleNode, SimpleEdge } from "../../panels/editors"
+import type { SimpleNode, SimpleEdge } from "../../panels/editors/_shared"
 
 // Mock the API client so the two JSON previews can be driven without a server.
 // The real `ApiError` is preserved (the editor narrows error shapes against it),

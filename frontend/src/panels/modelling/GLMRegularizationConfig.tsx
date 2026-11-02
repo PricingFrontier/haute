@@ -1,7 +1,7 @@
 import { useId, useState, type ReactNode } from "react"
 import { ChevronRight } from "lucide-react"
 
-import type { OnUpdateConfig } from "../editors"
+import type { OnUpdateConfig } from "../editors/_shared"
 import { configField } from "../../utils/configField"
 import { toggleButtonStyle } from "./styles"
 import { FailoverHelp } from "./FailoverHelp"

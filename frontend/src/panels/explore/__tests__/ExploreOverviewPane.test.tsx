@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest"
 import { cleanup, render, screen } from "@testing-library/react"
 import type { ExploreDataView } from "../exploreDataView"
-import type { SimpleNode } from "../../editors"
+import type { SimpleNode } from "../../editors/_shared"
 import ExploreOverviewPane from "../ExploreOverviewPane"
 
 function makeNode(config: Record<string, unknown>): SimpleNode {

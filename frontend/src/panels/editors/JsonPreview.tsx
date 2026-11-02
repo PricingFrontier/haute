@@ -268,5 +268,3 @@ export function JsonPreview({
     </div>
   )
 }
-
-export default JsonPreview

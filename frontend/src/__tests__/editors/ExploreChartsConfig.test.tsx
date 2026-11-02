@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ExplorePivotResult } from "../../api/types"
 import ExploreChartsConfig from "../../panels/editors/ExploreChartsConfig"
 import { GraphProvider } from "../../panels/GraphContext"
-import type { SimpleNode } from "../../panels/editors"
+import type { SimpleNode } from "../../panels/editors/_shared"
 
 const mockRunExplorePivot = vi.fn()
 const mockCancelExplorePivot = vi.fn()

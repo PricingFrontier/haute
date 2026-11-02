@@ -14,43 +14,12 @@ These packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FNED-R03 | Planned | P3 | The pickers, cards and grouping helpers written twice exist once, and the vestigial `errorLine` prop and the dead exports are gone. |
 | FNED-R04 | Planned | P2 | A banding rule the sidecar writer refuses is marked in the grid and refused by the save validator with a 400, a typed relativity that does not parse is refused rather than replaced, and the step builder's argument controls refuse what the renderer refuses with a visible message. |
 | FNED-R05 | Planned | P3 | The step builder's open card follows its step through undo, the pivot editor carries no unknown keys the backend refuses, the two banding grids, the two rating grids, the params pickers and the zone cards exist once, and the internal-only exports are un-exported. |
 | FNED-R06 | Planned | P1 | A schema inference reply cannot replace a newer input file, table configuration or document. |
-| FNED-R07 | Planned | P2 | `CatalogTablePicker` preserves selected catalog and schema when clearing a table, `TargetTablePicker` resets `tablesFor.current`, `OptimiserApplyEditor` cancels stale `readJson` calls, `OutputEditor` invalidates `outputDoc` on mapping edits, `ColumnsTab` handles stale column selections cleanly, `IoArgumentsEditor` flags blank or unbacked invalid JSON arguments, `BandingRulesGrid` strips internal `_id` keys before persisting, `PivotFormulaSection` resets `onFormulaEditorChange` on unmount and Undo, and `CodeMirrorEditor` re-syncs `errorLine` diagnostics on same-line repeats. |
+| FNED-R07 | Planned | P2 | `OptimiserApplyEditor` cancels stale `readJson` calls, `OutputEditor` invalidates `outputDoc` on mapping edits, `ColumnsTab` handles stale column selections cleanly, `IoArgumentsEditor` flags blank or unbacked invalid JSON arguments, `BandingRulesGrid` strips internal `_id` keys before persisting, `PivotFormulaSection` resets `onFormulaEditorChange` on unmount and Undo, and `CodeMirrorEditor` re-syncs `errorLine` diagnostics on same-line repeats. |
 
 ## Planned improvements
-
-### FNED-R03 — One copy of each picker, card and helper
-**Why:** The Workbench Output's table card re-implements `WorkbenchTableCard`,
-whose export then has no consumer; the two Databricks pickers each carry their
-own catalog and schema fetch helpers and cascading selects; `buildInheritGroups`
-and `buildAllKeyGroups` are the same grouping loop; the destination-change
-handler that clears the MLflow selection is written in both Model Score and
-Optimiser Apply; four editors declare an `errorLine` prop they never read since
-the code box moved to the shared Transform tab; `jsonpath.ts::NAME`,
-`outputMappingSchema.ts::NAME_RE`, `outputPathTools.ts::composePrefix` and two
-duplicate default exports have no consumer (verified against the
-repository-wide standard).
-
-**Plan:** Compose the card, lift a `CatalogSchemaSelects` component, one
-grouping helper, one `clearedMlflowSelection`, drop the prop and the dead
-exports.
-
-**Acceptance:** jscpd reports none of the pairs; knip reports none of the named
-exports; the editor tests pass unchanged.
-
-**Dependencies:** `ENGQ-R01` owns the editors' barrel and the unlisted
-dependency.
-
-**Evidence:** `frontend/src/panels/editors/WorkbenchOutputEditor.tsx`;
-`frontend/src/panels/editors/WorkbenchInputEditor.tsx`;
-`frontend/src/panels/editors/_DatabricksSelector.tsx`;
-`frontend/src/panels/editors/apiInputInherit.ts`;
-`frontend/src/panels/editors/jsonpath.ts`;
-`frontend/src/panels/editors/outputMappingSchema.ts`;
-`frontend/src/panels/editors/outputPathTools.ts`.
 
 ### FNED-R04 — What the grids let through, the save refuses with a reason
 **Why:** The banding grids leave three rule states unmarked that the save
@@ -180,20 +149,10 @@ fencing must cover already-completed schema as well as late inference replies. E
 `frontend/src/hooks/useSchemaFetch.ts::useSchemaFetch.fetchForPath`;
 `frontend/src/panels/editors/DataInputEditor.tsx::DataInputEditor` (Use detected schema button).
 
-### FNED-R07 — Databricks catalog/schema picker state, `OptimiserApplyEditor` artifact read cleanup, `OutputEditor` preview invalidation, and `ColumnsTab`, `IoArgumentsEditor`, banding/rating grid, `PivotFormulaSection`, and `CodeMirrorEditor` state sync
-**Why:** Ten node-editor state defects affect Databricks pickers, Optimiser Apply,
+### FNED-R07 — `OptimiserApplyEditor` artifact read cleanup, `OutputEditor` preview invalidation, and `ColumnsTab`, `IoArgumentsEditor`, banding/rating grid, `PivotFormulaSection`, and `CodeMirrorEditor` state sync
+**Why:** Eight node-editor state defects affect Optimiser Apply,
 Data Output, ColumnsTab, IoArgumentsEditor, banding and rating grids, pivot formulas
 and CodeMirror:
-1. In `CatalogTablePicker` (`_DatabricksSelector.tsx`), when a `cat.sch.tbl` table
-   is already configured and the user selects a new Catalog or Schema from the
-   dropdown, `handleCatalogChange` / `handleSchemaChange` sets the local `catalog` /
-   `dbSchema` state and calls `onSelect("")` to clear the old table; that prop
-   change triggers `useEffect([table])`, which sees `parts.length !== 3` and resets
-   both `catalog` and `dbSchema` back to `""`.
-2. In `TargetTablePicker` (`_DatabricksSelector.tsx`), changing the catalog sets
-   `setTables(null)` without resetting `tablesFor.current = ""`, so switching back
-   to `prevCatalog.prevSchema` hits the `tablesFor.current === key` early return and
-   leaves `tables` stuck at `null`.
 3. In `OptimiserApplyEditor`, the `useEffect` that calls
    `readJson<ArtifactMeta>(artifactPath)` has no cleanup flag or abort guard: when a
    slow `readJson` for artifact A resolves after artifact B has already resolved, the
@@ -238,10 +197,7 @@ and CodeMirror:
     (`errorLine` stays $L \to L$), `useEffect([errorLine])` does not re-run and the
     error line highlight does not reappear.
 
-**Plan:** Track the last synced `table` prop in `CatalogTablePicker` so clearing the
-table via `onSelect("")` does not wipe the newly chosen `catalog` or `dbSchema`;
-reset `tablesFor.current = ""` in `TargetTablePicker` whenever `setTables(null)` is
-called; add a `cancelled` cleanup guard to the `readJson` effect in
+**Plan:** Add a `cancelled` cleanup guard to the `readJson` effect in
 `OptimiserApplyEditor`; clear `outputDoc` in `OutputEditor` when the mapping
 configuration or `activeSource` changes; allow `ColumnsTab` to commit `[]` when
 removing the last stale column and require `next.length === allColumns.length` before
@@ -253,9 +209,7 @@ and warn on non-empty non-numeric boundaries in `BreakpointGrid`; reset
 `PivotFormulaSection`; use `writeClipboardText` in `TwoWayGrid`; and re-apply
 `errorLine` diagnostics on each execution result in `CodeMirrorEditor`.
 
-**Acceptance:** Changing Catalog or Schema in `CatalogTablePicker` when a 3-part
-table was configured retains the newly chosen Catalog/Schema and loads its children;
-switching Catalog A → B → A in `TargetTablePicker` reloads A's tables; a slow
+**Acceptance:** A slow
 `readJson` for artifact A resolving after artifact B does not clear B's displayed
 `loadedMeta`; editing a mapping row in `OutputEditor` clears the stale `outputDoc`
 preview; unchecking a sole stale column in `ColumnsTab` commits `[]`; in
@@ -267,13 +221,11 @@ warns on a non-empty non-numeric boundary; unmounting or undoing an open formula
 delegates to `writeClipboardText`; and a repeat error on the same line in
 `CodeMirrorEditor` re-highlights that line.
 
-**Dependencies:** Coordinates with `FNED-R03` and `FNED-R04` (which owns strict parsing
+**Dependencies:** Coordinates with `FNED-R04` (which owns strict parsing
 and invalid-cell marking for `ControlledNumberCell`); the node data carries editor
 state beside `node.data.config`.
 
-**Evidence:** `frontend/src/panels/editors/_DatabricksSelector.tsx::CatalogTablePicker`;
-`frontend/src/panels/editors/_DatabricksSelector.tsx::TargetTablePicker`;
-`frontend/src/panels/editors/OptimiserApplyEditor.tsx::OptimiserApplyEditor`;
+**Evidence:** `frontend/src/panels/editors/OptimiserApplyEditor.tsx::OptimiserApplyEditor`;
 `frontend/src/panels/editors/OutputEditor.tsx::OutputEditor`;
 `frontend/src/panels/editors/ColumnsTab.tsx::ColumnsTab`;
 `frontend/src/panels/editors/_IoFormatEditor.tsx::IoArgumentsEditor`;

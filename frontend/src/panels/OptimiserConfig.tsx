@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useMemo, useRef, type KeyboardEvent, type ReactElement } from "react"
 import { Plus } from "lucide-react"
-import type { OnUpdateConfig, OnUpdateConfigResult } from "./editors"
+import type { OnUpdateConfig, OnUpdateConfigResult } from "./editors/_shared"
 import { estimateOptimiserSolve } from "../api/client"
 import { useConstraintHandlers } from "../hooks/useConstraintHandlers"
 import { useStaleConfigEstimate } from "../hooks/useStaleConfigEstimate"

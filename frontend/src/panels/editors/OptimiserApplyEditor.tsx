@@ -5,10 +5,7 @@ import { RegisteredModelPicker, ExperimentRunPicker } from "./MlflowModelPicker"
 import { useMlflowBrowser } from "../../hooks/useMlflowBrowser"
 import { configField } from "../../utils/configField"
 import MlflowDestinationSelector from "../../components/MlflowDestinationSelector"
-import {
-  effectiveMlflowDestination,
-  mlflowDestinationConfigValue,
-} from "../../utils/mlflowDestinations"
+import { clearedMlflowSelection, effectiveMlflowDestination } from "../../utils/mlflowDestinations"
 import type { MlflowDestinationKey } from "../../api/types"
 import { optimiserSelectionMode } from "../../utils/mlflowOptimiser"
 import { resolveLoadedVersion } from "../../utils/mlflowModelMetadata"
@@ -73,18 +70,7 @@ export default function OptimiserApplyEditor({
 
   const handleDestinationChange = (next: MlflowDestinationKey) => {
     if (next === effectiveMlflowDestination(mlflowDestination)) return
-    onUpdate({
-      mlflow_destination: mlflowDestinationConfigValue(next),
-      run_id: "",
-      run_name: "",
-      experiment_id: "",
-      experiment_name: "",
-      artifact_path: "",
-      registered_model: "",
-      version: "latest",
-      alias: undefined,
-      optimiser_mode: "",
-    })
+    onUpdate({ ...clearedMlflowSelection(next), optimiser_mode: "" })
     setSelectionCleared(true)
   }
 

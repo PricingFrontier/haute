@@ -28,7 +28,7 @@ import type {
   OptimiserSolveResult,
 } from "../api/types"
 import type { PreviewData } from "./DataPreview"
-import type { SimpleEdge, SimpleNode } from "./editors"
+import type { SimpleEdge, SimpleNode } from "./editors/_shared"
 import FrontierChart, { type FrontierChartPoint } from "./optimiser/FrontierChart"
 import ConvergenceChart from "./optimiser/ConvergenceChart"
 import SummaryTab from "./optimiser/SummaryTab"

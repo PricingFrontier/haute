@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { SimpleEdge, SimpleNode } from "../editors"
+import type { SimpleEdge, SimpleNode } from "../editors/_shared"
 import { buildNodeDataCacheIdentity } from "../dataPointIdentity"
 
 const source: SimpleNode = {

@@ -10,7 +10,7 @@ import useNodeDataStore from "../stores/useNodeDataStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
 import { buildGraph } from "../utils/buildGraph"
-import type { SimpleEdge, SimpleNode } from "../panels/editors"
+import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import type { NodeDataCache } from "./useNodeDataCache"
 
 export interface NodeDataProfileState {

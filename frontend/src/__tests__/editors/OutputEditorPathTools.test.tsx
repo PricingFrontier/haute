@@ -15,7 +15,7 @@ import { useState } from "react"
 import OutputEditor from "../../panels/editors/OutputEditor"
 import { substitutePrefix } from "../../panels/editors/outputPathTools"
 import { GraphProvider } from "../../panels/GraphContext"
-import type { SimpleNode, SimpleEdge } from "../../panels/editors"
+import type { SimpleNode, SimpleEdge } from "../../panels/editors/_shared"
 
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard")
 const originalSecure = Object.getOwnPropertyDescriptor(globalThis, "isSecureContext")

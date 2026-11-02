@@ -18,7 +18,7 @@ import {
   mlflowDestinationConfigValue,
   mlflowLogAvailability,
 } from "../../utils/mlflowDestinations"
-import type { OnUpdateConfig } from "../editors"
+import type { OnUpdateConfig } from "../editors/_shared"
 import { FieldHelpIcon } from "./FieldHelpIcon"
 import { MlflowExportSection } from "./MlflowExportSection"
 import { ModelFileExportSection } from "./ModelFileExportSection"

@@ -20,7 +20,7 @@ import {
 import type { ExploreColumnStat } from "../../api/types"
 import { NODE_GROUP_COLORS } from "../../theme/colors"
 import { formatChartNumber } from "../../utils/chartHelpers"
-import type { SimpleEdge, SimpleNode } from "../editors"
+import type { SimpleEdge, SimpleNode } from "../editors/_shared"
 import useWholeDataAnswer from "../editors/shared/useWholeDataAnswer"
 import type { ExploreDataView } from "./exploreDataView"
 import ExploreTableHead from "./ExploreTableHead"

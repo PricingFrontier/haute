@@ -265,5 +265,3 @@ export function FrameTableActions({
     </div>
   )
 }
-
-export default FrameTableActions

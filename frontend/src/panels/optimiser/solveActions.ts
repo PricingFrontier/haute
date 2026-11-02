@@ -24,7 +24,7 @@ import {
   executionTerminalReasonFromError,
 } from "../../utils/executionDiagnostics"
 import { solveIdentityConfig } from "../../utils/modellingExportConfig"
-import type { SimpleEdge, SimpleNode } from "../editors"
+import type { SimpleEdge, SimpleNode } from "../editors/_shared"
 
 type Constraints = Record<string, Record<string, number>>
 
