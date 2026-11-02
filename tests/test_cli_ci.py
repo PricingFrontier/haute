@@ -26,7 +26,7 @@ from haute._scaffold import (
     workbench_ci_files,
 )
 from haute.cli import cli
-from tests._git_helpers import git_run
+from tests._git_helpers import git_run, install_hook
 
 _VALUES = {
     "DATABRICKS_MLFLOW_HOST": "https://adb-9.azuredatabricks.net",
@@ -363,6 +363,52 @@ def test_update_records_a_workflow_an_earlier_run_left_uncommitted(runner, proje
 
     assert result.exit_code == 0, result.output
     assert "unchanged .gitlab-ci.yml" in result.output
+    saved = git_run(project, "show", "--name-only", "--format=", "pricing-dev-save").splitlines()
+    assert ".gitlab-ci.yml" in saved
+    assert "Recorded in version history: .gitlab-ci.yml" in result.output
+
+
+def test_update_records_nothing_while_the_checkout_is_on_another_branch(
+    runner, project: Path
+) -> None:
+    # Recording on the ledger would check it out: never from under a branch the analyst
+    # switched to in git, whose files it would replace.
+    _in_a_repository(project, working_branch="pricing-dev")
+    git_run(project, "switch", "-c", "deployment-fix")
+    (project / "README.md").write_text("# deployment fix\n", encoding="utf-8")
+    git_run(project, "add", "README.md")
+    git_run(project, "commit", "-m", "Deployment fix")
+    tips = {
+        branch: git_run(project, "rev-parse", branch)
+        for branch in ("pricing-dev", "pricing-dev-save", "deployment-fix")
+    }
+    _to_provider(project, "gitlab")
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
+    assert git_run(project, "branch", "--show-current") == "deployment-fix"
+    assert {branch: git_run(project, "rev-parse", branch) for branch in tips} == tips
+    assert (project / "README.md").read_text(encoding="utf-8") == "# deployment fix\n"
+    assert "deployment-fix" in result.output
+    assert "Not yet in version history: .gitlab-ci.yml" in result.output
+
+
+def test_update_records_a_file_a_failed_capture_left_staged(runner, project: Path) -> None:
+    # A capture stages its files before committing: one whose commit a hook refused leaves
+    # them staged, no longer untracked, and the next run must still take them.
+    _in_a_repository(project, working_branch="pricing-dev")
+    _to_provider(project, "gitlab")
+    hook = install_hook(project, "pre-commit", "#!/bin/sh\nexit 1\n")
+
+    failed = runner.invoke(cli, ["ci", "update"])
+
+    assert failed.exit_code == 0, failed.output
+    assert "Not yet in version history: .gitlab-ci.yml" in failed.output
+    hook.unlink()
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
     saved = git_run(project, "show", "--name-only", "--format=", "pricing-dev-save").splitlines()
     assert ".gitlab-ci.yml" in saved
     assert "Recorded in version history: .gitlab-ci.yml" in result.output

@@ -551,29 +551,60 @@ def capture_new_files(project_dir: Path, written: Sequence[str]) -> None:
 
     Commit takes a new file only in the pipeline folder (specs/git-integration), so a
     workflow a newer Haute adds, or ``connections.toml``, would otherwise never reach version
-    history, and a branch could merge without its deploy workflow. What Haute changed in
-    tracked files is left on disk, for review and the next Commit. A capture skipped (no
-    working branch chosen, no git identity) or failed prints its warnings and names the files
-    for ``git status``, which lists new files where ``git diff`` does not. Outside a
-    repository there is nothing to record.
+    history, and a branch could merge without its deploy workflow. "Not tracked yet" is
+    untracked, or staged as an addition but never committed, as a capture whose commit a hook
+    refused leaves its files. What Haute changed in tracked files is left on disk, for review
+    and the next Commit. Recording checks the ledger out, so it is made only while the
+    checkout is on the working branch's ledger, never from under another branch, whose files
+    it would replace. A capture skipped (no working branch chosen, the checkout elsewhere, no
+    git identity) or failed prints why and names the files for ``git status``, which lists new
+    files where ``git diff`` does not. Outside a repository there is nothing to record.
     """
-    from haute._git_core import _is_git_repo, _run_git
+    from haute._git_core import (
+        _get_current_branch,
+        _is_git_repo,
+        _run_git,
+        _run_git_ok,
+        ledger_name,
+    )
+    from haute._git_state import read_working_branch
 
     paths = list(dict.fromkeys(written))
     if not paths or not _is_git_repo(project_dir):
         return
-    listed = _run_git(
-        "ls-files",
-        "--others",
-        "--exclude-standard",
+    pathspecs = [f":(literal){path}" for path in paths]
+    untracked = _run_git(
+        "ls-files", "--others", "--exclude-standard", "-z", "--", *pathspecs, cwd=project_dir
+    )
+    # A repository with no commit yet has no HEAD to compare with, and nothing staged that
+    # an earlier capture could have left.
+    has_head, staged = _run_git_ok(
+        "diff",
+        "--cached",
+        "--name-only",
+        "--diff-filter=A",
         "-z",
+        "HEAD",
         "--",
-        *(f":(literal){path}" for path in paths),
+        *pathspecs,
         cwd=project_dir,
     )
-    new = [path for path in listed.split("\0") if path]
+    listed = untracked.split("\0") + (staged.split("\0") if has_head else [])
+    new = list(dict.fromkeys(path for path in listed if path))
     if not new:
         return
+    working = read_working_branch(project_dir)
+    if working is not None:
+        ledger = ledger_name(working)
+        current = _get_current_branch(project_dir)
+        if current != ledger:
+            on = "no branch (a detached HEAD)" if current == "HEAD" else current
+            click.echo(
+                f"\nYour checkout is on {on}, not {ledger}, where Haute keeps {working}'s "
+                "saves, so these were not recorded from under it."
+            )
+            _not_in_version_history(new)
+            return
     # The editor's own capture: one save on the ledger, or a warning naming why not.
     from haute.routes._save_pipeline import capture_save_in_ledger
 
@@ -587,7 +618,11 @@ def capture_new_files(project_dir: Path, written: Sequence[str]) -> None:
         return
     for warning in warnings:
         click.echo(f"\n{warning}")
-    click.echo(f"Not yet in version history: {', '.join(capture.uncaptured)}")
+    _not_in_version_history(capture.uncaptured)
+
+
+def _not_in_version_history(paths: Sequence[str]) -> None:
+    click.echo(f"Not yet in version history: {', '.join(paths)}")
     click.echo("  git status lists them (git diff does not): add them before you commit.")
 
 

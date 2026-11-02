@@ -241,12 +241,18 @@ them later.
 `haute ci update` and a `haute init` re-run capture through it too, with
 `capture_new_files` (`haute/cli/_init_cmd.py`): of the files they generate (every generated
 file, so one an earlier run wrote and nobody committed is taken too) and the other files a
-re-run wrote, those Git does not track yet (`git ls-files --others --exclude-standard -z` on
-their literal paths), in one save whose default message names them. Their changes to tracked files, and the workflows they
-prune, are left on disk for review and the milestone's sweep. A capture made is reported with
-the files it took; one skipped or failed prints its warnings and names its files as not yet
-in version history, pointing at `git status`, which lists new files where `git diff` does not.
-Outside a repository there is nothing to capture.
+re-run wrote, those Git does not track yet, in one save whose default message names them:
+untracked (`git ls-files --others --exclude-standard -z` on their literal paths) or staged as
+an addition against `HEAD` and never committed (`git diff --cached --name-only
+--diff-filter=A`), as a capture whose commit a hook refused leaves its files, so the next run
+still takes them. Their changes to tracked files, and the workflows they prune, are left on
+disk for review and the milestone's sweep. Since `commit_save` checks the ledger out, the
+capture is made only while the checkout is on the chosen working branch's ledger; on any other
+branch, or a detached `HEAD`, it is skipped, saying where the checkout is, so no other
+branch's files are replaced. A capture made is reported with the files it took; one skipped or
+failed prints why and names its files as not yet in version history, pointing at `git
+status`, which lists new files where `git diff` does not. Outside a repository there is
+nothing to capture.
 
 Every public mutation entry point acquires the reentrant repository lock before its first
 precondition read and holds it through Git changes, clone-state writes, and any compensation.
