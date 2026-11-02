@@ -18,7 +18,6 @@ retired.
 |---|---|---:|---|
 | EXEC-R09 | Planned | P1 | The chunk-local classifier refuses a `select` whose expressions read no input column, so an input-sliced write never multiplies rows by the number of parts. Deployed request-order proof also refuses that select, preserving the per-quote output contract. |
 | EXEC-R10 | Planned | P2 | The RAM estimate reads column widths from the node's own lineage schema and from the parquet metadata of nested types, so a widened graph estimates wider than its source. |
-| EXEC-R11 | Planned | P2 | A display walk materialises a fan-out input only when more than one collected consumer reads it. |
 | EXEC-R12 | Planned | P2 | A warm pool worker survives an ordinary user error, a failed replacement is retried, and a wait for a slot ends at the request's deadline. |
 | EXEC-R13 | Planned | P2 | The one-shot and protocol parents arm their RSS watchdog from the child's capped baseline, not from a bare interpreter. |
 | EXEC-R14 | Planned | P3 | Engine defaults that fail quietly fail loudly: contracts enforced by default, an all-stale column selection refused, a request-input edge never loses its name, `Pipeline.run` prunes like the walker, and a sink failure names its node. |
@@ -90,28 +89,6 @@ updated expectations.
 **Evidence:** `src/haute/_ram_estimate.py::_resolve_target_columns_from_index`;
 `src/haute/_ram_estimate.py::_is_variable_width_arrow_type`;
 `src/haute/_ram_estimate.py::_BYTES_PER_COL`.
-
-### EXEC-R11 — Fan-out caching only where a collected consumer needs it
-**Why:** `_input_frame` wraps a fan-out input in `.cache()` whenever its lineage fan-out
-is greater than one in a display walk, counted over the lineage's edges regardless of
-which consumers the display policy collects. A preview therefore holds a materialised
-copy of every fan-out input (probe: 610 MB peak cached against 329–365 MB without the
-cache, same results), which is the opposite of what the cache is for and counts against
-the preview's admitted budget.
-
-**Plan:** Cache only when at least two collected consumers read the frame in this walk,
-or never (the probe's uncached runs held 329–365 MB with Polars' common-subplan
-elimination on and 318–340 MB with it off, so neither the cache nor the elimination was
-needed on that graph); measure both on the probe graph before choosing.
-
-**Acceptance:** The probe graph's preview peak is within ten percent of the uncached run
-with identical results; a graph where two collected nodes share an expensive input still
-computes it once.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_graph_walker.py::_input_frame`;
-`src/haute/_graph_walker.py::_fanout_counts`.
 
 ### EXEC-R12 — Warm pool resilience
 **Why:** In `_wait_for_result`, `raise user_error` sits inside the `try` whose

@@ -501,7 +501,12 @@ are never capped. A materialised node collects its own plan limited to
 `row_limits_by_node[node]`, or `row_limit` when unset, after projection and column-limit
 selection (each frame of a multi-frame node), and a limited collection never feeds a
 consumer, nor one narrower than the columns its consumers need: consumers then read the
-node's uncapped plan, which `WalkResult.frames` also exposes.
+node's uncapped plan, which `WalkResult.frames` also exposes. A frame several edges read is
+handed to each as it is, never through `cache()`: Polars scopes a cache to one query, so it
+shares no computation between separate collections, and within one query common-subplan
+elimination already computes the frame once; a cache only held a materialised copy of it
+against the preview's budget. Consumers of a collected node share its DataFrame instead,
+when it holds every row and column they need.
 
 Under a leased `snapshot_plan` (`haute._seed_plans`, resolved for this exact execution
 by `_check_snapshot_plan`) a display walk runs only the plan's seeds and executed nodes,
@@ -3006,6 +3011,8 @@ present a structural or schema result as execution evidence.
 
 Tests live in `tests/` (flat layout, no package-per-component subdirectories).
 
+- **`test_graph_walker.py`** — also that a display walk computes a producer two branches of
+  one collected query read once, with no `cache()` in its consumers' plans.
 - **`test_execute_lazy.py`** — the core suite: a Model Score reading the exposure optionally
   prices without it while a Polars node beside it that requires it is refused at its edge by
   name, `_prune_live_switch_edges`, shared

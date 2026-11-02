@@ -572,22 +572,12 @@ class _Walk:
         self.available_columns: dict[str, _SchemaItems] = {}
         self.output_columns: dict[str, _SchemaItems] = {}
         self.frame_columns: dict[tuple[str, str], _SchemaItems] = {}
-        self.shared_inputs: dict[tuple[str, str | None], pl.LazyFrame] = {}
-        self.fanout = self._fanout_counts() if self.display else {}
         self.runtime_demands: dict[projection_planner.ProjectionEdgeKey, frozenset[str]] = {}
         self.runtime_resolved: set[str] = set()
         # What a measuring walk reports.
         self.measurements: dict[str, NodeMeasurement] = {}
         self.attributed: dict[str, AttributedFailure] = {}
         self.ancestors_of: dict[str, frozenset[str]] = {}
-
-    def _fanout_counts(self) -> dict[tuple[str, str | None], int]:
-        """How many edges read each producer frame, counted by the selected source frame."""
-        counts: dict[tuple[str, str | None], int] = {}
-        for edge in self.graph_plan.relevant_edges:
-            key = (edge.source, edge.sourceHandle)
-            counts[key] = counts.get(key, 0) + 1
-        return counts
 
     # ------------------------------------------------------------------ run
 
@@ -1258,20 +1248,14 @@ class _Walk:
     def _input_frame(self, edge: GraphEdge) -> _Frame:
         """The frame *edge* delivers: its source frame, picked by port.
 
-        A display walk reads a producer frame that feeds several edges
-        through one ``cache()`` node, so separate collections below it share
-        one computation of it.
+        A frame several edges read is never wrapped in ``cache()``: Polars scopes a
+        cache to one query, so separate collections below it compute it each time
+        anyway, while within one query common-subplan elimination already computes
+        it once. The cache only held a materialised copy of it.
         """
         picked = _pick_source_frame(self.frames[edge.source], edge)
         if not self.display:
             return picked
-        key = (edge.source, edge.sourceHandle)
-        if isinstance(picked, pl.LazyFrame) and self.fanout.get(key, 0) > 1:
-            shared = self.shared_inputs.get(key)
-            if shared is None:
-                shared = picked.cache()
-                self.shared_inputs[key] = shared
-            return shared
         return _lazy(picked)
 
     def _node_inputs(self, boundary: NodeBoundary) -> list[_Frame]:
