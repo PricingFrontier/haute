@@ -94,6 +94,14 @@ class UnsafeCachePathError(RuntimeError):
     """A cache path or lock file is not a plain entry and cannot be trusted."""
 
 
+class _LockFileReplacedError(UnsafeCachePathError):
+    """The lock file was removed, or removed and recreated, while it was being opened.
+
+    A sweep may remove a lock file at any time (:func:`remove_unheld_lock_file`),
+    so :meth:`FileLock.acquire` opens the path again rather than failing.
+    """
+
+
 def _is_reparse_point(path_stat: os.stat_result) -> bool:
     return bool(getattr(path_stat, "st_file_attributes", 0) & 0x400)
 
@@ -172,6 +180,10 @@ def _open_lock_file(lock_path: Path) -> Any:
     try:
         try:
             path_stat = lock_path.lstat()
+        except FileNotFoundError as exc:
+            raise _LockFileReplacedError(
+                f"Lock path changed while it was being opened: {lock_path}"
+            ) from exc
         except OSError as exc:
             raise UnsafeCachePathError(
                 f"Lock path changed while it was being opened: {lock_path}"
@@ -185,13 +197,64 @@ def _open_lock_file(lock_path: Path) -> Any:
             and (path_stat.st_dev, path_stat.st_ino)
             != (descriptor_stat.st_dev, descriptor_stat.st_ino)
         ):
-            raise UnsafeCachePathError(
+            raise _LockFileReplacedError(
                 f"Lock path changed file identity while it was being opened: {lock_path}"
             )
         return os.fdopen(descriptor, "r+b", buffering=0)
     except BaseException:
         os.close(descriptor)
         raise
+
+
+# A sweep removes a lock file at most once, so a path that names another file
+# after this many locks is not being swept: it is failing.
+_RELOCK_ATTEMPTS = 5
+
+
+def _path_names_handle(path: Path, handle: Any) -> bool:
+    """Whether *path* still names the file *handle* has open."""
+    try:
+        path_stat = path.lstat()
+    except FileNotFoundError:
+        return False
+    handle_stat = os.fstat(handle.fileno())
+    if not (path_stat.st_ino and handle_stat.st_ino):
+        return True
+    return (path_stat.st_dev, path_stat.st_ino) == (handle_stat.st_dev, handle_stat.st_ino)
+
+
+def remove_unheld_lock_file(path: Path) -> bool:
+    """Remove the lock file *path* unless a process holds it; whether it was removed.
+
+    The removal can never leave two processes holding different files for one
+    path. On POSIX it happens while this process holds the file's lock: a
+    process that opened the file before then gets the lock only after the
+    removal, finds that the path no longer names its file, and locks the path
+    again (:meth:`FileLock.acquire`). Windows refuses to delete a file any
+    process has open, and a process opens a lock file before it locks it, so a
+    deletion that succeeds there removes a file no process holds or waits on.
+    """
+    # Only a plain file reached through plain directories is removed, never a
+    # link or anything a link leads to.
+    _assert_path_ancestors_plain(path)
+    try:
+        _lock_file_stat(path, path.lstat())
+    except FileNotFoundError:
+        return False
+    if os.name == "nt":
+        try:
+            path.unlink()
+        except (FileNotFoundError, PermissionError):
+            return False
+        return True
+    lock = FileLock(path)
+    if not lock.acquire(blocking=False):
+        return False
+    try:
+        path.unlink(missing_ok=True)
+    finally:
+        lock.release()
+    return True
 
 
 class FileLock:
@@ -221,7 +284,13 @@ class FileLock:
         return self._depth > 0 and self._owner_thread_id == threading.get_ident()
 
     def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
-        """Acquire the thread and process lock; ``False`` when it was not acquired."""
+        """Acquire the thread and process lock; ``False`` when it was not acquired.
+
+        A lock file may be removed (:func:`remove_unheld_lock_file`) while this
+        process waits on it. Holding the OS lock on a file the path no longer
+        names would let another process lock the file that replaced it, so after
+        locking, a file the path no longer names is let go and the path locked again.
+        """
         if not blocking and timeout != -1:
             raise ValueError("can't specify a timeout for a non-blocking call")
         started_at = time.monotonic()
@@ -238,24 +307,37 @@ class FileLock:
             return True
         handle: Any | None = None  # pragma: no mutate
         try:
-            _assert_path_ancestors_plain(self._path)
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            handle = _open_lock_file(self._path)
-            handle.seek(0, os.SEEK_END)
-            if handle.tell() == 0:
-                handle.write(b"\0")
-                handle.flush()
-            remaining_timeout = None
-            if timeout != -1:
-                remaining_timeout = max(0.0, timeout - (time.monotonic() - started_at))
-            if not _acquire_file_lock(
-                handle,
-                blocking=blocking,
-                timeout_seconds=remaining_timeout,
-            ):
+            for _attempt in range(_RELOCK_ATTEMPTS):
+                _assert_path_ancestors_plain(self._path)
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    handle = _open_lock_file(self._path)
+                except _LockFileReplacedError:
+                    continue
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                remaining_timeout = None
+                if timeout != -1:
+                    remaining_timeout = max(0.0, timeout - (time.monotonic() - started_at))
+                if not _acquire_file_lock(
+                    handle,
+                    blocking=blocking,
+                    timeout_seconds=remaining_timeout,
+                ):
+                    handle.close()
+                    self._thread_lock.release()
+                    return False
+                if _path_names_handle(self._path, handle):
+                    break
+                _release_file_lock(handle)
                 handle.close()
-                self._thread_lock.release()
-                return False
+                handle = None
+            else:
+                raise UnsafeCachePathError(
+                    f"Lock path kept naming another file after it was locked: {self._path}"
+                )
             self._handle = handle
             self._depth = 1
             self._owner_thread_id = threading.get_ident()

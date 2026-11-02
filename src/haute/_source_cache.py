@@ -25,11 +25,15 @@ from haute._credential_security import is_credential_name, validate_credential_f
 from haute._env import float_env
 from haute._file_lock import (
     FileLock,
+    UnsafeCachePathError,
     _acquire_file_lock,
     _assert_path_ancestors_plain,
     _is_reparse_point,
+    _LockFileReplacedError,
     _open_lock_file,
+    _path_names_handle,
     _release_file_lock,
+    remove_unheld_lock_file,
 )
 from haute._file_ops import atomic_write_text, ensure_disk_headroom
 from haute._hashing import content_hash
@@ -65,6 +69,11 @@ _DescribedGeneration = tuple[
 GENERATION_LAYOUT_VERSION = 3
 _DIGEST_REGEX = re.compile(r"[0-9a-f]{16}")
 _DEFAULT_STAGING_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+# Reclaiming staging globs every identity of the store, so a process does it at
+# most this often (or once per staging age, when that is shorter).
+_STAGING_SWEEP_INTERVAL_SECONDS = 300.0
+# A token file younger than this may belong to a process still creating it.
+_TOKEN_SWEEP_GRACE_SECONDS = 60.0
 _DEFAULT_RETIRE_GRACE_SECONDS = 30 * 60
 # Provider of node-output snapshots; their publication, leases, and retirement
 # live in ``haute._node_snapshots``.
@@ -465,6 +474,14 @@ class _SourceCacheCoordination:
     token: str | None = None
     token_handle: Any | None = None
     retired_cleaned: bool = False
+    staging_swept_at: float | None = None
+    publication_locks_swept: bool = False
+
+
+def _is_token(value: str) -> bool:
+    return len(value) == _TOKEN_LENGTH and all(
+        character in "0123456789abcdef" for character in value
+    )
 
 
 def _verification_key(
@@ -601,14 +618,23 @@ class SourceCacheStore:
         self._leases = coordination.leases
         self._verified_generations = coordination.verified_generations
         self._described_generations = coordination.described_generations
-        self._cleanup_stale_staging()
-        # The sweep globs the whole store, and a preview builds several stores
-        # for one root, so it runs once per process.
+        # These sweeps glob the whole store, and a preview builds several stores
+        # for one root, so they run once per process, or once per interval.
+        now = time.monotonic()
         with coordination.guard:
+            staging_due = coordination.staging_swept_at is None or (
+                now - coordination.staging_swept_at
+                >= min(_STAGING_SWEEP_INTERVAL_SECONDS, self.staging_max_age_seconds)
+            )
+            if staging_due:
+                coordination.staging_swept_at = now
             already_cleaned = coordination.retired_cleaned
             coordination.retired_cleaned = True
+        if staging_due:
+            self._cleanup_stale_staging()
         if not already_cleaned:
             self._cleanup_retired()
+            self._sweep_dead_tokens()
 
     @staticmethod
     def _tree_latest_activity(path: Path) -> float | None:
@@ -653,7 +679,7 @@ class SourceCacheStore:
     def _own_token(self) -> str:
         coordination = self._coordination
         with coordination.guard:
-            if coordination.token is None:
+            while coordination.token is None:
                 token = uuid.uuid4().hex[:_TOKEN_LENGTH]
                 path = self._processes_dir / f"{token}.lock"
                 _assert_path_ancestors_plain(path)
@@ -664,24 +690,55 @@ class SourceCacheStore:
                     handle.flush()
                     if not _acquire_file_lock(handle, blocking=False):
                         raise RuntimeError("a fresh lease-owner token file is already locked")
+                    named = _path_names_handle(path, handle)
                 except BaseException:
                     handle.close()
                     raise
+                if not named:
+                    # A sweep removed the file before this process locked it, so
+                    # other processes would read the token as dead: take another.
+                    handle.close()
+                    continue
                 coordination.token = token
                 coordination.token_handle = handle
             return coordination.token
 
+    def _sweep_dead_tokens(self) -> None:
+        """Remove the token files of processes that have exited.
+
+        A token file is locked by its live owner for the owner's lifetime, so
+        one no process holds names a process that has gone. It is removed while
+        this process holds its lock (:func:`remove_unheld_lock_file`), and an
+        owner that locked it meanwhile finds it gone and takes another token. One
+        younger than the grace may be one its owner is still creating, so it is
+        left, as is this process's own.
+        """
+        cutoff = time.time() - _TOKEN_SWEEP_GRACE_SECONDS
+        for path in tuple(self._processes_dir.glob("*.lock")):
+            token = path.stem
+            if not _is_token(token) or token == self._coordination.token:
+                continue
+            try:
+                if path.lstat().st_mtime > cutoff or not remove_unheld_lock_file(path):
+                    continue
+            except (OSError, UnsafeCachePathError):
+                # A racing or unreadable entry is not proven dead.
+                continue
+            logger.info("source_cache_dead_token_removed", token=token)
+
     def _token_alive(self, token: str) -> bool:
         if token == self._coordination.token:
             return True
-        if len(token) != _TOKEN_LENGTH or any(
-            character not in "0123456789abcdef" for character in token
-        ):
+        if not _is_token(token):
             return False
         path = self._processes_dir / f"{token}.lock"
         if not path.exists():
             return False
-        handle = _open_lock_file(path)
+        try:
+            handle = _open_lock_file(path)
+        except _LockFileReplacedError:
+            # A sweep removed it meanwhile, which it does only to a file no process holds.
+            return False
         try:
             if not _acquire_file_lock(handle, blocking=False):
                 return True

@@ -51,7 +51,7 @@ from haute._cache import (
 )
 from haute._chunked_writes import part_name, part_paths, scan_parts
 from haute._execution_context import ExecutionProfile
-from haute._file_lock import FileLock
+from haute._file_lock import FileLock, UnsafeCachePathError, remove_unheld_lock_file
 from haute._file_ops import atomic_write_text, ensure_disk_headroom, remove_tree
 from haute._logging import get_logger
 from haute._pipeline_settings import automatic_cache_size_bytes, read_pipeline_settings
@@ -789,6 +789,32 @@ class NodeSnapshotStore(SourceCacheStore):
     ) -> None:
         super().__init__(root, retire_grace_seconds=retire_grace_seconds)
         self._slots_dir = self.inputs_root / ".node-slots"
+        with self._coordination.guard:
+            already_swept = self._coordination.publication_locks_swept
+            self._coordination.publication_locks_swept = True
+        if not already_swept:
+            self._sweep_orphaned_publication_locks()
+
+    def _sweep_orphaned_publication_locks(self) -> None:
+        """Remove the publication lock file of each identity that no longer exists.
+
+        Every identity ever published leaves one, and clearing an identity
+        removes its directory, not its lock file. Each is removed only when no
+        process holds or waits on it, under the protocol that never leaves two
+        publishers holding different files for one identity
+        (:func:`haute._file_lock.remove_unheld_lock_file`).
+        """
+        for path in tuple(self._locks_dir.glob("publication-*.lock")):
+            digest = path.stem.removeprefix("publication-")
+            if not _is_identity_digest(digest) or (self.inputs_root / digest).exists():
+                continue
+            try:
+                removed = remove_unheld_lock_file(path)
+            except (OSError, UnsafeCachePathError):
+                # A racing or unreadable entry is not proven orphaned.
+                continue
+            if removed:
+                logger.info("node_snapshot_publication_lock_removed", identity_digest=digest)
 
     def clear_identity(self, identity_digest: str) -> int:
         """Clear one identity by its digest, returning the bytes it held.

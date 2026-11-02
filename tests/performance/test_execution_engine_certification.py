@@ -911,8 +911,8 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
     # Admission, the seed plan's resolution, the post-capture key, and
     # execution each prepare the graph. The seed plan is the fourth: a
     # preview resolves what it can read from the shared node-output store
-    # before it runs. `CACHE-S17` is the package for collapsing these onto
-    # one prepared graph, and its entry records the measurement.
+    # before it runs. Collapsing these onto one prepared graph was measured
+    # at about 3 ms a preview and not built: signing was the planning cost.
     assert prepare_calls == 4
     # Even treating every preparation call as removable gives the candidate
     # its most favourable possible comparison. It still must clear the same

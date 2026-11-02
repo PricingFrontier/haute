@@ -16,6 +16,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 import pyarrow as pa
@@ -464,6 +465,59 @@ def test_a_generation_whose_footer_check_failed_fails_every_later_lease(
         assert leased.lazy_frame.collect()["id"].to_list() == [1, 2]
 
 
+def test_a_described_generation_whose_metadata_changed_is_read_and_refused(
+    tmp_path: Path,
+) -> None:
+    """The described memo trusts a generation only for the row counts it agreed with."""
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="data/input.parquet", format="parquet")
+    generation = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1, 2]}).lazy()),
+        context=_context(),
+    )
+    with store.lease(identity):
+        pass
+    metadata_path = tmp_path / generation.metadata_path.relative_to(tmp_path)
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["parts"][0]["row_count"] += 1
+    metadata["row_count"] += 1
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(source_cache_module.SourceCacheCorruptError):
+        with store.lease(identity):
+            pass
+
+
+def test_a_fresh_token_file_another_process_holds_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SourceCacheStore(tmp_path)
+    closed: list[bool] = []
+    real_open = source_cache_module._open_lock_file
+
+    def tracked_open(path: Path) -> Any:
+        handle = real_open(path)
+        real_close = handle.close
+
+        def close() -> None:
+            closed.append(True)
+            real_close()
+
+        handle.close = close
+        return handle
+
+    monkeypatch.setattr(source_cache_module, "_open_lock_file", tracked_open)
+    monkeypatch.setattr(source_cache_module, "_acquire_file_lock", lambda *_a, **_k: False)
+
+    with pytest.raises(RuntimeError, match="already locked"):
+        store._own_token()
+
+    assert closed == [True]
+    assert store._coordination.token is None
+
+
 def test_transient_generation_access_error_is_not_reported_as_corruption(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -887,6 +941,115 @@ def test_store_startup_preserves_staging_when_reclamation_fails(
     SourceCacheStore(tmp_path)
 
     assert staging.exists()
+
+
+def test_a_process_reclaims_staging_at_most_once_per_interval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reclaiming staging globs every identity, so a process does it once per interval."""
+    clock = [1000.0]
+    monkeypatch.setattr(source_cache_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setenv("HAUTE_INPUT_CACHE_STAGING_MAX_AGE_SECONDS", "600")
+    SourceCacheStore(tmp_path)
+    staging = tmp_path / ".haute_cache" / "inputs" / "identity" / ".staging-abandoned"
+    staging.mkdir(parents=True)
+    old = time.time() - 3600
+    os.utime(staging, (old, old))
+
+    clock[0] += source_cache_module._STAGING_SWEEP_INTERVAL_SECONDS - 1
+    SourceCacheStore(tmp_path)
+    assert staging.exists()
+
+    clock[0] += 1
+    SourceCacheStore(tmp_path)
+    assert not staging.exists()
+
+
+def test_a_token_whose_file_was_swept_before_it_locked_is_replaced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SourceCacheStore(tmp_path)
+    real_check = source_cache_module._path_names_handle
+    checked: list[Path] = []
+
+    def swept_once(path: Path, handle: Any) -> bool:
+        checked.append(path)
+        return len(checked) > 1 and real_check(path, handle)
+
+    monkeypatch.setattr(source_cache_module, "_path_names_handle", swept_once)
+
+    token = store._own_token()
+
+    assert len(checked) == 2 and checked[0].stem != token
+    assert checked[1] == store._processes_dir / f"{token}.lock"
+    assert store._token_alive(token)
+
+
+def _dead_token_file(directory: Path) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{'f' * source_cache_module._TOKEN_LENGTH}.lock"
+    path.write_bytes(b"\0")
+    old = time.time() - 3600
+    os.utime(path, (old, old))
+    return path
+
+
+def test_the_token_sweep_removes_a_dead_token_while_holding_its_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An owner that locks the file meanwhile gets the lock only after it is gone."""
+    from haute._file_lock import FileLock
+
+    dead = _dead_token_file(tmp_path / ".haute_cache" / "inputs" / ".processes")
+    real_unlink = Path.unlink
+    held_while_removed: list[bool] = []
+
+    def observed_unlink(path: Path, missing_ok: bool = False) -> None:
+        if path == dead and os.name != "nt":
+            held_while_removed.append(FileLock(path).acquire(blocking=False) is False)
+        real_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", observed_unlink)
+
+    SourceCacheStore(tmp_path)
+
+    assert not dead.exists()
+    assert held_while_removed == ([] if os.name == "nt" else [True])
+
+
+def test_the_token_sweep_never_removes_through_a_linked_directory(tmp_path: Path) -> None:
+    outside = _dead_token_file(tmp_path / "outside")
+    inputs = tmp_path / "project" / ".haute_cache" / "inputs"
+    inputs.mkdir(parents=True)
+    (inputs / ".processes").symlink_to(outside.parent, target_is_directory=True)
+
+    SourceCacheStore(tmp_path / "project")
+
+    assert outside.exists()
+
+
+def test_the_token_sweep_leaves_entries_that_are_not_live_tokens_it_can_judge(
+    tmp_path: Path,
+) -> None:
+    processes = tmp_path / ".haute_cache" / "inputs" / ".processes"
+    processes.mkdir(parents=True)
+    not_a_token = processes / "not-a-token.lock"
+    not_a_token.write_bytes(b"\0")
+    target = tmp_path / "elsewhere.lock"
+    target.write_bytes(b"\0")
+    linked = processes / f"{'a' * source_cache_module._TOKEN_LENGTH}.lock"
+    linked.symlink_to(target)
+    old = time.time() - 3600
+    for path in (not_a_token, target):
+        os.utime(path, (old, old))
+    os.utime(linked, (old, old), follow_symlinks=False)
+
+    SourceCacheStore(tmp_path)
+
+    assert not_a_token.exists() and linked.is_symlink() and target.exists()
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "nan", "inf"])
