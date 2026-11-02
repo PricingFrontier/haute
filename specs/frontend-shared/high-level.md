@@ -442,14 +442,16 @@ therefore fail at the caller, consistent with the application's fail-loud policy
 
 ## Failure model
 
-> NOTE: A failed optimiser retry can stamp its identity onto a retained successful result.
-> [FSH-R12](../roadmap/frontend-shared.md#fsh-r12--failed-solves-cannot-relabel-retained-successful-results)
-> separates attempt status from result provenance; the preview is currently affected.
-
 > NOTE: Independent request-input edits can supersede each other while identity
 > resolution is pending, losing an earlier change. Retaining the pending draft
 > is tracked in [FSH-R10](../roadmap/frontend-shared.md#fsh-r10--retain-edits-during-input-identity-resolution).
 
+- A failed optimiser solve is recorded as a failed attempt beside the node's
+  earlier result, never over that result's identity: the retained numbers keep
+  the job, config, source and graph version that produced them, so they read as
+  stale against a changed config and are never labelled with the failed
+  attempt's objective. The Solve pane shows the failure and publication stays
+  refused until a solve succeeds.
 - A job reply belongs to the job it was asked about. Polling and Cancel name
   the job id with every progress, completion and failure they hand the results
   store, and the store changes nothing when the node's or pivot's active job

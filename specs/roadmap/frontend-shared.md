@@ -22,7 +22,6 @@ to `FSH-R09` from the
 | FSH-R08 | Planned | P3 | One helper per concern in the hooks and utilities: unit formatting that carries, one canonical JSON, one date validator, one job-status vocabulary, one locale, one node-creation block, one polling configuration, selector subscriptions. |
 | FSH-R09 | Planned | P3 | The frontend-shared specification describes the formatter, the pollers and the store shape that exist, and preview supersession is recognised by a structured code rather than by its message text. |
 | FSH-R10 | Planned | P2 | Independent request-input edits made while identity resolution is pending are retained together. |
-| FSH-R12 | Planned | P1 | Retained optimiser numbers keep the successful solve's config, source, structural version and job identity after a later failure. |
 | FSH-R13 | Planned | P2 | `useNodeDataCache` persists job ownership (`startedHere`) in `useNodeDataStore` so Stop/Cancel works across tab and node switches, `loadPipelineSettings` checks staleness before overwriting `_confirmedPipelineSettings`, and `UtilityPanel` syncs the `Imports` editor buffer with external `preamble` changes. |
 
 ## Planned improvements
@@ -294,31 +293,6 @@ the final accepted draft and persists it. Extend the controller/editor tests.
 **Evidence:** `frontend/src/hooks/useGraphCommitController.ts`;
 `frontend/src/panels/NodePanel.tsx`;
 `frontend/src/panels/editors/ApiInputEditor.tsx`.
-
-### FSH-R12 — Failed solves cannot relabel retained successful results
-
-**Why:** `failOptimiserSolve` keeps the earlier result but overwrites its identity with the
-failed attempt's metadata. Success A (profit/live/version 1, value 1234), followed by failed B
-(premium/batch/version 2), yields A's numbers under B's job id with `isSolveResultStale=false`.
-The preview then labels the old objective with B's column and omits its stale warning.
-Publication already refuses the error state; a wrong export was not reproduced.
-
-**Plan:** Represent last-attempt status separately from the retained successful result and its
-immutable provenance. Derive preview staleness and objective labels from the retained result
-identity; preserve the failed attempt's actionable error without authenticating old data as
-that attempt.
-
-**Acceptance:** Use two distinct configs, sources and graph versions: B's failure remains
-visible while A's preview keeps A's job/provenance and is stale for B. Same-config retry
-failure may retain a matching result without inventing a successful B. Cover both result and
-originalResult/frontier consumers; export must continue refusing failed/currently invalid
-publication.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/stores/useNodeResultsStore.ts::useNodeResultsStore.failSolveJob`;
-`frontend/src/panels/OptimiserPreview.tsx::OptimiserPreview` (`objectiveName`);
-`frontend/src/panels/optimiser/OptimiserPublishSection.tsx`.
 
 ### FSH-R13 — Store-backed node-data job ownership, guarded pipeline settings load, and `UtilityPanel` preamble buffer sync
 **Why:** Three shared state and hook defects affect node-data cancellation, pipeline

@@ -90,7 +90,7 @@ export default function OptimiserPublishSection({
   const cached = useNodeResultsStore((s) => s.solveResults[nodeId])
   const selectPoint = useNodeResultsStore((s) => s.selectFrontierPoint)
   const recordPointSummary = useNodeResultsStore((s) => s.recordFrontierPointSummary)
-  const jobId = cached && !cached.error ? cached.jobId : null
+  const jobId = cached && !cached.failedAttempt ? cached.jobId : null
   const publish = usePublishState(nodeId, jobId)
   const save = useOptimiserPublishStore((s) => s.save)
   const log = useOptimiserPublishStore((s) => s.log)

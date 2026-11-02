@@ -75,7 +75,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | Priority | Trigger and observed consequence | Owning package | Evidence and practical limit |
 |---|---|---|---|
 | P1 | Parser endpoint concatenation and multi-frame paste mint duplicate edge ids; healthy recovery can be refused and deleting one duplicate deletes both. | [NAME-10](name-collisions.md#name-10--every-distinct-connection-has-a-distinct-identity) | Real parser/codegen and actual keyboard/store paste/delete. Healthy recovery rejection follows its duplicate-id validator; malformed documents were not assumed to load normally. |
-| P1 | Failed solve B restamps retained success A with B's identity, making old numbers appear current under a new objective. | [FSH-R12](frontend-shared.md#fsh-r12--failed-solves-cannot-relabel-retained-successful-results) | Actual store/hash/staleness helpers; preview label source checked. Publication already refuses the error state. |
 | P2 | Haute classifier pyfunc's label/probability table is flattened to 40 values for 20 input rows. | [MSC-11](model-scoring.md#msc-11--pyfunc-classification-outputs-have-an-explicit-scoring-shape) | Real saved/loaded CatBoost pyfunc, feature contract and scoring adapter. Explicit pyfunc selection is affected; automatic native selection may avoid it. |
 | P3 | Relationships target `__w=[10,20]` is overwritten by internal weight alias: means become `[1,1]`, strength 0. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual Parquet, data-point resolver and relationship service; ordinary-name equivalent requires means `[10,20]`, strength 1. |
 | P3 | Copied Explore node B receives cached result.node_id A for the same producer/card. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual pivot service/cache. Numbers are correct; browser stores them under B, so no numerical cross-node corruption claim. |
@@ -194,7 +193,7 @@ adds a finding group or changes the 42-group count.
 | Existing report; source projection transparent-chain helper | **Unverified beyond the tested case:** the recorded schema-dependent `head` witness did not fail. A different accepted argument-dependent chain must show wrong actual executor rows before promotion. Do not generalize one passing probe into universal unreachability. |
 | SQLite duplicate result-column names / `_source_cache.py` publication | **Not reachable as a successful corrupted cached result in the measured path:** duplicate schema is refused before publication. This does not claim every direct helper caller rejects; a supported consumer bypassing that guard would be the confirming counterexample.  |
 | `_json_shred/_runtime_storage.py` source proof/freshness | **Unverified beyond that negative probe:** ordinary same-size modification was detected. Confirmation requires a concrete supported mutation with unchanged accepted proof that returns stale rows. No general claim that all same-size/open-writer changes are impossible. |
-| `frontend/src/panels/optimiser/solveActions.ts` solve request omits the active source | **Not a defect:** `solveActions` and the backend provenance path intentionally use the batch scenario; absence of an active-source field is not lost source identity. This is separate from FSH-R12's retained-success identity bug. |
+| `frontend/src/panels/optimiser/solveActions.ts` solve request omits the active source | **Not a defect:** `solveActions` and the backend provenance path intentionally use the batch scenario; absence of an active-source field is not lost source identity. |
 | Persisted trained-handle freshness after source/model changes | **Unverified and underspecified.** The batch note named no exact package or transition. Confirm through an actual restore/load that a stale persisted model handle survives a supported source/model change and is reused incorrectly. |
 | Raw pricing-error redaction in `src/haute/_workbench_app.py` | **Unverified and underspecified.** DEP-R15 owns generated-container error envelopes, but its scope does not establish ownership of this workbench hypothesis. Identify a supported pricing failure and show an externally returned sensitive/raw detail that the error contract forbids; no concrete payload was recorded. |
 
@@ -235,7 +234,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | cached file browser error | **FNED-R02**. |
 | cached pivot response consumer node identity | **EDA-R01**; numbers remain correct as recorded in the accepted report. |
 | edge ID collisions | **NAME-10**. |
-| failed new solve identity | **FSH-R12**. |
 | pyfunc classifier output shape | **MSC-11**. |
 | completed TimeoutError retry loop | **ROAD-WORKER-09** after requested split; formerly bundled ROAD-WORKER-07. |
 

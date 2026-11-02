@@ -85,12 +85,16 @@ export default function OptimiserConfig({
 
   const solving = submitting || !!solveJob
   const solveProgress = solveJob?.progress ?? null
-  const solveError = solveJob ? solveJob.error : (cachedResult?.error ?? null)
-  const solveTerminalStatus = solveJob?.progress ?? cachedResult?.terminalStatus ?? null
+  // The pane reports the latest attempt: a failed one's error and terminal
+  // status, never the retained result's beside it.
+  const failedAttempt = cachedResult?.failedAttempt ?? null
+  const solveError = solveJob ? solveJob.error : (failedAttempt?.error ?? null)
+  const solveTerminalStatus = solveJob?.progress
+    ?? (failedAttempt ? failedAttempt.terminalStatus : cachedResult?.terminalStatus ?? null)
   const solveTerminalMetrics = solveTerminalStatus?.execution_metrics ?? null
   // The Solve pane reports the solve itself: the as-solved result, never the
   // frontier point the preview happens to show (a frontier solve opens on point 1).
-  const solveResult: OptimiserSolveResult | null = cachedResult?.error ? null : (cachedResult?.originalResult ?? null)
+  const solveResult: OptimiserSolveResult | null = failedAttempt ? null : (cachedResult?.originalResult ?? null)
   const solveIterationSummary = solveResult ? formatOptimiserIterationSummary(solveResult) : null
   const setOptimiserPane = useUIStore((s) => s.setOptimiserPane)
 

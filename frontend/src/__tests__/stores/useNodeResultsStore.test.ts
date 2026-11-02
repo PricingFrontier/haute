@@ -31,6 +31,8 @@ import {
 } from "../../test-utils/factories.ts"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture.ts"
 import { makeAdjustmentReport, makeOnlineFrontierPoint } from "../../panels/optimiser/__tests__/fixtures.ts"
+import { isSolveResultStale, solveConfigHash } from "../../panels/optimiser/solveActions.ts"
+import type { SolveProgress } from "../../stores/useNodeResultsStore.ts"
 
 const NON_CONVERGED_WARNING = "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
 
@@ -114,6 +116,10 @@ function pointSummary(overrides: Partial<FrontierPointSummary> = {}): FrontierPo
 
 function makePivotResult(overrides: Partial<ExplorePivotResult> = {}): ExplorePivotResult {
   return { version: 1, node_id: "e1", pivot_id: "p1", source: "pricing", data_version: "cache", calculation_key: "calc", row_fields: [], column_fields: [], values: [], row_paths: [], column_paths: [], cells: [], warnings: [], generated_at: 1, execution_metrics: null, ...overrides }
+}
+
+function makeSolveProgress(overrides: Partial<SolveProgress> = {}): SolveProgress {
+  return { status: "running", progress: 1, message: "", elapsed_seconds: 0, ...overrides }
 }
 
 function makePivotStatus(overrides: Partial<ExplorePivotStatusResponse> = {}): ExplorePivotStatusResponse {
@@ -289,7 +295,7 @@ describe("useNodeResultsStore", () => {
       // Error is stored in solveResults
       const failedResult = useNodeResultsStore.getState().solveResults["n1"]
       expect(failedResult).toBeDefined()
-      expect(failedResult.error).toBe("Solver diverged")
+      expect(failedResult.failedAttempt?.error).toBe("Solver diverged")
     })
 
     it("retains structured terminal solve diagnostics on failure", () => {
@@ -319,7 +325,7 @@ describe("useNodeResultsStore", () => {
       s.failSolveJob("n1", "Solver diverged")
 
       const failed = useNodeResultsStore.getState().solveResults["n1"]
-      expect(failed.error).toBe("Solver diverged")
+      expect(failed.failedAttempt?.error).toBe("Solver diverged")
       // No zero objective or baseline stands in for a result that does not exist.
       expect(failed.result).toBeNull()
       expect(failed.originalResult).toBeNull()
@@ -338,9 +344,49 @@ describe("useNodeResultsStore", () => {
       s.failSolveJob("n1", "Solver diverged")
 
       const failed = useNodeResultsStore.getState().solveResults["n1"]
-      expect(failed.error).toBe("Solver diverged")
+      expect(failed.failedAttempt?.error).toBe("Solver diverged")
       expect(failed.result?.total_objective).toBe(42)
       expect(useNodeResultsStore.getState().getOptimiserPreview("n1")?.result?.total_objective).toBe(42)
+    })
+
+    it("records a failed attempt beside the earlier result without relabelling it", () => {
+      const s = useNodeResultsStore.getState()
+      const configA = { objective: "profit" }
+      const configB = { objective: "premium" }
+      s.startSolveJob("n1", "job-a", "Node 1", { volume: { min: 0.9 } }, solveConfigHash(configA), "live", 1)
+      s.completeSolveJob("n1", makeSolveResult({ total_objective: 1234 }), makeSolveProgress({ status: "completed", elapsed_seconds: 3 }))
+      s.startSolveJob("n1", "job-b", "Node 1 renamed", { volume: { min: 0.95 } }, solveConfigHash(configB), "batch", 2)
+      const failure = makeSolveProgress({ status: "error", message: "Infeasible", elapsed_seconds: 5 })
+
+      s.failSolveJob("n1", "Infeasible", failure)
+
+      const cached = useNodeResultsStore.getState().solveResults["n1"]
+      expect(cached).toMatchObject({
+        jobId: "job-a",
+        configHash: solveConfigHash(configA),
+        source: "live",
+        structuralVersion: 1,
+        constraints: { volume: { min: 0.9 } },
+        nodeLabel: "Node 1",
+        terminalStatus: { status: "completed", elapsed_seconds: 3 },
+        failedAttempt: {
+          jobId: "job-b",
+          configHash: solveConfigHash(configB),
+          source: "batch",
+          structuralVersion: 2,
+          error: "Infeasible",
+          terminalStatus: failure,
+        },
+      })
+      expect(cached.result?.total_objective).toBe(1234)
+      expect(isSolveResultStale(cached, configB, "batch", 2)).toBe(true)
+      expect(isSolveResultStale(cached, configA, "live", 1)).toBe(false)
+      expect(useNodeResultsStore.getState().getOptimiserPreview("n1")).toMatchObject({ jobId: "job-a" })
+
+      s.startSolveJob("n1", "job-c", "Node 1", {}, solveConfigHash(configB), "batch", 2)
+      s.completeSolveJob("n1", makeSolveResult({ total_objective: 99 }))
+      expect(useNodeResultsStore.getState().solveResults["n1"]).toMatchObject({ jobId: "job-c" })
+      expect(useNodeResultsStore.getState().solveResults["n1"].failedAttempt).toBeUndefined()
     })
 
     it("is a no-op for unknown node", () => {
@@ -1003,7 +1049,7 @@ describe("useNodeResultsStore", () => {
       const { solveResults } = useNodeResultsStore.getState()
       expect(Object.keys(solveResults)).toHaveLength(MAX_CACHED_SOLVE_RESULTS)
       expect(solveResults.s0).toBeUndefined()
-      expect(solveResults["s-new"].error).toBe("Solver failed")
+      expect(solveResults["s-new"].failedAttempt?.error).toBe("Solver failed")
     })
 
     it("keeps explicitly touched solve results when evicting", () => {
@@ -2354,7 +2400,7 @@ describe("useNodeResultsStore", () => {
       s.failSolveJob("n1", "Diverged")
 
       expect(useNodeResultsStore.getState().solveJobs["n1"]).toBeUndefined()
-      expect(useNodeResultsStore.getState().solveResults["n1"].error).toBe("Diverged")
+      expect(useNodeResultsStore.getState().solveResults["n1"].failedAttempt?.error).toBe("Diverged")
       expect(useNodeResultsStore.getState().solveJobs["n2"]).toBeDefined()
       expect(useNodeResultsStore.getState().solveJobs["n2"].jobId).toBe("sj-2")
     })

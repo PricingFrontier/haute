@@ -199,7 +199,7 @@ describe("useBackgroundJobs", () => {
 
       expect(mockGetStatus).toHaveBeenCalledTimes(1)
       expect(useNodeResultsStore.getState().solveJobs["n1"]).toBeUndefined()
-      expect(useNodeResultsStore.getState().solveResults["n1"]?.error).toBe("Job 'sj-missing' not found")
+      expect(useNodeResultsStore.getState().solveResults["n1"]?.failedAttempt?.error).toBe("Job 'sj-missing' not found")
       expect(useToastStore.getState().toasts).toContainEqual(
         expect.objectContaining({
           type: "error",
@@ -233,7 +233,7 @@ describe("useBackgroundJobs", () => {
 
       expect(mockGetStatus).toHaveBeenCalledTimes(1)
       expect(useNodeResultsStore.getState().solveJobs["n1"]).toBeUndefined()
-      expect(useNodeResultsStore.getState().solveResults["n1"]?.error).toBe(
+      expect(useNodeResultsStore.getState().solveResults["n1"]?.failedAttempt?.error).toBe(
         "Job 'sj-gone' has been purged",
       )
 
@@ -283,7 +283,7 @@ describe("useBackgroundJobs", () => {
             pollCount: () => mockGetStatus.mock.calls.length,
             progressMessage: () => useNodeResultsStore.getState().solveJobs.n1?.progress?.message,
             jobRemoved: () => useNodeResultsStore.getState().solveJobs.n1 === undefined,
-            resultError: () => useNodeResultsStore.getState().solveResults.n1?.error,
+            resultError: () => useNodeResultsStore.getState().solveResults.n1?.failedAttempt?.error,
           }
         },
       },
@@ -776,7 +776,7 @@ describe("useBackgroundJobs", () => {
 
       await advance(500)
 
-      expect(useNodeResultsStore.getState().solveResults["n1"]?.error).toBe(
+      expect(useNodeResultsStore.getState().solveResults["n1"]?.failedAttempt?.error).toBe(
         "Optimiser reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
       )
       expect(useNodeResultsStore.getState().solveResults["n1"]?.terminalStatus?.status).toBe("memory_limited")
@@ -812,7 +812,7 @@ describe("useBackgroundJobs", () => {
 
       await advance(500)
 
-      expect(useNodeResultsStore.getState().solveResults["n1"]?.error).toBe("Projection contract failed")
+      expect(useNodeResultsStore.getState().solveResults["n1"]?.failedAttempt?.error).toBe("Projection contract failed")
       expect(useNodeResultsStore.getState().solveResults["n1"]?.terminalStatus?.execution_metrics).toBeDefined()
       expect(useToastStore.getState().toasts.some(
         (toast) =>

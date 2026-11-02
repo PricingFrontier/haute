@@ -201,7 +201,6 @@ interface CachedPreview {
 }
 
 interface CachedSolveFields {
-  error?: string
   terminalStatus?: SolveProgress | null
   jobId: string
   configHash: string
@@ -213,14 +212,27 @@ interface CachedSolveFields {
   nodeLabel: string
 }
 
+/** The node's latest solve attempt, when it failed: what it was asked to solve and why it failed. */
+export interface FailedSolveAttempt {
+  jobId: string
+  configHash: string
+  source: string
+  structuralVersion: number
+  error: string
+  terminalStatus: SolveProgress | null
+}
+
 /** A node's solve result: the displayed result (a selected frontier point's
- *  summary applied, or the solve's) and the as-solved one. A later failed solve
- *  keeps it and adds its `error`. */
+ *  summary applied, or the solve's) and the as-solved one, under the identity of
+ *  the job that solved it. A later failed attempt is kept beside it in
+ *  `failedAttempt` and never relabels it. */
 export interface SolvedCachedSolveResult extends CachedSolveFields {
   result: OptimiserSolveResult
   originalResult: OptimiserSolveResult
   frontier: FrontierData | null
   selectedPointIndex: number | null
+  /** Absent until an attempt after this result fails; a completed solve has none. */
+  failedAttempt?: FailedSolveAttempt
 }
 
 /** A failed solve with no earlier result: nothing was solved, so no result is
@@ -228,9 +240,9 @@ export interface SolvedCachedSolveResult extends CachedSolveFields {
 interface FailedCachedSolveResult extends CachedSolveFields {
   result: null
   originalResult: null
-  error: string
   frontier: null
   selectedPointIndex: null
+  failedAttempt: FailedSolveAttempt
 }
 
 export type CachedSolveResult = SolvedCachedSolveResult | FailedCachedSolveResult
@@ -1042,24 +1054,33 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
       const { [nodeId]: _removedJob, ...remainingJobs } = s.solveJobs; void _removedJob
       touchCachedResult(solveResultRecency, nodeId)
-      const failure = {
-        terminalStatus: terminalStatus ?? null,
+      const failedAttempt: FailedSolveAttempt = {
         jobId: job.jobId,
         configHash: job.configHash,
         source: job.source,
         structuralVersion: job.structuralVersion,
-        constraints: job.constraints,
-        nodeLabel: job.nodeLabel,
-        frontier: null,
-        selectedPointIndex: null,
         error,
+        terminalStatus: terminalStatus ?? null,
       }
-      // An earlier result is kept beside the error; with none, nothing was solved
-      // and no result stands in for one.
+      // An earlier result keeps its own identity, with the failed attempt beside
+      // it; with none, nothing was solved and no result stands in for one.
       const previous = s.solveResults[nodeId]
       const nextCached: CachedSolveResult = previous !== undefined && previous.result !== null
-        ? { ...previous, ...failure }
-        : { ...failure, result: null, originalResult: null }
+        ? { ...previous, failedAttempt }
+        : {
+            terminalStatus: failedAttempt.terminalStatus,
+            jobId: job.jobId,
+            configHash: job.configHash,
+            source: job.source,
+            structuralVersion: job.structuralVersion,
+            constraints: job.constraints,
+            nodeLabel: job.nodeLabel,
+            result: null,
+            originalResult: null,
+            frontier: null,
+            selectedPointIndex: null,
+            failedAttempt,
+          }
       const bounded = trimCacheByRecency(
         {
           ...s.solveResults,

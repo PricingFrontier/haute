@@ -163,10 +163,19 @@
   `CachedSolveResult` additionally carries both `result` (current,
   possibly a frontier point's server summary applied) and `originalResult`
   (the as-solved baseline), so switching frontier points never loses the original.
-  A failed solve with no earlier result is cached with `result` and
-  `originalResult` `null` and its `error`; no result is fabricated for it (no zero
-  objective or baseline), `getOptimiserPreview` returns `null` for it, and the
-  point-selection actions ignore it. Every result is stored from the active
+  A failed attempt is recorded in `failedAttempt` (`FailedSolveAttempt`: its job
+  id, config hash, source, structural version, error and terminal status), never
+  over a stored result's identity. A node with an earlier result keeps that result
+  with its own job id, config hash, source, structural version, constraints, label,
+  terminal status, frontier and selection beside the failed attempt, so staleness,
+  the preview's objective label and the publish target are judged from the
+  result's identity; the next completed solve clears `failedAttempt`. The Solve
+  pane reports the failed attempt (its error and terminal status, and no result),
+  and publication is refused while one is recorded. A failed solve with no
+  earlier result is cached with `result` and `originalResult` `null`, the
+  attempt's identity and its `failedAttempt`; no result is fabricated for it (no
+  zero objective or baseline), `getOptimiserPreview` returns `null` for it, and
+  the point-selection actions ignore it. Every result is stored from the active
   job that produced it, with that job's `source` and `structuralVersion`; a
   completion with no matching active job stores nothing.
 - **`CachedExplorePivotResult` / `ActiveExplorePivotJob`** (`stores/useNodeResultsStore.ts`): records keyed by
