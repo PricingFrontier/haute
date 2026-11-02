@@ -350,15 +350,22 @@ def _staging_dirs(store: NodeSnapshotStore) -> list[Path]:
 def _pause_at(
     monkeypatch: pytest.MonkeyPatch, node_id: str, during: Callable[[], None]
 ) -> list[str]:
-    """Run *during* once, when a run is about to publish *node_id*'s capture."""
+    """Run *during* once, when a run has written *node_id*'s capture and not yet published it.
+
+    The real capture write runs first; the run's second input check and the
+    publication follow once *during* returns.
+    """
     paused: list[str] = []
+    real_write_parts = execute_lazy_module.write_parts
 
-    def fault_point(name: str, at_node: str) -> None:
-        if name == "snapshot_capture_before_publish" and at_node == node_id and not paused:
-            paused.append(at_node)
+    def write_then_pause(*args: Any, **kwargs: Any) -> Any:
+        written = real_write_parts(*args, **kwargs)
+        if kwargs.get("node_id") == node_id and not paused:
+            paused.append(node_id)
             during()
+        return written
 
-    monkeypatch.setattr(execute_lazy_module, "_snapshot_fault_point", fault_point)
+    monkeypatch.setattr(execute_lazy_module, "write_parts", write_then_pause)
     return paused
 
 

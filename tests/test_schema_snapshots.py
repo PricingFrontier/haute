@@ -176,9 +176,9 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
         ),
         (
             ExecutionMetricsPayload,
-            ["cache_proof"],
+            ["cache_direct_fallbacks"],
             {
-                "cache_proof": {"ref": "ExecutionCacheProofPayload"},
+                "cache_direct_fallbacks": {"type": "integer"},
                 "schema_version": {"type": "integer", "default": 1},
                 "operation": {"type": "string", "default": ""},
                 "profile": {"type": "string", "default": ""},

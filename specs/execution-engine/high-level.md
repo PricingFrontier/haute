@@ -717,14 +717,16 @@ successful run does no extra work.
   cancellation latency from the first request, and release cleanup callbacks in
   reverse order plus admission exactly once. Production code carries no
   fault-injection points: a test that must fail or observe an execution at a named
-  boundary does so at that boundary's checkpoint, through a test-only context.
+  boundary does so at that boundary's checkpoint, through a test-only context, or by
+  patching the real operation at that boundary (a capture's interleaving tests pause
+  after its real write).
   Optional terminal telemetry is disabled by default; when enabled it emits at most
   one schema-versioned, allow-listed aggregate event per terminal status/reason,
   excluding identifiers, paths, columns, plans, messages, exception text, and user
   data. Telemetry failure cannot change execution status.
   The same evidence reports logical requested width versus physical scanned width,
-  cache-proof hit/miss/fallback counts by a closed reason code, projected versus
-  complete-width admission basis, and estimated-versus-observed memory. These are
+  the count of direct cache fallbacks, projected versus complete-width admission
+  basis, and estimated-versus-observed memory. These are
   aggregate counters only; paths, graph identifiers, column names, and row values
   remain excluded.
 - **The execution context is a thin composition.** Every execution surface takes one

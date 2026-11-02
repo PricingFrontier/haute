@@ -13,7 +13,6 @@ from haute.executor import (
     _compile_preamble,
     _estimate_preview_cache_entry_bytes,
     _evict_utility_import_state,
-    _preamble_has_imports,
     _preview_projection_columns,
     _preview_row_limit_for_width,
     _result_order_for_target,
@@ -63,10 +62,6 @@ def test_evict_utility_import_state_removes_file_and_package_bytecode(
 
     assert not file_bytecode.exists()
     assert not package_bytecode.exists()
-
-
-def test_invalid_preamble_is_treated_as_import_sensitive() -> None:
-    assert _preamble_has_imports("if True print('broken')") is True
 
 
 def test_utility_error_outside_cwd_keeps_absolute_source_path(

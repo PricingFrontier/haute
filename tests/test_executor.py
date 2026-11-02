@@ -2669,30 +2669,6 @@ class TestPreviewCachePartialHit:
 
         _preview_cache.clear()
 
-    def test_projection_cache_suffix_signs_scope_columns_and_port(self):
-        from haute.executor import _preview_projection_cache_suffix
-
-        graph = _g({"nodes": [], "edges": []})
-
-        target_only = _preview_projection_cache_suffix(
-            graph,
-            "target",
-            None,
-            target_preview_only=True,
-            initial_column_limit=32,
-        )
-        projected_port = _preview_projection_cache_suffix(
-            graph,
-            "target",
-            ["premium"],
-            port_label="quotes",
-        )
-
-        assert "preview_target_only='target'" in target_only
-        assert "initial_col_limit=32" in target_only
-        assert "preview_cols=('premium',)" in projected_port
-        assert "preview_port='quotes'" in projected_port
-
     def test_full_cache_hit_reuses_producing_strategy_without_replanning(self, tmp_path):
         """When the target node is already in the cached outputs, no
         re-execution should happen.
@@ -3574,10 +3550,7 @@ df = src.with_columns(
             mock_execute.assert_not_called()
 
     def test_optimiser_apply_preview_alias_seed_preserves_default_name(self):
-        from haute.executor import (
-            _preview_projection_cache_suffix,
-            _preview_required_columns_by_node,
-        )
+        from haute.executor import _preview_required_columns_by_node
 
         node = _n(
             {
@@ -3596,11 +3569,6 @@ df = src.with_columns(
             "apply",
             ["optimal_scenario_value"],
         ) == {"apply": ["optimal_scenario_value", "custom_value"]}
-        assert _preview_projection_cache_suffix(
-            graph,
-            "apply",
-            ["optimal_scenario_value"],
-        ) != _preview_projection_cache_suffix(graph, "apply", ["custom_value"])
 
 
 # ---------------------------------------------------------------------------

@@ -269,11 +269,6 @@ function executionMetricsFixture() {
         rss_end_bytes: 1800,
         rss_delta_bytes: 800,
         rss_peak_bytes: 1800,
-        rows_in: 10,
-        rows_out: 2,
-        bytes_read: 512,
-        bytes_written: 128,
-        columns_scanned: 4,
         n_collects: 1,
         n_checkpoints: 2,
       },
@@ -320,17 +315,7 @@ function executionMetricsFixture() {
         warning_code: null,
       },
     ],
-    cache_proof: {
-      hits: 1,
-      misses: 2,
-      direct_fallbacks: 1,
-      miss_reason_counts: {
-        metadata_source_mismatch: 1,
-        artifact_integrity_schema_failure: 0,
-        unreadable_artifact: 0,
-        proof_unavailable: 1,
-      },
-    },
+    cache_direct_fallbacks: 1,
   }
 }
 
@@ -1415,7 +1400,6 @@ describe("API response guards", () => {
             { node_id: "scan", input_width: null, output_width: 4, requested_width: 3, physically_scanned_width: 4 },
           ],
         },
-        bytes_read: 1024,
         bytes_written: null,
         estimated_bytes: 2048,
         observed_peak_rss_bytes: null,
@@ -1442,25 +1426,17 @@ describe("API response guards", () => {
     })).toThrow(/calibrat/i)
   })
 
-  it("requires the closed cache-proof evidence on execution metrics", () => {
-    const withoutCacheProof = { ...executionMetricsFixture() } as Record<string, unknown>
-    delete withoutCacheProof.cache_proof
+  it("requires the cache direct-fallback count on execution metrics", () => {
+    const withoutFallbacks = { ...executionMetricsFixture() } as Record<string, unknown>
+    delete withoutFallbacks.cache_direct_fallbacks
     expect(() => parsePreviewNodeResponse({
       ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
-      execution_metrics: withoutCacheProof,
-    })).toThrow(/cache_proof/i)
+      execution_metrics: withoutFallbacks,
+    })).toThrow(/cache_direct_fallbacks/i)
     expect(() => parsePreviewNodeResponse({
       ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
-      execution_metrics: {
-        ...executionMetricsFixture(),
-        cache_proof: {
-          hits: 1,
-          misses: 3,
-          direct_fallbacks: 0,
-          miss_reason_counts: { metadata_source_mismatch: 1, artifact_integrity_schema_failure: 0, unreadable_artifact: 0, proof_unavailable: 1 },
-        },
-      },
-    })).toThrow(/closed reason-count total/i)
+      execution_metrics: { ...executionMetricsFixture(), cache_direct_fallbacks: -1 },
+    })).toThrow(/cache_direct_fallbacks/i)
   })
 
   it("rejects over-cap or non-deterministically ordered P12 wrappers", () => {

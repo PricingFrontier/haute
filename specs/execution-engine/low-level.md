@@ -6,10 +6,10 @@
 |---|---|
 | `src/haute/_cpu_performance.py` | Process-local Windows HighQoS read/set/verify policy, invoked at CLI, server and worker startup; preserves unrelated power-policy bits and reports unsupported or rejected native operations. |
 | `src/haute/executor.py` | GUI-facing eager entry point: `execute_graph()` (preview, with the `_preview_cache` `LRUCache`), `write_data_output()` (batch/data-output writes), preamble compilation + single-flight cache (`_compile_preamble`), preview-column projection/schema-warning assembly, and output-destination containment. |
-| `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points (and `plan_projection`, the projection half of `plan_execution_strategy`, for a caller that needs another execution's per-node column demand without planning or admitting it), runtime-input fingerprints, `preview_lineage_cache_key`, and `PREVIEW_EXECUTION_SEMANTICS_VERSION`. It is the stable application import boundary, but is not currently a thin re-export module. |
+| `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points, runtime-input fingerprints, `preview_lineage_cache_key`, and `PREVIEW_EXECUTION_SEMANTICS_VERSION`. It is the stable application import boundary, but is not currently a thin re-export module. |
 | `src/haute/_path_resolution.py` | Cross-component dependency owned by [sandbox-security](../sandbox-security/low-level.md); canonical local-runtime-path resolution: separator normalization, project/pipeline candidate choice, symlink-aware containment, selected-external-pipeline root inference, and the context-local root used by eager/lazy builders. |
 | `src/haute/_execute_lazy.py` | Node-boundary machinery the graph walker uses: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), and `_PlannedCaptures` (seed-plan closures and captures), with the contract, column-shaping, recipe and runtime-demand helpers each node step uses, and the recorded-failure line helpers `_extract_error_line` and `_located_step`. |
-| `src/haute/_graph_walker.py` | The graph walker: `walk_graph(graph, build_node_fn, *, policy: CollectPolicy, ...)` walks a graph once and returns a `WalkResult` (each built node's frame, the prepared order, parents, names, and the join and write recipes and pre-shaping frames it built). `WalkRequest` holds the execution-independent inputs, `CollectPolicy` what the walk collects, at which row and column limits, whether it records node failures, and its purpose (`WalkPurpose.SINK` hands lazy frames to a sink; `WalkPurpose.DISPLAY` reports schemas and collects for a person; `WalkPurpose.CHUNK` walks a chain one start frame at a time and has no production caller since the chunked runner was deleted; `WalkPurpose.MEASURE` builds a lineage as a display walk does but, at each checked node, collects the caller's `MeasurementQueries` over its input frames and then its output ports, each cut to a row bound, and returns one `NodeMeasurement` per checked node, never a frame, with each failure an `AttributedFailure` naming the node it is attributed to). The Data Output sink, every lazy execution through the execution facade, the preview, the trace and the assistant's data check walk through it. `prepare_walk(...)` prepares a chunk walk once and `PreparedWalk.run(start_frames)` walks it per start frame; `project_output` narrows a node's output to a demand in schema order. No function in the module exceeds a cyclomatic complexity of 15, held by ruff's C901 rule scoped to this module alone. |
+| `src/haute/_graph_walker.py` | The graph walker: `walk_graph(graph, build_node_fn, *, policy: CollectPolicy, ...)` walks a graph once and returns a `WalkResult` (each built node's frame, the prepared order, parents, names, and the join and write recipes and pre-shaping frames it built). `WalkRequest` holds the execution-independent inputs, `CollectPolicy` what the walk collects, at which row and column limits, whether it records node failures, and its purpose (`WalkPurpose.SINK` hands lazy frames to a sink; `WalkPurpose.DISPLAY` reports schemas and collects for a person; `WalkPurpose.MEASURE` builds a lineage as a display walk does but, at each checked node, collects the caller's `MeasurementQueries` over its input frames and then its output ports, each cut to a row bound, and returns one `NodeMeasurement` per checked node, never a frame, with each failure an `AttributedFailure` naming the node it is attributed to). The Data Output sink, every lazy execution through the execution facade, the preview, the trace and the assistant's data check walk through it. No function in the module exceeds a cyclomatic complexity of 15, held by ruff's C901 rule scoped to this module alone. |
 | `src/haute/_contracts.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution consumes the shared column-contract model and registry lookup. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution reads the canonical node registry. |
 | `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, profile-independent projection decisions, fan-in edge demands, materialisation/opaque boundaries, derivation of each code node's recompute facts (`recompute_facts_by_node(...)`), demand-only source-scan projection (a node's configured column selection bounds what may be demanded but is never pushed into or validated against a physical read), and bounded strategy diagnostics. |
@@ -27,7 +27,7 @@
 | `src/haute/_node_apply.py` | Config-driven implementations of External File object loading (`load_external_object_from_config`, after `validate_external_file_config` refuses an empty `path` or a missing or unsupported `fileType` with a `ConfigSettingError` naming the setting, the check Recover reports too), `liveSwitch` input selection, `scenarioExpander` row expansion (`expand_scenarios_from_config`, and `expand_scenarios_bounded` for the interactive form a preview row limit reaches through), `optimiserApply` artifact dispatch, output response-document assembly (`assemble_output_from_config`), and a Workbench Input's frames and a Workbench Output's tables (`resolve_workbench_input_from_config`, `assemble_workbench_output_from_config`: given a config, the one a run gives the node with its tables; given a sidecar path, as generated code passes it, the sidecar read and given the tables of the form folder of the project holding `base_dir`, through `_workbench_node_config`, and `workbench_input_ports_from_config` the ports alone, the sample unread) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
 | `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`, declaring every type's recompute cost (`recompute_cost=`); owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component, and `pass_through_selected_edge` / `PASS_THROUGH_NODE_TYPES`, which state the incoming edge a pass-through node's built function returns. A node built without an input (an unconnected Rating Step, Banding, Scenario Expander, Model Score or Optimiser Apply, an unsaved Data Input, and the deploy scorer's external and model placeholders) starts from `pl.LazyFrame()`, which has no rows, and so returns none: a constant it adds gives no row either (Polars 1 invented one). It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). A stepped Polars transform's function carries `transform_fn.failed_step`, which replays the schemas of the steps' prefixes on the run's input frames to name the step a run failed on and, for something Polars 2 refuses only on rows, what to change (`_failed_step`, `StepFailure`). |
 | `src/haute/_node_builder.py` | `NodeBuildHooks` and `wrap_builder`, the interception seam used by deploy scoring while preserving the canonical runtime builders. |
-| `src/haute/_topo.py` | Strict `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), explicit `topo_sort_ids_filtered` (opt-in subset traversal returning both the order and every dropped edge/endpoint), `canonical_topological_order` (the same graphlib sorter driven lexically: the smallest ready node id always comes next, so it is independent of input order; projection diagnostics rank nodes by it), and `ancestors` (a node and its ancestors over reversed edges, walked by `upstream_node_ids`). The default sorter never silently ignores an unknown endpoint. It is the one topological sort; `_find_cycle_nodes` peels in-degrees only to report every node in a cycle. |
+| `src/haute/_topo.py` | Strict `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), `canonical_topological_order` (the same graphlib sorter driven lexically: the smallest ready node id always comes next, so it is independent of input order; projection diagnostics rank nodes by it), and `ancestors` (a node and its ancestors over reversed edges, walked by `upstream_node_ids`). The default sorter never silently ignores an unknown endpoint. It is the one topological sort; `_find_cycle_nodes` peels in-degrees only to report every node in a cycle. |
 | `src/haute/graph_utils.py` | Canonical outward re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. Low-level engine modules import canonical graph models from `_types.py` and pure helpers from `_graph_utils.py` directly; importing back through this heavyweight facade would re-enter `_execute_lazy.py` and create an execution/RAM-estimation cycle. |
 | `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids` (the one ancestor walk, over any parents mapping, in depth-first preorder from the node's parents; `ancestors`, the trace waterfall's lineage check, the recovery route's ancestor closure and the optimiser's upstream node-type search all use it), `_sanitize_func_name`, `edge_input_name` (the single edge->input-name derivation: apiInput-frame edge -> its frame label verbatim, submodel-output edge -> its sanitised public output port name from an owner and, from an instance, the instance's sanitised name (one output) or `<instance>_<port>` (several), else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `resolve_orig_source_names`, and edge-id construction. |
 | `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional address-space resource cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state; the shared supervisor helpers `isolated_worker_failure_is_memory()` (RSS breach, unsupported cap, memory-looking crash exit code, or a memory-typed remote exception) and `isolated_worker_memory_detail()` (the closed memory-limit payload whose reason is one of worker_rss_limit_exceeded, native_memory_cap_unavailable, worker_may_have_exceeded_memory_limit, or worker_memory_limit) that the Data Output writer, training preparation, and the deployed batch path all map their 507 outcomes through. |
@@ -160,10 +160,6 @@
   callable, and applies identical input/output contract assertions. Eager-only
   materialisation, lazy-only checkpoint/cache policy, and preview-only error
   swallowing remain outside the runner and therefore remain explicit.
-- **`FilteredTopology`** (`_topo.py`, frozen dataclass) — result of the explicitly
-  named filtered traversal: ordered known node IDs plus every dropped edge and
-  the deterministic set of unknown endpoint IDs. `topo_sort_ids` instead raises
-  `UnknownEdgeEndpointError` before sorting when an edge names an unknown node.
 - **`ChunkLocalDecision`** (`chunking.py`, frozen dataclass) — one classification:
   `eligible`, `reason` (a closed vocabulary: `eligible`, `empty_code`, `no_frame_names`,
   `syntax_error`, or the walk's rejection reason), `blocking_operator`, and the 1-based
@@ -451,9 +447,8 @@ graph-shape contracts for exactly the executed subset (routes can submit raw fro
 graphs that bypass the parser), normalises required-column seeds, fixes the active
 strict/degraded contract policy, and builds child, full-parent, and incoming-edge
 indexes. Ancestor/live-switch filtering is explicit in `prepare_graph`; the strict
-topological sorter receives only the resulting relevant edges. Code that intentionally
-sorts a node subset with a broader edge set must call `topo_sort_ids_filtered` and
-inspect its dropped-edge evidence.
+topological sorter receives only the resulting relevant edges. A node subset sorted with a
+broader edge set is refused (`UnknownEdgeEndpointError`); a caller filters the edges first.
 
 **Automatic input preparation.** Between `_prepare_execution()` and strategy planning, the
 lazy engine calls `haute._input_preparation.prepare_input_snapshots()` over the pruned
@@ -905,9 +900,8 @@ artifact's directory, and the scorer's parts are published as the generation, ho
 columns the scorer wrote. A Model Score with its own post-processing is sunk like any other
 capture, from a parquet scan of its scored parts, so its write is sliced. A negotiated column the
 node does not produce is logged (`snapshot_capture_column_unavailable`) and dropped; a
-missing column the run itself reads raises `ContractMismatchError`. After the
-`snapshot_capture_before_publish` fault point and a second runtime-input check, the capture
-is published as an automatic generation whose `dependencies` are the closure the plan
+missing column the run itself reads raises `ContractMismatchError`. After the write and
+a second runtime-input check, the capture is published as an automatic generation whose `dependencies` are the closure the plan
 recorded for the node: every seed and published capture read upstream along effective
 edges, each with its own recorded dependencies, and for a capture that kept its own data,
 only what it was built from. Execution continues from the publication's frame. A superseded
@@ -2006,8 +2000,7 @@ present a structural or schema result as execution evidence.
   so callers must pass `node_ids` as an
   insertion-ordered sequence, never a `set`, or tie-break order becomes
   hash-randomisation-dependent across process runs. An unknown endpoint raises
-  `UnknownEdgeEndpointError`; an intentional subset traversal must instead call
-  `topo_sort_ids_filtered` and inspect its dropped-edge evidence. `CycleError` reports
+  `UnknownEdgeEndpointError`. `CycleError` reports
   every node participating in *any* cycle
   (via `_find_cycle_nodes`'s Kahn-style peel), not just the one `graphlib.CycleError`
   names.
@@ -2661,17 +2654,13 @@ present a structural or schema result as execution evidence.
   assembly/sink failures cannot alter execution status. New efficiency counters are
   additive: the existing V1 RSS, truncation, strategy, admission, streamability, and
   width-state attributes remain present.
-- **Efficiency evidence has closed reason sets.** `ExecutionContext` retains bounded
-  counters for cache proof hits, misses, and direct fallbacks. Since API Input tables
-  moved to the input-snapshot store only a direct fallback (a standalone shred) has a
-  producer; hits and misses stay zero until a cache-proof boundary records them. Miss reasons are a
-  closed enum (metadata/source mismatch, artifact integrity/schema failure,
-  unreadable artifact, and proof unavailable); unknown strings are rejected at the
-  recording boundary. Every metrics payload carries the cache-proof counters and
-  their reason-code breakdown — the field is required on both the backend response
-  model and the frontend guard, and `misses` must equal the closed reason-count
-  total — plus aggregate
-  requested/scanned widths and estimate calibration. A width total is emitted only
+- **Efficiency evidence carries only counters something records.** `ExecutionContext`
+  counts direct cache fallbacks (a standalone JSON/XML shred that bypassed the input-snapshot
+  store); every metrics payload carries that count as `cache_direct_fallbacks`, required on
+  both the backend response model and the frontend guard, plus aggregate
+  requested/scanned widths and estimate calibration. No payload carries a field that is
+  always null or zero: there are no cache-proof hit/miss counters, no payload-level bytes
+  read, and no per-stage row, byte or column counters. A width total is emitted only
   when that width is known for every recorded node; partial evidence remains `null`
   rather than looking like a deceptively narrow complete total. They never include cache paths,
   source identities, column names, graph ids, or exception messages.
@@ -2749,12 +2738,10 @@ present a structural or schema result as execution evidence.
   cyclic graph, listing every participating node.
 - `UnknownEdgeEndpointError` (`_topo.py`, extends `HauteError`) — strict topology
   input contains an edge whose source or target is absent from `node_ids`. It carries
-  deterministic `unknown_node_ids` and dropped-edge evidence. Intentional subset
-  traversal uses `topo_sort_ids_filtered` instead and receives the same evidence in
-  its return value.
+  deterministic `unknown_node_ids` and dropped-edge evidence.
 - `ContractMismatchError` (`haute.errors`, extends `HauteError`) — raised by
   missing input/output columns and checkpoint/eager projection mismatches in
-  `_execute_lazy.py` and the graph walker, and by the walker's `project_output` for a chunk;
+  `_execute_lazy.py` and the graph walker;
   it is re-raised with `SchemaMismatchError` even while a preview records node failures.
   The boundary checks (`_assert_inputs_satisfy_contract`,
   `_assert_outputs_satisfy_contract`) raise its subclass `ContractColumnsMissingError`,

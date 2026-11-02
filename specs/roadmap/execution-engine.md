@@ -23,7 +23,7 @@ retired.
 | EXEC-R14 | Planned | P3 | Engine defaults that fail quietly fail loudly: contracts enforced by default, an all-stale column selection refused, a request-input edge never loses its name, `Pipeline.run` prunes like the walker, and a sink failure names its node. |
 | EXEC-R15 | Planned | P3 | The static analyses cover the canvas join and the binning expressions, and the cardinality proof trusts `pl.lit` only with a literal argument. |
 | EXEC-R16 | Decision | P3 | Preview cache extension either extends the cached preview or is removed with its specification sentence. |
-| EXEC-R17 | Planned | P3 | The engine's never-fed evidence, dead entry points, test-only hooks and clone pairs are removed, and the preamble compile stops editing `sys.path` and bytecode caches. |
+| EXEC-R17 | Decision | P3 | The preamble compile stops reordering `sys.path` for the whole process, while a project's imports, including ones deferred to collect time, still resolve to that project and its edited `utility` package. |
 | EXEC-R18 | Planned | P3 | A node's optional inputs relax only the edges that feed it, not every column of that name in the graph. |
 | EXEC-R19 | Planned | P2 | `_eager_execute` reports `PreambleError` without running nodes against an empty preamble, `execute_graph` validates `port_label`, `_build_optimiser_apply` honours `ctx.schema_only`, `run_worker_protocol` forwards `worker_config.environment`, `DedicatedWorker.start` and `wait_for_process_exit` clean up IPC/OS handles, `Pipeline.score` guards empty pipelines, and `flatten_executable_graph` resolves the project root. |
 
@@ -243,58 +243,37 @@ frames (measured), or the mode is gone and the specification no longer promises 
 **Evidence:** `src/haute/executor.py::_execute`; `src/haute/execution.py` (the lineage
 cache key).
 
-### EXEC-R17 — Dead evidence, dead entry points and clones
-**Why:** The cache-proof hit/miss recorders (`record_cache_proof_hit`,
-`record_cache_proof_miss`, `record_cache_direct_fallback`) and
-`ExecutionCacheProofMissReason` are fed by no production code, so every `cache_proof`
-count in the metrics payload and the telemetry is always zero while the specification
-calls them operational evidence; the five per-stage counters on `ExecutionStageMetric`
-(`rows_in`, `rows_out`, `bytes_read`, `bytes_written`, `columns_scanned`) are never set and
-are `null` in every payload and the generated frontend contract. The chunk-walk entry
-points in `_graph_walker.py`, `plan_projection`, `build_linear_execution_chain_functions`,
-`topo_sort_ids_filtered`, `_preamble_has_imports` and `_preview_projection_cache_suffix`
-have no caller outside `execution.__all__`; two `execution_context is None` branches in
-`prepare_data_output` are unreachable; `_snapshot_fault_point` is a no-op test hook the
-high-level specification forbids and the low-level one documents. The declaration
-validation of `row_local_python_scan` and `fanout_python_scan` is a verbatim 27-line
-clone, and the POLARS, MODEL_SCORE and EXTERNAL_FILE branches of
-`_resolve_row_cardinality_from_index` are the same twelve lines three times. The preamble
-compile reorders `sys.path` process-wide on every compile. Its deletion of utility
-bytecode is a documented freshness defence: eviction from `sys.modules` and import-cache
-invalidation alone can reuse stale `.pyc` files after an edit preserving size and mtime.
+### EXEC-R17 — The preamble compile stops reordering `sys.path`
+**Why:** Every preamble compile moves the pipeline and project directories to the front
+of `sys.path` for the whole process and leaves them there. A scope around the compile and
+the walk alone does not fix this: a helper that imports `utility.sub` inside a Python
+function Polars calls at collect time runs after that scope has exited, so its import
+would resolve against whatever `sys.path` holds by then. The utility bytecode deletion
+is a documented freshness defence: eviction from `sys.modules` and import-cache
+invalidation alone can reuse a stale `.pyc` after an edit that keeps the file's size and
+mtime.
 
-**Plan:** Wire the cache-proof recorders at the one place that decides a source proof or
-delete them with the DTO, the telemetry attributes and the specification sentence
-(regenerating the contracts); remove the five stage counters or populate them at the
-collect and sink seams; delete the dead entry points and branches; replace the fault
-point with monkeypatching of the real write and align the two specifications; extract
-`_validate_scan_declarations` and `_code_cardinality` helpers; compile the preamble with
-an explicit `sys.path` entry scoped across compilation and node execution, including
-imports deferred inside helper functions, and restore it on success and failure. Preserve
-the existing utility `.pyc` invalidation; a replacement is acceptable only if its
-source-loading mechanism is specified and proves the same freshness guarantee. Publicly
-exported helpers need an API-use assessment before removal; an absent internal caller
-alone does not establish that a library entry point is dead.
+**Decision:** How long the project's import entry lives. (a) For the execution: each
+execution that compiles a preamble holds a reference-counted entry until its last
+collect returns, and the last holder restores `sys.path`, on success and on failure.
+(b) Keep the process-wide reordering and specify it as the engine's import model.
+(c) Resolve project imports through a finder bound to the project root, so `sys.path` is
+never edited.
 
-**Acceptance:** vulture and the repository greps show none of the named symbols
-unreferenced; the metrics payload carries no always-null field; `sys.path` is unchanged
-after compilation and execution, including failures; a same-size/same-mtime edit to
-`utility.py` changes the next run's result; a helper importing `utility.sub` during node
-execution resolves the correct project's package; the clone pairs are gone from jscpd's
-report. Keep these behavioural guarantees alongside the mechanical cleanup checks.
+**Plan:** Implement the chosen option. Preserve the existing utility `.pyc` invalidation;
+a replacement is acceptable only if its source-loading mechanism is specified and proves
+the same freshness guarantee.
 
-**Dependencies:** `ENGQ-R01` owns dead code outside the engine.
+**Acceptance:** Under (a) or (c), `sys.path` is unchanged after compilation and
+execution, including failures; under (b), the specification states the reordering. In
+every option, a same-size/same-mtime edit to `utility.py` changes the next run's result,
+and a helper importing `utility.sub` during node execution, inside a function Polars
+calls at collect time, resolves the correct project's package.
 
-**Evidence:** `src/haute/_execution_context.py::ExecutionCacheProofMissReason`;
-`src/haute/_execution_context.py::ExecutionStageMetric`;
-`src/haute/_execution_schemas.py`; `src/haute/execution.py`;
-`src/haute/executor.py::prepare_data_output`;
-`src/haute/executor.py::_prioritise_preamble_import_paths`;
-`src/haute/executor.py::_evict_utility_import_state`;
-`src/haute/_execute_lazy.py::_snapshot_fault_point`;
-`src/haute/_polars_utils.py::row_local_python_scan`;
-`src/haute/_polars_utils.py::fanout_python_scan`;
-`src/haute/_ram_estimate.py::_resolve_row_cardinality_from_index`.
+**Dependencies:** None.
+
+**Evidence:** `src/haute/executor.py::_prioritise_preamble_import_paths`;
+`src/haute/executor.py::_evict_utility_import_state`.
 
 ### EXEC-R18 — Optional inputs relax only their own edges
 **Why:** A column a node reads only where it exists (`Contract.optional_inputs`, a Model

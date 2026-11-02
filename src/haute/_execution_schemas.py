@@ -290,11 +290,6 @@ class ExecutionStageMetricsPayload(BaseModel):
     rss_end_bytes: int | None = None
     rss_delta_bytes: int | None = None
     rss_peak_bytes: int | None = None
-    rows_in: int | None = None
-    rows_out: int | None = None
-    bytes_read: int | None = None
-    bytes_written: int | None = None
-    columns_scanned: int | None = None
     n_collects: int = 0
     n_checkpoints: int = 0
 
@@ -341,34 +336,6 @@ class ExecutionColumnWidthsCollectionPayload(BaseModel):
         node_ids = [item.node_id for item in self.items]
         if node_ids != sorted(node_ids) or len(node_ids) != len(set(node_ids)):
             raise ValueError("column-width items must have unique sorted node ids")
-        return self
-
-
-class ExecutionCacheProofMissReasonCountsPayload(BaseModel):
-    metadata_source_mismatch: int = Field(ge=0)
-    artifact_integrity_schema_failure: int = Field(ge=0)
-    unreadable_artifact: int = Field(ge=0)
-    proof_unavailable: int = Field(ge=0)
-
-
-class ExecutionCacheProofPayload(BaseModel):
-    hits: int = Field(ge=0)
-    misses: int = Field(ge=0)
-    direct_fallbacks: int = Field(ge=0)
-    miss_reason_counts: ExecutionCacheProofMissReasonCountsPayload
-
-    @model_validator(mode="after")
-    def _validate_miss_total(self) -> ExecutionCacheProofPayload:
-        reason_total = sum(
-            (
-                self.miss_reason_counts.metadata_source_mismatch,
-                self.miss_reason_counts.artifact_integrity_schema_failure,
-                self.miss_reason_counts.unreadable_artifact,
-                self.miss_reason_counts.proof_unavailable,
-            )
-        )
-        if self.misses != reason_total:
-            raise ValueError("cache proof misses must equal the closed reason-count total")
         return self
 
 
@@ -534,8 +501,7 @@ class ExecutionMetricsPayload(BaseModel):
     )
     requested_column_width_total: int | None = Field(default=None, ge=0)
     physically_scanned_column_width_total: int | None = Field(default=None, ge=0)
-    cache_proof: ExecutionCacheProofPayload
-    bytes_read: int | None = Field(default=None, ge=0)
+    cache_direct_fallbacks: int = Field(ge=0)
     bytes_written: int | None = Field(default=None, ge=0)
     estimated_bytes: StrictInt | None = Field(default=None, ge=0)
     raw_estimated_bytes: StrictInt | None = Field(default=None, ge=0)

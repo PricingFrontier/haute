@@ -38,7 +38,6 @@ from haute._topo import (
     CycleError,
     UnknownEdgeEndpointError,
     topo_sort_ids,
-    topo_sort_ids_filtered,
 )
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.errors import HauteError
@@ -119,16 +118,14 @@ class TestTopologicalCorrectness:
         assert order == ["a", "b"]
         assert _is_topologically_valid(order, edges)
 
-    def test_edges_with_unknown_endpoints_require_explicit_filtering(self) -> None:
+    def test_edges_with_unknown_endpoints_are_refused(self) -> None:
         edges = [_e("a", "b"), _e("ghost", "a"), _e("b", "phantom")]
 
-        with pytest.raises(UnknownEdgeEndpointError):
+        with pytest.raises(UnknownEdgeEndpointError) as raised:
             topo_sort_ids(["a", "b"], edges)
 
-        filtered = topo_sort_ids_filtered(["a", "b"], edges)
-        assert filtered.order == ["a", "b"]
-        assert filtered.dropped_edges == tuple(edges[1:])
-        assert filtered.unknown_node_ids == ("ghost", "phantom")
+        assert raised.value.dropped_edges == tuple(edges[1:])
+        assert raised.value.unknown_node_ids == ("ghost", "phantom")
 
     def test_deep_chain_of_60_nodes(self) -> None:
         """A 60-node linear chain must come out in exactly the chain order."""

@@ -463,37 +463,6 @@ def test_null_handle_against_even_a_one_frame_dict_fails_loudly() -> None:
     assert "sourceHandle" in message
 
 
-def test_optimiser_linear_builder_uses_original_edge_metadata_for_input_name() -> None:
-    """The execution.py chain used by optimiser execution keeps the frame label."""
-    from haute.execution import build_linear_execution_chain_functions
-
-    graph = PipelineGraph(
-        nodes=[
-            _node("api", "Quote Input", NodeType.API_INPUT),
-            _node("transform", "transform", NodeType.POLARS),
-        ],
-        edges=[
-            GraphEdge(
-                id="api_transform",
-                source="api",
-                target="transform",
-                sourceHandle="quotes",
-            )
-        ],
-    )
-    captured: dict[str, dict[str, Any]] = {}
-
-    build_linear_execution_chain_functions(
-        graph,
-        _capture_builder_calls(captured),
-        target_node_id="transform",
-        base_node_id="api",
-        chain_node_ids=["transform"],
-    )
-
-    assert captured["transform"]["source_names"] == ["quotes"]
-
-
 # 5. Eager lazy-frame cache sharing at fan-out points
 
 

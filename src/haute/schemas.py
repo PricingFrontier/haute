@@ -30,8 +30,6 @@ from pydantic import (
 from haute._execution_schemas import (
     DiagnosticCollectionState,  # noqa: F401
     ExecutionAdmissionPayload,  # noqa: F401
-    ExecutionCacheProofMissReasonCountsPayload,  # noqa: F401
-    ExecutionCacheProofPayload,  # noqa: F401
     ExecutionColumnWidthsCollectionPayload,  # noqa: F401
     ExecutionColumnWidthsPayload,  # noqa: F401
     ExecutionMemoryLimitErrorPayload,  # noqa: F401

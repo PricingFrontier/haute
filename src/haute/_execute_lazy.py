@@ -601,11 +601,6 @@ if TYPE_CHECKING:
     from haute._seed_plans import CaptureDecision, SeedPlan, SeedPlanDecision
 
 
-def _snapshot_fault_point(name: str, node_id: str) -> None:
-    """Deterministic pause point for interleaving tests of planned captures."""
-    del name, node_id
-
-
 # ---------------------------------------------------------------------------
 # Materialisation housekeeping
 # ---------------------------------------------------------------------------
@@ -1406,7 +1401,6 @@ class _PlannedCaptures:
                 artifact.record_digests(written.digests)
             elif prewritten_digests:
                 artifact.record_digests(prewritten_digests)
-            _snapshot_fault_point("snapshot_capture_before_publish", node_id)
             if self._inputs_changed():
                 # The pre-run check exists to stop exactly this mix: seeds
                 # computed from the old inputs read beside branches recomputed

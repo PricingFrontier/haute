@@ -62,15 +62,6 @@ class ExecutionProfile(StrEnum):
     NODE_SNAPSHOT = "node_snapshot"
 
 
-class ExecutionCacheProofMissReason(StrEnum):
-    """Closed, data-free reasons an execution cache proof could not be used."""
-
-    METADATA_SOURCE_MISMATCH = "metadata_source_mismatch"
-    ARTIFACT_INTEGRITY_SCHEMA_FAILURE = "artifact_integrity_schema_failure"
-    UNREADABLE_ARTIFACT = "unreadable_artifact"
-    PROOF_UNAVAILABLE = "proof_unavailable"
-
-
 @dataclass(frozen=True, slots=True)
 class ExecutionTelemetryEvent:
     """Bounded terminal telemetry event with no request identifiers."""
@@ -263,11 +254,6 @@ class ExecutionStageMetric:
     rss_start_bytes: int | None = None
     rss_end_bytes: int | None = None
     rss_peak_bytes: int | None = None
-    rows_in: int | None = None
-    rows_out: int | None = None
-    bytes_read: int | None = None
-    bytes_written: int | None = None
-    columns_scanned: int | None = None
     n_collects: int = 0
     n_checkpoints: int = 0
     schema_version: int = EXECUTION_METRICS_SCHEMA_VERSION
@@ -290,11 +276,6 @@ class ExecutionStageMetric:
             rss_end_bytes=self.rss_end_bytes,
             rss_delta_bytes=self.rss_delta_bytes,
             rss_peak_bytes=self.rss_peak_bytes,
-            rows_in=self.rows_in,
-            rows_out=self.rows_out,
-            bytes_read=self.bytes_read,
-            bytes_written=self.bytes_written,
-            columns_scanned=self.columns_scanned,
             n_collects=self.n_collects,
             n_checkpoints=self.n_checkpoints,
             schema_version=self.schema_version,
@@ -315,11 +296,6 @@ class ExecutionStageSummary:
     rss_end_bytes: int | None
     rss_delta_bytes: int | None
     rss_peak_bytes: int | None
-    rows_in: int | None = None
-    rows_out: int | None = None
-    bytes_read: int | None = None
-    bytes_written: int | None = None
-    columns_scanned: int | None = None
     n_collects: int = 0
     n_checkpoints: int = 0
     schema_version: int = EXECUTION_METRICS_SCHEMA_VERSION
@@ -337,11 +313,6 @@ class ExecutionStageSummary:
             "rss_end_bytes": self.rss_end_bytes,
             "rss_delta_bytes": self.rss_delta_bytes,
             "rss_peak_bytes": self.rss_peak_bytes,
-            "rows_in": self.rows_in,
-            "rows_out": self.rows_out,
-            "bytes_read": self.bytes_read,
-            "bytes_written": self.bytes_written,
-            "columns_scanned": self.columns_scanned,
             "n_collects": self.n_collects,
             "n_checkpoints": self.n_checkpoints,
         }
@@ -586,11 +557,6 @@ class ExecutionMetricsRecorder:
             "rss_start_bytes",
             "rss_end_bytes",
             "rss_peak_bytes",
-            "rows_in",
-            "rows_out",
-            "bytes_read",
-            "bytes_written",
-            "columns_scanned",
             "n_collects",
             "n_checkpoints",
         ):
@@ -950,30 +916,22 @@ class ExecutionEvidence:
     __slots__ = (
         "_lock",
         "_column_widths",
-        "_bytes_read",
         "_bytes_written",
         "_chunk_count",
         "_observed_peak_rss_bytes",
         "_cancellation_latency_ms",
-        "_cache_proof_hits",
-        "_cache_proof_misses",
         "_cache_direct_fallbacks",
-        "_cache_proof_miss_reason_counts",
         "_calibration_recorded",
     )
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._column_widths: dict[str, ExecutionColumnWidths] = {}
-        self._bytes_read: int | None = None
         self._bytes_written: int | None = None
         self._chunk_count = 0
         self._observed_peak_rss_bytes: int | None = None
         self._cancellation_latency_ms: float | None = None
-        self._cache_proof_hits = 0
-        self._cache_proof_misses = 0
         self._cache_direct_fallbacks = 0
-        self._cache_proof_miss_reason_counts = dict.fromkeys(ExecutionCacheProofMissReason, 0)
         self._calibration_recorded = False
 
     def record_column_widths(
@@ -1009,11 +967,6 @@ class ExecutionEvidence:
                 },
             )
 
-    def record_bytes_read(self, byte_count: int) -> None:
-        _require_byte_count(byte_count)
-        with self._lock:
-            self._bytes_read = (self._bytes_read or 0) + byte_count
-
     def record_bytes_written(self, byte_count: int) -> None:
         _require_byte_count(byte_count)
         with self._lock:
@@ -1022,17 +975,6 @@ class ExecutionEvidence:
     def record_chunk(self) -> None:
         with self._lock:
             self._chunk_count += 1
-
-    def record_cache_proof_hit(self) -> None:
-        with self._lock:
-            self._cache_proof_hits += 1
-
-    def record_cache_proof_miss(self, reason: ExecutionCacheProofMissReason) -> None:
-        if not isinstance(reason, ExecutionCacheProofMissReason):
-            raise TypeError("cache proof miss reason must be an ExecutionCacheProofMissReason")
-        with self._lock:
-            self._cache_proof_misses += 1
-            self._cache_proof_miss_reason_counts[reason] += 1
 
     def record_cache_direct_fallback(self) -> None:
         with self._lock:
@@ -1061,16 +1003,8 @@ class ExecutionEvidence:
         with self._lock:
             widths = tuple(self._column_widths[node_id] for node_id in sorted(self._column_widths))
             observed_peak = self._observed_peak_rss_bytes
-            cache_proof = {
-                "hits": self._cache_proof_hits,
-                "misses": self._cache_proof_misses,
-                "direct_fallbacks": self._cache_direct_fallbacks,
-                "miss_reason_counts": {
-                    reason.value: self._cache_proof_miss_reason_counts[reason]
-                    for reason in ExecutionCacheProofMissReason
-                },
-            }
-            bytes_read, bytes_written = self._bytes_read, self._bytes_written
+            cache_direct_fallbacks = self._cache_direct_fallbacks
+            bytes_written = self._bytes_written
             chunk_count, cancellation_latency_ms = (
                 self._chunk_count,
                 self._cancellation_latency_ms,
@@ -1092,8 +1026,7 @@ class ExecutionEvidence:
             "physically_scanned_column_width_total": _width_total(
                 widths, "physically_scanned_width"
             ),
-            "cache_proof": cache_proof,
-            "bytes_read": bytes_read,
+            "cache_direct_fallbacks": cache_direct_fallbacks,
             "bytes_written": bytes_written,
             "estimated_bytes": getattr(diagnostic, "estimated_peak_bytes", None),
             "raw_estimated_bytes": getattr(diagnostic, "raw_estimated_peak_bytes", None),
@@ -1615,20 +1548,11 @@ class ExecutionContext:
             physically_scanned_width=physically_scanned_width,
         )
 
-    def record_bytes_read(self, byte_count: int) -> None:
-        self.evidence.record_bytes_read(byte_count)
-
     def record_bytes_written(self, byte_count: int) -> None:
         self.evidence.record_bytes_written(byte_count)
 
     def record_chunk(self) -> None:
         self.evidence.record_chunk()
-
-    def record_cache_proof_hit(self) -> None:
-        self.evidence.record_cache_proof_hit()
-
-    def record_cache_proof_miss(self, reason: ExecutionCacheProofMissReason) -> None:
-        self.evidence.record_cache_proof_miss(reason)
 
     def record_cache_direct_fallback(self) -> None:
         self.evidence.record_cache_direct_fallback()
@@ -1925,10 +1849,6 @@ def _terminal_telemetry_attributes(
     strategy_payload = strategy if isinstance(strategy, Mapping) else {}
     admission = payload.get("admission")
     admission_payload = admission if isinstance(admission, Mapping) else {}
-    cache_proof = payload.get("cache_proof")
-    cache_proof_payload = cache_proof if isinstance(cache_proof, Mapping) else {}
-    miss_reasons = cache_proof_payload.get("miss_reason_counts")
-    miss_reason_payload = miss_reasons if isinstance(miss_reasons, Mapping) else {}
     widths = payload.get("column_widths")
     widths_payload = widths if isinstance(widths, Mapping) else {}
     raw_attributes: dict[str, object] = {
@@ -1943,7 +1863,6 @@ def _terminal_telemetry_attributes(
         "n_checkpoints": payload.get("n_checkpoints"),
         "checkpoint_count": payload.get("checkpoint_count"),
         "chunk_count": payload.get("chunk_count"),
-        "bytes_read": payload.get("bytes_read"),
         "bytes_written": payload.get("bytes_written"),
         "estimated_bytes": payload.get("estimated_bytes"),
         "raw_estimated_bytes": payload.get("raw_estimated_bytes"),
@@ -1973,15 +1892,7 @@ def _terminal_telemetry_attributes(
         "physically_scanned_column_width_total": payload.get(
             "physically_scanned_column_width_total"
         ),
-        "cache_proof_hits": cache_proof_payload.get("hits"),
-        "cache_proof_misses": cache_proof_payload.get("misses"),
-        "cache_direct_fallbacks": cache_proof_payload.get("direct_fallbacks"),
-        "cache_miss_metadata_source_mismatch": miss_reason_payload.get("metadata_source_mismatch"),
-        "cache_miss_artifact_integrity_schema_failure": miss_reason_payload.get(
-            "artifact_integrity_schema_failure"
-        ),
-        "cache_miss_unreadable_artifact": miss_reason_payload.get("unreadable_artifact"),
-        "cache_miss_proof_unavailable": miss_reason_payload.get("proof_unavailable"),
+        "cache_direct_fallbacks": payload.get("cache_direct_fallbacks"),
     }
     return _bounded_telemetry_attributes(raw_attributes)
 

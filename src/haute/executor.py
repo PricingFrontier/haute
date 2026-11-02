@@ -12,7 +12,6 @@ can optimise the full plan end-to-end.
 
 from __future__ import annotations
 
-import ast as _ast
 import functools
 import gc
 import hashlib
@@ -313,19 +312,6 @@ def _prioritise_preamble_import_paths(
     for path in reversed(desired):
         sys.path[:] = [existing for existing in sys.path if existing != path]
         sys.path.insert(0, path)
-
-
-def _preamble_has_imports(preamble: str) -> bool:
-    """Return whether preamble execution can consult import resolution state.
-
-    Kept as a small diagnostic/test helper. The hot compile path deliberately
-    does not call this before the ``lru_cache`` lookup.
-    """
-    try:
-        tree = _ast.parse(preamble)
-    except SyntaxError:
-        return True
-    return any(isinstance(node, (_ast.Import, _ast.ImportFrom)) for node in _ast.walk(tree))
 
 
 def _exec_preamble_namespace(preamble: str) -> dict[str, Any]:
@@ -753,35 +739,6 @@ def _preview_required_columns_by_node(
     if not columns:
         return None
     return {target_node_id: columns}
-
-
-def _preview_projection_cache_suffix(
-    graph: PipelineGraph,
-    target_node_id: str | None,  # pragma: no mutate
-    requested_preview_columns: list[str] | None,  # pragma: no mutate
-    *,  # pragma: no mutate
-    target_preview_only: bool = False,
-    initial_column_limit: int | None = None,  # pragma: no mutate
-    port_label: str | None = None,  # pragma: no mutate
-) -> str:
-    """Cache-key suffix for projected preview materialisations.
-
-    ``port_label`` selects which frame of a multi-frame producer the flat
-    ``columns`` / ``preview`` reflect. It changes the serialised result, not
-    the underlying ``eager_outputs`` (which always holds every frame), so it
-    enters the cache key.
-    """
-    parts: list[str] = []
-    if target_preview_only and target_node_id is not None:
-        parts.append(f":preview_target_only={target_node_id!r}")
-        if requested_preview_columns is None:
-            parts.append(f":initial_col_limit={initial_column_limit!r}")
-    if target_node_id is not None and requested_preview_columns is not None:
-        parts.append(f":preview_target={target_node_id!r}")
-        parts.append(f":preview_cols={tuple(requested_preview_columns)!r}")
-    if target_node_id is not None and port_label is not None:
-        parts.append(f":preview_port={port_label!r}")
-    return "".join(parts)
 
 
 def _cache_has_required_materialization(
@@ -2426,12 +2383,8 @@ def prepare_data_output(
             row_count=row_count,
             path=path,
             format=str(config.get("format") or config["outputType"]),
-            execution_metrics=(
-                ExecutionMetricsPayload.model_validate(
-                    execution_context.metrics_payload(status="completed")
-                )
-                if execution_context is not None
-                else None
+            execution_metrics=ExecutionMetricsPayload.model_validate(
+                execution_context.metrics_payload(status="completed")
             ),
         )
         prepared = PreparedDataOutput(

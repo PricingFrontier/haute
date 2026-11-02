@@ -1038,6 +1038,39 @@ def _safe_edge_input_name(edge: GraphEdge, index: _EstimateGraphIndex) -> str | 
         return None
 
 
+# Nodes whose optional code bounds their rows, with the reason a node with no input is unbounded.
+_NO_INPUT_REASON_BY_CODE_TYPE = {
+    NodeType.MODEL_SCORE: "input_cardinality_unavailable",
+    NodeType.EXTERNAL_FILE: "external_object_row_cardinality_unknown",
+}
+
+
+def _code_cardinality(
+    index: _EstimateGraphIndex,
+    node: GraphNode,
+    edge_results: tuple[tuple[GraphEdge, _ResolvedRowCardinality], ...],
+    parents: tuple[_ResolvedRowCardinality, ...],
+    *,
+    selector_aliases: frozenset[str],
+    alias_first_as_df: bool = False,
+) -> _ResolvedRowCardinality:
+    """Bound a code node's output rows from its code and its named inputs' bounds."""
+    bindings = _named_cardinality_inputs(
+        index, node, edge_results, alias_first_as_df=alias_first_as_df
+    )
+    if not bindings:
+        return _ResolvedRowCardinality.unavailable(node.id, "invalid_input_name_binding")
+    code = node.data.config.get("code")
+    if not isinstance(code, str) or not code.strip():
+        return _ResolvedRowCardinality.unavailable(node.id, "empty_code")
+    analysis = analyze_polars_cardinality(
+        code,
+        {name: cast(int, result.output_rows) for name, result in bindings.items()},
+        selector_aliases=selector_aliases,
+    )
+    return _cardinality_from_analysis(node.id, analysis, parents)
+
+
 def _resolve_row_cardinality_from_index(
     index: _EstimateGraphIndex,
     target_node_id: str,
@@ -1128,21 +1161,9 @@ def _resolve_row_cardinality_from_index(
         )
 
     if node_type is NodeType.POLARS:
-        bindings = _named_cardinality_inputs(index, node, edge_results)
-        if not bindings:
-            return _ResolvedRowCardinality.unavailable(
-                target_node_id,
-                "invalid_input_name_binding",
-            )
-        code = node.data.config.get("code")
-        if not isinstance(code, str) or not code.strip():
-            return _ResolvedRowCardinality.unavailable(target_node_id, "empty_code")
-        analysis = analyze_polars_cardinality(
-            code,
-            {name: cast(int, result.output_rows) for name, result in bindings.items()},
-            selector_aliases=selector_aliases,
+        return _code_cardinality(
+            index, node, edge_results, parents, selector_aliases=selector_aliases
         )
-        return _cardinality_from_analysis(target_node_id, analysis, parents)
 
     if node_type is NodeType.SCENARIO_EXPANDER:
         if len(parents) != 1:
@@ -1192,31 +1213,22 @@ def _resolve_row_cardinality_from_index(
             return _cardinality_from_analysis(target_node_id, analysis, parents)
         return _passthrough_cardinality(target_node_id, parents)
 
-    if node_type is NodeType.MODEL_SCORE:
+    if node_type in _NO_INPUT_REASON_BY_CODE_TYPE:
         if not parents:
             return _ResolvedRowCardinality.unavailable(
                 target_node_id,
-                "input_cardinality_unavailable",
+                _NO_INPUT_REASON_BY_CODE_TYPE[node_type],
             )
         code = node.data.config.get("code")
         if isinstance(code, str) and code.strip():
-            bindings = _named_cardinality_inputs(
+            return _code_cardinality(
                 index,
                 node,
                 edge_results,
+                parents,
+                selector_aliases=selector_aliases,
                 alias_first_as_df=True,
             )
-            if not bindings:
-                return _ResolvedRowCardinality.unavailable(
-                    target_node_id,
-                    "invalid_input_name_binding",
-                )
-            analysis = analyze_polars_cardinality(
-                code,
-                {name: cast(int, result.output_rows) for name, result in bindings.items()},
-                selector_aliases=selector_aliases,
-            )
-            return _cardinality_from_analysis(target_node_id, analysis, parents)
         return _passthrough_cardinality(target_node_id, parents)
 
     if node_type is NodeType.OPTIMISER:
@@ -1271,33 +1283,6 @@ def _resolve_row_cardinality_from_index(
             ),
             many_to_many_join_node_ids=_inherited_many_to_many(parents),
         )
-
-    if node_type is NodeType.EXTERNAL_FILE:
-        if not parents:
-            return _ResolvedRowCardinality.unavailable(
-                target_node_id,
-                "external_object_row_cardinality_unknown",
-            )
-        code = node.data.config.get("code")
-        if isinstance(code, str) and code.strip():
-            bindings = _named_cardinality_inputs(
-                index,
-                node,
-                edge_results,
-                alias_first_as_df=True,
-            )
-            if not bindings:
-                return _ResolvedRowCardinality.unavailable(
-                    target_node_id,
-                    "invalid_input_name_binding",
-                )
-            analysis = analyze_polars_cardinality(
-                code,
-                {name: cast(int, result.output_rows) for name, result in bindings.items()},
-                selector_aliases=selector_aliases,
-            )
-            return _cardinality_from_analysis(target_node_id, analysis, parents)
-        return _passthrough_cardinality(target_node_id, parents)
 
     if node_type in {
         NodeType.BANDING,
