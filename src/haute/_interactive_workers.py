@@ -358,6 +358,8 @@ def _interactive_worker_entrypoint(
                     raise RuntimeError(
                         "interactive worker received a malformed or stale acknowledgement"
                     )
+            # Dropped before "released": the parent samples the next job's baseline on it.
+            del raw_request, request, function, args, kwargs
             try:
                 if native_growth is not None:
                     lease.restore()
@@ -388,7 +390,6 @@ def _interactive_worker_entrypoint(
                     protocol=pickle.HIGHEST_PROTOCOL,
                 )
             )
-            del raw_request, request, function, args, kwargs
     except BaseException:
         # The parent classifies an entrypoint/protocol failure from exitcode;
         # trying to use a possibly broken queue here can hide the original exit.
