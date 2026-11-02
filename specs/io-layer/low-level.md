@@ -339,7 +339,13 @@ inventory and consume physical disk space.
    and enters the store lease under that identity's coordination lock.
    Pointer, metadata, size/digest, footer, row count, and schema validation
    complete before the local `(identity, generation)` lease count is incremented
-   and the generation is exposed.
+   and the generation is exposed. A process checks a generation's part digests,
+   and reads its parts' footers and schemas, once while the parts' names, sizes,
+   modification times and digests and the row counts and columns its metadata
+   records are unchanged: the verified memo records the digests, and the described
+   memo records a generation only after its footers and schemas agreed with its
+   metadata, so a generation that failed them fails every later lease too. A
+   generation another Polars must re-describe is read again until it is.
 2. The generation supplies a Parquet `LazyFrame`. Inside an
    `ExecutionContext`, one idempotent release callback is registered with
    execution cleanup, so every plan derived during that request remains
@@ -752,8 +758,8 @@ is no eager dataframe or collect-then-write fallback.
 - Clear removes the pointer first and retires only generations without live leases.
 - Startup never removes generations; it removes only staging older than the configured
   activity threshold, and inventory includes retained staging bytes.
-- Full artifact SHA-256 is verified once per stable generation stat gate per process rather
-  than once per lease.
+- Full artifact SHA-256 is verified, and part footers and schemas read, once per stable
+  generation stat gate per process rather than once per lease.
 - Partitioned Parquet sinks validate the final layout and preserve the previous published
   target if publication fails.
 - Direct bounded reads require declared CSV dtypes and refuse eager-only formats and eager
@@ -1002,8 +1008,9 @@ failure sections above are the maintained answers.
   does not promise the bounded row order and so shares no snapshot with them.
 - `tests/test_source_cache.py` covers canonical/redacted identity, atomic refresh,
   immutable generations, leases, corruption, no-budget retention, same-identity single flight,
-  age-gated staging reclamation, digest memoization, non-destructive
-  generation startup, and transient OS failures. A generation whose directory was deleted
+  age-gated staging reclamation, digest memoization, a second lease reading no part footer or
+  schema while a changed part is read again and a generation whose footers failed fails every
+  later lease, non-destructive generation startup, and transient OS failures. A generation whose directory was deleted
   reads as missing, a current lease raises `FileNotFoundError` and holds nothing, and a build
   replaces it. A refresh or clear while a reader holds a part open (Windows' refusals of the
   rename and the delete, simulated) leaves the superseded generation whole and raises nothing,

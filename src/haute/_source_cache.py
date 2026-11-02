@@ -54,6 +54,11 @@ ReconcileOutcome = Literal[
 ]
 # (identity digest, generation id, ((part name, mtime_ns, size, digest), ...))
 _VerifiedGeneration = tuple[str, str, tuple[tuple[str, int, int, str], ...]]
+# A verified generation plus the row counts and columns its metadata records:
+# its parts' footers and schemas were read and agreed with them.
+_DescribedGeneration = tuple[
+    _VerifiedGeneration, tuple[tuple[str, int], ...], tuple[tuple[str, str], ...]
+]
 # A generation is meta.json plus ordered part files. Metadata from the
 # single-file layout or from layout 2 (SHA-256 part digests) reads as absent
 # and is rebuilt.
@@ -453,6 +458,7 @@ class _SourceCacheCoordination:
     identity_locks: dict[str, threading.RLock] = field(default_factory=dict)
     leases: dict[tuple[str, str], int] = field(default_factory=dict)
     verified_generations: set[_VerifiedGeneration] = field(default_factory=set)
+    described_generations: set[_DescribedGeneration] = field(default_factory=set)
     guard: threading.Lock = field(default_factory=threading.Lock)
     publication_locks: dict[str, FileLock] = field(default_factory=dict)
     budget_lock: FileLock | None = None
@@ -594,6 +600,7 @@ class SourceCacheStore:
         self._identity_locks = coordination.identity_locks
         self._leases = coordination.leases
         self._verified_generations = coordination.verified_generations
+        self._described_generations = coordination.described_generations
         self._cleanup_stale_staging()
         # The sweep globs the whole store, and a preview builds several stores
         # for one root, so it runs once per process.
@@ -833,7 +840,9 @@ class SourceCacheStore:
                         raise ValueError("snapshot digest does not match metadata")
                 with self._lock:
                     self._verified_generations.add(verification_key)
-            # Read every footer/schema before exposing the scan; corrupt data never falls back.
+            # Read every footer/schema before exposing the scan; corrupt data never
+            # falls back. Once they agreed with this metadata, a process trusts
+            # them for the same unchanged parts, as it trusts their digests.
             import pyarrow.parquet as pq
 
             # An input snapshot is a copy of its source, so another Polars only
@@ -843,8 +852,15 @@ class SourceCacheStore:
                 identity.provider != NODE_OUTPUT_PROVIDER
                 and metadata.polars_version != polars_version()
             )
+            description_key = (
+                verification_key,
+                tuple((part.name, part.row_count) for part in parts),
+                tuple(sorted(metadata.columns.items())),
+            )
+            with self._lock:
+                described = not redescribe and description_key in self._described_generations
             expected_columns: dict[str, str] | None = None if redescribe else metadata.columns
-            for part, path in zip(parts, data_paths, strict=True):
+            for part, path in () if described else zip(parts, data_paths, strict=True):
                 parquet_metadata = pq.read_metadata(path)
                 arrow_schema = pq.read_schema(path)
                 if redescribe and any(arrow_holds_map(field.type) for field in arrow_schema):
@@ -862,6 +878,9 @@ class SourceCacheStore:
             if redescribe:
                 assert expected_columns is not None
                 metadata = self._redescribed(metadata_path, metadata, expected_columns)
+            elif not described:
+                with self._lock:
+                    self._described_generations.add(description_key)
         except FileNotFoundError as exc:
             raise SourceCacheCorruptError("source-cache generation is corrupt") from exc
         except OSError:
@@ -1365,6 +1384,9 @@ class SourceCacheStore:
                 if key[:2] == (identity_digest, generation_id)
             }
             self._verified_generations.difference_update(stale)
+            self._described_generations.difference_update(
+                {key for key in self._described_generations if key[0] in stale}
+            )
 
     def _unremovable(self, path: Path, identity: SourceCacheIdentity) -> ReconcileOutcome:
         """Report a reconcile removal that silently left its directory behind."""

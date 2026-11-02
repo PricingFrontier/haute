@@ -364,6 +364,106 @@ def test_generation_digest_is_verified_once_per_stable_process_gate(
     assert hashed == list(generation.data_paths)
 
 
+def _count_footer_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    import pyarrow.parquet as pq
+
+    reads: list[Path] = []
+    read_metadata, read_schema = pq.read_metadata, pq.read_schema
+
+    def counted_metadata(path: Path, *args: object, **kwargs: object) -> object:
+        reads.append(Path(path))
+        return read_metadata(path, *args, **kwargs)
+
+    def counted_schema(path: Path, *args: object, **kwargs: object) -> object:
+        reads.append(Path(path))
+        return read_schema(path, *args, **kwargs)
+
+    monkeypatch.setattr(pq, "read_metadata", counted_metadata)
+    monkeypatch.setattr(pq, "read_schema", counted_schema)
+    return reads
+
+
+def test_a_second_lease_of_a_described_generation_reads_no_part_footer_or_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lease validates each part's footer and schema once per process (CACHE-S17)."""
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="data/input.parquet", format="parquet")
+    generation = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1, 2]}).lazy()),
+        context=_context(),
+    )
+    # The build described its own parts; this process forgets that.
+    store._described_generations.clear()
+    reads = _count_footer_reads(monkeypatch)
+
+    for _ in range(3):
+        with store.lease(identity) as leased:
+            assert leased.lazy_frame.collect()["id"].to_list() == [1, 2]
+
+    # The first lease reads each part's footer and schema once.
+    assert sorted(reads) == sorted([*generation.data_paths, *generation.data_paths])
+
+
+def test_a_generation_whose_part_changed_is_validated_again(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="data/input.parquet", format="parquet")
+    generation = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1, 2]}).lazy()),
+        context=_context(),
+    )
+    with store.lease(identity):
+        pass
+    reads = _count_footer_reads(monkeypatch)
+    part = generation.data_paths[0]
+    stat = part.stat()
+    os.utime(part, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+
+    with store.lease(identity):
+        pass
+
+    assert part in reads
+
+
+def test_a_generation_whose_footer_check_failed_fails_every_later_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a generation that passed its footer checks is remembered as described."""
+    import pyarrow.parquet as pq
+
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="data/input.parquet", format="parquet")
+    store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1, 2]}).lazy()),
+        context=_context(),
+    )
+    store._described_generations.clear()
+    read_metadata = pq.read_metadata
+    footers_fail = True
+
+    def failing_metadata(path: Path, *args: object, **kwargs: object) -> object:
+        if footers_fail:
+            raise OSError("unreadable footer")
+        return read_metadata(path, *args, **kwargs)
+
+    monkeypatch.setattr(pq, "read_metadata", failing_metadata)
+    for _ in range(2):
+        with pytest.raises(OSError, match="unreadable footer"):
+            with store.lease(identity):
+                pass
+    footers_fail = False
+    with store.lease(identity) as leased:
+        assert leased.lazy_frame.collect()["id"].to_list() == [1, 2]
+
+
 def test_transient_generation_access_error_is_not_reported_as_corruption(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
