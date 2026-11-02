@@ -799,7 +799,9 @@ and cannot serialize as a canonical node. Unavailable cards retain authored iden
 spelling instead of coercing the node to a supported type.
 
 Selecting an unavailable or blocked node opens a read-only diagnostic inspector rather than its
-normal configuration editor. The inspector shows attributed messages, remediation, source/config
+normal configuration editor. `NodePanel` separates this recovery boundary from healthy-editor
+input-identity derivation so inspecting an unavailable or blocked node never requires unavailable
+upstream sources (such as unknown decorators) to supply executable input identities. The inspector shows attributed messages, remediation, source/config
 location, incident id, and blocking path where present. The editor does not open an unavailable
 submodel's definition, so that submodel's inspector also lists the definition's unavailable
 nodes, each with its diagnostics and its own recovery actions. Ready siblings in a degraded document may
@@ -831,6 +833,8 @@ reset or recover action. Reset confirmation explicitly describes replaced settin
 required reconfiguration; a successful recover records a dismissible session summary, with
 what it could not fix listed as still to complete, of retained/defaulted/needs-input/removed
 fields with on-demand previous-configuration and diff views; updating a submodel preserves
-its contents and consumer code. In degraded documents, `scoped_editable` nodes keep their
-normal editors and save through the node-scoped save, which adopts the authoritative
-document while whole-graph fences stay in place.
+its contents and consumer code. In degraded documents, `scoped_editable` nodes whose incoming
+edges have resolvable executable input identities keep their normal editors and save through
+the node-scoped save, which adopts the authoritative document while whole-graph fences stay in
+place; when an unavailable upstream source has no executable input identity, the blocked
+downstream node remains in the recovery inspector.

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import type { ComponentProps, ReactNode } from "react"
 import {
   ReactFlow,
@@ -24,7 +24,6 @@ import type { OnUpdateConfigResult, SimpleEdge, SimpleNode } from "./panels/edit
 import { GraphProvider } from "./panels/GraphContext"
 import DataPreview, { type PreviewData } from "./panels/DataPreview"
 import ExplorePreview from "./panels/ExplorePreview"
-import OptimiserDataPreview from "./panels/OptimiserDataPreview"
 
 import { TraceStatePanel } from "./panels/TraceStatePanel"
 import type { ProjectFilePlace } from "./api/types"
@@ -61,6 +60,7 @@ import useTracing, { type TraceRequestState } from "./hooks/useTracing"
 import useSubmodelNavigation, { type SubmodelCreateResult } from "./hooks/useSubmodelNavigation"
 import useSubmodelBoundaryEditing from "./hooks/useSubmodelBoundaryEditing"
 import useKeyboardShortcuts from "./hooks/useKeyboardShortcuts"
+import { inModalDialog, isFormControl } from "./hooks/keyboardTargets"
 import useWindowFileDropGuard from "./hooks/useWindowFileDropGuard"
 import { WRAPPED_INSTANCE_TYPES } from "./utils/nodeTypes"
 import useNodeHandlers from "./hooks/useNodeHandlers"
@@ -144,6 +144,8 @@ const ModellingPreview = lazy(() => import("./panels/ModellingPreview").then(
 // Optimiser results are produced only after a user-triggered solve, so keep
 // the comparatively heavy charts out of the initial application bundle.
 const OptimiserPreview = lazy(() => import("./panels/OptimiserPreview"))
+// An optimiser node's scenario preview shares those panes; it loads on first display.
+const OptimiserDataPreview = lazy(() => import("./panels/OptimiserDataPreview"))
 // The trace panel shows only after a cell click; its chunk is fetched when the
 // trace request starts, so it is usually ready by the time the result arrives.
 const loadTracePanel = () => import("./panels/TracePanel")
@@ -220,7 +222,7 @@ type ActiveNodePreviewProps = {
   onAskAssistantToFix?: (nodeId: string) => void
 }
 
-function ActiveNodePreview({
+const ActiveNodePreview = memo(function ActiveNodePreview({
   documentCanExecute,
   activeNodeId,
   activeNode,
@@ -261,7 +263,7 @@ function ActiveNodePreview({
       />
     </PreviewRunContext.Provider>
   )
-}
+})
 
 function ActiveNodePreviewBody({
   documentCanExecute,
@@ -281,20 +283,50 @@ function ActiveNodePreviewBody({
   onImported,
   onAskAssistantToFix,
 }: Omit<ActiveNodePreviewProps, "run">) {
+  // The preview reads the active node's training and solve results through the store's
+  // getters, which are stable props; subscribing to what they read re-renders this memoized
+  // pane the moment a result lands.
+  useNodeResultsStore((s) => (activeNodeId === null ? null : s.trainResults[activeNodeId] ?? null))
+  useNodeResultsStore((s) => (activeNodeId === null ? null : s.trainJobs[activeNodeId] ?? null))
+  useNodeResultsStore((s) => (activeNodeId === null ? null : s.solveResults[activeNodeId] ?? null))
   const activeNodeType = activeNode ? effectiveNodeType(activeNode) : undefined
-  const canRefresh = activeNode
+  const canRefresh = Boolean(
+    activeNode
     && activeNodeType !== NODE_TYPES.SUBMODEL_PORT
     && nodeData(activeNode)._loadAvailability !== "unavailable"
-    && nodeData(activeNode)._loadAvailability !== "blocked"
+    && nodeData(activeNode)._loadAvailability !== "blocked",
+  )
   const refreshAction = canRefresh ? onRefresh : undefined
   // The assistant reproduces the error of a top-level executable node only.
-  const askAssistant = onAskAssistantToFix
+  const canAskAssistant = Boolean(
+    onAskAssistantToFix
     && activeNodeId !== null
     && previewData?.status === "error"
     && activeNodeType !== NODE_TYPES.SUBMODEL
-    && activeNodeType !== NODE_TYPES.SUBMODEL_PORT
-    ? () => onAskAssistantToFix(activeNodeId)
-    : undefined
+    && activeNodeType !== NODE_TYPES.SUBMODEL_PORT,
+  )
+  const handleAskAssistant = useCallback(() => {
+    if (onAskAssistantToFix && activeNodeId !== null) {
+      onAskAssistantToFix(activeNodeId)
+    }
+  }, [activeNodeId, onAskAssistantToFix])
+  const handleSelectFrame = useCallback(
+    (portLabel: string) => {
+      if (activeNodeId !== null) previewNodeFrame(activeNodeId, portLabel)
+    },
+    [activeNodeId, previewNodeFrame],
+  )
+  const inputAction = useMemo(
+    () =>
+      documentCanExecute && canRefresh && activeNode ? (
+        <InputImportButton node={activeNode} onImported={onImported} />
+      ) : undefined,
+    [activeNode, canRefresh, documentCanExecute, onImported],
+  )
+  const errorAction = useMemo(
+    () => (canAskAssistant ? <AskAssistantButton onClick={handleAskAssistant} /> : undefined),
+    [canAskAssistant, handleAskAssistant],
+  )
   if (
     documentCanExecute
     && activeNode
@@ -353,30 +385,26 @@ function ActiveNodePreviewBody({
     && previewData.preview.length > 0
   ) {
     return (
-      <OptimiserDataPreview
-        data={previewData}
-        config={nodeData(activeNode).config ?? {}}
-        onRefresh={refreshAction}
-      />
+      <Suspense fallback={null}>
+        <OptimiserDataPreview
+          data={previewData}
+          config={nodeData(activeNode).config ?? {}}
+          onRefresh={refreshAction}
+        />
+      </Suspense>
     )
   }
   return (
     <DataPreview
       data={previewData}
-      nodeLabel={canRefresh ? String(nodeData(activeNode).label) : undefined}
+      nodeLabel={canRefresh && activeNode ? String(nodeData(activeNode).label) : undefined}
       nodeType={activeNodeType}
       onRefresh={refreshAction}
       onCellClick={documentCanExecute ? onCellClick : undefined}
       tracedCell={tracedCell}
-      onSelectFrame={
-        activeNodeId ? (portLabel) => previewNodeFrame(activeNodeId, portLabel) : undefined
-      }
-      inputAction={
-        documentCanExecute && canRefresh && activeNode ? (
-          <InputImportButton node={activeNode} onImported={onImported} />
-        ) : undefined
-      }
-      errorAction={askAssistant ? <AskAssistantButton onClick={askAssistant} /> : undefined}
+      onSelectFrame={activeNodeId ? handleSelectFrame : undefined}
+      inputAction={inputAction}
+      errorAction={errorAction}
     />
   )
 }
@@ -575,7 +603,7 @@ type NodePropertiesPanelProps = {
   onOpenNode: (nodeId: string) => void
 }
 
-function NodePropertiesPanel({
+const NodePropertiesPanel = memo(function NodePropertiesPanel({
   gitOpen,
   filesPlace,
   utilityOpen,
@@ -722,7 +750,7 @@ function NodePropertiesPanel({
       <ErrorBoundary name="NodePanel">{content}</ErrorBoundary>
     </aside>
   )
-}
+})
 
 // Note: the ReactFlow node-type → component registry now lives in
 // ./utils/nodeTypeRegistry (imported as `nodeTypes` above), shared with the
@@ -770,7 +798,7 @@ function FlowEditor() {
   const filesPlace = useUIStore((s) => s.filesPlace)
   const setFilesPlace = useUIStore((s) => s.setFilesPlace)
   const assistantOpen = useUIStore((s) => s.assistantOpen)
-  const setAssistantOpen = useUIStore((s) => s.setAssistantOpen)
+  const closeSidePanes = useUIStore((s) => s.closeSidePanes)
   const assistantTurnRunning = useUIStore((s) => s.assistantTurn !== null)
   const askAssistantToFix = useUIStore((s) => s.askAssistantToFix)
   const setSubmodelDialog = useUIStore((s) => s.setSubmodelDialog)
@@ -850,10 +878,8 @@ function FlowEditor() {
     lastSelectedNodeRef.current = null
     setLastSelectedId(null)
     setPreviewDataRef.current(null)
-    setUtilityOpen(false)
-    setConstantsOpen(false)
-    setGitOpen(false)
-  }, [setUtilityOpen, setConstantsOpen, setGitOpen])
+    closeSidePanes()
+  }, [closeSidePanes])
 
   // Node results store — background jobs + cached results
   const getOptimiserPreview = useNodeResultsStore((s) => s.getOptimiserPreview)
@@ -1113,8 +1139,9 @@ function FlowEditor() {
     handleCreateSubmodel, handleCreateNodeInstance, handleDissolveSubmodel,
   } = useSubmodelNavigation({
     graphRef, parentGraphRef, activeSubmodelIdentity, setActiveSubmodelIdentity, submodelsRef,
-    setNodesRaw, setEdgesRaw, setSubmodelsRaw,
+    setNodesRaw, setEdgesRaw,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
+    cancelPreview, clearTrace,
     setLastSelectedId,
     preambleRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef,
     fitView,
@@ -1134,29 +1161,6 @@ function FlowEditor() {
     () => singletonTypesInDocument(documentRootNodes, submodels),
     [documentRootNodes, submodels],
   )
-
-  const handleRepairApplied = useCallback((
-    document: import("./types/pipelineDocument").PipelineEditorDocument,
-  ) => {
-    const recoverTargetId =
-      pipelineRepairTarget?.action === "recover" ? pipelineRepairTarget.recoveryId : null
-    // The repair response names no document fingerprint; the next resync fetches the document.
-    adoptPipelineDocument(document, null)
-    resetToAuthoritativeRoot(
-      document.source_file,
-      document.pipeline_name ?? "main",
-    )
-    setPipelineRepairTarget(null)
-    if (recoverTargetId) {
-      const restored = graphRef.current.nodes.find((item) => item.id === recoverTargetId)
-      if (restored) {
-        setSelectedNode(restored)
-        setLastSelectedId(recoverTargetId)
-        return
-      }
-    }
-    closePanel()
-  }, [adoptPipelineDocument, closePanel, pipelineRepairTarget, resetToAuthoritativeRoot])
 
   const activeView = viewStack[viewStack.length - 1]
   const activeSubmodelName = activeView?.type === "submodel" ? activeView.name : null
@@ -1180,29 +1184,6 @@ function FlowEditor() {
     typeof selectedNodeData?._sourceFile === "string" &&
     typeof selectedNodeData?._recoveryId === "string"
 
-  const selectedNodeRef = useRef<Node | null>(null)
-  useEffect(() => {
-    selectedNodeRef.current = selectedNode ?? null
-  }, [selectedNode])
-  const applyScopedSaveDocument = useCallback(
-    (document: import("./types/pipelineDocument").PipelineEditorDocument, savedNodeId: string) => {
-      const selectionUnchanged = selectedNodeRef.current?.id === savedNodeId
-      // The scoped save response names no document fingerprint; the next resync fetches the document.
-      adoptPipelineDocument(document, null)
-      resetToAuthoritativeRoot(document.source_file, document.pipeline_name ?? "main")
-      if (selectionUnchanged) {
-        const restored = graphRef.current.nodes.find((item) => item.id === savedNodeId)
-        if (restored) {
-          setSelectedNode(restored)
-          setLastSelectedId(savedNodeId)
-        } else {
-          closePanel()
-        }
-      }
-    },
-    [adoptPipelineDocument, closePanel, resetToAuthoritativeRoot],
-  )
-
   const {
     commitBoundaryConnection,
     deleteBoundaryEdge,
@@ -1222,6 +1203,139 @@ function FlowEditor() {
     setNodesAndEdgesAndSubmodels,
     reservedApiInputFrameLabels,
   })
+
+  const shouldSkipAutomaticPreview = useCallback(
+    (node: Node) => {
+      if (nodeData(node).nodeType !== NODE_TYPES.OPTIMISER) return false
+      const hasPreview = !!getOptimiserPreview(node.id)
+      if (hasPreview) touchOptimiserPreview(node.id)
+      return hasPreview
+    },
+    [getOptimiserPreview, touchOptimiserPreview],
+  )
+
+  const findEdgeIdAtPoint = useCallback((point: { x: number; y: number }) => {
+    const elements = document.elementsFromPoint(point.x, point.y)
+    for (const element of elements) {
+      if (element.closest?.(".react-flow__handle, .react-flow__node")) return null
+      const edgeElement = element.closest?.(".react-flow__edge[data-id]")
+      const edgeId = edgeElement?.getAttribute("data-id")
+      if (edgeId) return edgeId
+    }
+    return null
+  }, [])
+
+  const isBoundaryConnection = useCallback((connection: Connection | Edge) => {
+    if (!activeSubmodelName) return false
+    return graphRef.current.nodes.some(
+      (node) =>
+        (node.id === connection.source || node.id === connection.target)
+        && nodeData(node).nodeType === NODE_TYPES.SUBMODEL_PORT,
+    )
+  }, [activeSubmodelName, graphRef])
+
+  const isValidConnection = useCallback((connection: Connection | Edge) => {
+    if (editingReadOnly) return false
+    if (isBoundaryConnection(connection)) return true
+    return validatePipelineConnection(
+      connection,
+      panelGraph.allNodes,
+      panelGraph.edges,
+      submodelsRef.current,
+      useWorkbenchStore.getState().tables,
+    ).ok
+  }, [editingReadOnly, isBoundaryConnection, panelGraph])
+
+  const validateConnection = useCallback((connection: Connection): ConnectionValidationResult => {
+    if (editingReadOnly) {
+      return {
+        ok: false,
+        reason: { kind: "invalid-connection", message: "This pipeline document is read-only." },
+      }
+    }
+    if (isBoundaryConnection(connection)) return { ok: true }
+    return validatePipelineConnection(
+      connection,
+      panelGraph.allNodes,
+      panelGraph.edges,
+      submodelsRef.current,
+      useWorkbenchStore.getState().tables,
+    )
+  }, [editingReadOnly, isBoundaryConnection, panelGraph])
+
+  const {
+    onConnect, onSelectionChange, openNode, activateNode, onNodeClick, handleDeleteEdge,
+    onConnectStart, onConnectEnd, onConnectionPointerMove, clearEdgeJoinCandidate,
+    edgeJoinCandidateEdgeId, onNodeContextMenu, onDragOver, onDrop,
+    connectionDropMenu, closeConnectionDropMenu, createNodeFromConnectionDrop,
+    submodelInputMenu, selectSubmodelInput,
+  } = useEdgeHandlers({
+    selectedNode, graphRef, submodels, nodeIdCounter, lastSelectedNodeRef,
+    setNodes, setEdges, setNodesRaw, setEdgesRaw, pushSnapshot,
+    setSelectedNode, setPreviewData, setContextMenu,
+    setLastSelectedId,
+    fetchPreview,
+    cancelPreview,
+    shouldSkipAutomaticPreview,
+    clearTrace,
+    screenToFlowPosition,
+    graphRefreshingRef,
+    existingSingletonTypes,
+    resolveGraphIdentities: resolveCandidateGraphIdentities,
+    findEdgeIdAtPoint,
+    isPaneAtPoint: isEmptyCanvasAtPoint,
+    validateConnection,
+    commitBoundaryConnection,
+    deleteBoundaryEdge,
+  })
+
+  const handleRepairApplied = useCallback((
+    document: import("./types/pipelineDocument").PipelineEditorDocument,
+  ) => {
+    const recoverTargetId =
+      pipelineRepairTarget?.action === "recover" ? pipelineRepairTarget.recoveryId : null
+    // The repair response names no document fingerprint; the next resync fetches the document.
+    adoptPipelineDocument(document, null)
+    previousDocumentRevisionRef.current = document.source_revision
+    resetToAuthoritativeRoot(
+      document.source_file,
+      document.pipeline_name ?? "main",
+    )
+    setPipelineRepairTarget(null)
+    if (recoverTargetId) {
+      const restored = graphRef.current.nodes.find((item) => item.id === recoverTargetId)
+      if (restored) {
+        lastSelectedNodeRef.current = null
+        activateNode(restored)
+        return
+      }
+    }
+    closePanel()
+  }, [activateNode, adoptPipelineDocument, closePanel, pipelineRepairTarget, resetToAuthoritativeRoot])
+
+  const selectedNodeRef = useRef<Node | null>(null)
+  useEffect(() => {
+    selectedNodeRef.current = selectedNode ?? null
+  }, [selectedNode])
+  const applyScopedSaveDocument = useCallback(
+    (document: import("./types/pipelineDocument").PipelineEditorDocument, savedNodeId: string) => {
+      const selectionUnchanged = selectedNodeRef.current?.id === savedNodeId
+      // The scoped save response names no document fingerprint; the next resync fetches the document.
+      adoptPipelineDocument(document, null)
+      previousDocumentRevisionRef.current = document.source_revision
+      resetToAuthoritativeRoot(document.source_file, document.pipeline_name ?? "main")
+      if (selectionUnchanged) {
+        const restored = graphRef.current.nodes.find((item) => item.id === savedNodeId)
+        if (restored) {
+          lastSelectedNodeRef.current = null
+          activateNode(restored)
+        } else {
+          closePanel()
+        }
+      }
+    },
+    [activateNode, adoptPipelineDocument, closePanel, resetToAuthoritativeRoot],
+  )
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
     if (!editingReadOnly) {
       const removedNodeIds = new Set(changes
@@ -1492,6 +1606,7 @@ function FlowEditor() {
     setLastSelectedId,
     setPreviewData, fitView, getInternalNode,
     submodels,
+    activeSubmodelIdentity,
     resolveNodeIdentities: allocateNodeIdentities,
     createWrappedNodeInstance: handleCreateNodeInstance,
     commitSharedNodeDeletion,
@@ -1542,7 +1657,7 @@ function FlowEditor() {
   const handleToolbarSubmodelAction = useCallback(() => {
     if (selectedSubmodelId === null) {
       requestSubmodelCreation({
-        nodes,
+        nodes: graphRef.current.nodes,
         readOnly: editingReadOnly,
         isInsideSubmodel: viewStack.length > 1,
         setSubmodelDialog,
@@ -1559,103 +1674,57 @@ function FlowEditor() {
     void handleDissolveSubmodel(selectedSubmodelId).finally(() => {
       toolbarDissolveInFlightRef.current = false
     })
-  }, [selectedSubmodelId, nodes, editingReadOnly, viewStack.length, setSubmodelDialog, addToast, handleDissolveSubmodel])
+  }, [selectedSubmodelId, graphRef, editingReadOnly, viewStack.length, setSubmodelDialog, addToast, handleDissolveSubmodel])
   const handleToolbarCreateInstance = useCallback(() => {
     if (editingReadOnly) {
       addToast("info", "This pipeline document is read-only")
       return
     }
-    if (selectedNodeIds.length !== 1) {
+    const currentSelectedIds = graphRef.current.nodes.filter((n) => n.selected).map((n) => n.id)
+    if (currentSelectedIds.length !== 1) {
       addToast("info", "Select exactly one node to create an instance of it")
       return
     }
-    handleCreateInstance(selectedNodeIds[0])
-  }, [editingReadOnly, selectedNodeIds, handleCreateInstance, addToast])
+    handleCreateInstance(currentSelectedIds[0])
+  }, [editingReadOnly, graphRef, handleCreateInstance, addToast])
 
-  const shouldSkipAutomaticPreview = useCallback(
-    (node: Node) => {
-      if (nodeData(node).nodeType !== NODE_TYPES.OPTIMISER) return false
-      const hasPreview = !!getOptimiserPreview(node.id)
-      if (hasPreview) touchOptimiserPreview(node.id)
-      return hasPreview
-    },
-    [getOptimiserPreview, touchOptimiserPreview],
-  )
-
-  const findEdgeIdAtPoint = useCallback((point: { x: number; y: number }) => {
-    const elements = document.elementsFromPoint(point.x, point.y)
-    for (const element of elements) {
-      if (element.closest?.(".react-flow__handle, .react-flow__node")) return null
-      const edgeElement = element.closest?.(".react-flow__edge[data-id]")
-      const edgeId = edgeElement?.getAttribute("data-id")
-      if (edgeId) return edgeId
-    }
-    return null
-  }, [])
-
-  const isBoundaryConnection = useCallback((connection: Connection | Edge) => {
-    if (!activeSubmodelName) return false
-    return graphRef.current.nodes.some(
-      (node) =>
-        (node.id === connection.source || node.id === connection.target)
-        && nodeData(node).nodeType === NODE_TYPES.SUBMODEL_PORT,
-    )
-  }, [activeSubmodelName, graphRef])
-
-  const isValidConnection = useCallback((connection: Connection | Edge) => {
-    if (editingReadOnly) return false
-    if (isBoundaryConnection(connection)) return true
-    return validatePipelineConnection(
-      connection,
-      panelGraph.allNodes,
-      panelGraph.edges,
-      submodelsRef.current,
-      useWorkbenchStore.getState().tables,
-    ).ok
-  }, [editingReadOnly, isBoundaryConnection, panelGraph])
-
-  const validateConnection = useCallback((connection: Connection): ConnectionValidationResult => {
-    if (editingReadOnly) {
-      return {
-        ok: false,
-        reason: { kind: "invalid-connection", message: "This pipeline document is read-only." },
-      }
-    }
-    if (isBoundaryConnection(connection)) return { ok: true }
-    return validatePipelineConnection(
-      connection,
-      panelGraph.allNodes,
-      panelGraph.edges,
-      submodelsRef.current,
-      useWorkbenchStore.getState().tables,
-    )
-  }, [editingReadOnly, isBoundaryConnection, panelGraph])
-
-  const {
-    onConnect, onSelectionChange, openNode, onNodeClick, handleDeleteEdge,
-    onConnectStart, onConnectEnd, onConnectionPointerMove, clearEdgeJoinCandidate,
-    edgeJoinCandidateEdgeId, onNodeContextMenu, onDragOver, onDrop,
-    connectionDropMenu, closeConnectionDropMenu, createNodeFromConnectionDrop,
-    submodelInputMenu, selectSubmodelInput,
-  } = useEdgeHandlers({
-    selectedNode, graphRef, submodels, nodeIdCounter, lastSelectedNodeRef,
-    setNodes, setEdges, setNodesRaw, setEdgesRaw, pushSnapshot,
-    setSelectedNode, setPreviewData, setContextMenu,
-    setLastSelectedId,
-    fetchPreview,
-    cancelPreview,
-    shouldSkipAutomaticPreview,
-    clearTrace,
-    screenToFlowPosition,
-    graphRefreshingRef,
-    existingSingletonTypes,
-    resolveGraphIdentities: resolveCandidateGraphIdentities,
-    findEdgeIdAtPoint,
-    isPaneAtPoint: isEmptyCanvasAtPoint,
-    validateConnection,
-    commitBoundaryConnection,
-    deleteBoundaryEdge,
-  })
+  const handleZoomIn = useCallback(() => {
+    void zoomIn()
+  }, [zoomIn])
+  const handleZoomOut = useCallback(() => {
+    void zoomOut()
+  }, [zoomOut])
+  const handleCentre = useCallback(() => {
+    void fitView({ padding: 0.15 })
+  }, [fitView])
+  const handleOpenUtility = useCallback(() => {
+    setUtilityOpen(true)
+    setSelectedNode(null)
+    setLastSelectedId(null)
+    lastSelectedNodeRef.current = null
+    setPreviewDataRef.current(null)
+    setContextMenu(null)
+  }, [setUtilityOpen, setSelectedNode, setLastSelectedId, lastSelectedNodeRef, setPreviewDataRef, setContextMenu])
+  const handleOpenConstants = useCallback(() => {
+    setConstantsOpen(true)
+    setSelectedNode(null)
+    setLastSelectedId(null)
+    lastSelectedNodeRef.current = null
+    setPreviewDataRef.current(null)
+    setContextMenu(null)
+  }, [setConstantsOpen, setSelectedNode, setLastSelectedId, lastSelectedNodeRef, setPreviewDataRef, setContextMenu])
+  const handleCloseGit = useCallback(() => {
+    setGitOpen(false)
+  }, [setGitOpen])
+  const handleCloseFiles = useCallback(() => {
+    setFilesPlace(null)
+  }, [setFilesPlace])
+  const handleCloseUtility = useCallback(() => {
+    setUtilityOpen(false)
+  }, [setUtilityOpen])
+  const handleCloseConstants = useCallback(() => {
+    setConstantsOpen(false)
+  }, [setConstantsOpen])
 
   // The workbench prices its sample on the document as it is then: the whole pipeline,
   // even while a submodel is open.
@@ -1732,25 +1801,15 @@ function FlowEditor() {
   const handleSelectRecoveryElement = useCallback((elementId: string) => {
     const node = graphRef.current.nodes.find((candidate) => candidate.id === elementId)
     if (!node) return
-    setSelectedNode(node)
-    setLastSelectedId(node.id)
-    lastSelectedNodeRef.current = node
-    setUtilityOpen(false)
-    setConstantsOpen(false)
-    setGitOpen(false)
-  }, [setGitOpen, setConstantsOpen, setUtilityOpen])
+    activateNode(node)
+  }, [activateNode])
 
   const handleNodeSearchSelect = useCallback((nodeId: string) => {
     const node = graphRef.current.nodes.find((candidate) => candidate.id === nodeId) ?? null
     if (!node) return
-    setSelectedNode(node)
-    setLastSelectedId(node.id)
-    lastSelectedNodeRef.current = node
-    setUtilityOpen(false)
-    setConstantsOpen(false)
-    setGitOpen(false)
+    activateNode(node)
     centreNode(node.id, NODE_SEARCH_FOCUS_ZOOM)
-  }, [centreNode, setGitOpen, setConstantsOpen, setUtilityOpen])
+  }, [activateNode, centreNode])
 
   // A name violation's nodes: those at the root, and the occurrences of a
   // submodel holding the rest. The first is opened as a click would.
@@ -1772,8 +1831,8 @@ function FlowEditor() {
       id: node.id,
       selected: selected.includes(node),
     })))
-    handleSelectRecoveryElement(selected[0].id)
-  }, [handleSelectRecoveryElement, onNodesChange])
+    activateNode(selected[0])
+  }, [activateNode, onNodesChange])
 
   // Point the assistant at a failing node: select it alone, as a click would,
   // and open the panel with its preview error on the next message.
@@ -1841,10 +1900,8 @@ function FlowEditor() {
   useEffect(() => {
     if (!pipelineActive) return
     const handler = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.key !== "Enter") return
-      const el = e.target as HTMLElement | null
-      const tag = el?.tagName
-      if (tag === "INPUT" || tag === "TEXTAREA" || el?.closest?.(".cm-editor")) return
+      if (e.defaultPrevented || !(e.ctrlKey || e.metaKey) || e.key !== "Enter") return
+      if (inModalDialog(e.target) || isFormControl(e.target)) return
       e.preventDefault()
       handlePanelPreviewRefresh()
     }
@@ -1900,16 +1957,16 @@ function FlowEditor() {
           canRedo={canRedo}
           onUndo={undo}
           onRedo={redo}
-          onZoomIn={() => zoomIn()}
-          onZoomOut={() => zoomOut()}
-          onOpenUtility={() => { setUtilityOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
-          onOpenConstants={() => { setConstantsOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
+          onZoomIn={handleZoomIn}
+          onZoomOut={handleZoomOut}
+          onOpenUtility={handleOpenUtility}
+          onOpenConstants={handleOpenConstants}
           submodelAction={selectedSubmodelId === null ? "create" : "dissolve"}
           canRunSubmodelAction={canRunSubmodelAction}
           onSubmodelAction={handleToolbarSubmodelAction}
           canCreateInstance={canCreateInstance}
           onCreateInstance={handleToolbarCreateInstance}
-          onCentre={() => fitView({ padding: 0.15 })}
+          onCentre={handleCentre}
           onAutoLayout={handleAutoLayout}
           isAutoLayouting={isAutoLayouting}
           onSave={requestSave}
@@ -2085,19 +2142,13 @@ function FlowEditor() {
                 onMoveStart={handleActiveNodeMoveStart}
                 onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
                 onNodeMouseLeave={() => setHoveredNodeId(null)}
-                onNodeClick={(event, node) => { setUtilityOpen(false); setConstantsOpen(false); setGitOpen(false); setHoveredNodeId(null); onNodeClick(event, node) }}
+                onNodeClick={(event, node) => { setHoveredNodeId(null); onNodeClick(event, node) }}
                 onNodeContextMenu={editingReadOnly ? undefined : onNodeContextMenu}
                 onNodeDoubleClick={(_event, node) => {
                   if (nodeData(node).nodeType === NODE_TYPES.SUBMODEL) {
-                    const config = nodeData(node).config
-                    if (isSubmodelInstanceConfig(config) && config.instanceOf !== undefined) {
-                      setUtilityOpen(false)
-                      setConstantsOpen(false)
-                      setAssistantOpen(false)
-                      setContextMenu(null)
-                      setRenameDialog(null)
-                      setSubmodelDialog(null)
-                    }
+                    setContextMenu(null)
+                    setRenameDialog(null)
+                    setSubmodelDialog(null)
                     handleDrillIntoSubmodel(node.id)
                   }
                 }}
@@ -2162,10 +2213,10 @@ function FlowEditor() {
           utilityOpen={utilityOpen}
           constantsOpen={constantsOpen}
           assistantOpen={assistantOpen}
-          onCloseGit={() => setGitOpen(false)}
-          onCloseFiles={() => setFilesPlace(null)}
-          onCloseUtility={() => setUtilityOpen(false)}
-          onCloseConstants={() => setConstantsOpen(false)}
+          onCloseGit={handleCloseGit}
+          onCloseFiles={handleCloseFiles}
+          onCloseUtility={handleCloseUtility}
+          onCloseConstants={handleCloseConstants}
           onSave={saveProject}
           preamble={preamble}
           onImportAdded={handleImportAdded}

@@ -139,17 +139,18 @@ function previewPortLabel(
   chosenFrame?: string,
 ): string | undefined {
   const data = nodeData(node)
-  // A Workbench Output's tables are its frames: its preview is of the table last
-  // chosen in it while that is still one of its tables, else of its first.
+  // A Workbench Output's tables, and a request input's, are its frames: its
+  // preview is of the table last chosen in it while that is still one of its
+  // tables, else of its first.
+  let ports: string[]
   if (data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT) {
-    const ports = workbenchNodePorts(data.nodeType, workbench)
-    return chosenFrame !== undefined && ports.includes(chosenFrame) ? chosenFrame : ports[0]
+    ports = workbenchNodePorts(data.nodeType, workbench)
+  } else if (isRequestInputType(data.nodeType)) {
+    ports = requestInputSourceHandles({ id: node.id, data }, workbench)
+  } else {
+    return undefined
   }
-  if (!isRequestInputType(data.nodeType)) return undefined
-  return requestInputSourceHandles({
-    id: node.id,
-    data,
-  }, workbench)[0]
+  return chosenFrame !== undefined && ports.includes(chosenFrame) ? chosenFrame : ports[0]
 }
 
 type ColumnDef = ColumnFingerprintInput[number]
@@ -604,9 +605,11 @@ export default function usePipelineAPI({
     useDocumentStatusStore.getState().loadDocumentStatus(data, false, documentFingerprint)
     // Rules set aside by a Banding type switch last until the pipeline reloads.
     useUIStore.getState().clearBandingRuleStash()
+    const normalizedEdges = normalizeEdges(pipelineEdges)
+    graphRef.current = { nodes: pipelineNodes, edges: normalizedEdges }
     useGraphStore.getState().loadGraphSnapshot({
       nodes: pipelineNodes,
-      edges: normalizeEdges(pipelineEdges),
+      edges: normalizedEdges,
       preamble: loadedPreamble,
       submodels: loadedSubmodels,
       globalConstants: constantDrafts(data.global_constants),
@@ -621,7 +624,7 @@ export default function usePipelineAPI({
       if (data.active_source) useSettingsStore.getState().setActiveSource(data.active_source)
     }
     nodeIdCounterRef.current = computeNextNodeId(pipelineNodes)
-  }, [preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, submodelsRef, nodeIdCounterRef])
+  }, [graphRef, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, submodelsRef, nodeIdCounterRef])
 
   // Initial pipeline load
   useEffect(() => {

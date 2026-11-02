@@ -10,6 +10,7 @@ import {
 } from "../types/node"
 import { SUBMODEL_INPUT_HANDLE } from "../utils/flowHandles"
 import FramePortRows, { DefaultInputPortRow } from "./FramePortRows"
+import { deriveNodeCanvasFlags, NodeTraceValuePill } from "./nodeCanvasStyle"
 import useGraphStore from "../stores/useGraphStore"
 
 const accent = nodeTypeColors.submodel || STRUCTURE_COLORS.fallbackAccent
@@ -53,13 +54,20 @@ function SubmodelNode({
   const loadAvailability = nodeData._loadAvailability ?? "ready"
   const showRecoveryHandles = definitionInvalid && loadAvailability !== "ready"
   const childCount = canonicalDefinition?.graph.nodes.length ?? 0
-  const hasBody = hasInputSocket
+  const {
+    traceActive,
+    traceValue,
+    showTraceValue,
+    containerStyle,
+  } = deriveNodeCanvasFlags(nodeData, {
+    accent,
+    selected,
+    restBorder: "3px dashed var(--border-bright)",
+  })
+  const hasPortOrErrorBody = hasInputSocket
     || outputFrames.length > 0
     || definitionInvalid
-  const traceActive = !!nodeData._traceActive
-  const traceDimmed = !!nodeData._traceDimmed
-  const hoverDimmed = !!nodeData._hoverDimmed
-  const traceMotionDisabled = !!nodeData._traceMotionDisabled
+  const hasBody = hasPortOrErrorBody || showTraceValue
   const updateNodeInternals = useUpdateNodeInternals()
   const portSignature = JSON.stringify([
     inputAnchorIds,
@@ -78,19 +86,7 @@ function SubmodelNode({
       aria-label={`Submodel node: ${nodeData.label}, ${childCount} child nodes${loadAvailability !== "ready" ? `, ${loadAvailability}` : ""}${traceActive ? ", trace active" : ""}`}
       role="button"
       className="relative w-[240px] cursor-pointer rounded-xl"
-      style={{
-        border:
-          traceActive || selected
-            ? `3px solid ${accent}`
-            : "3px dashed var(--border-bright)",
-        boxShadow: traceActive
-          ? `0 0 12px ${accent}40, var(--node-shadow)`
-          : "var(--node-shadow)",
-        opacity: traceDimmed || hoverDimmed ? 0.3 : 1,
-        transition: traceMotionDisabled
-          ? "none"
-          : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
-      }}
+      style={containerStyle}
     >
       <div
         data-testid="submodel-header"
@@ -134,6 +130,13 @@ function SubmodelNode({
 
       {hasBody && (
         <div data-testid="submodel-body" className="px-3 py-2" style={bodyStyle}>
+          {showTraceValue && (
+            <NodeTraceValuePill
+              accent={accent}
+              value={traceValue}
+              className={hasPortOrErrorBody ? "mb-1" : ""}
+            />
+          )}
           {definitionInvalid && (
             <div
               role="alert"

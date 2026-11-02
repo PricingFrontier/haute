@@ -319,7 +319,10 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
    it saves again until no draft is left. A draft a save is already sending is waited for,
    not sent twice, and once that save settles a later save sends it again. Switching files, or to the Imports entry, first awaits `saveDraft(true)`; a
    refused save stops the switch, and the draft plus inline error remain visible until a later
-   save succeeds. The editor reports every change at once (`reportEachChange`), so the draft
+   save succeeds. Text typed in the open file while the next file's read waited is saved the
+   same way before the next file is shown, a refused save keeping the open file; and each
+   selection takes a serial (`selectionSerialRef`), so a file read or save that a newer
+   selection overtook (another file, or the Imports entry) is dropped. The editor reports every change at once (`reportEachChange`), so the draft
    and `utilityUnsaved` hold the text as it is at each keystroke and a close, a switch or a
    save straight after typing takes all of it. Ctrl+S (`hasModifier`, on the open file's
    editor) runs `saveDraft(false)` and prevents the key, so the pipeline's window-level Ctrl+S, which skips a prevented key, does

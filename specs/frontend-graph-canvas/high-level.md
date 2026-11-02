@@ -216,15 +216,20 @@ candidate, with the error toast.
   column, and a valid (non-blank, non-duplicate) raw label — and a long
   name truncates with the full name available as a tooltip. Frame labels
   use the same semibold primary-text typography as node names.
-- **Visual state.** Nodes show: a selection border; a dashed border for
-  submodel instances; a "LIVE" badge on live-switch nodes when the active
-  data source is live; one run-status dot that is green for a clean success,
-  yellow for a successful run with an execution or schema warning, red for an
-  error, and pulsing while running; a standalone yellow warning dot only when
-  schema warnings exist without a completed run status; trace-active/dimmed/
-  hover-dimmed opacity and glow; and, in the read-only comparison view, a
+- **Visual state.** Every node renderer (`PipelineNode`, `SubmodelNode`, and
+  `SubmodelPortNode`) draws every canvas flag from one shared derivation: a
+  selection border; a dashed resting border for submodel occurrences; a "LIVE"
+  badge on live-switch nodes when the active data source is live; one
+  run-status dot that is green for a clean success, yellow for a successful run
+  with an execution or schema warning, red for an error, and pulsing while
+  running; a standalone yellow warning dot only when schema warnings exist
+  without a completed run status; trace-active glow and border, trace/hover-dimmed
+  opacity (`0.25`), trace/change focus ring (`_traceFocused` / `_changeFocused`),
+  and the active `_traceValue` pill; and, in the read-only comparison view, a
   diff ring (solid glow for added/removed/changed, dashed outline for
-  moved-only). Edge-join status and warning dots stay within the visible
+  moved-only). An unknown `nodeType` reached by `PipelineNode` renders the
+  unavailable card (`UnavailablePipelineNode`) rather than falling back to a
+  Transform card. Edge-join status and warning dots stay within the visible
   marker ellipse.
 - **Submodel nodes** use the same opaque card, full-width coloured header,
   and frame-row presentation as a full-detail API-input node. The header
@@ -282,7 +287,7 @@ candidate, with the error toast.
   non-history path. A whole-document load is a distinct atomic transition: it
   installs all four persisted fields, establishes that exact snapshot as the
   saved baseline, clears undo and redo, and advances cache/context versions
-  monotonically. Undo/redo restores all four graph fields together and retains
+  monotonically. Undo/redo restores all four graph fields and the global constants together and retains
   transient server-owned editor identities required by the live graph; Save
   payloads and dirty fingerprints omit those identities.
 - **Save waits for committed editor work.** A blur-triggered node update or
@@ -337,8 +342,10 @@ candidate, with the error toast.
   no-op for singleton node types (the request inputs, Quote Input and Workbench Input,
   which share one slot, and the response nodes, Quote Response and Workbench Output, which
   share another). Generic Duplicate is unavailable for a submodel occurrence,
-  and the handler directs callers to Create Instance. The palette, duplicate,
-  paste, instance, and context-menu paths consume the same singleton metadata,
+  and the handler directs callers to Create Instance; paste skips a copied
+  occurrence with the same direction, and skips submodel boundary cards. The
+  palette, duplicate, paste, instance, and context-menu paths consume the same
+  singleton metadata,
   matching the backend save invariant. Create Instance also refuses a Data Output (two writers to one destination) and a Source
   Switch, which routes by its own input names; the instance guard lives in the shared
   handler rather than in each caller's enabled-state check, so a new entry
@@ -356,8 +363,10 @@ candidate, with the error toast.
   owner (or an occurrence with malformed identity) is refused on every one of
   those surfaces with a visible explanation, because it anchors the shared
   definition; "Dissolve Submodel" is its only removal path. A mixed keyboard
-  selection spares owners with an explanatory toast while the rest of the
-  selection still deletes; canvas-native deletion never includes an owner
+  selection of nodes and edges removes the eligible selected nodes, their
+  incident edges, and any separately selected edges in one undoable graph
+  transaction while preserving unrelated unselected edges, and spares owners
+  with an explanatory toast while the rest of the selection still deletes; canvas-native deletion never includes an owner
   because owners are stamped non-deletable, and React Flow preserves the
   edges of nodes it does not delete. An explicitly selected boundary edge
   remains deletable — removing a binding is an ordinary edit.
@@ -366,7 +375,14 @@ candidate, with the error toast.
   land. It arranges the graph left-to-right with crossing reduction and straight
   branch continuations, accounting for measured card sizes and visible connection
   points (including named frame outputs and join inputs). It changes positions
-  only. Layout before nodes mount uses estimated dimensions and unconstrained
+  only: when ELK finishes, the computed coordinates are merged onto the live
+  nodes by id (preserving any node data, config, label, selection, or measurement
+  changes made while layout ran, and replacing concurrent position changes) only
+  while the initiating document, submodel navigation scope, and graph topology
+  (node ids/origins and edge endpoints/handles) remain current; if a node or
+  edge was added, deleted, or rewired, or the document or submodel view changed,
+  the obsolete layout is rejected with an informational toast without mutating
+  the graph, pushing history, or fitting the view. Layout before nodes mount uses estimated dimensions and unconstrained
   connection points; invalid layout output fails without applying partial positions.
   Node-cache cleanup for an ordinary deleted node is deferred one task
   tick past the graph mutation so no component reads a torn state in the same
@@ -498,8 +514,8 @@ candidate, with the error toast.
   current source and row limit — or the empty "Refresh to preview" state —
   and sends nothing; a moved node-data epoch does not refetch it; the header
   marks a shown result "Out of date" once the structural version or epoch has
-  moved past it. Refresh, or Ctrl/Cmd+Enter outside a text field, calculates
-  in either mode.
+  moved past it. Refresh, or Ctrl/Cmd+Enter outside a form control or modal
+  dialog, calculates in either mode.
 - **Preview fetching.** Selecting or refreshing a node debounces, then
   fetches its preview; a cache hit for the same structural version, source,
   and row limit paints instantly and skips the network call, otherwise
@@ -549,15 +565,42 @@ candidate, with the error toast.
   node type and `{definitionId, alias}` config, loads the shared definition by
   definition id, verifies any returned identity, and builds boundary nodes from
   that definition's structured ports and the selected occurrence's parent
-  bindings. Load, projection, and ELK layout must all finish before the view
+  bindings. Pending drill-in is bound to the initiating document, source file
+  and revision, navigation stack, occurrence identity, and graph/submodel
+  snapshot; it is invalidated by a document reload, another navigation or
+  transform request, any parent graph or submodel change, or loss of submodel
+  management capability, and rechecked after identity resolution and again
+  immediately before committing the child nodes/edges, source path, parent
+  snapshot, and view stack together. If the request has been superseded, it
+  returns without mutating the current graph, source path, or navigation stack.
+  The view keeps the definition's authored child positions; only the two
+  boundary cards are placed, the Input card left of the children and the Output
+  card right of them, so a visit that edits nothing changes nothing in the
+  document. Projection and identity resolution must both finish before the view
   stack, graph, source-file refs, or selection mutate; any failure leaves the
   parent view byte-for-byte unchanged and reports one error toast. A successful
   frame records both `instanceId` and `definitionId`, so two occurrences of one
   definition navigate and return independently, and announces when edits affect
-  more than one occurrence. Breadcrumb navigation restores the exact saved
-  node/edge state for any ancestor level rather than re-fetching it, using the
-  backend's recorded submodel file instead of reconstructing a path from a
-  display label.
+  more than one occurrence. Drilling into any occurrence, original or read-only
+  instance, and returning by breadcrumb both close the side panels (Utility,
+  Constants, Assistant, Git, Files), clear the selection, cancel any in-flight
+  preview or trace request, and clear the preview and trace on show. Returning
+  restores the source file recorded on entry, never a path reconstructed from a
+  display label. Submodels do not nest: the graph store refuses a second view
+  while one is open, so every breadcrumb below the active one is the main
+  pipeline.
+- **A submodel view has its own Undo/Redo history.** The graph store swaps the
+  canvas for the child view in one transition that sets the root's undo and redo
+  stacks aside and starts the view with empty ones, so Undo in the view never
+  reaches a root edit. The view is clean exactly when it is unchanged and the root
+  it came from was saved: a save begun at the root that lands while drilled makes
+  the view clean only if it saved the root that was entered. Returning by
+  breadcrumb restores the reconciled parent graph and submodels held for the
+  view, rather than re-fetching them, together with the root's stacks; when the
+  visit changed the document, the root as it was on entry becomes one undo entry
+  (and the redo stack is cleared), so one Undo at the root reverts the whole visit
+  and never puts `submodel_port` cards on the root canvas. A whole-document load
+  ends an open view, keeping only version-control entries from both levels.
 - **Submodel creation is a toolbar action or a keyboard shortcut, not a
   context-menu item.** Selecting two or more nodes and either pressing Ctrl+G
   or clicking the toolbar's Submodel button opens `SubmodelDialog` for the
@@ -632,11 +675,16 @@ candidate, with the error toast.
 
 - **Selector isolation is a hard contract**, not a convention: `useGraphStore`
   consumers must subscribe via selectors (`useGraphStore((s) => s.nodes)`),
-  never the whole store. This exists because React Flow drag events replay
-  many `position` changes per animation frame; a whole-store subscription
-  would re-render every consumer on every frame of every drag. A dedicated
-  "selector isolation (reviewer gate)" test block enforces this by render
-  count.
+  never the whole store, and `FlowEditor` memoises its chrome children
+  (`Toolbar`, `NodePropertiesPanel`/`NodePanel`, and `ActiveNodePreview`/
+  `DataPreview`) with stable callbacks so mid-drag position updates do not
+  re-render the toolbar, inspector, or preview table on every drag frame
+  (rendering at most once per drag, when `canUndo`/`canRedo` flips on the
+  first drag frame). This exists because React Flow drag events replay
+  many `position` changes per animation frame; a whole-store subscription or
+  unmemoised chrome props would re-render every consumer on every frame of
+  every drag. Dedicated selector-isolation and drag render-count tests enforce
+  this by render count.
 - **History-aware vs raw actions** exist to keep undo granularity at the
   gesture level. A raw path lets a 60fps drag update node positions without
   ballooning undo to one entry per pixel; a history-aware path snapshots
@@ -832,24 +880,14 @@ candidate, with the error toast.
 
 ## Failure model
 
-> NOTE: A blocked node after an unavailable source can currently throw during
-> healthy-editor input derivation before its recovery inspector renders.
-> [FGC-R09](../roadmap/frontend-graph-canvas.md#fgc-r09--recovery-inspection-does-not-require-executable-input-identities) owns the recovery boundary.
+> NOTE: Distinct parsed or pasted connections can share an id.
+> [NAME-10](../roadmap/name-collisions.md#name-10--every-distinct-connection-has-a-distinct-identity) owns this gap.
 
-> NOTE: Utility navigation can discard a draft typed during a pending read if its
-> later autosave fails, and late reads can steal a newer selection.
-> [FGC-R08](../roadmap/frontend-graph-canvas.md#fgc-r08--utility-navigation-preserves-drafts-across-pending-reads) owns draft and navigation identity.
-
-> NOTE: Distinct parsed or pasted connections can share an id; pending submodel drill-in
-> can replace a newer document; mixed node/edge Delete omits unrelated selected edges.
-> [NAME-10](../roadmap/name-collisions.md#name-10--every-distinct-connection-has-a-distinct-identity),
-> [FGC-R06](../roadmap/frontend-graph-canvas.md#fgc-r06--pending-submodel-navigation-belongs-to-its-document) and
-> [FGC-R07](../roadmap/frontend-graph-canvas.md#fgc-r07--delete-removes-the-complete-eligible-selection) own these gaps.
-
-> NOTE: Auto-layout replaces nodes with the snapshot it started from, so edits
-> made while ELK runs can be lost. Applying only current, authorised geometry is
-> tracked in [FGC-R05](../roadmap/frontend-graph-canvas.md#fgc-r05--auto-layout-cannot-overwrite-edits).
-
+- `NodePanel` separates the recovery diagnostic boundary from healthy editor input-identity
+  derivation: inspecting an `unavailable` node, or a `blocked` node that is not actively
+  scoped-editing with resolvable upstream input identities, renders `RecoveryNodePanel`
+  before mounting `NodePanelContent`, while `ready` nodes and mounted `scoped_editable`
+  editors enforce strict `edgeInputName` validation.
 - `useGraph()` called outside a `<GraphProvider>` throws a plain `Error`
   naming `GraphProvider` in its message. `App.tsx` wraps the node panel in
   an `ErrorBoundary` (`name="NodePanel"`), so this surfaces as a caught

@@ -21,7 +21,11 @@ type PortPropsData = Partial<SubmodelPortData> & {
   portName?: string
 }
 
-function makeProps(data: PortPropsData, isConnectable = true) {
+function makeProps(
+  data: PortPropsData,
+  isConnectable = true,
+  selected = false,
+) {
   const { portName, ...typedData } = data
   const fallbackFrameLabel = portName || data.label || "frame"
   const fullData: SubmodelPortData = {
@@ -41,7 +45,7 @@ function makeProps(data: PortPropsData, isConnectable = true) {
     id: "test-port-node",
     type: "submodelPort",
     data: fullData,
-    selected: false,
+    selected,
     isConnectable,
     positionAbsoluteX: 0,
     positionAbsoluteY: 0,
@@ -56,8 +60,12 @@ function makeProps(data: PortPropsData, isConnectable = true) {
   }
 }
 
-function renderPortNode(data: PortPropsData, isConnectable = true) {
-  const props = makeProps(data, isConnectable)
+function renderPortNode(
+  data: PortPropsData,
+  isConnectable = true,
+  selected = false,
+) {
+  const props = makeProps(data, isConnectable, selected)
   return render(
     <ReactFlowProvider>
       <SubmodelPortNode {...(props as unknown as NodeProps<SubmodelPortFlowNode>)} />
@@ -143,8 +151,17 @@ describe("SubmodelPortNode", () => {
       _traceDimmed: true,
     })
     const wrapper = screen.getByTestId("submodel-boundary-card")
-    expect(wrapper.style.opacity).toBe("0.3")
+    expect(wrapper.style.opacity).toBe("0.25")
     expect(container).toContainElement(wrapper)
+  })
+
+  it("reduces opacity when _hoverDimmed is true", () => {
+    renderPortNode({
+      portDirection: "input",
+      portName: "hover_dimmed",
+      _hoverDimmed: true,
+    })
+    expect(screen.getByTestId("submodel-boundary-card").style.opacity).toBe("0.25")
   })
 
   it("has full opacity when _traceDimmed is false", () => {
@@ -165,6 +182,32 @@ describe("SubmodelPortNode", () => {
     const wrapper = screen.getByTestId("submodel-boundary-card")
     expect(wrapper.style.border).toContain("solid")
     expect(wrapper.style.border).not.toContain("dashed")
+  })
+
+  it("draws the solid accent selection border when selected", () => {
+    renderPortNode(
+      { portDirection: "input", portName: "selected_port" },
+      true,
+      true,
+    )
+    const wrapper = screen.getByTestId("submodel-boundary-card")
+    expect(wrapper.getAttribute("style") || "").not.toContain("color-mix")
+    expect(wrapper.style.border).toContain("3px solid")
+  })
+
+  it("draws diff ring, focus ring, and trace value on a boundary card", () => {
+    renderPortNode({
+      portDirection: "input",
+      portName: "flagged_port",
+      _diffStatus: "added",
+      _changeFocused: true,
+      _traceActive: true,
+      _traceValue: 99.5,
+    })
+    const wrapper = screen.getByTestId("submodel-boundary-card")
+    expect(wrapper.style.boxShadow).toContain("var(--diff-added)")
+    expect(wrapper.style.boxShadow).toContain("0 0 0 3px var(--accent)")
+    expect(screen.getByText("99.5")).toBeInTheDocument()
   })
 
   it("disables trace motion transitions when requested by the tracing hook", () => {

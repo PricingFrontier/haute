@@ -537,4 +537,76 @@ describe("useGraphStore structuralVersion", () => {
 
     expect(useGraphStore.getState().structuralVersion).toBe(afterChange)
   })
+
+  describe("submodels", () => {
+    const definition = (children: Node[], inputPorts: unknown[] = []) => ({
+      definition: {
+        definitionId: "definition",
+        file: "modules/definition.py",
+        inputPorts,
+        outputPorts: [],
+        graph: { nodes: children, edges: [] },
+      },
+    })
+
+    beforeEach(() => {
+      useGraphStore.getState().resetForTests()
+      useGraphStore.getState().loadGraphSnapshot({
+        nodes: [makeNode("occurrence", "submodel")],
+        edges: [],
+        preamble: "",
+        submodels: definition([makeNode("child")]),
+      })
+    })
+
+    it("advances on a definition's child graph or ports, not on preview results written into it", () => {
+      const store = () => useGraphStore.getState()
+      const start = store().structuralVersion
+
+      act(() => store().setSubmodelsRaw(definition([makeNode("child"), makeNode("child2")])))
+      expect(store().structuralVersion).toBe(start + 1)
+
+      act(() => store().setSubmodelsRaw(definition([makeNode("child"), makeNode("child2")], [{ name: "quotes" }])))
+      expect(store().structuralVersion).toBe(start + 2)
+
+      const withColumns = makeNode("child2", "polars", { data: { _columns: [{ name: "premium", dtype: "f64" }] } })
+      act(() => store().setSubmodelsRaw(definition([makeNode("child"), withColumns], [{ name: "quotes" }])))
+      expect(store().structuralVersion).toBe(start + 2)
+    })
+
+    it("hashes a definition child without node data rather than failing the edit", () => {
+      const store = () => useGraphStore.getState()
+      const start = store().structuralVersion
+      const bare = { id: "bare" } as unknown as Node
+
+      act(() => store().setSubmodelsRaw(definition([makeNode("child"), bare])))
+
+      expect(store().structuralVersion).toBe(start + 1)
+    })
+
+    it("advances when Undo restores only a definition", () => {
+      const store = () => useGraphStore.getState()
+      act(() => store().setNodesAndEdgesAndSubmodels(store().nodes, [], definition([makeNode("child"), makeNode("child2")])))
+      const edited = store().structuralVersion
+
+      act(() => store().undo())
+
+      expect(store().structuralVersion).toBe(edited + 1)
+    })
+
+    it("advances both versions when a boundary card's ports change", () => {
+      const store = () => useGraphStore.getState()
+      const card = (ports: unknown[]) => makeNode("input", "submodelPort", {
+        data: { label: "INPUT", portDirection: "input", ports },
+      })
+      act(() => store().setNodes([card([{ id: "quotes", label: "quotes" }])]))
+      const structural = store().structuralVersion
+      const panel = store().panelContextVersion
+
+      act(() => store().setNodes([card([{ id: "quotes", label: "quotes" }, { id: "claims", label: "claims" }])]))
+
+      expect(store().structuralVersion).toBe(structural + 1)
+      expect(store().panelContextVersion).toBe(panel + 1)
+    })
+  })
 })

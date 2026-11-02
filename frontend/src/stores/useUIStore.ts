@@ -79,6 +79,8 @@ interface UIState {
   /** The place the Files panel shows, or null while it is closed. */
   filesPlace: ProjectFilePlace | null
   setFilesPlace: (place: ProjectFilePlace | null) => void
+  /** Close all five mutually exclusive side panes in one store update. */
+  closeSidePanes: () => void
   shortcutsOpen: boolean
   setShortcutsOpen: (open: boolean | ((prev: boolean) => boolean)) => void
   /** MLflow tracking-settings dialog — an overlay like shortcuts, outside
@@ -225,6 +227,7 @@ const useUIStore = create<UIState>()((set, get) => ({
   setGitOpen: (open) => set((s) => leavingUtility(s, { gitOpen: open, utilityOpen: false, constantsOpen: false, assistantOpen: false, filesPlace: null })),
   filesPlace: null,
   setFilesPlace: (place) => set((s) => leavingUtility(s, { filesPlace: place, utilityOpen: false, constantsOpen: false, assistantOpen: false, gitOpen: false })),
+  closeSidePanes: () => set((s) => leavingUtility(s, { utilityOpen: false, constantsOpen: false, assistantOpen: false, gitOpen: false, filesPlace: null })),
   mlflowSettingsOpen: false,
   setMlflowSettingsOpen: (open) => set({ mlflowSettingsOpen: open }),
   shortcutsOpen: false,

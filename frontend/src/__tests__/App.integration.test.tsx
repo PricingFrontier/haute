@@ -1064,7 +1064,8 @@ describe("App integration - load a pipeline with nodes", () => {
     }
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [producer, stepped],
-      edges: [{ id: "e1", source: "prod", target: "t", sourceHandle: "output_1", targetHandle: null }],
+      // The server names the executable input of the edge it sends.
+      edges: [{ id: "e1", source: "prod", target: "t", sourceHandle: "output_1", targetHandle: null, data: { _inputName: "Model" } }],
       source_revision: "revision-test",
     }))
     render(<App />)
@@ -3546,3 +3547,120 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     }
   })
 })
+
+describe("App integration - selection activation and Ctrl+Enter target guards (FGC-R01)", () => {
+  it("selecting a node from Node Search in Automatic calculation fetches its preview and closes side panes", async () => {
+    const node = makeNode("polars_1", "Feature Cleanup", "polars")
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [node],
+      edges: [],
+      source_revision: "revision-search",
+    }))
+    render(<App />)
+    await waitForAppReady()
+
+    act(() => {
+      useUIStore.getState().setConstantsOpen(true)
+    })
+    expect(useUIStore.getState().constantsOpen).toBe(true)
+    vi.mocked(api.previewNode).mockClear()
+
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true })
+    const searchDialog = await screen.findByTestId("node-search-dialog", {}, { timeout: 10_000 })
+    const searchInput = within(searchDialog).getByRole("combobox", { name: "Search nodes" })
+    fireEvent.keyDown(searchInput, { key: "Enter" })
+
+    await waitFor(() => {
+      expect(vi.mocked(api.previewNode)).toHaveBeenCalledWith(
+        expect.objectContaining({ nodeId: "polars_1" }),
+      )
+    })
+    expect(useUIStore.getState().constantsOpen).toBe(false)
+  })
+
+  it("selecting a ready node from the recovery banner in Automatic calculation fetches its recovery preview", async () => {
+    const readyNode = makeNode("ready_1", "Ready Transform", "polars")
+    const brokenNode = makeNode("broken_1", "Broken Node", "polars")
+    brokenNode.data._loadAvailability = "unavailable"
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      load_status: "degraded",
+      source_file: "rating/main.py",
+      source_revision: "revision-degraded",
+      nodes: [readyNode, brokenNode],
+      edges: [],
+      capabilities: { can_preview: true },
+      diagnostics: [{
+        diagnostic_id: "diag_ready",
+        code: "node_warning",
+        severity: "warning",
+        scope: "node",
+        message: "Inspect Ready Transform",
+        element_id: "ready_1",
+        source_file: "rating/main.py",
+        source_span: { start_line: 12, start_column: 1, end_line: 12, end_column: 10 },
+        remediation: null,
+        incident_id: null,
+      }],
+    }))
+    vi.mocked(api.previewRecoveryNode).mockClear()
+
+    render(<App />)
+    await waitForAppReady()
+
+    const banner = await screen.findByTestId("pipeline-recovery-banner")
+    fireEvent.click(within(banner).getByRole("button", { name: /Inspect Ready Transform/i }))
+
+    await waitFor(() => {
+      expect(vi.mocked(api.previewRecoveryNode)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sourceFile: "rating/main.py",
+          sourceRevision: "revision-degraded",
+          targetRecoveryId: "ready_1",
+        }),
+      )
+    })
+  })
+
+  it("Ctrl+Enter ignores a focused select or open modal dialog, while a focused checkbox still refreshes", async () => {
+    const node = makeNode("polars_1", "Feature Cleanup", "polars")
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [node],
+      edges: [],
+      source_revision: "revision-refresh",
+    }))
+    render(<App />)
+    await waitForAppReady()
+
+    fireEvent.click(await screen.findByTestId("rf__node-polars_1"))
+    await waitFor(() => expect(vi.mocked(api.previewNode)).toHaveBeenCalledTimes(1))
+    vi.mocked(api.previewNode).mockClear()
+
+    const selectEl = document.createElement("select")
+    const checkboxEl = document.createElement("input")
+    checkboxEl.type = "checkbox"
+    const dialogEl = document.createElement("div")
+    dialogEl.setAttribute("role", "dialog")
+    dialogEl.setAttribute("aria-modal", "true")
+    const dialogButton = document.createElement("button")
+    dialogEl.appendChild(dialogButton)
+    document.body.append(selectEl, checkboxEl, dialogEl)
+
+    try {
+      selectEl.focus()
+      fireEvent.keyDown(selectEl, { key: "Enter", ctrlKey: true })
+      dialogButton.focus()
+      fireEvent.keyDown(dialogButton, { key: "Enter", ctrlKey: true })
+      await act(() => new Promise<void>((resolve) => { setTimeout(resolve, 50) }))
+      expect(vi.mocked(api.previewNode)).not.toHaveBeenCalled()
+
+      checkboxEl.focus()
+      fireEvent.keyDown(checkboxEl, { key: "Enter", ctrlKey: true })
+      await waitFor(() => expect(vi.mocked(api.previewNode)).toHaveBeenCalledTimes(1))
+    } finally {
+      selectEl.remove()
+      checkboxEl.remove()
+      dialogEl.remove()
+    }
+  })
+})
+

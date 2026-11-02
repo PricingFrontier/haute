@@ -4,6 +4,7 @@ import { ArrowRight } from "lucide-react"
 import { STRUCTURE_COLORS } from "../theme/colors"
 import type { SubmodelPortFlowNode } from "../types/node"
 import FramePortRows, { DefaultInputPortRow } from "./FramePortRows"
+import { deriveNodeCanvasFlags, NodeTraceValuePill } from "./nodeCanvasStyle"
 
 const portColor = STRUCTURE_COLORS.port
 const headerInset = {
@@ -22,6 +23,7 @@ const bodyStyle = {
 function SubmodelPortNode({
   id,
   data: nodeData,
+  selected,
 }: NodeProps<SubmodelPortFlowNode>) {
   if (
     nodeData.portDirection !== "input" &&
@@ -36,9 +38,15 @@ function SubmodelPortNode({
   }
 
   const isInput = nodeData.portDirection === "input"
-  const traceActive = !!nodeData._traceActive
-  const traceDimmed = !!nodeData._traceDimmed
-  const traceMotionDisabled = !!nodeData._traceMotionDisabled
+  const {
+    traceValue,
+    showTraceValue,
+    containerStyle,
+  } = deriveNodeCanvasFlags(nodeData, {
+    accent: portColor,
+    selected,
+    restBorder: `3px solid color-mix(in srgb, ${portColor} 35%, var(--bg-canvas))`,
+  })
   const updateNodeInternals = useUpdateNodeInternals()
   const portSignature = JSON.stringify(nodeData.ports.map((port) => port.id))
 
@@ -52,18 +60,7 @@ function SubmodelPortNode({
       aria-label={`Submodel ${nodeData.portDirection} boundary`}
       role="group"
       className="relative w-[240px] cursor-pointer rounded-xl"
-      style={{
-        border: traceActive
-          ? `3px solid ${portColor}`
-          : `3px solid color-mix(in srgb, ${portColor} 35%, var(--bg-canvas))`,
-        boxShadow: traceActive
-          ? `0 0 12px ${portColor}40, var(--node-shadow)`
-          : "var(--node-shadow)",
-        opacity: traceDimmed ? 0.3 : 1,
-        transition: traceMotionDisabled
-          ? "none"
-          : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
-      }}
+      style={containerStyle}
     >
       <div
         className="flex items-center gap-2 px-3 py-1.5"
@@ -87,6 +84,9 @@ function SubmodelPortNode({
       </div>
 
       <div className="px-3 py-2" style={bodyStyle}>
+        {showTraceValue && (
+          <NodeTraceValuePill accent={portColor} value={traceValue} className="mb-1" />
+        )}
         {isInput ? (
           nodeData.ports.length > 0 ? (
             <FramePortRows

@@ -234,6 +234,8 @@ function technicalDetail(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+const IDLE_TRACE_STATE: TraceRequestState = { status: "idle" }
+
 export default function useTracing({
   nodes, edges, submodels, selectedNode,
   graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef,
@@ -257,8 +259,12 @@ export default function useTracing({
   const traceMotionLite = prefersReducedMotion || shouldUseLiteGraphEffects(nodes.length, edges.length)
   const [storedTraceResult, setStoredTraceResult] = useState<TraceResult | null>(null)
   const [storedTracedCell, setStoredTracedCell] = useState<{ rowIndex: number; column: string } | null>(null)
-  const [storedTraceState, setStoredTraceState] = useState<TraceRequestState>({ status: "idle" })
+  const [storedTraceState, setStoredTraceState] = useState<TraceRequestState>(IDLE_TRACE_STATE)
   const [storedSemanticContextToken, setStoredSemanticContextToken] = useState<object | null>(null)
+  const nodesRef = useRef(nodes)
+  useEffect(() => {
+    nodesRef.current = nodes
+  }, [nodes])
   const traceRequestSeq = useRef(0)
   const traceAbort = useRef<AbortController | null>(null)
   const progressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -289,7 +295,7 @@ export default function useTracing({
     setStoredSemanticContextToken(null)
     setStoredTraceResult(null)
     setStoredTracedCell(null)
-    setStoredTraceState({ status: "idle" })
+    setStoredTraceState(IDLE_TRACE_STATE)
   }, [])
 
   // What a 409's recovery notice belongs to. The preview refresh it starts
@@ -334,7 +340,7 @@ export default function useTracing({
   const tracedCell = traceContextIsCurrent ? storedTracedCell : null
   const traceState: TraceRequestState = traceContextIsCurrent
     ? storedTraceState
-    : { status: "idle" }
+    : IDLE_TRACE_STATE
 
   useEffect(() => {
     if (
@@ -409,7 +415,7 @@ export default function useTracing({
       graph,
       row_index: rowIndex,
       target_node_id: output?.nodeId ?? runtimeNodeIdForVisibleNode(
-        nodes,
+        nodesRef.current,
         selectedNode.id,
         activeSubmodelIdentity,
       ),
@@ -438,7 +444,7 @@ export default function useTracing({
           activeRequestContext.current = null
           setStoredTraceResult(null)
           setStoredTracedCell(null)
-          setStoredTraceState({ status: "idle" })
+          setStoredTraceState(IDLE_TRACE_STATE)
           return
         }
         if (progressTimer.current) clearTimeout(progressTimer.current)
@@ -460,7 +466,7 @@ export default function useTracing({
           activeRequestContext.current = null
           setStoredTraceResult(null)
           setStoredTracedCell(null)
-          setStoredTraceState({ status: "idle" })
+          setStoredTraceState(IDLE_TRACE_STATE)
           return
         }
         if (progressTimer.current) clearTimeout(progressTimer.current)
@@ -486,7 +492,7 @@ export default function useTracing({
           traceAbort.current = null
         }
       })
-  }, [selectedNode, nodes, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, rowLimit, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan, previewFrame, previewOutputHandle])
+  }, [selectedNode, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, rowLimit, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan, previewFrame, previewOutputHandle])
 
   const handleCellClick = startTrace
   const cancelTrace = clearTrace

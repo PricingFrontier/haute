@@ -9,7 +9,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Loader2, RefreshCw, RotateCcw, TriangleAlert, X } from "lucide-react"
 
 import CacheStoreSize from "./CacheStoreSize"
+import { CommittedTextField } from "./form"
 import ModalShell from "./ModalShell"
+import ToggleButtonGroup from "./ToggleButtonGroup"
 import { clearCacheIdentities, fetchCacheNodes } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
 import type { CacheNodeEntry, CacheNodesResponse } from "../api/types"
@@ -265,50 +267,33 @@ function PipelineSettingField({
   const automatic = loaded?.automatic[settingKey] ?? null
   const shown = set ?? automatic
   const shownText = loaded === null || shown === null ? "" : formatFigure(shown)
-  // A local draft while typing; committed on blur/Enter, never per keystroke.
-  // It follows the store when the shown value changes from outside a
-  // keystroke (a load, a save's response) — the "adjusting state" pattern.
-  const [draft, setDraft] = useState(shownText)
-  const [prevShownText, setPrevShownText] = useState(shownText)
-  if (shownText !== prevShownText) {
-    setPrevShownText(shownText)
-    setDraft(shownText)
-  }
   const id = `pipeline-settings-${settingKey.replace(/_/g, "-")}`
   const unavailable = loaded === null || disabled
 
-  const commit = useCallback(() => {
-    const raw = draft.trim()
+  const commit = useCallback((next: string) => {
+    const raw = next.trim()
     if (raw === shownText) return
     if (raw === "") {
       if (set !== null) void save(settingKey, null)
-      else setDraft(shownText)
       return
     }
     const parsed = Number(raw)
     const value = Number.isFinite(parsed) ? PARSERS[settingKey](parsed) : null
-    if (value === null || formatFigure(value) === shownText) {
-      setDraft(shownText)
-      return
-    }
+    if (value === null || formatFigure(value) === shownText) return
     void save(settingKey, value)
-  }, [draft, save, set, settingKey, shownText])
+  }, [save, set, settingKey, shownText])
 
   return (
     <NumberSetting id={id} label={label} hint={hint}>
       <div className="flex items-center gap-1.5 shrink-0">
-        <input
+        <CommittedTextField
           id={id}
           data-testid={id}
           type="number"
-          value={draft}
+          value={shownText}
           placeholder={loaded !== null && shown === null ? "No limit" : undefined}
           disabled={unavailable}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") commit()
-          }}
+          onCommit={commit}
           className={NUMBER_INPUT_CLASS}
           style={NUMBER_INPUT_STYLE}
         />
@@ -480,74 +465,34 @@ function TimeLimitSettings() {
   )
 }
 
-const CALCULATION_MODES: { mode: CalculationMode; label: string; hint: string }[] = [
+const CALCULATION_MODES: { key: CalculationMode; label: string; hint: string; testId: string }[] = [
   {
-    mode: "automatic",
+    key: "automatic",
     label: "Automatic",
     hint: "Clicking a node calculates its preview.",
+    testId: "calculation-mode-automatic",
   },
   {
-    mode: "manual",
+    key: "manual",
     label: "Manual",
     hint: "Clicking a node shows its last result. Press Refresh (Ctrl+Enter) to calculate.",
+    testId: "calculation-mode-manual",
   },
 ]
 
 function CalculationSettings() {
   const calculationMode = useUIStore((s) => s.calculationMode)
   const setCalculationMode = useUIStore((s) => s.setCalculationMode)
-  const groupRef = useRef<HTMLDivElement>(null)
-
-  // Radio-group keyboard contract: one tab stop, arrows move and select.
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    const step = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1
-      : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1
-      : 0
-    if (step === 0) return
-    e.preventDefault()
-    const index = CALCULATION_MODES.findIndex((m) => m.mode === calculationMode)
-    const next = (index + step + CALCULATION_MODES.length) % CALCULATION_MODES.length
-    setCalculationMode(CALCULATION_MODES[next].mode)
-    groupRef.current?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus()
-  }
 
   return (
-    <div
-      ref={groupRef}
-      role="radiogroup"
-      aria-label="Calculation"
-      onKeyDown={onKeyDown}
-      className="grid grid-cols-2 gap-2"
-      data-testid="pipeline-settings-calculation"
-    >
-      {CALCULATION_MODES.map(({ mode, label, hint }) => {
-        const selected = calculationMode === mode
-        return (
-          <button
-            key={mode}
-            type="button"
-            role="radio"
-            aria-checked={selected}
-            tabIndex={selected ? 0 : -1}
-            data-testid={`calculation-mode-${mode}`}
-            onClick={() => setCalculationMode(mode)}
-            className="flex flex-col items-start gap-0.5 rounded-lg px-2.5 py-2 text-left transition-colors"
-            style={{
-              background: selected ? "var(--accent-soft)" : "var(--bg-elevated)",
-              border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
-            }}
-          >
-            <span
-              className="text-[12px] font-medium"
-              style={{ color: selected ? "var(--text-accent)" : "var(--text-primary)" }}
-            >
-              {label}
-            </span>
-            <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>{hint}</span>
-          </button>
-        )
-      })}
-    </div>
+    <ToggleButtonGroup
+      ariaLabel="Calculation"
+      testId="pipeline-settings-calculation"
+      value={calculationMode}
+      onChange={setCalculationMode}
+      accentColor="var(--accent)"
+      options={CALCULATION_MODES}
+    />
   )
 }
 

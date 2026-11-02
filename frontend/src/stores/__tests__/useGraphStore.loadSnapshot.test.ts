@@ -69,7 +69,7 @@ describe("useGraphStore loadGraphSnapshot", () => {
     expect(state.persistedFingerprint).toBe(serializeSnapshot(loaded))
     expect(state.savedPersistedFingerprint).toBe(state.persistedFingerprint)
     expect(state.structuralFingerprint).toBe(
-      computeStructuralFingerprint(loaded.nodes, loaded.edges, loaded.preamble),
+      computeStructuralFingerprint(loaded.nodes, loaded.edges, loaded.preamble, [], loaded.submodels),
     )
     expect(state.panelContextFingerprint).toBe(
       computePanelContextFingerprint(loaded.nodes, loaded.edges),
@@ -104,7 +104,7 @@ describe("useGraphStore loadGraphSnapshot", () => {
     })
 
     const state = useGraphStore.getState()
-    expect(state.structuralFingerprint).toBe(before.structuralFingerprint)
+    expect(state.structuralFingerprint).not.toBe(before.structuralFingerprint)
     expect(state.panelContextFingerprint).toBe(before.panelContextFingerprint)
     expect(state.structuralVersion).toBe(before.structuralVersion + 1)
     expect(state.panelContextVersion).toBe(before.panelContextVersion + 1)
@@ -181,18 +181,37 @@ describe("useGraphStore global constants", () => {
     expect(useGraphStore.getState().dirty).toBe(false)
   })
 
-  it("undo and redo of a graph edit leave the constants alone", () => {
+  it("undo and redo restore the constants each step recorded, with the graph", () => {
     useGraphStore.getState().loadGraphSnapshot({ ...snapshot("a", "", {}), globalConstants: [rate] })
+    const structuralVersion = useGraphStore.getState().structuralVersion
+    useGraphStore.getState().setGlobalConstants([{ ...rate, value: "2" }])
     useGraphStore.getState().setPreamble("import math")
-    useGraphStore.getState().setGlobalConstantsRaw([{ ...rate, value: "2" }])
+    expect(useGraphStore.getState().undoStack).toHaveLength(2)
 
     useGraphStore.getState().undo()
     expect(useGraphStore.getState().preamble).toBe("")
     expect(useGraphStore.getState().globalConstants).toEqual([{ ...rate, value: "2" }])
-    expect(useGraphStore.getState().dirty).toBe(true)
+    useGraphStore.getState().undo()
+    expect(useGraphStore.getState().globalConstants).toEqual([rate])
+    expect(useGraphStore.getState().dirty).toBe(false)
+    expect(useGraphStore.getState().structuralVersion).toBeGreaterThan(structuralVersion)
 
     useGraphStore.getState().redo()
     expect(useGraphStore.getState().globalConstants).toEqual([{ ...rate, value: "2" }])
+    expect(useGraphStore.getState().dirty).toBe(true)
+    useGraphStore.getState().redo()
+    expect(useGraphStore.getState().preamble).toBe("import math")
+  })
+
+  it("records a constants change as one step, and none when nothing changes", () => {
+    useGraphStore.getState().loadGraphSnapshot({ ...snapshot("a", "", {}), globalConstants: [rate] })
+    useGraphStore.getState().setGlobalConstants([rate])
+    expect(useGraphStore.getState().undoStack).toHaveLength(0)
+    useGraphStore.getState().setPreamble("import math")
+    useGraphStore.getState().undo()
+    useGraphStore.getState().setGlobalConstants([])
+    expect(useGraphStore.getState().undoStack).toHaveLength(1)
+    expect(useGraphStore.getState().redoStack).toHaveLength(0)
   })
 
   it("marking a saved snapshot saves the constants it carries", () => {

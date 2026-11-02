@@ -19,7 +19,7 @@ const POLLING_SELECTORS = [
 ]
 // One helper per repeated concern; each owning module is exempt from its own ban.
 const ERROR_HELPER_NAMES = '/^(errorMessage|errorMsg|errorDetail|requestErrorDetail|previewErrorDetail|gitErrorMessage)$/'
-const ERROR_TEXT_SELECTORS = [
+const ERROR_TEXT_BASE_SELECTORS = [
   {
     // A variable of that name holding a string is fine; a function is a copy.
     selector: `FunctionDeclaration[id.name=${ERROR_HELPER_NAMES}], VariableDeclarator[id.name=${ERROR_HELPER_NAMES}][init.type=/^(ArrowFunctionExpression|FunctionExpression)$/]`,
@@ -27,6 +27,13 @@ const ERROR_TEXT_SELECTORS = [
   },
   {
     selector: 'LogicalExpression[left.property.name="detail"][right.property.name="message"]',
+    message: 'Use apiErrorMessage (api/errors.ts) for error text.',
+  },
+]
+const ERROR_TEXT_SELECTORS = [
+  ...ERROR_TEXT_BASE_SELECTORS,
+  {
+    selector: 'ConditionalExpression[test.operator="instanceof"][test.right.name="Error"][consequent.property.name="message"]',
     message: 'Use apiErrorMessage (api/errors.ts) for error text.',
   },
 ]
@@ -109,10 +116,48 @@ export default defineConfig([
   },
   {
     files: ['src/types/guards.ts', 'src/utils/objectLiteral.ts'],
-    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_BASE_SELECTORS, FORMAT_SELECTORS),
   },
   // Exact file/rule debt that predates the blocking severities. New instances
   // elsewhere fail lint; remove each override with its owning-stream fix.
+  {
+    files: [
+      'src/api/responseValidation.ts',
+      'src/hooks/ensureInputSnapshots.ts',
+      'src/hooks/useDataInputColumns.ts',
+      'src/hooks/useGraphCommitController.ts',
+      'src/hooks/useNodeDataProfile.ts',
+      'src/hooks/usePipelineAPI.ts',
+      'src/hooks/useStaleConfigEstimate.ts',
+      'src/hooks/useSubmodelBoundaryEditing.ts',
+      'src/hooks/useTracing.ts',
+      'src/hooks/useWebSocketSync.ts',
+      'src/panels/ModellingConfig.tsx',
+      'src/panels/editors/ApiInputEditor.tsx',
+      'src/panels/editors/ExploreChartsConfig.tsx',
+      'src/panels/editors/FrameTableActions.tsx',
+      'src/panels/editors/JsonPreview.tsx',
+      'src/panels/editors/_ioFormats.ts',
+      'src/panels/editors/_shared.tsx',
+      'src/panels/editors/apiInputInherit.ts',
+      'src/panels/editors/banding/BandingRulesGrid.tsx',
+      'src/panels/editors/banding/BreakpointGrid.tsx',
+      'src/panels/editors/explorePivots/FilterMemberPicker.tsx',
+      'src/panels/editors/polarsSteps/useRenderedSteps.ts',
+      'src/panels/editors/rating/TwoWayGrid.tsx',
+      'src/panels/explore/ComboChart.tsx',
+      'src/panels/explore/ExploreChartsPane.tsx',
+      'src/panels/explore/ExploreTableActions.tsx',
+      'src/panels/explore/chartConfig.ts',
+      'src/panels/modelling/GpuTrainingToggle.tsx',
+      'src/panels/modelling/HyperparametersConfig.tsx',
+      'src/panels/useNodePanelSession.ts',
+      'src/stores/useSettingsStore.ts',
+      'src/utils/connectionValidation.ts',
+      'src/workbench/ChartBody.tsx',
+    ],
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_BASE_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS),
+  },
   {
     files: ['e2e/persistence/api-input-v2-native.spec.ts'],
     rules: {

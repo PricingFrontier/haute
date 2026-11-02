@@ -69,7 +69,7 @@ export interface NodeEditorState {
 
 export interface HauteNodeData extends Record<string, unknown> {
   label: string
-  nodeType: NodeTypeValue | string
+  nodeType: NodeTypeValue
   description?: string
   config?: Record<string, unknown>
   /** Server-derived editor state, beside the config (see `NodeEditorState`). */
@@ -309,9 +309,18 @@ export interface SubmodelPortData extends Record<string, unknown> {
   externalNodeIds: string[]
   _traceActive?: boolean
   _traceDimmed?: boolean
+  _hoverDimmed?: boolean
+  _traceFocused?: boolean
+  _changeFocused?: boolean
+  _traceValue?: unknown
   _traceMotionDisabled?: boolean
+  _diffStatus?: "added" | "removed" | "changed" | "moved"
 }
 export type SubmodelPortFlowNode = Node<SubmodelPortData>
+export interface UnavailableNodeData extends Omit<HauteNodeData, "nodeType" | "label"> {
+  label: string
+  nodeType: NodeTypeValue | string
+}
 
 export type HauteNode = PipelineFlowNode | SubmodelFlowNode | SubmodelPortFlowNode
 

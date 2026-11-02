@@ -192,13 +192,10 @@ class TestCreateUtilityFile:
             },
         )
         assert res.status_code == 400
-        # Item #76: detail is a flat string, not a nested dict. The line
-        # number must still be embedded so the frontend can extract it
-        # with a /line (\d+)/ regex.
         detail = res.json()["detail"]
-        assert isinstance(detail, str)
-        assert "line" in detail.lower()
-        assert "1" in detail  # SyntaxError reports line 1 for "def foo(\n"
+        assert isinstance(detail, dict)
+        assert detail["line"] == 1
+        assert "line 1" in detail["message"].lower()
 
     def test_rejects_duplicate(self, client: TestClient, tmp_path: Path) -> None:
         d = tmp_path / "utility"
@@ -254,10 +251,10 @@ class TestUpdateUtilityFile:
 
         res = _put(client, "helpers", "def foo(\n")
         assert res.status_code == 400
-        # Item #76: flat string detail with embedded line number.
         detail = res.json()["detail"]
-        assert isinstance(detail, str)
-        assert "line" in detail.lower()
+        assert isinstance(detail, dict)
+        assert detail["line"] == 1
+        assert "line 1" in detail["message"].lower()
         # Original file should be unchanged
         assert (d / "helpers.py").read_text() == "x = 1\n"
 
@@ -379,11 +376,11 @@ class TestSyntaxErrorReturns400:
             },
         )
         assert res.status_code == 400
-        # Item #76: flat string detail with embedded line number.
         detail = res.json()["detail"]
-        assert isinstance(detail, str)
-        assert "syntax" in detail.lower()
-        assert "line" in detail.lower()
+        assert isinstance(detail, dict)
+        assert detail["line"] == 1
+        assert "syntax" in detail["message"].lower()
+        assert "line 1" in detail["message"].lower()
         # File must NOT have been written
         assert not (tmp_path / "utility" / "broken.py").exists()
 
@@ -394,11 +391,11 @@ class TestSyntaxErrorReturns400:
 
         res = _put(client, "mymod", "if True\n")
         assert res.status_code == 400
-        # Item #76: flat string detail with embedded line number.
         detail = res.json()["detail"]
-        assert isinstance(detail, str)
-        assert "syntax" in detail.lower()
-        assert "line" in detail.lower()
+        assert isinstance(detail, dict)
+        assert detail["line"] == 1
+        assert "syntax" in detail["message"].lower()
+        assert "line 1" in detail["message"].lower()
         # Original file must be unchanged
         assert (d / "mymod.py").read_text() == "x = 1\n"
 

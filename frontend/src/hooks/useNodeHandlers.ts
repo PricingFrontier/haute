@@ -5,8 +5,10 @@
  * auto-layout operations so the main component stays focused on
  * orchestration and rendering.
  */
-import { useCallback, useRef, useState, type MutableRefObject } from "react"
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react"
 import type { Node, Edge, NodeChange, InternalNode } from "@xyflow/react"
+import { apiErrorMessage } from "../api/errors"
+import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useToastStore from "../stores/useToastStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useUIStore from "../stores/useUIStore"
@@ -23,6 +25,7 @@ import {
   singletonTypesInSubmodelDefinition,
 } from "../utils/nodeTypes"
 import { getLayoutedElements } from "../utils/layout"
+import type { DrilledOccurrenceIdentity } from "../utils/submodelRuntimeTarget"
 import type { PreviewData } from "../panels/DataPreview"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
 import type { SubmodelCreateResult } from "./useSubmodelNavigation"
@@ -42,6 +45,7 @@ type UseNodeHandlersParams = {
   fitView: (opts?: { padding?: number }) => void
   getInternalNode?: (id: string) => InternalNode | undefined
   submodels: Record<string, unknown>
+  activeSubmodelIdentity?: DrilledOccurrenceIdentity | null
   resolveNodeIdentities: (nodes: readonly Node[]) => Promise<Node[]>
   createWrappedNodeInstance?: (nodeId: string) => Promise<SubmodelCreateResult>
   commitSharedNodeDeletion?: (
@@ -51,6 +55,37 @@ type UseNodeHandlersParams = {
     onSettled?: (committed: boolean) => void,
   ) => SharedNodeDeletionResult
 }
+
+function layoutDocumentKey(
+  activeSubmodelIdentity: DrilledOccurrenceIdentity | null | undefined,
+): string {
+  const status = useDocumentStatusStore.getState()
+  return JSON.stringify([
+    status.executionGeneration,
+    status.sourceFile,
+    activeSubmodelIdentity?.instanceId ?? null,
+    activeSubmodelIdentity?.definitionId ?? null,
+  ])
+}
+
+function layoutTopologyKey(nodes: readonly Node[], edges: readonly Edge[]): string {
+  const nodeKeys = nodes
+    .map((node) => JSON.stringify([node.id, node.origin ?? null]))
+    .sort()
+  const edgeKeys = edges
+    .map((edge) =>
+      JSON.stringify([
+        edge.id,
+        edge.source,
+        edge.sourceHandle ?? null,
+        edge.target,
+        edge.targetHandle ?? null,
+      ]),
+    )
+    .sort()
+  return JSON.stringify([nodeKeys, edgeKeys])
+}
+
 // Strips one trailing copy-number so cloning "scoring_10" counts from
 // "scoring": _2–_9 plus any multi-digit suffix (_10, _11, …). A bare "_1"
 // is not a copy number — the base itself is the first occurrence.
@@ -79,12 +114,17 @@ export default function useNodeHandlers({
   fitView,
   getInternalNode,
   submodels,
+  activeSubmodelIdentity,
   resolveNodeIdentities,
   createWrappedNodeInstance,
   commitSharedNodeDeletion,
 }: UseNodeHandlersParams) {
   const layoutInFlightRef = useRef(false)
   const creationRequestSerialRef = useRef(0)
+  const activeSubmodelIdentityRef = useRef(activeSubmodelIdentity)
+  useEffect(() => {
+    activeSubmodelIdentityRef.current = activeSubmodelIdentity
+  }, [activeSubmodelIdentity])
   const [isAutoLayouting, setIsAutoLayouting] = useState(false)
   const addToast = useToastStore((s) => s.addToast)
   const clearNode = useNodeResultsStore((s) => s.clearNode)
@@ -182,7 +222,7 @@ export default function useNodeHandlers({
       setSelectedNode(resolvedNode)
       setLastSelectedId?.(resolvedNode.id)
     } catch (err: unknown) {
-      addToast("error", `Create node failed: ${err instanceof Error ? err.message : String(err)}`)
+      addToast("error", `Create node failed: ${apiErrorMessage(err)}`)
     }
   }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast, resolveNodeIdentities])
 
@@ -312,7 +352,7 @@ export default function useNodeHandlers({
       setLastSelectedId?.(resolvedNode.id)
       addToast("info", `Created instance of "${origData.label}"`)
     } catch (err: unknown) {
-      addToast("error", `Create node failed: ${err instanceof Error ? err.message : String(err)}`)
+      addToast("error", `Create node failed: ${apiErrorMessage(err)}`)
     }
   }, [graphRef, setNodes, setSelectedNode, setLastSelectedId, addToast, submodels, resolveNodeIdentities, createWrappedNodeInstance])
 
@@ -327,11 +367,47 @@ export default function useNodeHandlers({
     if (layoutInFlightRef.current) return
     const { nodes: n, edges: e } = graphRef.current
     if (n.length === 0) return
+    const capturedDocumentKey = layoutDocumentKey(activeSubmodelIdentityRef.current)
+    const capturedTopologyKey = layoutTopologyKey(n, e)
     layoutInFlightRef.current = true
     setIsAutoLayouting(true)
     try {
       const layouted = await getLayoutedElements(n, e, getInternalNode)
-      setNodes(() => layouted)
+      const positionsById = new Map<string, { x: number; y: number }>()
+      for (const layoutedNode of layouted) {
+        if (
+          typeof layoutedNode.position?.x === "number"
+          && Number.isFinite(layoutedNode.position.x)
+          && typeof layoutedNode.position?.y === "number"
+          && Number.isFinite(layoutedNode.position.y)
+        ) {
+          positionsById.set(layoutedNode.id, {
+            x: layoutedNode.position.x,
+            y: layoutedNode.position.y,
+          })
+        }
+      }
+      const current = graphRef.current
+      const sameDocument =
+        layoutDocumentKey(activeSubmodelIdentityRef.current) === capturedDocumentKey
+      const sameTopology =
+        layoutTopologyKey(current.nodes, current.edges) === capturedTopologyKey
+      const completePositions =
+        positionsById.size === current.nodes.length
+        && current.nodes.every((node) => positionsById.has(node.id))
+      if (!sameDocument || !sameTopology || !completePositions) {
+        addToast(
+          "info",
+          "Auto-layout was not applied because the graph changed while layout was running.",
+        )
+        return
+      }
+      setNodes((nds) =>
+        nds.map((node) => {
+          const position = positionsById.get(node.id)
+          return position ? { ...node, position } : node
+        }),
+      )
       setTimeout(() => fitView({ padding: 0.15 }), 50)
       addToast("info", "Auto-layout applied")
     } finally {

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+import { apiErrorMessage } from "../api/errors"
 import ModalShell from "./ModalShell"
 import { validateNodeName } from "../utils/nodeNameValidation"
 
@@ -44,7 +45,7 @@ export default function RenameDialog({ defaultValue, onConfirm, onCancel }: Rena
       const outcome = await onConfirm(result)
       if (!outcome.ok) setError(outcome.error)
     } catch (reason: unknown) {
-      setError(`Rename failed: ${reason instanceof Error ? reason.message : String(reason)}`)
+      setError(`Rename failed: ${apiErrorMessage(reason)}`)
     } finally {
       setPending(false)
     }

@@ -17,7 +17,7 @@ import {
   updateUtilityFile,
   deleteUtilityFile,
 } from "../api/client"
-import { apiErrorStatus } from "../api/errors"
+import { apiErrorMessage, apiErrorRawDetail, apiErrorStatus } from "../api/errors"
 import type { UtilityFile } from "../api/types"
 
 /**
@@ -29,15 +29,18 @@ import type { UtilityFile } from "../api/types"
  */
 function parseSyntaxError(err: unknown): { error: string; error_line: number | null } | null {
   if (!(err instanceof ApiError) || err.status !== 400) return null
-  const raw = err.detail
-  if (!raw) return null
-
-  const message = String(raw)
-  const match = /\bline\s+(\d+)\b/i.exec(message)
-  return {
-    error: message,
-    error_line: match ? Number.parseInt(match[1], 10) : null,
+  // A refused save names its line and message (`{line, message}`); other refusals are text.
+  const record = apiErrorRawDetail(err)
+  if (record && typeof record.message === "string" && record.message.trim()) {
+    return {
+      error: record.message,
+      error_line: typeof record.line === "number" ? record.line : null,
+    }
   }
+  if (typeof err.detail === "string" && err.detail.trim()) {
+    return { error: err.detail, error_line: null }
+  }
+  return null
 }
 
 interface UtilityPanelProps {
@@ -81,6 +84,9 @@ export default function UtilityPanel({
   const draftRef = useRef<{ module: string; value: string } | null>(null)
   // The draft a save is sending, so a second trigger waits for that save, not another.
   const sendingRef = useRef<{ draft: { module: string; value: string }; result: Promise<boolean> } | null>(null)
+  // Each file or Imports selection takes the next number; a selection overtaken while it
+  // waited (on a save or a read) is dropped rather than replacing the newer one.
+  const selectionSerialRef = useRef(0)
   const unsaved = useUIStore((s) => s.utilityUnsaved)
   const setUtilityUnsaved = useUIStore((s) => s.setUtilityUnsaved)
   const leave = useUIStore((s) => s.utilityLeave)
@@ -159,9 +165,9 @@ export default function UtilityPanel({
           setErrorMsg(syntaxErr.error)
         } else if (apiErrorStatus(err) === 412) {
           conflictModuleRef.current = module
-          setConflict({ module, message: err instanceof Error ? err.message : String(err) })
+          setConflict({ module, message: apiErrorMessage(err) })
         } else {
-          const detail = err instanceof Error ? err.message : "unknown error"
+          const detail = apiErrorMessage(err, "unknown error")
           addToast("error", `Failed to save utility file "${module}": ${detail}`)
           setErrorMsg("Failed to save")
         }
@@ -265,7 +271,7 @@ export default function UtilityPanel({
       const res = await listUtilityFiles()
       setFiles(res.files)
     } catch (err) {
-      const detail = err instanceof Error ? err.message : "unknown error"
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Failed to list utility files: ${detail}`)
       setFiles([])
     }
@@ -276,21 +282,31 @@ export default function UtilityPanel({
 
   // Load file content
   const loadFile = useCallback(async (module: string) => {
+    const serial = ++selectionSerialRef.current
+    const current = () => mountedRef.current && selectionSerialRef.current === serial
     // The previous file's draft saves first; a refused save keeps it open.
-    if (!await saveDraft(true)) return
+    if (!await saveDraft(true) || !current()) return
+    let res: Awaited<ReturnType<typeof readUtilityFile>>
     try {
-      const res = await readUtilityFile(module)
-      revisionsRef.current.set(module, res.revision)
-      setContent(res.content)
-      setActiveModule(module)
-      setImportsSelected(false)
-      setErrorLine(null)
-      setErrorMsg(null)
+      res = await readUtilityFile(module)
     } catch (err) {
-      const detail = err instanceof Error ? err.message : "unknown error"
+      // A read a newer selection overtook reports nothing over the file now open.
+      if (!current()) return
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Failed to load utility file "${module}": ${detail}`)
       setErrorMsg(`Failed to load ${module}`)
+      return
     }
+    // A read a newer selection overtook saves nothing either: that file's draft is its own.
+    if (!current()) return
+    // Text typed in the previous file while the read waited saves too before it goes.
+    if (!await saveDraft(true) || !current()) return
+    revisionsRef.current.set(module, res.revision)
+    setContent(res.content)
+    setActiveModule(module)
+    setImportsSelected(false)
+    setErrorLine(null)
+    setErrorMsg(null)
   }, [addToast, saveDraft])
 
   // Reload drops the draft for the file as it is now; Overwrite saves the draft over it.
@@ -307,7 +323,7 @@ export default function UtilityPanel({
       try {
         read = await readUtilityFile(module)
       } catch (err) {
-        const detail = err instanceof Error ? err.message : "unknown error"
+        const detail = apiErrorMessage(err, "unknown error")
         addToast("error", `Failed to load utility file "${module}": ${detail}`)
         return
       }
@@ -342,7 +358,8 @@ export default function UtilityPanel({
   }, [addToast, sendDraft, setUtilityUnsaved])
 
   const selectImports = useCallback(async () => {
-    if (!await saveDraft(true)) return
+    const serial = ++selectionSerialRef.current
+    if (!await saveDraft(true) || !mountedRef.current || selectionSerialRef.current !== serial) return
     setImportsSelected(true)
     setErrorLine(null)
     setErrorMsg(null)
@@ -351,7 +368,6 @@ export default function UtilityPanel({
   // Auto-select first file
   useEffect(() => {
     if (!importsSelected && files.length > 0 && activeModule === null) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- auto-select on initial load
       loadFile(files[0].module)
     }
   }, [files, activeModule, importsSelected, loadFile])
@@ -374,7 +390,7 @@ export default function UtilityPanel({
       loadFile(res.module)
     } catch (err) {
       const syntaxErr = parseSyntaxError(err)
-      setCreateError(syntaxErr ? syntaxErr.error : err instanceof Error ? err.message : "Failed to create")
+      setCreateError(syntaxErr ? syntaxErr.error : apiErrorMessage(err, "Failed to create"))
     }
   }, [newName, loadFiles, loadFile, onImportAdded])
 
@@ -393,7 +409,7 @@ export default function UtilityPanel({
       setContent("")
       await loadFiles()
     } catch (err) {
-      const detail = err instanceof Error ? err.message : "unknown error"
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Failed to delete utility file "${activeModule}": ${detail}`)
       setErrorMsg("Failed to delete")
     }

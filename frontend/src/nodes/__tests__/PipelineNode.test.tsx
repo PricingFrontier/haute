@@ -3,7 +3,7 @@ import { describe, it, expect, afterEach } from "vitest"
 import { act, render, screen, cleanup, within } from "@testing-library/react"
 import { ReactFlowProvider, useStoreApi, type Edge, type InternalNode, type NodeProps } from "@xyflow/react"
 import PipelineNode from "../PipelineNode"
-import type { PipelineFlowNode, PipelineNodeData } from "../../types/node"
+import type { NodeTypeValue, PipelineFlowNode, PipelineNodeData } from "../../types/node"
 import { NODE_TYPES, nodeTypeColors, nodeTypeLabels } from "../../utils/nodeTypes"
 import { DEFAULT_TARGET_HANDLE } from "../../utils/flowHandles"
 import { apiInputFrameLabels } from "../../utils/apiInputPorts"
@@ -122,7 +122,7 @@ function FlowGeometrySeed({
 function internalNode(
   id: string,
   y: number,
-  nodeType: string = NODE_TYPES.POLARS,
+  nodeType: NodeTypeValue = NODE_TYPES.POLARS,
   height = 34,
 ): InternalNode<PipelineFlowNode> {
   const userNode: PipelineFlowNode = {
@@ -235,6 +235,29 @@ describe("PipelineNode", () => {
   it("uses a dashed outline for a moved node", () => {
     renderNode({ label: "Moved", nodeType: NODE_TYPES.POLARS, _diffStatus: "moved" })
     expect(screen.getByTestId("node-Moved").style.outline).toContain("dashed")
+  })
+
+  it("marks an Edge Join's marker for a changed or moved comparison, keeping a focus ring with it", () => {
+    renderNode({ label: "Join", nodeType: NODE_TYPES.EDGE_JOIN, _diffStatus: "changed", _changeFocused: true })
+    const changed = screen.getByTestId("edge-join-marker").style
+    expect(changed.boxShadow).toContain("var(--diff-changed)")
+    expect(changed.boxShadow).toContain("0 0 0 3px var(--accent)")
+    cleanup()
+    renderNode({ label: "Join", nodeType: NODE_TYPES.EDGE_JOIN, _diffStatus: "moved" })
+    expect(screen.getByTestId("edge-join-marker").style.outline).toContain("dashed")
+  })
+
+  it("rings the card when _changeFocused is set", () => {
+    renderNode({ label: "Changed", nodeType: NODE_TYPES.POLARS, _changeFocused: true })
+    expect(screen.getByTestId("node-Changed").style.boxShadow).toContain("0 0 0 3px var(--accent)")
+  })
+
+  it("renders the unavailable card for an unknown nodeType instead of falling back to Transform", () => {
+    renderNode({ label: "Mystery Node", nodeType: "unknown_future_type" as unknown as NodeTypeValue })
+    expect(screen.getByTestId("unavailable-node-Mystery Node")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Unavailable unknown_future_type node: Mystery Node" })).toBeInTheDocument()
+    expect(screen.getByText("@pipeline.unknown_future_type")).toBeInTheDocument()
+    expect(screen.queryByText(nodeTypeLabels[NODE_TYPES.POLARS])).not.toBeInTheDocument()
   })
 
   // ── Render per node type ───────────────────────────────────────────

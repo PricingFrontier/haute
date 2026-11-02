@@ -204,13 +204,13 @@ describe("usePipelineAPI - a preview never runs downstream nodes", () => {
     const { callOrder, deferreds } = makeControllablePreview()
 
     const params = makeParams()
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
     params.graphRef.current = {
       nodes: [makeNode("A"), makeNode("B"), makeNode("C")],
       edges: [makeEdge("A", "B"), makeEdge("A", "C")],
     }
-
-    const { result } = renderHook(() => usePipelineAPI(params))
-    await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => { result.current.fetchPreview(params.graphRef.current.nodes[0]) })
     await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: PREVIEW_TIMEOUT_MS })
@@ -230,13 +230,13 @@ describe("usePipelineAPI - a preview never runs downstream nodes", () => {
       data: { _columns: [{ name: "stale_col", dtype: "i64" }] },
     })
     const params = makeParams()
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
     params.graphRef.current = {
       nodes: [A, makeNode("B")],
       edges: [makeEdge("A", "B")],
     }
-
-    const { result } = renderHook(() => usePipelineAPI(params))
-    await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => { result.current.fetchPreview(A) })
     await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: PREVIEW_TIMEOUT_MS })
@@ -251,13 +251,13 @@ describe("usePipelineAPI - a preview never runs downstream nodes", () => {
     const { callOrder, deferreds } = makeControllablePreview()
 
     const params = makeParams()
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
     params.graphRef.current = {
       nodes: [makeNode("A"), makeNode("B"), makeNode("C")],
       edges: [makeEdge("A", "B"), makeEdge("B", "C")],
     }
-
-    const { result } = renderHook(() => usePipelineAPI(params))
-    await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => { result.current.fetchPreview(params.graphRef.current.nodes[0]) })
     await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: PREVIEW_TIMEOUT_MS })

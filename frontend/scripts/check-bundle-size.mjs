@@ -211,7 +211,12 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // The test quotes in Preview (WB-12): their panel, store and client, and the test-quote
 // contracts in the workbench validators, bring it to 1,769.5 KiB; 1,771 KiB restores about
 // 1.5 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1771
+// The frontend graph canvas roadmap (FGC-R01 to R12: submodel view history, Global
+// Constants on Undo/Redo, the shared shell mechanisms) grows the editor's index past the
+// initial budget (300.3 KiB), so the optimiser's scenario preview loads on first display,
+// as its result preview already does: the initial bundle falls to 295.4 KiB, and the
+// split chunk's own compression brings the complete bundle to 1,771.1 KiB; 1,772 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1772
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

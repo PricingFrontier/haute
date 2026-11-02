@@ -1,8 +1,8 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react"
 import { AlertTriangle } from "lucide-react"
-import type { HauteNodeData } from "../types/node"
+import type { UnavailableNodeData } from "../types/node"
 
-type UnavailableNode = Node<HauteNodeData, "unavailablePipelineNode">
+export type UnavailableNode = Node<UnavailableNodeData, "unavailablePipelineNode">
 
 /** Editor-only card for an unknown or otherwise unrenderable authored node. */
 export default function UnavailablePipelineNode({ data, selected }: NodeProps<UnavailableNode>) {

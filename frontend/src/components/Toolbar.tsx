@@ -1,4 +1,4 @@
-import { useMemo, useCallback } from "react"
+import { memo, useMemo, useCallback } from "react"
 import { Scan, Network, Timer, HardDrive, FileCode2, Variable, Loader2, Group, Ungroup, Link2 } from "lucide-react"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import type { NodeTiming, NodeMemory } from "../api/types"
@@ -47,7 +47,7 @@ interface ToolbarProps {
   sourceSelectionTrusted?: boolean
 }
 
-export default function Toolbar({
+function Toolbar({
   nodeCount,
   canUndo, canRedo, onUndo, onRedo,
   onZoomIn, onZoomOut,
@@ -217,3 +217,6 @@ export default function Toolbar({
     </header>
   )
 }
+
+export default memo(Toolbar)
+

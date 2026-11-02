@@ -1,13 +1,118 @@
 import { useEffect, useRef } from "react"
 import type { Node, Edge, NodeChange } from "@xyflow/react"
+import { apiErrorMessage } from "../api/errors"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { isProtectedSubmodelNodeData, nodeData } from "../types/node"
-import { isSingletonType, singletonTypesOccupiedBy, type NodeTypeValue } from "../utils/nodeTypes"
+import { NODE_TYPES, isSingletonType, singletonTypesOccupiedBy, type NodeTypeValue } from "../utils/nodeTypes"
 import { requestSubmodelCreation } from "../utils/submodelCreation"
 import { hasModifier, inModalDialog, isTypingTarget, saveCommittingField } from "./keyboardTargets"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
+
+export interface KeyboardShortcutBinding {
+  id:
+    | "undo"
+    | "redo"
+    | "copy"
+    | "paste"
+    | "selectAll"
+    | "groupSubmodel"
+    | "save"
+    | "searchNodes"
+    | "fitView"
+    | "refreshPreview"
+    | "deleteSelected"
+    | "escape"
+    | "help"
+  keys: (modLabel: string) => string
+  label: string
+  matches?: (e: KeyboardEvent, mod: boolean) => boolean
+}
+
+export const KEYBOARD_SHORTCUT_BINDINGS: readonly KeyboardShortcutBinding[] = [
+  {
+    id: "undo",
+    keys: (mod) => `${mod}+Z`,
+    label: "Undo",
+    matches: (e, mod) => mod && e.key === "z" && !e.shiftKey,
+  },
+  {
+    id: "redo",
+    keys: (mod) => `${mod}+Shift+Z / ${mod}+Y`,
+    label: "Redo",
+    matches: (e, mod) => mod && ((e.key === "z" && e.shiftKey) || e.key === "y"),
+  },
+  {
+    id: "copy",
+    keys: (mod) => `${mod}+C`,
+    label: "Copy selected nodes",
+    matches: (e, mod) => mod && e.key === "c",
+  },
+  {
+    id: "paste",
+    keys: (mod) => `${mod}+V`,
+    label: "Paste nodes",
+    matches: (e, mod) => mod && e.key === "v",
+  },
+  {
+    id: "selectAll",
+    keys: (mod) => `${mod}+A`,
+    label: "Select all nodes",
+    matches: (e, mod) => mod && e.key === "a",
+  },
+  {
+    id: "groupSubmodel",
+    keys: (mod) => `${mod}+G`,
+    label: "Group into submodel",
+    matches: (e, mod) => mod && e.key === "g",
+  },
+  {
+    id: "save",
+    keys: (mod) => `${mod}+S`,
+    label: "Save pipeline",
+    matches: (e, mod) => mod && e.key === "s",
+  },
+  {
+    id: "searchNodes",
+    keys: (mod) => `${mod}+K`,
+    label: "Search nodes",
+    matches: (e, mod) => mod && e.key === "k",
+  },
+  {
+    id: "fitView",
+    keys: (mod) => `${mod}+1`,
+    label: "Fit view",
+    matches: (e, mod) => mod && e.key === "1",
+  },
+  {
+    id: "refreshPreview",
+    keys: (mod) => `${mod}+Enter`,
+    label: "Refresh the open preview",
+  },
+  {
+    id: "deleteSelected",
+    keys: () => "Delete / Backspace",
+    label: "Delete selected",
+    matches: (e) => e.key === "Delete" || e.key === "Backspace",
+  },
+  {
+    id: "escape",
+    keys: () => "Escape",
+    label: "Close panel / clear trace",
+    matches: (e) => e.key === "Escape",
+  },
+  {
+    id: "help",
+    keys: () => "?",
+    label: "Show this help",
+    matches: (e) => e.key === "?",
+  },
+] as const
+
+const BINDING_BY_ID = Object.fromEntries(
+  KEYBOARD_SHORTCUT_BINDINGS.map((binding) => [binding.id, binding]),
+) as Record<KeyboardShortcutBinding["id"], KeyboardShortcutBinding>
 
 interface KeyboardShortcutsParams {
   /** False while the workbench's view shows over the pipeline editor: then no shortcut
@@ -92,33 +197,26 @@ export default function useKeyboardShortcuts({
       // Focused dialogs own their keyboard interactions, including Escape. The
       // node-search palette is itself a modal dialog, so its toggle key still
       // reaches the Ctrl+K handler below while it is open.
-      const closesNodeSearch = mod && e.key === "k" && useUIStore.getState().nodeSearchOpen
+      const closesNodeSearch = Boolean(BINDING_BY_ID.searchNodes.matches?.(e, mod)) && useUIStore.getState().nodeSearchOpen
       if (e.defaultPrevented) return
       if (inModalDialog(e.target) && !closesNodeSearch) return
       const isTyping = isTypingTarget(e.target)
 
       // Ctrl+S / Cmd+S → save, with a focused field's edit included.
-      if (mod && e.key === "s") {
+      if (BINDING_BY_ID.save.matches?.(e, mod)) {
         e.preventDefault()
         saveCommittingField(e.target, handleSave)
         return
       }
 
-      // Ctrl+Z → undo, Ctrl+Shift+Z → redo
-      if (mod && e.key === "z" && !e.shiftKey && !isTyping) {
+      // Ctrl+Z → undo, Ctrl+Shift+Z / Ctrl+Y → redo
+      if (BINDING_BY_ID.undo.matches?.(e, mod) && !isTyping) {
         e.preventDefault()
         if (readOnly) return
         undo()
         return
       }
-      if (mod && e.key === "z" && e.shiftKey && !isTyping) {
-        e.preventDefault()
-        if (readOnly) return
-        redo()
-        return
-      }
-      // Ctrl+Y → redo (Windows convention)
-      if (mod && e.key === "y" && !isTyping) {
+      if (BINDING_BY_ID.redo.matches?.(e, mod) && !isTyping) {
         e.preventDefault()
         if (readOnly) return
         redo()
@@ -126,7 +224,7 @@ export default function useKeyboardShortcuts({
       }
 
       // Ctrl+C → copy selected nodes
-      if (mod && e.key === "c" && !isTyping) {
+      if (BINDING_BY_ID.copy.matches?.(e, mod) && !isTyping) {
         const { nodes: currentNodes, edges: currentEdges } = graphRef.current
         const selected = currentNodes.filter((n) => n.selected)
         if (selected.length === 0) return
@@ -140,7 +238,7 @@ export default function useKeyboardShortcuts({
       }
 
       // Ctrl+V → paste copied nodes
-      if (mod && e.key === "v" && !isTyping) {
+      if (BINDING_BY_ID.paste.matches?.(e, mod) && !isTyping) {
         if (readOnly) {
           e.preventDefault()
           return
@@ -155,8 +253,13 @@ export default function useKeyboardShortcuts({
         for (const n of capturedGraph.nodes) {
           for (const occupied of singletonTypesOccupiedBy(nodeData(n).nodeType)) occupiedSingletonTypes.add(occupied)
         }
+        // A copy of a submodel occurrence would carry the original's alias under
+        // a new id, and a boundary card belongs to its view: neither pastes.
+        const copiedOccurrence = copiedNodes.some((n) => nodeData(n).nodeType === NODE_TYPES.SUBMODEL)
+        if (copiedOccurrence) addToast("error", "Use Create Instance to duplicate a reusable submodel")
         const pasteable = copiedNodes.filter((n) => {
           const nt = nodeData(n).nodeType
+          if (nt === NODE_TYPES.SUBMODEL || nt === NODE_TYPES.SUBMODEL_PORT) return false
           if (!isSingletonType(nt)) return true
           if (occupiedSingletonTypes.has(nt!)) return false
           for (const occupied of singletonTypesOccupiedBy(nt)) occupiedSingletonTypes.add(occupied)
@@ -219,49 +322,49 @@ export default function useKeyboardShortcuts({
           }
           addToast(
             "error",
-            `Paste failed: ${error instanceof Error ? error.message : String(error)}`,
+            `Paste failed: ${apiErrorMessage(error)}`,
           )
         })
         return
       }
 
       // Ctrl+A → select all nodes
-      if (mod && e.key === "a" && !isTyping) {
+      if (BINDING_BY_ID.selectAll.matches?.(e, mod) && !isTyping) {
         e.preventDefault()
         setNodes((nds) => nds.map((n) => ({ ...n, selected: true })))
         return
       }
 
       // Ctrl+1 → fit view
-      if (mod && e.key === "1") {
+      if (BINDING_BY_ID.fitView.matches?.(e, mod)) {
         e.preventDefault()
         fitView({ padding: 0.8 })
         return
       }
 
       // Ctrl+K → open node search
-      if (mod && e.key === "k" && (!isTyping || useUIStore.getState().nodeSearchOpen)) {
+      if (BINDING_BY_ID.searchNodes.matches?.(e, mod) && (!isTyping || useUIStore.getState().nodeSearchOpen)) {
         e.preventDefault()
         setNodeSearchOpen((prev) => !prev)
         return
       }
 
       // Escape → clear trace + close panel
-      if (e.key === "Escape" && !isTyping) {
+      if (BINDING_BY_ID.escape.matches?.(e, mod) && !isTyping) {
         clearTrace()
         closePanel()
         return
       }
 
       // ? → toggle keyboard shortcuts help (unless typing)
-      if (e.key === "?" && !isTyping) {
+      if (BINDING_BY_ID.help.matches?.(e, mod) && !isTyping) {
         e.preventDefault()
         setShortcutsOpen((prev) => !prev)
         return
       }
 
       // Ctrl+G → group selected nodes into a submodel
-      if (mod && e.key === "g" && !isTyping) {
+      if (BINDING_BY_ID.groupSubmodel.matches?.(e, mod) && !isTyping) {
         e.preventDefault()
         requestSubmodelCreation({
           nodes: graphRef.current.nodes,
@@ -274,7 +377,7 @@ export default function useKeyboardShortcuts({
       }
 
       // Delete / Backspace → remove selected nodes and/or edges (unless typing)
-      if ((e.key === "Delete" || e.key === "Backspace") && !isTyping) {
+      if (BINDING_BY_ID.deleteSelected.matches?.(e, mod) && !isTyping) {
         if (readOnly) {
           e.preventDefault()
           return
@@ -326,7 +429,12 @@ export default function useKeyboardShortcuts({
           if (sharedDeletion !== "committed") {
             setNodesAndEdges(
               currentNodes.filter((n) => !selectedNodeIds.has(n.id)),
-              currentEdges.filter((ed) => !selectedNodeIds.has(ed.source) && !selectedNodeIds.has(ed.target)),
+              currentEdges.filter(
+                (ed) =>
+                  !selectedNodeIds.has(ed.source)
+                  && !selectedNodeIds.has(ed.target)
+                  && !selectedEdgeIds.has(ed.id),
+              ),
             )
           }
           if (!cleanedUp) cleanupAfterRemoval()

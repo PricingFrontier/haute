@@ -4,8 +4,9 @@
  * release, a titled part that folds, and a menu behind a button.
  */
 import { AlertTriangle, ChevronDown, ChevronRight, Info, X, type LucideIcon } from "lucide-react"
-import { useEffect, useRef, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import type { WorkbenchAppQuote } from "../api/types"
+import { useMenuKeyboard } from "../hooks/useMenuKeyboard"
 import { STAGE_LABEL } from "./quoteValues"
 
 export const BUTTON = "toolbar-btn inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium disabled:opacity-50"
@@ -121,7 +122,9 @@ export interface MenuItem {
 export function Menu({ label, icon: Icon, items, testId }: { label: string; icon: LucideIcon; items: MenuItem[]; testId?: string }) {
   const [open, setOpen] = useState(false)
   const holder = useRef<HTMLDivElement>(null)
-  const entries = useRef<(HTMLButtonElement | null)[]>([])
+  const closeMenu = useCallback(() => setOpen(false), [])
+
+  useMenuKeyboard(holder, closeMenu, open)
 
   useEffect(() => {
     if (!open) return
@@ -129,25 +132,11 @@ export function Menu({ label, icon: Icon, items, testId }: { label: string; icon
       if (!holder.current?.contains(event.target as Node)) setOpen(false)
     }
     window.addEventListener("pointerdown", away)
-    entries.current.find((entry) => entry !== null && !entry.disabled)?.focus()
     return () => window.removeEventListener("pointerdown", away)
   }, [open])
 
-  const onKey = (event: React.KeyboardEvent) => {
-    if (event.key === "Escape") {
-      event.stopPropagation()
-      setOpen(false)
-      return
-    }
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return
-    event.preventDefault()
-    const live = entries.current.filter((entry): entry is HTMLButtonElement => entry !== null && !entry.disabled)
-    const at = live.indexOf(document.activeElement as HTMLButtonElement)
-    live[(at + (event.key === "ArrowDown" ? 1 : live.length - 1)) % live.length]?.focus()
-  }
-
   return (
-    <div ref={holder} className="relative" onKeyDown={onKey}>
+    <div ref={holder} className="relative">
       <button
         type="button"
         className="toolbar-btn toolbar-action"
@@ -167,12 +156,9 @@ export function Menu({ label, icon: Icon, items, testId }: { label: string; icon
           className="absolute right-0 z-40 mt-1 flex min-w-[190px] flex-col rounded-md py-1 shadow-xl"
           style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-bright)" }}
         >
-          {items.map((item, index) => (
+          {items.map((item) => (
             <button
               key={item.label}
-              ref={(element) => {
-                entries.current[index] = element
-              }}
               type="button"
               role="menuitem"
               disabled={item.disabled}

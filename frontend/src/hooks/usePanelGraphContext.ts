@@ -33,6 +33,7 @@ export function toSimpleEdge(edge: Edge): SimpleEdge {
     target: edge.target,
     ...(edge.sourceHandle != null ? { sourceHandle: edge.sourceHandle } : {}),
     ...(edge.targetHandle != null ? { targetHandle: edge.targetHandle } : {}),
+    ...(edge.data != null ? { data: edge.data as SimpleEdge["data"] } : {}),
   }
 }
 
