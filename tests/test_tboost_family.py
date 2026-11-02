@@ -857,7 +857,7 @@ def test_a_record_with_extra_keys_is_refused_and_none_at_all_reads_t_boost(
     haute = TBoostModel.load(path)
     document["metadata"]["haute"]["extra"] = 1
     _rewrite(path, document)
-    with pytest.raises(ConfigError, match="has keys"):
+    with pytest.raises(ConfigError, match=r"has unknown field\(s\) extra"):
         TBoostModel.load(path)
     document["metadata"]["haute"] = "not an object"
     _rewrite(path, document)
@@ -903,6 +903,11 @@ def test_a_classifier_record_on_a_regressor_and_a_multiclass_model_are_refused(
     _rewrite(path, document)
     with pytest.raises(ConfigError, match="holds a TBoostRegressor"):
         TBoostModel.load(path)
+    for labels in (["yes", "yes"], [0, "yes"], [None, 1], [[0], [1]]):
+        document["metadata"]["haute"]["class_labels"] = labels
+        _rewrite(path, document)
+        with pytest.raises(ConfigError, match="distinct labels of one type"):
+            TBoostModel.load(path)
 
     data = frame()
     multiclass = TBoostClassifier(n_trees=50, n_bags=1, prune=False).fit(

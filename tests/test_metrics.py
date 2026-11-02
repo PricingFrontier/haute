@@ -357,6 +357,21 @@ class TestPdp:
             assert "value" in entry
             assert "avg_prediction" in entry
 
+    @pytest.mark.parametrize("dtype", [pl.Int64, pl.Int16, pl.Float32, pl.Date, pl.Datetime("us")])
+    def test_each_grid_value_is_the_value_the_model_scored(self, dtype: pl.DataType):
+        # Linear percentiles over these rows fall between them (1.25, 1.5, ...); the
+        # mock predicts the feature itself, so each point's prediction is what was scored.
+        df = pl.DataFrame({"x": [1] * 10 + [2] * 10 + [3] * 10}).cast(dtype)
+        result = compute_pdp(MagicMock(), _MockAlgo(), df, ["x"], [], n_grid=50)
+
+        grid = result[0]["grid"]
+        assert [entry["value"] for entry in grid] == [entry["avg_prediction"] for entry in grid]
+        # A temporal feature is gridded and labelled by its physical value (days, ticks).
+        if dtype.is_integer() or dtype.is_temporal():
+            assert [entry["value"] for entry in grid] == [1.0, 2.0, 3.0]
+        else:
+            assert len(grid) > 3
+
     def test_basic_categorical(self):
         df = pl.DataFrame({"cat": ["a", "b", "c"] * 20})
 

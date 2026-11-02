@@ -258,9 +258,6 @@ production:
 | Optimiser | OPR-4, OPR-5, OPR-6, OPR-7 | `OPT-R03` |
 | Optimiser | OPR-2 | `OPT-R04` (Decision) |
 | Optimiser | OPR-9, OPR-10, OPR-11 | `OPT-R05` |
-| Modelling | MDL-24 | `MOD-R03` |
-| Modelling | MDL-3, MDL-9, MDL-11, MDL-16, MDL-20, MDL-21 | `MOD-R05` |
-| Modelling | MDL-2, MDL-18, MDL-22 | `MOD-R06` |
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
 | Tracing | TRC-8, TRC-9, TRC-10, TRC-14 | `TRACE-R03` |
 | Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |
@@ -320,8 +317,7 @@ rule (`NAME-09`); the dead
 `submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
 utilities (`ENGQ-R01`); Banding's `_id` inside the config (`FNED-R07`), the editors'
 barrels (`ENGQ-R01`), the pivot editor writing the
-fields the backend defaults (`EDA-R02`); the panel half of the GPU loss-history
-numbering and the GLM `best_iteration` (`MOD-R05`) and a second fabricated
+fields the backend defaults (`EDA-R02`); a second fabricated
 train-failure sentinel (`FSH-R06`); the browser's frontier
 generation fences that only ever see generation 0 (`OPT-R04`), the optimiser
 panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and

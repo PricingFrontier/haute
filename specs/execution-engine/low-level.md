@@ -410,7 +410,9 @@ captures never stores under its pre-execution key: after executing, the core rea
 runtime inputs again and stores nothing if they moved; otherwise it resolves the plan a
 new request would choose and stores under the key built from the first read and that
 plan's seeds only when every one is a generation it read. The generations are recorded on the context
-(`record_preview_seed_plan`) for the response's `seed_plan`.
+(`record_preview_seed_plan`) for the response's `seed_plan`; a hit reports every generation it
+re-validated as `seeded`, since it publishes none, so the canvas raises no node-data epoch for a
+repeated preview.
 
 An API input bundle containing exactly one labelled frame has one canonical flat
 frame, so that frame remains the node's ordinary preview without requiring
@@ -663,8 +665,9 @@ hands over its write's digests the same way:
   first, so a `validate` Polars rejects at schema resolution (`right`/`semi`/`anti`) raises
   Polars' own error and writes nothing; `cross` ignores `validate` as Polars does; on
   `inner`/`left`/`full` the whole checked side is proven unique before any part — non-null
-  keys only, a hash-partitioned group-by of about `chunk_rows` keys at a time — and a
-  violation raises Polars' `ComputeError("join keys did not fulfill <v> validation")`. Each
+  keys only, a hash-partitioned group-by of about `chunk_rows` keys at a time, which filters
+  the checked side once per partition — and a violation raises Polars'
+  `ComputeError("join keys did not fulfill <v> validation")`. Each
   driving chunk probes its lookup matches (`semi` on the chunk's keys, `head(chunk_rows + 1)`);
   when they fit and their keys are unique the chunk joins them directly, otherwise per-key
   match counts split the chunk into consecutive groups of at most `chunk_rows` expected output
@@ -680,6 +683,18 @@ hands over its write's digests the same way:
   A `semi`/`anti` join reads only the lookup's distinct keys. A `full` join adds the lookup
   rows no driving row matched, once each and in the lookup's order, after every driving
   row, as the full join of an empty base with them: where an ordered full join places them.
+  To find them it semi-joins the base's key columns against each `chunk_rows` slice of the
+  lookup, so a full join reads its base keys once per lookup slice: bounded in memory, but
+  slower than one native sink as both sides grow. Measured on 24 September 2026 with
+  500,000-row chunks and half the lookup keys unmatched, at a similar peak: 0.17 s against
+  0.09 s native at one million rows a side, 1.09 s against 0.35 s at five million, 2.66 s
+  against 0.74 s at ten million. A larger streaming chunk size in the pipeline settings
+  reads the base fewer times. A cross join whose lookup is larger than one chunk is likewise
+  bounded but slow, re-reading each lookup slice for every driving slice of one row (67.3 s
+  against 8.4 s native at 2,000 × 600,000 rows). A lookup that fits one chunk is collected
+  once and joined with each driving slice (28.3 s against 19.3 s native at one million ×
+  1,000 rows, 0.46 s against 0.20 s at one million × 12): a scenario expander's small lookup
+  stays within 2.5 times native.
   Every join states its order (`maintainOrder` is required), and so does every frame join
   in `src/haute/`, the assistant's examples included: `"none"` where nothing reads the
   order (a count, a table keyed by id, a sort after it), held by `tests/test_join_orders.py`.
@@ -714,7 +729,15 @@ to a caller that writes a node in full, and `unshaped_frames=...` hands it, for 
 that shapes its columns, its frame before that step. Beside edge joins, the lazy engine builds
 write recipes for single-input `NodeType.POLARS` nodes by classifying their code with
 `classify_chunk_local_polars_code` (with bound source frame names and preamble selector aliases)
-using the prepared boundary's source nodes directly. Missing source nodes are invalid prepared
+using the prepared boundary's source nodes directly. A Data Input with post-load code gets one
+too: its builder returns a `SourceWithCode`, whose `open_scan` opens and projects the source's
+scan and whose `apply_code` runs the code on a frame (calling it does both). A sink walk opens
+the scan once, builds the output from it, and records a recipe whose input is that scan and
+whose function is the code, classified with the frame name `df`. So a filter in a Data Input's
+code is written `input_sliced`, a slice of the source at a time, as the same filter in a
+Transform is, where before it was written natively; a Data Input whose code Polars can slice
+through (adding columns) is still written `sliced`, and one whose code is not chunk-local
+(a sort) still natively, carrying the classifier's reason. Missing source nodes are invalid prepared
 state and must fail, never silently omit a recipe input name. An edge from a request input
 (API, Quote or Workbench Input) with no `sourceHandle` names no table: `_build_funcs` gives its
 consumer a function that raises `ConfigError` naming the consumer and the input instead of
@@ -912,7 +935,7 @@ missing column the run itself reads raises `ContractMismatchError`. After the wr
 a second runtime-input check, the capture is published as an automatic generation whose `dependencies` are the closure the plan
 recorded for the node: every seed and published capture read upstream along effective
 edges, each with its own recorded dependencies, and for a capture that kept its own data,
-only what it was built from. Execution continues from the publication's frame. A superseded
+only what it was built from. Execution continues from the publication's frame, so a run stopped later (by the pipeline time limit, a failure or a cancellation) keeps every capture it had published and discards only an unfinished capture's staging. A superseded
 publication or a changed input continues from the
 run's own staged artifact, which the plan owns and removes when it closes; any other store
 error propagates after the staged artifact is removed. The consumed nodes are preserved

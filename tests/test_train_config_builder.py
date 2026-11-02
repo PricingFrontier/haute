@@ -309,8 +309,8 @@ class TestBuildTrainingJobKwargs:
             patch("haute.modelling._candidate_run.build_candidate_run") as mock_candidate,
             patch("haute.modelling._mlflow_log.log_experiment") as mock_log,
         ):
-            job._log_to_mlflow(result, final_params={"iterations": 7})
-        assert mock_candidate.call_args.kwargs["final_params"] == {"iterations": 7}
+            job._log_to_mlflow(result)
+        assert mock_candidate.call_args.kwargs["final_params"] == job.params
         mock_log.assert_called_once()
         assert mock_log.call_args.kwargs.get("destination") == "local"
 

@@ -260,6 +260,10 @@ def estimate_glm_dispersion(
         n_fits += 1
         try:
             return float(rs.glm_dict(**builder_kwargs).fit().llf())
+        except MemoryError:
+            # Out of memory is not a bad candidate: the search stops and the job
+            # ends memory_limited instead of trying the rest.
+            raise
         except Exception as exc:  # non-convergence at this candidate
             last_error = exc
             return -math.inf
@@ -647,9 +651,11 @@ class GLMAlgorithm(BaseAlgorithm):
         del train_df
         release_freed_memory(freed_bytes)
 
+        # No early stopping: the IRLS iteration count is a fit statistic
+        # (``glm_fit_statistics``), not the round every other family's value names.
         return FitResult(
             model=result,
-            best_iteration=result.iterations,
+            best_iteration=None,
             loss_history=loss_history,
         )
 

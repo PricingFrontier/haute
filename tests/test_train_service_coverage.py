@@ -122,7 +122,6 @@ def _patch_execute_env():
     return (
         patch("haute.executor._build_node_fn", return_value=None),
         patch("haute.modelling._algorithms._mem_checkpoint"),
-        patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
         patch("haute.executor._preview_cache", MagicMock()),
         patch("haute.trace._cache", MagicMock()),
     )
@@ -241,7 +240,7 @@ class TestPreparationMissingTarget:
             # Returns the 4-tuple shape but with the target node absent.
             return ({}, [], {}, {})
 
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -251,7 +250,6 @@ class TestPreparationMissingTarget:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(_preparation_request(body, parquet_path))
 
@@ -301,7 +299,7 @@ class TestPreparationProjection:
         def lazy_returns_target(*args, **kwargs):
             return ({"n": lf}, [], {}, {})
 
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -313,7 +311,6 @@ class TestPreparationProjection:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(
                 _preparation_request(
@@ -357,7 +354,7 @@ class TestPreparationProjection:
         def lazy_returns_target(*args, **kwargs):
             return ({"n": lf}, [], {}, {})
 
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -369,7 +366,6 @@ class TestPreparationProjection:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(
                 _preparation_request(
@@ -617,7 +613,7 @@ class TestPreparationWithExecutionContext:
 
         context = _training_execution_context()
 
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -629,7 +625,6 @@ class TestPreparationWithExecutionContext:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(_preparation_request(body, parquet_path), context=context)
 
@@ -676,7 +671,7 @@ class TestPreparationWithExecutionContext:
         overrides = (
             {"project_to_keep_columns": True, "keep_columns": ["y", "x1"]} if projected else {}
         )
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -688,7 +683,6 @@ class TestPreparationWithExecutionContext:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(
                 _preparation_request(body, parquet_path, **overrides),
@@ -728,7 +722,7 @@ class TestPreparationWithExecutionContext:
         }
         context = _training_execution_context()
 
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -740,7 +734,6 @@ class TestPreparationWithExecutionContext:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(
                 _preparation_request(body, parquet_path, required_columns_by_node=demand),
@@ -769,7 +762,7 @@ class TestPreparationWithExecutionContext:
 
         demand = {"n": frozenset({"needed_col"})}
 
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -781,7 +774,6 @@ class TestPreparationWithExecutionContext:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(
                 _preparation_request(body, parquet_path, required_columns_by_node=demand)
@@ -810,7 +802,7 @@ class TestPreparationCleanupArms:
         def lazy_raises_contract_error(*args, **kwargs):
             raise PreambleError("invalid preamble", source_line=7)
 
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -820,7 +812,6 @@ class TestPreparationCleanupArms:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(_preparation_request(body, parquet_path))
 
@@ -851,7 +842,7 @@ class TestPreparationCleanupArms:
                 job_id="job",
             )
 
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -861,7 +852,6 @@ class TestPreparationCleanupArms:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(_preparation_request(body, parquet_path))
 
@@ -881,7 +871,7 @@ class TestPreparationCleanupArms:
         def lazy_raises_unsupported(*args, **kwargs):
             raise BoundedMemoryUnsupportedError("node X cannot stream")
 
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -891,7 +881,6 @@ class TestPreparationCleanupArms:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(_preparation_request(body, parquet_path))
 
@@ -922,7 +911,7 @@ class TestPreparationCleanupAbsentPaths:
         body = _source_only_request()
         parquet_path = tmp_path / "never_created.parquet"
 
-        p1, p2, p3, p4, p5 = _patch_execute_env()
+        p1, p2, p3, p4 = _patch_execute_env()
         with (
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",
@@ -932,7 +921,6 @@ class TestPreparationCleanupAbsentPaths:
             p2,
             p3,
             p4,
-            p5,
         ):
             outcome = _prepare(_preparation_request(body, parquet_path))
         assert not parquet_path.exists()
@@ -1685,7 +1673,7 @@ class TestLaunchBackgroundWorker:
                 _launch_config(),
                 {"iterations": 1},
                 tmp_parquet,
-                ram_warning=None,
+                warning=None,
                 total_source_rows=100,
                 execution_context=context,
             )
@@ -1700,6 +1688,58 @@ class TestLaunchBackgroundWorker:
         assert job["train_loss_history_truncated"] is False
         # Temp parquet removed in the worker finally (1229->exit true side).
         assert not Path(tmp_parquet).exists()
+
+    def test_publication_reads_its_artifacts_with_status_polls_still_answering(self, tmp_path):
+        """The evaluation artifacts are read and validated before the store's lock is
+        taken: a status poll made while they are read answers at once."""
+        import threading
+
+        from haute.routes import _training_artifacts
+        from haute.routes import _training_lifecycle as _train_service
+
+        store, service, job_id = self._service_and_job()
+        context = _training_execution_context()
+        tmp_parquet = str(tmp_path / "train.parquet")
+        Path(tmp_parquet).write_text("x", encoding="utf-8")
+        read = _training_artifacts._validate_evaluation_artifact_contents
+        polls: list[str] = []
+
+        def slow_reader(*args, **kwargs):
+            poll = threading.Thread(
+                target=lambda: polls.append(store.require_job(job_id)["status"])
+            )
+            poll.start()
+            # Under the store's lock this poll could not answer until the read ends.
+            poll.join(timeout=5)
+            assert not poll.is_alive(), "a status poll waited on the artifact read"
+            return read(*args, **kwargs)
+
+        with (
+            patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob),
+            patch.object(
+                _train_service,
+                "build_training_job_kwargs",
+                return_value={"name": "train", "output_dir": str(tmp_path / "outputs")},
+            ),
+            patch.object(
+                _training_artifacts, "_validate_evaluation_artifact_contents", slow_reader
+            ),
+        ):
+            thread = service._launch_background(
+                job_id,
+                "train",
+                _launch_config(),
+                {"iterations": 1},
+                tmp_parquet,
+                warning=None,
+                total_source_rows=100,
+                execution_context=context,
+            )
+            assert thread is not None
+            thread.join_and_raise(timeout=20)
+
+        assert polls == ["running"]
+        assert store.require_job(job_id)["status"] == "completed"
 
     def test_execution_cancelled_marks_cancelled(self, tmp_path):
         """An ExecutionCancelledError from run() → job cancelled (1164-1169)."""
@@ -1732,7 +1772,7 @@ class TestLaunchBackgroundWorker:
                 _launch_config(),
                 {"iterations": 1},
                 tmp_parquet,
-                ram_warning=None,
+                warning=None,
                 total_source_rows=None,
                 execution_context=context,
             )
@@ -1772,7 +1812,7 @@ class TestLaunchBackgroundWorker:
                 _launch_config(),
                 {"iterations": 1},
                 tmp_parquet,
-                ram_warning=None,
+                warning=None,
                 total_source_rows=None,
                 execution_context=context,
             )
@@ -1822,7 +1862,7 @@ class TestLaunchBackgroundWorker:
                 _launch_config(),
                 {"iterations": 1},
                 tmp_parquet,
-                ram_warning=None,
+                warning=None,
                 total_source_rows=None,
                 execution_context=context,
             )

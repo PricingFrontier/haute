@@ -439,7 +439,8 @@ class TestGLMFit:
             target="claim_count",
             weight="exposure",
         )
-        assert result.best_iteration is not None
+        # No early stopping: a GLM names no best round (its IRLS count is a fit statistic).
+        assert result.best_iteration is None
         assert "train_deviance" in result.loss_history[0]
         assert result.model.feature_names == [
             "Intercept",

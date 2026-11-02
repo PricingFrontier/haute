@@ -901,6 +901,41 @@ class TestBuildApiInput:
 # ---------------------------------------------------------------------------
 
 
+class TestBuildDataInputWithCode:
+    """A Data Input with post-load code keeps its scan and its code apart (CACHE-S22)."""
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_its_function_opens_the_scan_and_runs_the_code_on_it(self, tmp_path: Path) -> None:
+        from haute._builders import SourceWithCode
+
+        data_file = tmp_path / "quotes.parquet"
+        pl.DataFrame({"premium": [100.0, 300.0]}).write_parquet(data_file)
+        _, fn, is_source = _build(
+            "dataInput",
+            {
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "path": str(data_file),
+                "code": "df = df.filter(pl.col('premium') > 200)",
+            },
+        )
+
+        assert is_source and isinstance(fn, SourceWithCode)
+        scan, frame = fn.opened()
+        assert scan is not None and scan.collect()["premium"].to_list() == [100.0, 300.0]
+        assert frame.collect()["premium"].to_list() == [300.0]
+        assert fn().collect()["premium"].to_list() == [300.0]
+
+    def test_an_unsaved_one_previews_empty_without_running_its_code(self) -> None:
+        _, fn, _ = _build("dataInput", {"code": "raise RuntimeError('ran')"})
+
+        scan, frame = fn.opened()
+
+        assert scan is None
+        assert frame.collect().shape == (0, 0)
+
+
 class TestBuildDataInputSelectedColumns:
     """``selected_columns`` is interpreted once, after the node's code runs."""
 

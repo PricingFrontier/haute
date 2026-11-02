@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import polars as pl
 import pytest
 
 from haute.modelling._algorithms import _get_available_mb, _get_rss_mb, _mem_checkpoint
@@ -53,38 +54,34 @@ class TestGetAvailableMb:
 
 
 class TestMemCheckpoint:
-    def test_writes_to_log_file(self, tmp_path, monkeypatch):
-        log_path = tmp_path / "mem.log"
-        monkeypatch.setattr("haute.modelling._algorithms._MEM_LOG", log_path)
+    def test_a_fit_without_haute_mem_log_writes_no_file(self, tmp_path, monkeypatch):
+        """The log is opt-in: a real fit leaves the working directory as it was."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
 
-        _mem_checkpoint("test_label")
+        work = tmp_path / "work"
+        work.mkdir()
+        monkeypatch.chdir(work)
+        monkeypatch.delenv("HAUTE_MEM_LOG", raising=False)
+        frame = pl.DataFrame({"x": [0.1, 0.5, 0.9, 0.3] * 10, "y": [1.0, 2.0, 3.0, 4.0] * 10})
+        CatBoostAlgorithm().fit(
+            frame, ["x"], [], "y", None, {"iterations": 3, "depth": 2}, "regression"
+        )
+        assert list(work.iterdir()) == []
 
-        content = log_path.read_text()
-        assert "test_label" in content
-        assert "RSS=" in content
-        assert "Avail=" in content
+    def test_lines_append_to_the_named_file_across_runs(self, tmp_path, monkeypatch):
+        """HAUTE_MEM_LOG is read at write time, and an earlier run's lines are kept."""
+        log_path = tmp_path / "logs" / "mem.log"
+        monkeypatch.setenv("HAUTE_MEM_LOG", str(log_path))
+        with (
+            patch("haute.modelling._algorithms._get_rss_mb", return_value=123.4),
+            patch("haute.modelling._algorithms._get_available_mb", return_value=567.8),
+        ):
+            _mem_checkpoint("first run")
+            _mem_checkpoint("second run")
 
-    def test_appends_on_multiple_calls(self, tmp_path, monkeypatch):
-        log_path = tmp_path / "mem.log"
-        monkeypatch.setattr("haute.modelling._algorithms._MEM_LOG", log_path)
-
-        _mem_checkpoint("first")
-        _mem_checkpoint("second")
-
-        lines = log_path.read_text().strip().split("\n")
-        assert len(lines) == 2
-        assert "first" in lines[0]
-        assert "second" in lines[1]
-
-    def test_fsync_failure_does_not_raise(self, tmp_path, monkeypatch):
-        """Defensive fsync: OSError from fsync must not crash the process."""
-        log_path = tmp_path / "mem.log"
-        monkeypatch.setattr("haute.modelling._algorithms._MEM_LOG", log_path)
-
-        with patch("os.fsync", side_effect=OSError("not supported")):
-            _mem_checkpoint("test")  # should not raise
-
-        assert "test" in log_path.read_text()
+        lines = log_path.read_text().splitlines()
+        assert ["first run" in lines[0], "second run" in lines[1]] == [True, True]
+        assert "123.4" in lines[0] and "567.8" in lines[0]
 
 
 def test_get_rss_mb_converts_bytes_to_mebibytes(monkeypatch: pytest.MonkeyPatch) -> None:

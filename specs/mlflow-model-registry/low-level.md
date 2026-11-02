@@ -779,9 +779,11 @@ no longer exists (a `404`); no frontend caller references it.
   `save_mlflow_settings()` (tomlkit), replacing only the `[mlflow]` table
   and preserving every other section, comment, and layout choice, and
   refuses a `haute.toml` whose resolved path escapes the project root
-  (symlink containment); the response repeats the GET shape after the
+  (symlink containment); the file is replaced in one rename, so a failed
+  write leaves it whole. The response repeats the GET shape after the
   write. A validation failure → `400` naming the offending field without
-  echoing the rejected value; nothing is written. Databricks has no stored
+  echoing the rejected value, and a `haute.toml` that is not valid TOML →
+  `400` saying so; nothing is written. Databricks has no stored
   settings: its credentials stay in `.env` or the selected profile.
 - **`POST /api/mlflow/test-connection` → `MlflowTestConnectionResponse`** —
   probes one destination with one `experiments/search` request for a single
