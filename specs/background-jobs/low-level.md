@@ -350,10 +350,10 @@ therefore cannot be bypassed by test or shutdown reset code.
   still the uncancelled latest owner for its key while holding the registry `RLock`
   across the caller's block, serialising the check and publication indivisibly
   relative to concurrent `register_latest` and `cancel`.
-- `cancel_all(reason, timeout)` — cancels every active token not already cancelled, keeping
-  an earlier reason such as `superseded`. It waits at most `timeout` seconds for the registry
-  lock, which `latest_publication` holds across a job's publication (a profile written to
-  disk), and returns `False` without cancelling anything when the lock stayed held.
+- `cancel_all(reason)` — cancels every active token not already cancelled, keeping an
+  earlier reason such as `superseded`. It never waits for the registry lock, which
+  `latest_publication` holds across a job's publication (a profile written to disk): while
+  that lock is held it returns `False` and cancels nothing.
 - `release(job_id)` — pops the token; if `_latest_by_key[token.key]` still points at
   this `job_id`, removes that mapping too (so a *stale* `job_id` being released after
   a newer one has already superseded it does not accidentally clear the newer job's
@@ -364,9 +364,10 @@ therefore cannot be bypassed by test or shutdown reset code.
 The server's lifespan calls it at shutdown (through `asyncio.to_thread`, with a 10-second
 bound) before it ends the dedicated workers and the interactive pool. Until the bound it
 repeats: snapshot `_REGISTRIES` and the live `_JOB_THREADS`; call each registry's
-`cancel_all(reason="cancelled")` with what remains of the bound, so a registry held by a
-publication is cancelled on a later pass and never stalls the others; return if no job
-thread is alive; otherwise join each for what remains of the bound. Repeating catches a job registered, or a thread started
+`cancel_all(reason="cancelled")`, which never waits, so a registry held by a publication is
+tried again on the next pass and every other registry is cancelled at once; return if no
+job thread is alive; otherwise join the job threads for one pass (0.1 s, or what remains of
+the bound). Repeating catches a job registered, or a thread started
 (a training preparation launching its supervisor), while it waits. It returns the names
 of the job threads still alive at the bound, which the lifespan logs as
 `background_jobs_outlived_shutdown`; it never kills a thread or a process itself.
@@ -660,8 +661,8 @@ is only warranted for a concrete thread callable that can honour such a signal.
   records the job `cancelled`; `stop_background_jobs` returns at its bound naming a job
   thread that does not stop. A terminal write the store refuses is settled as `error`
   by `settle_unrecorded_outcome`, and only once; one kept past the store's TTL is gone. A
-  registry held by a publication delays only its own cancellation, never the shutdown's
-  bound. The two `MemoryError` subclasses
+  registry held by a publication delays only its own cancellation: another registry's job
+  stops at once, and the shutdown keeps its bound. The two `MemoryError` subclasses
   Haute raises (`ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError`) are
   `memory_limited` from a real one-shot, protocol and pool child alike.
 - `tests/test_worker_protocol.py` — the bounded version-1 transport: spawn-safe

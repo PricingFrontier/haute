@@ -43,6 +43,8 @@ logger = get_logger(component="server.background_jobs")
 _LIVE_LOCK = threading.Lock()
 _REGISTRIES: weakref.WeakSet[CancellableJobRegistry] = weakref.WeakSet()
 _JOB_THREADS: weakref.WeakSet[threading.Thread] = weakref.WeakSet()
+# How long a shutdown joins job threads between its passes over the registries.
+_SHUTDOWN_PASS_SECONDS = 0.1
 
 
 def start_job_thread(thread: threading.Thread) -> None:
@@ -69,12 +71,13 @@ def stop_background_jobs(*, timeout_seconds: float) -> tuple[str, ...]:
             registries = tuple(_REGISTRIES)
             running = [thread for thread in _JOB_THREADS if thread.is_alive()]
         for registry in registries:
-            # A registry held by a job's publication is cancelled on a later pass.
-            registry.cancel_all(reason="cancelled", timeout=deadline - time.monotonic())
+            # Never waits: a registry a job's publication holds is tried on the next pass.
+            registry.cancel_all(reason="cancelled")
         if not running or time.monotonic() >= deadline:
             return tuple(thread.name for thread in running)
+        pass_ends = min(deadline, time.monotonic() + _SHUTDOWN_PASS_SECONDS)
         for thread in running:
-            thread.join(max(0.0, deadline - time.monotonic()))
+            thread.join(max(0.0, pass_ends - time.monotonic()))
 
 
 class BackgroundJobStoppedError(RuntimeError):
@@ -154,13 +157,13 @@ class CancellableJobRegistry:
             token.cancel(reason)
             return True
 
-    def cancel_all(self, *, reason: TerminalReason, timeout: float) -> bool:
+    def cancel_all(self, *, reason: TerminalReason) -> bool:
         """Request cancellation for every active job not already asked to stop.
 
-        Waits at most *timeout* seconds for the registry, which a job's publication
-        holds (``latest_publication``); False if it stayed held and nothing was cancelled.
+        Never waits for the registry, which a job's publication holds
+        (``latest_publication``): False, with nothing cancelled, while it is held.
         """
-        if not self._lock.acquire(timeout=max(timeout, 0.0)):
+        if not self._lock.acquire(blocking=False):
             return False
         try:
             for token in self._tokens_by_job_id.values():

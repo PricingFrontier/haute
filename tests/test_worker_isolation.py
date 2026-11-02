@@ -221,34 +221,48 @@ def test_server_shutdown_cancels_a_running_job_and_leaves_no_worker(
         stop_background_jobs(timeout_seconds=10)
 
 
-def test_job_shutdown_keeps_its_bound_while_a_job_holds_its_registry() -> None:
-    """A publication holding a registry delays that registry's cancel, never the shutdown."""
-    registry = CancellableJobRegistry()
-    registry.register_latest("publishing", "publishing-job")
+def test_job_shutdown_stops_other_jobs_while_one_holds_its_registry() -> None:
+    """A publication holding a registry delays only that registry's cancel: every other
+    registry is cancelled at once, its jobs stop, and the shutdown keeps its bound."""
+    held = CancellableJobRegistry()
+    held_token, _ = held.register_latest("publishing", "publishing-job")
+    free = CancellableJobRegistry()
+    free_token, _ = free.register_latest("waiting", "waiting-job")
     publishing = threading.Event()
     release = threading.Event()
 
     def publish() -> None:
-        with registry.latest_publication("publishing-job"):
+        with held.latest_publication("publishing-job"):
             publishing.set()
             release.wait(30)
 
     holder = threading.Thread(target=publish, name="haute-test-publishing-job", daemon=True)
+    waiter = threading.Thread(
+        target=free_token.event.wait, args=(30,), name="haute-test-waiting-job", daemon=True
+    )
     start_job_thread(holder)
+    start_job_thread(waiter)
     assert publishing.wait(10)
     try:
         started = time.monotonic()
-        still_running = stop_background_jobs(timeout_seconds=0.3)
+        assert held.cancel_all(reason="cancelled") is False  # held: refused, never waited for
+        assert time.monotonic() - started < 1
+        still_running = stop_background_jobs(timeout_seconds=1.0)
         elapsed = time.monotonic() - started
-        assert not registry.is_cancelled("publishing-job")
+        # Read from the tokens: the held registry's own lock is still taken.
+        held_cancelled_while_publishing = held_token.cancelled
     finally:
         release.set()
         holder.join(10)
+        waiter.join(10)
 
+    assert free_token.cancelled
+    assert "haute-test-waiting-job" not in still_running
     assert "haute-test-publishing-job" in still_running
+    assert held_cancelled_while_publishing is False
     assert elapsed < 5
     stop_background_jobs(timeout_seconds=5)
-    assert registry.is_cancelled("publishing-job")
+    assert held_token.cancelled
 
 
 def test_job_shutdown_returns_at_its_bound_naming_the_jobs_still_running() -> None:
