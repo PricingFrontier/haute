@@ -395,9 +395,18 @@ export default function useWebSocketSync({
           // held one can never put the pre-save document back.
           const saves = pendingSavesSettled(currentDocumentSource() ?? frame.sourceFile)
           if (saves) {
+            const acceptedBefore = acceptedDocumentFingerprintFor(frame.sourceFile)
             await saves
             if (!mounted || !isCurrentSourceFile(frame.sourceFile, currentDocumentSource())) return
             if (showsFrame()) return
+            // The save answered with a newer document than this frame may hold: a
+            // resync can read what the save wrote before a formatting hook rewrote
+            // it. Ask for the document on disk instead; the server answers nothing
+            // while it is the one the save acknowledged.
+            if (acceptedDocumentFingerprintFor(frame.sourceFile) !== acceptedBefore) {
+              sendResync(true)
+              return
+            }
           }
           const updateSeq = ++graphUpdateSeq
           const graphState = useGraphStore.getState()

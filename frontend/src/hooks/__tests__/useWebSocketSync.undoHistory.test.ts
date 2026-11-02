@@ -407,6 +407,41 @@ describe("useWebSocketSync - WS sync must not corrupt undo history (#8)", () => 
       })
     })
 
+    it("asks for the document on disk instead of adopting a held frame the save's answer superseded", async () => {
+      const { document, saved } = loadSavedCanvas()
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(document, "fingerprint-as-loaded")) }))
+      })
+      vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockClear()
+      latestWS().send.mockClear()
+      let answer!: () => void
+      const saving = new Promise<void>((resolve) => { answer = resolve })
+      trackPendingSave(SOURCE_FILE, saving)
+
+      // A resync read what the save wrote before a formatting hook rewrote it.
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(saved, "fingerprint-before-hook")) }))
+      })
+      // The save answers with the document the hook left.
+      await act(async () => {
+        useDocumentStatusStore.getState().acknowledgeSave("revision-after-hook", "fingerprint-after-hook")
+        answer()
+        await saving
+      })
+
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      expect(useDocumentStatusStore.getState()).toMatchObject({
+        sourceRevision: "revision-after-hook",
+        documentFingerprint: "fingerprint-after-hook",
+      })
+      expect(latestWS().send).toHaveBeenCalledTimes(1)
+      expect(JSON.parse(latestWS().send.mock.calls[0][0] as string)).toMatchObject({
+        type: "resync",
+        source_file: SOURCE_FILE,
+        document_fingerprint: "fingerprint-after-hook",
+      })
+    })
+
     it("applies a held frame when the save fails", async () => {
       const { document, saved } = loadSavedCanvas()
       await act(async () => {
