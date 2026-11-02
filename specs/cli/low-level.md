@@ -118,8 +118,8 @@ creates or patches `pyproject.toml` via `_ensure_haute_dependency`, which adds `
 for a workbench project `haute[<database>,azure]` (the database's driver its release
 installs and the Azure management packages its rollout uses), when no `haute` requirement is
 listed, gives one that is listed each of those extras it lacks, keeping its version
-specifier, marker and other extras and taking none away, and does a structural TOML edit
-rather than string templating so existing content survives; it adds a
+specifier, marker and other extras and taking none away, and edits the file through `tomlkit`
+so existing content and formatting survive; it adds a
 `[dependency-groups]` dev group of ruff, mypy and pytest and a `[tool.mypy]` table only when the
 file has none: `mypy_path = "rating"` and `explicit_package_bases = true`, so the generated CI's
 `uv run mypy .` resolves what `rating/main.py` imports from its own folder (`utility`, and
@@ -381,17 +381,13 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
   entirely on `win32` (NTFS ignores POSIX bits and git-on-Windows ignores the executable bit too),
   documenting the manual `git update-index --chmod=+x` workaround in a comment instead of calling a
   chmod that would silently do nothing.
-- **TOML-aware, not string-templated, dependency injection.** `_init_cmd._rewrite_project_dependencies`
-  and its helpers (`_scan_table_headers`, `_find_project_table_bounds`, `_find_matching_bracket`,
-  `_toml_basic_string`) hand-roll a quote/comment-aware TOML table scanner so injecting `"haute"`
-  into an existing `pyproject.toml`'s `[project].dependencies` array cannot be fooled by a `[foo]`
-  literal inside a triple-quoted string, and correctly escapes PEP 508 environment markers (which
-  contain embedded double quotes) when re-serialising dependency entries.
-- **Dotted-key `[project]` tables.** `_rewrite_project_dependencies` distinguishes a file with a
-  literal `[project]` header from one that only has `project.dependencies = [...]` at the root
-  (which `tomllib` parses into the same nested dict but has no textual `[project]` header to locate)
-  — the dotted-key case is rewritten in place rather than appending a second `[project]` table, which
-  TOML would reject as a duplicate declaration.
+- **A style-preserving `pyproject.toml` edit.** `_init_cmd._ensure_haute_dependency` edits an
+  existing file through `tomlkit`, so the `[project]` table is found as TOML finds it (a quoted
+  header, root dotted `project.*` keys, an inline table) and nothing outside the one entry it adds
+  or extends changes: comments, ordering and escaping (PEP 508 markers with embedded quotes) are
+  kept. `haute` goes first in `[project].dependencies`, and a one-line array it joins is laid out
+  one entry a line, as the scaffold writes it. `[[project]]` and a `dependencies` that is not an
+  array are refused, and what is written is read back with `tomllib` first.
 - **CI marker falsy-value handling.** `_deploy._detect_ci_env` treats `"0"`, `"false"`/`"False"`/
   `"FALSE"`, and `"no"`/`"No"`/`"NO"` as *not* CI, even though the env var is present — a provider
   that sets its marker to a falsy string should not be treated as "running in CI".

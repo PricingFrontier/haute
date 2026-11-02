@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import stat
 import sys
@@ -19,7 +20,7 @@ from haute._scaffold import (
 )
 from haute._workbench_form import blank_form
 from haute.cli import cli
-from haute.cli._init_cmd import _ensure_haute_dependency, _toml_basic_string
+from haute.cli._init_cmd import _ensure_haute_dependency
 from tests._git_helpers import git_run
 
 if TYPE_CHECKING:
@@ -668,7 +669,7 @@ class TestEnsureHauteDependency:
         # A project set up again as a workbench: its haute keeps its version, marker and other
         # extras, and none is taken away.
         pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text(layout.format(deps=f'"polars", {_toml_basic_string(listed)}'))
+        pyproject.write_text(layout.format(deps=f'"polars", {json.dumps(listed)}'))
         assert _ensure_haute_dependency(pyproject, "foo", "haute[sqlserver,azure]")
         with open(pyproject, "rb") as fh:
             assert tomllib.load(fh)["project"]["dependencies"] == ["polars", gains]
@@ -805,23 +806,6 @@ class TestEnsureHauteDependencyTomlSafety:
         assert 'numpy; python_version >= "3.11"' in deps
         assert "haute" in deps
 
-    @pytest.mark.parametrize(
-        "value",
-        [
-            'foo; python_version >= "3.11"',  # env marker with double quotes
-            "back\\slash",  # backslash
-            "tab\tchar",  # control char shorthand
-            "null\x00byte",  # \uXXXX control-char escape
-            'both "\\ mixed',  # quote + backslash together
-        ],
-    )
-    def test_toml_basic_string_round_trips(self, value: str):
-        # F131: whatever escaping the helper produces must be valid TOML that
-        # parses back to the original value.
-        emitted = _toml_basic_string(value)
-        parsed = tomllib.loads(f"x = {emitted}")
-        assert parsed["x"] == value
-
     def test_quoted_project_header_not_duplicated(self, tmp_path: Path):
         # F142: a quoted [ "project" ] header is the project table for tomllib;
         # the textual scan must recognise it and edit in place rather than
@@ -918,15 +902,39 @@ class TestEnsureHauteDependencyTomlSafety:
         with pytest.raises(ValueError, match="array-of-tables"):
             _ensure_haute_dependency(pyproject, "foo")
 
-    def test_haute_where_its_extras_cannot_be_added_raises_naming_them(self, tmp_path: Path):
-        # An inline [project] table has no array to rewrite: the extras are named for the
-        # analyst to add, and the file is left as it was.
+    def test_an_inline_project_table_gains_the_extras(self, tmp_path: Path):
         pyproject = tmp_path / "pyproject.toml"
-        text = 'project = { name = "foo", dependencies = ["haute>=1"] }\n'
-        pyproject.write_text(text, encoding="utf-8")
-        with pytest.raises(ValueError, match="add the azure, sqlserver extras to it yourself"):
-            _ensure_haute_dependency(pyproject, "foo", "haute[sqlserver,azure]")
-        assert pyproject.read_text(encoding="utf-8") == text
+        pyproject.write_text(
+            'project = { name = "foo", dependencies = ["haute>=1"] }\n', encoding="utf-8"
+        )
+        assert _ensure_haute_dependency(pyproject, "foo", "haute[sqlserver,azure]")
+        parsed = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        assert parsed["project"]["dependencies"] == ["haute[azure,sqlserver]>=1"]
+
+    def test_comments_and_layout_outside_the_entry_are_kept(self, tmp_path: Path):
+        pyproject = tmp_path / "pyproject.toml"
+        rest = "[dependency-groups]\ndev = []\n\n[tool.mypy]\nstrict = true\n"
+        pyproject.write_text(
+            '[project]\nname = "foo"  # the model\ndependencies = [\n'
+            '    "polars",  # frames\n    "numpy",\n]\n\n' + rest,
+            encoding="utf-8",
+        )
+        assert _ensure_haute_dependency(pyproject, "foo")
+        assert pyproject.read_text(encoding="utf-8") == (
+            '[project]\nname = "foo"  # the model\ndependencies = [\n'
+            '    "haute",\n    "polars",  # frames\n    "numpy",\n]\n\n' + rest
+        )
+
+    def test_a_one_line_array_is_laid_out_one_entry_a_line(self, tmp_path: Path):
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            '[project]\nname = "foo"\ndependencies = ["polars", "numpy"]\n', encoding="utf-8"
+        )
+        _ensure_haute_dependency(pyproject, "foo")
+        assert pyproject.read_text(encoding="utf-8").startswith(
+            '[project]\nname = "foo"\ndependencies = [\n'
+            '    "haute",\n    "polars",\n    "numpy",\n]\n'
+        )
 
 
 def _own_files(project_dir: Path) -> dict[Path, bytes]:
@@ -1781,3 +1789,4 @@ class TestInitCiRunsTheProjectsPython:
             )
             assert pins, relative
             assert {next(v for v in pin if v) for pin in pins} == {expected}, relative
+
