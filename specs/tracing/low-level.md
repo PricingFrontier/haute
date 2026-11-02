@@ -828,10 +828,9 @@ snapshot deterministically.
   representations with timezone-awareness preserved; Decimal uses exact
   lossless rescaling and never floats; Categorical/Enum compares normalised
   string values; compatible List/Array/Struct uses a typed one-row Polars
-  literal. Object and incompatible nested schemas are unsupported. A Polars
-  failure evaluating the strict predicate is reported as
-  `incompatible_nested_schema` only when a compared column is nested; with no
-  nested column it is a defect and propagates.
+  literal. Object and incompatible nested schemas are unsupported, refused by
+  the typed expression before the predicate runs; a Polars failure evaluating
+  the strict predicate is therefore a defect and propagates.
 - **Ambiguity and relaxation are explicit.** Multiple candidates never select
   the first row. Relaxation is attempted only after zero strict candidates,
   may omit keys but cannot weaken a retained key's value contract, and emits a

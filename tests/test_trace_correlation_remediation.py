@@ -203,7 +203,7 @@ def test_a_nested_comparison_polars_refuses_is_reported_as_nested(column, value)
     assert result.reason_code == "incompatible_nested_schema"
 
 
-def test_a_polars_failure_outside_a_nested_comparison_propagates(monkeypatch) -> None:
+def test_a_polars_failure_evaluating_the_strict_match_propagates(monkeypatch) -> None:
     import haute._trace_correlation as correlation
 
     def failing_expression(column, value, dtype, *, cast=None):

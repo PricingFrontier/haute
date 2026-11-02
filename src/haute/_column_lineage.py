@@ -3778,10 +3778,10 @@ def carried_column_proof(
                         if listed:
                             outputs.extend((name, False) for name in listed)
                         else:
-                            names_listed = _listed_column_names(argument)
-                            if names_listed is None:
-                                return None
-                            outputs.extend((name, True) for name in names_listed)
+                            # A pure selection, possibly behind an empty prefix or suffix.
+                            named = _name_list_outputs(argument)
+                            assert named is not None
+                            outputs.extend((name, True) for name in named[1])
                         continue
                     output = _expression_output(argument)
                     if output is None:

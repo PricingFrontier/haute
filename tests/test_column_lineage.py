@@ -2990,6 +2990,8 @@ def test_carried_column_proof_names_every_rewritten_column(
         ("df = src.select('a', pl.col('b').alias('b_new'))", ("src",), {"a"}, set(), {}),
         ("df = src.select((pl.col('a') * 2).alias('a'))", ("src",), set(), set(), {}),
         ("df = src.select(pl.col('a', 'b'))", ("src",), {"a", "b"}, set(), {}),
+        # A regex name list in ``with_columns`` selects without writing.
+        ("df = src.with_columns(['^a$'])", ("src",), None, set(), {}),
         ("df = src.select('a', 'b').select('b')", ("src",), {"b"}, set(), {}),
         # A column a later join brings in is not the root input's.
         (
@@ -3075,8 +3077,15 @@ def test_carried_proof_keeps_an_aggregate_from_identifying_a_later_joined_input(
         "df = src.group_by('id').agg(pl.len()).join(other, on='id')", ("src", "other")
     )
 
+    keyword = carried_column_proof(
+        "df = src.group_by('id').agg(rate=pl.col('amount').sum()).join(other, on='id')",
+        ("src", "other"),
+    )
+
     assert named is not None
     assert not named.carries("rate", "other")
+    assert keyword is not None
+    assert not keyword.carries("rate", "other")
     assert named.carries("id", "other")
     # ``pl.len()``'s output name is not in the syntax, so it could be any column.
     assert unnamed is None
@@ -3115,6 +3124,7 @@ def test_carried_proof_reads_a_selection_as_polars_keeps_it(
         "df = src.drop(names)",
         "df = src.drop()",
         "df = src.drop('a', strict=flag)",
+        "df = src.group_by('a').agg(**aggregates)",
     ],
 )
 def test_carried_proof_refuses_a_select_or_drop_whose_columns_it_cannot_name(code: str) -> None:

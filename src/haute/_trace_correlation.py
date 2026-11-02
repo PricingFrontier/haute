@@ -564,22 +564,16 @@ def _match_rows_vectorized(
 
     indexed = frame.with_row_index("__trace_row_index")
     strict_predicate = pl.all_horizontal(expressions)
-    try:
-        strict_indices = (
-            indexed.select(
-                pl.col("__trace_row_index"),
-                strict_predicate.alias("__trace_matches"),
-            )
-            .filter(pl.col("__trace_matches"))
-            .select("__trace_row_index")
+    # Every incompatible value, nested ones included, was refused by its typed
+    # expression above, so a failure here is a defect and propagates.
+    strict_indices = (
+        indexed.select(
+            pl.col("__trace_row_index"),
+            strict_predicate.alias("__trace_matches"),
         )
-    except pl.exceptions.PolarsError:
-        # Only a nested comparison can fail here: every other dtype's typed
-        # expression refused an incompatible value above, so any other failure
-        # is a defect and propagates.
-        if not any(compared[column].is_nested() for column in keys):
-            raise
-        return _unsupported_match_result(keys, dtypes, "incompatible_nested_schema")
+        .filter(pl.col("__trace_matches"))
+        .select("__trace_row_index")
+    )
     strict_count, strict_candidates, strict_state = _candidate_payload(strict_indices)
     if strict_count:
         status = _RowMatchStatus.UNIQUE_STRICT if strict_count == 1 else _RowMatchStatus.AMBIGUOUS
