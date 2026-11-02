@@ -596,7 +596,7 @@ input, input snapshots, model contracts and graph structure exclude the class.
   encoding remains byte-stable so previously published `contract_hash` values
   continue to verify.
 - Every logical cache input is present exactly once; unknown fields fail.
-- LRU oversized rejection retains a previous same-key entry.
+- LRU oversized rejection evicts a previous same-key entry, pinned or not.
 - Freshness-gated caches never exceed `max_entries` after a completed insertion.
 - A proof or loaded value is never reused across a moved freshness token, and a token without
   a native revision, or a POSIX revision whose ctime is a whole second, is reused only for a
@@ -731,7 +731,7 @@ cache lifecycle changes.
   `tests/test_graph_fingerprint_cached.py`, and `tests/test_hashing.py` cover canonical
   encoding, injectivity, field completeness, versioning, live switches, utility files,
   memoisation, and shared primitive behaviour.
-- `tests/test_lru_cache.py` covers entry/byte/TTL eviction, pins, oversized retention,
+- `tests/test_lru_cache.py` covers entry/byte/TTL eviction, pins, oversized rejection,
   non-promoting reads, and concurrency.
 - `tests/test_stat_gated_cache.py` covers hit/reload, LRU bounds, single flight, moving
   gates, exceptions, clear, and load-gate reclamation.

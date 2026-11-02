@@ -91,6 +91,16 @@ describe("buildExploreCacheIdentity", () => {
     expect(identity(explore, [changedSource, explore, downstream])).not.toEqual(identity())
     expect(identity(explore, [source, explore, downstream], "import pandas as pd")).not.toEqual(identity())
   })
+
+  it("changes when a Global Constant changes", () => {
+    const constant = { name: "base_rate", type: "float" as const, split: false, value: "1.2", bySource: {} }
+    const withConstants = (globalConstants: (typeof constant)[]) =>
+      buildNodeDataCacheIdentity({ node: explore, allNodes: [source, explore, downstream], edges, globalConstants })
+
+    expect(withConstants([constant])).not.toEqual(withConstants([]))
+    expect(withConstants([{ ...constant, value: "1.3" }])).not.toEqual(withConstants([constant]))
+    expect(withConstants([constant])).toEqual(withConstants([{ ...constant }]))
+  })
 })
 
 describe("buildNodeDataCacheIdentity for a consumer that reads its input", () => {

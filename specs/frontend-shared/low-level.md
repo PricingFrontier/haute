@@ -30,7 +30,7 @@
 | `frontend/src/hooks/useNodeDataCache.ts` | One consumer node's view of the data it reads: the point, its availability for that consumer's demand, and `run`, `refresh`, `cancel`, and `clear`. |
 | `frontend/src/hooks/useNodeDataProfile.ts` | The shared `profile` analysis of the data one consumer reads: asked for once per slot and data version while the point is `current`, fenced against a document that has moved on, stored per slot so every pane showing that data gets it, with `cancel` for the running job, and `error` plus `refresh` so a failed attempt is retried rather than left as an empty pane. Each request names the version it asks about, which the job it starts carries. |
 | `frontend/src/utils/operationToken.ts` | `nextOperationToken`: a process-unique token that tells one asynchronous operation apart from the operation that replaced it. |
-| `frontend/src/panels/dataPointIdentity.ts` | `buildNodeDataCacheIdentity`: the identity that gates a consumer's `point` request — its upstream subgraph, each node's data-affecting configuration (for a Banding or Rating Step consumer itself, only its column demand), every edge with its handles, the submodels, and the preamble. |
+| `frontend/src/panels/dataPointIdentity.ts` | `buildNodeDataCacheIdentity`: the identity that gates a consumer's `point` request — its upstream subgraph, each node's data-affecting configuration (for a Banding or Rating Step consumer itself, only its column demand), every edge with its handles, the submodels, the preamble, and the Global Constants. |
 | `frontend/src/stores/useSettingsStore.ts` | Zustand store: row limit, the pipeline settings (loaded from `GET /api/pipeline-settings` and written key by key through `PATCH /api/pipeline-settings`), section open/closed state, the MLflow destinations inventory cache (fetched once with probing, re-fetched by `invalidateMlflow()`), data sources, file-listing cache. The pure destination helpers live in `frontend/src/utils/mlflowDestinations.ts`, and the shared per-node control is the destination selector component described under the MLflow destination surface below. |
 | `frontend/src/stores/useToastStore.ts` | Zustand store: toast queue with dedup, capped at 10 entries. |
 | `frontend/src/stores/useUIStore.ts` | Zustand store: modal/panel open flags (git/utility/constants/assistant, and `filesPlace`, the Files panel's place or `null`, mutually exclusive by construction — each setter clears the others), sync banner, node panel width, the modelling and optimiser results workspaces' docked heights (`modellingPreviewHeight`, `optimiserPreviewHeight`; session-only, 420px initially), per-node Explore/modelling selection memory (editor pane, preview pane, and the configured chart/pivot Configure-subview ids), hover highlight, node search open flag, and the assistant's running-turn mirror, unseen-outcome flag and fix request, whose behaviour [frontend-assistant-ui](../frontend-assistant-ui/low-level.md) specifies. |
@@ -709,9 +709,10 @@ it (specified in the [server API](../server-api/low-level.md#node-data-builds)).
 
 1. `panels/dataPointIdentity.ts` builds the identity that gates the request: the consumer's
    upstream subgraph, each node's data-affecting configuration (Explore's overview, pivot, chart, and formula
-   settings excluded), every edge with its source and target handles, the submodels, and the
-   preamble. Covering more than the backend's signature costs an extra request, never a wrong
-   answer. A Banding or Rating Step consumer reads its input rather than its own output, so its
+   settings excluded), every edge with its source and target handles, the submodels, the
+   preamble, and every Global Constant (the backend's signature covers only those the lineage
+   reads; the browser does not work that out). Covering more than the backend's signature costs
+   an extra request, never a wrong answer. A Banding or Rating Step consumer reads its input rather than its own output, so its
    own configuration enters only as the column demand the backend derives from it (the factor
    columns, as `_data_points._banding_demand` / `_rating_step_demand`): editing its rules or
    table entries neither re-asks nor drops the answer it holds, while choosing another column
@@ -800,8 +801,9 @@ same Vitest config.
   directly offering no build, a clear that leaves nothing claimed as cached and a refused clear
   that changes nothing, an answer for a superseded identity never landing, a document that has
   moved on never being written — including a clear that lands after it — the shared poller
-  completing or failing a build, and the fence dropping every slot. The identity suite covers
-  a changed shared submodel definition and a moved port handle.
+  completing or failing a build, the fence dropping every slot, and a Global Constant edit
+  withdrawing the answer and asking again. The identity suite covers a changed shared submodel
+  definition, a moved port handle and a changed Global Constant.
   `frontend/src/stores/__tests__/useNodeDataStore.test.ts` covers the store's record of
   announced captures.
 - **Delegated data-point builds** (`frontend/src/hooks/__tests__/useNodeDataCache.delegation.test.tsx`):

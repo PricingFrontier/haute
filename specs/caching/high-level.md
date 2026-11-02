@@ -73,7 +73,8 @@ builds a snapshot or shreds JSON. The read holds its lease for the caller's whol
 final collection, and a spawned child reads exactly the generation its parent leased.
 
 `LRUCache` bounds entries, optionally bounds bytes/TTL, and supports pins. Rejecting an
-oversized value leaves an existing same-key entry intact. `StatGatedCache` is built on
+oversized value evicts an existing same-key entry, pinned or not, so the value it replaced is
+never served. `StatGatedCache` is built on
 `LRUCache`: it is bounded by an entry count, gates each entry on its file's freshness token,
 provides per-key single flight, and evicts least recently used entries.
 

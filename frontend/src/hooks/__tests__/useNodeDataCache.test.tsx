@@ -7,6 +7,7 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useToastStore from "../../stores/useToastStore"
 import useNodeWorkStore, { stopNodeWork } from "../../stores/useNodeWorkStore"
+import useGraphStore from "../../stores/useGraphStore"
 import useNodeDataCache, { deriveAvailability, refreshNodeDataCache } from "../useNodeDataCache"
 
 vi.mock("../../api/client", () => ({
@@ -202,6 +203,29 @@ describe("useNodeDataCache", () => {
 
     await waitFor(() => expect(result.current.availability).toBe("current"))
     expect(mockGetPoint.mock.calls.length).toBeGreaterThan(1)
+  })
+
+  it("re-asks the backend for a new identity when a Global Constant changes", async () => {
+    const constant = { name: "base_rate", type: "float" as const, split: false, value: "1.2", bySource: {} }
+    useGraphStore.setState({ globalConstants: [constant] })
+    try {
+      mockGetPoint.mockResolvedValue(point())
+      const { result } = renderCache("explore")
+      await waitFor(() => expect(result.current.availability).toBe("current"))
+      expect(mockGetPoint).toHaveBeenCalledTimes(1)
+
+      mockGetPoint.mockResolvedValue(point({ data_version: "gen-2" }))
+      act(() => {
+        useGraphStore.setState({ globalConstants: [{ ...constant, value: "1.3" }] })
+      })
+
+      // The answer for the old constants is withdrawn at once, then re-asked.
+      expect(result.current.point).toBeNull()
+      await waitFor(() => expect(result.current.dataVersion).toBe("gen-2"))
+      expect(mockGetPoint.mock.calls.length).toBeGreaterThan(1)
+    } finally {
+      useGraphStore.setState({ globalConstants: [] })
+    }
   })
 
   // The node's Refresh button is the only way to cache data now, so what it
