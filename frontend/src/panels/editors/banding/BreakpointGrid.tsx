@@ -1,11 +1,9 @@
 import { Copy, Plus, Trash } from "lucide-react"
 import { withAlpha } from "../../../utils/color"
-import useToastStore from "../../../stores/useToastStore"
-import { buildTsv, parsePastedGrid, writeClipboardText } from "../shared/tableClipboard"
+import { useTwoColumnGridClipboard } from "../shared/useTwoColumnGridClipboard"
 import { boundaryDayNumber, boundaryKind, breakpointLabelIssues } from "./bandingUtils"
 import { CellIssueMark } from "../shared/CellIssueMark"
 import { cellIssueStyle } from "../shared/cellIssueStyle"
-import { apiErrorMessage } from "../../../api/errors"
 
 type Breakpoint = { boundary: string; label: string }
 
@@ -23,8 +21,7 @@ interface BreakpointGridProps {
   temporal?: boolean
 }
 
-const BREAKPOINT_FIELDS = ["boundary", "label"] as const
-const BREAKPOINT_COPY_HEADERS = ["Up to", "Band name"] as const
+const BREAKPOINT_GRID = { name: "banding", fields: ["boundary", "label"], copyHeaders: ["Up to", "Band name"] } as const
 const CELL_CLASS = "px-0.5 py-0.5"
 const DELETE_CELL_CLASS = `${CELL_CLASS} text-center`
 const MATCH_CELL_CLASS = `${CELL_CLASS} text-right`
@@ -33,53 +30,6 @@ const BOXED_LABEL_INPUT_CLASS = `${BOXED_INPUT_CLASS} font-semibold`
 const BOXED_CELL_STYLE = { background: "var(--bg-panel)", border: "1px solid var(--border)", color: "var(--text-primary)" }
 const DELETE_BUTTON_CLASS = "p-0.5 rounded transition-colors hover:text-[var(--danger)] focus-visible:text-[var(--danger)]"
 const ACTION_BUTTON_CLASS = "accent-hover-btn flex size-6 items-center justify-center rounded"
-
-function isHeaderRow(cols: string[], expected: readonly string[]): boolean {
-  if (cols.length < expected.length) return false
-  return expected.every((header, index) => cols[index]?.trim().toLowerCase() === header.toLowerCase())
-}
-
-function isBreakpointHeaderRow(cols: string[]): boolean {
-  return isHeaderRow(cols, BREAKPOINT_COPY_HEADERS) || isHeaderRow(cols, BREAKPOINT_FIELDS)
-}
-
-function dropRecognizedHeaderRow(matrix: string[][], fieldIndex: number): string[][] {
-  if (fieldIndex !== 0 || matrix.length === 0) return matrix
-  return isBreakpointHeaderRow(matrix[0]) ? matrix.slice(1) : matrix
-}
-
-function applyPastedBreakpointRange(
-  breakpoints: Breakpoint[],
-  rowIndex: number,
-  fieldIndex: number,
-  matrix: string[][],
-): Breakpoint[] {
-  const next = [...breakpoints]
-
-  for (let rowOffset = 0; rowOffset < matrix.length; rowOffset++) {
-    const targetRow = rowIndex + rowOffset
-    if (!next[targetRow]) {
-      next[targetRow] = { boundary: "", label: "" }
-    } else {
-      next[targetRow] = { ...next[targetRow] }
-    }
-
-    for (let colOffset = 0; colOffset < matrix[rowOffset].length; colOffset++) {
-      const field = BREAKPOINT_FIELDS[fieldIndex + colOffset]
-      if (!field) continue
-      next[targetRow][field] = matrix[rowOffset][colOffset]
-    }
-  }
-
-  return next
-}
-
-function breakpointsToTsv(breakpoints: Breakpoint[]): string {
-  return buildTsv([
-    BREAKPOINT_COPY_HEADERS,
-    ...breakpoints.map((breakpoint) => [breakpoint.boundary ?? "", breakpoint.label ?? ""]),
-  ])
-}
 
 function parseBoundaryValue(boundary: string): number | null {
   const trimmed = boundary.trim()
@@ -162,7 +112,7 @@ export function BreakpointGrid({
   matchCounts,
   temporal = false,
 }: BreakpointGridProps) {
-  const addToast = useToastStore(s => s.addToast)
+  const { handleCellPaste, copyTsv } = useTwoColumnGridClipboard(BREAKPOINT_GRID, breakpoints, onUpdate)
   const showMatches = matchCounts != null
   const boundaryWarnings = temporal ? dateBoundaryWarnings(breakpoints) : boundaryOrderWarnings(breakpoints)
   const labelIssues = breakpointLabelIssues(breakpoints)
@@ -180,30 +130,6 @@ export function BreakpointGrid({
 
   const removeBreakpoint = (index: number) => {
     onUpdate(breakpoints.filter((_, i) => i !== index))
-  }
-
-  const handleCellPaste = (
-    e: React.ClipboardEvent<HTMLInputElement>,
-    rowIndex: number,
-    fieldIndex: number,
-  ) => {
-    const text = e.clipboardData.getData("text/plain")
-    if (!text.includes("\t") && !text.includes("\n") && !text.includes("\r")) return
-
-    e.preventDefault()
-    e.stopPropagation()
-
-    const matrix = dropRecognizedHeaderRow(parsePastedGrid(text), fieldIndex)
-    if (matrix.length === 0) return
-
-    onUpdate(applyPastedBreakpointRange(breakpoints, rowIndex, fieldIndex, matrix))
-  }
-
-  const copyBanding = () => {
-    void writeClipboardText(breakpointsToTsv(breakpoints)).catch((error: unknown) => {
-      const detail = apiErrorMessage(error)
-      addToast("error", `Could not copy banding TSV: ${detail}`)
-    })
   }
 
   return (
@@ -334,7 +260,7 @@ export function BreakpointGrid({
             type="button"
             aria-label="Copy banding as TSV"
             title="Copy banding as TSV"
-            onClick={copyBanding}
+            onClick={copyTsv}
             className={ACTION_BUTTON_CLASS}
             style={{ color: "var(--text-secondary)", ["--node-accent" as string]: accentColor }}
           >

@@ -1,31 +1,16 @@
 import { useMemo, useCallback } from "react"
 import { Copy, Trash } from "lucide-react"
 import { CHART_COLORS } from "../../../theme/colors"
-import useToastStore from "../../../stores/useToastStore"
-import { buildTsv, parsePastedGrid, writeClipboardText } from "../shared/tableClipboard"
+import { parsePastedGrid } from "../shared/tableClipboard"
+import { isGridHeaderRow, useTwoColumnGridClipboard } from "../shared/useTwoColumnGridClipboard"
 import type { BandingFactor, CategoricalRule } from "../../../types/banding"
 import { categoricalRuleIssues } from "./bandingUtils"
 import { useRowKeys } from "../shared/useRowKeys"
 import { CellIssueMark } from "../shared/CellIssueMark"
 import { cellIssueStyle } from "../shared/cellIssueStyle"
-import { apiErrorMessage } from "../../../api/errors"
 
 const CATEGORICAL_FIELDS = ["value", "assignment"] as const
-const CATEGORICAL_COPY_HEADERS = ["Value", "Maps To"] as const
-
-function isHeaderRow(cols: string[], expected: readonly string[]): boolean {
-  if (cols.length < expected.length) return false
-  return expected.every((header, index) => cols[index]?.trim().toLowerCase() === header.toLowerCase())
-}
-
-function isCategoricalHeaderRow(cols: string[]): boolean {
-  return isHeaderRow(cols, CATEGORICAL_COPY_HEADERS) || isHeaderRow(cols, CATEGORICAL_FIELDS)
-}
-
-function dropRecognizedHeaderRow(matrix: string[][], fieldIndex: number): string[][] {
-  if (fieldIndex !== 0 || matrix.length === 0) return matrix
-  return isCategoricalHeaderRow(matrix[0]) ? matrix.slice(1) : matrix
-}
+const RULE_GRID = { name: "banding", fields: CATEGORICAL_FIELDS, copyHeaders: ["Value", "Maps To"] } as const
 
 function isBlankPastedRow(cols: string[]): boolean {
   return cols.every(col => col.trim() === "")
@@ -40,7 +25,7 @@ function parsePastedRules(text: string): CategoricalRule[] {
     if (isBlankPastedRow(cols)) {
       continue
     }
-    if (parsed.length === 0 && isCategoricalHeaderRow(cols)) {
+    if (parsed.length === 0 && isGridHeaderRow(RULE_GRID, cols)) {
       continue
     }
     if (cols.length >= 2) {
@@ -49,35 +34,6 @@ function parsePastedRules(text: string): CategoricalRule[] {
   }
 
   return parsed
-}
-
-function applyPastedRuleRange(
-  rules: CategoricalRule[],
-  rowIndex: number,
-  fieldIndex: number,
-  matrix: string[][],
-): CategoricalRule[] {
-  const next = [...rules]
-
-  for (let rowOffset = 0; rowOffset < matrix.length; rowOffset++) {
-    const targetRow = rowIndex + rowOffset
-    next[targetRow] = next[targetRow] ? { ...next[targetRow] } : { value: "", assignment: "" }
-
-    for (let colOffset = 0; colOffset < matrix[rowOffset].length; colOffset++) {
-      const field = CATEGORICAL_FIELDS[fieldIndex + colOffset]
-      if (!field) continue
-      next[targetRow][field] = matrix[rowOffset][colOffset]
-    }
-  }
-
-  return next
-}
-
-function rulesToTsv(rules: CategoricalRule[]): string {
-  return buildTsv([
-    [...CATEGORICAL_COPY_HEADERS],
-    ...rules.map((rule) => [rule.value ?? "", rule.assignment ?? ""]),
-  ])
 }
 
 const DELETE_BUTTON_CLASS = "p-0.5 rounded transition-colors text-[var(--text-muted)] hover:text-[var(--danger)] focus-visible:text-[var(--danger)]"
@@ -119,7 +75,6 @@ export function BandingRulesGrid({
   matchCounts?: (number | null)[]
   onAddRule?: () => void
 }) {
-  const addToast = useToastStore(s => s.addToast)
   const rules = useMemo(() => (factor.rules || []) as CategoricalRule[], [factor.rules])
   // Each row's key lives here, never in the config: an edit keeps every key, so
   // focus stays in the cell being typed in.
@@ -129,6 +84,7 @@ export function BandingRulesGrid({
   // editor kept on the rule) is dropped from what is written.
   const setRules = (r: CategoricalRule[]) =>
     onUpdateFactor({ rules: r.map(({ value, assignment }) => ({ value, assignment })) })
+  const { handleCellPaste, copyTsv } = useTwoColumnGridClipboard(RULE_GRID, rules, setRules)
   const updateRule = (idx: number, field: string, value: string) => {
     const next = [...rules]; next[idx] = { ...next[idx], [field]: value }; setRules(next)
   }
@@ -147,31 +103,6 @@ export function BandingRulesGrid({
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rules])
-
-  const handleCellPaste = useCallback((
-    e: React.ClipboardEvent<HTMLInputElement>,
-    ruleIndex: number,
-    fieldIndex: number,
-  ) => {
-    const text = e.clipboardData.getData("text/plain")
-    if (!text.includes("\t") && !text.includes("\n") && !text.includes("\r")) return
-
-    e.preventDefault()
-    e.stopPropagation()
-
-    const matrix = dropRecognizedHeaderRow(parsePastedGrid(text), fieldIndex)
-    if (matrix.length === 0) return
-
-    setRules(applyPastedRuleRange(rules, ruleIndex, fieldIndex, matrix))
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rules])
-
-  const handleCopyBanding = useCallback(() => {
-    void writeClipboardText(rulesToTsv(rules)).catch((error: unknown) => {
-      const detail = apiErrorMessage(error)
-      addToast("error", `Could not copy banding TSV: ${detail}`)
-    })
-  }, [rules, addToast])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>, ruleIndex: number) => {
     if (e.key === "Enter" && ruleIndex === rules.length - 1 && onAddRule) {
@@ -262,7 +193,7 @@ export function BandingRulesGrid({
           type="button"
           aria-label="Copy banding as TSV"
           title="Copy banding as TSV"
-          onClick={handleCopyBanding}
+          onClick={copyTsv}
           className={ACTION_BUTTON_CLASS}
           style={{ color: 'var(--text-secondary)', ['--node-accent' as string]: accentColor }}
         >
