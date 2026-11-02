@@ -148,7 +148,7 @@ To see the trade-off instead, switch `claims` to **Sweep**, fill in **from** and
     | **Validation input** | `analysis_input`: the exact input name of the connected edge; absent uses `data_input` |
     | **Validation** tick boxes | `analysis_columns`: up to 12 column names |
     | Constraints | `constraints`: a map of column to `{"min": …}` (**at least**), `{"max": …}` (**at most**), or `{"min_pct": …}` / `{"max_pct": …}` (the % of baseline bounds, as a fraction: `0.95` is 95%). May be empty. |
-    | **Sweep**, **from**, **to** | `frontier_ranges`: a map of swept constraint to its absolute `min` and `max` totals; a frontier is computed when any constraint has one |
+    | **Sweep**, **from**, **to** | `frontier_ranges`: a map of swept constraint to its `min` and `max`, absolute totals for an **at least**/**at most** bound and fractions of the baseline for a % of baseline bound (a 90–110% sweep is `{"min": 0.9, "max": 1.1}`); a frontier is computed when any constraint has one |
     | **Points per swept constraint** | `frontier_steps` (defaults to 15) |
     | **Max iterations** | `max_iter` (defaults to 50) |
     | **Tolerance** | `tolerance` (defaults to `1e-6`) |
