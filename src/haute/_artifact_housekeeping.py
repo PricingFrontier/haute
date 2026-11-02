@@ -13,6 +13,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import psutil
+
 from haute._logging import get_logger
 
 logger = get_logger(component="artifact_housekeeping")
@@ -40,7 +42,14 @@ def create_owned_artifact_directory(root: Path, prefix: str, owner: str) -> Path
             raise RuntimeError("system clock produced an invalid artifact creation time")
         (directory / _MARKER_FILENAME).write_text(
             json.dumps(
-                {"schema_version": _SCHEMA_VERSION, "owner": owner, "created_at": created_at},
+                {
+                    "schema_version": _SCHEMA_VERSION,
+                    "owner": owner,
+                    "created_at": created_at,
+                    # The creating process: a live one's directories are never reaped.
+                    "pid": os.getpid(),
+                    "process_started_at": _CURRENT_PROCESS_STARTED_AT,
+                },
                 separators=(",", ":"),
             ),
             encoding="utf-8",
@@ -134,7 +143,12 @@ def reap_stale_artifact_directories(
             report["skipped"] += 1
             continue
         marker = _read_valid_marker(child / _MARKER_FILENAME)
-        if marker is None or marker["owner"] != owner or marker["created_at"] > cutoff:
+        if (
+            marker is None
+            or marker["owner"] != owner
+            or marker["created_at"] > cutoff
+            or _creator_is_running(marker)
+        ):
             report["skipped"] += 1
             continue
         reclaimed_bytes = _directory_size_bytes(child)
@@ -192,7 +206,47 @@ def _read_valid_marker(path: Path) -> dict[str, Any] | None:
         return None
     if not math.isfinite(created_at) or created_at < 0:
         return None
-    return {"owner": owner, "created_at": created_at}
+    pid = marker.get("pid")
+    started_at = marker.get("process_started_at")
+    if pid is None and started_at is None:
+        # A marker written before creators were recorded: age alone decides.
+        return {"owner": owner, "created_at": created_at, "pid": None, "started_at": None}
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return None
+    if isinstance(started_at, bool) or not isinstance(started_at, (int, float)):
+        return None
+    if not math.isfinite(started_at):
+        return None
+    return {"owner": owner, "created_at": created_at, "pid": pid, "started_at": started_at}
+
+
+def _process_started_at(pid: int) -> float:
+    return float(psutil.Process(pid).create_time())
+
+
+_CURRENT_PROCESS_STARTED_AT = _process_started_at(os.getpid())
+# Process start times are reported to the clock tick, so compare with a margin.
+_START_TIME_TOLERANCE_SECONDS = 1.0
+
+
+def _creator_is_running(marker: dict[str, Any]) -> bool:
+    """Whether the process that created a marked directory is still running.
+
+    A recorded start time tells the creator apart from a later process that
+    reused its pid. A process whose start time cannot be read is treated as
+    running: a live server's files are never removed on a guess.
+    """
+    pid = marker["pid"]
+    if not isinstance(pid, int):
+        return False
+    recorded_started_at = float(marker["started_at"])
+    try:
+        started_at = _process_started_at(pid)
+    except psutil.NoSuchProcess:
+        return False
+    except psutil.Error:
+        return True
+    return abs(started_at - recorded_started_at) <= _START_TIME_TOLERANCE_SECONDS
 
 
 def _directory_size_bytes(directory: Path) -> int:

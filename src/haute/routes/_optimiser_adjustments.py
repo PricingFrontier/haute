@@ -38,12 +38,10 @@ BASE_PRICE = 1.0
 _QUANTILES = (("p5", 0.05), ("p25", 0.25), ("p50", 0.5), ("p75", 0.75), ("p95", 0.95))
 
 ADJUSTMENT_REPORTS_KEY = "adjustment_reports"
-"""The job field caching point reports by ``(frontier_generation, point_index)``."""
+"""The job field caching point reports by ``point_index``."""
 
 MAX_CACHED_ADJUSTMENT_REPORTS = 64
 """The most point reports one job keeps; the oldest is dropped first."""
-
-PointReportKey = tuple[int, int]
 
 K = TypeVar("K", bound=Hashable)
 

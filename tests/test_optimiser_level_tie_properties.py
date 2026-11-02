@@ -7,7 +7,7 @@ only the curated fixtures."
 Tie rules proved:
 (a) Save time: every spelling of one typed factor value canonicalises to one
     saved __factor_group__ key, distinct typed values never share a key, and two
-    emitted levels collapsing to one key fail loudly with ValueError raised by
+    emitted levels collapsing to one key fail loudly with InvalidRequestError raised by
     _serialise_ratebook_factor_table_rows (never last-writer-wins at save).
 (b) Apply time: a duplicate saved key resolves to the LAST entry in both the
     Polars engine (_apply_ratebook, unique keep="last") and the explainability
@@ -28,6 +28,7 @@ from hypothesis import strategies as st
 from haute._builders import _apply_ratebook
 from haute._optimiser_apply_explainability import _match_ratebook_entry
 from haute._rating import normalise_rating_key
+from haute.errors import InvalidRequestError
 from haute.routes._optimiser_solver import (
     _ratebook_factor_dtypes,
     _ratebook_factor_level_counts,
@@ -254,7 +255,7 @@ def test_two_spellings_of_one_value_in_one_table_fail_loudly(
     data: st.DataObject,
 ) -> None:
     """Rule (a): two emitted levels collapsing to one key fail loudly with
-    ValueError raised by _serialise_ratebook_factor_table_rows naming the table."""
+    InvalidRequestError raised by _serialise_ratebook_factor_table_rows naming the table."""
     val = data.draw(typed_value_strategy(dtype), label="val")
     distinct_sp = distinct_spellings_for_value(val, dtype)
     assume(len(distinct_sp) >= 2)
@@ -268,7 +269,7 @@ def test_two_spellings_of_one_value_in_one_table_fail_loudly(
     dtypes = _ratebook_factor_dtypes(df, [[table_name]])
 
     table = {table_name: {sp1: 1.1, sp2: 1.2}}
-    with pytest.raises(ValueError, match="canonicalise") as exc_info:
+    with pytest.raises(InvalidRequestError, match="canonicalise") as exc_info:
         _serialise_ratebook_factor_tables(table, counts, {}, dtypes)
 
     assert table_name in str(exc_info.value), (
@@ -480,7 +481,7 @@ def test_verbatim_labels_would_silently_drop_a_solved_rate() -> None:
     spellings of one typed value are stored verbatim as two entries; the apply
     path coerces both through the factor dtype, deduplicates keep="last" and
     silently rates the row with the second entry. The canonicalising save path
-    refuses the very same emitted table with the ValueError property 3 proves.
+    refuses the very same emitted table with the InvalidRequestError property 3 proves.
     """
     found = find(st_float_case, _verbatim_table_drops_a_rate_silently, settings=pr_budget(60))
     assert _verbatim_table_drops_a_rate_silently(found), found
@@ -490,7 +491,7 @@ def test_verbatim_labels_would_silently_drop_a_solved_rate() -> None:
     df = pl.DataFrame({"age": [val, val]}, schema={"age": dtype})
     counts = _ratebook_factor_level_counts(df, [["age"]])
     dtypes = _ratebook_factor_dtypes(df, [["age"]])
-    with pytest.raises(ValueError, match="canonicalise"):
+    with pytest.raises(InvalidRequestError, match="canonicalise"):
         _serialise_ratebook_factor_tables(
             {"age": {spellings[0]: 1.1, spellings[1]: 1.9}}, counts, {}, dtypes
         )

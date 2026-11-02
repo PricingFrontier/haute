@@ -185,9 +185,6 @@ these are the Majors still open.
 - **A graceful server exit joins every in-flight worker** (Major,
   `ROAD-WORKER-06`): a 6 s child in flight at a 2 s exit ends the process at
   7.6 s; no job registry is cancelled at shutdown.
-- **The optimiser's MLflow log writes the complete result artifact without the
-  finiteness gate the save applies** (Major, `OPT-R01`): a missing defence layer
-  on a pricing artifact, since the status poll corrects the UI path.
 - **The assistant's SDK clients are built without the validated endpoint**
   (Major, `ASSIST-54`): `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` in the
   server's environment redirects the key, the prompt and project material to a
@@ -251,11 +248,6 @@ production:
 | Background jobs | WRK-5, WRK-6, WRK-11, WRK-14 | `ROAD-WORKER-07` |
 | Background jobs | WRK-8, WRK-9, WRK-10 | `ROAD-WORKER-08` |
 | Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
-| Optimiser | OPR-1, OPR-8, OPR-12 | `OPT-R01` |
-| Optimiser | OPR-3 | `OPT-R02` |
-| Optimiser | OPR-4, OPR-5, OPR-6, OPR-7 | `OPT-R03` |
-| Optimiser | OPR-2 | `OPT-R04` (Decision) |
-| Optimiser | OPR-9, OPR-10, OPR-11 | `OPT-R05` |
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
 | Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |
 | Assistant | ASA-3, ASA-4, ASA-6, ASA-9 | `ASSIST-55` |
@@ -313,8 +305,7 @@ browser's hand-written contract mirrors (`API-R03`), the results store's optimis
 utilities (`ENGQ-R01`); Banding's `_id` inside the config (`FNED-R07`), the editors'
 barrels (`ENGQ-R01`), the pivot editor writing the
 fields the backend defaults (`EDA-R02`); a second fabricated
-train-failure sentinel (`FSH-R06`); the browser's frontier
-generation fences that only ever see generation 0 (`OPT-R04`), the optimiser
+train-failure sentinel (`FSH-R06`); the optimiser
 panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and
 `applyFrontierPointSummary`'s null handling (`FSH-R03`); in the workbench UI and
 the app shell, the

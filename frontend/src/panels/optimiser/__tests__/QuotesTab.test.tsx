@@ -69,7 +69,6 @@ function page(
     offset: 0,
     preview_row_count: rows.length,
     preview_row_limit: 100,
-    frontier_generation: 0,
     error: null,
     ...overrides,
   }
@@ -85,7 +84,7 @@ function install(mode: "online" | "ratebook" = "online") {
 
 function renderTab(mode: "online" | "ratebook" = "online") {
   install(mode)
-  return render(<QuotesTab nodeId="opt_1" jobId="job_1" mode={mode} frontierGeneration={0} pointIndex={null} />)
+  return render(<QuotesTab nodeId="opt_1" jobId="job_1" mode={mode} pointIndex={null} />)
 }
 
 /** The query each request sent, in order. */
@@ -282,17 +281,6 @@ describe("QuotesTab", () => {
 
     expect(screen.queryByText("LATE")).toBeNull()
     expect(screen.getByText("HIGHEST")).toBeInTheDocument()
-  })
-
-  it("refuses a page the server answered for another frontier generation", async () => {
-    // The server recomputed the frontier between the request and its reply.
-    mockApply.mockResolvedValueOnce(page(ROWS, { frontier_generation: 1 }))
-    renderTab()
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "The server answered for frontier generation 1, but this result shows generation 0.",
-    )
-    expect(screen.queryByText("Q001")).toBeNull()
   })
 
   it("offers Retry after a failure, and none when the result is gone", async () => {

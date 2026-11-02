@@ -4045,6 +4045,7 @@ _ONLINE_APPLY_ARTIFACT = {
 }
 
 
+@pytest.mark.usefixtures("_widen_sandbox_root")
 @pytest.mark.parametrize(
     "required", [{"quote_id", "optimal_scenario_value"}, {"quote_id"}, {"optimal_volume"}]
 )

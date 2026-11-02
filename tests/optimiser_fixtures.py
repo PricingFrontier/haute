@@ -199,7 +199,6 @@ def make_frontier_data(
         "points_truncated": False,
         "constraint_names": names,
         "swept_axes": list(names),
-        "frontier_generation": 0,
     }
     data.update(extra)
     return data
@@ -303,7 +302,6 @@ def make_solved_result(
         ),
         "lambdas": lambdas if lambdas is not None else {"volume": 0.0},
         "converged": converged,
-        "frontier_generation": 0,
         "input_summary": make_input_summary(),
         "diagnostics_errors": [],
         "scenario_grid": make_scenario_grid(extra.get("n_steps") or 3),
@@ -449,7 +447,6 @@ def make_online_frontier_job(
         "config": cfg,
         "node_label": "frontier_opt",
         "frontier_data": fd,
-        "frontier_generation": 0,
         "result": result,
         "artifact_handles": {},
         "scenario_grid": SOLVE_SCENARIO_GRID,
@@ -473,7 +470,6 @@ def make_ratebook_frontier_job(
     frontier_data: dict[str, Any] | None = None,
     solver: Any = None,
     quote_grid: Any = None,
-    factors_df: pl.DataFrame | None = None,
     factor_columns_valid: list[list[str]] | None = None,
     factor_level_counts: dict[str, dict[str, int]] | None = None,
     selected_frontier_point: int | None = None,
@@ -490,9 +486,6 @@ def make_ratebook_frontier_job(
     )
     # Override result mode to ratebook.
     job["result"]["mode"] = "ratebook"
-    job["factors_df"] = (
-        factors_df if factors_df is not None else pl.DataFrame({"region": ["North"]})
-    )
     job["factor_columns_valid"] = (
         factor_columns_valid if factor_columns_valid is not None else [["region"]]
     )
@@ -552,50 +545,6 @@ def make_select_job(
 _FRONTIER_TERMINAL_STATUSES = frozenset(
     {"completed", "error", "contract_error", "memory_limited", "timed_out", "cancelled"}
 )
-
-
-def poll_frontier_until_done(client: Any, job_id: str, timeout: float = 30.0) -> dict[str, Any]:
-    """Poll ``/frontier/status/{job_id}`` until a terminal status."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        resp = client.get(f"/api/optimiser/frontier/status/{job_id}")
-        assert resp.status_code == 200, resp.text
-        data = resp.json()
-        if data["status"] in _FRONTIER_TERMINAL_STATUSES:
-            return data
-        time.sleep(0.02)
-    raise TimeoutError(f"Frontier job {job_id} did not finish within {timeout}s")
-
-
-def run_frontier_and_wait(
-    client: Any,
-    payload: dict[str, Any],
-    timeout: float = 30.0,
-) -> dict[str, Any]:
-    """Start a frontier sweep and poll it to a terminal state.
-
-    Returns the terminal status payload; callers assert on ``status``,
-    ``message``/``http_status_code`` (errors) or ``result`` (success).
-    """
-    resp = client.post("/api/optimiser/frontier", json=payload)
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["status"] == "started"
-    assert body["job_id"]
-    return poll_frontier_until_done(client, body["job_id"], timeout=timeout)
-
-
-def frontier_result(
-    client: Any,
-    payload: dict[str, Any],
-    timeout: float = 30.0,
-) -> dict[str, Any]:
-    """Run a frontier sweep to completion and return its result payload."""
-    status = run_frontier_and_wait(client, payload, timeout=timeout)
-    assert status["status"] == "completed", status.get("message", "")
-    result = status.get("result")
-    assert isinstance(result, dict)
-    return result
 
 
 def use_local_mlflow_store(tmp_path: Any, monkeypatch: Any) -> Any:
@@ -692,3 +641,27 @@ def make_ratebook_quote_results(constraint_names: list[str]) -> pl.DataFrame:
         "clamped_high": [False, False],
     }
     return pl.DataFrame(values, schema=schema)
+
+
+def setup_launch_context(service: Any, job_id: str) -> Any:
+    """The admitted, registered context solve setup hands ``_launch_background``."""
+    from haute._execution_admission import create_admitted_execution_context
+    from haute._execution_context import ExecutionCancellationToken, ExecutionProfile
+    from haute.routes._optimiser_service import _SOLVE_JOB_TYPE
+    from haute.routes._optimiser_solver import SolveContext
+
+    token = ExecutionCancellationToken()
+    service._jobs.register_latest((_SOLVE_JOB_TYPE, job_id), job_id, execution_token=token)
+    context = create_admitted_execution_context(
+        operation="optimiser_solve_worker",
+        profile=ExecutionProfile.OPTIMISER_SETUP,
+        job_id=job_id,
+        cancellation_token=token,
+    )
+    return SolveContext(
+        job_id=job_id,
+        node_id="opt",
+        mode="online",
+        execution_context=context,
+        registration_already_active=True,
+    )

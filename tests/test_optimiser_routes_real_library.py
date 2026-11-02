@@ -44,7 +44,6 @@ from tests.conftest import (
     make_ready_file_input_config,
     make_transform_node,
 )
-from tests.optimiser_fixtures import run_frontier_and_wait
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -202,6 +201,7 @@ def _ratebook_graph(
     scored_path: str,
     banding_path: str,
     factor_columns: list[list[str]] | None = None,
+    config: dict | None = None,
 ) -> dict:
     graph = make_graph(
         {
@@ -241,6 +241,7 @@ def _ratebook_graph(
                             "factor_columns": factor_columns or [["region"]],
                             "banding_source": "banding",
                             "data_input": "source",
+                            **(config or {}),
                         },
                     },
                 },
@@ -252,6 +253,18 @@ def _ratebook_graph(
         }
     )
     return graph.model_dump()
+
+
+def _volume_frontier(low: float, high: float, steps: int) -> dict:
+    """Node config that sweeps ``volume`` from *low* to *high* in the solve's own frontier."""
+    return {"frontier_ranges": {"volume": {"min": low, "max": high}}, "frontier_steps": steps}
+
+
+def _solve_frontier(client: TestClient, job_id: str) -> dict:
+    """The frontier the completed solve computed."""
+    frontier = _poll_until_done(client, job_id)["frontier"]
+    assert frontier is not None
+    return frontier
 
 
 def _solve_completed(client: TestClient, graph: dict) -> str:
@@ -443,17 +456,11 @@ class TestRatebookResultContract:
         actions) must keep working against the REAL ``RatebookResult``
         shape — the factor-table flow is the ratebook detail surface."""
         scored_path, banding_path = _ratebook_fixture_paths(tmp_path)
-        job_id = _solve_completed(client, _ratebook_graph(scored_path, banding_path))
-
-        frontier_status = run_frontier_and_wait(
+        job_id = _solve_completed(
             client,
-            {
-                "job_id": job_id,
-                "threshold_ranges": {"volume": [4.0, 6.0]},
-                "n_points_per_dim": 2,
-            },
+            _ratebook_graph(scored_path, banding_path, config=_volume_frontier(4.0, 6.0, 2)),
         )
-        assert frontier_status["status"] == "completed", frontier_status.get("message", "")
+        assert _solve_frontier(client, job_id)["n_points"] == 2
 
         select_resp = client.post(
             "/api/optimiser/frontier/select",
@@ -531,18 +538,15 @@ class TestRatebookResultContract:
 
         scored_path, banding_path = _ratebook_fixture_paths(tmp_path, with_age=True)
         job_id = _solve_completed(
-            client, _ratebook_graph(scored_path, banding_path, [["region"], ["age"]])
-        )
-        frontier_status = run_frontier_and_wait(
             client,
-            {
-                "job_id": job_id,
-                "threshold_ranges": {"volume": [4.0, 6.0]},
-                "n_points_per_dim": 3,
-            },
+            _ratebook_graph(
+                scored_path,
+                banding_path,
+                [["region"], ["age"]],
+                config=_volume_frontier(4.0, 6.0, 3),
+            ),
         )
-        assert frontier_status["status"] == "completed", frontier_status.get("message", "")
-        points = frontier_status["result"]["points"]
+        points = _solve_frontier(client, job_id)["points"]
         assert len(points) == 3
 
         clean_job_store.clear_result_data(job_id)
@@ -728,18 +732,8 @@ class TestOnlineApplyDetailRealSchema:
         df = _scored_frame(n_quotes=5, n_steps=3)
         path = tmp_path / "online_frontier_scored.parquet"
         df.write_parquet(path)
-        job_id = _solve_completed(client, _online_graph(str(path)))
-
-        frontier_status = run_frontier_and_wait(
-            client,
-            {
-                "job_id": job_id,
-                "threshold_ranges": {"volume": [4.0, 6.0]},
-                "n_points_per_dim": 3,
-            },
-        )
-        assert frontier_status["status"] == "completed", frontier_status.get("message", "")
-        assert frontier_status["result"]["n_points"] == 3
+        job_id = _solve_completed(client, _online_graph(str(path), _volume_frontier(4.0, 6.0, 3)))
+        assert _solve_frontier(client, job_id)["n_points"] == 3
 
         first = client.post(
             "/api/optimiser/apply",
@@ -770,24 +764,14 @@ class TestFrontierPointSummaryContract:
         df = _scored_frame(n_quotes=5, n_steps=3)
         path = tmp_path / "online_frontier_summaries.parquet"
         df.write_parquet(path)
-        job_id = _solve_completed(client, _online_graph(str(path)))
+        job_id = _solve_completed(client, _online_graph(str(path), _volume_frontier(4.0, 6.0, 3)))
 
-        frontier_status = run_frontier_and_wait(
-            client,
-            {
-                "job_id": job_id,
-                "threshold_ranges": {"volume": [4.0, 6.0]},
-                "n_points_per_dim": 3,
-            },
-        )
-        assert frontier_status["status"] == "completed", frontier_status.get("message", "")
-        frontier = frontier_status["result"]
+        frontier = _solve_frontier(client, job_id)
         summaries = frontier["point_summaries"]
         assert len(summaries) == len(frontier["points"]) == 3
-
-        # The browser reads the frontier from the solve job, not the sweep job.
-        solve_status = _poll_until_done(client, job_id)
-        assert solve_status["result"]["frontier"]["point_summaries"] == summaries
+        assert (
+            _poll_until_done(client, job_id)["result"]["frontier"]["point_summaries"] == summaries
+        )
 
         for index, summary in enumerate(summaries):
             point = frontier["points"][index]
@@ -922,15 +906,12 @@ class TestSolveResultContract:
 
     def test_ratebook_frontier_points_are_typed_ratebook_rows(self, client, tmp_path):
         scored_path, banding_path = _ratebook_fixture_paths(tmp_path)
-        job_id = _solve_completed(client, _ratebook_graph(scored_path, banding_path))
-
-        status = run_frontier_and_wait(
+        job_id = _solve_completed(
             client,
-            {"job_id": job_id, "threshold_ranges": {"volume": [4.0, 6.0]}, "n_points_per_dim": 2},
+            _ratebook_graph(scored_path, banding_path, config=_volume_frontier(4.0, 6.0, 2)),
         )
 
-        assert status["status"] == "completed", status.get("message", "")
-        for point in status["result"]["points"]:
+        for point in _solve_frontier(client, job_id)["points"]:
             assert point["mode"] == "ratebook"
             assert set(point["totals"]) == {"volume"}
             assert 0.0 <= point["clamp_rate"] <= 1.0
@@ -938,53 +919,6 @@ class TestSolveResultContract:
         solved = _poll_until_done(client, job_id)["result"]
         assert solved["input_summary"]["solver_settings"]["max_cd_iterations"] == 3
         assert solved["diagnostics_errors"] == []
-
-
-@pytest.mark.usefixtures("_widen_sandbox_root")
-class TestFrontierGenerationContract:
-    def test_every_response_reports_the_generation_and_a_recompute_increments_it(
-        self, client, tmp_path
-    ):
-        """The browser keys point-derived data (the /apply cache) by
-        ``(job_id, frontier_generation)``: a recompute reuses point indices for
-        different points, so each recompute must report a new generation on the
-        solve result, its frontier, the sweep's own result and select."""
-        df = _scored_frame(n_quotes=5, n_steps=3)
-        path = tmp_path / "online_frontier_generation.parquet"
-        df.write_parquet(path)
-        job_id = _solve_completed(client, _online_graph(str(path)))
-        assert _poll_until_done(client, job_id)["result"]["frontier_generation"] == 0
-
-        for expected_generation in (1, 2):
-            sweep = run_frontier_and_wait(
-                client,
-                {
-                    "job_id": job_id,
-                    "threshold_ranges": {"volume": [4.0, 6.0]},
-                    "n_points_per_dim": 2,
-                },
-            )
-            assert sweep["status"] == "completed", sweep.get("message", "")
-            assert sweep["result"]["frontier_generation"] == expected_generation
-
-            solve_status = _poll_until_done(client, job_id)
-            assert solve_status["result"]["frontier_generation"] == expected_generation
-            assert solve_status["result"]["frontier"]["frontier_generation"] == expected_generation
-            assert solve_status["frontier"]["frontier_generation"] == expected_generation
-
-            selected = client.post(
-                "/api/optimiser/frontier/select",
-                json={"job_id": job_id, "point_index": 1},
-            )
-            assert selected.status_code == 200, selected.text
-            assert selected.json()["frontier_generation"] == expected_generation
-            # Returning to the solved result reports the same generation.
-            solved = client.post(
-                "/api/optimiser/frontier/select",
-                json={"job_id": job_id, "point_index": None},
-            )
-            assert solved.status_code == 200, solved.text
-            assert solved.json()["frontier_generation"] == expected_generation
 
 
 _TWO_CONSTRAINTS = {"volume": {"min": 5.5}, "margin": {"max": 400.0}}
@@ -999,6 +933,124 @@ def _assert_every_constraint_summarised(summary: dict, point: dict) -> None:
         "volume": {"kind": "min", "bound": point["thresholds"]["volume"]},
         "margin": {"kind": "max", "bound": 400.0},
     }
+
+
+# Three quotes, two steps each: the base price (1.0) or 10% up (1.1). Price up
+# earns more and halves the volume, so unconstrained every quote prices up
+# (volume 1.5). Quote q_0002 gains least from pricing up (1 against 2 and 3),
+# so a minimum volume of 2.0 holds it at the base price and no other: the
+# Lagrangian moves a quote to the base price once lambda * 0.5 exceeds its gain,
+# so q_0002 moves for any lambda in [2, 4), and the total is exactly 2.0.
+_BINDING_INCOME = {"q_0000": (10.0, 12.0), "q_0001": (10.0, 13.0), "q_0002": (10.0, 11.0)}
+_BINDING_REGION = {"q_0000": "North", "q_0001": "South", "q_0002": "East"}
+_BINDING_CHOICE = {"q_0000": 1.1, "q_0001": 1.1, "q_0002": 1.0}
+
+
+def _binding_fixture(tmp_path) -> tuple[str, str]:
+    rows = [
+        (quote, step, value, _BINDING_INCOME[quote][step], (1.0, 0.5)[step])
+        for quote in _BINDING_INCOME
+        for step, value in enumerate((1.0, 1.1))
+    ]
+    scored = pl.DataFrame(
+        {
+            "quote_id": [row[0] for row in rows],
+            "scenario_index": pl.Series([row[1] for row in rows], dtype=pl.Int32),
+            "scenario_value": pl.Series([row[2] for row in rows], dtype=pl.Float32),
+            "expected_income": pl.Series([row[3] for row in rows], dtype=pl.Float32),
+            "volume": pl.Series([row[4] for row in rows], dtype=pl.Float32),
+        }
+    )
+    scored_path = tmp_path / "binding_scored.parquet"
+    scored.write_parquet(scored_path)
+    banding = pl.DataFrame(
+        {"quote_id": list(_BINDING_REGION), "region": list(_BINDING_REGION.values())}
+    )
+    banding_path = tmp_path / "binding_banding.parquet"
+    banding.write_parquet(banding_path)
+    return str(scored_path), str(banding_path)
+
+
+_BINDING_CONFIG = {
+    "constraints": {"volume": {"min": 2.0}},
+    "max_iter": 500,
+    "tolerance": 1e-9,
+}
+
+
+@pytest.mark.usefixtures("_widen_sandbox_root")
+class TestABindingConstraintAgainstAHandSolvedAnswer:
+    """OPT-R05: a solve whose constraint binds matches the answer worked by hand:
+    the chosen steps, a positive lambda and the total at the bound."""
+
+    def test_online(self, client, tmp_path):
+        scored_path, _banding = _binding_fixture(tmp_path)
+        job_id = _solve_completed(client, _online_graph(scored_path, _BINDING_CONFIG))
+        result = _poll_until_done(client, job_id)["result"]
+
+        assert 2.0 <= result["lambdas"]["volume"] < 4.0
+        assert result["constraints"]["volume"] == pytest.approx(2.0, abs=1e-6)
+        assert result["effective_bounds"] == {"volume": {"kind": "min", "bound": 2.0}}
+        assert result["total_objective"] == pytest.approx(35.0, abs=1e-5)
+        page = client.post("/api/optimiser/apply", json={"job_id": job_id})
+        assert page.status_code == 200, page.text
+        chosen = {
+            row["quote_id"]: round(row["optimal_scenario_value"], 6)
+            for row in page.json()["preview"]
+        }
+        assert chosen == _BINDING_CHOICE
+
+    def test_ratebook(self, client, tmp_path):
+        scored_path, banding_path = _binding_fixture(tmp_path)
+        job_id = _solve_completed(
+            client,
+            _ratebook_graph(scored_path, banding_path, [["region"]], config=_BINDING_CONFIG),
+        )
+        result = _poll_until_done(client, job_id)["result"]
+
+        assert result["lambdas"]["volume"] > 0.0
+        assert result["constraints"]["volume"] == pytest.approx(2.0, abs=1e-6)
+        assert result["effective_bounds"] == {"volume": {"kind": "min", "bound": 2.0}}
+        assert result["total_objective"] == pytest.approx(35.0, abs=1e-5)
+        # Each quote is priced at the step its region's rate evaluates to.
+        page = client.post("/api/optimiser/apply", json={"job_id": job_id})
+        assert page.status_code == 200, page.text
+        chosen = {
+            row["quote_id"]: round(row["optimal_scenario_value"], 6)
+            for row in page.json()["preview"]
+        }
+        assert chosen == _BINDING_CHOICE
+
+
+@pytest.mark.usefixtures("_widen_sandbox_root")
+class TestFrontierPointMlflowSummary:
+    @pytest.mark.parametrize("mode", ["online", "ratebook"])
+    def test_a_point_logs_the_anchors_metric_names(self, client, tmp_path, monkeypatch, mode):
+        """OPT-R03: a frontier point's run and the anchor's share their metric
+        names (price-contour's ``summary`` scheme), so they compare by name."""
+        from tests.optimiser_fixtures import use_local_mlflow_store
+
+        store = use_local_mlflow_store(tmp_path, monkeypatch)
+        if mode == "online":
+            path = tmp_path / "summary_keys.parquet"
+            _scored_frame(n_quotes=5, n_steps=3).write_parquet(path)
+            graph = _online_graph(str(path), _volume_frontier(4.0, 6.0, 3))
+        else:
+            scored_path, banding_path = _ratebook_fixture_paths(tmp_path)
+            graph = _ratebook_graph(scored_path, banding_path, config=_volume_frontier(4.0, 6.0, 2))
+        job_id = _solve_completed(client, graph)
+
+        metric_names = {}
+        for point_index in (None, 1):
+            response = client.post(
+                "/api/optimiser/mlflow/log", json={"job_id": job_id, "point_index": point_index}
+            )
+            assert response.status_code == 200, response.text
+            run = store.get_run(response.json()["run_id"])
+            metric_names[point_index] = set(run.data.metrics)
+
+        assert metric_names[1] == metric_names[None]
+        assert {"constraint_volume_total", "lambda_volume"} <= metric_names[1]
 
 
 @pytest.mark.usefixtures("_widen_sandbox_root")
@@ -1027,39 +1079,9 @@ class TestEffectiveBoundsContract:
             "margin": {"kind": "max", "bound": 400.0},
         }
         frontier = result["frontier"]
-        # The solve-time frontier is the job's first generation.
-        assert result["frontier_generation"] == frontier["frontier_generation"] == 0
         assert frontier["constraint_names"] == ["volume", "margin"]
         assert frontier["swept_axes"] == ["volume"]
         assert [point["thresholds"]["volume"] for point in frontier["points"]] == [5.0, 5.5, 6.0]
-        for index, point in enumerate(frontier["points"]):
-            _assert_every_constraint_summarised(frontier["point_summaries"][index], point)
-            response = client.post(
-                "/api/optimiser/frontier/select",
-                json={"job_id": job_id, "point_index": index},
-            )
-            assert response.status_code == 200, response.text
-            _assert_every_constraint_summarised(response.json(), point)
-
-    def test_unswept_constraint_survives_the_recompute_and_select(self, client, tmp_path):
-        path = tmp_path / "two_constraints.parquet"
-        _scored_frame(n_quotes=6, n_steps=5, extra_constraint_columns=True).write_parquet(path)
-        job_id = _solve_completed(
-            client, _online_graph(str(path), {"constraints": _TWO_CONSTRAINTS})
-        )
-
-        status = run_frontier_and_wait(
-            client,
-            {
-                "job_id": job_id,
-                "threshold_ranges": {"volume": [5.0, 6.0]},
-                "n_points_per_dim": 3,
-            },
-        )
-        assert status["status"] == "completed", status.get("message", "")
-        frontier = status["result"]
-        assert frontier["constraint_names"] == ["volume", "margin"]
-        assert frontier["swept_axes"] == ["volume"]
         for index, point in enumerate(frontier["points"]):
             _assert_every_constraint_summarised(frontier["point_summaries"][index], point)
             response = client.post(
@@ -1077,25 +1099,21 @@ class TestEffectiveBoundsContract:
         path = tmp_path / "pct.parquet"
         _scored_frame(n_quotes=6, n_steps=5).write_parquet(path)
         job_id = _solve_completed(
-            client, _online_graph(str(path), {"constraints": {"volume": {"min_pct": 0.95}}})
+            client,
+            _online_graph(
+                str(path),
+                {"constraints": {"volume": {"min_pct": 0.95}}, **_volume_frontier(0.9, 1.0, 3)},
+            ),
         )
         result = _poll_until_done(client, job_id)["result"]
         baseline = result["baseline_constraints"]["volume"]
 
+        # The solve runs at the swept range's start.
         assert result["effective_bounds"] == {
-            "volume": {"kind": "min", "bound": pytest.approx(0.95 * baseline, rel=1e-12)}
+            "volume": {"kind": "min", "bound": pytest.approx(0.9 * baseline, rel=1e-12)}
         }
 
-        status = run_frontier_and_wait(
-            client,
-            {
-                "job_id": job_id,
-                "threshold_ranges": {"volume": [0.9, 1.0]},
-                "n_points_per_dim": 3,
-            },
-        )
-        assert status["status"] == "completed", status.get("message", "")
-        frontier = status["result"]
+        frontier = result["frontier"]
         thresholds = [point["thresholds"]["volume"] for point in frontier["points"]]
         assert thresholds == pytest.approx([0.9, 0.95, 1.0])
         for index, point in enumerate(frontier["points"]):
@@ -1129,73 +1147,14 @@ class TestEffectiveBoundsContract:
 
 @pytest.mark.usefixtures("_widen_sandbox_root")
 class TestFrontierComputeBudgetContract:
-    def test_frontier_above_library_cap_is_422_naming_both_numbers(
-        self,
-        client,
-        tmp_path,
-    ):
-        """22³ = 10,648 grid points sits above the library cap (10,000)
-        but below the old route budget (100,000).  Before the fix this
-        request passed the route gate and died inside price-contour as an
-        opaque 500; it must now be a 422 naming the projected grid size
-        and the cap, raised before the solver is invoked."""
-        df = _scored_frame(n_quotes=5, n_steps=3, extra_constraint_columns=True)
-        path = tmp_path / "budget_scored.parquet"
-        df.write_parquet(path)
-        graph = _online_graph(
-            str(path),
-            config={
-                "constraints": {
-                    "volume": {"min": 0.1},
-                    "conversion": {"min": 0.1},
-                    "margin": {"min": 0.1},
-                },
-            },
-        )
-        job_id = _solve_completed(client, graph)
-
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={
-                "job_id": job_id,
-                "threshold_ranges": {
-                    "volume": [4.0, 6.0],
-                    "conversion": [2.0, 3.0],
-                    "margin": [100.0, 200.0],
-                },
-                "n_points_per_dim": 22,
-            },
-        )
-
-        assert resp.status_code == 422, resp.text
-        detail = resp.json()["detail"]
-        assert "10,648" in detail
-        assert "10,000" in detail
-        assert "frontier compute budget" in detail.lower()
-
-        # The job must remain a healthy completed job — the rejection is a
-        # request-level contract error, not a job failure.
-        status = client.get(f"/api/optimiser/solve/status/{job_id}")
-        assert status.status_code == 200
-        assert status.json()["status"] == "completed"
-
     def test_small_real_frontier_still_passes_the_gate(self, client, tmp_path):
         """A within-budget sweep runs the real solver end-to-end."""
         df = _scored_frame(n_quotes=5, n_steps=3)
         path = tmp_path / "budget_ok_scored.parquet"
         df.write_parquet(path)
-        job_id = _solve_completed(client, _online_graph(str(path)))
+        job_id = _solve_completed(client, _online_graph(str(path), _volume_frontier(4.0, 6.0, 3)))
 
-        status = run_frontier_and_wait(
-            client,
-            {
-                "job_id": job_id,
-                "threshold_ranges": {"volume": [4.0, 6.0]},
-                "n_points_per_dim": 3,
-            },
-        )
-        assert status["status"] == "completed", status.get("message", "")
-        assert status["result"]["n_points"] == 3
+        assert _solve_frontier(client, job_id)["n_points"] == 3
 
     def test_budget_error_names_exact_projection_when_computable(self) -> None:
         with pytest.raises(FrontierComputeBudgetExceededError) as exc:

@@ -53,6 +53,7 @@ from haute._types import (
     RatebookSolveResultLike,
     SolveResultLike,
 )
+from haute.errors import InvalidRequestError
 from haute.graph_utils import NodeType
 from haute.routes import _optimiser_artifacts
 from haute.routes._background_jobs import (
@@ -119,7 +120,6 @@ class _OptimiserSolverExecutionError(Exception):
     """An exception raised by the external price-contour solver boundary."""
 
 
-_FRONTIER_GENERATION_KEY = "frontier_generation"
 # Job key: one ``factor_tables`` dict per retained ratebook frontier point,
 # aligned with ``frontier_data["points"]``. price-contour reports each row's
 # totals as the canonical evaluation of these tables, so a point is
@@ -146,8 +146,8 @@ _SOLVER_WORKER_ACTIVE: contextvars.ContextVar[bool] = contextvars.ContextVar(
 def solver_worker_context() -> Iterator[None]:
     """Mark the current thread of execution as an optimiser solver worker.
 
-    Entered only by the background job runners (solve worker, frontier sweep
-    worker). Guarded entrypoints refuse to run outside it.
+    Entered only by the solve's background runners (in process or in the
+    solver session). Guarded entrypoints refuse to run outside it.
     """
     token = _SOLVER_WORKER_ACTIVE.set(True)
     try:
@@ -775,7 +775,7 @@ def _serialise_ratebook_factor_table_rows(
             factor_dtypes,
         )
         if level_key in emitted_by_canonical:
-            raise ValueError(
+            raise InvalidRequestError(
                 f"Ratebook factor table {name!r} levels {emitted_by_canonical[level_key]!r} "
                 f"and {level!r} both canonicalise to {level_key!r}; the solver input mixed "
                 "value types in one factor column. Cast it to a single type and re-solve."
@@ -783,7 +783,10 @@ def _serialise_ratebook_factor_table_rows(
         emitted_by_canonical[level_key] = level
         scenario_float = float(scenario_value)
         if not np.isfinite(scenario_float):
-            raise ValueError(f"Ratebook factor table {name!r} contains a non-finite rate.")
+            raise InvalidRequestError(
+                f"Ratebook factor table {name!r} has a non-finite rate ({scenario_float}) "
+                f"at level {level_key!r}."
+            )
         sort_key = (
             (0, level_positions[level_key]) if level_key in level_positions else (1, original_index)
         )
@@ -940,7 +943,6 @@ def _finalize_solve_result(
     elapsed: float,
     extra_fields: dict[str, Any] | None = None,
     extra_job_fields: dict[str, Any] | None = None,
-    factors_df: pl.DataFrame | None = None,
     ratebook_factors_handle: dict[str, Any] | None = None,
     ratebook_factor_contexts: Any | None = None,
     factor_columns: list[list[str]] | None = None,
@@ -1076,7 +1078,6 @@ def _finalize_solve_result(
                     mode=mode,
                     constraint_kinds=kinds,
                     swept_axes=list(ranges),
-                    frontier_generation=0,
                 )
                 frontier_factor_tables = frontier_point_factor_tables(
                     frontier_result,
@@ -1097,8 +1098,6 @@ def _finalize_solve_result(
             diagnostics_errors.append(_diagnostic_error("frontier", exc, job_id=job_id))
 
     result_dict["frontier"] = frontier_data
-    # A solve starts the job's frontier generations; see ``completion_fields``.
-    result_dict["frontier_generation"] = 0
     if frontier_error is not None:
         result_dict["frontier_error"] = frontier_error
     result_dict["diagnostics_errors"] = diagnostics_errors
@@ -1148,18 +1147,10 @@ def _finalize_solve_result(
             )
         )
 
-        factor_handle = ratebook_factors_handle
-        if factor_handle is None:
-            factor_handle = _optimiser_artifacts._persist_ratebook_factors_artifact(factors_df)
-            if factor_handle is not None:
-                uncommitted_handles.append(
-                    (
-                        factor_handle,
-                        "solve_completion_orphan_factor_artifact_cleanup_failed",
-                    )
-                )
-        if factor_handle is not None:
-            artifact_handles[_optimiser_artifacts._RATEBOOK_FACTORS_HANDLE_KEY] = factor_handle
+        if ratebook_factors_handle is not None:
+            artifact_handles[_optimiser_artifacts._RATEBOOK_FACTORS_HANDLE_KEY] = (
+                ratebook_factors_handle
+            )
         if quote_analysis_handle is not None:
             artifact_handles[_optimiser_artifacts._QUOTE_ANALYSIS_HANDLE_KEY] = (
                 quote_analysis_handle
@@ -1178,7 +1169,6 @@ def _finalize_solve_result(
             _FRONTIER_FACTOR_TABLES_KEY: frontier_factor_tables,
             "artifact_handles": artifact_handles,
             **(extra_job_fields or {}),
-            _FRONTIER_GENERATION_KEY: 0,
         }
         if ratebook_factor_contexts is not None:
             completion_fields["ratebook_factor_contexts"] = ratebook_factor_contexts
@@ -1272,7 +1262,6 @@ def _solve_online(
         mode="online",
         solver=solver,
         quote_grid=solve_result.grid,
-        factors_df=None,
         store=store,
         job_id=job_id,
         elapsed=elapsed,

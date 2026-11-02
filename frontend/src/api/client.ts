@@ -32,7 +32,6 @@ import type {
   FrontierAutoRangeStartResponse,
   FrontierAutoRangeStatusResponse,
   FrontierSelectResponse,
-  FrontierStatusResponse,
   OptimiserSegmentIndexResponse,
   OptimiserSegmentsResponse,
   GitArchiveResponse,
@@ -132,7 +131,6 @@ import {
   parseDissolveSubmodelResponse,
   explorePivotMembersFromContract,
   frontierAutoRangeStatusFromContract,
-  frontierStatusFromContract,
   optimiserStatusFromContract,
   explorePivotRunFromContract,
   explorePivotStatusFromContract,
@@ -1732,18 +1730,6 @@ export function logOptimiserToMlflow(
   options?: { signal?: AbortSignal },
 ): Promise<MlflowLogResponse> {
   return post<unknown>("/api/optimiser/mlflow/log", payload, options).then(async (data) => expectGeneratedContract("OptimiserMlflowLogResponse", (await optimiserValidators()).validateOptimiserMlflowLogResponse, data))
-}
-
-export function getFrontierStatus(
-  jobId: string,
-  options?: { signal?: AbortSignal },
-): Promise<FrontierStatusResponse> {
-  return request<unknown>(
-    `/api/optimiser/frontier/status/${encodeURIComponent(jobId)}`,
-    options,
-  ).then(async (data) => frontierStatusFromContract(
-    expectGeneratedContract("OptimiserFrontierStatusResponse", (await optimiserValidators()).validateOptimiserFrontierStatusResponse, data),
-  ))
 }
 
 export interface StartOptimiserFrontierAutoRangeArgs {

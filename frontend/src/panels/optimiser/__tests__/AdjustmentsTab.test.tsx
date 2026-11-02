@@ -43,13 +43,11 @@ function deferred<T>(): Deferred<T> {
 function Harness({
   solvedResult = makeOnlineSolveResult(),
   pointIndex = null,
-  frontierGeneration = 0,
   initialReports = {},
   onLoaded,
 }: {
   solvedResult?: OptimiserSolveResult
   pointIndex?: number | null
-  frontierGeneration?: number
   initialReports?: PointAdjustmentReports
   onLoaded?: (key: string, report: OptimiserAdjustmentReport) => void
 }) {
@@ -57,7 +55,6 @@ function Harness({
   return (
     <AdjustmentsTab
       jobId="job_1"
-      frontierGeneration={frontierGeneration}
       pointIndex={pointIndex}
       solvedResult={solvedResult}
       pointReports={reports}
@@ -269,14 +266,14 @@ describe("AdjustmentsTab: a selected frontier point", () => {
     const pointReport = makeAdjustmentReport({ n_quotes: 50000 })
     await act(async () => request.resolve(makeFrontierSelect({ point_index: 2, adjustments: pointReport })))
 
-    expect(onLoaded).toHaveBeenCalledWith("job_1:0:2", pointReport)
+    expect(onLoaded).toHaveBeenCalledWith("job_1:2", pointReport)
     expect(chart()).toBeInTheDocument()
     rerender(<Harness pointIndex={2} onLoaded={onLoaded} />)
     expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(1)
   })
 
   it("makes no request for a point already loaded in this review", () => {
-    render(<Harness pointIndex={1} initialReports={{ "job_1:0:1": makeAdjustmentReport() }} />)
+    render(<Harness pointIndex={1} initialReports={{ "job_1:1": makeAdjustmentReport() }} />)
 
     expect(mockSelectFrontierPoint).not.toHaveBeenCalled()
     expect(chart()).toBeInTheDocument()
@@ -297,7 +294,7 @@ describe("AdjustmentsTab: a selected frontier point", () => {
 
     await act(async () => second.resolve(makeFrontierSelect({ point_index: 2, adjustments: makeAdjustmentReport() })))
     expect(onLoaded).toHaveBeenCalledTimes(1)
-    expect(onLoaded.mock.calls[0][0]).toBe("job_1:0:2")
+    expect(onLoaded.mock.calls[0][0]).toBe("job_1:2")
   })
 
   it("reissues a request another point's apply replaced, without showing an error", async () => {
@@ -344,48 +341,6 @@ describe("AdjustmentsTab: a selected frontier point", () => {
     const alert = screen.getByRole("alert")
     expect(alert).toHaveTextContent("Frontier point 3 is no longer available. Re-run the solve to inspect it.")
     expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
-  })
-
-  it("discards an earlier generation's reply once a recompute reuses the point index", async () => {
-    const earlier = deferred<ReturnType<typeof makeFrontierSelect>>()
-    const recomputed = deferred<ReturnType<typeof makeFrontierSelect>>()
-    mockSelectFrontierPoint.mockReturnValueOnce(earlier.promise).mockReturnValueOnce(recomputed.promise)
-    const onLoaded = vi.fn()
-    const { rerender } = render(<Harness pointIndex={2} frontierGeneration={0} onLoaded={onLoaded} />)
-    rerender(<Harness pointIndex={2} frontierGeneration={1} onLoaded={onLoaded} />)
-
-    expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(2)
-    await act(async () => recomputed.resolve(makeFrontierSelect({
-      point_index: 2,
-      frontier_generation: 1,
-      adjustments: makeAdjustmentReport({ n_quotes: 222 }),
-    })))
-    await act(async () => earlier.resolve(makeFrontierSelect({
-      point_index: 2,
-      frontier_generation: 0,
-      adjustments: makeAdjustmentReport({ n_quotes: 111 }),
-    })))
-
-    expect(onLoaded).toHaveBeenCalledTimes(1)
-    expect(onLoaded.mock.calls[0][0]).toBe("job_1:1:2")
-    expect(onLoaded.mock.calls[0][1].n_quotes).toBe(222)
-  })
-
-  it("reports a reply from a generation the view does not show instead of keeping it", async () => {
-    // The server recomputed the frontier before the node installed the new generation.
-    mockSelectFrontierPoint.mockResolvedValueOnce(makeFrontierSelect({
-      point_index: 2,
-      frontier_generation: 1,
-      adjustments: makeAdjustmentReport(),
-    }))
-    const onLoaded = vi.fn()
-    render(<Harness pointIndex={2} frontierGeneration={0} onLoaded={onLoaded} />)
-    await act(async () => {})
-
-    expect(onLoaded).not.toHaveBeenCalled()
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "The server answered for frontier generation 1, but this result shows generation 0.",
-    )
   })
 
   it("fails loudly when the server answers a point without its report", async () => {

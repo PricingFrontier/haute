@@ -45,7 +45,6 @@ import {
 import { effectiveConstraintBounds } from "../stores/useNodeResultsStore"
 import RatebookRatesTab from "./optimiser/RatebookRatesTab"
 import { hasFactorTables } from "./optimiser/ratebookFactorTables"
-import { frontierGenerationMismatch } from "./optimiser/optimiserHelpers"
 import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
 import QuotesTab from "./optimiser/QuotesTab"
 import AdjustmentsTab, { type PointAdjustmentReports } from "./optimiser/AdjustmentsTab"
@@ -356,18 +355,14 @@ export default function OptimiserPreview({
   const frontier = displayData.frontier
   const selectedIdx = displayData.selectedPointIndex
 
-  // A recompute keeps the job and reuses point indices for different points,
-  // so a rates request is identified by job, frontier generation and point.
-  const frontierGeneration = solvedResult.frontier_generation
-
   // The rates effect's cleanup already releases its in-flight key when its
   // identity changes or on unmount; the whole map is also cleared when the
-  // job or generation changes, so keys for a solve the node no longer shows
+  // job changes, so keys for a solve the node no longer shows
   // do not accumulate across long-lived sessions.
   useEffect(() => {
     requestedRatesRef.current.clear()
     setRatesDetail({ status: "idle" })
-  }, [jobId, frontierGeneration])
+  }, [jobId])
 
   const selectedRatebookRatesMissing = (
     result.mode === "ratebook"
@@ -382,7 +377,7 @@ export default function OptimiserPreview({
   )
   useEffect(() => {
     if (!shouldMaterialiseSelectedRates || selectedIdx == null) return
-    const key = `${jobId}:${frontierGeneration}:${selectedIdx}`
+    const key = `${jobId}:${selectedIdx}`
     const requestedRates = requestedRatesRef.current
     if (requestedRates.has(key)) return
     const requestId = ratesRequestSeqRef.current + 1
@@ -401,14 +396,6 @@ export default function OptimiserPreview({
     )
       .then((res) => {
         if (requestedRates.get(key) !== requestId) return
-        // The server may have recomputed the frontier since the request; its
-        // point then is not the one this result shows, so nothing is stored.
-        const mismatch = frontierGenerationMismatch(res.frontier_generation, frontierGeneration)
-        if (mismatch !== null) {
-          requestedRates.delete(key)
-          setRatesDetail({ status: "error", key, error: mismatch })
-          return
-        }
         storeUpdateAfterSelect(nodeId, jobId, selectedIdx, res)
         requestedRates.delete(key)
         setRatesDetail((current) => {
@@ -435,7 +422,7 @@ export default function OptimiserPreview({
       }
       controller.abort()
     }
-  }, [shouldMaterialiseSelectedRates, selectedIdx, jobId, frontierGeneration, nodeId, storeUpdateAfterSelect, ratesAttempt])
+  }, [shouldMaterialiseSelectedRates, selectedIdx, jobId, nodeId, storeUpdateAfterSelect, ratesAttempt])
 
   // A click selects a point as the publish target; the selected point stays
   // selected (the Export pane's target choice returns to the solved result).
@@ -475,15 +462,14 @@ export default function OptimiserPreview({
     : { previous: null, next: null }
   const handleSliceChange = useCallback(
     (key: string) => {
-      if (!slicing || !frontierWithPoints) return
+      if (!slicing) return
       setSliceChoice({
         xName: slicing.xName,
-        generation: frontierWithPoints.frontier_generation,
         key,
         selection: selectedIdx,
       })
     },
-    [slicing, frontierWithPoints, selectedIdx, setSliceChoice],
+    [slicing, selectedIdx, setSliceChoice],
   )
   // The y axis names the objective column only while the node's config is the
   // one the result was solved with; a stale result's column is not known.
@@ -608,12 +594,7 @@ export default function OptimiserPreview({
             xConstraintIdx={xConstraintIdx}
             onXConstraintChange={setXConstraintIdx}
             slicing={slicing}
-            slicePosition={displayedSlicePosition(
-              slicing,
-              selectedIdx,
-              sliceChoice,
-              frontierWithPoints.frontier_generation,
-            )}
+            slicePosition={displayedSlicePosition(slicing, selectedIdx, sliceChoice)}
             onSliceChange={handleSliceChange}
             objectiveName={objectiveName}
             onPointClick={handlePointClick}
@@ -660,7 +641,6 @@ export default function OptimiserPreview({
       {activeTab === "adjustments" && (
         <AdjustmentsTab
           jobId={jobId}
-          frontierGeneration={solvedResult.frontier_generation}
           pointIndex={selectedIdx}
           solvedResult={solvedResult}
           pointReports={adjustmentReports}
@@ -671,7 +651,6 @@ export default function OptimiserPreview({
       {activeTab === "segments" && (
         <SegmentsTab
           jobId={jobId}
-          frontierGeneration={solvedResult.frontier_generation}
           pointIndex={selectedIdx}
           solvedResult={solvedResult}
           selection={{
@@ -702,7 +681,6 @@ export default function OptimiserPreview({
           nodeId={nodeId}
           jobId={jobId}
           mode={result.mode}
-          frontierGeneration={solvedResult.frontier_generation}
           pointIndex={selectedIdx}
         />
       )}

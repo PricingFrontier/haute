@@ -189,32 +189,31 @@ describe("sliceNeighbours", () => {
 
 describe("displayedSlicePosition", () => {
   const slicing = sliceFrontier(grid(), GRID_NAMES, GRID_NAMES, "volume")
-  const choice = (key: string, selection: number | null) => ({ xName: "volume", generation: 0, key, selection })
+  const choice = (key: string, selection: number | null) => ({ xName: "volume", key, selection })
 
   it("shows point 1's slice with no selection and no choice", () => {
-    expect(displayedSlicePosition(slicing, null, null, 0)).toBe(0)
+    expect(displayedSlicePosition(slicing, null, null)).toBe(0)
   })
 
   it("shows the selected point's slice", () => {
-    expect(displayedSlicePosition(slicing, 3, null, 0)).toBe(1)
+    expect(displayedSlicePosition(slicing, 3, null)).toBe(1)
   })
 
   it("keeps the user's slice while the selection is the one it was chosen under", () => {
-    expect(displayedSlicePosition(slicing, 3, choice(slicing.slices[0].key, 3), 0)).toBe(0)
+    expect(displayedSlicePosition(slicing, 3, choice(slicing.slices[0].key, 3))).toBe(0)
   })
 
   it("switches to the selected point's slice once the selection changes", () => {
-    expect(displayedSlicePosition(slicing, 3, choice(slicing.slices[0].key, 2), 0)).toBe(1)
+    expect(displayedSlicePosition(slicing, 3, choice(slicing.slices[0].key, 2))).toBe(1)
   })
 
-  it("ignores a choice made under another x constraint or frontier generation", () => {
+  it("ignores a choice made under another x constraint", () => {
     const key = slicing.slices[1].key
-    expect(displayedSlicePosition(slicing, null, { ...choice(key, null), xName: "margin" }, 0)).toBe(0)
-    expect(displayedSlicePosition(slicing, null, choice(key, null), 1)).toBe(0)
+    expect(displayedSlicePosition(slicing, null, { ...choice(key, null), xName: "margin" })).toBe(0)
   })
 
   it("throws for a chosen slice this frontier does not have", () => {
-    expect(() => displayedSlicePosition(slicing, null, choice("[\"nope\"]", null), 0)).toThrow(/slice/)
+    expect(() => displayedSlicePosition(slicing, null, choice("[\"nope\"]", null))).toThrow(/slice/)
   })
 })
 

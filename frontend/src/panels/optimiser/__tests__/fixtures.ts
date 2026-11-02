@@ -285,7 +285,6 @@ export function makeOnlineFrontier(n = 5, overrides: Partial<FrontierData> = {})
     swept_axes: ["loss_ratio"],
     points_limit: 2000,
     points_truncated: false,
-    frontier_generation: 0,
     ...overrides,
   }
 }
@@ -384,6 +383,5 @@ export function makeRatebookFrontier(
     swept_axes: ["volume"],
     points_limit: 2000,
     points_truncated: false,
-    frontier_generation: 0,
   }
 }

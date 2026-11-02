@@ -16,11 +16,9 @@ from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from tests.job_store_support import discard_corrupt_job, seed_job
 from tests.optimiser_fixtures import (
     SOLVE_SCENARIO_GRID,
-    library_frontier_frame,
     logged_json_artifacts,
     make_input_summary,
     make_online_apply_frame,
-    run_frontier_and_wait,
     typed_frontier_point,
     use_local_mlflow_store,
 )
@@ -56,7 +54,6 @@ def _frontier_job(*, artifact_handles: object | None = None) -> dict:
         "quote_grid": MagicMock(),
         "heavy_objects_expires_at": time.time() + 3600,
         "frontier_data": {
-            "frontier_generation": 0,
             "status": "ok",
             "points": [
                 typed_frontier_point(
@@ -80,7 +77,6 @@ def _frontier_job(*, artifact_handles: object | None = None) -> dict:
             "baseline_constraints": {"volume": 0.85},
             "lambdas": {"volume": 0.3},
             "converged": True,
-            "frontier_generation": 0,
             "diagnostics_errors": [],
             "input_summary": make_input_summary(),
         },
@@ -93,7 +89,7 @@ def _frontier_job(*, artifact_handles: object | None = None) -> dict:
 
 
 def test_estimate_schema_rejects_missing_columns() -> None:
-    from haute.routes.optimiser import _estimate_quote_id_column_or_raise
+    from haute.routes._optimiser_input import _estimate_quote_id_column_or_raise
 
     source = pl.LazyFrame({"quote_id": ["q1"]})
     config = {
@@ -116,7 +112,7 @@ def test_estimate_schema_rejects_missing_columns() -> None:
 
 
 def test_estimate_schema_rejects_numeric_quote_ids() -> None:
-    from haute.routes.optimiser import _estimate_quote_id_column_or_raise
+    from haute.routes._optimiser_input import _estimate_quote_id_column_or_raise
 
     source = pl.LazyFrame(
         {
@@ -322,31 +318,6 @@ def test_apply_rejects_incomplete_artifact_summary(client, clean_job_store):
         discard_corrupt_job(clean_job_store, "incomplete_apply_summary")
 
 
-def test_frontier_fails_if_runtime_disappears_after_touch(client, clean_job_store):
-    seed_job(
-        clean_job_store,
-        "frontier_runtime_race",
-        {
-            "status": "completed",
-            "solver": MagicMock(),
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
-    )
-
-    with patch.object(clean_job_store, "touch_heavy_objects", return_value=True):
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={
-                "job_id": "frontier_runtime_race",
-                "threshold_ranges": {"volume": [0.85, 0.95]},
-            },
-        )
-
-    assert resp.status_code == 400
-    assert "re-run the solve" in resp.json()["detail"].lower()
-
-
 def test_frontier_select_succeeds_when_runtime_is_absent(client, clean_job_store):
     seed_job(
         clean_job_store,
@@ -356,7 +327,6 @@ def test_frontier_select_succeeds_when_runtime_is_absent(client, clean_job_store
             "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
             "scenario_grid": SOLVE_SCENARIO_GRID,
             "frontier_data": {
-                "frontier_generation": 0,
                 "status": "ok",
                 "points": [
                     typed_frontier_point(
@@ -376,7 +346,6 @@ def test_frontier_select_succeeds_when_runtime_is_absent(client, clean_job_store
             "result": {
                 "baseline_objective": 90.0,
                 "baseline_constraints": {"volume": 0.85},
-                "frontier_generation": 0,
             },
             "created_at": time.time(),
             "completed_at": time.time(),
@@ -659,70 +628,6 @@ def test_frontier_select_unhandled_exception_logged_and_500(
 # ---------------------------------------------------------------------------
 # /frontier — atomic_update conflict yields 409
 # ---------------------------------------------------------------------------
-
-
-def test_run_frontier_returns_409_when_atomic_update_loses_race(
-    client,
-    clean_job_store,
-):
-    """Same race semantics as select, on the recompute path.  Frontier
-    artefacts created up to this point must be cleaned up and a 409 raised."""
-    solver = MagicMock()
-    solver.frontier.return_value = SimpleNamespace(
-        points=library_frontier_frame(
-            [
-                {
-                    "total_objective": 100.0,
-                    "total_volume": 0.9,
-                    "lambda_volume": 0.25,
-                    "bound_volume": 0.9,
-                    "converged": True,
-                }
-            ],
-            constraint_names=["volume"],
-        )
-    )
-    seed_job(
-        clean_job_store,
-        "frontier_race",
-        {
-            "status": "completed",
-            "solver": solver,
-            "quote_grid": MagicMock(),
-            "config": {
-                "mode": "online",
-                "constraints": {"volume": {"min": 0.9}},
-                "frontier_ranges": {"volume": {"min": 0.85, "max": 0.95}},
-            },
-            "result": {
-                "mode": "online",
-                "total_objective": 95.0,
-                "baseline_objective": 90.0,
-                "constraints": {"volume": 0.85},
-                "baseline_constraints": {"volume": 0.85},
-                "lambdas": {"volume": 0.0},
-                "converged": True,
-                "diagnostics_errors": [],
-                "input_summary": make_input_summary(),
-            },
-            "artifact_handles": {},
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
-    )
-
-    # The recompute publishes through the heavy-guarded update (a session job's
-    # frontier needs its session still attached); losing that race is the 409.
-    with patch.object(clean_job_store, "atomic_update_if_heavy_present", return_value=None):
-        status = run_frontier_and_wait(
-            client,
-            {"job_id": "frontier_race"},
-        )
-
-    assert status["status"] == "contract_error"
-    assert status["http_status_code"] == 409
-    assert "recomputing the frontier" in status["message"].lower()
-    assert "re-run the solve" in status["message"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1142,7 +1047,6 @@ def _ratebook_materialise_job(**overrides: object) -> dict:
         "status": "completed",
         "config": {"mode": "ratebook", "constraints": {"volume": {"min": 0.9}}},
         "frontier_data": {
-            "frontier_generation": 0,
             "status": "ok",
             "points": [
                 typed_frontier_point(
@@ -1171,7 +1075,6 @@ def _ratebook_materialise_job(**overrides: object) -> dict:
             "baseline_constraints": {"volume": 0.85},
             "lambdas": {"volume": 0.0},
             "converged": True,
-            "frontier_generation": 0,
             "diagnostics_errors": [],
             "input_summary": make_input_summary(),
         },
@@ -1194,64 +1097,25 @@ def _select_ratebook_point(client, job_id: str):
     )
 
 
-def test_ratebook_materialise_reads_totals_and_tables_from_one_frontier(
-    client,
-    clean_job_store,
-    monkeypatch,
+@pytest.mark.parametrize("rate", [float("nan"), float("inf")])
+def test_ratebook_point_with_a_non_finite_rate_is_refused_naming_the_table(
+    client, clean_job_store, rate
 ):
-    """A recompute that publishes between the select route's first read and the
-    materialisation must not pair one point's totals with another's tables:
-    materialisation re-reads the row and its tables together under the parent
-    lock that recompute publishes under."""
-    import haute.routes._optimiser_frontier as frontier_module
-
-    seed_job(clean_job_store, "ratebook_recompute_race", _ratebook_materialise_job())
-    new_point = typed_frontier_point(
-        {
-            "total_objective": 240.0,
-            "total_volume": 1.02,
-            "lambda_volume": 0.3,
-            "threshold_volume": 1.0,
-            "bound_volume": 1.0,
-            "iterations": 6,
-            "clamp_rate": 0.02,
-            "converged": True,
-        },
-        mode="ratebook",
+    """OPT-R01: a retained point whose kept table holds a non-finite rate is a
+    400 naming the table and level, never the sanitized 500."""
+    seed_job(
+        clean_job_store,
+        "ratebook_nan_rate",
+        _ratebook_materialise_job(frontier_factor_tables=[{"region": {"North": rate}}]),
     )
-    new_tables = {"region": {"North": 1.21}}
-    original = frontier_module._frontier_point_result_dict
-    recomputed = False
 
-    def recompute_after_first_read(job, point_index):
-        nonlocal recomputed
-        result = original(job, point_index)
-        if not recomputed:
-            recomputed = True
-            assert clean_job_store.atomic_update(
-                "ratebook_recompute_race",
-                {
-                    "frontier_data": {
-                        "status": "ok",
-                        "points": [new_point],
-                        "n_points": 1,
-                        "constraint_names": ["volume"],
-                    },
-                    "frontier_factor_tables": [new_tables],
-                },
-                expected_status="completed",
-            )
-        return result
+    resp = _select_ratebook_point(client, "ratebook_nan_rate")
 
-    monkeypatch.setattr(frontier_module, "_frontier_point_result_dict", recompute_after_first_read)
-    resp = _select_ratebook_point(client, "ratebook_recompute_race")
-
-    assert resp.status_code == 200, resp.text
-    selected = resp.json()
-    assert selected["total_objective"] == 240.0
-    assert selected["constraints"] == {"volume": 1.02}
-    assert selected["cd_iterations"] == 6
-    assert [row["optimal_scenario_value"] for row in selected["factor_tables"]["region"]] == [1.21]
+    assert resp.status_code == 400, resp.text
+    detail = resp.json()["detail"]
+    assert "'region'" in detail
+    assert "'North'" in detail
+    assert "non-finite rate" in detail
 
 
 def test_ratebook_materialise_keeps_unswept_constraint_totals(client, clean_job_store):
@@ -1422,7 +1286,6 @@ def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe
         mode="ratebook",
     )
     cached_result = {
-        "frontier_generation": 0,
         "mode": "ratebook",
         "total_objective": 130.0,
         "baseline_objective": 90.0,
@@ -1445,7 +1308,6 @@ def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe
             "status": "completed",
             "config": {"mode": "ratebook", "constraints": {"volume": {"min": 0.9}}},
             "frontier_data": {
-                "frontier_generation": 0,
                 "status": "ok",
                 "points": [point],
                 "n_points": 1,
@@ -1511,49 +1373,9 @@ def test_ratebook_materialise_returns_409_on_atomic_update_race(
     assert "re-run the solve" in detail.lower()
 
 
-def test_ratebook_runtime_state_or_raise_rejects_partial_heavy_objects(
-    client,
-    clean_job_store,
-):
-    """A ratebook frontier recompute needs the solver and quote grid.  Touch
-    may report success but the underlying values can still be None under a
-    tight TTL race; the explicit check in ``ratebook_runtime_state_or_raise``
-    catches that and surfaces a 400 rather than an AttributeError 500.
-    """
-    seed_job(
-        clean_job_store,
-        "ratebook_partial",
-        _ratebook_materialise_job(
-            # Keys present, values None — the race window.
-            solver=None,
-            quote_grid=None,
-            factors_df=None,
-        ),
-    )
-
-    with patch.object(clean_job_store, "touch_heavy_objects", return_value=True):
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={"job_id": "ratebook_partial", "threshold_ranges": {"volume": [0.85, 0.95]}},
-        )
-
-    assert resp.status_code == 400
-    assert "ratebook runtime state is not available" in resp.json()["detail"].lower()
-
-
-@pytest.mark.parametrize(
-    "request_route",
-    [pytest.param("select", id="materialise"), pytest.param("frontier", id="recompute")],
-)
-def test_ratebook_runtime_state_rejects_invalid_factor_columns_metadata(
-    client,
-    clean_job_store,
-    request_route,
-):
-    """If ``factor_columns_valid`` is malformed (e.g. a list containing
-    non-string entries), both the materialise path and the recompute path
-    must surface a 500 with a typed message — not blow up later inside the
-    solver."""
+def test_ratebook_materialise_rejects_invalid_factor_columns_metadata(client, clean_job_store):
+    """Malformed ``factor_columns_valid`` (a list holding non-string entries)
+    surfaces as a typed 500 on materialise, never later inside the solver."""
     solver = MagicMock()  # Must NOT be called: validation rejects first.
     seed_job(
         clean_job_store,
@@ -1567,88 +1389,9 @@ def test_ratebook_runtime_state_rejects_invalid_factor_columns_metadata(
         ),
     )
 
-    if request_route == "select":
-        resp = _select_ratebook_point(client, "ratebook_bad_factors")
-    else:
-        resp = client.post(
-            "/api/optimiser/frontier",
-            json={
-                "job_id": "ratebook_bad_factors",
-                "threshold_ranges": {"volume": [0.85, 0.95]},
-            },
-        )
+    resp = _select_ratebook_point(client, "ratebook_bad_factors")
 
     assert resp.status_code == 500
     assert resp.json()["detail"] == "Ratebook factor column metadata is invalid"
     solver.solve.assert_not_called()
     solver.frontier.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# _invalidate_frontier_apply_artifact_handles: bad handle shape
-# ---------------------------------------------------------------------------
-
-
-def test_run_frontier_rejects_invalid_apply_handle_shape(
-    client,
-    clean_job_store,
-):
-    """If a job has an artefact handle that isn't a dict (data corruption),
-    the frontier recompute must fail loudly with a typed 500 rather than
-    silently dropping the handle."""
-    solver = MagicMock()
-    solver.frontier.return_value = SimpleNamespace(
-        points=library_frontier_frame(
-            [
-                {
-                    "total_objective": 100.0,
-                    "total_volume": 0.9,
-                    "lambda_volume": 0.25,
-                    "bound_volume": 0.9,
-                    "converged": True,
-                }
-            ],
-            constraint_names=["volume"],
-        )
-    )
-    seed_job(
-        clean_job_store,
-        "frontier_bad_handle",
-        {
-            "status": "completed",
-            "solver": solver,
-            "quote_grid": MagicMock(),
-            "config": {
-                "mode": "online",
-                "constraints": {"volume": {"min": 0.9}},
-                "frontier_ranges": {"volume": {"min": 0.85, "max": 0.95}},
-            },
-            "result": {
-                "mode": "online",
-                "total_objective": 95.0,
-                "baseline_objective": 90.0,
-                "constraints": {"volume": 0.85},
-                "baseline_constraints": {"volume": 0.85},
-                "lambdas": {"volume": 0.0},
-                "converged": True,
-                "diagnostics_errors": [],
-                "input_summary": make_input_summary(),
-            },
-            # Frontier-apply handle exists but is not a dict — corruption.
-            "artifact_handles": {"frontier_apply_result:0": "not-a-dict"},
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
-    )
-
-    try:
-        status = run_frontier_and_wait(
-            client,
-            {"job_id": "frontier_bad_handle"},
-        )
-
-        assert status["status"] == "error"
-        assert status["http_status_code"] == 500
-        assert "frontier apply artifact handle is invalid" in status["message"].lower()
-    finally:
-        discard_corrupt_job(clean_job_store, "frontier_bad_handle")

@@ -83,7 +83,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/optimiser/frontierSlices.ts` | The frontier's pure slice and feasibility model: `frontierConstraintKinds` (each constraint's min/max from the solve's bounds via `effectiveConstraintBounds`; a missing one throws), `assessFrontierPoint` (feasible = `converged` and every constraint's `totals` meets its absolute `bounds` by `constraintAttainment`, swept or not; a missing bound or total throws), `sliceFrontier` (groups the points by the other constraints' `thresholds` with exact equality, since they come from linspace; each slice lists **global** indices in ascending x bound, ties by index), `sliceNeighbours`, `displayedSlicePosition` and `asSolvedOnSlice`. |
 | `frontend/src/panels/ChartFocusDetail.tsx` | The polite `role="status"` line under a chart that states the hovered or focused item's exact values, or an optional placeholder (the optimiser's frontier points pass one; the modelling detail lines stay empty until an item is active); AvE bins and frontier points use it. |
 | `frontend/src/panels/optimiser/RatebookRatesTab.tsx`, `frontend/src/panels/optimiser/RatebookImpactBeeswarm.tsx`, `frontend/src/panels/optimiser/ratebookFactorTables.ts` | Ratebook Rates tab, impact beeswarm and factor-table helpers over the generated `OptimiserFactorTableRow` (`__factor_group__`, `optimal_scenario_value`, `quote_count`), read directly with no per-row parsing or fallbacks: banding order, `factorRateSpread` (the quote-weighted mean \|ln rate\|, which ranks factors in both views), `levelQuoteShares` (per-level quote shares rounded by largest remainder to sum to exactly 100.0%), `formatVsNeutral`, and `factorTablesCsv(factorTables, collar)`, which appends `combined_factor_min`/`combined_factor_max` to every row. A non-positive rate or a factor with no quotes throws. |
-| `frontend/src/panels/optimiser/iterationSummary.ts`, `frontend/src/panels/optimiser/optimiserHelpers.ts` | Iteration copy and optimiser result/save helpers, including `frontierGenerationMismatch`, the message for a point reply the server answered for another frontier generation than the result shows. |
+| `frontend/src/panels/optimiser/iterationSummary.ts`, `frontend/src/panels/optimiser/optimiserHelpers.ts` | Iteration copy and optimiser result/save helpers. |
 | `frontend/src/utils/banding.ts` | Extracts banding factor-levels/order and resolves an optimiser's explicit or sole direct banding source. |
 | `frontend/src/utils/polarsDtypes.ts` | Shared canonical Polars numeric-dtype predicate used by modelling and banding controls, `isStringOrCategoricalDtype` (the String and Categorical dtypes CatBoost trains as categorical features, as the backend detects them; Enum is not one), and the Date/Datetime predicate (`isTemporalDtype`, matching the Date and Datetime dtype strings Polars renders) banding uses to offer Numeric on date columns; `castFamily` names a column type's family in the step renderer's cast table (`cast_family`) and `decimalScale` reads a Decimal type's scale, for the step editor. |
 
@@ -276,11 +276,8 @@ Only a current, accepted save response may acknowledge this revision transition.
 4. `frontend/src/panels/OptimiserPreview.tsx` picks the available result tabs and the selected
    frontier point, which is also the publish target (`selectedPointIndex`, `null` = the solved
    result). In ratebook mode a selected point without tables is materialised only on Rates/Summary;
-   a request's identity is `(jobId, frontier_generation, point)` (a recompute keeps the job and
-   reuses point indices for other points, so a new generation re-requests the same index), request
-   sequence bookkeeping drops stale replies, a reply the server answered for another
-   `frontier_generation` than the result shows (it recomputed first) is reported as a Rates error
-   and never stored, and accepted tables persist in the result store. Save and MLflow requests always send the target explicitly (`point_index` omitted for the
+   a request's identity is `(jobId, point)`, request sequence bookkeeping drops stale replies,
+   and accepted tables persist in the result store. Save and MLflow requests always send the target explicitly (`point_index` omitted for the
    solved result) and never consume the server-side result, so they and the Quotes view may run
    in any order. `OptimiserPreviewData` carries `solvedResult` (the store's as-solved
    `originalResult`) beside the displayed `result`: Convergence (offered for every result) draws
@@ -306,13 +303,12 @@ Only a current, accepted save response may acknowledge this revision transition.
    (`solvedResult.adjustments`) when no point is selected. With a point selected it loads that
    point's report through `POST /frontier/select` with `include_adjustments: true`, only while
    the tab is open, in the Rates flow's pattern: one `AbortController` per request and a
-   request sequence, so a reply for a point, job or generation the tab has moved past is
-   dropped, and a reply the server answered for another `frontier_generation` than the tab shows
-   is reported (with **Retry**) and never kept; a browser abort (a new point, closing the tab) discards the reply, and the server cancels a point apply no request waits for any more (OPT-PC02); a 409 whose
+   request sequence, so a reply for a point or job the tab has moved past is
+   dropped; a browser abort (a new point, closing the tab) discards the reply, and the server cancels a point apply no request waits for any more (OPT-PC02); a 409 whose
    `error_code` is `frontier_point_apply_replaced` is not an error, and the tab reissues the
    request while it still shows that point; a 410 shows the server's message with no Retry
    (only a new solve helps); any other failure shows the message with **Retry**. A loaded point
-   report is kept for the tab's review (node, job, frontier generation, point), so stepping
+   report is kept for the tab's review (node, job, point), so stepping
    back to a point already loaded makes no request. An as-solved result without a report
    shows the result's `"adjustments"` diagnostic message; one with neither throws. A ratebook
    report (`deployed_factor_differs` not null) adds, under the shares, "Deployed factor differs
@@ -345,12 +341,10 @@ Only a current, accepted save response may acknowledge this revision transition.
    its reason and makes no request. An available key loads `POST /segments` for the target (the
    selected point, else the solved result) and the chosen weighting, with one `AbortController`
    per request: switching key, weighting or point aborts the request in flight, and a reply for a
-   key, weighting, point, job or generation the view has moved past is dropped; a breakdown or
-   index the server answered for another `frontier_generation` than the view shows is reported
-   (with **Retry**) and never kept. A 409
+   key, weighting, point or job the view has moved past is dropped. A 409
    `frontier_point_apply_replaced` is reissued, a 410 shows the message with no Retry, anything
    else offers **Retry**. Loaded breakdowns and indexes are kept for the review, by
-   `(job, generation, target, key, weight)` and `(job, generation, target)`, so returning to one
+   `(job, target, key, weight)` and `(job, target)`, so returning to one
    makes no request. The chart is `RelativityBars` of each level's mean chosen scenario value
    under the weighting (the unweighted mean for Quotes) around the 1.0 base line, in the
    response's level order, with an aligned quote strip (0 to the largest level's quotes); a level
@@ -387,10 +381,8 @@ Only a current, accepted save response may acknowledge this revision transition.
    through `allNodes` by `nodeId`; `""` for Auto) and the Export pane derives availability from
    that destination alone. It publishes through `useOptimiserPublishStore`, whose state belongs to
    one solve job. Export's factor-table load stores its
-   reply through `recordFrontierPointSummary`, which drops a reply for a job or frontier generation
-   the node does not hold and never changes the selection; its load is identified by
-   `(jobId, frontier_generation, target)`, and a reply the server answered for another generation
-   than the result shows is reported as the load's error.
+   reply through `recordFrontierPointSummary`, which drops a reply for a job the node does not
+   hold and never changes the selection; its load is identified by `(jobId, target)`.
 5. `useOptimiserScenarioData` caps rows at 5,000 before grouping by quote, orders scenario rows,
    and calculates full-preview statistics only while a Statistics pane is open (the data preview's
    tab, or the result workspace's). `App` passes `OptimiserPreview` the active node's `ok`
@@ -419,7 +411,7 @@ not enough memory is free to start because Haute already uses that much of its
 `process_rss_limit_bytes` limit, otherwise Haute reached its process limit (the running
 execution's effective `rss_limit_bytes`) while running it; `in_flight_memory_budget_exceeded` — another job is running,
 named from the detail's `in_flight_operations` (`<profile>:<operation>`) by a fixed map of user-facing job names
-(Auto range, Optimisation, Frontier recompute, Solve estimate, Model training, Training preview, Explore, Data
+(Auto range, Optimisation, Solve estimate, Model training, Training preview, Explore, Data
 caching, Data output; an operation outside the map is left out, never shown by its internal name), so try again
 when it finishes — a solve estimate refused while auto-range runs reads "Solve estimate failed: Another job is
 running (Auto range). Try again when it finishes."; `native_memory_cap_unavailable` — Haute cannot enforce
@@ -511,7 +503,7 @@ without broadening the exactly-one-direct fallback.
   it is the selected point's slice (so a point selected from Summary or the
   stepper brings its slice into view); with no selection and no choice it is
   point 1's slice. The choice belongs to the review (reset with the tab) and to
-  the x constraint and frontier generation it was made under. The header stepper
+  the x constraint it was made under. The header stepper
   steps to the selected point's bound-order neighbours within its slice and is
   disabled at the slice's ends; its label keeps the global "Point i of N".
   **Feasibility** is haute's own judgement in both modes, since online
@@ -529,21 +521,19 @@ without broadening the exactly-one-direct fallback.
   `aria-current`, highlighted in the optimiser accent and scrolled into view, and each row's
   "Point N" button (or the row) selects that point.
 - `/apply` responses are cached in `useNodeResultsStore` under their full request identity
-  `(jobId, frontierGeneration, target, query)`: `target` is `"solved"` or the frontier point
-  index, `frontierGeneration` is the solve result's backend `frontier_generation`, and `query` is
+  `(jobId, target, query)`: `target` is `"solved"` or the frontier point
+  index, and `query` is
   the canonical (key-sorted) request query beyond the target: `sort_by`, `descending`,
   `quote_id_prefix`, `filters` and `offset`/`limit`, always fully specified (`null` and `false`
   for what is unset, an empty `analysis_equals`), so one query has one key, and the request body
   is exactly the query plus the job and point. At most 16 entries are kept,
-  least recently used evicted first. Installing a solve result for a node (a new job, or the same
-  job with another frontier generation, i.e. a recompute) drops that node's entries for any
-  other `(jobId, frontierGeneration)`; a failed solve or clearing or evicting the node's result
+  least recently used evicted first. Installing a solve result for a node (a new job) drops that
+  node's entries for any other `jobId`; a failed solve or clearing or evicting the node's result
   drops all of the node's entries. `recordOptimiserApply` accepts a response only when its
-  identity's job, generation and target are the node's current ones, so a late response from an
-  earlier job, generation or target is discarded and never displayed; QuotesTab additionally
+  identity's job and target are the node's current ones, so a late response from an
+  earlier job or target is discarded and never displayed; QuotesTab additionally
   drops a response whose query is no longer its current query. A cache hit makes no request and
-  marks the entry most recently used. `completeSolveJob` throws when the result's frontier
-  carries a different `frontier_generation` from the result itself.
+  marks the entry most recently used.
 - The Frontier tab lays the chart beside its points table at equal widths and stacks the
   chart above it when the workspace container is at most 640px wide. Its labels and footnote use
   the workspace type scale (12-13px, sentence case), not 9-11px uppercase labels.
@@ -619,11 +609,8 @@ only for ratebook), the analysis-value filter and its chip, the debounced search
 and Previous/Next offsets, the depth note, a response for an earlier query dropped, Retry, and
 a ratebook page's factor product and flag. `frontend/src/panels/__tests__/GLMComponents.test.tsx` stays green over the
 extracted `SortableValuesTable`.
-Store-integration tests cover the apply cache (no second request on reopening Quotes, a refetch
-after a frontier recompute, late responses from an earlier job or generation discarded, the
-16-entry bound), Rates across a same-job recompute (the reused point index re-requested and the
-earlier generation's late reply never installed; a reply from a generation the result does not
-show reported, not stored), the tab kept across stepper presses and reset on a new job or node, Convergence
+Store-integration tests cover the apply cache (no second request on reopening Quotes, late
+responses from an earlier job discarded, the 16-entry bound), the tab kept across stepper presses and reset on a new job or node, Convergence
 kept after point select, the fixed as-solved marker, the warning strip and
 Retry. `frontend/src/panels/__tests__/IterationLinesChart.test.tsx` covers the shared chart's
 real tick values, distinct labels on a narrow value range, log axis, reference lines, marker,

@@ -35,7 +35,6 @@ _DEFAULT_HEAVY_OBJECT_TTL_SECONDS = 15 * 60  # 15 minutes
 _DEFAULT_HEAVY_OBJECT_KEYS = ("solver", "solve_result", "quote_grid")
 _HEAVY_OBJECT_KEYS = (
     *_DEFAULT_HEAVY_OBJECT_KEYS,
-    "factors_df",
     "ratebook_factor_contexts",
     "solver_session",
 )
