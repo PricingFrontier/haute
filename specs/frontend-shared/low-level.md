@@ -118,7 +118,7 @@
 | `frontend/src/components/form/LabelledRow.tsx` | `LabelledRow`, a side panel's row of a label in a fixed column beside its control, so the controls line up, or with no label that column left blank, as for tick boxes under labelled rows; and `SelectRow`, a labelled select of named choices, its label its name unless given a `name` of its own. |
 | `frontend/src/components/form/QuietAction.tsx` | `QuietAction`, the quiet "+ Add" text action under a list (`.quiet-action`: accent text, underlined on hover), a plus before it unless another icon is given, its other props passed to the button. |
 | `frontend/src/utils/scopedSaveGuards.ts` | Pure node-scoped-save guards: one-node-at-a-time edit fencing and the stale-response document-identity fence. |
-| `frontend/src/hooks/useScopedNodeSave.ts` | App-lifetime scoped-save coordination: per-document edited-node tracking, edit refusal while a save is in flight or another node is dirty, the response fence, and adoption hand-off. |
+| `frontend/src/hooks/useScopedNodeSave.ts` | App-lifetime scoped-save coordination: per-document edited-node tracking (a node is marked edited only once its update is accepted, so a refused update locks no other node), edit refusal while a save is in flight or another node is dirty, the response fence, and adoption hand-off. |
 | `frontend/src/stores/useRecoverySummaryStore.ts` | Transient per-session recovery summary (field outcomes, completeness, previous config, diffs) keyed by recovery id. |
 
 ## Key types and data structures

@@ -21,6 +21,7 @@ import type { BackendNodeStatus } from "../../types/node"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
+  loadPipelineDocument: vi.fn(),
   previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
@@ -60,10 +61,10 @@ vi.mock("../../utils/makePreviewData", () => ({
   })),
 }))
 
-import { loadPipeline, previewNode, savePipeline, ApiError } from "../../api/client"
+import { loadPipeline, loadPipelineDocument, previewNode, savePipeline, ApiError } from "../../api/client"
 import { makeNode } from "../../test-utils/factories"
 import { NODE_TYPES } from "../../utils/nodeTypes"
-import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
+import { makeLoadedPipeline, makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
 const mockSave = vi.mocked(savePipeline)
@@ -267,6 +268,53 @@ describe("usePipelineAPI - gap tests", () => {
         documentFingerprint: "fingerprint-saved",
       })
       expect(pendingSavesSettled(sourceFile)).toBeNull()
+    })
+
+    describe("whose answer was lost", () => {
+      const onDisk = () => makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "revision-test",
+        nodes: [makeNode("n1")],
+        preserved_blocks: ["# kept"],
+      })
+
+      async function saveWithLostAnswer(readBack: ReturnType<typeof makePipelineEditorDocument>) {
+        mockLoad.mockResolvedValue({ document: onDisk(), documentFingerprint: "fingerprint-loaded" })
+        mockSave.mockRejectedValueOnce(new TypeError("Failed to fetch"))
+        vi.mocked(loadPipelineDocument).mockResolvedValueOnce({ document: readBack, documentFingerprint: "fingerprint-read" })
+        const params = makeParams()
+        const { result } = renderHook(() => usePipelineAPI(params))
+        await waitFor(() => expect(result.current.loading).toBe(false))
+        let saved!: boolean
+        await act(async () => { saved = await result.current.handleSave() })
+        return saved
+      }
+
+      it("is acknowledged when the document read back holds exactly what was sent", async () => {
+        const saved = await saveWithLostAnswer({ ...onDisk(), source_revision: "revision-written" })
+
+        expect(saved).toBe(true)
+        expect(useDocumentStatusStore.getState()).toMatchObject({
+          sourceRevision: "revision-written",
+          documentFingerprint: "fingerprint-read",
+        })
+        expect(useToastStore.getState().toasts.at(-1)).toMatchObject({ type: "success", text: "Saved → rating/main.py" })
+      })
+
+      it("stays unsaved when the document read back differs, adopting no other revision", async () => {
+        const saved = await saveWithLostAnswer({
+          ...onDisk(),
+          source_revision: "revision-other-writer",
+          preserved_blocks: ["# kept", "# another writer"],
+        })
+
+        expect(saved).toBe(false)
+        expect(useDocumentStatusStore.getState()).toMatchObject({
+          sourceRevision: "revision-test",
+          documentFingerprint: "fingerprint-loaded",
+        })
+        expect(useToastStore.getState().toasts.at(-1)).toMatchObject({ type: "error", text: "Failed to save pipeline: Failed to fetch" })
+      })
     })
 
     it("second save failure does not corrupt lastSavedSnapshot from first success", async () => {

@@ -5,6 +5,7 @@ import { makePreviewData } from "../utils/makePreviewData"
 import {
   ApiError,
   loadPipeline,
+  loadPipelineDocument,
   previewInputs,
   previewNode,
   previewRecoveryNode,
@@ -24,6 +25,7 @@ import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useNodeDataStore from "../stores/useNodeDataStore"
 import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
 import { trackPendingSave } from "../stores/pendingSaves"
+import { documentHoldsSave } from "../utils/savedDocument"
 import useUIStore from "../stores/useUIStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
@@ -456,6 +458,11 @@ function isApiTimeoutError(err: unknown): err is ApiTimeoutError {
   return typeof err === "object" &&
     err !== null &&
     (err as { name?: unknown }).name === "ApiTimeoutError"
+}
+
+/** A request that failed with no HTTP answer: the server may still have acted on it. */
+function isLostAnswer(err: unknown): boolean {
+  return err instanceof TypeError || isApiTimeoutError(err)
 }
 
 export default function usePipelineAPI({
@@ -1519,9 +1526,53 @@ export default function usePipelineAPI({
     })
     const requestGraph = toCanonicalGraphPayload(savedSnapshot)
     const saveRequestId = ++saveRequestSeq.current
+    const savePipelineName = pipelineNameRef.current
+    const savePreservedBlocks = preservedBlocksRef.current
+    // Mark the exact graph snapshot that reached the backend, unless a newer
+    // save has already been applied or another revision arrived meanwhile.
+    const acknowledge = (sourceRevision: string, documentFingerprint: string) => {
+      if (
+        saveRequestId <= appliedSaveSeq.current ||
+        useDocumentStatusStore.getState().sourceFile !== saveSourceFile
+      ) return
+      const observedRevision = sourceRevisionRef.current
+      if (observedRevision !== saveSourceRevision && observedRevision !== sourceRevision) return
+      useGraphStore.getState().markSaved(savedSnapshot)
+      appliedSaveSeq.current = saveRequestId
+      sourceRevisionRef.current = sourceRevision
+      const status = useDocumentStatusStore.getState()
+      status.acknowledgeSave(sourceRevision, documentFingerprint)
+      status.setGraphSynchronized(true)
+      useUIStore.getState().setSyncBanner(null)
+    }
+    // A save whose answer was lost may still have been written: it is confirmed
+    // only by reading back a document that holds exactly what was sent.
+    const confirmLostSave = async (): Promise<string | null> => {
+      try {
+        const read = await loadPipelineDocument(savePipelineName)
+        const document = parsePipelineEditorDocument(read.document)
+        if (document.source_revision === null || !documentHoldsSave(document, {
+          sourceFile: saveSourceFile,
+          snapshot: savedSnapshot,
+          constantsSent: globalConstantsError === null,
+          preservedBlocks: savePreservedBlocks,
+          sources: sc,
+          activeSource: as_,
+        })) return null
+        acknowledge(document.source_revision, read.documentFingerprint)
+        return document.source_file
+      } catch {
+        // The read failing leaves the save as unconfirmed as the lost answer did.
+        return null
+      }
+    }
+    // Live sync holds a frame of this file until the save, and any confirmation
+    // of a lost answer, has settled.
+    let settleSave!: () => void
+    trackPendingSave(saveSourceFile, new Promise<void>((resolve) => { settleSave = resolve }))
     try {
-      const saving = savePipeline({
-        name: pipelineNameRef.current,
+      const data = await savePipeline({
+        name: savePipelineName,
         description: descriptionRef.current,
         graph: {
           nodes: requestGraph.nodes,
@@ -1537,31 +1588,10 @@ export default function usePipelineAPI({
         base_revision: saveSourceRevision || null,
         sources: sc,
         active_source: as_,
-        preserved_blocks: preservedBlocksRef.current,
+        preserved_blocks: savePreservedBlocks,
         connection_id: syncConnectionId(),
       })
-      trackPendingSave(saveSourceFile, saving)
-      const data = await saving
-      // Mark the exact graph snapshot that reached the backend, unless a
-      // newer save has already been applied.
-      if (
-        saveRequestId > appliedSaveSeq.current &&
-        useDocumentStatusStore.getState().sourceFile === saveSourceFile
-      ) {
-        const observedRevision = sourceRevisionRef.current
-        const acknowledgesCurrentRevision =
-          observedRevision === saveSourceRevision ||
-          observedRevision === data.source_revision
-        if (acknowledgesCurrentRevision) {
-          useGraphStore.getState().markSaved(savedSnapshot)
-          appliedSaveSeq.current = saveRequestId
-          sourceRevisionRef.current = data.source_revision
-          const status = useDocumentStatusStore.getState()
-          status.acknowledgeSave(data.source_revision, data.document_fingerprint)
-          status.setGraphSynchronized(true)
-          useUIStore.getState().setSyncBanner(null)
-        }
-      }
+      acknowledge(data.source_revision, data.document_fingerprint)
       addToast("success", `Saved → ${data.file}`)
       // The ledger commit, the warnings and the identity prompt, as every save reports them.
       reportSaveCapture(data)
@@ -1586,9 +1616,18 @@ export default function usePipelineAPI({
         )
         return false
       }
+      if (isLostAnswer(err)) {
+        const savedFile = await confirmLostSave()
+        if (savedFile !== null) {
+          addToast("success", `Saved → ${savedFile}`)
+          return true
+        }
+      }
       const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Failed to save pipeline: ${detail}`)
       return false
+    } finally {
+      settleSave()
     }
   }, [graphRef, parentGraphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef, addToast])
 

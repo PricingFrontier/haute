@@ -7,7 +7,6 @@
  */
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react"
 import type { Node, Edge, NodeChange, InternalNode } from "@xyflow/react"
-import { apiErrorMessage } from "../api/errors"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useToastStore from "../stores/useToastStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
@@ -29,6 +28,7 @@ import type { DrilledOccurrenceIdentity } from "../utils/submodelRuntimeTarget"
 import type { PreviewData } from "../panels/DataPreview"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
 import type { SubmodelCreateResult } from "./useSubmodelNavigation"
+import { authoredNodeData, createAfterIdentity } from "./createAfterIdentity"
 
 type UseNodeHandlersParams = {
   graphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
@@ -121,6 +121,14 @@ export default function useNodeHandlers({
 }: UseNodeHandlersParams) {
   const layoutInFlightRef = useRef(false)
   const creationRequestSerialRef = useRef(0)
+  /** Resolve one new node's identities; anything but that one node breaks the resolver's contract. */
+  const resolveSingleNode = useCallback(async (node: Node): Promise<Node> => {
+    const resolved = await resolveNodeIdentities([node])
+    if (resolved.length !== 1 || resolved[0]?.id !== node.id) {
+      throw new Error("identity resolver returned an invalid node")
+    }
+    return resolved[0]
+  }, [resolveNodeIdentities])
   const activeSubmodelIdentityRef = useRef(activeSubmodelIdentity)
   useEffect(() => {
     activeSubmodelIdentityRef.current = activeSubmodelIdentity
@@ -204,27 +212,23 @@ export default function useNodeHandlers({
       id: newId,
       position: { x: original.position.x + 40, y: original.position.y + 40 },
       selected: true,
-      data: { ...original.data, label: `${original.data.label} copy` },
+      // Another node's recovery identity, column stash or editor identities are not the copy's.
+      data: { ...authoredNodeData(original.data), label: `${original.data.label} copy` },
     }
-    const capturedGraph = graphRef.current
-    const requestSerial = ++creationRequestSerialRef.current
-    try {
-      const resolved = await resolveNodeIdentities([newNode])
-      if (resolved.length !== 1 || resolved[0]?.id !== newNode.id) {
-        throw new Error("identity resolver returned an invalid node")
-      }
-      if (creationRequestSerialRef.current !== requestSerial || graphRef.current !== capturedGraph) {
-        addToast("error", "Node creation was not applied because the graph changed while identity resolution was running.")
-        return
-      }
-      const resolvedNode = resolved[0]
-      setNodes((nds) => [...nds.map((nd) => ({ ...nd, selected: false })), resolvedNode])
-      setSelectedNode(resolvedNode)
-      setLastSelectedId?.(resolvedNode.id)
-    } catch (err: unknown) {
-      addToast("error", `Create node failed: ${apiErrorMessage(err)}`)
-    }
-  }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast, resolveNodeIdentities])
+    await createAfterIdentity({
+      graphRef,
+      serialRef: creationRequestSerialRef,
+      resolve: () => resolveSingleNode(newNode),
+      apply: (resolvedNode) => {
+        setNodes((nds) => [...nds.map((nd) => ({ ...nd, selected: false })), resolvedNode])
+        setSelectedNode(resolvedNode)
+        setLastSelectedId?.(resolvedNode.id)
+      },
+      addToast,
+      action: "Node creation",
+      failure: "Create node failed",
+    })
+  }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast, resolveSingleNode])
 
   const handleCreateInstance = useCallback(async (id: string): Promise<void> => {
     const { nodes: n } = graphRef.current
@@ -335,26 +339,21 @@ export default function useNodeHandlers({
         config: instanceConfig,
       },
     }
-    const capturedGraph = graphRef.current
-    const requestSerial = ++creationRequestSerialRef.current
-    try {
-      const resolved = await resolveNodeIdentities([newNode])
-      if (resolved.length !== 1 || resolved[0]?.id !== newNode.id) {
-        throw new Error("identity resolver returned an invalid node")
-      }
-      if (creationRequestSerialRef.current !== requestSerial || graphRef.current !== capturedGraph) {
-        addToast("error", "Node creation was not applied because the graph changed while identity resolution was running.")
-        return
-      }
-      const resolvedNode = resolved[0]
-      setNodes((nds) => [...nds.map((nd) => ({ ...nd, selected: false })), resolvedNode])
-      setSelectedNode(resolvedNode)
-      setLastSelectedId?.(resolvedNode.id)
-      addToast("info", `Created instance of "${origData.label}"`)
-    } catch (err: unknown) {
-      addToast("error", `Create node failed: ${apiErrorMessage(err)}`)
-    }
-  }, [graphRef, setNodes, setSelectedNode, setLastSelectedId, addToast, submodels, resolveNodeIdentities, createWrappedNodeInstance])
+    await createAfterIdentity({
+      graphRef,
+      serialRef: creationRequestSerialRef,
+      resolve: () => resolveSingleNode(newNode),
+      apply: (resolvedNode) => {
+        setNodes((nds) => [...nds.map((nd) => ({ ...nd, selected: false })), resolvedNode])
+        setSelectedNode(resolvedNode)
+        setLastSelectedId?.(resolvedNode.id)
+        addToast("info", `Created instance of "${origData.label}"`)
+      },
+      addToast,
+      action: "Node creation",
+      failure: "Create node failed",
+    })
+  }, [graphRef, setNodes, setSelectedNode, setLastSelectedId, addToast, submodels, resolveSingleNode, createWrappedNodeInstance])
 
   const handleRenameNode = useCallback((id: string) => {
     const { nodes: n } = graphRef.current

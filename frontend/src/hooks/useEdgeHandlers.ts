@@ -29,7 +29,9 @@ import {
   type NodeTypeValue,
 } from "../utils/nodeTypes"
 import {
+  edgeJoinRewrittenNodeIds,
   finalizeResolvedEdgeJoinInsertion,
+  rebaseEdgeJoinInsertion,
   insertEdgeJoinNode,
   insertEdgeJoinNodeFromSources,
   validateEdgeJoinInsertionCandidate,
@@ -47,6 +49,7 @@ import {
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import type { FetchPreviewOptions } from "./usePipelineAPI"
+import { createAfterIdentity } from "./createAfterIdentity"
 import type { PreviewData } from "../panels/DataPreview"
 import type { SimpleNode } from "../panels/editors/_shared"
 
@@ -358,27 +361,33 @@ export default function useEdgeHandlers({
           return
         }
 
+        // The insertion was computed from the graph as it is now.
         const capturedGraph = graphRef.current
-        const requestSerial = ++structuralCreationSerialRef.current
-        try {
-          const resolved = await resolveGraphIdentities(result.nodes, result.edges)
-          const finalized = finalizeResolvedEdgeJoinInsertion(result, resolved)
-          if (structuralCreationSerialRef.current !== requestSerial || graphRef.current !== capturedGraph) {
-            addToast("error", "Node creation was not applied because the graph changed while identity resolution was running.")
-            return
-          }
-          const selected = finalized.nodes.find((node) => node.id === result.newNodeId) ?? null
-          pushSnapshot()
-          setNodesRaw(finalized.nodes)
-          setEdgesRaw(finalized.edges)
-          setSelectedNode(selected)
-          setLastSelectedId?.(selected?.id ?? null)
-          lastSelectedNodeRef.current = selected
-          clearTrace()
-          cancelPreview()
-        } catch (err: unknown) {
-          addToast("error", `Create node failed: ${apiErrorMessage(err)}`)
-        }
+        const rewrittenNodeIds = edgeJoinRewrittenNodeIds(result)
+        await createAfterIdentity({
+          graphRef,
+          serialRef: structuralCreationSerialRef,
+          dependsOnNodeIds: rewrittenNodeIds,
+          resolve: async () => finalizeResolvedEdgeJoinInsertion(
+            result,
+            await resolveGraphIdentities(result.nodes, result.edges),
+          ),
+          apply: (finalized, liveGraph) => {
+            const next = rebaseEdgeJoinInsertion(capturedGraph, finalized, liveGraph, rewrittenNodeIds)
+            const selected = next.nodes.find((node) => node.id === result.newNodeId) ?? null
+            pushSnapshot()
+            setNodesRaw(next.nodes)
+            setEdgesRaw(next.edges)
+            setSelectedNode(selected)
+            setLastSelectedId?.(selected?.id ?? null)
+            lastSelectedNodeRef.current = selected
+            clearTrace()
+            cancelPreview()
+          },
+          addToast,
+          action: "Node creation",
+          failure: "Create node failed",
+        })
       }
 
       if (edgeJoinCandidateId && fromHandle?.type === "source") {
@@ -534,30 +543,28 @@ export default function useEdgeHandlers({
   }, [addToast, existingSingletonTypes, graphRef])
 
   /**
-   * Resolves a new node's server identity, then hands it and the graph it was
-   * created against to `apply` — unless the graph changed in the meantime.
+   * Resolves a new node's server identity, then hands it and the live graph to
+   * `apply` — unless the graph's structure changed in the meantime.
    */
   const createNodeAfterIdentity = useCallback((
     newNode: Node,
     apply: (resolvedNode: Node, graph: { nodes: Node[]; edges: Edge[] }) => void,
   ) => {
-    const capturedGraph = graphRef.current
-    const requestSerial = ++structuralCreationSerialRef.current
-    void (async () => {
-      try {
+    void createAfterIdentity({
+      graphRef,
+      serialRef: structuralCreationSerialRef,
+      resolve: async () => {
         const resolved = await resolveGraphIdentities([newNode], [])
         if (resolved.nodes.length !== 1 || resolved.nodes[0]?.id !== newNode.id || resolved.edges.length !== 0) {
           throw new Error("identity resolver returned an invalid node")
         }
-        if (structuralCreationSerialRef.current !== requestSerial || graphRef.current !== capturedGraph) {
-          addToast("error", "Node creation was not applied because the graph changed while identity resolution was running.")
-          return
-        }
-        apply(resolved.nodes[0], capturedGraph)
-      } catch (err: unknown) {
-        addToast("error", `Create node failed: ${apiErrorMessage(err)}`)
-      }
-    })()
+        return resolved.nodes[0]
+      },
+      apply,
+      addToast,
+      action: "Node creation",
+      failure: "Create node failed",
+    })
   }, [addToast, graphRef, resolveGraphIdentities])
 
   /** Creates the chosen node where the connection was released, wired to the dragged output. */

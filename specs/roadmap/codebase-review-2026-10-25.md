@@ -135,7 +135,6 @@ target dependency resolution. The component roadmaps now carry the resulting pla
 
 | Packages | Correction |
 |---|---|
-| `FSH-R07` | Recover a save only from complete canonical saved-content equality and retain newer dirty edits. |
 | `DEP-R11` | Check every response batch before positional pairing; require explicit first-deploy intent or authoritative absence, never infer absence from an outage. |
 | `DEP-R09` | Resolve and verify dependency locks for each target Python/platform and extras. |
 | `WB-43` | Shipped SQLite already has atomic insert-if-absent. Require a real selected-engine concurrency test and correct transaction recovery. |
@@ -204,10 +203,6 @@ these are the Majors still open.
 - **Saving the pipeline cancels an auto-range run in flight, and a percentage
   constraint is shown as "at least 0" and rewritten as an absolute bound on
   edit** (two Majors, `FMOU-R04`).
-- **Ctrl+S with the cursor in a code box saves without the last keystrokes**
-  (Major, `FSH-R07`): the save helper blurs only text fields, the code editor's
-  debounced commit flushes only on blur, and the toolbar shows "Saved" while the
-  canvas re-dirties with no indicator.
 
 ## Design choices the review asks the owner to confirm
 
@@ -266,7 +261,6 @@ production:
 | Frontend node editors | FNE-1, FNE-2, FNE-4, FNE-7, FNE-8, FNE-17 | `FNED-R01` |
 | Frontend node editors | FNE-3, FNE-5, FNE-6, FNE-9, FNE-11 | `FNED-R02` |
 | Frontend node editors | FNE-10, FNE-12, FNE-13, FNE-14, FNE-15, FNE-16 | `FNED-R03` |
-| Frontend shared | FSB-1, FSB-2, FSB-10, FSB-12, FSB-15 | `FSH-R07` |
 | Frontend shared | FSB-3, FSB-4, FSB-5, FSB-6, FSB-9, FSB-13, FSB-14, FSB-16, FSB-17, FSB-18 | `FSH-R08` |
 | Frontend shared | FSB-7, FSB-8, FSB-11 | `FSH-R09` |
 | Frontend node editors | FNB-1, FNB-2, FNB-3, FNB-5, FNB-13 | `FNED-R04` |
@@ -317,7 +311,7 @@ panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and
 `applyFrontierPointSummary`'s null handling (`FSH-R03`); in the workbench UI and
 the app shell, the
 chart theme observer written twice (`EDA-R03`), the params-folder listing in the
-Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`), browser-locale dates (`FSH-R08`), Ctrl+S inside a code box (`FSH-R07`) and the
+Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`), browser-locale dates (`FSH-R08`) and the
 modelling pane badges (`FMOU-R03`); in the tests, scripts and CI, the floating
 action tags in the generated workflows (`CLI-R06`), the campaign-named test modules
 (`ENGQ-R05`), the test-only reset hooks in production code (`ENGQ-R01`), and the

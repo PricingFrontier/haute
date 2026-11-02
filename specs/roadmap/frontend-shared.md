@@ -17,7 +17,6 @@ to `FSH-R09` from the
 |---|---|---:|---|
 | FSH-R03 | Planned | P3 | The results store holds results; validation and optimiser logic move out. |
 | FSH-R06 | Planned | P3 | The stores carry one copy of each derivation and validator, no test-only action, no fabricated result sentinel, and their specification names the actions that exist. |
-| FSH-R07 | Planned | P2 | Ctrl+S saves what is being typed in a code box, node creation is fenced on the graph's structure rather than on object identity, a refused scoped update marks nothing edited, a copied node carries no other node's transient metadata, and a save whose answer was lost is reconciled instead of reported failed. |
 | FSH-R08 | Planned | P3 | One helper per concern in the hooks and utilities: unit formatting that carries, one canonical JSON, one date validator, one job-status vocabulary, one locale, one node-creation block, one polling configuration, selector subscriptions. |
 | FSH-R09 | Planned | P3 | The frontend-shared specification describes the formatter, the pollers and the store shape that exist, and preview supersession is recognised by a structured code rather than by its message text. |
 | FSH-R10 | Planned | P2 | Independent request-input edits made while identity resolution is pending are retained together. |
@@ -80,69 +79,6 @@ remove, reset, recover and remove-connection only.
 `frontend/src/api/dispersion.ts::runDispersionEstimate`;
 `frontend/src/types/pipelineRepair.ts`;
 `frontend/src/stores/__tests__/useUIStore.dirty.derived.test.ts`.
-
-### FSH-R07 — Saves and creations that include what the analyst did
-**Why:** Ctrl+S pressed while the cursor is in a code box saves the pipeline
-without the keystrokes of the last 150 ms, reports "Saved" and leaves the canvas
-dirty with no indicator: `saveCommittingField` blurs only `<input>` and
-`<textarea>` targets while CodeMirror's focused element is a contenteditable
-`div`, so the save runs at once; the editor's debounced commit is flushed only
-on blur, unmount or an external value, so the snapshot predates the edit and the
-debounce re-dirties the graph after the toast; `isTypingTarget` already knows a
-`.cm-editor` is a typing target, and a test pins the gap. The five node-creation
-paths (duplicate, create instance, palette and connection drop, Edge Join
-insertion, paste) decide "the graph changed while identity resolution was
-running" by object identity of `graphRef.current`, which the app replaces on
-every selection, drag, measurement or preview stash, so an unrelated write
-during the round trip refuses the creation with an error toast; the structural
-fingerprint built for exactly this is used by the two other identity flows, and a
-test pins the coarse behaviour. `useScopedNodeSave` marks a node edited before
-the update is accepted, so one refused update locks every other node behind
-"Save X or reload" until a document reload. Duplicate and paste copy every
-transient field of the source node (`_recoveryId`, `_columns`, ...) onto the
-copy, so a copy carries another node's recovery identity and column stash
-(latent while the copy is only reachable in a mutable document). A save whose
-HTTP response is lost is reported failed although the server wrote the file;
-the client keeps the old base revision, the next save is refused as stale and
-the banner tells the analyst to reload, discarding the edits in between.
-
-**Plan:** In `saveCommittingField`, treat a typing target inside `.cm-editor`
-like a text field (blur or flush, then save after the commit has rendered) and
-test a Ctrl+S inside the debounce window; fence the five creation sites on
-`structuralFingerprint` plus the ids the creation depends on, in one shared
-helper, and turn the pinning test around; add the id to the edited set only on
-an accepted update; build a copy's data from the authored fields only; on a
-non-HTTP save failure re-read the document and acknowledge only complete canonical
-content equality with the submitted save snapshot. Define that comparison over all
-persisted authored state, including graph, layout, preamble, submodels, constants,
-sources, active source and preserved blocks; exclude transient execution/UI fields.
-Use the same canonical representation as save/read, not raw request-versus-response
-object equality. The submitted `base_revision` is the old version and cannot prove a
-write occurred. Preserve `saveRequestSeq`, `appliedSaveSeq` and `savedSnapshot` fences,
-adopt the confirmed server revision/fingerprint only for that snapshot, and retain
-edits made while waiting. If equality cannot be established, leave the save unconfirmed;
-do not adopt another writer's revision as permission to overwrite their document.
-
-**Acceptance:** Ctrl+S during typing saves the typed text and leaves the canvas
-clean; a selection change during identity resolution does not refuse a
-creation while a structural change still does; a refused scoped update leaves
-the edited set unchanged; a pasted node carries none of the original's
-underscore fields. A changed-content request that never reaches the server stays unsaved; a committed
-save with a dropped response is acknowledged after matching canonical content and the
-next save uses the confirmed revision. Edits made during recovery remain dirty. A
-concurrent writer's different content and an older recovery response cannot acknowledge
-or replace a newer save. Layout-only and preserved-code changes participate in equality.
-
-**Dependencies:** None; the save returns the saved document's fingerprint.
-
-**Evidence:** `frontend/src/hooks/keyboardTargets.ts::saveCommittingField`;
-`frontend/src/hooks/keyboardTargets.ts::isTypingTarget`;
-`frontend/src/panels/editors/CodeMirrorEditor.tsx`;
-`frontend/src/hooks/useNodeHandlers.ts`; `frontend/src/hooks/useEdgeHandlers.ts`;
-`frontend/src/hooks/useKeyboardShortcuts.ts`;
-`frontend/src/utils/structuralFingerprint.ts::structuralFingerprint`;
-`frontend/src/hooks/useScopedNodeSave.ts::useScopedNodeSave`;
-`frontend/src/hooks/usePipelineAPI.ts`.
 
 ### FSH-R08 — One helper per concern
 **Why:** `formatNumber` and `formatBytes` round a value up to its unit boundary
@@ -241,7 +177,7 @@ is visible and does not silently discard unrelated accepted edits. Switching
 documents or becoming read-only still prevents stale commits. Save waits for
 the final accepted draft and persists it. Extend the controller/editor tests.
 
-**Dependencies:** None. `FSH-R07` owns separate save/creation problems.
+**Dependencies:** None.
 
 **Evidence:** `frontend/src/hooks/useGraphCommitController.ts`;
 `frontend/src/panels/NodePanel.tsx`;

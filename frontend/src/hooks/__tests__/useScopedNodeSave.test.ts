@@ -172,6 +172,14 @@ describe("useScopedNodeSave", () => {
     )
   })
 
+  it("marks nothing edited when the update is refused, so another node can still be edited", () => {
+    const hook = render("a@1")
+    onUpdateNode.mockReturnValueOnce({ ok: false, error: "Rename refused" })
+
+    expect(hook.result.current.handlePanelUpdateNode("a@1", editedData("a@1", "a-edit-1")).ok).toBe(false)
+    expect(hook.result.current.handlePanelUpdateNode("b@1", editedData("b@1", "b-edit-1")).ok).toBe(true)
+  })
+
   it("completes the two-node sequence saving each node's edited values", async () => {
     const hook = render("a@1")
 

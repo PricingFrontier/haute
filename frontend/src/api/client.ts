@@ -672,6 +672,16 @@ export async function loadPipeline(options: ApiClientOptions = {}): Promise<Load
   return { document: body, documentFingerprint }
 }
 
+/** The editor document of the named pipeline, as `GET /api/pipeline/{name}` reads it now. */
+export async function loadPipelineDocument(name: string, options: ApiClientOptions = {}): Promise<LoadedPipeline> {
+  const { body, documentFingerprint } = await requestWith(
+    `/api/pipeline/${encodeURIComponent(name)}`,
+    options,
+    readNamedDocument("loadPipelineDocument"),
+  )
+  return { document: body, documentFingerprint }
+}
+
 /** A write's parsed answer and the fingerprint of the editor document it carries. */
 export interface WithDocumentFingerprint<T> {
   value: T

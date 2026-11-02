@@ -3,6 +3,7 @@ import { act, cleanup, render } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import CodeMirrorEditor from "../CodeMirrorEditor"
+import { saveCommittingField } from "../../../hooks/keyboardTargets"
 
 describe("CodeMirrorEditor", () => {
   beforeEach(() => {
@@ -70,6 +71,30 @@ describe("CodeMirrorEditor", () => {
     })
 
     expect(onChange.mock.calls).toEqual([["a"], ["ab"]])
+  })
+
+  it("commits what is being typed before a Ctrl+S save inside the debounce window", async () => {
+    let committed = "df = join_premiums"
+    const saved: string[] = []
+    let editorView: EditorView | null = null
+    render(
+      <CodeMirrorEditor
+        defaultValue={committed}
+        onChange={(value) => { committed = value }}
+        onEditorView={(view) => { editorView = view }}
+      />,
+    )
+    await act(async () => {
+      editorView!.focus()
+      editorView!.dispatch({ changes: { from: 0, to: editorView!.state.doc.length, insert: "df = sale_flag" } })
+    })
+
+    saveCommittingField(editorView!.contentDOM, () => saved.push(committed))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(saved).toEqual(["df = sale_flag"])
   })
 
   it("flushes a pending local document change on blur", async () => {

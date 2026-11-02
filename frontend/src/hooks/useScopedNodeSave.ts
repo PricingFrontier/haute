@@ -85,7 +85,10 @@ export function useScopedNodeSave({
               "another node.",
           }
         }
-        editedNodeIdsRef.current.add(id)
+        const result = onUpdateNode(id, data)
+        // A refused update edited nothing, so it locks no other node.
+        if (result.ok) editedNodeIdsRef.current.add(id)
+        return result
       }
       return onUpdateNode(id, data)
     },

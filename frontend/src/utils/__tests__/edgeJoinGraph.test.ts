@@ -1,9 +1,11 @@
 import type { Edge, Node } from "@xyflow/react"
 import { describe, expect, it, vi } from "vitest"
 import {
+  edgeJoinRewrittenNodeIds,
   finalizeResolvedEdgeJoinInsertion,
   insertEdgeJoinNode,
   insertEdgeJoinNodeFromSources,
+  rebaseEdgeJoinInsertion,
   swapEdgeJoinInputs,
   validateEdgeJoinInsertionCandidate,
   type EdgeJoinInsertSuccess,
@@ -87,6 +89,44 @@ describe("validateEdgeJoinInsertionCandidate", () => {
       targetEdgeId,
       connection: { source },
     })).toEqual({ ok: false, reason })
+  })
+})
+
+describe("rebaseEdgeJoinInsertion", () => {
+  it("applies the insertion onto a live graph whose positions, selection and other nodes changed", () => {
+    const captured = { nodes: [node("a"), node("b"), node("c")], edges: [edge("e-a-b", "a", "b")] }
+    const result = insertEdgeJoinNode({
+      ...captured,
+      targetEdgeId: "e-a-b",
+      connection: { source: "c", sourceHandle: null },
+      position: { x: 100, y: 50 },
+      idFactory: () => "edgeJoin_1",
+    })
+    if (!result.ok) throw new Error("insertion refused")
+    const finalized = finalizeInsertion(result, "server_assigned_join")
+    // While identities resolved: a drags, c is selected and its config edited.
+    const live = {
+      nodes: [
+        { ...captured.nodes[0], position: { x: 500, y: 500 } },
+        captured.nodes[1],
+        { ...captured.nodes[2], selected: true, data: { ...captured.nodes[2].data, config: { code: "edited" } } },
+      ],
+      edges: captured.edges,
+    }
+
+    const next = rebaseEdgeJoinInsertion(captured, finalized, live, edgeJoinRewrittenNodeIds(result))
+
+    expect(edgeJoinRewrittenNodeIds(result)).toEqual(["b"])
+    expect(next.nodes.map((item) => item.id)).toEqual(["a", "b", "c", "edgeJoin_1"])
+    expect(next.nodes[0].position).toEqual({ x: 500, y: 500 })
+    expect(next.nodes[2].data.config).toEqual({ code: "edited" })
+    // b's data is the insertion's rewrite; only the new node is selected.
+    expect(next.nodes[1].data).toBe(finalized.nodes.find((item) => item.id === "b")?.data)
+    expect(next.nodes.map((item) => item.selected)).toEqual([false, false, false, true])
+    expect(next.edges.map((item) => item.id).sort()).toEqual(
+      finalized.edges.map((item) => item.id).sort(),
+    )
+    expect(next.edges.some((item) => item.id === "e-a-b")).toBe(false)
   })
 })
 
