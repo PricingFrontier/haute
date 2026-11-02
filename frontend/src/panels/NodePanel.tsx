@@ -11,7 +11,7 @@ import {
   LazyEditorBoundary,
 } from "./LazyNodeEditors"
 import { stepInputNames, steppedSurfaceFor } from "../utils/polarsStepInputs"
-import type { InputSource, SimpleNode, SimpleEdge, OnUpdateConfig, OnUpdateConfigResult, OnReplaceConfig } from "./editors"
+import type { InputSource, SimpleNode, SimpleEdge, OnUpdateConfig, OnUpdateConfigResult, OnReplaceConfig } from "./editors/_shared"
 import {
   effectiveNodeType,
   isSubmodelDefinition,
@@ -62,6 +62,8 @@ type NodePanelProps = {
   dimmed?: boolean
   /** 1-based line number of the error in user code, if any */
   errorLine?: number | null
+  /** Changes with each run's result, so a repeat error line is marked again. */
+  errorRevision?: unknown
   /** The last run's error message for this node, if it failed */
   runError?: string | null
   /** Preview rows from the current node's preview data (input columns pass through) */
@@ -982,6 +984,8 @@ type NodeEditorBodyProps = {
   inputSources: InputSource[]
   onDeleteEdge?: (edgeId: string) => void
   errorLine?: number | null
+  /** Changes with each run's result, so a repeat error line is marked again. */
+  errorRevision?: unknown
   /** The last run's error message for this node, if it failed. */
   runError?: string | null
   upstreamColumns: { name: string; dtype: string }[]
@@ -1007,6 +1011,7 @@ function NodeEditorBody({
   inputSources,
   onDeleteEdge,
   errorLine,
+  errorRevision,
   runError,
   upstreamColumns,
   nodeColumns,
@@ -1034,6 +1039,7 @@ function NodeEditorBody({
         inputNames={stepInputNames(nodeType, inputSources.map((source) => source.name))}
         onDeleteInput={onDeleteEdge}
         errorLine={errorLine}
+        errorRevision={errorRevision}
         runError={runError}
         upstreamColumns={upstreamColumns}
         nodeColumns={nodeColumns}
@@ -1154,6 +1160,7 @@ function NodePanelContent({
   onRefreshPreview,
   dimmed,
   errorLine,
+  errorRevision,
   runError,
   previewRows,
   selectedPreviewLoading = false,
@@ -1213,6 +1220,7 @@ function NodePanelContent({
     () => new Set(reservedApiInputFrameLabels ?? []),
     [reservedApiInputFrameLabels],
   )
+  const inputBindingViolations = useDocumentStatusStore((s) => s.inputBindingViolations)
 
   // Current Explore cache identity hash — the same client identity gate the
   // Explore preview applies, so a Chart Configure subview never treats a
@@ -1418,12 +1426,14 @@ function NodePanelContent({
       onSwapEdgeJoinInputs={onSwapEdgeJoinInputs}
       onShowPivots={() => setExplorePane(node.id, "pivots")}
       errorLine={errorLine}
+      errorRevision={errorRevision}
       runError={runError}
       previewRows={previewRows}
       selectedPreviewLoading={selectedPreviewLoading}
       loadPivotFilterMembers={loadPivotFilterMembers}
       exploreConfigHash={exploreConfigHash}
       reservedApiInputFrameLabels={reservedApiInputFrameLabelSet}
+      inputBindingViolations={inputBindingViolations}
       accentColor={accentColor}
     />
   )
@@ -1525,6 +1535,7 @@ function NodePanelContent({
         inputSources={inputSources}
         onDeleteEdge={onDeleteEdge}
         errorLine={errorLine}
+        errorRevision={errorRevision}
         runError={runError}
         upstreamColumns={upstreamColumns}
         nodeColumns={nodeColumns}

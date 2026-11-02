@@ -749,16 +749,17 @@ describe("swapEdgeJoinInputs", () => {
       on: ["policy_id"],
       suffix: "_lookup",
     })
+    // Each swapped connection is named by its new role.
     expect(result.edges).toEqual([
       expect.objectContaining({
-        id: "base-edge",
+        id: "e-quotes-edgeJoin_1-quotes_out-join",
         source: "quotes",
         target: "edgeJoin_1",
         sourceHandle: "quotes_out",
         targetHandle: "join",
       }),
       expect.objectContaining({
-        id: "join-edge",
+        id: "e-lookup-edgeJoin_1-lookup_out-base",
         source: "lookup",
         target: "edgeJoin_1",
         sourceHandle: "lookup_out",

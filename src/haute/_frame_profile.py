@@ -34,6 +34,10 @@ _SUMMARY_NAME_LIMIT = 3
 _CATEGORICAL_VALUE_COUNT_LIMIT = 50
 _PROFILE_COLUMN_BATCH_SIZE = 8
 _PROFILE_DISTINCT_PARTITION_ROWS = 250_000
+#: The fewest rows a duplicate-count partition holds however little memory is free: fewer
+#: would split a large frame into a partition per handful of rows, so the job's memory
+#: limit fails it instead.
+_PROFILE_DISTINCT_PARTITION_MIN_ROWS = 20_000
 # Equal-width bins rendered per numeric column histogram.
 _HISTOGRAM_BIN_COUNT = 20
 # Wide-schema guardrail: only the first N numeric columns (schema order) get a
@@ -583,7 +587,10 @@ def _count_unique_rows(
     remaining = execution_context.remaining_memory_bytes()
     if remaining is not None:
         # Leave room for the reader, hash table and retained scalar-stat buffers.
-        partition_rows = min(partition_rows, max(1, int(remaining / (8 * max(1, width)))))
+        partition_rows = min(
+            partition_rows,
+            max(_PROFILE_DISTINCT_PARTITION_MIN_ROWS, int(remaining / (8 * max(1, width)))),
+        )
     partition_count = math.ceil(row_count / partition_rows)
     routing_name = "__haute_profile_bucket"
     while routing_name in column_names:

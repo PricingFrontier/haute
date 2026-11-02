@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { useState } from "react"
 import { render, screen, fireEvent, cleanup, act, waitFor, within } from "@testing-library/react"
 import { WarehousePicker, CatalogTablePicker, TargetTablePicker } from "../_DatabricksSelector"
 
@@ -472,6 +473,53 @@ describe("CatalogTablePicker", () => {
     expect(onSelect).toHaveBeenCalledWith("") // called again with empty
   })
 
+  /** The picker under a parent that stores what it selects, as the node config does. */
+  function StoredCatalogTablePicker({ initial, onSelect }: { initial: string; onSelect: (name: string) => void }) {
+    const [table, setTable] = useState(initial)
+    return (
+      <CatalogTablePicker
+        table={table}
+        onSelect={(name) => {
+          onSelect(name)
+          setTable(name)
+        }}
+      />
+    )
+  }
+
+  it("keeps a newly chosen catalog, and loads its schemas, when it clears a configured table", async () => {
+    mockGetCatalogs.mockResolvedValue({ catalogs: catalogItems })
+    mockGetSchemas.mockResolvedValue({ schemas: [{ name: "landing", comment: "" }] })
+    const onSelect = vi.fn()
+    render(<StoredCatalogTablePicker initial="main.default.users" onSelect={onSelect} />)
+
+    fireEvent.focus(getCatalogSelect())
+    await waitForCatalogOption("staging")
+    fireEvent.change(getCatalogSelect(), { target: { value: "staging" } })
+
+    expect(onSelect).toHaveBeenLastCalledWith("")
+    expect(getCatalogSelect().value).toBe("staging")
+    await waitFor(() => expect(mockGetSchemas).toHaveBeenCalledWith("staging"))
+    await waitForSchemaOption("landing")
+    expect(getSchemaSelect()).toBeEnabled()
+  })
+
+  it("keeps a newly chosen schema, and loads its tables, when it clears a configured table", async () => {
+    mockGetSchemas.mockResolvedValue({ schemas: schemaItems })
+    mockGetTables.mockResolvedValue({ tables: [{ name: "orders", full_name: "main.analytics.orders", table_type: "TABLE", comment: "" }] })
+    const onSelect = vi.fn()
+    render(<StoredCatalogTablePicker initial="main.default.users" onSelect={onSelect} />)
+
+    fireEvent.focus(getSchemaSelect())
+    await waitForSchemaOption("analytics")
+    fireEvent.change(getSchemaSelect(), { target: { value: "analytics" } })
+
+    expect(onSelect).toHaveBeenLastCalledWith("")
+    expect(getCatalogSelect().value).toBe("main")
+    expect(getSchemaSelect().value).toBe("analytics")
+    await waitForTableOption("orders")
+  })
+
   it("selecting a table calls onSelect with catalog.schema.table", async () => {
     mockGetCatalogs.mockResolvedValue({ catalogs: catalogItems })
     mockGetSchemas.mockResolvedValue({ schemas: schemaItems })
@@ -696,6 +744,23 @@ describe("TargetTablePicker", () => {
     fireEvent.change(screen.getByLabelText("Schema"), { target: { value: "other" } })
 
     expect(onSelect).toHaveBeenLastCalledWith("workspace.other.scored")
+  })
+
+  it("lists a catalog's tables again after switching away from it and back", async () => {
+    mockGetSchemas.mockResolvedValue({ schemas: [{ name: "pricing-dev", comment: "" }] })
+    mockGetCatalogs.mockResolvedValue({ catalogs: [{ name: "workspace", comment: "" }, { name: "sandbox", comment: "" }] })
+    const { container } = render(<TargetTablePicker table="workspace.pricing-dev.claims" onSelect={vi.fn()} />)
+    await waitFor(() => expect(container.querySelectorAll("datalist option")).toHaveLength(1))
+
+    fireEvent.focus(screen.getByLabelText("Catalog"))
+    await screen.findByRole("option", { name: "sandbox" })
+    fireEvent.change(screen.getByLabelText("Catalog"), { target: { value: "sandbox" } })
+    fireEvent.change(screen.getByLabelText("Catalog"), { target: { value: "workspace" } })
+    await screen.findByRole("option", { name: "pricing-dev" })
+    fireEvent.change(screen.getByLabelText("Schema"), { target: { value: "pricing-dev" } })
+
+    await waitFor(() => expect(container.querySelectorAll("datalist option")).toHaveLength(1))
+    expect(mockGetTables).toHaveBeenCalledTimes(2)
   })
 
   it("clears the table when the catalog changes", async () => {

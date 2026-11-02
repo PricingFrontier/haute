@@ -9,7 +9,8 @@ import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { formatChartNumber } from "../../utils/chartHelpers"
 import { ChartEmptyState } from "./ChartScaffold"
 import { FeatureBrowser } from "./FeatureBrowser"
-import { TERM_DISPLAY_OPTIONS, TermTableView, ViewSwitch, type TermDisplay } from "./TermTableView"
+import { ViewSwitch } from "../ViewSwitch"
+import { TERM_DISPLAY_OPTIONS, TermTableView, type TermDisplay } from "./TermTableView"
 
 type Scale = "relativity" | "score"
 

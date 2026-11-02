@@ -2,6 +2,7 @@ import type { Edge, Node, XYPosition } from "@xyflow/react"
 import { isSteppedTransformConfig, renameStepInputs, steppedSurfaceAllowsInputReferences } from "./polarsStepInputs"
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
+import { withEdgeIdentity } from "./edgeIds"
 import { appEdge, appNode, selectOnlyNode } from "./flowElements"
 import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_HANDLE } from "./edgeJoinRoles"
 import { edgeInputName, UNRESOLVED_INPUT_NAME } from "./apiInputPorts"
@@ -381,8 +382,8 @@ export function swapEdgeJoinInputs({
     ok: true,
     nodes,
     edges: edges.map((edge) => {
-      if (edge === baseEdge) return { ...edge, targetHandle: EDGE_JOIN_JOIN_HANDLE }
-      if (edge === joinEdge) return { ...edge, targetHandle: EDGE_JOIN_BASE_HANDLE }
+      if (edge === baseEdge) return withEdgeIdentity(edge, { targetHandle: EDGE_JOIN_JOIN_HANDLE })
+      if (edge === joinEdge) return withEdgeIdentity(edge, { targetHandle: EDGE_JOIN_BASE_HANDLE })
       return edge
     }),
   }

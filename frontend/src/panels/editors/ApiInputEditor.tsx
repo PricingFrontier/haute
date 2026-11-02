@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { AlertTriangle, Radio, Check, HelpCircle, KeyRound, Plus, X } from "lucide-react"
 import { SchemaPreview } from "./_shared"
 import type { OnUpdateConfig, OnUpdateConfigResult } from "./_shared"
@@ -45,6 +45,7 @@ import FramesTable, { type FramesTableRow } from "../../components/FramesTable"
 import KeyPickerModal from "../../components/KeyPickerModal"
 import Tooltip from "../../components/Tooltip"
 import { ValidatedTextField } from "../../components/form"
+import { apiErrorMessage } from "../../api/errors"
 
 // The re-infer merge is `reconcileInferredTables` (apiInputInherit.ts): the
 // column-level reconciliation that supersedes the old whole-column-array
@@ -55,28 +56,52 @@ import { ValidatedTextField } from "../../components/form"
 // ─── ApiInputEditor ───────────────────────────────────────────────
 
 const COLUMN_TYPES: ColumnType[] = ["int", "float", "str", "bool", "date"]
+const NO_LABEL_VIOLATIONS: ReadonlyMap<string, string> = new Map()
 
 export default function ApiInputEditor({
   config,
   onUpdate,
   accentColor,
   reservedFrameLabels,
+  labelViolations = NO_LABEL_VIOLATIONS,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   accentColor: string
   /** Server-advertised frame labels reserved by the executable language. */
   reservedFrameLabels: ReadonlySet<string>
+  /** The server's name violations each committed frame label causes, by label. */
+  labelViolations?: ReadonlyMap<string, string>
 }) {
   const currentPath = configField<string | undefined>(config, "path", undefined)
   const { schema, loading: loadingSchema, error: schemaError, fetchForPath } = useSchemaFetch(currentPath)
-  const [inferring, setInferring] = useState(false)
+  // The file an inference is running for: its button waits only while that
+  // file is the one selected.
+  const [inferringSource, setInferringSource] = useState<string | null>(null)
+  const inferring = inferringSource !== null && inferringSource === currentPath
   const [inferError, setInferError] = useState<string | null>(null)
-  // Defect 2 — when a re-infer would overwrite tables the user has
-  // already curated, we stage the normalised inferred tables here and
-  // render a confirm/cancel gate instead of clobbering immediately.
-  // First run (empty tables) skips the gate and applies in one click.
-  const [pendingInferred, setPendingInferred] = useState<ApiInputTableV2[] | null>(null)
+  // When a re-infer would overwrite tables the user has already curated, the
+  // normalised inferred tables are staged here behind a confirm/cancel gate
+  // instead of clobbering, for the very draft they were inferred against: any
+  // change of that draft (an edit, an undo, another file, the document read
+  // again) drops the staged tables for good. An empty draft skips the gate.
+  const [stagedInference, setStagedInference] = useState<{ draft: Record<string, unknown>; tables: ApiInputTableV2[] } | null>(null)
+  if (stagedInference !== null && stagedInference.draft !== config) setStagedInference(null)
+  const pendingInferred = stagedInference !== null && stagedInference.draft === config ? stagedInference.tables : null
+  // The editor's latest config and update, for an inference reply that arrives
+  // after renders, and the generation that invalidates a reply on unmount
+  // (another node or document) or a newer inference.
+  const latest = useRef({ config, onUpdate })
+  useEffect(() => {
+    latest.current = { config, onUpdate }
+  })
+  const inferGeneration = useRef(0)
+  useEffect(() => {
+    const generations = inferGeneration
+    return () => {
+      generations.current += 1
+    }
+  }, [])
   // The most-recent-inference snapshot: a single snapshot overwritten on every
   // infer (never accumulated), so a key deleted from a frame — or whose whole
   // frame was deleted — can still be offered by the inventory.
@@ -335,12 +360,30 @@ export default function ApiInputEditor({
     const next = { ...v2, tables: v2.tables.filter((_, idx) => idx !== i) }
     writeBack(next)
   }
+  /**
+   * Infer the selected file's tables. The reply is bound to the very draft it
+   * was asked from: it is dropped if the editor closed or a newer inference
+   * started by then, and dropped with a note if the draft changed (an edit, an
+   * undo, another file, the document read again); it applies at once to that
+   * draft when it has no tables, and otherwise waits behind the replace
+   * confirmation. It writes through the editor's current update, so a document
+   * that cannot be edited any more refuses it.
+   */
   const inferTables = async () => {
     if (!currentPath) return
-    setInferring(true)
+    const source = currentPath
+    const askedFrom = config
+    const generation = ++inferGeneration.current
+    const isCurrent = () => generation === inferGeneration.current
+    setInferringSource(source)
     setInferError(null)
     try {
-      const result = await inferJsonCacheSchema({ path: currentPath })
+      const result = await inferJsonCacheSchema({ path: source })
+      if (!isCurrent()) return
+      if (latest.current.config !== askedFrom) {
+        setInferError("The node changed while this inference ran, so it was not applied.")
+        return
+      }
       // Route the raw /infer response through `readV2` so unknown column
       // types are coerced instead of being raw-cast into state. Infer is
       // fresh backend output that was never user-persisted, so it opts
@@ -355,18 +398,20 @@ export default function ApiInputEditor({
       // Refresh the single most-recent-inference snapshot on EVERY infer,
       // whether or not the replace gate is later confirmed.
       setLastInfer(inferred)
-      if (v2.tables.length === 0) {
+      const update = latest.current.onUpdate
+      const askedShape = classifyConfig(askedFrom)
+      const askedV2 = askedShape.kind === "v2" ? askedShape.v2 : emptyV2(source)
+      if (askedV2.tables.length === 0) {
         // First run — nothing to clobber, apply in one click.
-        writeBack({ ...v2, tables: inferred })
+        const committed = update(writeV2({ ...askedV2, tables: inferred }))
+        if (!committed.ok) setInferError(committed.error)
       } else {
-        // The user already has tables: stage the inferred set behind a
-        // confirm gate so deliberate edits are never silently lost.
-        setPendingInferred(inferred)
+        setStagedInference({ draft: askedFrom, tables: inferred })
       }
     } catch (e) {
-      setInferError(e instanceof Error ? e.message : String(e))
+      if (isCurrent()) setInferError(apiErrorMessage(e))
     } finally {
-      setInferring(false)
+      if (generation === inferGeneration.current) setInferringSource(null)
     }
   }
   const confirmInferred = () => {
@@ -375,9 +420,9 @@ export default function ApiInputEditor({
       ...v2,
       tables: reconcileInferredTables(v2.tables, pendingInferred, inventory, saltNames),
     })
-    setPendingInferred(null)
+    setStagedInference(null)
   }
-  const cancelInferred = () => setPendingInferred(null)
+  const cancelInferred = () => setStagedInference(null)
 
   // Using a path as a key CONFIRMS every column already carrying it, on any
   // frame — the source field of a cascade/inherit included (ruled 2026-07-09):
@@ -654,15 +699,15 @@ export default function ApiInputEditor({
             rows={frameRows}
             accentColor={accentColor}
             onCascade={() => {
-              setPendingInferred(null)
+              setStagedInference(null)
               setPicker({ mode: "cascade" })
             }}
             onInherit={(i) => {
-              setPendingInferred(null)
+              setStagedInference(null)
               setPicker({ mode: "inherit", tableIdx: i })
             }}
             onAddKeys={(i) => {
-              setPendingInferred(null)
+              setStagedInference(null)
               setPicker({ mode: "attributes", tableIdx: i })
             }}
           />
@@ -787,7 +832,7 @@ export default function ApiInputEditor({
                   testIdPrefix={`api-input-table-${ti}`}
                   ambiguousNames={ambiguous}
                   validateLabel={validateTableLabel(ti)}
-                  commitError={labelCommitErrors[ti] ?? null}
+                  commitError={labelCommitErrors[ti] ?? labelViolations.get(table.label) ?? null}
                   onUpdate={(patch) => updateTable(ti, patch)}
                   onRemove={() => removeTable(ti)}
                   onAddColumn={() => addColumn(ti)}

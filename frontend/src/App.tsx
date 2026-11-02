@@ -734,6 +734,7 @@ const NodePropertiesPanel = memo(function NodePropertiesPanel({
               ? previewData.error_line ?? null
               : null
           }
+          errorRevision={previewData?.nodeId === activePanelNodeId ? previewData : null}
           runError={previewData?.nodeId === activePanelNodeId ? previewData.error ?? null : null}
           previewRows={
             previewData?.status === "ok" && previewData.nodeId === activePanelNodeId

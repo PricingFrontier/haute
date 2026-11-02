@@ -15,8 +15,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from haute._file_ops import file_revision
-from haute._pipeline_recovery import load_pipeline_editor_document
-from haute._support_code_names import support_code_violations
+from haute._pipeline_recovery import load_pipeline_editor_document, name_violations_payload
+from haute._support_code_names import name_violations, support_code_violations
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
 from haute.errors import ParseError, RequestRefusedError
 from haute.parser import parse_pipeline_file
@@ -240,6 +240,77 @@ def test_the_support_code_rule(
     graph: PipelineGraph, modules: dict[str, str], expected: list[tuple[str, str]]
 ) -> None:
     assert _violations(graph, **modules) == expected
+
+
+def _with_input_port(port: str, preamble: str) -> PipelineGraph:
+    """A ``rates`` definition whose public input *port* routes to its ``child``."""
+    definition = SubmodelDefinition(
+        definitionId="rates",
+        file="modules/rates.py",
+        graph=PipelineGraph(nodes=[_node("child")], edges=[]),
+        inputPorts=[{"name": port, "targets": [{"nodeId": "child"}]}],
+        outputPorts=[],
+    )
+    occurrence = _node("rates_1", "submodel", definitionId="rates", alias="rates_1")
+    return PipelineGraph(
+        nodes=[occurrence], edges=[], submodels={"rates": definition}, preamble=preamble
+    )
+
+
+@pytest.mark.parametrize(
+    ("graph", "modules", "expected"),
+    [
+        pytest.param(
+            PipelineGraph(
+                nodes=[_quote_input("rate_lookup"), _node("rated")],
+                edges=[
+                    GraphEdge(id="e", source="quotes", target="rated", sourceHandle="rate_lookup")
+                ],
+                preamble=_RATE_LOOKUP,
+            ),
+            {},
+            (
+                "support_input",
+                {"kind": "frame", "node_id": "quotes", "handle": "rate_lookup", "submodel": None},
+            ),
+            id="frame-named-like-a-preamble-helper",
+        ),
+        pytest.param(
+            _with_input_port("rate_lookup", "from utility.rates import *\n"),
+            {"rates": _RATE_LOOKUP},
+            (
+                "support_input",
+                {"kind": "submodel_input", "submodel": "rates", "port": "rate_lookup"},
+            ),
+            id="port-named-like-a-utility-helper",
+        ),
+        pytest.param(
+            _with_input_port("pipeline", ""),
+            {},
+            ("reserved_input", {"kind": "submodel_input", "submodel": "rates", "port": "pipeline"}),
+            id="port-named-like-a-reserved-name",
+        ),
+        pytest.param(
+            PipelineGraph(
+                nodes=[_node("source"), _node("rated", inputMapping={"rate_lookup": "source"})],
+                edges=[GraphEdge(id="e", source="source", target="rated")],
+                preamble=_RATE_LOOKUP,
+            ),
+            {},
+            ("support_input", None),
+            id="an-input-mapping-alias-has-no-editor-binding",
+        ),
+    ],
+)
+def test_an_input_violation_names_the_frame_or_port_that_sets_it(
+    graph: PipelineGraph,
+    modules: dict[str, str],
+    expected: tuple[str, dict[str, object] | None],
+) -> None:
+    payload = name_violations_payload(name_violations(graph, _utilities(**modules)))
+    assert [(v.kind, None if v.binding is None else v.binding.model_dump()) for v in payload] == [
+        expected
+    ]
 
 
 _MATCH_AND_TYPE_BINDINGS = [

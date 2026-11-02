@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import requests
 
 from haute import _workbench_rollout as rollouts
 from haute._workbench_config import AppEnvironment, WorkbenchConfig
@@ -768,7 +769,10 @@ def server() -> Any:
 
         def do_GET(self) -> None:
             if self.path == "/stall":
+                # The client has given up by now; writing to its closed socket
+                # would print a broken pipe into whichever test runs next.
                 clock.sleep(3)
+                return
             if self.path in ("/truncated", "/error-truncated"):
                 self.send_response(200 if self.path == "/truncated" else 500)
                 self.send_header("Content-Length", "100")
@@ -981,7 +985,7 @@ class _Sdk:
                 return sdk.app
 
             def begin_update(
-                self, group: str, name: str, envelope: Any, *, timeout: float
+                self, group: str, name: str, envelope: Any, *, timeout: float, polling: Any
             ) -> _Poller:
                 sdk.timeouts.append(("begin_update", timeout))
                 sdk.updates.append(envelope)
@@ -1145,6 +1149,128 @@ def test_azure_asks_a_token_for_the_app_registrations_client_id(azure: Any) -> N
 
     assert host.token("app-client-id") == "a-token"
     assert credential.scopes == ["app-client-id/.default"]
+
+
+# ── Through the real Azure SDK ─────────────────────────────────────────────────────
+
+_POLL = "https://management.azure.com/operations/update-1"
+
+
+class _ResourceManager(requests.adapters.BaseAdapter):
+    """Azure Resource Manager as the real SDK reaches it over HTTP: the Container App, and
+    an update answered 202 with a Location to poll, done on its first poll."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.app: dict[str, Any] = {
+            "location": "uksouth",
+            "tags": {"owner": "pricing"},
+            "properties": {
+                "latestRevisionName": "motor-staging--old",
+                "configuration": {
+                    "activeRevisionsMode": "Single",
+                    "ingress": {"external": True, "fqdn": ADDRESS},
+                },
+                "template": {
+                    "containers": [{"name": "app", "image": OLD}],
+                    "revisionSuffix": "old",
+                },
+            },
+        }
+        self.updates: list[dict[str, Any]] = []
+        self.reads: list[str] = []
+
+    def send(self, request: Any, **kwargs: Any) -> requests.Response:
+        if request.method == "PATCH":
+            body = json.loads(request.body)
+            self.updates.append(body)
+            template = body.get("properties", {}).get("template")
+            if template is not None:
+                self.app["properties"]["template"] = template
+                suffix = template["revisionSuffix"]
+                self.app["properties"]["latestRevisionName"] = f"motor-staging--{suffix}"
+            if "tags" in body:
+                self.app["tags"] = body["tags"]
+            return self._answer(request, 202, None, {"Location": _POLL, "Retry-After": "0"})
+        # Only the app's own address and the update's Location answer: a poll anywhere else
+        # is the SDK reading the wrong URL.
+        address = request.url.split("?", 1)[0]
+        self.reads.append(address)
+        if address == _POLL or address.endswith("/containerApps/motor-staging"):
+            return self._answer(request, 200, self.app)
+        return self._answer(request, 404, {"error": {"code": "NotFound", "message": address}})
+
+    def close(self) -> None:
+        pass
+
+    @staticmethod
+    def _answer(
+        request: Any, status: int, body: Any, headers: Mapping[str, str] | None = None
+    ) -> requests.Response:
+        import io
+
+        from urllib3.response import HTTPResponse
+
+        content = json.dumps(body).encode("utf-8") if body is not None else b""
+        sent = {"Content-Type": "application/json", **(headers or {})}
+        answer = requests.Response()
+        answer.status_code = status
+        answer.headers.update(sent)
+        # azure-core reads the urllib3 response beneath, as a real transport fills it.
+        answer.raw = HTTPResponse(
+            body=io.BytesIO(content), headers=sent, status=status, preload_content=False
+        )
+        answer._content = content
+        answer.encoding = "utf-8"
+        answer.request = request
+        answer.url = request.url
+        return answer
+
+
+class _SdkCredential:
+    """A token as azure-core's bearer policy asks one."""
+
+    def get_token(self, *scopes: str, **kwargs: Any) -> Any:
+        from azure.core.credentials import AccessToken
+
+        return AccessToken("a-token", 4_102_444_800)
+
+
+def test_the_real_sdk_takes_the_rollouts_updates() -> None:
+    # The SDK hands an update's keyword arguments to the request and to the poller it
+    # builds, whose own first parameter is `timeout`: the rollout's request bound reached it
+    # twice, failing after Azure had taken the image, before the check or the record.
+    from azure.core.pipeline.transport import RequestsTransport
+    from azure.mgmt.appcontainers import ContainerAppsAPIClient
+
+    manager = _ResourceManager()
+    session = requests.Session()
+    session.mount("https://", manager)
+    client = ContainerAppsAPIClient(
+        _SdkCredential(),  # type: ignore[arg-type]
+        "subscription-1",
+        transport=RequestsTransport(session=session),
+    )
+    host = rollouts.AzureContainerApps(
+        AppEnvironment("staging", "pricing-rg", "motor-staging"),
+        {},
+        client=client,
+        credential=_SdkCredential(),  # type: ignore[arg-type]
+    )
+
+    made = host.set_image(NEW, "h261102190710b9a4d9", 60.0)
+    host.record(Recorded(NEW, "rel-1", COMMIT))
+
+    assert made == "motor-staging--h261102190710b9a4d9"
+    # Each update was followed to its end at the Location Azure answered it with.
+    assert manager.reads.count(_POLL) == 2
+    assert manager.updates[0]["properties"]["template"]["containers"][0]["image"] == NEW
+    assert manager.app["tags"] == {
+        "owner": "pricing",
+        "haute-image": NEW,
+        "haute-release": "rel-1",
+        "haute-commit": COMMIT,
+    }
 
 
 def test_azure_deactivates_a_revision(azure: Any) -> None:

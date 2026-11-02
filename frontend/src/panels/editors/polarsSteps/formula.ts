@@ -49,7 +49,7 @@ export class FormulaError extends Error {
 }
 
 /** The catalogue function a name refers to, whatever its case. */
-export function functionNamed(name: string): (typeof FUNCTIONS)[number] | undefined {
+function functionNamed(name: string): (typeof FUNCTIONS)[number] | undefined {
   const lower = name.toLowerCase()
   return FUNCTIONS.find((f) => f.value === lower)
 }
@@ -335,9 +335,19 @@ class Parser {
     switch (arg) {
       case "integer":
       case "int":
-      case "number":
+      case "number": {
         if (value.kind !== "number") throw new FormulaError(`${fn}() expects a number here.`, value.start)
-        return literal("number", negative ? -value.value : value.value)
+        const number = negative ? -value.value : value.value
+        // The renderer's rules: an `integer` argument is a whole number of zero or
+        // more (decimal places, a group), an `int` any whole number (an offset).
+        if (arg === "integer" && (!Number.isInteger(number) || number < 0)) {
+          throw new FormulaError(`${fn}() expects a whole number of zero or more here.`, token.start)
+        }
+        if (arg === "int" && !Number.isInteger(number)) {
+          throw new FormulaError(`${fn}() expects a whole number here.`, token.start)
+        }
+        return literal("number", number)
+      }
       case "text":
         if (value.kind !== "string" || negative) throw new FormulaError(`${fn}() expects quoted text here.`, value.start)
         return literal("text", value.value)

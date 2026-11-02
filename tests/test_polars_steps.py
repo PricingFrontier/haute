@@ -5138,7 +5138,6 @@ def _bundled_scoring_graph(steps: list[dict[str, Any]]) -> PipelineGraph:
                                 }
                                 for col in ("area", "factor")
                             ],
-                            "outputFormat": "json",
                         },
                     },
                 },
@@ -5684,7 +5683,6 @@ def test_model_score_steps_round_trip_and_fail_before_any_model_loads(
                                     "enabled": True,
                                 }
                             ],
-                            "outputFormat": "json",
                         },
                     },
                 },
@@ -6230,7 +6228,6 @@ def test_deploy_injected_data_input_applies_post_load_code(
                 "enabled": True,
             }
         ],
-        "outputFormat": "json",
     }
     graph = PipelineGraph(
         nodes=[

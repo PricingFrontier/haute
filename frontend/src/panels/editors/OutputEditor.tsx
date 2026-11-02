@@ -341,70 +341,74 @@ export default function OutputEditor({
   // saved file. Capped to PREVIEW_ROW_LIMIT source rows; document rows beyond
   // the cap render with a "showing N of M" note rather than silently truncating.
   const [outputPreviewOpen, setOutputPreviewOpen] = useState(false)
-  const [outputDoc, setOutputDoc] = useState<unknown[] | null>(null)
+  // A preview is of one mapping read from one data source: it is shown only
+  // while both are still the editor's, so an edit or a source switch never
+  // leaves an earlier document beside the current rows.
+  const activeSource = useSettingsStore((s) => s.activeSource)
+  const persistedMapping = useMemo(() => writeV2(v2).outputMapping as Array<Record<string, unknown>>, [v2])
+  const previewKey = useMemo(() => JSON.stringify([persistedMapping, activeSource]), [persistedMapping, activeSource])
+  const [assembled, setAssembled] = useState<
+    | { key: string; status: "loading" }
+    | { key: string; status: "ok"; doc: unknown[]; total: number }
+    | { key: string; status: "error"; error: string }
+    | null
+  >(null)
+  const outputReqSeq = useRef(0)
+  const currentAssembled = assembled?.key === previewKey ? assembled : null
+  const outputDoc = currentAssembled?.status === "ok" ? currentAssembled.doc : null
   // The pre-cap document length (the dry-run's `row_count`), so a capped doc can
   // show "showing N of M".
-  const [outputDocTotal, setOutputDocTotal] = useState<number>(0)
-  const [outputLoading, setOutputLoading] = useState(false)
-  const [outputError, setOutputError] = useState<string | null>(null)
-  const outputReqSeq = useRef(0)
+  const outputDocTotal = currentAssembled?.status === "ok" ? currentAssembled.total : 0
+  const outputLoading = currentAssembled?.status === "loading"
+  const outputError = currentAssembled?.status === "error" ? currentAssembled.error : null
+  const outputStale = assembled !== null && currentAssembled === null
 
   const runOutputPreview = useCallback(() => {
     // buildGraph reads the preamble from the store; listing it renews this callback.
     void preamble
     const reqId = ++outputReqSeq.current
-    setOutputLoading(true)
-    setOutputError(null)
+    const key = previewKey
+    setAssembled({ key, status: "loading" })
     const graph = buildGraph(allNodes, edges, submodels)
     outputAssembleDryRun({
       graph,
       nodeId,
       // The live working copy's mapping — the editor's CURRENT (unsaved) state.
-      outputMapping: writeV2(v2).outputMapping as Array<Record<string, unknown>>,
-      outputFormat: v2.outputFormat || "json",
+      outputMapping: persistedMapping,
       rowLimit: PREVIEW_ROW_LIMIT,
-      source: useSettingsStore.getState().activeSource,
+      source: activeSource,
     })
       .then((res) => {
         if (outputReqSeq.current !== reqId) return
         if (res.status !== "ok") {
           // A run that completed but the node errored (200 + status:"error").
-          setOutputDoc(null)
-          setOutputError(res.error || "Assembly failed")
-        } else {
-          setOutputDoc(Array.isArray(res.document) ? res.document : [])
-          setOutputDocTotal(
-            typeof res.row_count === "number" && res.row_count > 0
-              ? res.row_count
-              : Array.isArray(res.document)
-                ? res.document.length
-                : 0,
-          )
+          setAssembled({ key, status: "error", error: res.error || "Assembly failed" })
+          return
         }
-        setOutputLoading(false)
+        const doc = Array.isArray(res.document) ? res.document : []
+        const total = typeof res.row_count === "number" && res.row_count > 0 ? res.row_count : doc.length
+        setAssembled({ key, status: "ok", doc, total })
       })
       .catch((err: unknown) => {
         if (outputReqSeq.current !== reqId) return
         // The route returns structured 422/400/404/503/504/500 — surface the
         // detail message (ApiError carries it) rather than a bare status.
-        const message = apiErrorMessage(err, "Output preview failed")
-        setOutputDoc(null)
-        setOutputError(message)
-        setOutputLoading(false)
+        setAssembled({ key, status: "error", error: apiErrorMessage(err, "Output preview failed") })
       })
-  }, [allNodes, edges, submodels, preamble, nodeId, v2])
+  }, [allNodes, edges, submodels, preamble, nodeId, persistedMapping, activeSource, previewKey])
 
-  // Expanding the preview for the first time (no doc yet, not already loading)
-  // kicks off a run; the refresh button re-runs on demand.
+  // Expanding the preview with no document of the current mapping (none yet,
+  // or one of an earlier mapping) kicks off a run; while it is open, the
+  // refresh button re-runs on demand.
   const toggleOutputPreview = useCallback(() => {
     setOutputPreviewOpen((open) => {
       const next = !open
-      if (next && outputDoc === null && !outputLoading && outputError === null) {
+      if (next && currentAssembled === null) {
         runOutputPreview()
       }
       return next
     })
-  }, [outputDoc, outputLoading, outputError, runOutputPreview])
+  }, [currentAssembled, runOutputPreview])
 
   // Rows actually rendered — capped to PREVIEW_ROW_LIMIT (the doc may legally be
   // longer than the source-row cap once frames fan out).
@@ -637,35 +641,6 @@ export default function OutputEditor({
 
   return (
     <div className="px-4 py-3 space-y-3" data-testid="output-editor">
-      {/* RESPONSE CONFIGURATION — its own section, above Response Mapping (a
-          peer of it, not a boxed sub-panel). The output format starts at the
-          "-- select output format --" placeholder (a disabled, hidden option)
-          so a format is never silently chosen. JSON is the only built format
-          today; jsonl/jsonseq join the list later. */}
-      <div data-testid="output-response-config">
-        <EditorLabel className="block" as="div">
-          Response configuration
-        </EditorLabel>
-        <label
-          className="mt-1.5 flex items-center gap-1.5 text-[11px]"
-          style={{ color: "var(--text-muted)" }}
-        >
-          Output format
-          <select
-            data-testid="output-format-select"
-            value={v2.outputFormat || ""}
-            onChange={(e) => writeBack({ ...v2, outputFormat: e.target.value })}
-            className="text-[11px] px-1.5 py-0.5 rounded font-mono"
-            style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-          >
-            <option value="" disabled hidden>
-              -- select output format --
-            </option>
-            <option value="json">JSON</option>
-          </select>
-        </label>
-      </div>
-
       <EditorLabel className="block" as="div">
         Response Mapping
       </EditorLabel>
@@ -818,7 +793,11 @@ export default function OutputEditor({
             onRefresh={runOutputPreview}
             loading={outputLoading}
             error={outputError}
-            emptyMessage="The assembled document is empty (no enabled rows mapped, or no source rows)."
+            emptyMessage={
+              outputStale
+                ? "Refresh to assemble the response from the current mapping."
+                : "The assembled document is empty (no enabled rows mapped, or no source rows)."
+            }
           />
 
           <div className="space-y-2">

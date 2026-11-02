@@ -161,7 +161,7 @@ class SolverSession:
 
         *on_slot* runs as soon as the slot is held, before anything is reserved
         or sent: a caller re-checks there whatever may have changed while it
-        waited (a frontier point's generation).
+        waited (that its job still exists).
         """
         deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
         while not self._slot.acquire(timeout=_SLOT_POLL_SECONDS):

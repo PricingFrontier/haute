@@ -250,10 +250,10 @@ Out of scope (owned elsewhere):
   the card. Shared formula definitions live only in `pivot_formulas`; formula references are
   required, and shared formula ids/references are unique in the Explore node. Inline formula
   objects, missing references, missing formula selections, and incomplete numeric-format or
-  conditional-format fields are rejected rather than migrated.
-  Every known nested field
-  is type checked and unknown string-keyed fields are retained only when they use the finite,
-  recursively simple-literal grammar. An empty list remains empty so callers may omit
+  conditional-format fields are rejected rather than migrated, as are a Row placement without
+  its `sort` and a Value without its `sort_rows` or `color_scale` (no field is completed with a
+  default). Every known nested field is type checked, and a field a card, placement or option
+  does not declare is refused, never carried. An empty list remains empty so callers may omit
   `pivots=[]`.
 
 ## PivotChart invariants

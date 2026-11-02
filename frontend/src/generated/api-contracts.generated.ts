@@ -315,9 +315,13 @@ export interface EditorIdentityResponseNode {
  *
  * A support-code violation that involves no node (two helpers binding one
  * name, a statement the inventory cannot read) has no parties, and an
- * unreadable statement has no name.
+ * unreadable statement has no name. A ``reserved_input`` or ``support_input``
+ * violation whose input a frame or a public input port names carries that
+ * ``binding``, so the editor that set it can show the violation; any other
+ * violation's is ``None``.
  */
 export interface PipelineNameViolation {
+  binding: (PipelineNameViolationFrameBinding | PipelineNameViolationPortBinding) | null;
   kind:
     | 'duplicate'
     | 'reserved'
@@ -332,6 +336,23 @@ export interface PipelineNameViolation {
   message: string;
   name: string;
   parties: PipelineNameViolationParty[];
+}
+/**
+ * A request input's frame, which names the input its consumers receive.
+ */
+export interface PipelineNameViolationFrameBinding {
+  handle: string;
+  kind: 'frame';
+  node_id: string;
+  submodel: string | null;
+}
+/**
+ * A submodel's public input port, which names the input its targets receive.
+ */
+export interface PipelineNameViolationPortBinding {
+  kind: 'submodel_input';
+  port: string;
+  submodel: string;
 }
 /**
  * A node taking part in a name violation; ``submodel`` is its definition, if any.
@@ -1675,8 +1696,6 @@ export interface OptimiserStatusResponse {
 }
 export interface OptimiserFrontierResponse {
   constraint_names: string[];
-  frontier_generation: number | null;
-  job_id: string | null;
   n_points: number;
   point_summaries: OptimiserFrontierPointSummary[];
   points: (OptimiserOnlineFrontierPoint | OptimiserRatebookFrontierPoint)[];
@@ -1871,7 +1890,6 @@ export interface OptimiserSolveResult {
   };
   frontier: OptimiserFrontierResponse | null;
   frontier_error: string | null;
-  frontier_generation: number;
   history: OptimiserHistoryEntry[] | null;
   input_summary: OptimiserInputSummary;
   iterations: number | null;
@@ -2023,7 +2041,6 @@ export interface OptimiserApplyResponse {
   };
   error: string | null;
   from_artifact: boolean;
-  frontier_generation: number;
   matched_row_count: number;
   offset: number;
   preview: {
@@ -2058,25 +2075,6 @@ export interface OptimiserMlflowLogResponse {
   run_url: string | null;
   status: 'ok' | 'error';
   tracking_uri: string;
-}
-export interface OptimiserFrontierStatusResponse {
-  elapsed_seconds: number;
-  error_code: string | null;
-  error_detail:
-    | ExecutionMemoryLimitErrorPayload
-    | {
-        [k: string]: unknown;
-      }
-    | string
-    | null;
-  execution_metrics: ExecutionMetricsPayload | null;
-  http_status_code: number | null;
-  message: string;
-  progress: number;
-  result: OptimiserFrontierResponse | null;
-  status:
-    'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
-  terminal_reason: string | null;
 }
 export interface OptimiserFrontierAutoRangeStartResponse {
   error: string | null;
@@ -2134,7 +2132,6 @@ export interface OptimiserFrontierSelectResponse {
   factor_tables: {
     [k: string]: OptimiserFactorTableRow[];
   };
-  frontier_generation: number;
   history: OptimiserHistoryEntry[] | null;
   iterations: number | null;
   lambdas: {
@@ -2152,7 +2149,6 @@ export interface OptimiserFrontierSelectResponse {
 export interface OptimiserSegmentsResponse {
   binning: 'numeric' | 'categorical';
   diagnostics_errors: OptimiserDiagnosticError[];
-  frontier_generation: number;
   key: string;
   mean_scenario_value: number;
   n_levels: number;
@@ -2199,7 +2195,6 @@ export interface OptimiserSegmentFigures {
  * The keys of one target ranked by their adjustment spread (OPT-V11).
  */
 export interface OptimiserSegmentIndexResponse {
-  frontier_generation: number;
   keys: OptimiserSegmentIndexKey[];
   point_index: number | null;
   statistic: OptimiserSegmentIndexStatistic;

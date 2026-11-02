@@ -342,11 +342,15 @@ describe("SplitAndMetricsConfig", () => {
       />,
     )
 
+    // The issue is picked out by its code and shown once, under the validation size.
+    const alerts = screen.getAllByRole("alert")
+    expect(alerts).toHaveLength(1)
+    expect(alerts[0]).toHaveTextContent(
+      "Validation and test must total below 100% so training retains some rows.",
+    )
     expect(
-      screen.getByText(
-        "Validation and test must total below 100% so training retains some rows.",
-      ),
-    ).toBeInTheDocument()
+      screen.getByRole("heading", { name: "Validation strategy" }).closest("section"),
+    ).toContainElement(alerts[0])
     expect(screen.queryByLabelText("Data allocation")).not.toBeInTheDocument()
   })
 

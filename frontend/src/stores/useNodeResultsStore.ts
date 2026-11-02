@@ -62,11 +62,9 @@ export const MAX_CACHED_OPTIMISER_APPLY = 16
 /** The `/apply` request's query beyond its target (OPT-V12): sort, search, filters and page. */
 export type { OptimiserApplyQuery }
 
-/** Everything an `/apply` response depends on: a recompute reuses point
- *  indices for different points, so the frontier generation is part of it. */
+/** Everything an `/apply` response depends on. */
 export interface OptimiserApplyIdentity {
   jobId: string
-  frontierGeneration: number
   target: "solved" | number
   query: OptimiserApplyQuery
 }
@@ -513,22 +511,20 @@ interface NodeResultsState {
   selectFrontierPoint: (nodeId: string, pointIndex: number | null) => void
   /**
    * Store the reply for a point the user selected, and display it unless the
-   * selection has moved on. A reply for a job or frontier generation other
-   * than the node's installed one is dropped.
+   * selection has moved on. A reply for a job other than the node's installed
+   * one is dropped.
    */
   updateFrontierAfterSelect: (nodeId: string, jobId: string, pointIndex: number, selectResult: FrontierSelectResponse) => void
   /**
    * Store a materialised point summary for one job without changing the
-   * selection: a reply for a job or frontier generation the node does not hold
-   * is dropped, and the displayed result changes only if that point is (still)
-   * selected.
+   * selection: a reply for a job the node does not hold is dropped, and the
+   * displayed result changes only if that point is (still) selected.
    */
   recordFrontierPointSummary: (nodeId: string, jobId: string, pointIndex: number, selectResult: FrontierSelectResponse) => void
   /**
    * Cache an `/apply` response under its request identity. It is stored only
-   * while that identity's job, frontier generation and target are still the
-   * node's; otherwise it is a late response and dropped. Returns whether it
-   * was stored.
+   * while that identity's job and target are still the node's; otherwise it
+   * is a late response and dropped. Returns whether it was stored.
    */
   recordOptimiserApply: (nodeId: string, identity: OptimiserApplyIdentity, response: ApplyOptimiserResponse) => boolean
   /** Mark a cached `/apply` response most recently used. */
@@ -551,6 +547,16 @@ interface NodeResultsState {
    */
   markTrainResultExpired: (nodeId: string, jobId: string) => void
   failTrainJob: (nodeId: string, jobId: string, error: string, terminalStatus?: TrainProgress) => void
+  /**
+   * Record a training request refused before any job existed, under the identity
+   * it was asked for, keeping a running job's tracking and the remembered handle.
+   */
+  failTrainStart: (
+    nodeId: string,
+    attempt: { configHash: string; source: string; structuralVersion: number },
+    error: string,
+    terminalStatus?: TrainProgress,
+  ) => void
 
   startExplorePivotJob: (key: string, jobId: string, nodeId: string, pivotId: string, nodeLabel: string, pivotName: string, calculationIdentity: string, source: string, structuralVersion: number, requestedDataVersion?: string | null) => void
   updateExplorePivotProgress: (key: string, jobId: string, progress: ExplorePivotProgress) => void
@@ -741,13 +747,9 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         MAX_CACHED_SOLVE_RESULTS,
         s.pinnedPreviewNodeId,
       )
-      // A new job or a recomputed frontier makes the node's /apply responses
-      // answers to other requests.
+      // A new job makes the node's /apply responses answers to other requests.
       const optimiserApplyCache = withoutApplyEntriesForNodes(
-        withoutSupersededApplyEntries(s.optimiserApplyCache, nodeId, {
-          jobId: job.jobId,
-          frontierGeneration: result.frontier_generation,
-        }),
+        withoutSupersededApplyEntries(s.optimiserApplyCache, nodeId, job.jobId),
         bounded.evicted,
       )
       return {
@@ -838,7 +840,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     assertSelectReplyForPoint(pointIndex, selectResult)
     set((s) => {
       const cached = s.solveResults[nodeId]
-      if (!selectReplyIsCurrent(cached, jobId, selectResult)) return s
+      if (!selectReplyIsCurrent(cached, jobId)) return s
       touchCachedResult(solveResultRecency, nodeId)
       const summary = frontierPointSummaryFromSelect(selectResult)
       // Keep the richer summary so re-selecting this point needs no round trip.
@@ -883,7 +885,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => {
       const cached = s.solveResults[nodeId]
       if (
-        !selectReplyIsCurrent(cached, jobId, selectResult)
+        !selectReplyIsCurrent(cached, jobId)
         || !cached.frontier?.point_summaries[pointIndex]
       ) return s
       touchCachedResult(solveResultRecency, nodeId)
@@ -1013,6 +1015,28 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     })
     if (fenceCurrent) rememberTrainOutcome(nodeId, completingJob, result)
   },
+
+  failTrainStart: (nodeId, attempt, error, terminalStatus) =>
+    // The request was refused before any job existed: the node shows the
+    // failure, while a running job's tracking and the browser's handle to the
+    // last completed job, which this attempt neither replaced nor invalidated
+    // on the server, stay as they are.
+    set((s) => {
+      touchCachedResult(trainResultRecency, nodeId)
+      const bounded = trimCacheByRecency(
+        {
+          ...s.trainResults,
+          [nodeId]: { result: null, error, terminalStatus: terminalStatus ?? null, jobId: "", ...attempt },
+        },
+        trainResultRecency,
+        MAX_CACHED_TRAIN_RESULTS,
+        s.pinnedPreviewNodeId,
+      )
+      return {
+        trainResults: bounded.records,
+        expiredTrainJobs: forgetExpiredTrainJob(s.expiredTrainJobs, nodeId),
+      }
+    }),
 
   markTrainResultExpired: (nodeId, jobId) =>
     set((s) => {

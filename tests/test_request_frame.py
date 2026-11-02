@@ -207,7 +207,6 @@ def _graph() -> PipelineGraph:
                                 }
                                 for f in fields
                             ],
-                            "outputFormat": "json",
                         },
                     },
                 },
@@ -369,7 +368,6 @@ def test_a_dated_dry_run_reaches_the_worker_as_iso_strings(tmp_path):
                                     "enabled": True,
                                 }
                             ],
-                            "outputFormat": "json",
                         },
                     },
                 },

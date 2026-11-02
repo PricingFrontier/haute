@@ -206,11 +206,15 @@ compatibility facade and route own no duplicate state or worker implementation.
   are valid, it also returns a bounded preview of the exact evaluation plan: effective
   development/final-test rows, validation-fit count and row bounds, plus group counts
   or date ranges when applicable. A failure raised while that bounded preview executes
-  is the user's to fix and is answered as HTTP 422 `Evaluation preview failed: <reason>`,
-  whether it is data-dependent (an all-null target, an empty partition), a graph-shape
-  or schema failure (a broken node contract, a column no source supplies, an invalid
-  config or parse, any Polars planning or collection failure raised by the pipeline's own
-  code and data), or a bounded-mode refusal; the endpoint never surfaces one as a 500.
+  is the user's to fix and is answered as HTTP 422 with the structured detail
+  `{"error_code": "evaluation_preview_failed", "message": "Evaluation preview failed: <reason>"}`
+  (a bounded-mode refusal's message reads `Evaluation preview cannot run in bounded mode:
+  <reason>`), whether it is data-dependent (an all-null target, an empty partition), a
+  graph-shape or schema failure (a broken node contract, a column no source supplies, an
+  invalid config or parse, any Polars planning or collection failure raised by the pipeline's
+  own code and data), or a bounded-mode refusal; the endpoint never surfaces one as a 500.
+  The editor tells such a failure from a failed memory estimate by that code, never by the
+  message's words.
 - `POST /api/modelling/export` returns a standalone Python script that trains the
   identical model the "Train" button would, using the same graph preparation and config →
   kwargs builder as live training, so a modelling node inside a submodel exports too.
@@ -609,7 +613,7 @@ than a machine-specific production switch.
 ### Training configuration experience
 
 Training configuration uses Target, Features, Parameters, Split, Train and Export
-panes for both algorithms. GLM regularization and solver controls belong in
+panes for every family. GLM regularization and solver controls belong in
 Parameters; distribution, link and dispersion remain in Target. Configuration pane
 tabs use the shared node-tab typography, spacing, equal-width layout and node accent.
 Target and Split content uses open sections with consistent headings and field
@@ -660,15 +664,17 @@ Parameters as well as Train. CatBoost Tweedie power must be finite and strictly 
 1 and 2; its controls and backend validation enforce those bounds.
 
 Tuning must not silently add or alter a final-test partition. The Parameters pane
-explains whether one is reserved and links to Split, and displays the number of
-selection fits plus the final fit. Config issues appear in the relevant pane and on
+explains whether one is reserved and links to Split, and states the fit budget in the
+Train run summary's words: the selection fits plus the final fit, or, for t-boost, which
+is never refit, plus the winning validation fit. Config issues appear in the relevant pane and on
 its tab; Train provides links to resolve them and a summary of target, feature count,
 evaluation, compute settings and fit budget before submission. With fixed parameters, the
 fit budget labels holdout/CV runs as validation fits and the development refit as the final
 fit; tuning labels its trial runs as tuning fits. With no validation, it shows only the
 final fit. Evaluation preview
-failures retain their actionable detail and are distinguished from unavailable memory
-estimates; neither state promises that training will succeed.
+failures retain their actionable detail and are told from failed or unavailable memory
+estimates by the server's `evaluation_preview_failed` error code; neither state promises
+that training will succeed.
 
 The MOD-M09 product decision keeps monotonicity because both supported algorithms
 already have deterministic named-feature semantics and it is meaningful in pricing

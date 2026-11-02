@@ -1793,6 +1793,73 @@ def test_unknown_decorator_is_rejected_strictly_and_preserved_for_recovery(
     assert any(diagnostic.code == "node_decorator_unknown" for diagnostic in document.diagnostics)
 
 
+_COLLIDING_CONCATENATION_SOURCE = """
+    import haute
+    pipeline = haute.Pipeline("concatenation")
+
+    @pipeline.polars
+    def base():
+        return None
+
+    @pipeline.polars
+    def base_rates():
+        return None
+
+    @pipeline.polars
+    def rates_apply(base):
+        return base
+
+    @pipeline.polars
+    def apply(base_rates):
+        return base_rates
+
+    pipeline.connect("base", "rates_apply")
+"""
+
+
+@pytest.mark.parametrize("degraded", [False, True], ids=["ready", "degraded"])
+def test_connections_whose_names_concatenate_alike_keep_distinct_ids(
+    tmp_path: Path, degraded: bool
+) -> None:
+    """``base`` to ``rates_apply`` and ``base_rates`` to ``apply`` are two connections,
+    through parse, codegen and reparse, and in a ready or a recovered document.
+
+    One is declared and one inferred from its parameter, so both parser paths mint.
+    """
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute.codegen import graph_to_code
+
+    source = _COLLIDING_CONCATENATION_SOURCE
+    if degraded:
+        source += """
+    @pipeline.retired_explore(mode="legacy")
+    def old_node(apply):
+        return apply
+"""
+    pipeline_file = _write(tmp_path / "main.py", source)
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == ("degraded" if degraded else "ready")
+    by_endpoints = {
+        (edge.source_authored_id, edge.target_authored_id): edge.recovery_id
+        for edge in document.edges
+        if edge.target_authored_id != "old_node"
+    }
+    assert set(by_endpoints) == {("base", "rates_apply"), ("base_rates", "apply")}
+    assert len({edge.recovery_id for edge in document.edges}) == len(document.edges)
+    if degraded:
+        return
+    parsed = parse_pipeline_file(pipeline_file)
+    assert {(edge.source, edge.target): edge.id for edge in parsed.edges} == by_endpoints
+    reparsed = parse_pipeline_source(
+        graph_to_code(parsed, pipeline_name="concatenation"),
+        source_file=str(pipeline_file),
+        _base_dir=tmp_path,
+    )
+    assert [edge.id for edge in reparsed.edges] == [edge.id for edge in parsed.edges]
+
+
 def test_duplicate_nodes_and_connections_are_conserved_with_stable_diagnostics(
     tmp_path: Path,
 ) -> None:

@@ -7,7 +7,7 @@ import {
 import { useState } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import type { OnUpdateConfig } from "../../editors"
+import type { OnUpdateConfig } from "../../editors/_shared"
 import { HyperparametersConfig } from "../HyperparametersConfig"
 import {
   formatHyperparameters,
@@ -38,12 +38,14 @@ function Harness({
   },
   onUpdate = vi.fn<OnUpdateConfig>(() => ({ ok: true })),
   publishesValidationFit = false,
+  algorithmLabel = "CatBoost",
 }: {
   params?: Record<string, unknown>
   tuning?: Record<string, unknown> | null
   evaluation?: Record<string, unknown>
   onUpdate?: OnUpdateConfig
   publishesValidationFit?: boolean
+  algorithmLabel?: string
 }) {
   const [draft, setDraft] = useState(
     formatHyperparameters(params, ["task_type"]),
@@ -55,7 +57,7 @@ function Harness({
   )
   return (
     <HyperparametersConfig
-      algorithmLabel="CatBoost"
+      algorithmLabel={algorithmLabel}
       params={params}
       reservedKeys={["task_type"]}
       reservedKeysHelp="GPU training is configured in the Train pane."
@@ -68,6 +70,7 @@ function Harness({
       searchSpaceDraft={searchSpaceDraft}
       setSearchSpaceDraft={setSearchSpaceDraft}
       publishesValidationFit={publishesValidationFit}
+      refitOnDevelopment
     />
   )
 }
@@ -181,6 +184,34 @@ describe("HyperparametersConfig", () => {
     expect(Object.keys(update)).toEqual(["tuning"])
   })
 
+  it("names the selected family's search space and counts t-boost's winning fit, never a refit", () => {
+    render(
+      <Harness
+        algorithmLabel="t-boost"
+        publishesValidationFit
+        evaluation={{
+          schema_version: 1,
+          strategy: "random",
+          seed: 42,
+          validation: { method: "single", size: 0.2 },
+        }}
+        tuning={{
+          schema_version: 1,
+          trial_count: 20,
+          seed: 42,
+          metric: "gini",
+          search_space: { learning_rate: [0.03, 0.05, 0.1] },
+        }}
+      />,
+    )
+
+    expect(screen.getByLabelText("t-boost search space JSON")).toBeInTheDocument()
+    expect(screen.queryByLabelText("CatBoost search space JSON")).toBeNull()
+    // The Train pane's run summary words the same budget.
+    expect(screen.getByText("21 total fits: 20 tuning fits + 1 winning validation fit")).toBeInTheDocument()
+    expect(screen.queryByText(/final fit/)).toBeNull()
+  })
+
   it("keeps a reserved fixed key local instead of silently overriding it", () => {
     const onUpdate = vi.fn<OnUpdateConfig>(() => ({ ok: true }))
     render(<Harness onUpdate={onUpdate} />)
@@ -258,7 +289,7 @@ describe("HyperparametersConfig", () => {
       FORMATTED_STARTER_SEARCH_SPACE,
     )
     expect(screen.queryByLabelText("Search space format help")).toBeNull()
-    expect(screen.getByText(/101 total fits/)).toBeInTheDocument()
+    expect(screen.getByText("101 total fits: 100 tuning fits + 1 final fit")).toBeInTheDocument()
     expect(screen.queryByText(/One key per CatBoost parameter/)).toBeNull()
     expect(screen.queryByRole("button", { name: "Apply" })).toBeNull()
     expect(screen.queryByRole("button", { name: "Revert" })).toBeNull()

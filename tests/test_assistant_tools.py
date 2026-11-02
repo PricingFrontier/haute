@@ -3893,7 +3893,7 @@ class TestActionableErrors:
                         "op": "add_node",
                         "node_type": "output",
                         "name": "response",
-                        "config": {"outputMapping": [row], "outputFormat": "json"},
+                        "config": {"outputMapping": [row]},
                     },
                     {"op": "add_edge", "source": "quotes", "target": "response"},
                 ],
@@ -3973,7 +3973,7 @@ class TestActionableErrors:
                         "op": "add_node",
                         "node_type": "output",
                         "name": "response",
-                        "config": {"outputMapping": [row], "outputFormat": "json"},
+                        "config": {"outputMapping": [row]},
                     },
                     *(
                         {

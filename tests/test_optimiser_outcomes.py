@@ -38,7 +38,6 @@ from haute.routes._optimiser_outcomes import (
 )
 from haute.routes.optimiser import _store
 from tests.conftest import make_edge, make_graph, make_ready_file_input_config
-from tests.optimiser_fixtures import run_frontier_and_wait
 
 _TERMINAL = {
     "completed",
@@ -129,6 +128,13 @@ def _config(**overrides: Any) -> dict[str, Any]:
 
 def _node(node_id: str, node_type: str, config: dict[str, Any]) -> dict[str, Any]:
     return {"id": node_id, "data": {"label": node_id, "nodeType": node_type, "config": config}}
+
+
+# Node config that sweeps volume over [5.0, 8.0] in three steps in the solve's own frontier.
+VOLUME_FRONTIER: dict[str, Any] = {
+    "frontier_ranges": {"volume": {"min": 5.0, "max": 8.0}},
+    "frontier_steps": 3,
+}
 
 
 def _data_graph(scored: Path, **config: Any) -> dict[str, Any]:
@@ -345,22 +351,12 @@ class TestScenarioGrid:
 
 @pytest.mark.usefixtures("_widen_sandbox_root")
 class TestOwnership:
-    def test_adoption_survives_completion_apply_and_frontier_recompute(self, client, tmp_path):
+    def test_adoption_survives_completion_and_apply(self, client, tmp_path):
         job_id, _status = _solved(
-            client, _data_graph(_scored(tmp_path), analysis_columns=["region"])
+            client,
+            _data_graph(_scored(tmp_path), analysis_columns=["region"], **VOLUME_FRONTIER),
         )
         handle = _analysis_handle(job_id)
-
-        frontier = run_frontier_and_wait(
-            client,
-            {
-                "job_id": job_id,
-                "threshold_ranges": {"volume": [5.0, 8.0]},
-                "n_points_per_dim": 3,
-            },
-        )
-        assert frontier["status"] == "completed", frontier
-        assert _analysis_handle(job_id) == handle
         assert Path(handle["path"]).is_file()
 
         # A point's apply, then the anchor's: each slims heavy state afterwards.
@@ -520,8 +516,11 @@ class TestOwnership:
         monkeypatch.setattr(
             _optimiser_artifacts, "_ratebook_factors_artifact_root", lambda: tmp_path / "f"
         )
+        monkeypatch.setattr(_optimiser_artifacts, "_scratch_artifact_root", lambda: tmp_path / "s")
         directory = _optimiser_artifacts._new_quote_analysis_directory()
         assert directory.parent == root
+        # After a restart the process that created the table is gone.
+        monkeypatch.setattr("haute._artifact_housekeeping._creator_is_running", lambda _m: False)
 
         reports = _optimiser_artifacts.reap_stale_optimiser_artifacts(0)
 
@@ -992,17 +991,8 @@ class TestChoiceQueries:
     def test_a_frontier_points_histogram_reconciles_to_that_points_totals(self, client, tmp_path):
         from haute.routes._optimiser_outcomes import ScenarioHistogram
 
-        job_id, _status = _solved(client, _data_graph(_scored(tmp_path)))
-        frontier = run_frontier_and_wait(
-            client,
-            {
-                "job_id": job_id,
-                "threshold_ranges": {"volume": [5.0, 8.0]},
-                "n_points_per_dim": 3,
-            },
-        )
-        assert frontier["status"] == "completed", frontier
-        point = frontier["result"]["points"][2]
+        job_id, status = _solved(client, _data_graph(_scored(tmp_path), **VOLUME_FRONTIER))
+        point = status["frontier"]["points"][2]
 
         rows = _choices(job_id, ScenarioHistogram(), point_index=2).rows
 

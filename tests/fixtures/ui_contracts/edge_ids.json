@@ -1,0 +1,18 @@
+{
+  "description": "Edge ids as both stacks mint them (haute._graph_utils._edge_id and frontend/src/utils/flowElements.ts::edgeId): an injective encoding of an edge's four-field identity. Every case's id is distinct.",
+  "cases": [
+    { "source": "base", "target": "rates_apply", "sourceHandle": null, "targetHandle": null, "id": "e-base-rates_apply" },
+    { "source": "base_rates", "target": "apply", "sourceHandle": null, "targetHandle": null, "id": "e-base_rates-apply" },
+    { "source": "quote", "target": "premium", "sourceHandle": "policy", "targetHandle": null, "id": "e-quote-premium-policy" },
+    { "source": "quote", "target": "premium", "sourceHandle": "risks", "targetHandle": null, "id": "e-quote-premium-risks" },
+    { "source": "lookup", "target": "join", "sourceHandle": null, "targetHandle": "base", "id": "e-lookup-join--base" },
+    { "source": "lookup", "target": "join", "sourceHandle": "base", "targetHandle": null, "id": "e-lookup-join-base" },
+    { "source": "lookup", "target": "join", "sourceHandle": "policy", "targetHandle": "base", "id": "e-lookup-join-policy-base" },
+    { "source": "rates", "target": "occurrence", "sourceHandle": "out__rates", "targetHandle": "in__base", "id": "e-rates-occurrence-out__rates-in__base" },
+    { "source": "a-b", "target": "c", "sourceHandle": null, "targetHandle": null, "id": "e-a~1b-c" },
+    { "source": "a", "target": "b-c", "sourceHandle": null, "targetHandle": null, "id": "e-a-b~1c" },
+    { "source": "a~1b", "target": "c", "sourceHandle": null, "targetHandle": null, "id": "e-a~01b-c" },
+    { "source": "a", "target": "b", "sourceHandle": "c-d", "targetHandle": null, "id": "e-a-b-c~1d" },
+    { "source": "a", "target": "b", "sourceHandle": "c", "targetHandle": "d", "id": "e-a-b-c-d" }
+  ]
+}

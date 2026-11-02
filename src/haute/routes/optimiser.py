@@ -62,12 +62,11 @@ from haute.routes._optimiser_adjustments import (
     adjustment_report,
     cache_point_report,
 )
+from haute.routes._optimiser_artifacts import scratch_directory
 from haute.routes._optimiser_frontier import (
     _CONSTRAINT_THRESHOLD_KEYS,
-    _FRONTIER_CHANGED_DETAIL,
     OptimiserFrontierService,
     _base_result_for_frontier,
-    _frontier_generation_or_raise,
     _frontier_point_constraints_override,
     _frontier_point_mlflow_summary,
     _job_has_frontier_points,
@@ -75,7 +74,6 @@ from haute.routes._optimiser_frontier import (
 )
 from haute.routes._optimiser_input import (
     ESTIMATE_MAPPED_ERRORS,
-    _estimate_quote_id_column_or_raise,  # noqa: F401 - estimate pre-flight, re-exported
     _find_optimiser_node,
     estimate_failure_http_exception,
 )
@@ -107,11 +105,9 @@ from haute.schemas import (
     OptimiserFrontierAutoRangeRequest,
     OptimiserFrontierAutoRangeStartResponse,
     OptimiserFrontierAutoRangeStatusResponse,
-    OptimiserFrontierRequest,
     OptimiserFrontierResponse,
     OptimiserFrontierSelectRequest,
     OptimiserFrontierSelectResponse,
-    OptimiserFrontierStatusResponse,
     OptimiserMlflowLogRequest,
     OptimiserMlflowLogResponse,
     OptimiserSaveRequest,
@@ -259,7 +255,6 @@ def _frontier_select_response(
         ),
         clamp_rate=result.get("clamp_rate"),
         combined_factor_bounds=result.get(COMBINED_FACTOR_BOUNDS_KEY),
-        frontier_generation=result["frontier_generation"],
         diagnostics_errors=result["diagnostics_errors"],
     )
 
@@ -360,14 +355,13 @@ def _finite_validated_job(job_id: str, job: Mapping[str, Any]) -> Mapping[str, A
 
     Mirrors the modelling status route's finite-JSON check: a non-finite value
     corrects the job from ``completed`` to ``error``. A clean walk is cached as
-    the ``(frontier_generation, selected_frontier_point)`` it was made for,
-    since a recompute or a selection rewrites the result. The flag is private
-    and never part of a response.
+    the ``selected_frontier_point`` it was made for, since a selection rewrites
+    the result. The flag is private and never part of a response.
     """
     result = job.get("result")
     if job.get("status") != "completed" or result is None:
         return job
-    validated_for = [result["frontier_generation"], job.get("selected_frontier_point")]
+    validated_for = [job.get("selected_frontier_point")]
     if job.get(_FINITE_VALIDATED_KEY) == validated_for:
         return job
     bad_paths = _non_finite_paths({"result": result, "frontier": job.get("frontier_data")})
@@ -465,57 +459,6 @@ def _apply_preview(
     return response
 
 
-def _frontier_status_response(job: Mapping[str, Any]) -> OptimiserFrontierStatusResponse:
-    stored_status = require_job_status(job)
-    result = None
-    if stored_status == "completed" and job.get("result") is not None:
-        result = OptimiserFrontierResponse.model_validate(job["result"])
-    elapsed_seconds = job.get("elapsed_seconds", 0.0)
-    if stored_status == "running":
-        elapsed_seconds = _job_elapsed_seconds(job, elapsed_seconds)
-    return OptimiserFrontierStatusResponse(
-        status=stored_status,
-        progress=job.get("progress", 0.0),
-        message=job.get("message", ""),
-        elapsed_seconds=elapsed_seconds,
-        result=result,
-        terminal_reason=job.get("terminal_reason"),
-        error_code=job.get("error_code"),
-        http_status_code=job.get("http_status_code"),
-        error_detail=job.get("error_detail"),
-        execution_metrics=job.get("execution_metrics"),
-    )
-
-
-@router.post("/frontier", response_model=OptimiserFrontierResponse)
-def run_frontier(body: OptimiserFrontierRequest) -> OptimiserFrontierResponse:
-    """Start an efficient-frontier sweep for a completed optimisation job.
-
-    Validation (job/runtime availability, range resolution, the compute-budget
-    cap) stays synchronous so contract errors surface as 4xx on this request.
-    The sweep itself runs on a
-    background thread; the response carries a pollable job handle for
-    ``GET /frontier/status/{job_id}``.
-    """
-    frontier_job_id = _frontier_service.start_sweep(body)
-    return OptimiserFrontierResponse(status="started", job_id=frontier_job_id)
-
-
-@router.get("/frontier/status/{job_id}", response_model=OptimiserFrontierStatusResponse)
-def frontier_status(job_id: str) -> OptimiserFrontierStatusResponse:
-    """Return status for a background frontier sweep job."""
-    return _frontier_status_response(_frontier_service.sweep_status(job_id))
-
-
-@router.post(
-    "/frontier/cancel/{job_id}",
-    response_model=OptimiserFrontierStatusResponse,
-)
-def cancel_frontier(job_id: str) -> OptimiserFrontierStatusResponse:
-    """Cancel a background frontier sweep without allowing late publication."""
-    return _frontier_status_response(_frontier_service.cancel_sweep(job_id))
-
-
 @router.post("/frontier/select", response_model=OptimiserFrontierSelectResponse)
 async def select_frontier_point(
     body: OptimiserFrontierSelectRequest, request: Request
@@ -537,7 +480,7 @@ def _select_point(
         # Without a point the result is the solve's, which carries its own report.
         return _frontier_select_response(result, result.get("adjustments"))
     adjustments = (
-        _point_adjustments(body.job_id, body.point_index, result["frontier_generation"], token)
+        _point_adjustments(body.job_id, body.point_index, token)
         if body.include_adjustments
         else None
     )
@@ -545,20 +488,11 @@ def _select_point(
 
 
 def _point_adjustments(
-    job_id: str, point_index: int, generation: int, token: ExecutionCancellationToken
+    job_id: str, point_index: int, token: ExecutionCancellationToken
 ) -> dict[str, Any]:
-    """The adjustment report for *point_index* of frontier *generation*: cached, else computed.
-
-    *generation* is the selected summary's, so the response never pairs one
-    frontier's totals with another's distribution: the job must still be at it
-    when the report is read (cached or not) and when it is stored; a recompute
-    in between is the frontier-changed 409.
-    """
+    """The adjustment report for *point_index*: cached, else computed and cached."""
     job = _store.require_completed_job(job_id)
-    if _frontier_generation_or_raise(job) != generation:
-        raise HTTPException(status_code=409, detail=_FRONTIER_CHANGED_DETAIL)
-    key = (generation, point_index)
-    cached = (job.get(ADJUSTMENT_REPORTS_KEY) or {}).get(key)
+    cached = (job.get(ADJUSTMENT_REPORTS_KEY) or {}).get(point_index)
     if cached is not None:
         return cast(dict[str, Any], cached)
     histogram = _choice_service.choice_query(
@@ -567,13 +501,11 @@ def _point_adjustments(
     report = adjustment_report(histogram, _choice_spec(job)).model_dump()
     with _frontier_service.parent_lock(job_id):
         latest = _store.require_completed_job(job_id)
-        if _frontier_generation_or_raise(latest) != generation:
-            raise HTTPException(status_code=409, detail=_FRONTIER_CHANGED_DETAIL)
         _store.atomic_update(
             job_id,
             {
                 ADJUSTMENT_REPORTS_KEY: cache_point_report(
-                    latest.get(ADJUSTMENT_REPORTS_KEY) or {}, key, report
+                    latest.get(ADJUSTMENT_REPORTS_KEY) or {}, point_index, report
                 )
             },
             expected_status="completed",
@@ -736,25 +668,25 @@ def _non_finite_paths(value: Any, path: str = "") -> list[str]:
 
 
 def _validate_artifact_payload(payload: dict[str, Any]) -> None:
-    """Gate the artifact payload before it is written to disk.
+    """Gate the artifact payload before it is saved or logged.
 
-    The saved artifact is exactly what OPTIMISER_APPLY reads to price, so a
-    payload with NaN/Infinity values or a missing ratebook factor-table
-    section would mis-price silently downstream. Reject with an actionable
-    4xx instead of persisting a poisoned artifact — and because this runs
-    before the write and before the post-save result slimming, the in-memory
-    solve result survives for the user to inspect.
+    The artifact, saved to a file or logged to MLflow as
+    ``optimiser_result.json``, is exactly what OPTIMISER_APPLY reads to price,
+    so a payload with NaN/Infinity values or a missing ratebook factor-table
+    section would mis-price silently downstream. Reject with an actionable 4xx
+    instead of persisting a poisoned artifact; this runs before anything is
+    written, so the solve result survives for the user to inspect.
     """
     lambdas = payload.get("lambdas")
     if not isinstance(lambdas, dict):
         raise HTTPException(
             status_code=400,
-            detail="Solve result has no lambda mapping. Re-run the solve before saving.",
+            detail="Solve result has no lambda mapping. Re-run the solve.",
         )
     if payload.get("total_objective") is None:
         raise HTTPException(
             status_code=400,
-            detail="Solve result has no total objective. Re-run the solve before saving.",
+            detail="Solve result has no total objective. Re-run the solve.",
         )
     if payload.get("mode") == "ratebook":
         factor_tables = payload.get("factor_tables")
@@ -762,8 +694,8 @@ def _validate_artifact_payload(payload: dict[str, Any]) -> None:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Ratebook solve result has no factor tables, so the saved artifact "
-                    "could not be applied for pricing. Re-run the solve before saving."
+                    "Ratebook solve result has no factor tables, so the artifact "
+                    "could not be applied for pricing. Re-run the solve."
                 ),
             )
         factor_dtypes = payload.get("factor_dtypes")
@@ -771,8 +703,8 @@ def _validate_artifact_payload(payload: dict[str, Any]) -> None:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Ratebook solve result has no factor dtype metadata, so the saved "
-                    "artifact could not be applied safely. Re-run the solve before saving."
+                    "Ratebook solve result has no factor dtype metadata, so the "
+                    "artifact could not be applied safely. Re-run the solve."
                 ),
             )
         if list(factor_dtypes) != list(factor_tables):
@@ -780,7 +712,7 @@ def _validate_artifact_payload(payload: dict[str, Any]) -> None:
                 status_code=400,
                 detail=(
                     "Ratebook factor_dtypes tables do not match factor_tables in "
-                    "the same order. Re-run the solve before saving."
+                    "the same order. Re-run the solve."
                 ),
             )
         for table_name, records in factor_dtypes.items():
@@ -829,7 +761,7 @@ def _validate_artifact_payload(payload: dict[str, Any]) -> None:
                 status_code=400,
                 detail=(
                     f"Ratebook solve result has no finite clamp_rate (got {clamp_rate!r}). "
-                    "Re-run the solve before saving."
+                    "Re-run the solve."
                 ),
             )
         try:
@@ -839,7 +771,7 @@ def _validate_artifact_payload(payload: dict[str, Any]) -> None:
                 status_code=400,
                 detail=(
                     f"Ratebook solve result has no valid combined-factor collar: {exc}. "
-                    "Re-run the solve before saving."
+                    "Re-run the solve."
                 ),
             ) from exc
     bad_paths = _non_finite_paths(payload)
@@ -851,7 +783,7 @@ def _validate_artifact_payload(payload: dict[str, Any]) -> None:
             status_code=400,
             detail=(
                 f"Solve result contains non-finite values ({shown}); the artifact was "
-                "not saved. Check the solve inputs and constraints, then re-run the "
+                "not written. Check the solve inputs and constraints, then re-run the "
                 "solve — a pricing artifact must not contain NaN or Infinity."
             ),
         )
@@ -993,6 +925,22 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
         raise mlflow_log_http_exception(exc, job_id=body.job_id) from None
 
 
+def _require_finite_summary_artifacts(summary: Mapping[str, Any]) -> None:
+    """Refuse a summary whose logged JSON artifacts hold NaN or Infinity (400, naming them)."""
+    bad_paths = _non_finite_paths(summary.get("artifacts") or {})
+    if bad_paths:
+        shown = ", ".join(bad_paths[:5])
+        if len(bad_paths) > 5:
+            shown += f", … ({len(bad_paths)} in total)"
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"The MLflow summary contains non-finite values ({shown}); nothing was "
+                "logged. Check the solve inputs and constraints, then re-run the solve."
+            ),
+        )
+
+
 def _mlflow_param_value(value: Any) -> str:
     if isinstance(value, dict | list):
         return json.dumps(value, sort_keys=True, default=str)
@@ -1014,7 +962,6 @@ def _log_optimiser_run(
     """
     import csv
     import io
-    import tempfile
     import time
 
     from mlflow.entities import Metric, Param
@@ -1040,6 +987,10 @@ def _log_optimiser_run(
         point_index=body.point_index,
         stale_at_publish=body.stale,
     )
+    # Gated before the run exists, as the save is, so nothing non-finite or
+    # malformed is ever logged.
+    _validate_artifact_payload(complete_payload)
+    _require_finite_summary_artifacts(summary)
     params = {key: str(value) for key, value in summary["params"].items()}
     for name, value in (complete_payload.get("solver_settings") or {}).items():
         params[f"solver_settings.{name}"] = _mlflow_param_value(value)
@@ -1062,16 +1013,18 @@ def _log_optimiser_run(
             params=[Param(key, value) for key, value in params.items()],
         )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with scratch_directory("mlflow_log_") as tmpdir:
             for name, data in summary.get("artifacts", {}).items():
                 if data is None:
                     continue
                 artifact_path = Path(tmpdir) / f"{name}.json"
-                artifact_path.write_text(json.dumps(data, indent=2, default=str))
+                artifact_path.write_text(json.dumps(data, indent=2, default=str, allow_nan=False))
                 client.log_artifact(run_id, str(artifact_path))
 
             complete_path = Path(tmpdir) / "optimiser_result.json"
-            complete_path.write_text(json.dumps(complete_payload, indent=2, default=str))
+            complete_path.write_text(
+                json.dumps(complete_payload, indent=2, default=str, allow_nan=False)
+            )
             client.log_artifact(run_id, str(complete_path))
 
             # The frontier CSV and its provenance tags.

@@ -1,6 +1,6 @@
 import { useMemo } from "react"
 import { useDataInputColumns } from "../../hooks/useDataInputColumns"
-import type { SimpleEdge, SimpleNode } from "../editors"
+import type { SimpleEdge, SimpleNode } from "../editors/_shared"
 import { optimiserSolveReadiness, resolveOptimiserInputs } from "./solveReadiness"
 
 type Column = { name: string; dtype: string }

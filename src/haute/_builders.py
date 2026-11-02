@@ -13,7 +13,7 @@ the single source of truth shared with ``_codegen_builders.py``.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -1022,6 +1022,21 @@ def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool
     return ctx.func_name, scenario_expand_with_code, False
 
 
+def _frames_in_declared_order(
+    dfs_by_name: Mapping[str, _Frame], source_names: Sequence[str], *, node_label: str
+) -> tuple[_Frame, ...]:
+    """The named input frames in declared-source order; a missing declared name raises.
+
+    Dropping a missing frame would shift every later input onto the wrong name.
+    """
+    try:
+        return tuple(dfs_by_name[name] for name in source_names)
+    except KeyError as exc:
+        raise ValueError(
+            f"{node_label} did not receive every declared connected input name.",
+        ) from exc
+
+
 @_register(NodeType.OPTIMISER, recompute_cost="cheap", columns=_passthrough_columns)
 def _build_optimiser(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # Pass-through in preview mode. Solving happens via /api/optimiser/solve.
@@ -1037,15 +1052,11 @@ def _build_optimiser(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         _src_names_captured = list(ctx.source_names)
 
         def _optimiser_select(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
-            if dfs_by_name:
-                try:
-                    dfs = tuple(dfs_by_name[name] for name in _src_names_captured)
-                except KeyError as exc:
-                    raise ValueError(
-                        "Optimiser did not receive every declared connected input name.",
-                    ) from exc
-            else:
-                dfs = dfs_positional
+            dfs = (
+                _frames_in_declared_order(dfs_by_name, _src_names_captured, node_label="Optimiser")
+                if dfs_by_name
+                else dfs_positional
+            )
             if len(dfs) <= _i_captured:
                 raise ValueError(
                     f"Optimiser expected input at index {_i_captured} but only "
@@ -1127,10 +1138,11 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         # Reconstruct positional tuple in declared-source order, then delegate
         # to the shared apply helper that generated standalone code also
         # calls — one code path, no drift.
-        if dfs_by_name:
-            dfs = tuple(dfs_by_name[name] for name in _source_names if name in dfs_by_name)
-        else:
-            dfs = dfs_positional
+        dfs = (
+            _frames_in_declared_order(dfs_by_name, _source_names, node_label="Optimiser Apply")
+            if dfs_by_name
+            else dfs_positional
+        )
         return apply_optimiser_apply_from_config(
             *dfs,
             config=_config_captured,

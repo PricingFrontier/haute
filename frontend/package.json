@@ -222,6 +222,7 @@
     "@codemirror/search": "6.6.0",
     "@codemirror/state": "6.5.4",
     "@codemirror/view": "6.39.16",
+    "@lezer/highlight": "1.2.3",
     "@tailwindcss/vite": "4.1.18",
     "@xyflow/react": "12.10.0",
     "echarts": "6.1.0",

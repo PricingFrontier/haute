@@ -15,7 +15,7 @@ import useNodeResultsStore, {
   resetNodeResultsDerivedCaches,
 } from "../../../stores/useNodeResultsStore"
 import useSettingsStore from "../../../stores/useSettingsStore"
-import type { SimpleNode } from "../../editors"
+import type { SimpleNode } from "../../editors/_shared"
 import {
   pivotCalculationIdentity,
   type ExplorePivotConfig,
@@ -44,7 +44,7 @@ function pivot(overrides: Partial<ExplorePivotConfig> = {}): ExplorePivotConfig 
     name: "Claims",
     enabled: true,
     filters: [],
-    rows: [{ id: "region", field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
+    rows: [{ sort: "ascending", id: "region", field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
     columns: [],
     values: [
       {
@@ -53,6 +53,8 @@ function pivot(overrides: Partial<ExplorePivotConfig> = {}): ExplorePivotConfig 
         aggregation: "sum",
         reference: "paid_sum",
         display_name: "Paid",
+        sort_rows: "none",
+        color_scale: "none",
         color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
       },
     ],

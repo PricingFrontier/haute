@@ -3,7 +3,7 @@ import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { NODE_TYPES } from "../../utils/nodeTypes"
 import { columnFill, workbenchNodeTables, type ColumnFill } from "../../utils/workbenchTables"
 import type { InputSource } from "./_shared"
-import { NO_COLUMNS_NOTE, WorkbenchTablesHeader, tableLabelIssue } from "./WorkbenchInputEditor"
+import { WorkbenchTableCard, WorkbenchTablesHeader, tableLabelIssue } from "./WorkbenchInputEditor"
 
 /** A column's border: red while it is missing, orange while its frame's column is of another type. */
 const FILL_BORDERS: Readonly<Record<ColumnFill["kind"], string>> = {
@@ -68,48 +68,25 @@ function OutputTable({
   source: InputSource | null
 }) {
   return (
-    <div
-      data-testid={`workbench-table-${table.name}`}
-      className="rounded-md border px-2 py-1.5 text-xs"
-      style={{ borderColor: issue ? "var(--warning)" : "var(--border)", background: "var(--bg-elevated)" }}
-    >
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="font-mono font-semibold truncate">{table.name}</span>
-        <span className="shrink-0 text-[11px]" style={{ color: "var(--text-muted)" }}>
-          {table.rows === "one" ? "one per quote" : "many per quote"}
-        </span>
-      </div>
-      {issue && (
-        <p role="alert" className="mt-0.5 text-[11px]" style={{ color: "var(--warning)" }}>
-          {issue}
-        </p>
-      )}
-      {table.columns.length === 0 ? (
-        <p className="mt-0.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
-          {NO_COLUMNS_NOTE}
-        </p>
-      ) : (
-        <>
-          <p
-            data-testid={`workbench-table-connection-${table.name}`}
-            className="mt-0.5 text-[11px]"
-            style={{ color: source === null ? "var(--danger-text)" : "var(--text-muted)" }}
-          >
-            {source === null ? "Not connected" : `From ${source.sourceLabel}`}
-          </p>
-          <ul className="mt-1 space-y-1">
-            {table.columns.map((column, at) => (
-              <OutputColumn
-                key={column.name}
-                table={table.name}
-                column={column}
-                fill={columnFill(table, at, source !== null, source?.columns)}
-              />
-            ))}
-          </ul>
-        </>
-      )}
-    </div>
+    <WorkbenchTableCard table={table} issue={issue}>
+      <p
+        data-testid={`workbench-table-connection-${table.name}`}
+        className="mt-0.5 text-[11px]"
+        style={{ color: source === null ? "var(--danger-text)" : "var(--text-muted)" }}
+      >
+        {source === null ? "Not connected" : `From ${source.sourceLabel}`}
+      </p>
+      <ul className="mt-1 space-y-1">
+        {table.columns.map((column, at) => (
+          <OutputColumn
+            key={column.name}
+            table={table.name}
+            column={column}
+            fill={columnFill(table, at, source !== null, source?.columns)}
+          />
+        ))}
+      </ul>
+    </WorkbenchTableCard>
   )
 }
 

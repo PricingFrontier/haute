@@ -59,7 +59,10 @@ inside `GitPushResponse`, and `gitSetCiSecrets(remote)` (`POST /api/git/ci-secre
 one, both through the generated validators. Neither sets a browser deadline: the server
 bounds each of their steps (git's, `gh`'s and Databricks' own timeouts), and a first
 publication runs several, so a deadline would report a failure while the push or the
-secrets still land.
+secrets still land. `gitFastForward` (Catch up) and `gitBranchAway` (Spin off a copy) set
+none either: each fetches first, which the server allows its 60-second remote deadline, as
+a credential helper may sign in, so the browser's 30 seconds would report a failure while
+the branches still move.
 
 **`GitRemote`** — `{ name, url, working, ledger }`. `working` and `ledger` are
 `GitRemoteLeg | null` and are the only divergence fields; the working leg is not duplicated

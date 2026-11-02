@@ -33,8 +33,7 @@ from haute.routes._optimiser_quotes import (
     quote_page,
 )
 from haute.routes.optimiser import _store
-from tests.optimiser_fixtures import run_frontier_and_wait
-from tests.test_optimiser_outcomes import _data_graph, _region, _scored, _solved
+from tests.test_optimiser_outcomes import VOLUME_FRONTIER, _data_graph, _region, _scored, _solved
 
 _GRID = (0.9, 1.0, 1.1, 1.2)
 
@@ -374,7 +373,6 @@ class TestApplyRoute:
         ]
         assert body["row_count"] == body["matched_row_count"] == 9
         # The page names the frontier generation it was answered for.
-        assert body["frontier_generation"] == status["result"]["frontier_generation"]
         assert body["offset"] == 0
         assert body["preview_row_limit"] == APPLY_PREVIEW_ROW_LIMIT
         assert body["preview_row_count"] == 9
@@ -427,12 +425,8 @@ class TestApplyRoute:
         assert past["matched_row_count"] == past["row_count"] == 9
 
     def test_a_frontier_point_is_paged_from_its_own_choices(self, client, tmp_path):
-        job_id, _status = _solved(client, _data_graph(_scored(tmp_path)))
-        frontier = run_frontier_and_wait(
-            client,
-            {"job_id": job_id, "threshold_ranges": {"volume": [5.0, 8.0]}, "n_points_per_dim": 3},
-        )
-        assert frontier["status"] == "completed", frontier
+        job_id, status = _solved(client, _data_graph(_scored(tmp_path), **VOLUME_FRONTIER))
+        frontier = status["frontier"]
 
         response = _apply(
             client, job_id, point_index=2, sort_by="optimal_scenario_value", descending=True
@@ -444,11 +438,8 @@ class TestApplyRoute:
         assert [row["quote_id"] for row in body["preview"]] == point.sort(
             ["optimal_scenario_value", "quote_id"], descending=[True, False]
         )["quote_id"].to_list()
-        assert body["total_objective"] == pytest.approx(
-            frontier["result"]["points"][2]["total_objective"]
-        )
+        assert body["total_objective"] == pytest.approx(frontier["points"][2]["total_objective"])
         assert _store.require_job(job_id)["selected_frontier_point"] == 2
-        assert body["frontier_generation"] == frontier["result"]["frontier_generation"]
 
     def test_at_range_edge_is_answered_after_the_grid_is_evicted(self, client, tmp_path):
         job_id, _status = _solved(client, _data_graph(_scored(tmp_path)))

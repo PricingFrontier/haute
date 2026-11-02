@@ -1690,6 +1690,9 @@ def _trace_lineage_alignments(
                 submodels=prepared.submodels,
             )
         except ValueError:
+            # As in projection, the edge's target builder is the fail-loud point:
+            # executing the trace refuses the malformed edge with the ports it
+            # could name, before any correlation reads these names.
             continue
         input_names[(edge.source, edge.target, edge.sourceHandle, edge.targetHandle)] = name
         child_inputs.setdefault(edge.target, []).append(name)

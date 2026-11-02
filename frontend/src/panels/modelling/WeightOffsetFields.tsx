@@ -1,4 +1,4 @@
-import type { OnUpdateConfig } from "../editors"
+import type { OnUpdateConfig } from "../editors/_shared"
 import { ColumnSelector } from "./ColumnSelector"
 import type { ModelColumn } from "./modelColumns"
 import { OffsetFieldLabel } from "./OffsetFieldLabel"

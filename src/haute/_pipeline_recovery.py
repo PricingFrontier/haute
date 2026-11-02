@@ -36,7 +36,13 @@ from haute._editor_identities import (
     recoverable_request_input_source_handles,
     resolve_editor_identity,
 )
-from haute._executable_names import RESERVED_NAMES, ROOT_MODULE, NameViolation
+from haute._executable_names import (
+    RESERVED_NAMES,
+    ROOT_MODULE,
+    InputBinding,
+    NameViolation,
+    PortBinding,
+)
 from haute._graph_builders import (
     PipelineNodeSkeleton,
     _edge_param_names_for_node,
@@ -88,7 +94,9 @@ from haute.schemas import (
     PipelineElementAvailability,
     PipelineLoadStatus,
     PipelineNameViolation,
+    PipelineNameViolationFrameBinding,
     PipelineNameViolationParty,
+    PipelineNameViolationPortBinding,
     PipelineNodeCompleteness,
     PipelineRecoveryDiagnostic,
     RecoveryGraphSnapshot,
@@ -2090,6 +2098,23 @@ def _recovery_artifacts(
     return artifacts
 
 
+def _binding_payload(
+    binding: InputBinding | None,
+) -> PipelineNameViolationFrameBinding | PipelineNameViolationPortBinding | None:
+    if binding is None:
+        return None
+    if isinstance(binding, PortBinding):
+        return PipelineNameViolationPortBinding(
+            kind="submodel_input", submodel=binding.definition_id, port=binding.port
+        )
+    return PipelineNameViolationFrameBinding(
+        kind="frame",
+        node_id=binding.node_id,
+        handle=binding.handle,
+        submodel=None if binding.module == ROOT_MODULE else binding.module,
+    )
+
+
 def name_violations_payload(violations: Sequence[NameViolation]) -> list[PipelineNameViolation]:
     """The wire form of executable-name violations, each party with its submodel."""
     return [
@@ -2105,6 +2130,7 @@ def name_violations_payload(violations: Sequence[NameViolation]) -> list[Pipelin
                 )
                 for party in violation.parties
             ],
+            binding=_binding_payload(violation.binding),
         )
         for violation in violations
     ]

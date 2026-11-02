@@ -6,12 +6,19 @@
  * and the frontier detail card), so a save started on one is visible on the
  * other and survives pane switches. Each state belongs to one solve job: a new
  * job's state starts empty rather than showing the previous job's receipts.
+ * The states belong to the document too: loading another one (or accepting a
+ * change on disk) forgets them, and a reply that arrives after it is dropped.
  */
 
 import { create } from "zustand"
 import { logOptimiserToMlflow, saveOptimiser } from "../api/client"
 import { apiErrorCode, apiErrorMessage } from "../api/errors"
 import type { MlflowDestinationKey, MlflowLogResponse, SaveOptimiserResponse } from "../api/types"
+import useDocumentStatusStore, {
+  captureDocumentExecutionFence,
+  isDocumentExecutionFenceCurrent,
+  type DocumentExecutionFence,
+} from "./useDocumentStatusStore"
 
 /** What a publish acts on: the job's own solve, or one frontier point. */
 export type PublishTarget = { pointIndex: number | null }
@@ -83,7 +90,14 @@ function stateFor(byNode: Record<string, OptimiserPublishState>, nodeId: string,
 }
 
 const useOptimiserPublishStore = create<Store>((set, get) => {
-  const patch = (nodeId: string, jobId: string, update: Partial<OptimiserPublishState>) => {
+  const patch = (
+    nodeId: string,
+    jobId: string,
+    fence: DocumentExecutionFence,
+    update: Partial<OptimiserPublishState>,
+  ) => {
+    // A reply for a document the editor has moved past is nobody's now.
+    if (!isDocumentExecutionFenceCurrent(fence)) return
     set((store) => {
       // A reply for a job the node has moved past is dropped.
       const current = store.byNode[nodeId]
@@ -96,6 +110,7 @@ const useOptimiserPublishStore = create<Store>((set, get) => {
     byNode: {},
 
     save: async ({ nodeId, jobId, pointIndex, outputPath, version, stale, overwrite = false }) => {
+      const fence = captureDocumentExecutionFence()
       set((store) => ({
         byNode: {
           ...store.byNode,
@@ -111,20 +126,21 @@ const useOptimiserPublishStore = create<Store>((set, get) => {
           overwrite,
           stale,
         })
-        patch(nodeId, jobId, { saving: false, saveReceipt: { ...response, pointIndex } })
+        patch(nodeId, jobId, fence, { saving: false, saveReceipt: { ...response, pointIndex } })
       } catch (error) {
         if (apiErrorCode(error) === RESULT_EXISTS_CODE && !overwrite) {
-          patch(nodeId, jobId, {
+          patch(nodeId, jobId, fence, {
             saving: false,
             overwritePrompt: { message: apiErrorMessage(error), request: { nodeId, jobId, pointIndex, outputPath, version, stale } },
           })
           return
         }
-        patch(nodeId, jobId, { saving: false, saveError: apiErrorMessage(error) })
+        patch(nodeId, jobId, fence, { saving: false, saveError: apiErrorMessage(error) })
       }
     },
 
     log: async ({ nodeId, jobId, pointIndex, destination, experimentName, stale }) => {
+      const fence = captureDocumentExecutionFence()
       set((store) => ({
         byNode: {
           ...store.byNode,
@@ -141,9 +157,9 @@ const useOptimiserPublishStore = create<Store>((set, get) => {
           experiment_name: experimentName || null,
           stale,
         })
-        patch(nodeId, jobId, { logging: false, logReceipt: { ...response, pointIndex } })
+        patch(nodeId, jobId, fence, { logging: false, logReceipt: { ...response, pointIndex } })
       } catch (error) {
-        patch(nodeId, jobId, {
+        patch(nodeId, jobId, fence, {
           logging: false,
           logError: apiErrorMessage(error),
           logErrorCode: apiErrorCode(error) ?? null,
@@ -153,7 +169,7 @@ const useOptimiserPublishStore = create<Store>((set, get) => {
 
     dismissOverwrite: (nodeId, jobId) => {
       if (get().byNode[nodeId]?.jobId !== jobId) return
-      patch(nodeId, jobId, { overwritePrompt: null })
+      patch(nodeId, jobId, captureDocumentExecutionFence(), { overwritePrompt: null })
     },
   }
 })
@@ -166,5 +182,9 @@ export function usePublishState(nodeId: string, jobId: string | null): Optimiser
     return current && current.jobId === jobId ? current : null
   })
 }
+
+useDocumentStatusStore.subscribe((state, previous) => {
+  if (state.executionGeneration !== previous.executionGeneration) useOptimiserPublishStore.setState({ byNode: {} })
+})
 
 export default useOptimiserPublishStore

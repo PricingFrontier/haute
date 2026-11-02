@@ -302,6 +302,156 @@ describe("ApiInputEditor", () => {
     expect(arg.tables[0].columns[0].type).toBe("str")
   })
 
+  it("Infer Tables shows the server's detail when inference is refused", async () => {
+    const { ApiError } = await import("../../api/client")
+    mockInferJsonCacheSchema.mockRejectedValue(
+      new ApiError("HTTP 422", 422, "v2 column type must be one of int|float|str|bool|date"),
+    )
+    render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.json", tables: [] }} />)
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+    })
+    expect(await screen.findByText("v2 column type must be one of int|float|str|bool|date")).toBeTruthy()
+    expect(screen.queryByText("HTTP 422")).toBeNull()
+  })
+
+  describe("an inference reply belongs to the file and draft it was asked for", () => {
+    const inferred = {
+      tables: [{
+        path: "$[:]", label: "policies", emit: true,
+        columns: [{ name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", selected: true }],
+      }],
+    }
+    const userTable = {
+      path: "$[:]", label: "quotes", emit: true,
+      columns: [{ name: "quote_id", path: "$[:].quote_id", type: "str", status: "Confirmed", selected: true }],
+    }
+    /** An inference the test answers by hand. */
+    function controlledInference() {
+      let answer: (value: unknown) => void = () => {}
+      mockInferJsonCacheSchema.mockImplementation(() => new Promise((resolve) => { answer = resolve }))
+      return async () => {
+        await act(async () => {
+          answer(inferred)
+        })
+      }
+    }
+    const editor = (config: Record<string, unknown>, onUpdate: OnUpdateConfig) => (
+      <ApiInputEditor {...DEFAULT_PROPS} config={config} onUpdate={onUpdate} />
+    )
+
+    it("writes nothing for a reply about a file no longer selected, and offers no confirmation", async () => {
+      const answer = controlledInference()
+      const onUpdate = successfulOnUpdateSpy()
+      const view = render(editor({ path: "first.json", tables: [] }, onUpdate))
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+      view.rerender(editor({ path: "second.json", tables: [userTable] }, onUpdate))
+
+      await answer()
+
+      expect(onUpdate).not.toHaveBeenCalled()
+      expect(screen.queryByTestId("api-input-infer-confirm-banner")).toBeNull()
+      expect(screen.getByTestId("api-input-infer-btn")).toBeEnabled()
+    })
+
+    it("drops a reply once the same file's tables changed, saying so, and a new inference merges through the confirmation", async () => {
+      const answer = controlledInference()
+      const first = successfulOnUpdateSpy()
+      const view = render(editor({ path: "data.json", tables: [] }, first))
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+      const latest = successfulOnUpdateSpy()
+      const edited = { path: "data.json", tables: [userTable] }
+      view.rerender(editor(edited, latest))
+
+      await answer()
+
+      expect(first).not.toHaveBeenCalled()
+      expect(latest).not.toHaveBeenCalled()
+      expect(screen.queryByTestId("api-input-infer-confirm-banner")).toBeNull()
+      expect(screen.getByText("The node changed while this inference ran, so it was not applied.")).toBeTruthy()
+
+      const again = controlledInference()
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+      await again()
+      fireEvent.click(screen.getByTestId("api-input-infer-confirm"))
+      const written = latest.mock.calls.at(-1)?.[0] as { path: string; tables: Array<{ label: string }> }
+      expect(written.path).toBe("data.json")
+      expect(written.tables.map((table) => table.label)).toContain("quotes")
+    })
+
+    it("writes nothing when the document is reloaded under the open editor", async () => {
+      const answer = controlledInference()
+      const before = successfulOnUpdateSpy()
+      const view = render(editor({ path: "data.json", tables: [] }, before))
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+      // The same node in a document read again: an equal config, but not the draft asked from.
+      const after = successfulOnUpdateSpy()
+      view.rerender(editor({ path: "data.json", tables: [] }, after))
+
+      await answer()
+
+      expect(before).not.toHaveBeenCalled()
+      expect(after).not.toHaveBeenCalled()
+      expect(screen.queryByTestId("api-input-infer-confirm-banner")).toBeNull()
+    })
+
+    it("writes nothing once the editor has closed (another node or document)", async () => {
+      const answer = controlledInference()
+      const onUpdate = successfulOnUpdateSpy()
+      const view = render(editor({ path: "data.json", tables: [] }, onUpdate))
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+      view.unmount()
+
+      await answer()
+
+      expect(onUpdate).not.toHaveBeenCalled()
+    })
+
+    it("writes through the editor's current update, which refuses once editing is not allowed", async () => {
+      const answer = controlledInference()
+      const config = { path: "data.json", tables: [] }
+      const editable = successfulOnUpdateSpy()
+      const view = render(editor(config, editable))
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+      const refusing = vi.fn<OnUpdateConfig>(() => ({ ok: false, error: "The document is read-only." }))
+      view.rerender(editor(config, refusing))
+
+      await answer()
+
+      expect(editable).not.toHaveBeenCalled()
+      expect(refusing).toHaveBeenCalledTimes(1)
+      expect(screen.getByText("The document is read-only.")).toBeTruthy()
+    })
+
+    it("applies a reply to an unchanged empty draft at once", async () => {
+      const answer = controlledInference()
+      const onUpdate = successfulOnUpdateSpy()
+      render(editor({ path: "data.json", tables: [] }, onUpdate))
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+
+      await answer()
+
+      expect(onUpdate).toHaveBeenCalledTimes(1)
+      expect((onUpdate.mock.calls[0][0] as { tables: Array<{ label: string }> }).tables[0].label).toBe("policies")
+    })
+
+    it("drops a staged confirmation when the file changes, for good", async () => {
+      const answer = controlledInference()
+      const onUpdate = successfulOnUpdateSpy()
+      const view = render(editor({ path: "data.json", tables: [userTable] }, onUpdate))
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+      await answer()
+      expect(screen.getByTestId("api-input-infer-confirm-banner")).toBeTruthy()
+
+      view.rerender(editor({ path: "other.json", tables: [userTable] }, onUpdate))
+      expect(screen.queryByTestId("api-input-infer-confirm-banner")).toBeNull()
+      // Selecting the first file again does not bring the earlier confirmation back.
+      view.rerender(editor({ path: "data.json", tables: [userTable] }, onUpdate))
+      expect(screen.queryByTestId("api-input-infer-confirm-banner")).toBeNull()
+      expect(onUpdate).not.toHaveBeenCalled()
+    })
+  })
+
   it("Infer Tables does NOT clobber existing user tables without confirmation", async () => {
     mockInferJsonCacheSchema.mockResolvedValue({
       tables: [
@@ -937,6 +1087,38 @@ describe("ApiInputEditor - W1.4 label validation (blank / duplicate / sanitised 
 
     expect(screen.getByTestId("api-input-table-0-label-error")).toBeTruthy()
     expect(screen.getByTestId("api-input-table-1-label-error")).toBeTruthy()
+  })
+
+  it("shows the server's name violation under the committed label it names, until the label changes", () => {
+    const message = "Node 'rated' (the pipeline) receives an input named `rate_lookup`, which a definition in the preamble binds."
+    const config = {
+      tables: [
+        { path: "$[:]", label: "rate_lookup", emit: true, columns: [] },
+        { path: "$[:].d[:]", label: "drivers", emit: true, columns: [] },
+      ],
+    }
+    const { rerender } = render(
+      <ApiInputEditor
+        config={config}
+        onUpdate={successfulOnUpdateSpy()}
+        accentColor="#10b981"
+        labelViolations={new Map([["rate_lookup", message]])}
+      />,
+    )
+
+    expect(screen.getByTestId("api-input-table-0-label-error")).toHaveTextContent(message)
+    expect(screen.getByTestId("api-input-table-0-label")).toHaveAttribute("aria-invalid", "true")
+    expect(screen.queryByTestId("api-input-table-1-label-error")).toBeNull()
+
+    rerender(
+      <ApiInputEditor
+        config={{ tables: [{ ...config.tables[0], label: "rates" }, config.tables[1]] }}
+        onUpdate={successfulOnUpdateSpy()}
+        accentColor="#10b981"
+        labelViolations={new Map([["rate_lookup", message]])}
+      />,
+    )
+    expect(screen.queryByTestId("api-input-table-0-label-error")).toBeNull()
   })
 })
 

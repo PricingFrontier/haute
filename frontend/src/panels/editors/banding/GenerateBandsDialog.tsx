@@ -4,6 +4,7 @@ import {
   CALENDAR_UNITS,
   generateCalendarBreakpoints,
   generateEvenBreakpoints,
+  suggestedBandStep,
   type CalendarGenerateSettings,
   type CalendarUnit,
   type GenerateSettings,
@@ -55,9 +56,9 @@ function NumericGenerate({ onGenerate, onClose, accentColor, dataMin, dataMax, i
   const [start, setStart] = useState<number | "">(initial?.start ?? dataMin ?? "")
   const [end, setEnd] = useState<number | "">(initial?.end ?? dataMax ?? "")
 
-  // Auto-suggest step for ~10 bands when data range is known
+  // About ten bands at the range's own scale, when the data's range is known.
   const suggestedStep = (dataMin != null && dataMax != null && dataMax > dataMin)
-    ? Math.ceil((dataMax - dataMin) / 10)
+    ? suggestedBandStep(dataMax - dataMin)
     : ""
   const [step, setStep] = useState<number | "">(initial?.step ?? suggestedStep)
   const [error, setError] = useState<string | null>(null)

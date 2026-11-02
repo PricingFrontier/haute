@@ -136,8 +136,11 @@ backend API modules own validation and persistence.
   node to count all rows", or the failure in the server's words — the counts show as pending
   while they are being counted and are absent otherwise, and there is no histogram or "x of N
   rows". A server answer that the data needs caching, which can come for a point that looked
-  current, reads "Not cached" too rather than counting on. Its categorical value list then offers the preview's values without counts, and
-  Generate may start from the preview's range. Editing Banding's rules does not drop the whole
+  current, reads "Not cached" too rather than counting on. Its categorical value list then offers the preview's values without counts,
+  only where the preview gives the text a rule matches (the column cast to text): a text, categorical,
+  integer or boolean column's values, a column of unknown type's text values only, and none for a float,
+  decimal or temporal column (a Float64 `1.0` previews as `1` while execution matches `"1.0"`), which
+  waits for the whole dataset's values. Generate may start from the preview's range. Editing Banding's rules does not drop the whole
   dataset's answer while the new counts are asked: its total, values and distribution stay,
   categorical counts follow the edit at once from the data's value counts, and a count not yet
   known shows as pending.
@@ -311,8 +314,9 @@ backend API modules own validation and persistence.
   component shape.
 - Rating, Output, and API Input expose only their current persisted shapes:
   Rating uses `tables[].entries` plus `combinedOutputs`; Output uses
-  `outputMapping` rows with all four required fields including `enabled`; API
-  Input uses `tables`. Editors do not detect, upgrade, or mirror historical
+  `outputMapping` rows with all four required fields including `enabled` and
+  nothing else, the response document being JSON (no format is chosen or
+  stored); API Input uses `tables`. Editors do not detect, upgrade, or mirror historical
   working-copy formats.
 
 **Transform step builder.** A Transform node's config tab is labelled "Transform" (its config is
@@ -553,7 +557,7 @@ chips that exclude them, name and value column fields, and a note that row order
 not guaranteed: ordering an unpivot's rows costs three times its time and memory, so a sort
 step after it orders them where that matters). Select and drop take column types beside named columns, and an
 aggregation row can target every column of a type through an `every <type> column` entry
-after the names in its column box, which turns the row into `*<suffix> = <function> of
+after the names in its column box (the same list of types its type select offers), which turns the row into `*<suffix> = <function> of
 every <type> column` with the suffix `_<function>` to start (row count and row filters are
 withheld there; its "one column…" choice turns it back). Column suggestions treat a dtype
 selection as unresolved: a typed select keeps every upstream column suggested, a
@@ -645,7 +649,15 @@ category, a duration a number, binary data text, text anything but true/false, a
 number or date becomes a category directly), the same table the renderer holds
 (`CAST_REFUSALS`, checked against Polars by a test); a formula casting a known text
 column to a date, or a category to anything but text, is refused with the function to
-use instead; std and var are not offered for a duration, and log, exp and divide only
+use instead; a whole-number argument is refused as the renderer refuses it, in a formula
+(`round(x, -1)` or `round(x, 1.5)`: "expects a whole number of zero or more here";
+`slice(x, 0.5, 2)`: "expects a whole number here") and in its box (decimal places, a
+group: "Enter a value of at least 0."); a date format typed without a `%` directive is
+refused under its box ("Enter a date format such as %d/%m/%Y.") with the typed text kept,
+and a quantile outside 0 to 1 is refused, not clamped ("Enter a value of at most 1.");
+a Change types entry whose saved format no longer fits its column (the column is no
+longer text) keeps showing its Format box, saying the column takes no format, so the
+format can be cleared rather than failing the run out of sight; std and var are not offered for a duration, and log, exp and divide only
 for numbers and true/false. A numeric "is one of" records the kind of number its column
 holds, from the column's type: `integer` renders its values as whole numbers
 (`[100, 300]`), `float` as floats (`[100.0, 300.0]`), and `decimal` as exact decimals
@@ -762,14 +774,22 @@ api-input frame-identity helpers owned by
 
 ## Failure model
 
-> NOTE: Completed Data Input schema can remain applicable after a file change while
-> the new schema loads, and a cached file-browser parent can retain its failed child
-> error. [FNED-R06](../roadmap/frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft)
-> and [FNED-R02](../roadmap/frontend-node-editors.md#fned-r02--drafts-in-step-with-the-document-errors-with-their-detail) track these transitions.
-
-> NOTE: A late API Input inference reply can restore its old source path and
-> overwrite newer tables. Source, draft and document fencing is tracked in
-> [FNED-R06](../roadmap/frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft).
+- **A detected schema belongs to its file and reader settings.** A Data Input's detected
+  schema (and its **Use detected schema**) is shown only for the path and reader settings
+  it was read with: while another file's or other settings' schema loads, after a retry
+  starts, or once the path is cleared, none is offered, and a late reply for an earlier
+  read is ignored.
+- **An inference reply belongs to the draft it was asked for.** API Input's **Infer
+  Tables** reply is dropped when the editor has closed (another node or document) or a newer
+  inference started, and dropped with the note "The node changed while this inference ran,
+  so it was not applied." when the node's config is no longer the very draft it was asked
+  from (a table edit, an undo, another file, the document read again under the open
+  editor). Against that draft it applies at once when the draft has no tables, and
+  otherwise waits behind the replace confirmation, which belongs to that draft too: any
+  change of it drops the confirmation for good, so a file selected again never brings an
+  earlier one back. Inferring again is how a still-current file's tables are merged after
+  an edit. The reply writes through the editor's current update, so a document that can no
+  longer be edited refuses it and the refusal shows where inference errors do.
 
 Client-side parse and shape checks show inline invalid state where implemented. Server failures
 such as format, file, Databricks, or MLflow lookup errors are rendered by the invoking editor.

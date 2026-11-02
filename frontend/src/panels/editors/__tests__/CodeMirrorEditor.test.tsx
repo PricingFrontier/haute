@@ -15,6 +15,35 @@ describe("CodeMirrorEditor", () => {
     vi.useRealTimers()
   })
 
+  it("marks a repeat error on the same line after an edit cleared the mark", async () => {
+    let editorView: EditorView | null = null
+    const editor = (errorRevision: object) => (
+      <CodeMirrorEditor
+        defaultValue={"x = 1\ny = oops"}
+        onChange={vi.fn()}
+        errorLine={2}
+        errorRevision={errorRevision}
+        onEditorView={(view) => {
+          editorView = view
+        }}
+      />
+    )
+    const marked = () => editorView!.dom.querySelectorAll(".cm-lintRange-error").length
+    const view = render(editor({ run: 1 }))
+    expect(marked()).toBe(1)
+
+    // An edit clears the mark: the user is fixing the code.
+    await act(async () => {
+      editorView!.dispatch({ changes: { from: 0, insert: "#" } })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(marked()).toBe(0)
+
+    // The next run fails on the same line: its result marks it again.
+    view.rerender(editor({ run: 2 }))
+    expect(marked()).toBe(1)
+  })
+
   it("debounces local document changes before notifying callers", async () => {
     const onChange = vi.fn()
     let editorView: EditorView | null = null

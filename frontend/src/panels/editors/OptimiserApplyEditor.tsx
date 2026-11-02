@@ -5,12 +5,10 @@ import { RegisteredModelPicker, ExperimentRunPicker } from "./MlflowModelPicker"
 import { useMlflowBrowser } from "../../hooks/useMlflowBrowser"
 import { configField } from "../../utils/configField"
 import MlflowDestinationSelector from "../../components/MlflowDestinationSelector"
-import {
-  effectiveMlflowDestination,
-  mlflowDestinationConfigValue,
-} from "../../utils/mlflowDestinations"
+import { clearedMlflowSelection, effectiveMlflowDestination } from "../../utils/mlflowDestinations"
 import type { MlflowDestinationKey } from "../../api/types"
 import { optimiserSelectionMode } from "../../utils/mlflowOptimiser"
+import { resolveLoadedVersion } from "../../utils/mlflowModelMetadata"
 import { readJson } from "../../api/client"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import { CommittedTextField } from "../../components/form"
@@ -72,18 +70,7 @@ export default function OptimiserApplyEditor({
 
   const handleDestinationChange = (next: MlflowDestinationKey) => {
     if (next === effectiveMlflowDestination(mlflowDestination)) return
-    onUpdate({
-      mlflow_destination: mlflowDestinationConfigValue(next),
-      run_id: "",
-      run_name: "",
-      experiment_id: "",
-      experiment_name: "",
-      artifact_path: "",
-      registered_model: "",
-      version: "latest",
-      alias: undefined,
-      optimiser_mode: "",
-    })
+    onUpdate({ ...clearedMlflowSelection(next), optimiser_mode: "" })
     setSelectionCleared(true)
   }
 
@@ -108,11 +95,14 @@ export default function OptimiserApplyEditor({
     [mlflow.modelVersionsFor, mlflow.modelVersions, selectedRegisteredModel],
   )
   const selectedVersion = configField(config, "version", "latest")
-  const selectedRegisteredVersion = useMemo(() => {
-    if (sourceType !== "registered") return undefined
-    if (selectedVersion === "latest") return registeredModelVersions[0]
-    return registeredModelVersions.find((version) => version.version === selectedVersion)
-  }, [sourceType, selectedVersion, registeredModelVersions])
+  const selectedAlias = configField(config, "alias", "")
+  const selectedRegisteredVersion = useMemo(
+    () =>
+      sourceType === "registered"
+        ? resolveLoadedVersion(registeredModelVersions, selectedVersion, selectedAlias)
+        : undefined,
+    [sourceType, selectedVersion, selectedAlias, registeredModelVersions],
+  )
   const resolvedOptimiserMode = useMemo(() => {
     if (sourceType === "file" && loadedMeta) return loadedMeta.mode
     if (sourceType === "run" && selectedRun !== undefined) return optimiserSelectionMode(selectedRun)
@@ -151,16 +141,22 @@ export default function OptimiserApplyEditor({
     if (sourceType !== "file" || !artifactPath) {
       return
     }
-    readJson<ArtifactMeta>(artifactPath)
+    // A read for a path no longer chosen is cancelled, and a late answer to it
+    // never replaces the current artifact's metadata.
+    const controller = new AbortController()
+    readJson<ArtifactMeta>(artifactPath, { signal: controller.signal })
       .then((data) => {
+        if (controller.signal.aborted) return
         setMeta({ artifactPath, data })
         setLoadError(null)
       })
       .catch((e: unknown) => {
+        if (controller.signal.aborted) return
         console.warn("Artifact load failed:", e)
         setLoadError({ artifactPath, message: "Could not load artifact file" })
         setMeta(null)
       })
+    return () => controller.abort()
   }, [artifactPath, sourceType])
 
   return (

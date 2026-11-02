@@ -127,7 +127,7 @@ def _api_output_graph(config: dict[str, Any]) -> PipelineGraph:
                 data=NodeData(
                     label="out",
                     nodeType=NodeType.OUTPUT,
-                    config={"outputMapping": _output_mapping(), "outputFormat": "json"},
+                    config={"outputMapping": _output_mapping()},
                 ),
             ),
         ],
@@ -179,7 +179,6 @@ def test_output_dry_run_route_with_pipeline_relative_path(nested_project) -> Non
             "graph": graph_dict,
             "node_id": "out",
             "output_mapping": _output_mapping(),
-            "output_format": "json",
         },
     )
     assert resp.status_code == 200, resp.text

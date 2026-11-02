@@ -207,7 +207,13 @@ function of the request and of the project's saved utility files, which it reads
 those) to resolve `utility.<module>` star imports, from where the executor imports them. The
 naming context is the whole graph, in the representation save receives, with the request's
 nodes applied. The response then lists the name violations (executable names and support
-code) that remain in it (`violations`), as the document carries them. Utility files reach the
+code) that remain in it (`violations`), as the document carries them. A `reserved_input` or
+`support_input` violation whose input a request input's frame or a submodel's public input
+port names carries that setting as its `binding`: `{kind: "frame", node_id, handle,
+submodel}` (the request input, its frame's source handle, and the definition it sits in or
+`null`) or `{kind: "submodel_input", submodel, port}` (the definition and the port's name);
+every other violation's `binding` is `null`. The editor that set the name matches its
+violations by `binding`, never by parsing the message. Utility files reach the
 disk only through the utility routes, and save, preview and the deployed scorer read the same
 files, so the editor and save judge one set of utility contents.
 
@@ -569,7 +575,7 @@ describes. Stale, changed or already-applied plans fail before
   dispatch and canonical `_types.py` graph models used by the executor.
 - **[background-jobs](../background-jobs/high-level.md)** — job-status response shapes
   (`TrainStatusResponse`, `OptimiserStatusResponse`, `ExploreStatusResponse`,
-  `OptimiserFrontierAutoRangeStatusResponse`, `OptimiserFrontierStatusResponse`,
+  `OptimiserFrontierAutoRangeStatusResponse`,
   `DispersionEstimateStatusResponse`) are defined in `schemas.py`; the polling/job-
   runner mechanics live in that component's own routers.
 - **[git-integration](../git-integration/high-level.md)** — every `Git*` schema

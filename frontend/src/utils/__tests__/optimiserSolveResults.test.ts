@@ -27,11 +27,10 @@ describe("optimiserSolveResults", () => {
   }
 
   it("keys every part of the identity, the full query included", () => {
-    const base = { jobId: "j1", frontierGeneration: 0, target: "solved" as const, query: QUERY }
+    const base = { jobId: "j1", target: "solved" as const, query: QUERY }
     const keys = new Set([
       optimiserApplyKey(base),
       optimiserApplyKey({ ...base, jobId: "j2" }),
-      optimiserApplyKey({ ...base, frontierGeneration: 1 }),
       optimiserApplyKey({ ...base, target: 0 }),
       optimiserApplyKey({ ...base, query: { ...QUERY, offset: 100 } }),
       optimiserApplyKey({ ...base, query: { ...QUERY, sort_by: "optimal_objective" } }),
@@ -41,12 +40,12 @@ describe("optimiserSolveResults", () => {
         query: { ...QUERY, filters: { ...QUERY.filters, analysis_equals: { region: "North" } } },
       }),
     ])
-    expect(keys.size).toBe(8)
+    expect(keys.size).toBe(7)
   })
 
   it("canonicalises the query, so key order never splits one query into two entries", () => {
     const reordered = Object.fromEntries(Object.entries(QUERY).reverse()) as OptimiserApplyQuery
-    const base = { jobId: "j1", frontierGeneration: 0, target: "solved" as const }
+    const base = { jobId: "j1", target: "solved" as const }
     expect(optimiserApplyKey({ ...base, query: reordered })).toBe(optimiserApplyKey({ ...base, query: QUERY }))
   })
 
@@ -91,13 +90,9 @@ describe("optimiserSolveResults", () => {
     expect(point.factor_tables).toEqual({})
   })
 
-  it("refuses a frontier from another generation than its result's", () => {
-    const result = makeSolveResult({ frontier_generation: 2 })
+  it("carries a frontier with points, and none without", () => {
+    const result = makeSolveResult()
     expect(frontierFromSolveResult(result)).toBeNull()
-    expect(() => frontierFromSolveResult({
-      ...result,
-      frontier: { ...({} as NonNullable<typeof result.frontier>), frontier_generation: 1, points: [] },
-    })).toThrow(/generation 1 does not match its result's generation 2/)
   })
 
   it("refuses a select reply naming another point", () => {

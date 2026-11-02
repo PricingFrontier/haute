@@ -42,7 +42,7 @@ function distance(a: string, b: string): number {
  * The known name closest to `name`: a case-insensitive match first, then the
  * nearest by edit distance within a third of the name's length (at least 1).
  */
-export function closestName(name: string, names: readonly string[]): string | null {
+function closestName(name: string, names: readonly string[]): string | null {
   const lower = name.toLowerCase()
   const caseMatch = names.find((n) => n.toLowerCase() === lower)
   if (caseMatch) return caseMatch
@@ -59,7 +59,7 @@ export function closestName(name: string, names: readonly string[]): string | nu
   return best
 }
 
-export function describeColumn(column: KnownColumn | undefined): string | null {
+function describeColumn(column: KnownColumn | undefined): string | null {
   if (!column) return null
   return column.dtype ?? (column.made ? "new" : null)
 }

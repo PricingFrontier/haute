@@ -8,7 +8,8 @@
 import { memo, useMemo } from "react"
 import { ChevronLeft, ChevronRight, Search } from "lucide-react"
 import { CHART_COLORS } from "../../theme/colors"
-import { chartTicks, formatChartTicks } from "../../utils/chartHelpers"
+import { chartDomain, chartTickSpan, chartTicks, formatChartTicks } from "../../utils/chartHelpers"
+import { formatNumber } from "../../utils/formatValue"
 import type { ScenarioStats } from "../optimiserScenarioStats"
 import type { OptimiserScenarioData, QuoteRow } from "./useOptimiserScenarioData"
 
@@ -52,21 +53,16 @@ function buildSeriesScale(
 ): SeriesScaleContext {
   const chartH = h - CHART_PY - CHART_PY_BOTTOM
 
-  let vMin = Infinity
-  let vMax = -Infinity
-  for (const r of rows) {
-    const v = r.values[column] ?? 0
-    if (v < vMin) vMin = v
-    if (v > vMax) vMax = v
-  }
-  if (!Number.isFinite(vMin)) vMin = 0
-  if (!Number.isFinite(vMax)) vMax = 1
-  const rawRange = vMax - vMin || 1
-  const ticks = chartTicks(vMin, vMax, 5)
+  // The shared padded domain: a constant series sits mid-axis, and a spread
+  // that is only rounding noise reads as flat rather than filling the axis.
+  const values = rows.length > 0 ? rows.map((r) => r.values[column] ?? 0) : [0]
+  const [low, high] = chartDomain(values)
+  const [tickLow, tickHigh] = chartTickSpan(values)
+  const ticks = chartTicks(tickLow, tickHigh, 5)
 
-  const pad = rawRange * yPadFraction
-  const adjMin = vMin - pad
-  const adjRange = rawRange + pad * 2 || 1
+  const pad = (high - low) * yPadFraction
+  const adjMin = low - pad
+  const adjRange = high - low + pad * 2
 
   return {
     yScale: (v: number) => CHART_PY + chartH - ((v - adjMin) / adjRange) * chartH,
@@ -290,14 +286,6 @@ const ChartArea = memo(function ChartArea({
 
 // ─── Scenario-level summary statistics ───────────────────────────
 
-function formatStat(v: number): string {
-  if (Math.abs(v) >= 1_000_000) return (v / 1_000_000).toFixed(2) + "M"
-  if (Math.abs(v) >= 10_000) return (v / 1_000).toFixed(1) + "K"
-  if (Math.abs(v) < 0.01 && v !== 0) return v.toExponential(2)
-  if (Number.isInteger(v)) return v.toLocaleString()
-  return v.toFixed(4)
-}
-
 const STAT_COLUMNS = ["Count", "Mean", "Std", "Min", "P25", "Median", "P75", "Max"] as const
 
 function ScenarioStatsTable({
@@ -343,15 +331,15 @@ function ScenarioStatsTable({
             {stats.map((s, i) => (
               <tr key={s.scenarioIndex} style={{ background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,.02)" }}>
                 <td className="px-2 py-0.5 font-mono" style={{ color: "var(--text-primary)" }}>{s.scenarioIndex}</td>
-                <td className="px-2 py-0.5 font-mono" style={{ color: "var(--text-muted)" }}>{formatStat(s.scenarioValue)}</td>
+                <td className="px-2 py-0.5 font-mono" style={{ color: "var(--text-muted)" }}>{formatNumber(s.scenarioValue)}</td>
                 <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{s.count}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-primary)" }}>{formatStat(s.mean)}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{formatStat(s.std)}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{formatStat(s.min)}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{formatStat(s.p25)}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-primary)" }}>{formatStat(s.median)}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{formatStat(s.p75)}</td>
-                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{formatStat(s.max)}</td>
+                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-primary)" }}>{formatNumber(s.mean)}</td>
+                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{formatNumber(s.std)}</td>
+                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{formatNumber(s.min)}</td>
+                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{formatNumber(s.p25)}</td>
+                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-primary)" }}>{formatNumber(s.median)}</td>
+                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{formatNumber(s.p75)}</td>
+                <td className="px-2 py-0.5 font-mono text-right" style={{ color: "var(--text-secondary)" }}>{formatNumber(s.max)}</td>
               </tr>
             ))}
           </tbody>

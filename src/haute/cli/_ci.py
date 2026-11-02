@@ -138,7 +138,8 @@ def handle_ci_update() -> None:
     ``[ci.staging] endpoint_suffix`` and the production job under its ``[ci.production]
     environment``; every other generated file (another provider's, or the other kind of
     project's) is removed, and every other file is left alone. Reports each file as updated
-    or unchanged.
+    or unchanged, and records those Git does not track yet in version history
+    (:func:`capture_new_files`): Commit would never take them.
     """
     from haute._connections import ConnectionsError
     from haute._project_python import ProjectPythonError, project_python_version
@@ -153,7 +154,11 @@ def handle_ci_update() -> None:
         workbench_ci_files,
     )
     from haute._workbench_config import WorkbenchConfigError, read_workbench_config
-    from haute.cli._init_cmd import _prune_stale_ci_files, write_generated_files
+    from haute.cli._init_cmd import (
+        _prune_stale_ci_files,
+        capture_new_files,
+        write_generated_files,
+    )
 
     project_dir, deploy_config = _project()
     provider = deploy_config.ci.provider
@@ -209,8 +214,11 @@ def handle_ci_update() -> None:
     changed = write_generated_files(project_dir, files)
     for rel in files:
         click.echo(f"  {'updated  ' if rel in changed else 'unchanged'} {rel}")
+    # Every generated file, not only those just changed: one written by an earlier run and
+    # never committed is recorded now.
+    capture_new_files(project_dir, list(files))
     if changed:
-        click.echo("Review the changes (git diff) and commit them.")
+        click.echo("Review the changes (git status, then git diff) and commit them.")
     else:
         click.echo("The CI files are up to date.")
 

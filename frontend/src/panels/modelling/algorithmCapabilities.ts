@@ -39,36 +39,6 @@ export function isKnownAlgorithm(algorithm: string): algorithm is ModellingAlgor
 }
 
 /**
- * The round-refitting family whose round key a final-parameter set carries,
- * mirroring the backend's ``refit_descriptor``: a projection writes exactly
- * one family's round key and drops every other spelling.
- */
-export function refitCapability(finalParams: Record<string, unknown>): AlgorithmCapability | null {
-  const matches = Object.values(ALGORITHM_CAPABILITIES).filter(
-    (capability) =>
-      capability.refit_policy === "validation_weighted_rounds"
-      && capability.round_key !== null
-      && capability.round_key in finalParams,
-  )
-  return matches.length === 1 ? matches[0] : null
-}
-
-/**
- * The fixed-budget family (EBM) whose round key a final-parameter set carries:
- * its study refits with the winning parameters unchanged, mirroring the
- * backend's ``tuning_family``.
- */
-export function fixedBudgetCapability(finalParams: Record<string, unknown>): AlgorithmCapability | null {
-  const matches = Object.values(ALGORITHM_CAPABILITIES).filter(
-    (capability) =>
-      capability.refit_policy === "fixed_budget"
-      && capability.round_key !== null
-      && capability.round_key in finalParams,
-  )
-  return matches.length === 1 ? matches[0] : null
-}
-
-/**
  * The tunable family a study's final parameters belong to, mirroring the
  * backend's ``tuning_family``: the one family whose round key they carry,
  * whatever its refit policy.

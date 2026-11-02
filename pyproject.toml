@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "haute"
-version = "0.6.0"
+version = "0.7.1"
 description = "Haute - Open-source pricing engine for insurance teams"
 readme = "README.md"
 license = "AGPL-3.0-only"
@@ -121,10 +121,13 @@ databricks = [
     "databricks-sql-connector>=4.2.5,<5",
 ]
 # The underwriter app's quote store on SQL Server, Azure SQL Database and Azure SQL
-# Managed Instance: pyodbc, through Microsoft ODBC Driver 18, which is installed apart
-# (a release's image installs it), and azure-identity for a Microsoft Entra ID sign-in.
+# Managed Instance: Microsoft's mssql-python, whose wheels carry ODBC Driver 18 within
+# them, so nothing is installed apart and no administrator is needed; SQLAlchemy 2.1, its
+# first with the mssql+mssqlpython dialect; and azure-identity for a Microsoft Entra ID
+# sign-in.
 sqlserver = [
-    "pyodbc>=5.2.0,<6",
+    "mssql-python>=1.16.0,<2",
+    "sqlalchemy>=2.1.0,<3",
     "azure-identity>=1.19.0,<2",
 ]
 # The quote store on PostgreSQL and its hosted forms: psycopg with its own libpq, and

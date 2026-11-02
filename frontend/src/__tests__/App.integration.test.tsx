@@ -298,6 +298,7 @@ class MockWebSocket {
 import App from "../App"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
+import { edgeId } from "../utils/edgeIds"
 import { appEdge } from "../utils/flowElements"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
@@ -2162,9 +2163,10 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
 
     await waitFor(() => {
       expect(useGraphStore.getState().edges.filter((edge) => edge.source === "api_0")).toEqual([
-        expect.objectContaining({ id: "e_api_live", sourceHandle: "driver_risk" }),
-        expect.objectContaining({ id: "e_api_original", sourceHandle: "driver_risk" }),
-        expect.objectContaining({ id: "e_api_instance", sourceHandle: "driver_risk" }),
+        // A renamed frame's connections are named by their new handle.
+        expect.objectContaining({ id: edgeId({ source: "api_0", target: "live_1", sourceHandle: "driver_risk" }), sourceHandle: "driver_risk" }),
+        expect.objectContaining({ id: edgeId({ source: "api_0", target: "original_1", sourceHandle: "driver_risk" }), sourceHandle: "driver_risk" }),
+        expect.objectContaining({ id: edgeId({ source: "api_0", target: "instance_value", sourceHandle: "driver_risk" }), sourceHandle: "driver_risk" }),
       ])
     })
     expect(configFor("api_0")).toEqual(
@@ -2390,7 +2392,7 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
     const assertIdentityPayload = (graphValue: unknown, expectedName: "drivers" | "driver_risk") => {
       const graphState = graphValue as {
         nodes: Array<{ id: string; data: { config: Record<string, unknown> } }>
-        edges: Array<{ id: string; sourceHandle?: string | null }>
+        edges: Array<{ id: string; source: string; sourceHandle?: string | null }>
         submodels: {
           definition_pricing: {
             graph: { nodes: Array<{ id: string; data: { config: Record<string, unknown> } }> }
@@ -2403,7 +2405,7 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
       expect(apiConfig.tables[1].label).toBe(expectedName)
       expect(
         graphState.edges
-          .filter((edge) => edge.id === "e_api_router" || edge.id === "e_api_value_instance")
+          .filter((edge) => edge.source === "api_0")
           .map((edge) => edge.sourceHandle),
       ).toEqual([expectedName, expectedName])
 
@@ -2436,8 +2438,8 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
 
     await waitFor(() => {
       expect(useGraphStore.getState().edges.filter((edge) => edge.source === "api_0")).toEqual([
-        expect.objectContaining({ id: "e_api_router", sourceHandle: "driver_risk" }),
-        expect.objectContaining({ id: "e_api_value_instance", sourceHandle: "driver_risk" }),
+        expect.objectContaining({ id: edgeId({ source: "api_0", target: "pricing", sourceHandle: "driver_risk", targetHandle: "in__router_input" }), sourceHandle: "driver_risk" }),
+        expect.objectContaining({ id: edgeId({ source: "api_0", target: "pricing", sourceHandle: "driver_risk", targetHandle: "in__value_input" }), sourceHandle: "driver_risk" }),
       ])
     })
     assertIdentityPayload(storePayload(), "driver_risk")
@@ -2474,8 +2476,8 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
 
     await waitFor(() => {
       expect(useGraphStore.getState().edges.filter((edge) => edge.source === "api_0")).toEqual([
-        expect.objectContaining({ id: "e_api_router", sourceHandle: "collision_name" }),
-        expect.objectContaining({ id: "e_api_value_instance", sourceHandle: "collision_name" }),
+        expect.objectContaining({ id: edgeId({ source: "api_0", target: "pricing", sourceHandle: "collision_name", targetHandle: "in__router_input" }), sourceHandle: "collision_name" }),
+        expect.objectContaining({ id: edgeId({ source: "api_0", target: "pricing", sourceHandle: "collision_name", targetHandle: "in__value_input" }), sourceHandle: "collision_name" }),
       ])
     })
     expect(screen.queryByTestId("api-input-table-1-label-error")).not.toBeInTheDocument()
@@ -2497,8 +2499,8 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
 
     await waitFor(() => {
       expect(useGraphStore.getState().edges.filter((edge) => edge.source === "api_0")).toEqual([
-        expect.objectContaining({ id: "e_api_router", sourceHandle: "collision_name" }),
-        expect.objectContaining({ id: "e_api_value_instance", sourceHandle: "collision_name" }),
+        expect.objectContaining({ id: edgeId({ source: "api_0", target: "pricing", sourceHandle: "collision_name", targetHandle: "in__router_input" }), sourceHandle: "collision_name" }),
+        expect.objectContaining({ id: edgeId({ source: "api_0", target: "pricing", sourceHandle: "collision_name", targetHandle: "in__value_input" }), sourceHandle: "collision_name" }),
       ])
     })
     expect(screen.queryByTestId("api-input-table-1-label-error")).not.toBeInTheDocument()
@@ -2676,7 +2678,7 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
     await waitFor(() => {
       expect(useGraphStore.getState().edges).toEqual([
         expect.objectContaining({
-          id: "e_api_policy_data",
+          id: edgeId({ source: "api_0", target: "pricing_secondary", sourceHandle: "driver_risk", targetHandle: "in__policy_data" }),
           sourceHandle: "driver_risk",
         }),
       ])

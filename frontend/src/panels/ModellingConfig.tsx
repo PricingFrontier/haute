@@ -13,8 +13,9 @@ import {
 import useGraphStore from "../stores/useGraphStore"
 import useNodeResultsStore, { type CachedTrainResult, type TrainProgress } from "../stores/useNodeResultsStore"
 import { hasTrainResult } from "../stores/nodeResultsSelectors"
-import {
+import useDocumentStatusStore, {
   captureDocumentExecutionFence,
+  documentExecutionKey,
   isDocumentExecutionFenceCurrent,
 } from "../stores/useDocumentStatusStore"
 import useSettingsStore from "../stores/useSettingsStore"
@@ -34,7 +35,7 @@ import {
   trainingIssuePane,
   type TrainingConfigurationIssue,
 } from "../utils/trainingObjective"
-import type { OnUpdateConfig } from "./editors"
+import type { OnUpdateConfig } from "./editors/_shared"
 import { useGraph } from "./useGraph"
 import {
   ALGORITHM_CAPABILITIES,
@@ -46,7 +47,7 @@ import {
 import { CommonFeatureConfig } from "./modelling/CommonFeatureConfig"
 import { EBMInteractionsConfig } from "./modelling/EBMInteractionsConfig"
 import { ExportPane } from "./modelling/ExportPane"
-import { XGBoostGpuToggle } from "./modelling/GpuTrainingToggle"
+import { GpuTrainingCheckbox, XGBoostGpuToggle } from "./modelling/GpuTrainingToggle"
 import { GLMInteractionsConfig } from "./modelling/GLMInteractionsConfig"
 import { GLMRegularizationConfig } from "./modelling/GLMRegularizationConfig"
 import { GLMTargetConfig } from "./modelling/GLMTargetConfig"
@@ -67,6 +68,7 @@ import { useTrainedJobRestore } from "./modelling/useTrainedJobRestore"
 import { SplitAndMetricsConfig } from "./modelling/SplitAndMetricsConfig"
 import { TrainingRunSummary } from "./modelling/TrainingRunSummary"
 import { estimateAfterSupersededPreviews } from "./modelling/trainingEstimate"
+import { EVALUATION_PREVIEW_FAILED } from "./modelling/evaluationPreview"
 import { TargetAndTaskConfig } from "./modelling/TargetAndTaskConfig"
 import { TrainingActionsAndResults } from "./modelling/TrainingActionsAndResults"
 import type { ReactElement } from "react"
@@ -183,6 +185,13 @@ function reservedParamsFor(algorithm: string): { keys: readonly string[]; help: 
     help: TREE_RESERVED_PARAM_HELP,
   }
 }
+// Issues a pane does not repeat above its body: the GLM Parameters pane shows its
+// conflicts beside the settings involved, and a missing L1 ratio only in Train's list.
+const PANE_BODY_ISSUE_CODES: ReadonlySet<TrainingConfigurationIssue["code"]> = new Set([
+  "glm-elastic-net-l1-ratio",
+  "glm-smooth-regularization",
+  "glm-robust-standard-errors",
+])
 const DEFAULT_EVALUATION: Record<string, unknown> = {
   schema_version: 1,
   strategy: "random",
@@ -320,20 +329,7 @@ function TrainPane({
     <>
       <TrainingRunSummary config={config} columns={columns} preview={estimate.estimate?.evaluation_preview ?? null} />
       {algorithm === "catboost" && (
-        <label className="flex cursor-pointer select-none items-center gap-2">
-          <input
-            type="checkbox"
-            checked={params.task_type === "GPU"}
-            onChange={(event) => toggleGpu(event.target.checked)}
-            className="accent-purple-500"
-          />
-          <span className="text-[11px]" style={{ color: "var(--text-primary)" }}>
-            GPU training
-          </span>
-          <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-            (CUDA)
-          </span>
-        </label>
+        <GpuTrainingCheckbox checked={params.task_type === "GPU"} onToggle={toggleGpu} />
       )}
       {algorithmCapability(algorithm)?.gpu_device === true && (
         <XGBoostGpuToggle
@@ -357,6 +353,7 @@ function TrainPane({
         ramEstimate={estimate.estimate}
         ramEstimateLoading={estimate.loading}
         ramEstimateError={estimate.error}
+        ramEstimateErrorCode={estimate.errorCode}
         estimateWaiting={estimateWaiting}
         rowLimit={rowLimit}
         nodeLabel={nodeLabel}
@@ -392,6 +389,7 @@ export default function ModellingConfig({
   const updateTrainProgress = useNodeResultsStore((state) => state.updateTrainProgress)
   const completeTrainJob = useNodeResultsStore((state) => state.completeTrainJob)
   const failTrainJob = useNodeResultsStore((state) => state.failTrainJob)
+  const failTrainStart = useNodeResultsStore((state) => state.failTrainStart)
   const addToast = useToastStore((state) => state.addToast)
   const activeSource = useSettingsStore((state) => state.activeSource)
   const structuralVersion = useGraphStore((state) => state.structuralVersion)
@@ -555,32 +553,32 @@ export default function ModellingConfig({
     },
     [config.refit_on_development, onUpdate, validationFit],
   )
-  const onEstimateDispersion = useCallback(
-    (param: DispersionParam, signal: AbortSignal) => runDispersionEstimate({
+  // A dispersion estimate reads the document, this node's training settings,
+  // the graph feeding it and the data source; a change to any stops it.
+  const documentKey = useDocumentStatusStore(documentExecutionKey)
+  // The estimate hook hashes the training identity in this same render.
+  const trainingHash = estimate.configHash
+  const dispersionEstimate = useMemo(() => ({
+    scope: JSON.stringify([documentKey, nodeId, activeSource, structuralVersion, trainingHash]),
+    run: (param: DispersionParam, signal: AbortSignal) => runDispersionEstimate({
       graph: graph(),
       node_id: nodeId,
       param,
-      source: useSettingsStore.getState().activeSource,
+      source: activeSource,
     }, { signal }),
-    [graph, nodeId],
-  )
+  }), [activeSource, documentKey, graph, nodeId, structuralVersion, trainingHash])
   const onTrain = useCallback(async () => {
     if (hasTrainingConfigurationIssues) return
     const documentFence = captureDocumentExecutionFence()
     if (!isDocumentExecutionFenceCurrent(documentFence)) return
     setSubmitting(true)
     // The lineage is taken from the exact payload submitted, before awaiting, so
-    // an edit made while the request is pending never relabels this job.
+    // an edit made while the request is pending never relabels this job; the
+    // config hash is this render's training identity for the same reason.
     const submittedGraph = graph()
     const lineage = trainingLineage(submittedGraph)
-    const nodeLabel = allNodes.find((node) => node.id === nodeId)?.data.label ?? "Model Training"
-    // A refused start is recorded against the identity it was attempted for, as
-    // a solve's is: a startup-failure job is started and failed at once.
-    const recordStartFailure = (message: string, status?: TrainProgress) => {
-      const startupFailureId = `startup-failure:${nodeId}`
-      startTrainJob(nodeId, startupFailureId, nodeLabel, estimate.configHash, activeSource, structuralVersion)
-      failTrainJob(nodeId, startupFailureId, message, status)
-    }
+    const configHash = trainingHash
+    const attempt = { configHash, source: activeSource, structuralVersion }
     try {
       const result = await trainModel({
         graph: submittedGraph,
@@ -589,18 +587,27 @@ export default function ModellingConfig({
       })
       if (!isDocumentExecutionFenceCurrent(documentFence)) return
       if (result.status === "started" && result.job_id) {
-        startTrainJob(nodeId, result.job_id, nodeLabel, estimate.configHash, activeSource, structuralVersion, lineage)
+        startTrainJob(
+          nodeId,
+          result.job_id,
+          allNodes.find((node) => node.id === nodeId)?.data.label ?? "Model Training",
+          configHash,
+          activeSource,
+          structuralVersion,
+          lineage,
+        )
       } else {
-        recordStartFailure(result.error || `Training did not start (status ${result.status}).`)
+        // The server only ever answers a started job; anything else refused the start.
+        failTrainStart(nodeId, attempt, result.error || `Training did not start (status ${result.status}).`)
       }
     } catch (error) {
       if (!isDocumentExecutionFenceCurrent(documentFence)) return
       const message = apiErrorMessage(error)
-      recordStartFailure(message, failureStatus(error, message))
+      failTrainStart(nodeId, attempt, message, failureStatus(error, message))
     } finally {
       setSubmitting(false)
     }
-  }, [activeSource, allNodes, estimate.configHash, failTrainJob, graph, hasTrainingConfigurationIssues, nodeId, startTrainJob, structuralVersion])
+  }, [activeSource, allNodes, failTrainStart, graph, hasTrainingConfigurationIssues, nodeId, startTrainJob, structuralVersion, trainingHash])
   const onCancel = useCallback(async () => {
     const job = useNodeResultsStore.getState().trainJobs[nodeId]
     if (!job || cancelling) return
@@ -644,7 +651,7 @@ export default function ModellingConfig({
       publishesValidationFit={validationFit}
       tuningEnabled={Boolean(tuning)}
       preview={estimate.estimate?.evaluation_preview ?? null}
-      previewError={estimate.error?.startsWith("Evaluation preview failed:") ? estimate.error : null}
+      previewError={estimate.errorCode === EVALUATION_PREVIEW_FAILED ? estimate.error : null}
     />
   )
   const trainPane = (
@@ -715,6 +722,7 @@ export default function ModellingConfig({
           algorithmLabel={algorithmCapability(algorithm)?.label ?? algorithm}
           starterSearchSpace={STARTER_SEARCH_SPACES[algorithm]}
           publishesValidationFit={validationFit}
+          refitOnDevelopment={config.refit_on_development !== false}
           params={params}
           reservedKeys={reservedParams.keys}
           reservedKeysHelp={reservedParams.help}
@@ -734,7 +742,7 @@ export default function ModellingConfig({
   } else if (algorithm === "glm" && pane === "target") {
     paneBody = (
       <>
-        <GLMTargetConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} onEstimateDispersion={onEstimateDispersion} />
+        <GLMTargetConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} dispersionEstimate={dispersionEstimate} />
       </>
     )
   } else if (algorithm === "glm" && pane === "params") {
@@ -750,7 +758,7 @@ export default function ModellingConfig({
 
   return (
     <div key={nodeId} id={`modelling-${pane}-pane`} role="tabpanel" aria-labelledby={`modelling-${pane}-tab`} className="px-4 py-3 space-y-4">
-      {pane !== "train" && pane !== "split" && validationIssues.filter((issue) => trainingIssuePane(issue) === pane && issue.code !== "glm-elastic-net-l1-ratio" && issue !== paramDraftIssue && issue !== searchSpaceDraftIssue).map((issue) => (
+      {pane !== "train" && pane !== "split" && validationIssues.filter((issue) => trainingIssuePane(issue) === pane && !PANE_BODY_ISSUE_CODES.has(issue.code) && issue !== paramDraftIssue && issue !== searchSpaceDraftIssue).map((issue) => (
         <p key={issue.code} role="alert" className="rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: "var(--warning-border)", color: "var(--warning-strong)", background: "var(--warning-soft-subtle)" }}>{issue.message}</p>
       ))}
       {paneBody}

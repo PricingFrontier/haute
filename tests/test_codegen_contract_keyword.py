@@ -60,7 +60,6 @@ _RESPONSE = {
         }
         for column in ("premium", "quote_id")
     ],
-    "outputFormat": "json",
 }
 _RESULTS = {
     "outputType": "file",

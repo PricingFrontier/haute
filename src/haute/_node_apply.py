@@ -437,16 +437,21 @@ def expand_scenarios_bounded(
 
 
 def _resolve_artifact_path(path: str, base_dir: str | Path | None) -> str:
-    """Anchor a relative optimiser artifact path to *base_dir* when given.
+    """Resolve a file-backed optimiser artifact path by the one anchoring rule.
 
-    Called from generated code with ``base_dir=Path(__file__).parent`` so a
-    saved pipeline finds a project-relative artifact regardless of the
-    working directory.  Executor callers pass ``base_dir=None`` — leaving the
-    path untouched, exactly as the in-process executor resolved it before.
+    A relative path names the project-root file first, then the one under
+    *base_dir* (the pipeline directory: generated code passes
+    ``Path(__file__).parent``), and no path may leave the runtime project root
+    (``RuntimePathOutsideProjectError``), as for every other node input. The
+    executor passes the canonical graph's already-resolved absolute path.
     """
-    if base_dir and path and not Path(path).is_absolute():
-        return str(Path(base_dir) / path)
-    return path
+    from haute._path_resolution import current_runtime_project_root, resolve_node_input_path
+
+    return str(
+        resolve_node_input_path(
+            path, pipeline_dir=base_dir, project_root=current_runtime_project_root()
+        )
+    )
 
 
 def load_configured_optimiser_artifact(

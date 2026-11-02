@@ -23,6 +23,7 @@ const mockMlflow = {
     status: string
     description: string
     params?: Record<string, string>
+    aliases?: string[]
   }[],
   modelVersionsFor: "",
   loadingExperiments: false,
@@ -232,6 +233,35 @@ describe("OptimiserApplyEditor", () => {
     expect(screen.getByText("online")).toBeInTheDocument()
     expect(screen.getByText("v2")).toBeInTheDocument()
     expect(screen.getByText("loss_ratio")).toBeInTheDocument()
+  })
+
+  it("keeps B's metadata when A's slower read lands after it", async () => {
+    const meta = (version: string) => ({
+      version, created_at: "2026-01-15T10:00:00Z", mode: "online", objective: "loss_ratio", lambdas: {}, constraints: {},
+    })
+    // The reads answer in the order they were asked: a.json first, then b.json.
+    const asked = ["a.json", "b.json"]
+    const replies = new Map<string, (value: unknown) => void>()
+    ;(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      const path = asked[replies.size]
+      return new Promise((resolve) => {
+        replies.set(path, (data) => resolve({ ok: true, statusText: "OK", json: async () => data }))
+      })
+    })
+    const props = defaultProps()
+    props.config = { artifact_path: "a.json" }
+    const { rerender } = render(<OptimiserApplyEditor {...props} />)
+    await waitFor(() => expect(replies.has("a.json")).toBe(true))
+    rerender(<OptimiserApplyEditor {...props} config={{ artifact_path: "b.json" }} />)
+    await waitFor(() => expect(replies.has("b.json")).toBe(true))
+
+    replies.get("b.json")!(meta("version-b"))
+    expect(await screen.findByText("version-b")).toBeInTheDocument()
+    replies.get("a.json")!(meta("version-a"))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(screen.getByText("version-b")).toBeInTheDocument()
+    expect(screen.queryByText("version-a")).not.toBeInTheDocument()
   })
 
   // 6. File mode: shows ArtifactMetaPanel with online mode lambdas
@@ -841,6 +871,37 @@ describe("OptimiserApplyEditor", () => {
         ratebook_input: "",
       })
     })
+  })
+
+  it("mirrors the mode of the version an alias targets, not the newest version's", async () => {
+    mockMlflow.modelVersionsFor = "registered-opt"
+    // The versions route lists newest first: the alias points at the older one.
+    mockMlflow.modelVersions = [
+      { version: "3", run_id: "r3", status: "READY", description: "", params: { mode: "online" } },
+      {
+        version: "2",
+        run_id: "r2",
+        status: "READY",
+        description: "",
+        params: { mode: "ratebook" },
+        aliases: ["champion"],
+      },
+    ]
+    const props = defaultProps()
+    props.config = {
+      sourceType: "registered",
+      registered_model: "registered-opt",
+      alias: "champion",
+      ratebook_input: "age_veh_banding",
+    }
+    props.inputSources = [
+      { sourceNodeId: "banding", name: "age_veh_banding", sourceLabel: "Age banding", edgeId: "e2" },
+    ]
+    render(<OptimiserApplyEditor {...props} />)
+
+    await waitFor(() => expect(props.onUpdate).toHaveBeenCalledWith({ optimiser_mode: "ratebook" }))
+    expect(props.onUpdate).not.toHaveBeenCalledWith(expect.objectContaining({ ratebook_input: "" }))
+    expect(screen.getByLabelText("Ratebook Input")).toBeInTheDocument()
   })
 
   it("shows ratebook input selector for selected ratebook registered model versions", () => {

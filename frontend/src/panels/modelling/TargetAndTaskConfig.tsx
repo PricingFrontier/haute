@@ -1,5 +1,5 @@
 import { ConfigSection } from "../../components/form"
-import type { OnUpdateConfig } from "../editors"
+import type { OnUpdateConfig } from "../editors/_shared"
 import { configField } from "../../utils/configField"
 import { isNumericDtype } from "../../utils/polarsDtypes"
 import { effectiveMetrics } from "../../utils/trainingObjective"

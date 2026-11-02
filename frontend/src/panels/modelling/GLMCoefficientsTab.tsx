@@ -16,6 +16,7 @@ import {
   type SortableValuesColumn,
 } from "../SortableValuesTable"
 import { nextSort, type SortState } from "../valuesSort"
+import { ViewSwitch } from "../ViewSwitch"
 
 interface GLMCoefficientsTabProps {
   result: TrainResult
@@ -29,6 +30,10 @@ const STATISTIC_KEYS: ReadonlySet<SortKey> = new Set(["std_error", "z_value", "p
 const DASH = "–"
 
 const NEUTRAL_STATISTIC_COLOR = "var(--text-secondary)"
+const COEFFICIENT_VIEWS = [
+  { key: "table", label: "Table" },
+  { key: "interval", label: "Intervals" },
+] as const
 
 function formatStatistic(value: number | null, digits: number): string {
   return value === null ? DASH : formatFixed(value, digits)
@@ -180,26 +185,7 @@ export function GLMCoefficientsTab({ result }: GLMCoefficientsTabProps) {
       <div className="flex flex-wrap items-center gap-2">
         <ValuesTableSearch label="Search coefficient terms" value={search} onChange={setSearch} />
         {intervalAvailable && (
-          <div className="flex gap-1">
-            <button
-              type="button"
-              aria-pressed={view === "table"}
-              onClick={() => setView("table")}
-              className="focus-ring rounded px-2 py-1 text-[13px]"
-              style={{ color: view === "table" ? MODEL_COLORS.accent : "var(--text-secondary)" }}
-            >
-              Table
-            </button>
-            <button
-              type="button"
-              aria-pressed={view === "interval"}
-              onClick={() => setView("interval")}
-              className="focus-ring rounded px-2 py-1 text-[13px]"
-              style={{ color: view === "interval" ? MODEL_COLORS.accent : "var(--text-secondary)" }}
-            >
-              Intervals
-            </button>
-          </div>
+          <ViewSwitch label="Coefficient view" options={COEFFICIENT_VIEWS} value={view} onChange={setView} />
         )}
       </div>
       {view === "interval" && intervalAvailable && visibleRows.length > 0 ? (

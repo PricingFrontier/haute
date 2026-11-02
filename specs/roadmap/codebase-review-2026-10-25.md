@@ -184,9 +184,6 @@ these are the Majors still open.
 - **A graceful server exit joins every in-flight worker** (Major,
   `ROAD-WORKER-06`): a 6 s child in flight at a 2 s exit ends the process at
   7.6 s; no job registry is cancelled at shutdown.
-- **The optimiser's MLflow log writes the complete result artifact without the
-  finiteness gate the save applies** (Major, `OPT-R01`): a missing defence layer
-  on a pricing artifact, since the status poll corrects the UI path.
 - **The assistant's SDK clients are built without the validated endpoint**
   (Major, `ASSIST-54`): `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` in the
   server's environment redirects the key, the prompt and project material to a
@@ -196,13 +193,6 @@ these are the Majors still open.
   `ASSIST-57`): every save, write and other server process on the project waits
   for the profile; 47 ms of descriptor construction per tool result on the
   event-loop thread.
-- **A banding rule the grid leaves unmarked fails the save with a 500** (Major,
-  `FNED-R04`): the save validator accepts a blank band name, a blank categorical
-  value or a repeated value, the sidecar writer refuses them, and the writer's
-  error has no HTTP handler.
-- **Saving the pipeline cancels an auto-range run in flight, and a percentage
-  constraint is shown as "at least 0" and rewritten as an absolute bound on
-  edit** (two Majors, `FMOU-R04`).
 
 ## Design choices the review asks the owner to confirm
 
@@ -242,13 +232,7 @@ production:
 | Background jobs | WRK-5, WRK-6, WRK-11, WRK-14 | `ROAD-WORKER-07` |
 | Background jobs | WRK-8, WRK-9, WRK-10 | `ROAD-WORKER-08` |
 | Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
-| Optimiser | OPR-1, OPR-8, OPR-12 | `OPT-R01` |
-| Optimiser | OPR-3 | `OPT-R02` |
-| Optimiser | OPR-4, OPR-5, OPR-6, OPR-7 | `OPT-R03` |
-| Optimiser | OPR-2 | `OPT-R04` (Decision) |
-| Optimiser | OPR-9, OPR-10, OPR-11 | `OPT-R05` |
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
-| Tracing | TRC-8, TRC-9, TRC-10, TRC-14 | `TRACE-R03` |
 | Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |
 | Assistant | ASA-3, ASA-4, ASA-6, ASA-9 | `ASSIST-55` |
 | Assistant | ASA-5, ASA-8, ASA-10, ASA-11, ASA-12, ASA-14 | `ASSIST-56` |
@@ -256,15 +240,6 @@ production:
 | Assistant | ASB-4, ASB-5, ASB-6, ASB-8, ASB-9 | `ASSIST-58` |
 | Assistant | ASB-3, ASB-7, ASB-11 | `ASSIST-59` |
 | Explore / EDA | SUB-5, SUB-6, SUB-7, SUB-10 | `EDA-R01` |
-| Explore / EDA | SUB-8, SUB-9, SUB-12 | `EDA-R02` |
-| Frontend node editors | FNE-1, FNE-2, FNE-4, FNE-7, FNE-8, FNE-17 | `FNED-R01` |
-| Frontend node editors | FNE-3, FNE-5, FNE-6, FNE-9, FNE-11 | `FNED-R02` |
-| Frontend node editors | FNE-10, FNE-12, FNE-13, FNE-14, FNE-15, FNE-16 | `FNED-R03` |
-| Frontend node editors | FNB-1, FNB-2, FNB-3, FNB-5, FNB-13 | `FNED-R04` |
-| Frontend node editors | FNB-4, FNB-6, FNB-7, FNB-8, FNB-9, FNB-10, FNB-11, FNB-12, FNB-14, FNB-15 | `FNED-R05` |
-| Frontend modelling | FMD-7, FMD-8, FMD-9, FMD-10, FMD-11, FMD-13, FMD-14, FMD-15 | `FMOU-R03` |
-| Frontend optimiser | FOX-1, FOX-2, FOX-3 | `FMOU-R04` |
-| Frontend optimiser | FOX-4, FOX-5, FOX-6, FOX-8, FOX-10 (optimiser part) | `FMOU-R05` |
 | Frontend Explore | FOX-7, FOX-9, FOX-10 (Explore part), FOX-11, FOX-12 | `EDA-R03` |
 | Assistant UI | FTG-5, FTG-18, FTG-20 | `ASSIST-60` |
 | Workbench | PM-45 | `WB-43` (selected server engine's atomic form insertion) |
@@ -281,8 +256,7 @@ three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
 the hand-maintained
 browser contract (`API-R03`); the cwd-dependent resolvers in the routes and the
 parser (`PCFG-R04`), the per-type
-validators and branches (`PCFG-R07`, `PCFG-R09`); name-violation reporting
-(`NAME-09`); the test-only config helpers and
+validators and branches (`PCFG-R07`, `PCFG-R09`); the test-only config helpers and
 event-bus hooks (`ENGQ-R01`); the optimiser's unshown solve-memory forecast (`OPT-W02`) and its frontier
 points without convergence traces (`OPT-PC04`); the optimiser's job registries
 not cancelled at shutdown (`ROAD-WORKER-06`); the test-only
@@ -295,18 +269,11 @@ key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
 (`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the pivot registry at shutdown (`ROAD-WORKER-06`); the
 browser's hand-written contract mirrors (`API-R03`) and the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
-(`ENGQ-R01`); the editors' unused barrel and unlisted `@lezer/highlight`
-(`ENGQ-R01`) and the API Input label
-rule (`NAME-09`); the dead
+(`ENGQ-R01`); the dead
 `submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
-utilities (`ENGQ-R01`); Banding's `_id` inside the config (`FNED-R07`), the editors'
-barrels (`ENGQ-R01`), the pivot editor writing the
-fields the backend defaults (`EDA-R02`); the browser's frontier
-generation fences that only ever see generation 0 (`OPT-R04`); in the workbench UI and
+utilities (`ENGQ-R01`); in the workbench UI and
 the app shell, the
-chart theme observer written twice (`EDA-R03`), the params-folder listing in the
-Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`) and the
-modelling pane badges (`FMOU-R03`); in the tests, scripts and CI, the floating
+chart theme observer written twice (`EDA-R03`) and knip's export-only symbols (`ENGQ-R01`); in the tests, scripts and CI, the floating
 action tags in the generated workflows (`CLI-R06`), the campaign-named test modules
 (`ENGQ-R05`), the test-only reset hooks in production code (`ENGQ-R01`), and the
 189 test modules that change directory because production resolves the project
@@ -366,6 +333,6 @@ All probes live outside the repository and wrote nothing into it.
 | radon | 285 functions with cyclomatic complexity ≥ 20; 27 ≥ 50 (the largest in the optimiser service, the save service, the assistant tools and the RAM estimate). |
 | vulture (60 %) | 61 candidates; those confirmed unreferenced are in `ROAD-WORKER-08`, `DEP-R13`, `CLI-R05` and `ENGQ-R01`. |
 | jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13` and `ROAD-WORKER-08`. |
-| jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `FNED-R03`, `FNED-R05`, `FMOU-R05` and `EDA-R03`. |
-| knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted; every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
+| jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `EDA-R03`. |
+| knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted (since declared); every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
 | sweeps | 35 campaign-named test modules (`ENGQ-R05`). |

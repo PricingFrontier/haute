@@ -152,6 +152,23 @@ describe("formatNumber", () => {
   it("formats -999 as integer (above -K threshold)", () => {
     expect(formatNumber(-999)).toBe("-999")
   })
+
+  it("keeps a value in K while it prints below 1000.0K", () => {
+    expect(formatNumber(999_949)).toBe("999.9K")
+    expect(formatNumber(-999_949)).toBe("-999.9K")
+  })
+
+  it("carries a value that would print as 1000.0K into M", () => {
+    expect(formatNumber(999_999)).toBe("1.00M")
+    expect(formatNumber(999_950)).toBe("1.00M")
+    expect(formatNumber(-999_999)).toBe("-1.00M")
+  })
+
+  it("carries a value that would print as 1000.0000 into K", () => {
+    expect(formatNumber(999.99999)).toBe("1.0K")
+    expect(formatNumber(-999.99999)).toBe("-1.0K")
+    expect(formatNumber(999.9999)).toBe("999.9999")
+  })
 })
 
 // ── formatDuration ──────────────────────────────────────────────

@@ -20,6 +20,7 @@ from haute._scaffold import (
 from haute._workbench_form import blank_form
 from haute.cli import cli
 from haute.cli._init_cmd import _ensure_haute_dependency, _toml_basic_string
+from tests._git_helpers import git_run
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -1024,6 +1025,32 @@ class TestInitAgain:
         assert result.exit_code == 0, result.output
         assert (tmp_path / ".gitlab-ci.yml").exists()
         assert not (tmp_path / ".github").exists()
+
+    def test_a_re_run_records_the_new_files_it_writes_for_the_next_commit(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Commit takes a new file only in the pipeline folder: a workflow the re-run adds
+        # would otherwise never reach version history.
+        from haute._git_setup import set_working_branch
+
+        monkeypatch.chdir(tmp_path)
+        assert runner.invoke(cli, ["init", "--ci", "github"], catch_exceptions=False).exit_code == 0
+        git_run(tmp_path, "init", "-b", "main")
+        git_run(tmp_path, "config", "user.name", "Test Actuary")
+        git_run(tmp_path, "config", "user.email", "test@example.com")
+        git_run(tmp_path, "add", "-A")
+        git_run(tmp_path, "commit", "-m", "The project")
+        set_working_branch("pricing-dev", tmp_path, create=True, cwd=tmp_path)
+
+        result = runner.invoke(cli, ["init", "--ci", "gitlab"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        saved = git_run(tmp_path, "show", "--name-only", "--format=", "pricing-dev-save")
+        assert ".gitlab-ci.yml" in saved.splitlines()
+        # haute.toml, rewritten, is left for review against the previous version.
+        assert "haute.toml" not in saved.splitlines()
+        assert git_run(tmp_path, "status", "--porcelain", "--", "haute.toml") == "M haute.toml"
+        assert "Recorded in version history: .gitlab-ci.yml" in result.output
 
     def test_a_re_run_prunes_stale_gitlab_and_azure_files(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

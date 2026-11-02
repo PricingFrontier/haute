@@ -7,7 +7,6 @@
  */
 import { useState } from "react"
 import type { EbmTermAxis, NestedNumbers } from "../../api/types"
-import { MODEL_COLORS } from "../../theme/colors"
 import { InteractionLines, LevelBars, LevelTable, StepShape, SurfaceTable } from "./termCharts"
 
 export type TermDisplay = "table" | "chart"
@@ -38,39 +37,6 @@ function tableSlice(
       index[columnAxis] = column
       return valueAt(tensor, index)
     }),
-  )
-}
-
-/** A pressed-button switch between a few options, styled as the other result panes' view switches. */
-export function ViewSwitch<T extends string>({
-  label,
-  options,
-  value,
-  onChange,
-}: {
-  label: string
-  options: readonly { key: T; label: string }[]
-  value: T
-  onChange: (value: T) => void
-}) {
-  return (
-    <div className="flex gap-1" role="group" aria-label={label}>
-      {options.map((option) => (
-        <button
-          key={option.key}
-          type="button"
-          aria-pressed={value === option.key}
-          onClick={() => onChange(option.key)}
-          className="rounded px-2 py-0.5 text-[12px] font-medium"
-          style={{
-            background: value === option.key ? MODEL_COLORS.accentSoft : "var(--chrome-hover)",
-            color: value === option.key ? MODEL_COLORS.accent : "var(--text-muted)",
-          }}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
   )
 }
 

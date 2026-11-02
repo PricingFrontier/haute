@@ -17,7 +17,6 @@ import {
 import type {
   OptimiserFrontierAutoRangeStatusResponse as GeneratedOptimiserFrontierAutoRangeStatusResponse,
   OptimiserFrontierResponse as GeneratedOptimiserFrontierResponse,
-  OptimiserFrontierStatusResponse as GeneratedOptimiserFrontierStatusResponse,
   OptimiserStatusResponse as GeneratedOptimiserStatusResponse,
 } from "../generated/api-contracts.generated"
 import type {
@@ -57,7 +56,6 @@ import type {
   ExplorePivotRunResponse,
   ExplorePivotStatusResponse,
   FrontierAutoRangeStatusResponse,
-  FrontierStatusResponse,
   FrontierResponse,
   NodeDataStatusResponse,
   OptimiserStatusResponse,
@@ -2129,19 +2127,6 @@ export function optimiserStatusFromContract(
     frontier: response.frontier === null ? null : frontierFromContract(response.frontier, "frontier"),
     execution_metrics: optionalExecutionMetrics(
       "parseOptimiserStatusResponse",
-      { execution_metrics: response.execution_metrics },
-    ),
-  }
-}
-
-export function frontierStatusFromContract(
-  response: GeneratedOptimiserFrontierStatusResponse,
-): FrontierStatusResponse {
-  return {
-    ...response,
-    result: response.result === null ? null : frontierFromContract(response.result, "result"),
-    execution_metrics: optionalExecutionMetrics(
-      "parseFrontierStatusResponse",
       { execution_metrics: response.execution_metrics },
     ),
   }

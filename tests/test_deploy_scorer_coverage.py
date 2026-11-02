@@ -230,7 +230,6 @@ class TestScoreGraphModelScoreContractOnly:
                                     }
                                     for col in output_columns
                                 ],
-                                "outputFormat": "json",
                             },
                         },
                     },
@@ -406,7 +405,6 @@ class TestScoreGraphStaticDataSourceRemap:
                                     }
                                     for col in ("area", "factor")
                                 ],
-                                "outputFormat": "json",
                             },
                         },
                     },

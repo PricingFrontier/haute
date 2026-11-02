@@ -417,7 +417,7 @@ def _output_operations(
             "node_type": "output",
             "name": output_name,
             "ref": ref,
-            "config": {"outputMapping": mappings, "outputFormat": "json"},
+            "config": {"outputMapping": mappings},
         },
         {"op": "add_edge", "source": source, "target": f"${ref}"},
     ]

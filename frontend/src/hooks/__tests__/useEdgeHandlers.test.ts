@@ -301,7 +301,7 @@ describe("useEdgeHandlers", () => {
     const updater = params.setEdges.mock.calls[0][0] as (eds: Edge[]) => Edge[]
     expect(updater([])).toEqual([
       {
-        id: "e_a_b_in_out",
+        id: "e-a-b-out-in",
         source: "a",
         target: "b",
         sourceHandle: "out",

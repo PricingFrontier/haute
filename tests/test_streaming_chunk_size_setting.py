@@ -26,6 +26,7 @@ from haute._polars_utils import (
 )
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from tests.conftest import make_ready_file_input_config
+from tests.optimiser_fixtures import setup_launch_context
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -193,7 +194,6 @@ def test_an_estimate_completes_while_a_solve_is_running(
     from haute._sandbox import set_project_root
     from haute.routes._job_store import JobStore
     from haute.routes._optimiser_service import OptimiserSolveService
-    from haute.routes._optimiser_solver import SolveContext
 
     # Unpinned, the solve reserves 70% of available RAM from the in-flight
     # budget and admission refuses the estimate before it could wait on
@@ -232,7 +232,7 @@ def test_an_estimate_completes_while_a_solve_is_running(
 
     with patch("haute.routes._optimiser_service._solve_online", side_effect=blocking_solve):
         service._launch_background(
-            SolveContext(job_id=job_id, node_id="opt", mode="online"),
+            setup_launch_context(service, job_id),
             config=graph["nodes"][1]["data"]["config"],
             quote_grid=MagicMock(),
             ratebook_factors_handle=None,

@@ -29,20 +29,16 @@ records corrections to that audit's claims and proposed remedies.
 | [Deploy](deploy.md) | Every target's dependency closure locked, typed `haute.toml`, impact alignment, build directories under the project, one copy of each deploy mechanism; matching JSON and NDJSON output documents | `DEP-R09` |
 | [Documentation](docs.md) | The Databricks guide as the deploy runs, the CI pages as the generated workflows are, a new project's path from an empty folder, upgrade notes for a project made by 0.6.0, the site publishing `main` again | `DOC-01` |
 | [Engineering quality](engineering-quality.md) | Dead code, test organisation; mutation witnesses for the price-changing modules (a decision) | `ENGQ-R01` |
-| [Explore and EDA](explore-eda.md) | Pivot requests answered right (invalid cards, time-zone-aware members, formula causes, one scan per feature), card fields and the specification's stale statements, the chart panels' empty state and glyphs; advanced pivot and PivotChart parity (deferred); noncolliding relationship aliases and cached responses naming their consumer; pivot header format lookup by field name, fresh config reads after confirmation dialogs, and Explore error assistant action | `EDA-R01` |
-| [Frontend modelling and optimiser UI](frontend-modelling-optimiser-ui.md) | The specification as the editor is; an auto-range run that survives a save, percentage constraints kept as such, one point-request lifecycle; dispersion estimates bound to the initiating training draft; retained model handles on pre-job errors, synchronous training hash, fenced optimiser publish and factor pruning, and frontier axis clamping | `FMOU-R04` |
-| [Frontend node editors](frontend-node-editors.md) | Editors that write what the engine reads, drafts in step with the document and errors with their detail, one copy of each picker and helper; grid rules the save refuses with a reason, positions and passthroughs in the subdirectories; cached-directory recovery, source-bound API Input inference and Data Input schemas, Databricks catalog/schema picker state, `OptimiserApplyEditor` artifact read cleanup, and `OutputEditor` preview invalidation | `FNED-R01` |
+| [Explore and EDA](explore-eda.md) | Pivot requests answered right (invalid cards, time-zone-aware members, formula causes, one scan per feature), the chart panels' empty state and glyphs; advanced pivot and PivotChart parity (deferred); noncolliding relationship aliases and cached responses naming their consumer; pivot header format lookup by field name, fresh config reads after confirmation dialogs, and Explore error assistant action | `EDA-R01` |
 | [IO layer](io-layer.md) | Lock holds and usage cost; memory admission and isolated worker execution for explicit Data Input cache builds | `IO-R07` |
 | [Model scoring](model-scoring.md) | Generic model-file suffixes, pyfunc files, loader errors that keep their meaning; pyfunc classifiers preserving separate labels and positive-class probabilities | `MSC-06` |
 | [Modelling](modelling.md) | Adaptive low-memory fitting: exact chunked GLM (deferred until RustyStats fits out of core), XGBoost through external memory when a job will not fit; evaluation planning that holds its memberships compactly | `MOD-R11` |
-| [Name collisions](name-collisions.md) | Input-binding editors showing their name violations inline; distinct parsed, recovered and pasted connections retaining distinct identities | `NAME-09` |
-| [Optimiser validation](optimiser-validation.md) | Per-point convergence traces from price_contour's frontier sweep; a calibrated solve-memory forecast in the Solve panel; the optimiser result workspace's open robustness and CSV questions; one gate for every persisted optimiser artifact, setup files under a reaped root, failures classified once, the frontier recompute sweep as a decision, `select_point` serialized under `parent_lock`, and sandboxed `artifact_path` resolution in Optimiser Apply | `OPT-R06` |
+| [Optimiser validation](optimiser-validation.md) | A calibrated solve-memory forecast in the Solve panel that warns and never refuses; per-point convergence traces from price_contour's frontier sweep; the optimiser result workspace's open robustness and CSV questions | `OPT-W02` |
 | [Pipeline config](pipeline-config.md) | Project context, typed configs, node specification | `PCFG-R04` |
 | [Polars 2](polars-2.md) | Remaining RAM-estimate calibration, large-scale operator measurements and worker baselines; Map columns and quantile/rank binning (deferred) | `PL2-17` |
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
 | [Server API](server-api.md) | Generated browser contract; process-mode 422 domain error mapping in `output_assemble_dry_run` and format-keyed Parquet metadata reads in `get_schema` | `API-R03` |
 | [t-boost](t-boost.md) | What rating-table models make possible: cell-level holdout A/E, unfolding into rating steps, model comparison with premium attribution, measured analyst adjustments (all awaiting a decision); `_report_table` relativity overflow guard | `TBOOST-11` |
-| [Tracing](tracing.md) | Proven matches kept strict, and `carried_column_proof` restricted to columns retained by `select(...)` | `TRACE-R04` |
 | [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; managing quotes in the app past the Quotes page: outcomes, many quotes at once; exports from the app (awaiting a decision on formats); test quotes analysts keep and price again, built again after the first version was taken out (awaiting decisions); actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources); the app's sign-in (a decision); typed-in allowed values (a decision); `useQuoteListStore` pagination fencing and submodel `WORKBENCH_OUTPUT` resolution in `priceSample` | `WB-08` |
 
 ## Delivery plan
@@ -113,8 +109,8 @@ with a systematic batch-by-batch pass over all 961 authored production source fi
 inventory ledger with `0` unread files remaining). It maps the verified findings to
 new component packages (`ASSIST-62`, `CLI-R07`,
 `EDA-R04`, `FGC-R10` to `FGC-R12`, `FMOU-R07`, `FNED-R07`,
-`GIT-R19`, `IO-R07`, `OPT-R06`,
-`API-R04`, `TBOOST-11`, `TRACE-R04`, `WB-41`) and extensions of `DEP-R12B` and
+`GIT-R19`, `IO-R07`,
+`API-R04`, `TBOOST-11`, `WB-41`) and extensions of `DEP-R12B` and
 `DEP-R13`; findings whose packages were delivered have been removed.
 It is a supporting report and owns no work; the packages in the component roadmaps
 above carry the plans.

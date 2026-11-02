@@ -54,11 +54,9 @@ They have different semantics, and several depend on process cwd:
 - There are 25 `*_for_tests` / `_reset_*` / `_clear_*` hooks in production modules, plus `ExecutionFaultPoint` fault-injection points threaded through `ExecutionContext`.
 - `routes/_train_service.py` is a "compatibility facade" that re-exports underscore-private names from five modules, mainly so tests can patch old paths.
 - **Frontend (knip):**
-  - 8 unused files, including the `panels/editors/banding/index.ts` and `rating/index.ts` barrels.
-  - The whole `panels/editors/index.ts` barrel of 22 editors is unused; consumers go through `LazyNodeEditors`.
+  - Unused files, besides the node editors' barrels, which have been removed.
   - 33 unused exports, including 17 in `glmTerms.ts` and 11 in `traceStoryView.ts`.
   - 91 unused exported types.
-  - One unlisted dependency (`@lezer/highlight`).
 
 ---
 

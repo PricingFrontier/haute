@@ -661,7 +661,15 @@ candidate, with the error toast.
   identity request and adopts the violations it returns, a newer edit superseding an answer
   in flight; the banner shrinks as renames fix them, and when the list is empty the fence
   lifts to the ready document's own capabilities (preview still needing a trusted source
-  selection). A document loaded without violations is not revalidated this way.
+  selection). A document loaded without violations is not fenced or revalidated this way,
+  except for its input bindings: after an edit changes the frame labels of an API Input or the
+  public input ports of a definition that the graph already held (a new node or definition
+  asks nothing), the browser sends the same request. It sends it again after each such
+  change or preamble edit while any returned violation with a `binding` remains, or while
+  a request is still unanswered, which the later one supersedes. Those violations are
+  shown where the name is set: under the API Input's frame label field (node editors)
+  and in the drilled Input inspector beside the public input port. Save
+  refuses them as before; they add no fence.
 - **Recovery canvas rendering and minimal repair.** Unavailable and blocked nodes
   remain selectable and expose their diagnostics, source/config location, and
   deterministic blocking path instead of a normal editor. The recovery banner
@@ -886,9 +894,25 @@ candidate, with the error toast.
 
 ## Failure model
 
-> NOTE: Distinct parsed or pasted connections can share an id.
-> [NAME-10](../roadmap/name-collisions.md#name-10--every-distinct-connection-has-a-distinct-identity) owns this gap.
-
+- A connection's id is a pure, injective function of its four-field identity
+  (source, target, source handle, target handle): `e`, then each present field
+  with `~` escaped as `~0` and `-` as `~1`, joined by `-`, an absent trailing
+  handle left off and an absent source handle before a target handle left
+  empty. The server (`haute._graph_utils._edge_id`) and the browser
+  (`edgeId` in `frontend/src/utils/edgeIds.ts`) mint it identically,
+  held to one shared fixture (`tests/fixtures/ui_contracts/edge_ids.json`), so
+  distinct connections never share an id whatever their node names
+  (`base` → `rates_apply` and `base_rates` → `apply`), and an id survives
+  parse, save, reload and a ready document's recovery snapshot unchanged. Every
+  edit that gives an existing connection another endpoint or handle mints its id
+  again from the result (`withEdgeIdentity`): paste (new endpoints, original
+  handles), a frame rename rebinding its connections, a retargeted submodel
+  input and swapped Edge Join inputs. So a two-frame Quote Input's parallel
+  connections stay two after a paste, deleting one leaves the other, and one
+  undo restores exactly the deleted one; and a renamed frame's connection cannot
+  share its id with a later connection to a new frame under the old label. A degraded document's recovery
+  connections keep their own `edge:` ids, which also count each duplicate
+  declaration.
 - `NodePanel` separates the recovery diagnostic boundary from healthy editor input-identity
   derivation: inspecting an `unavailable` node, or a `blocked` node that is not actively
   scoped-editing with resolvable upstream input identities, renders `RecoveryNodePanel`

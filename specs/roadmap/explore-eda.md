@@ -16,11 +16,10 @@ specified in [Explore / EDA](../explore-eda/high-level.md),
 | EDA-E23 | Deferred | P3 | Add shared chart filter and hierarchy interactions after representative use. |
 | EDA-E24 | Deferred | P3 | Evaluate the remaining PivotChart parity surface from evidence. |
 | EDA-R01 | Planned | P2 | A pivot request is answered right: an invalid card is a 400, a filter on a time-zone-aware column matches, a formula failure names its cause, and a relationships question scans each feature once. Internal relationship aliases cannot collide with user columns, and shared cached results name the requesting consumer. |
-| EDA-R02 | Planned | P3 | Card fields are required or documented as defaulted, the specification's stale statements are corrected, and the duplicate-count scratch never partitions down to single rows. |
 | EDA-R03 | Planned | P3 | An empty pivot result charts as empty rather than as a configuration error, the chart environment observer exists once, nulls use the glyph the specification names, a pivot start failure is recorded without a fabricated job id, and the Explore panels' dead exports are gone. |
 | EDA-R04 | Planned | P2 | `PivotTableGrid` resolves header formats by `result.column_fields` / `result.row_fields`, async confirmation callbacks in `ExplorePivotsConfig` and `ExploreChartsConfig` read the latest node config, and `ExplorePreview` renders `AskAssistantButton` on execution errors. |
 
-`EDA-R01` to `EDA-R03` come from the
+`EDA-R01` and `EDA-R03` come from the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md).
 
 ## Planned improvements
@@ -141,34 +140,6 @@ noncolliding prefixed or generated internal aliases (including related temporary
 identity when sharing cached calculation data. Compare ordinary column names with `__w`/`__wy`;
 equivalent A/B pivot requests may share computation but each response names its own consumer.
 Evidence: `src/haute/routes/_explore_relationships.py::ExploreRelationshipsService._compute`, `src/haute/routes/_pivot_service.py::PivotService._calculation_spec` and `src/haute/_data_points.py::DataPointResolver.point_digest`.
-
-### EDA-R02 — Card fields, stale statements, the partition floor
-
-**Why:** Three absent card fields (`sort`, `sort_rows`, `color_scale`) are
-materialised with defaults while their siblings are required, so a card missing
-`color_scale_split_by` is rejected and one missing `color_scale` is silently
-completed, against the canonical-only policy and the specification's "rejected
-rather than migrated". Two statements of the Explore specification contradict
-the code: the "single aggregation guarantee" (the profile collects once per
-batch of eight columns plus the histogram and duplicate-count passes, which its
-own test counts) and the decorator's kwarg order, which omits `pivot_formulas`.
-The duplicate-count scratch floors its partition size at one row, so a small
-memory headroom turns a large frame into up to one partition per row.
-
-**Plan:** Require the three fields like their siblings (the writers already emit
-them) or document the exception; delete or restate the two specification
-sentences; floor the partition size at tens of thousands of rows and let the
-memory limit fail the job instead.
-
-**Acceptance:** A card missing `sort` is refused like one missing
-`decimal_places`; the specification matches the collect count and the kwarg
-order; the scratch writes a bounded number of partitions.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_explore_pivots.py`;
-`src/haute/_frame_profile.py::_count_unique_rows`;
-`src/haute/_codegen_builders.py`; `specs/explore-eda/low-level.md`.
 
 ### EDA-R03 — The Explore panels' empty state, observer, glyph and sentinel
 

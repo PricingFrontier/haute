@@ -91,8 +91,9 @@
   Column, Row, Value, and formula
   placements also own presentation-only `number_format`, `decimal_places: None | 0..10`, and
   `use_grouping` settings. The closed formats are General, Number, Percentage, and GBP/USD/EUR
-  currency. Every numeric-format field is required on a version-1 card. Value placements
-  additionally own `color_scale` and required nullable `color_scale_split_by`; a non-null split is
+  currency. Every numeric-format field is required on a version-1 card. Row placements own a
+  required `sort`; Value placements additionally own required `sort_rows` and `color_scale` and
+  required nullable `color_scale_split_by`; a non-null split is
   valid only for an active scale and references a current Row/Column placement id. Missing fields
   are rejected rather than defaulted or migrated.
 - **`PivotCalculationSpec`** (`_pivot_service.py`, frozen dataclass) — resolved Explore cache
@@ -501,17 +502,22 @@ levels use (`run_synchronous_analysis` inside `run_until_disconnected`):
 - **Value truncation for display**: any min/max or categorical value longer than 80 characters
   (`_VALUE_DISPLAY_MAX_CHARS`) is clipped to exactly 80 characters plus a single `"…"` marker
   (`_VALUE_DISPLAY_TRUNCATION_MARKER`), so the returned string is always ≤81 characters.
-- **Single aggregation guarantee**: `_build_frame_stats` performs exactly one
-  `cancellable_streaming_collect` call regardless of the number of columns or how many need
-  categorical value counts — asserted directly in tests by monkeypatching that helper and counting
-  invocations, and by
-  inspecting the query plan for absence of `UNION`/`CACHE` nodes (ruling out an unpivot-based
-  implementation).
+- **Bounded aggregation passes**: `_build_frame_stats` collects one aggregation query per batch
+  of eight columns (`_PROFILE_COLUMN_BATCH_SIZE`) — the bounded categorical value counts ride in
+  those batches rather than adding a collect per column — then one histogram bin-count query per
+  batch of numeric columns that need bins, and, only where no single column is unique, the
+  whole-row duplicate count. Tests count the `cancellable_streaming_collect` invocations (two
+  for one numeric column, one for two text columns, six or seven for seventeen numeric columns)
+  and inspect the query plan for absence of `UNION`/`CACHE` nodes (ruling out an unpivot-based
+  implementation). A duplicate count over more rows than `_PROFILE_DISTINCT_PARTITION_ROWS` hashes
+  the rows into job-scratch partitions sized to the memory headroom but never below
+  `_PROFILE_DISTINCT_PARTITION_MIN_ROWS` (20,000) rows, so little headroom gives a bounded number
+  of partitions and the job's memory limit, not a partition per row, is what stops it.
 - **Explore display-config round-trip**: an explicit `False` overview toggle or disabled chart
   must be preserved through codegen → parse (not treated the same as an absent key); pivot cards
   retain ordered ids. Empty `overview: {}`, `pivots: []`, and `charts: []`
   values must not be emitted as decorator kwargs. Non-empty kwargs are emitted in stable
-  overview-then-pivots-then-charts order.
+  overview, `pivot_formulas`, pivots, charts order, then the shared column metadata.
 - **Downstream-edit cache stability**: the data point an Explore node reads, and therefore its
   data version, is unchanged by edits to nodes downstream of it and by adding an `overview`,
   `pivots`, or `charts` block to its own config — the display payload is not part of the node

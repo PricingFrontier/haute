@@ -14,3 +14,10 @@ export function compatibleEvaluationPreview(
     ? preview
     : null
 }
+
+/**
+ * The `error_code` of an estimate refused because its evaluation preview
+ * failed, as opposed to its memory estimate: the Split pane shows the first,
+ * and the Train pane labels the two apart.
+ */
+export const EVALUATION_PREVIEW_FAILED = "evaluation_preview_failed"

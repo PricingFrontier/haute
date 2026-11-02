@@ -196,8 +196,7 @@ _BROWSER_OUTPUT_CONFIG = """{
       "output_path": "$[:].value_doubled",
       "enabled": true
     }
-  ],
-  "outputFormat": "json"
+  ]
 }
 """
 _BROWSER_MIXED_BANDING_CONFIG = """{

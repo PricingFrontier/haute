@@ -170,7 +170,7 @@ def test_mlflow_log_explicit_frontier_point_without_solver_or_solve_result(
     run = store.get_run(resp.json()["run_id"])
     assert run.data.tags["frontier.selected_point_index"] == "0"
     assert run.data.metrics["total_objective"] == 123.0
-    assert run.data.metrics["constraint.volume"] == 0.91
+    assert run.data.metrics["constraint_volume_total"] == 0.91
 
 
 def test_apply_explicit_frontier_point_materialises_online_result_to_disk(
@@ -281,43 +281,6 @@ def test_concurrent_frontier_point_materialisations_run_one_at_a_time_and_keep_b
     }
     for handle in handles.values():
         assert Path(handle["path"]).is_file()
-
-
-def test_frontier_point_materialisation_survives_store_copy_of_frontier_payload(
-    client,
-    clean_job_store,
-):
-    """A store may copy nested payloads without representing a recompute."""
-    job_id = "apply_point_after_store_copy"
-    seed_job(
-        clean_job_store,
-        job_id,
-        _with_as_solved_artifact(
-            _online_frontier_job(
-                quote_grid=MagicMock(),
-                frontier_generation=7,
-            )
-        ),
-    )
-
-    def apply_from_grid(_grid, *, lambdas, constraints, cancel):
-        del lambdas, constraints, cancel
-        current = clean_job_store.require_job(job_id)
-        clean_job_store.atomic_update(
-            job_id,
-            {"frontier_data": dict(current["frontier_data"])},
-            expected_status="completed",
-        )
-        return SimpleNamespace(dataframe=make_online_apply_frame(["q-store-copy"]))
-
-    with patch("price_contour.apply_from_grid", side_effect=apply_from_grid):
-        response = client.post(
-            "/api/optimiser/apply",
-            json={"job_id": job_id, "point_index": 0},
-        )
-
-    assert response.status_code == 200, response.text
-    assert clean_job_store.require_job(job_id)["frontier_generation"] == 7
 
 
 def test_frontier_point_artifact_handles_are_capped_oldest_first():
@@ -483,29 +446,17 @@ def test_select_frontier_point_normalises_when_config_name_differs_from_column(
 
 
 def test_frontier_work_on_one_solve_never_waits_for_another(clean_job_store) -> None:
-    """Each parent solve has its own frontier lock: slow work on one leaves the rest free."""
-    import time
+    """Each parent solve has its own frontier lock, and selecting a point takes it:
+    slow work on one solve leaves the others free and serialises its own."""
     from concurrent.futures import ThreadPoolExecutor
     from concurrent.futures import TimeoutError as FutureTimeoutError
 
     from haute.routes._optimiser_frontier import OptimiserFrontierService
+    from haute.schemas import OptimiserFrontierSelectRequest
 
     service = OptimiserFrontierService(clean_job_store)
-    for sweep, parent in (("sweep_a", "parent_a"), ("sweep_b", "parent_b")):
-        seed_job(
-            clean_job_store,
-            sweep,
-            {
-                "status": "running",
-                "job_type": "frontier_recompute",
-                "parent_job_id": parent,
-                "start_time": time.monotonic(),
-                "timeout": None,
-                "progress": 0.0,
-                "message": "Computing efficient frontier",
-                "created_at": time.time(),
-            },
-        )
+    for parent in ("parent_a", "parent_b"):
+        seed_job(clean_job_store, parent, _online_frontier_job())
     held = threading.Event()
     release = threading.Event()
 
@@ -514,20 +465,26 @@ def test_frontier_work_on_one_solve_never_waits_for_another(clean_job_store) -> 
             held.set()
             release.wait(10)
 
+    def select(parent: str) -> object:
+        return service.select_point(OptimiserFrontierSelectRequest(job_id=parent, point_index=0))
+
     holder = threading.Thread(target=hold_parent_a, daemon=True)
     holder.start()
     assert held.wait(5)
     try:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            other = executor.submit(service.sweep_status, "sweep_b")
-            same = executor.submit(service.sweep_status, "sweep_a")
+            other = executor.submit(select, "parent_b")
+            same = executor.submit(select, "parent_a")
             try:
-                assert other.result(timeout=5)["status"] == "running"
+                assert other.result(timeout=5)["selected_frontier_point"] == 0
                 with pytest.raises(FutureTimeoutError):
                     same.result(timeout=0.2)
+                assert (
+                    clean_job_store.require_job("parent_a").get("selected_frontier_point") is None
+                )
             finally:
                 release.set()
-            assert same.result(timeout=5)["status"] == "running"
+            assert same.result(timeout=5)["selected_frontier_point"] == 0
     finally:
         release.set()
         holder.join(5)
@@ -885,9 +842,9 @@ def test_a_cancel_racing_the_commit(clean_job_store, moment):
     ):
         if moment == "during persist":
             with pytest.raises(ExecutionCancelledError):
-                _frontier_service._materialise_point(job_id, 1, 0, token)
+                _frontier_service._materialise_point(job_id, 1, token)
         else:
-            _frontier_service._materialise_point(job_id, 1, 0, token)
+            _frontier_service._materialise_point(job_id, 1, token)
 
     (handle,) = written
     if moment == "during persist":
@@ -930,7 +887,7 @@ def test_a_cancelled_run_keeps_no_frame_alive(clean_job_store, moment):
     try:
         with patch("price_contour.apply_from_grid", side_effect=apply_from_grid):
             with pytest.raises(ExecutionCancelledError) as caught:
-                _frontier_service._materialise_point(job_id, 1, 0, token)
+                _frontier_service._materialise_point(job_id, 1, token)
         # Still holding the exception, as a flight's outcome does.
         assert caught.value is not None
         (ref,) = alive
@@ -948,7 +905,7 @@ def test_a_pre_cancelled_run_never_starts_the_apply(clean_job_store):
     token.cancel()
     with patch("price_contour.apply_from_grid") as apply_from_grid:
         with pytest.raises(ExecutionCancelledError):
-            _frontier_service._materialise_point("pre_cancelled", 1, 0, token)
+            _frontier_service._materialise_point("pre_cancelled", 1, token)
     apply_from_grid.assert_not_called()
 
 
@@ -1085,3 +1042,26 @@ def test_an_eviction_during_a_read_waits_for_the_reader(client, clean_job_store)
             assert "frontier_apply_result:0" not in handles
             assert pl.read_parquet(handle["path"]).height == 3
         assert not Path(handle["directory"]).exists()
+
+
+@pytest.mark.parametrize(("baseline", "uplift"), [(0.0, None), (90.0, 10.0)])
+def test_a_points_summary_reports_uplift_only_against_a_non_zero_baseline(
+    baseline: float, uplift: float | None
+) -> None:
+    """price-contour's summary scheme: ``uplift_pct`` only when the baseline is not 0."""
+    from haute.routes._optimiser_frontier import (
+        _frontier_point_mlflow_summary,
+        _frontier_point_result_for_job,
+    )
+
+    job = _online_frontier_job()
+    job["result"]["baseline_objective"] = baseline
+    result = _frontier_point_result_for_job(job, 0)
+
+    metrics = _frontier_point_mlflow_summary(job, result, 0)["metrics"]
+
+    if uplift is None:
+        assert "uplift_pct" not in metrics
+    else:
+        expected = (result["total_objective"] - baseline) / baseline * 100
+        assert metrics["uplift_pct"] == pytest.approx(expected)

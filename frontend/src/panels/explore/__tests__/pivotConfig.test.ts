@@ -21,7 +21,7 @@ function pivot(overrides: Partial<ExplorePivotConfig> = {}): ExplorePivotConfig 
     enabled: true,
     filters: [],
     columns: [],
-    rows: [{ id: "row_1", field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
+    rows: [{ sort: "ascending", id: "row_1", field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
     values: [
       {
         id: "value_1",
@@ -29,6 +29,8 @@ function pivot(overrides: Partial<ExplorePivotConfig> = {}): ExplorePivotConfig 
         aggregation: "sum",
         reference: "claims_sum",
         display_name: "Claims",
+        sort_rows: "none",
+        color_scale: "none",
         color_scale_split_by: null,
         number_format: "general",
         decimal_places: null,
@@ -154,7 +156,7 @@ describe("pivotConfig", () => {
     expect(duplicatePlacement).toMatchObject({ ok: false, error: expect.stringMatching(/duplicate placement id/i) })
 
     const duplicateRow = parseExplorePivots({
-      pivots: [pivot({ rows: [{ id: "row_1", field: "region", number_format: "general", decimal_places: null, use_grouping: true }, { id: "row_2", field: "region", number_format: "general", decimal_places: null, use_grouping: true }] })],
+      pivots: [pivot({ rows: [{ sort: "ascending", id: "row_1", field: "region", number_format: "general", decimal_places: null, use_grouping: true }, { sort: "ascending", id: "row_2", field: "region", number_format: "general", decimal_places: null, use_grouping: true }] })],
     })
     expect(duplicateRow).toMatchObject({ ok: false, error: expect.stringMatching(/duplicate field/i) })
   })
@@ -214,7 +216,7 @@ describe("pivotConfig", () => {
     })).toMatchObject({ ok: true })
     expect(pivotCalculationIdentity(presentationEdit)).toBe(pivotCalculationIdentity(base))
     expect(
-      pivotCalculationIdentity({ ...base, rows: [{ ...base.rows[0], field: "segment" }] }),
+      pivotCalculationIdentity({ ...base, rows: [{ sort: "ascending", ...base.rows[0], field: "segment" }] }),
     ).not.toBe(pivotCalculationIdentity(base))
     expect(
       pivotCalculationIdentity({
@@ -442,6 +444,18 @@ describe("pivotConfig", () => {
     expect(parseExplorePivots({ pivots: [pivot({ values: [valueWithoutSplit as never] })] })).toMatchObject({
       ok: false, error: expect.stringMatching(/split.*required/i),
     })
+    // Required like their siblings, as the server requires them: never defaulted.
+    const { sort: _omittedSort, ...rowWithoutSort } = pivot().rows[0]
+    expect(parseExplorePivots({ pivots: [pivot({ rows: [rowWithoutSort as never] })] })).toMatchObject({
+      ok: false, error: "Pivot 1 rows placement sort is required.",
+    })
+    for (const [field, message] of [
+      ["sort_rows", "Pivot 1 value row sort is required."],
+      ["color_scale", "Pivot 1 value color scale is required."],
+    ] as const) {
+      const { [field]: _omitted, ...value } = pivot().values[0]
+      expect(parseExplorePivots({ pivots: [pivot({ values: [value as never] })] })).toMatchObject({ ok: false, error: message })
+    }
     expect(
       parseExplorePivots({
         pivots: [
@@ -579,6 +593,7 @@ describe("pivotConfig", () => {
               use_grouping: false,
             }],
             rows: [{
+              sort: "ascending",
               id: "row_1",
               field: "region",
               number_format: "percent",
@@ -591,6 +606,8 @@ describe("pivotConfig", () => {
               aggregation: "sum",
               reference: "claims_sum",
               display_name: "Claims",
+              sort_rows: "none",
+              color_scale: "none",
               color_scale_split_by: null,
               number_format: "currency_eur",
               decimal_places: 2,
@@ -613,7 +630,7 @@ describe("pivotConfig", () => {
         parseExplorePivots({
           pivots: [
             pivot({
-              columns: [{ ...pivot().rows[0], id: "column_1", field: "year", decimal_places: decimal_places as never }],
+              columns: [{ id: "column_1", field: "year", number_format: "general", use_grouping: true, decimal_places: decimal_places as never }],
             }),
           ],
         }),
@@ -633,7 +650,7 @@ describe("pivotConfig", () => {
         parseExplorePivots({
           pivots: [
             pivot({
-              columns: [{ ...pivot().rows[0], id: "column_1", field: "year", [field]: value }],
+              columns: [{ id: "column_1", field: "year", number_format: "general", decimal_places: null, use_grouping: true, [field]: value }],
             }),
           ],
         }),

@@ -592,7 +592,6 @@ class TestSnapshotGenerationLease:
                                         "enabled": True,
                                     }
                                 ],
-                                "outputFormat": "json",
                             },
                         },
                     },

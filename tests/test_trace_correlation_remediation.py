@@ -185,6 +185,37 @@ def test_aware_naive_datetime_and_decimal_float_are_unsupported() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        (pl.Series([[1, 2]]), ["a", "b"]),
+        (pl.Series([{"a": 1}]), {"b": 1}),
+        (pl.Series([[1, 2]], dtype=pl.Array(pl.Int64, 2)), [1, 2, 3]),
+    ],
+    ids=["list", "struct", "array"],
+)
+def test_a_nested_comparison_polars_refuses_is_reported_as_nested(column, value) -> None:
+    result = _match_rows_vectorized(
+        pl.DataFrame({"k": column, "j": [1]}), {"k": value, "j": 1}, ["k", "j"]
+    )
+
+    assert result.status is _RowMatchStatus.UNSUPPORTED_DTYPE
+    assert result.reason_code == "incompatible_nested_schema"
+
+
+def test_a_polars_failure_evaluating_the_strict_match_propagates(monkeypatch) -> None:
+    import haute._trace_correlation as correlation
+
+    def failing_expression(column, value, dtype, *, cast=None):
+        # An expression Polars refuses only when it runs.
+        return pl.col(column).cast(pl.String).str.to_integer(), None
+
+    monkeypatch.setattr(correlation, "_typed_value_match_expr", failing_expression)
+
+    with pytest.raises(pl.exceptions.ComputeError):
+        _match_rows_vectorized(pl.DataFrame({"k": ["x"]}), {"k": "x"}, ["k"])
+
+
 def test_object_key_is_unsupported_and_target_relocation_raises_typed_error() -> None:
     value = object()
     frame = pl.DataFrame({"opaque": pl.Series([value], dtype=pl.Object)})

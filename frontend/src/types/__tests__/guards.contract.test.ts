@@ -14,7 +14,6 @@ import {
   explorePivotRunFromContract,
   explorePivotStatusFromContract,
   frontierAutoRangeStatusFromContract,
-  frontierStatusFromContract,
   optimiserStatusFromContract,
   parseJsonCacheSchemaInferenceResponse,
   parsePreviewNodeResponse,
@@ -41,7 +40,6 @@ import {
   validateOptimiserEstimateResponse,
   validateOptimiserFrontierAutoRangeStatusResponse,
   validateOptimiserFrontierSelectResponse,
-  validateOptimiserFrontierStatusResponse,
   validateOptimiserMlflowLogResponse,
   validateOptimiserSaveResponse,
   validateOptimiserSolveResponse,
@@ -379,13 +377,16 @@ const completedJob = (result: unknown) => ({
   execution_metrics: null,
 })
 const parseFrontierResponse = (value: unknown) =>
-  frontierStatusFromContract(
-    expectGeneratedContract(
-      "OptimiserFrontierStatusResponse",
-      validateOptimiserFrontierStatusResponse,
-      completedJob(value),
-    ),
-  ).result!
+  parseOptimiserStatusResponse({
+    status: "completed",
+    progress: 1,
+    message: "",
+    elapsed_seconds: 0,
+    result: null,
+    frontier: value,
+    terminal_reason: null,
+    execution_metrics: null,
+  }).frontier!
 // A typed online frontier point with one `loss` constraint.
 const lossPoint = (totalObjective: number) =>
   makeOnlineFrontierPoint(0, {
@@ -2813,11 +2814,9 @@ describe("API response guards", () => {
       offset: 100,
       preview_row_count: 1,
       preview_row_limit: 100,
-      frontier_generation: 3,
     })
     expect(parsedApply.matched_row_count).toBe(101)
     expect(parsedApply.offset).toBe(100)
-    expect(parsedApply.frontier_generation).toBe(3)
     expect(parsedApply.from_artifact).toBe(false)
     expect(frontier.constraint_names).toEqual(["loss"])
     expect(frontierAutoRange.ranges.expected_margin).toEqual({ min: 11, max: 39 })
@@ -2887,8 +2886,6 @@ describe("API response guards", () => {
       swept_axes: ["loss"],
       points_limit: 2000,
       points_truncated: true,
-      frontier_generation: 0,
-      job_id: null,
     }).points_truncated).toBe(true)
     expect(selected.lambdas.loss).toBe(0.3)
     expect(saved.path).toBe("optimiser_output.py")
@@ -2898,7 +2895,6 @@ describe("API response guards", () => {
     const frontier = () => makeOnlineFrontier(2)
     const payload = (overrides: Partial<ReturnType<typeof frontier>> = {}) => ({
       status: "ok",
-      job_id: null,
       ...frontier(),
       ...overrides,
     })
@@ -2913,7 +2909,7 @@ describe("API response guards", () => {
     it("rejects an open, untyped point object", () => {
       expect(() => parseFrontierResponse(payload({
         points: [{ total_objective: 1 }, { total_objective: 2 }] as never,
-      }))).toThrow(/OptimiserFrontierStatusResponse: invalid contract at \/result\/points\/0/)
+      }))).toThrow(/OptimiserStatusResponse: invalid contract at \/frontier\/points\/0/)
     })
 
     it.each(["thresholds", "bounds", "totals", "lambdas"] as const)(
@@ -2922,7 +2918,7 @@ describe("API response guards", () => {
         const points = frontier().points
         points[1] = { ...points[1], [field]: {} }
         expect(() => parseFrontierResponse(payload({ points }))).toThrow(
-          `parseOptimiserStatusResponse: expected result.points[1].${field} to hold exactly the constraint names [loss_ratio], got []`,
+          `parseOptimiserStatusResponse: expected frontier.points[1].${field} to hold exactly the constraint names [loss_ratio], got []`,
         )
       },
     )
@@ -2934,7 +2930,7 @@ describe("API response guards", () => {
         const value = Object.values(summaries[0][field])[0]
         summaries[0] = { ...summaries[0], [field]: { volume: value } }
         expect(() => parseFrontierResponse(payload({ point_summaries: summaries }))).toThrow(
-          `parseOptimiserStatusResponse: expected result.point_summaries[0].${field} to hold exactly the constraint names [loss_ratio], got [volume]`,
+          `parseOptimiserStatusResponse: expected frontier.point_summaries[0].${field} to hold exactly the constraint names [loss_ratio], got [volume]`,
         )
       },
     )
@@ -2943,7 +2939,7 @@ describe("API response guards", () => {
       const ratebook = makeRatebookFrontier([{ objective: 1, volume: 1, lambda: 0 }]).points[0]
       const points = [frontier().points[0], { ...ratebook, totals: { loss_ratio: 1 }, thresholds: { loss_ratio: 1 }, bounds: { loss_ratio: 1 }, lambdas: { loss_ratio: 0 } }]
       expect(() => parseFrontierResponse(payload({ points }))).toThrow(
-        "parseOptimiserStatusResponse: expected every result.points entry to be of one mode, got online, ratebook",
+        "parseOptimiserStatusResponse: expected every frontier.points entry to be of one mode, got online, ratebook",
       )
     })
   })
@@ -2977,11 +2973,9 @@ describe("API response guards", () => {
         swept_axes: ["loss"],
         points_limit: 2000,
         points_truncated: false,
-        frontier_generation: 0,
-        job_id: null,
       }),
     ).toThrow(
-      "parseOptimiserStatusResponse: expected result.point_summaries to hold one summary per point, got 1 for 2 points",
+      "parseOptimiserStatusResponse: expected frontier.point_summaries to hold one summary per point, got 1 for 2 points",
     )
   })
 
@@ -3013,22 +3007,20 @@ describe("API response guards", () => {
       swept_axes: ["loss"],
       points_limit: 2000,
       points_truncated: false,
-      frontier_generation: 0,
-      job_id: null,
     })
     const { warning: _warning, ...withoutWarning } = summary; void _warning
     expect(() => parseFrontierResponse(payload(withoutWarning))).toThrow(
-      "OptimiserFrontierStatusResponse: invalid contract at /result/point_summaries/0/warning: required",
+      "OptimiserStatusResponse: invalid contract at /frontier/point_summaries/0/warning: required",
     )
     expect(parseFrontierResponse(payload(summary)).point_summaries[0]?.warning).toBeNull()
     const { effective_bounds: _bounds, ...withoutBounds } = summary; void _bounds
     expect(() => parseFrontierResponse(payload(withoutBounds))).toThrow(
-      "OptimiserFrontierStatusResponse: invalid contract at /result/point_summaries/0/effective_bounds: required",
+      "OptimiserStatusResponse: invalid contract at /frontier/point_summaries/0/effective_bounds: required",
     )
     expect(() => parseFrontierResponse(payload({
       ...summary,
       effective_bounds: { loss: { kind: "min_pct", bound: 1 } },
-    }))).toThrow("OptimiserFrontierStatusResponse: invalid contract at /result/point_summaries/0/effective_bounds/loss/kind: enum")
+    }))).toThrow("OptimiserStatusResponse: invalid contract at /frontier/point_summaries/0/effective_bounds/loss/kind: enum")
   })
 
   it("parses every field of a fully populated frontier point summary", () => {
@@ -3068,8 +3060,6 @@ describe("API response guards", () => {
       swept_axes: ["loss"],
       points_limit: 2000,
       points_truncated: false,
-      frontier_generation: 0,
-      job_id: null,
     }).point_summaries[0]
 
     expect(parsed).toEqual(summary)
@@ -3085,11 +3075,9 @@ describe("API response guards", () => {
         swept_axes: ["loss"],
         points_limit: 2000,
         points_truncated: false,
-        frontier_generation: 0,
-        job_id: null,
       }),
     ).toThrow(
-      "OptimiserFrontierStatusResponse: invalid contract at /result/point_summaries/0/adjustments: type",
+      "OptimiserStatusResponse: invalid contract at /frontier/point_summaries/0/adjustments: type",
     )
   })
 
@@ -3158,7 +3146,6 @@ describe("API response guards", () => {
       adjustments: null,
       clamp_rate: null,
       combined_factor_bounds: null,
-      frontier_generation: 0,
       diagnostics_errors: [],
       error: null,
     }

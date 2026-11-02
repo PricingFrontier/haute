@@ -731,12 +731,7 @@ def test_optimiser_leaves_no_checkpoint_directory(
     assert _poll(client, "solve", solve.json()["job_id"]) == "completed"
 
     checkpoint_prefixes = ("haute_opt_", "haute_frontier_range_", "haute_opt_estimate_")
-    assert [
-        name
-        for name in created
-        if name.startswith(checkpoint_prefixes)
-        and not name.startswith("haute_frontier_range_parts_")
-    ] == []
+    assert [name for name in created if name.startswith(checkpoint_prefixes)] == []
 
 
 def _poll(client: Any, route: str, job_id: str) -> str:

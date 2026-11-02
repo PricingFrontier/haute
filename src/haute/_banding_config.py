@@ -209,7 +209,7 @@ def _compact_rule_rows(
             key = str(raw_key)
         if raw_value is None or raw_value == "":
             raise ConfigSettingError(
-                f"{duplicate_label} rule {key!r} requires {value_field}",
+                f"{duplicate_label} rule {key!r} requires {value_field} (rules[{index}])",
                 setting="factors",
                 values=(key,),
             )

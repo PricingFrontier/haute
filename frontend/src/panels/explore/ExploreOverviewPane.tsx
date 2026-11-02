@@ -15,7 +15,7 @@
 
 import type { JSX } from "react"
 
-import type { SimpleNode } from "../editors"
+import type { SimpleNode } from "../editors/_shared"
 import {
   CategoricalSummaryCard,
   DataQualityCard,

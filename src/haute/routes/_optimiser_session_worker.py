@@ -93,23 +93,6 @@ class SessionSolveOutcome:
 
 
 @dataclass(frozen=True)
-class SessionSweepRequest:
-    session_id: str
-    ranges: dict[str, tuple[float, float]]
-    n_points_per_dim: int
-    initial_lambdas: dict[str, float]
-    constraint_kinds: dict[str, str]
-
-
-@dataclass(frozen=True)
-class SessionSweepOutcome:
-    """A recompute's capped frontier payload (generation 0; the parent stamps its own)."""
-
-    frontier_payload: dict[str, Any]
-    factor_tables: list[dict[str, dict[str, float]]] | None
-
-
-@dataclass(frozen=True)
 class SessionPointApplyRequest:
     session_id: str
     point_index: int
@@ -282,43 +265,6 @@ def build_and_solve(request: SessionSolveRequest) -> SessionSolveOutcome:
         return SessionSolveOutcome(failure=failure, grid_forecast_bytes=grid_forecast)
     finally:
         store.delete_job(job_id)
-
-
-def sweep(request: SessionSweepRequest) -> SessionSweepOutcome:
-    """Recompute the frontier against the session's solver and grid."""
-    from haute.routes._optimiser_limits import limited_frontier_payload
-    from haute.routes._optimiser_solver import (
-        _compute_frontier,
-        frontier_point_factor_tables,
-        solver_worker_context,
-    )
-
-    state = _session(request.session_id)
-    _report_stage("Computing efficient frontier", 0.1)
-    with solver_worker_context():
-        frontier_result = _compute_frontier(
-            state.solver,
-            state.quote_grid,
-            mode=state.mode,
-            ratebook_factors=state.factor_contexts,
-            factor_columns=state.factor_columns if state.mode == "ratebook" else None,
-            threshold_ranges=dict(request.ranges),
-            n_points_per_dim=request.n_points_per_dim,
-            initial_lambdas=dict(request.initial_lambdas),
-        )
-    payload = limited_frontier_payload(
-        frontier_result.points,
-        mode=state.mode,
-        constraint_kinds=dict(request.constraint_kinds),  # type: ignore[arg-type]
-        swept_axes=list(request.ranges),
-        frontier_generation=0,
-    )
-    return SessionSweepOutcome(
-        frontier_payload=payload,
-        factor_tables=frontier_point_factor_tables(
-            frontier_result, mode=state.mode, points_returned=payload["points_returned"]
-        ),
-    )
 
 
 def apply_point(request: SessionPointApplyRequest) -> dict[str, Any]:

@@ -43,28 +43,6 @@ export function zoneLabel(zone: Zone): string {
   return ZONES.find((candidate) => candidate.key === zone)?.label ?? zone
 }
 
-function futurePlacementFields(placement: Placement): Record<string, unknown> {
-  const known = new Set([
-    "id",
-    "field",
-    "members",
-    "aggregation",
-    "reference",
-    "display_name",
-    "sort",
-    "sort_rows",
-    "color_scale",
-    "color_scale_split_by",
-    "number_format",
-    "decimal_places",
-    "use_grouping",
-  ])
-  return Object.fromEntries(
-    Object.entries(placement).filter(([key]) => !known.has(key)),
-  )
-}
-
-
 function isFilterPlacement(placement: Placement): placement is PivotFilterPlacement {
   return Array.isArray(placement.members)
 }
@@ -127,11 +105,7 @@ export function appendToZone(
   placement: Placement,
   dtype: string,
 ): ExplorePivotConfig {
-  const common = {
-    ...futurePlacementFields(placement),
-    id: placement.id,
-    field: placement.field,
-  }
+  const common = { id: placement.id, field: placement.field }
   switch (zone) {
     case "filters":
       return {

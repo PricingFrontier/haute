@@ -1,7 +1,7 @@
 /**
  * Unit tests for the pure helpers behind the shared table-actions + OUTPUT
  * path tools: CSV serialisation, common-root derivation, and the paste header
- * sniffer. (substitutePrefix / composePrefix are covered in
+ * sniffer. (substitutePrefix is covered in
  * OutputEditorPathTools.test.tsx; TSV/paste round-trip in FrameTableActions.)
  */
 import { describe, it, expect } from "vitest"

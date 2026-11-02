@@ -69,7 +69,6 @@ function page(
     offset: 0,
     preview_row_count: rows.length,
     preview_row_limit: 100,
-    frontier_generation: 0,
     error: null,
     ...overrides,
   }
@@ -85,7 +84,7 @@ function install(mode: "online" | "ratebook" = "online") {
 
 function renderTab(mode: "online" | "ratebook" = "online") {
   install(mode)
-  return render(<QuotesTab nodeId="opt_1" jobId="job_1" mode={mode} frontierGeneration={0} pointIndex={null} />)
+  return render(<QuotesTab nodeId="opt_1" jobId="job_1" mode={mode} pointIndex={null} />)
 }
 
 /** The query each request sent, in order. */
@@ -284,15 +283,27 @@ describe("QuotesTab", () => {
     expect(screen.getByText("HIGHEST")).toBeInTheDocument()
   })
 
-  it("refuses a page the server answered for another frontier generation", async () => {
-    // The server recomputed the frontier between the request and its reply.
-    mockApply.mockResolvedValueOnce(page(ROWS, { frontier_generation: 1 }))
+  it("reissues a page another point's apply replaced, without showing an error", async () => {
+    mockApply
+      .mockRejectedValueOnce(new ApiError("HTTP 409", 409, "replaced", undefined, {
+        error_code: "frontier_point_apply_replaced",
+        message: "Another frontier point was requested while this one waited.",
+      }))
+      .mockResolvedValueOnce(page(ROWS))
     renderTab()
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "The server answered for frontier generation 1, but this result shows generation 0.",
-    )
-    expect(screen.queryByText("Q001")).toBeNull()
+    expect(await screen.findByText("Q001")).toBeInTheDocument()
+    expect(queries()).toEqual([DEFAULT_QUERY, DEFAULT_QUERY])
+    expect(screen.queryByRole("alert")).toBeNull()
+  })
+
+  it("shows any other 409 as a failure with Retry", async () => {
+    mockApply.mockRejectedValueOnce(new ApiError("HTTP 409", 409, "Optimiser job state changed."))
+    renderTab()
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Optimiser job state changed.")
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument()
+    expect(queries()).toHaveLength(1)
   })
 
   it("offers Retry after a failure, and none when the result is gone", async () => {

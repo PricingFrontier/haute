@@ -171,7 +171,11 @@ def _pivot(**updates: Any) -> dict[str, Any]:
         placement.setdefault("number_format", "general")
         placement.setdefault("decimal_places", None)
         placement.setdefault("use_grouping", True)
+    for row in pivot["rows"]:
+        row.setdefault("sort", "ascending")
     for value in pivot["values"]:
+        value.setdefault("sort_rows", "none")
+        value.setdefault("color_scale", "none")
         value.setdefault("color_scale_split_by", None)
     pivot.setdefault(
         "value_order",

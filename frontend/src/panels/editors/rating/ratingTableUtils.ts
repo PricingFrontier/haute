@@ -1,4 +1,5 @@
 import { isObjectLiteral } from "../../../utils/objectLiteral"
+import { castFamily } from "../../../utils/polarsDtypes"
 
 // ─── Rating Table Types & Pure Utilities ──────────────────────────
 
@@ -203,7 +204,7 @@ export function tableStats(entries: Record<string, string | number>[]): { min: n
  * The key every rating row keeps its rate under, beside its factors' levels, so no
  * factor may share it: the server's config codec refuses such a factor too.
  */
-export const RATING_RATE_KEY = "value"
+const RATING_RATE_KEY = "value"
 
 /** Why *column* cannot be a rating factor, or null when it can. */
 export function ratingFactorProblem(column: string): string | null {
@@ -254,13 +255,14 @@ export function buildCartesianEntries(
 
 // ─── Shared helpers for rating editors ────────────────────────────
 
-/** True when a dtype can provide finite categorical rating levels from preview rows. */
+/**
+ * True when a column can provide finite categorical rating levels from preview rows:
+ * text or a category as Polars names it, or a Quote Input column declared `str`
+ * (a request input's frame columns carry its declared types, not Polars dtypes).
+ */
 function isStringLikeDtype(dtype: string): boolean {
-  const normalized = dtype.trim().toLowerCase()
-  return normalized === "str" ||
-    normalized.includes("string") ||
-    normalized.includes("categorical") ||
-    normalized.includes("enum")
+  const family = castFamily(dtype)
+  return family === "text" || family === "category" || dtype === "str"
 }
 
 function previewCandidateColumns(
@@ -368,6 +370,20 @@ export function extractTableEntryFactorLevels(
     if (values.size > 0) levels[factor] = [...values]
   }
   return levels
+}
+
+/**
+ * A relativity as typed or pasted: a number written as JavaScript reads one
+ * (`1.25`, `-0.5`, `1e-3`), blank, or anything else, which is refused rather
+ * than replaced (`1,5` is not one and a half).
+ */
+export type TypedRelativity = { kind: "value"; value: number } | { kind: "blank" } | { kind: "invalid" }
+
+export function parseRelativity(text: string): TypedRelativity {
+  const trimmed = text.trim()
+  if (!trimmed) return { kind: "blank" }
+  const parsed = Number(trimmed)
+  return Number.isFinite(parsed) ? { kind: "value", value: parsed } : { kind: "invalid" }
 }
 
 /** Resolve the table's defaultValue to a safe numeric fallback. */

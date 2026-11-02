@@ -497,8 +497,7 @@ class TestImplicitEdgeDedup:
             {"func_name": "f", "param_names": ["a", "a"], "edge_param_names": ["a", "a"]},
         ]
         edges = _build_edges(raw_nodes, [])
-        ids = [e.id for e in edges]
-        assert ids.count("e_a_f") == 1
+        assert [(e.id, e.source, e.target) for e in edges] == [("e-a-f", "a", "f")]
 
 
 class TestSubmodelResolutionRoot:

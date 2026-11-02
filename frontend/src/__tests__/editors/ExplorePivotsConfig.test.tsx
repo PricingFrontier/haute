@@ -82,12 +82,15 @@ function fullPivot(overrides: FixturePivotOverrides = {}): ExplorePivotConfig {
   }))
   const formattedRows = rows.map((placement): PivotAxisPlacement => ({
     ...placement,
+    sort: placement.sort ?? "ascending",
     number_format: placement.number_format ?? "general",
     decimal_places: placement.decimal_places ?? null,
     use_grouping: placement.use_grouping ?? true,
   }))
   const formattedValues = values.map((placement): PivotValuePlacement => ({
     ...placement,
+    sort_rows: placement.sort_rows ?? "none",
+    color_scale: placement.color_scale ?? "none",
     color_scale_split_by: placement.color_scale_split_by ?? null,
     number_format: placement.number_format ?? "general",
     decimal_places: placement.decimal_places ?? null,
@@ -741,7 +744,7 @@ describe("ExplorePivotsConfig", () => {
             fullPivot({
               filters: [{ id: "filter_1", field: "region", members: [] }],
               columns: [{ id: "column_1", field: "year" }],
-              rows: [{ id: "row_1", field: "region" }],
+              rows: [{ sort: "ascending", id: "row_1", field: "region" }],
               values: [
                 {
                   id: "value_1",
@@ -994,8 +997,8 @@ describe("ExplorePivotsConfig", () => {
           pivots: [
             fullPivot({
               rows: [
-                { id: "row_1", field: "region" },
-                { id: "row_2", field: "year" },
+                { sort: "ascending", id: "row_1", field: "region" },
+                { sort: "ascending", id: "row_2", field: "year" },
               ],
             }),
           ],
@@ -1040,7 +1043,7 @@ describe("ExplorePivotsConfig", () => {
     const persisted = JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
     expect(persisted.pivots[0]).toMatchObject({
       name: "Claims analysis",
-      rows: [{ id: "row_2", field: "year" }],
+      rows: [{ sort: "ascending", id: "row_2", field: "year" }],
       options: { row_grand_totals: false, column_grand_totals: true },
     })
   })
@@ -1211,7 +1214,7 @@ describe("ExplorePivotsConfig", () => {
                 decimal_places: 4,
                 use_grouping: false,
               }],
-              rows: [{ id: "row_1", field: "region" }],
+              rows: [{ sort: "ascending", id: "row_1", field: "region" }],
               values: [{
                 id: "value_1",
                 field: "claims",
@@ -1372,7 +1375,7 @@ describe("ExplorePivotsConfig", () => {
           pivots: [
             fullPivot({
               columns: [{ id: "column_1", field: "year" }],
-              rows: [{ id: "row_1", field: "year" }],
+              rows: [{ sort: "ascending", id: "row_1", field: "year" }],
             }),
           ],
         }}
@@ -1394,7 +1397,7 @@ describe("ExplorePivotsConfig", () => {
     expect(persisted.pivots[0].columns).toEqual([
       { id: "column_1", field: "year", number_format: "general", decimal_places: null, use_grouping: true },
     ])
-    expect(persisted.pivots[0].rows).toEqual([{ id: "row_1", field: "year", number_format: "general", decimal_places: null, use_grouping: true }])
+    expect(persisted.pivots[0].rows).toEqual([{ sort: "ascending", id: "row_1", field: "year", number_format: "general", decimal_places: null, use_grouping: true }])
   })
 
   it("reorders within an area by dragging and omits redundant movement controls", () => {
@@ -1405,8 +1408,8 @@ describe("ExplorePivotsConfig", () => {
           pivots: [
             fullPivot({
               rows: [
-                { id: "row_1", field: "region" },
-                { id: "row_2", field: "year" },
+                { sort: "ascending", id: "row_1", field: "region" },
+                { sort: "ascending", id: "row_2", field: "year" },
               ],
             }),
           ],
@@ -1526,7 +1529,7 @@ describe("ExplorePivotsConfig", () => {
       use_grouping: true,
     }
     const configuredPivot = fullPivot({
-      rows: [{ id: "row_1", field: "year" }],
+      rows: [{ sort: "ascending", id: "row_1", field: "year" }],
       values: [
         {
           id: "value_1",
@@ -1568,7 +1571,7 @@ describe("ExplorePivotsConfig", () => {
       <PivotConfigHarness
         initialConfig={{
           pivots: [
-            fullPivot({ rows: [{ id: "row_1", field: "removed_field" }] }),
+            fullPivot({ rows: [{ sort: "ascending", id: "row_1", field: "removed_field" }] }),
             fullPivot({ id: "pivot_2", name: "Other pivot" }),
           ],
         }}
@@ -1581,11 +1584,60 @@ describe("ExplorePivotsConfig", () => {
     const name = screen.getByRole("textbox", { name: "Pivot name" })
     fireEvent.change(name, { target: { value: "   " } })
     fireEvent.blur(name)
-    expect(screen.getByRole("alert")).toHaveTextContent(/name cannot be blank/i)
+    expect(screen.getByTestId("pivot-name-error")).toHaveTextContent(/name cannot be blank/i)
 
     fireEvent.change(name, { target: { value: " other PIVOT " } })
     fireEvent.blur(name)
-    expect(screen.getByRole("alert")).toHaveTextContent(/name must be unique/i)
+    expect(screen.getByTestId("pivot-name-error")).toHaveTextContent(/name must be unique/i)
+    expect(
+      JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}").pivots[0].name,
+    ).toBe("Pivot 1")
+  })
+
+  it("leaves Add to: Formula when an undo removes the formula being edited", () => {
+    const formula = {
+      id: "formula_1", reference: "double_claims", display_name: "Double claims",
+      expression: 'pl.col("claims").sum() * 2', number_format: "general" as const, decimal_places: null, use_grouping: true,
+    }
+    const props = (withFormula: boolean) => ({
+      config: withFormula
+        ? { pivot_formulas: [formula], pivots: [{ ...fullPivot({ value_order: ["formula_1"] }), formulas: [formula.id] }] }
+        : { pivot_formulas: [], pivots: [fullPivot()] },
+      onUpdate: vi.fn<OnUpdateConfig>(() => ({ ok: true })),
+      nodeId: "explore_1",
+      upstreamColumns,
+      currentConfigHash: "hash",
+    })
+    const view = render(<ExplorePivotsConfig {...props(true)} />)
+    fireEvent.click(screen.getByRole("button", { name: "Configure Pivot 1" }))
+    fireEvent.click(screen.getByRole("button", { name: "Edit formula Double claims" }))
+    expect(screen.getByRole("button", { name: "Add region to Formula" })).toBeVisible()
+
+    view.rerender(<ExplorePivotsConfig {...props(false)} />)
+
+    expect(screen.queryByRole("button", { name: "Add region to Formula" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("textbox", { name: "Polars expression" })).not.toBeInTheDocument()
+  })
+
+  it("shows the pivot name an undo leaves, and a blur then commits nothing", () => {
+    const onUpdate = vi.fn<OnUpdateConfig>(() => ({ ok: true }))
+    const props = (name: string) => ({
+      config: { pivots: [fullPivot({ name })] },
+      onUpdate,
+      nodeId: "explore_1",
+      upstreamColumns,
+      currentConfigHash: "hash",
+    })
+    const view = render(<ExplorePivotsConfig {...props("Claims analysis")} />)
+    fireEvent.click(screen.getByRole("button", { name: "Configure Claims analysis" }))
+    expect(screen.getByRole("textbox", { name: "Pivot name" })).toHaveValue("Claims analysis")
+
+    view.rerender(<ExplorePivotsConfig {...props("Pivot 1")} />)
+
+    const name = screen.getByRole("textbox", { name: "Pivot name" })
+    expect(name).toHaveValue("Pivot 1")
+    fireEvent.blur(name)
+    expect(onUpdate).not.toHaveBeenCalled()
   })
 
   it("blocks deletion while charts depend on a Pivot and lists those charts", async () => {

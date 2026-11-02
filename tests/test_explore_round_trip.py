@@ -393,6 +393,8 @@ def test_shared_pivot_formulas_round_trip_once_with_multiple_selections(tmp_path
                 "aggregation": "sum",
                 "reference": "claims_sum",
                 "display_name": "Claims",
+                "sort_rows": "none",
+                "color_scale": "none",
                 "color_scale_split_by": None,
                 "number_format": "general",
                 "decimal_places": None,

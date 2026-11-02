@@ -71,6 +71,7 @@ def test_a_removed_edge_join_decorator_argument_is_rejected_with_its_replacement
             {"exclude": ["quote_id"]},
             "list the columns to train on in feature_columns",
         ),
+        (NodeType.OUTPUT, {"outputFormat": "json"}, "The response document is always JSON"),
     ],
 )
 def test_a_removed_config_key_is_rejected_with_its_replacement(

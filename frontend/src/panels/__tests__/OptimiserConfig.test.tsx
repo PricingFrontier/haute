@@ -11,7 +11,7 @@ import useGraphStore from "../../stores/useGraphStore"
 import { buildGraph } from "../../utils/buildGraph"
 import useOptimiserPublishStore from "../../stores/useOptimiserPublishStore"
 import { solveConfigHash } from "../optimiser/solveActions"
-import type { SimpleNode, SimpleEdge } from "../editors"
+import type { SimpleNode, SimpleEdge } from "../editors/_shared"
 import type { MlflowDestinationEntry, MlflowDestinationKey } from "../../api/types"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 import { makeSolveResult } from "../../test-utils/factories"
@@ -60,6 +60,7 @@ const mockHandleAddConstraint = vi.fn()
 const mockHandleRemoveConstraint = vi.fn()
 const mockHandleConstraintColumnChange = vi.fn()
 const mockHandleConstraintValueChange = vi.fn()
+const mockHandleConstraintKindChange = vi.fn()
 
 vi.mock("../../hooks/useDataInputColumns", () => ({
   useDataInputColumns: vi.fn(() => [
@@ -77,6 +78,7 @@ vi.mock("../../hooks/useConstraintHandlers", () => ({
     handleRemoveConstraint: mockHandleRemoveConstraint,
     handleConstraintColumnChange: mockHandleConstraintColumnChange,
     handleConstraintValueChange: mockHandleConstraintValueChange,
+    handleConstraintKindChange: mockHandleConstraintKindChange,
   })),
 }))
 
@@ -711,7 +713,7 @@ describe("OptimiserConfig", () => {
       )
       showPane("solve")
       expect(screen.getByRole("button", { name: /Optimise/ })).toBeDisabled()
-      expect(screen.getByRole("alert")).toHaveTextContent("Select a connected Rating Factor Source.")
+      expect(screen.getByRole("alert")).toHaveTextContent("The Rating Factor Source must be an input name.")
     })
 
     it("warns for zero-level outputs while keeping healthy factor controls", () => {
@@ -1044,6 +1046,58 @@ describe("OptimiserConfig", () => {
         "Set both ends of the frontier range for volume.Go to Constraints",
         "The frontier would run 10,201 solves; the limit is 10,000. Reduce the points per swept constraint or sweep fewer constraints.Go to Constraints",
       ])
+    })
+
+    it("blocks a constraint without one bound, or a fixed one without a value", () => {
+      renderConfig(makeProps({
+        upstreamColumns: [
+          { name: "premium", dtype: "Float64" },
+          { name: "loss_ratio", dtype: "Float64" },
+          { name: "volume", dtype: "Float64" },
+          { name: "premium_share", dtype: "Float64" },
+          { name: "quote_id", dtype: "String" },
+          { name: "scenario_index", dtype: "Int64" },
+          { name: "scenario_value", dtype: "Float64" },
+        ],
+        config: {
+          mode: "online",
+          objective: "premium",
+          constraints: {
+            loss_ratio: { min: 0.5, max: 1 },
+            volume: { min_pct: null },
+            premium_share: { max: null },
+          },
+          frontier_ranges: { premium_share: { min: 0.1, max: 0.2 } },
+        },
+      }))
+      const alert = screen.getByRole("alert")
+      expect(within(alert).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+        "Choose a bound for the loss_ratio constraint.Go to Constraints",
+        "Set a value for the volume constraint.Go to Constraints",
+      ])
+    })
+
+    it("blocks an objective or a constraint the input does not have, once its columns are known", () => {
+      renderConfig(makeProps({
+        config: {
+          mode: "online",
+          objective: "profit",
+          constraints: { volume: { min: 10 }, retention: { min: 0.9 } },
+        },
+      }))
+      const alert = screen.getByRole("alert")
+      expect(within(alert).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+        "The objective “profit” is not a column of the input.Go to Data",
+        "Constraint “retention” is not a column of the input.Go to Constraints",
+      ])
+      expect(screen.getByRole("button", { name: /Optimise/ })).toBeDisabled()
+    })
+
+    it("names a Rating Factor Source that is no longer connected", () => {
+      renderConfig(makeProps({
+        config: { mode: "ratebook", objective: "premium", constraints: {}, banding_source: "old_bands" },
+      }))
+      expect(screen.getByRole("alert")).toHaveTextContent("The selected Rating Factor Source is not connected.")
     })
 
     it("needs no range for a constraint that is not swept", () => {
@@ -1689,7 +1743,7 @@ describe("OptimiserConfig", () => {
       expect(valueInput).toHaveValue(1.05)
     })
 
-    it("changing the constraint type dropdown calls handleConstraintValueChange", () => {
+    it("changing the constraint type dropdown calls handleConstraintKindChange", () => {
       renderConfig(makeProps({
             config: {
               mode: "online",
@@ -1700,8 +1754,67 @@ describe("OptimiserConfig", () => {
       const typeSelect = screen.getByRole("combobox", {
         name: "loss_ratio constraint bound type",
       })
-      fireEvent.change(typeSelect, { target: { value: "min" } })
-      expect(mockHandleConstraintValueChange).toHaveBeenCalledWith("loss_ratio", "min", 1.05)
+      expect(Array.from(typeSelect.querySelectorAll("option")).map((option) => option.textContent)).toEqual([
+        "at least", "at most", "at least % of baseline", "at most % of baseline",
+      ])
+      fireEvent.change(typeSelect, { target: { value: "min_pct" } })
+      expect(mockHandleConstraintKindChange).toHaveBeenCalledWith("loss_ratio", "min_pct")
+    })
+
+    it("shows a percentage constraint in percent and keeps its key when the value is edited", () => {
+      renderConfig(makeProps({
+            config: {
+              mode: "online",
+              objective: "premium",
+              constraints: { volume: { min_pct: 0.95 } },
+            },
+          }))
+      expect(screen.getByRole("combobox", { name: "volume constraint bound type" }))
+        .toHaveDisplayValue("at least % of baseline")
+      const valueInput = screen.getByRole("spinbutton", {
+        name: "volume constraint value (% of baseline)",
+      })
+      expect(valueInput).toHaveValue(95)
+      fireEvent.change(valueInput, { target: { value: "90" } })
+      fireEvent.blur(valueInput)
+      expect(mockHandleConstraintValueChange).toHaveBeenCalledWith("volume", "min_pct", 0.9)
+    })
+
+    it("sweeps a percentage constraint in percent and withholds Auto range", () => {
+      const onUpdate = vi.fn()
+      renderConfig(makeProps({
+            config: {
+              mode: "online",
+              objective: "premium",
+              constraints: { volume: { max_pct: 1.05 } },
+              frontier_ranges: { volume: { min: 0.9 } },
+            },
+            onUpdate,
+          }))
+      const from = screen.getByRole("spinbutton", { name: "volume sweep from (% of baseline)" })
+      const to = screen.getByRole("spinbutton", { name: "volume sweep to (% of baseline)" })
+      expect(from).toHaveValue(90)
+      expect(to).toHaveValue(null)
+      fireEvent.change(to, { target: { value: "110" } })
+      fireEvent.blur(to)
+      expect(onUpdate).toHaveBeenCalledWith({ frontier_ranges: { volume: { min: 0.9, max: 1.1 } } })
+      const autoRange = screen.getByRole("button", { name: "Auto range volume" })
+      expect(autoRange).toBeDisabled()
+      expect(autoRange).toHaveAccessibleDescription("Auto range sets absolute totals")
+    })
+
+    it("asks for a bound when a constraint holds none of the bound keys", () => {
+      renderConfig(makeProps({
+            config: {
+              mode: "online",
+              objective: "premium",
+              constraints: { volume: { min_abs: 1000 } },
+            },
+          }))
+      const typeSelect = screen.getByRole("combobox", { name: "volume constraint bound type" })
+      expect(typeSelect).toHaveValue("")
+      expect(typeSelect).toHaveAttribute("aria-invalid", "true")
+      expect(screen.getByRole("spinbutton", { name: "volume constraint value" })).toBeDisabled()
     })
 
     it("shows multiple constraints with correct count", () => {
@@ -2978,6 +3091,22 @@ describe("OptimiserConfig", () => {
       })))
     })
 
+    it("withdraws Replace once the version label differs from the refused request's", async () => {
+      const config = seedSolve()
+      const { ApiError } = await vi.importActual<typeof import("../../api/client")>("../../api/client")
+      mockSaveOptimiser.mockRejectedValueOnce(new ApiError("HTTP 409", 409, undefined, undefined, {
+        error_code: "optimiser_result_exists",
+        message: "Optimiser result already exists: output/a.json",
+      }))
+      renderStatefulConfig(makeProps({ config: { ...config, result_export_path: "output/a.json" } }))
+
+      fireEvent.click(screen.getByRole("button", { name: "Save to file" }))
+      expect(await screen.findByRole("button", { name: "Replace existing file" })).toBeInTheDocument()
+
+      fireEvent.change(screen.getByLabelText(/Version/), { target: { value: "v2" } })
+      expect(screen.queryByRole("button", { name: "Replace existing file" })).not.toBeInTheDocument()
+    })
+
     it("loads a ratebook frontier point's factor tables for the CSV", async () => {
       const ratebook = makeSolveResult({ mode: "ratebook", factor_tables: {}, combined_factor_bounds: { min: 0.9, max: 1.1 } })
       const summary = (total_objective: number) => ({
@@ -3003,7 +3132,6 @@ describe("OptimiserConfig", () => {
         ...summary(10),
         status: "ok",
         point_index: 0,
-        frontier_generation: 0,
         baseline_objective: 0,
         baseline_constraints: {},
         factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
@@ -3013,11 +3141,10 @@ describe("OptimiserConfig", () => {
 
       expect(screen.queryByRole("button", { name: "Download factor tables (CSV)" })).not.toBeInTheDocument()
       fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
-      await waitFor(() => expect(mockSelectFrontierPoint).toHaveBeenCalledWith({
-        job_id: "job_pub",
-        point_index: 0,
-        include_ratebook_tables: true,
-      }))
+      await waitFor(() => expect(mockSelectFrontierPoint).toHaveBeenCalledWith(
+        { job_id: "job_pub", point_index: 0, include_ratebook_tables: true },
+        { signal: expect.any(AbortSignal) },
+      ))
       expect(await screen.findByRole("button", { name: "Download factor tables (CSV)" })).toBeInTheDocument()
     })
 
@@ -3046,7 +3173,6 @@ describe("OptimiserConfig", () => {
         ...summary(10),
         status: "ok",
         point_index: 0,
-        frontier_generation: 0,
         baseline_objective: 0,
         baseline_constraints: {},
         factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
@@ -3054,21 +3180,82 @@ describe("OptimiserConfig", () => {
       }
       let resolveReply: (value: unknown) => void = () => {}
       mockSelectFrontierPoint.mockReturnValue(new Promise((resolve) => { resolveReply = resolve }))
-      return { config, deliver: () => act(async () => { resolveReply(reply) }) }
+      return { config, reply, deliver: () => act(async () => { resolveReply(reply) }) }
     }
 
-    it("keeps the chosen target when a factor-table reply arrives after the choice changed", async () => {
+    /** The Export pane's alert that starts with `text`. */
+    async function findAlert(text: string): Promise<HTMLElement> {
+      const alert = (await screen.findByText(new RegExp(`^${text}`))).closest<HTMLElement>("[role=alert]")
+      if (!alert) throw new Error(`"${text}" is not in an alert`)
+      return alert
+    }
+
+    it("aborts a factor-table load the target moved past, and keeps the chosen target", async () => {
       const { config, deliver } = seedRatebookFrontier()
       renderConfig(makeProps({ config }))
       fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
+      const signal = mockSelectFrontierPoint.mock.calls[0][1].signal as AbortSignal
+      expect(signal.aborted).toBe(false)
       fireEvent.change(screen.getByRole("combobox", { name: "Result to publish" }), { target: { value: "" } })
+      expect(signal.aborted).toBe(true)
 
       await deliver()
       const cached = useNodeResultsStore.getState().solveResults.opt_1
       expect(cached?.selectedPointIndex).toBeNull()
-      expect(cached?.frontier?.point_summaries[0].factor_tables).toEqual({
-        age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }],
-      })
+      expect(cached?.frontier?.point_summaries[0].factor_tables).toBeNull()
+    })
+
+    it("says a frontier point that is gone cannot load its factor tables, with no Retry", async () => {
+      const { config } = seedRatebookFrontier()
+      const { ApiError } = await vi.importActual<typeof import("../../api/client")>("../../api/client")
+      mockSelectFrontierPoint.mockReset()
+      mockSelectFrontierPoint.mockRejectedValueOnce(new ApiError("HTTP 410", 410, "gone", undefined, {
+        error_code: "frontier_point_unavailable",
+        message: "Frontier point 1 is no longer available. Re-run the solve to inspect it.",
+      }))
+      renderConfig(makeProps({ config }))
+      fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
+
+      const alert = await findAlert("Factor tables could not be loaded")
+      expect(alert).toHaveTextContent("Frontier point 1 is no longer available. Re-run the solve to inspect it.")
+      expect(within(alert).queryByRole("button", { name: "Retry" })).toBeNull()
+      expect(screen.queryByRole("button", { name: "Load factor tables for CSV" })).toBeNull()
+      expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(1)
+    })
+
+    it("offers Retry after any other factor-table failure, and Retry loads them", async () => {
+      const { config, reply } = seedRatebookFrontier()
+      mockSelectFrontierPoint.mockReset()
+      mockSelectFrontierPoint
+        .mockRejectedValueOnce(Object.assign(new Error("HTTP 500"), { detail: "Rates unavailable." }))
+        .mockResolvedValueOnce(reply)
+      renderConfig(makeProps({ config }))
+      fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
+
+      const alert = await findAlert("Factor tables could not be loaded")
+      expect(alert).toHaveTextContent("Rates unavailable.")
+      fireEvent.click(within(alert).getByRole("button", { name: "Retry" }))
+
+      expect(await screen.findByRole("button", { name: "Download factor tables (CSV)" })).toBeInTheDocument()
+      expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(2)
+    })
+
+    it("reissues a factor-table load another point's apply replaced, without an error", async () => {
+      const { config, reply } = seedRatebookFrontier()
+      const { ApiError } = await vi.importActual<typeof import("../../api/client")>("../../api/client")
+      mockSelectFrontierPoint.mockReset()
+      mockSelectFrontierPoint
+        .mockRejectedValueOnce(new ApiError("HTTP 409", 409, "replaced", undefined, {
+          error_code: "frontier_point_apply_replaced",
+          message: "Another frontier point was requested while this one waited.",
+        }))
+        .mockResolvedValueOnce(reply)
+      renderConfig(makeProps({ config }))
+      fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
+
+      expect(await screen.findByRole("button", { name: "Download factor tables (CSV)" })).toBeInTheDocument()
+      expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(2)
+      expect(screen.queryByText(/Factor tables could not be loaded/)).toBeNull()
     })
 
     it("drops a factor-table reply for a job the node has moved past", async () => {
@@ -3088,57 +3275,6 @@ describe("OptimiserConfig", () => {
       expect(cached?.jobId).toBe("job_newer")
       expect(cached?.frontier?.point_summaries[0].factor_tables).toBeNull()
       expect(cached?.result?.factor_tables).toEqual({})
-    })
-
-    it("drops a factor-table reply from a frontier generation the node has recomputed past", async () => {
-      const { config, deliver } = seedRatebookFrontier()
-      renderConfig(makeProps({ config }))
-      fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
-      // The recompute keeps the job and point 0 is a different point now.
-      act(() => {
-        const previous = useNodeResultsStore.getState().solveResults.opt_1
-        if (!previous || previous.result === null) throw new Error("The seeded solve has no result")
-        const recomputed = { ...previous.originalResult, frontier_generation: 1 }
-        useNodeResultsStore.setState({
-          solveResults: {
-            opt_1: {
-              ...previous,
-              result: recomputed,
-              originalResult: recomputed,
-              frontier: previous.frontier && { ...previous.frontier, frontier_generation: 1 },
-            },
-          },
-        })
-      })
-
-      await deliver()
-      const cached = useNodeResultsStore.getState().solveResults.opt_1
-      expect(cached?.originalResult?.frontier_generation).toBe(1)
-      expect(cached?.frontier?.point_summaries[0].factor_tables).toBeNull()
-      expect(cached?.result?.factor_tables).toEqual({})
-    })
-
-    it("reports a factor-table reply from a generation the result does not show", async () => {
-      const { config } = seedRatebookFrontier()
-      mockSelectFrontierPoint.mockResolvedValue({
-        total_objective: 10, constraints: {}, lambdas: {}, converged: true, iterations: null,
-        cd_iterations: null, clamp_rate: null, history: null, adjustments: null, diagnostics_errors: [],
-        status: "ok",
-        point_index: 0,
-        frontier_generation: 3,
-        baseline_objective: 0,
-        baseline_constraints: {},
-        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
-        error: null,
-      })
-      renderConfig(makeProps({ config }))
-      fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
-
-      expect(await screen.findByText(
-        /The server answered for frontier generation 3, but this result shows generation 0\./,
-      )).toBeInTheDocument()
-      const cached = useNodeResultsStore.getState().solveResults.opt_1
-      expect(cached?.frontier?.point_summaries[0].factor_tables).toBeNull()
     })
 
     it("publishes the chosen frontier point, the same selection the preview shows", async () => {
@@ -3262,13 +3398,14 @@ describe("OptimiserConfig", () => {
       const ratebook = makeSolveResult({
         mode: "ratebook",
         factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
-        combined_factor_bounds: { min: 0.8999999761581421, max: 1.100000023841858 },
+        // The solver's Float32 grid ends, widened to float64.
+        combined_factor_bounds: { min: 0.800000011920929, max: 1.2000000476837158 },
       })
       const config = seedSolve({ result: ratebook, originalResult: ratebook })
       renderConfig(makeProps({ config }))
       expect(screen.getByRole("button", { name: "Download factor tables (CSV)" })).toBeInTheDocument()
       expect(screen.getByTestId("optimiser-combined-factor-collar")).toHaveTextContent(
-        "Combined factor collar [0.8999999761581421, 1.100000023841858] — apply it in your rating engine.",
+        "Combined factor collar [0.8, 1.2] — apply it in your rating engine.",
       )
     })
 
@@ -3496,6 +3633,27 @@ describe("OptimiserConfig factors table", () => {
     })
     expect(onUpdate).toHaveBeenCalledWith("analysis_input", "regions")
     expect(screen.getByRole("checkbox", { name: "Use region for validation" })).toBeChecked()
+  })
+
+  it("settles a switch to an identically structured frame, so a later schema edit prunes nothing", async () => {
+    mockUseDataInputColumns.mockImplementation(() => DATA_COLUMNS)
+    const onUpdate = vi.fn()
+    const view = renderStatefulConfig(analysisProps({ analysis_columns: ["region", "premium"] }), onUpdate)
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Validation input" }), {
+      target: { value: "regions" },
+    })
+    expect(onUpdate).toHaveBeenCalledWith("analysis_input", "regions")
+
+    // The validation frame later loses a column through an unrelated upstream edit.
+    mockUseDataInputColumns.mockImplementation((nodeId: string) =>
+      nodeId === "regions_node" ? DATA_COLUMNS.filter((column) => column.name !== "premium") : DATA_COLUMNS,
+    )
+    fireEvent.click(screen.getByRole("checkbox", { name: "Use volume for validation" }))
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith("analysis_columns", ["region", "premium", "volume"]))
+    expect(onUpdate).not.toHaveBeenCalledWith("analysis_columns", ["region"])
+    expect(onUpdate).not.toHaveBeenCalledWith("analysis_columns", ["region", "volume"])
+    expect(view.container).toHaveTextContent(/“premium” is not a column of the validation input/)
   })
 
   it("flags a configured column the frame lacks without rewriting the configuration", () => {

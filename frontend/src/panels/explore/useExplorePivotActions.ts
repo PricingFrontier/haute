@@ -23,7 +23,7 @@ import {
   executionTerminalReasonFromError,
 } from "../../utils/executionDiagnostics"
 import { apiErrorMessage } from "../../api/errors"
-import type { SimpleEdge, SimpleNode } from "../editors"
+import type { SimpleEdge, SimpleNode } from "../editors/_shared"
 import {
   pivotCalculationIdentity,
   isPivotConfigured,

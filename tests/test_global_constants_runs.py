@@ -389,7 +389,6 @@ def _served_model_score(tmp_path: Path, code: str, preamble: str = "") -> pl.Dat
                                     "enabled": True,
                                 }
                             ],
-                            "outputFormat": "json",
                         },
                     },
                 }

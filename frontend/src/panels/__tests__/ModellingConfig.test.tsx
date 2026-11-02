@@ -5,7 +5,8 @@ import { ApiError } from "../../api/client"
 import { trainingIdentityConfig } from "../../utils/modellingExportConfig"
 import { trainingLineage } from "../../utils/trainedJobHandles"
 import { buildGraph } from "../../utils/buildGraph"
-import type { SimpleNode as GraphNodeInput } from "../editors"
+import { runDispersionEstimate } from "../../api/dispersion"
+import type { SimpleNode as GraphNodeInput } from "../editors/_shared"
 import { GraphProvider } from "../GraphContext"
 import useGraphStore from "../../stores/useGraphStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
@@ -16,7 +17,7 @@ import useToastStore from "../../stores/useToastStore"
 import type { ModellingPane } from "../../stores/useUIStore"
 import useUIStore from "../../stores/useUIStore"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
-import type { SimpleNode, SimpleEdge } from "../editors"
+import type { SimpleNode, SimpleEdge } from "../editors/_shared"
 import type { MlflowDestinationEntry, MlflowDestinationKey } from "../../api/types"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 import { makeTrainResult as makeCanonicalTrainResult } from "../../test-utils/factories"
@@ -382,6 +383,18 @@ describe("Training configuration readiness", () => {
     renderConfig({ activePane: "params", nodeId: "glm_params", config: { algorithm: "glm", family: "poisson", target: "loss_ratio", terms: { age: { type: "linear" } } } })
     expect(screen.getByText("Regularization")).toBeInTheDocument()
     expect(screen.queryByText("Target column")).toBeNull()
+  })
+  it("shows each GLM conflict once, beside its setting", () => {
+    renderConfig({ activePane: "params", nodeId: "glm_conflicts", config: {
+      algorithm: "glm", family: "poisson", target: "loss_ratio",
+      terms: { age: { type: "bs" } }, regularization: "ridge", cv_folds: 5, cv_selection: "min",
+      robust_standard_errors: "HC1",
+    } })
+    const alerts = screen.getAllByRole("alert").map((alert) => alert.textContent)
+    expect(alerts).toEqual([
+      expect.stringMatching(/^Regularization cannot be combined with automatically smoothed splines \(age\)/),
+      expect.stringMatching(/^Robust standard errors cannot be combined with regularization/),
+    ])
   })
   it("keeps the missing L1 ratio issue out of Parameters for older Elastic Net configs", () => {
     renderConfig({ activePane: "params", nodeId: "glm_params", config: { algorithm: "glm", family: "poisson", target: "loss_ratio", terms: { age: { type: "linear" } }, regularization: "elastic_net" } })
@@ -1242,6 +1255,63 @@ describe("ModellingConfig", () => {
       })
     })
 
+    describe("a request refused before any job exists", () => {
+      const handle = { jobId: "job_kept", configHash: "h", source: "live", lineage: "l" }
+
+      async function rememberEarlierModel() {
+        useDocumentStatusStore.setState({ sourceFile: "rating/main.py" })
+        const trainedJobHandles = await import("../../utils/trainedJobHandles")
+        trainedJobHandles.writeTrainedJobHandle("rating/main.py", "node_1", handle)
+        // The node already shows that model, so nothing restores it meanwhile.
+        useNodeResultsStore.getState().restoreTrainResult("node_1", {
+          result: makeTrainResult(),
+          terminalStatus: null,
+          jobId: "job_kept",
+          configHash: "h",
+          source: "live",
+          structuralVersion: 0,
+        })
+        return trainedJobHandles
+      }
+
+      it("keeps the handle to the last completed model when the request fails", async () => {
+        const { readTrainedJobHandle } = await rememberEarlierModel()
+        mockTrainModel.mockRejectedValue(new Error("Network fail"))
+        renderConfig()
+        fireEvent.click(screen.getByRole("button", { name: "Re-train" }))
+
+        await waitFor(() => expect(useNodeResultsStore.getState().trainResults.node_1?.error).toBe("Network fail"))
+        expect(readTrainedJobHandle("rating/main.py", "node_1")).toEqual(handle)
+      })
+
+      it("keeps the handle when the server answers the request with an error", async () => {
+        const { readTrainedJobHandle } = await rememberEarlierModel()
+        mockTrainModel.mockResolvedValue(makeTrainResult({ status: "error", error: "Training is already running for this node" }))
+        renderConfig()
+        fireEvent.click(screen.getByRole("button", { name: "Re-train" }))
+
+        await waitFor(() => expect(useNodeResultsStore.getState().trainResults.node_1?.error)
+          .toBe("Training is already running for this node"))
+        expect(readTrainedJobHandle("rating/main.py", "node_1")).toEqual(handle)
+      })
+    })
+
+    it("records the edited config's hash when Train follows an edit at once", async () => {
+      mockTrainModel.mockResolvedValue({ status: "started", job_id: "job_after_edit" })
+      const { rerender, props } = renderConfig()
+      const edited = { ...props.config, target: "claim_count" }
+      rerender(
+        <GraphProvider allNodes={[]} edges={[]}>
+          <ModellingConfig {...props} config={edited} />
+        </GraphProvider>,
+      )
+      fireEvent.click(screen.getByRole("button", { name: /Train Model/ }))
+
+      await waitFor(() => expect(useNodeResultsStore.getState().trainJobs.node_1?.jobId).toBe("job_after_edit"))
+      expect(useNodeResultsStore.getState().trainJobs.node_1?.configHash)
+        .toBe(hashConfig(trainingIdentityConfig(edited)))
+    })
+
     it("preserves structured execution metrics when trainModel admission fails", async () => {
       const executionMetrics = makeExecutionMetricsFixture({
         profile: "training_prep",
@@ -1284,7 +1354,8 @@ describe("ModellingConfig", () => {
         const cached = store.trainResults.node_1
         expect(cached?.result).toBeNull()
         expect(cached?.error).toBe("Refused")
-        expect(cached?.jobId).toBe("startup-failure:node_1")
+        // A refused start ran no job: no job id stands in for one.
+        expect(cached?.jobId).toBe("")
         expect(cached?.source).toBe("live")
         expect(store.trainJobs.node_1).toBeUndefined()
       })
@@ -1294,6 +1365,101 @@ describe("ModellingConfig", () => {
   // ═════════════════════════════════════════════════════════════════
   // Staleness indicator
   // ═════════════════════════════════════════════════════════════════
+
+  describe("Dispersion estimate ownership", () => {
+    const initialSource = useSettingsStore.getState().activeSource
+    afterEach(() => useSettingsStore.setState({ activeSource: initialSource }))
+
+    const negbinomial = (overrides: Record<string, unknown> = {}) => ({
+      target: "claims_a",
+      task: "regression",
+      algorithm: "glm",
+      family: "negbinomial",
+      terms: { age: { type: "linear" } },
+      ...overrides,
+    })
+    const columns = [
+      { name: "claims_a", dtype: "Int64" },
+      { name: "claims_b", dtype: "Int64" },
+      { name: "age", dtype: "Float64" },
+    ]
+
+    /** A reply held until the test settles it, and the signal it was asked under. */
+    function holdEstimate() {
+      const held: { signal?: AbortSignal; resolve?: (value: number) => void } = {}
+      vi.mocked(runDispersionEstimate).mockImplementationOnce((_args, options) => {
+        held.signal = options?.signal
+        return new Promise<number>((resolve) => { held.resolve = resolve })
+      })
+      return held
+    }
+
+    function renderGlm(config: Record<string, unknown>) {
+      withPassThroughGraph()
+      const node = { id: "node_1", data: { label: "glm", description: "", nodeType: "modelling", config } }
+      const view = renderConfig({ config, upstreamColumns: columns, allNodes: [node] })
+      const rerenderWith = (next: Record<string, unknown>) => view.rerender(
+        <GraphProvider allNodes={[{ ...node, data: { ...node.data, config: next } }]} edges={[]}>
+          <ModellingConfig {...view.props} config={{ ...next, evaluation: view.props.config.evaluation }} />
+        </GraphProvider>,
+      )
+      return { ...view, node, rerenderWith }
+    }
+
+    it("asks for the current graph and source, and fills the unchanged draft's field", async () => {
+      useSettingsStore.setState({ activeSource: "batch" })
+      const held = holdEstimate()
+      const { props, node } = renderGlm(negbinomial())
+
+      fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
+      expect(runDispersionEstimate).toHaveBeenCalledWith(
+        { graph: payloadFor([node]), node_id: "node_1", param: "theta", source: "batch" },
+        { signal: expect.any(AbortSignal) },
+      )
+
+      await act(async () => held.resolve?.(3))
+      expect(props.onUpdate).toHaveBeenCalledWith("theta", 3)
+    })
+
+    it("never writes target A's late estimate over target B's manual theta", async () => {
+      const held = holdEstimate()
+      const { props, rerenderWith } = renderGlm(negbinomial())
+
+      fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
+      rerenderWith(negbinomial({ target: "claims_b", theta: 7 }))
+      expect(held.signal?.aborted).toBe(true)
+
+      await act(async () => held.resolve?.(3))
+      expect(props.onUpdate).not.toHaveBeenCalledWith("theta", 3)
+      expect(screen.getByPlaceholderText("e.g. 1.5")).toHaveValue(7)
+      expect(screen.getByRole("button", { name: "Estimate from data" })).toBeEnabled()
+    })
+
+    it("stops an estimate when the data source changes", async () => {
+      useSettingsStore.setState({ activeSource: "live" })
+      const held = holdEstimate()
+      const { props } = renderGlm(negbinomial())
+
+      fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
+      act(() => useSettingsStore.setState({ activeSource: "batch" }))
+      expect(held.signal?.aborted).toBe(true)
+
+      await act(async () => held.resolve?.(3))
+      expect(props.onUpdate).not.toHaveBeenCalled()
+    })
+
+    it("stops an estimate when the graph feeding the node changes", async () => {
+      const held = holdEstimate()
+      const { props } = renderGlm(negbinomial({ family: "tweedie", var_power: 1.5 }))
+
+      fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
+      act(() => useGraphStore.setState((state) => ({ structuralVersion: state.structuralVersion + 1 })))
+      expect(held.signal?.aborted).toBe(true)
+
+      await act(async () => held.resolve?.(1.7))
+      expect(props.onUpdate).not.toHaveBeenCalled()
+    })
+  })
 
   describe("Staleness indicator", () => {
     beforeEach(() => { defaultPane = "train" })
@@ -1657,6 +1823,32 @@ describe("ModellingConfig", () => {
       const ramToast = toasts.find((t) => t.text.includes("Training estimate failed"))!
       expect(ramToast.type).toBe("warning")
       expect(ramToast.text).toContain("Network error")
+    })
+
+    it("shows a refusal coded as a failed evaluation preview in Split, whatever its words", async () => {
+      mockEstimateTrainingRam.mockRejectedValue(Object.assign(new Error("HTTP 422"), {
+        status: 422,
+        rawDetail: {
+          error_code: "evaluation_preview_failed",
+          message: "Evaluation preview cannot run in bounded mode: unsafe lazy plan",
+        },
+      }))
+      renderConfig({ activePane: "split" })
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Evaluation preview cannot run in bounded mode: unsafe lazy plan",
+      )
+    })
+
+    it("keeps an uncoded estimate failure out of Split", async () => {
+      mockEstimateTrainingRam.mockRejectedValue(Object.assign(new Error("HTTP 422"), {
+        status: 422,
+        detail: "Evaluation preview failed: written like one, but not coded as one",
+      }))
+      renderConfig({ activePane: "split" })
+      await waitFor(() => {
+        expect(useToastStore.getState().toasts.some((t) => t.text.includes("written like one"))).toBe(true)
+      })
+      expect(screen.queryByRole("alert")).toBeNull()
     })
 
     it("does not show inline warning when estimate succeeds", async () => {

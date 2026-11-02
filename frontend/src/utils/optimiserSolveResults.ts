@@ -20,19 +20,9 @@ import type {
 } from "../stores/useNodeResultsStore"
 import { canonicalJson } from "./canonicalJson"
 
-/**
- * The frontier a completed solve carries, stamped with the result's frontier
- * generation, or null when it has no points. A frontier from another
- * generation than its result's is a contract error and throws.
- */
+/** The frontier a completed solve carries, or null when it has no points. */
 export function frontierFromSolveResult(result: OptimiserSolveResult): FrontierData | null {
   const rawFrontier = result.frontier
-  if (rawFrontier && rawFrontier.frontier_generation !== result.frontier_generation) {
-    throw new Error(
-      `Optimiser frontier generation ${rawFrontier.frontier_generation} does not match `
-      + `its result's generation ${result.frontier_generation}`,
-    )
-  }
   return rawFrontier && rawFrontier.points?.length
     ? {
         points: rawFrontier.points,
@@ -43,7 +33,6 @@ export function frontierFromSolveResult(result: OptimiserSolveResult): FrontierD
         swept_axes: rawFrontier.swept_axes,
         points_limit: rawFrontier.points_limit,
         points_truncated: rawFrontier.points_truncated,
-        frontier_generation: result.frontier_generation,
       }
     : null
 }
@@ -104,43 +93,32 @@ export function effectiveConstraintBounds(result: OptimiserSolveResult): Record<
 
 /** The cache key of an `/apply` request identity, with the query canonicalised. */
 export function optimiserApplyKey(identity: OptimiserApplyIdentity): string {
-  return canonicalJson([
-    identity.jobId,
-    identity.frontierGeneration,
-    identity.target,
-    identity.query,
-  ])
+  return canonicalJson([identity.jobId, identity.target, identity.query])
 }
 
-/** The `/apply` identity a node's cached solve shows now: its job, frontier
- *  generation and selected target. */
+/** The `/apply` identity a node's cached solve shows now: its job and selected target. */
 export function optimiserApplyIdentityFor(
   cached: SolvedCachedSolveResult,
   query: OptimiserApplyQuery,
 ): OptimiserApplyIdentity {
   return {
     jobId: cached.jobId,
-    frontierGeneration: cached.originalResult.frontier_generation,
     target: cached.selectedPointIndex ?? "solved",
     query,
   }
 }
 
 export function sameApplyTarget(a: OptimiserApplyIdentity, b: OptimiserApplyIdentity): boolean {
-  return a.jobId === b.jobId && a.frontierGeneration === b.frontierGeneration && a.target === b.target
+  return a.jobId === b.jobId && a.target === b.target
 }
 
-/** The node's entries for any job or generation other than the one installed. */
+/** The node's entries for any job other than the one installed. */
 export function withoutSupersededApplyEntries(
   entries: OptimiserApplyCacheEntry[],
   nodeId: string,
-  installed: { jobId: string; frontierGeneration: number },
+  installedJobId: string,
 ): OptimiserApplyCacheEntry[] {
-  const kept = entries.filter((entry) => (
-    entry.nodeId !== nodeId
-    || (entry.identity.jobId === installed.jobId
-      && entry.identity.frontierGeneration === installed.frontierGeneration)
-  ))
+  const kept = entries.filter((entry) => entry.nodeId !== nodeId || entry.identity.jobId === installedJobId)
   return kept.length === entries.length ? entries : kept
 }
 
@@ -154,17 +132,12 @@ export function withoutApplyEntriesForNodes(
   return kept.length === entries.length ? entries : kept
 }
 
+/** Whether a frontier select reply answers the node's installed solve: the same job. */
 export function selectReplyIsCurrent(
   cached: CachedSolveResult | undefined,
   jobId: string,
-  selectResult: FrontierSelectResponse,
 ): cached is SolvedCachedSolveResult {
-  return (
-    cached !== undefined
-    && cached.result !== null
-    && cached.jobId === jobId
-    && cached.originalResult.frontier_generation === selectResult.frontier_generation
-  )
+  return cached !== undefined && cached.result !== null && cached.jobId === jobId
 }
 
 /** A select response is the server's complete result for its point. */

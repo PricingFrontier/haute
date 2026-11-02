@@ -1799,15 +1799,22 @@ def _collect_assigned_names(node: ast.AST, names: set[str]) -> None:
                 names.add(child.target.id)
 
 
-def _has_control_flow_wrapping_target(stmts: list[ast.stmt], target_column: str) -> bool:
-    """Check if with_columns producing target_column is inside control flow."""
-    for stmt in stmts:
-        if isinstance(stmt, _CONTROL_FLOW_STATEMENT_TYPES):
-            if _contains_with_columns_producing(stmt, target_column):
-                return True
-        if hasattr(ast, "Match") and isinstance(stmt, ast.Match):
-            if _contains_with_columns_producing(stmt, target_column):
-                return True
+def _has_control_flow_wrapping_target(code: str, target_column: str) -> bool:
+    """Whether a ``with_columns``/``select`` inside a block writes *target_column*.
+
+    The call's outputs are named as :func:`_find_definition` names them, through
+    the bindings in force there and Polars' auto-naming, so a block's write is
+    found whenever the unconditional path would read it as the definition.
+    """
+    stmts = _cached_parse(code).body
+    for call, _lineno, table, _unprovable, _after_change in _calls_with_bindings(code):
+        if not isinstance(stmts[_statement_index(stmts, call)], _BLOCK_STATEMENT_TYPES):
+            continue
+        if any(
+            alias == target_column
+            for _expr, alias, _line, _bound in _extract_expressions_from_with_columns(call, table)
+        ):
+            return True
     return False
 
 
@@ -1825,22 +1832,6 @@ def _spread(args: list[ast.expr]) -> list[ast.expr]:
         else:
             items.append(arg)
     return items
-
-
-def _contains_with_columns_producing(node: ast.AST, target_column: str) -> bool:
-    """Check if any node in subtree has with_columns that produces target_column."""
-    for child in ast.walk(node):
-        if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute):
-            if child.func.attr in _COLUMN_PRODUCER_METHODS:
-                # Check if any arg produces the target column
-                for arg in _spread(child.args):
-                    _, alias = _strip_alias(arg)
-                    if alias == target_column:
-                        return True
-                for kw in child.keywords:
-                    if kw.arg == target_column:
-                        return True
-    return False
 
 
 # ---------------------------------------------------------------------------
@@ -2036,7 +2027,7 @@ def _parse_expression_impl(code: str, target_column: str) -> ParsedExpression | 
         return _opaque(target_column, "")
 
     # Check if the with_columns producing target is inside control flow
-    if _has_control_flow_wrapping_target(stmts, target_column):
+    if _has_control_flow_wrapping_target(code, target_column):
         return _opaque(target_column, code)
 
     if not _find_with_columns_calls(tree):

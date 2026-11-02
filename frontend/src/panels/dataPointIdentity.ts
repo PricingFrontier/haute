@@ -1,6 +1,6 @@
 import type { GlobalConstantDraft } from "../utils/globalConstants"
 import { authoredPolarsConfig } from "../utils/polarsStepInputs"
-import type { SimpleEdge, SimpleNode } from "./editors"
+import type { SimpleEdge, SimpleNode } from "./editors/_shared"
 
 type NodeDataCacheIdentityInput = {
   node: SimpleNode

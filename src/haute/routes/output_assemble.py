@@ -128,10 +128,7 @@ async def output_assemble_dry_run(
 
     # 2. Swap the volatile mapping into the OUTPUT node's config — the dry-run
     #    overrides whatever is persisted so the editor previews unsaved edits.
-    node.data.config = {
-        "outputMapping": body.output_mapping,
-        "outputFormat": body.output_format,
-    }
+    node.data.config = {"outputMapping": body.output_mapping}
 
     # 3. Run up to the OUTPUT node.
     run = _InteractiveRun("output_assemble_dry_run")

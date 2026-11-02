@@ -8,7 +8,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import type { Node } from "@xyflow/react"
 
 import type { InputCacheJobStatusResponse, InputCacheSnapshotResponse } from "../../api/types"
-import type { SimpleNode } from "../../panels/editors"
+import type { SimpleNode } from "../../panels/editors/_shared"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useInputImportStore from "../../stores/useInputImportStore"

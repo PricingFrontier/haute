@@ -545,6 +545,87 @@ def write_generated_files(project_dir: Path, files: Mapping[str, str]) -> list[s
     return changed
 
 
+def capture_new_files(project_dir: Path, written: Sequence[str]) -> None:
+    """Record the files Haute just wrote into *project_dir* that Git does not track yet, as
+    one save on the working branch's ledger, and say what became of them.
+
+    Commit takes a new file only in the pipeline folder (specs/git-integration), so a
+    workflow a newer Haute adds, or ``connections.toml``, would otherwise never reach version
+    history, and a branch could merge without its deploy workflow. "Not tracked yet" is
+    untracked, or staged as an addition but never committed, as a capture whose commit a hook
+    refused leaves its files. What Haute changed in tracked files is left on disk, for review
+    and the next Commit. Recording checks the ledger out, so it is made only while the
+    checkout is on the working branch's ledger, never from under another branch, whose files
+    it would replace. A capture skipped (no working branch chosen, the checkout elsewhere, no
+    git identity) or failed prints why and names the files for ``git status``, which lists new
+    files where ``git diff`` does not. Outside a repository there is nothing to record.
+    """
+    from haute._git_core import (
+        _get_current_branch,
+        _is_git_repo,
+        _run_git,
+        _run_git_ok,
+        ledger_name,
+    )
+    from haute._git_state import read_working_branch
+
+    paths = list(dict.fromkeys(written))
+    if not paths or not _is_git_repo(project_dir):
+        return
+    pathspecs = [f":(literal){path}" for path in paths]
+    untracked = _run_git(
+        "ls-files", "--others", "--exclude-standard", "-z", "--", *pathspecs, cwd=project_dir
+    )
+    # A repository with no commit yet has no HEAD to compare with, and nothing staged that
+    # an earlier capture could have left.
+    has_head, staged = _run_git_ok(
+        "diff",
+        "--cached",
+        "--name-only",
+        "--diff-filter=A",
+        "-z",
+        "HEAD",
+        "--",
+        *pathspecs,
+        cwd=project_dir,
+    )
+    listed = untracked.split("\0") + (staged.split("\0") if has_head else [])
+    new = list(dict.fromkeys(path for path in listed if path))
+    if not new:
+        return
+    working = read_working_branch(project_dir)
+    if working is not None:
+        ledger = ledger_name(working)
+        current = _get_current_branch(project_dir)
+        if current != ledger:
+            on = "no branch (a detached HEAD)" if current == "HEAD" else current
+            click.echo(
+                f"\nYour checkout is on {on}, not {ledger}, where Haute keeps {working}'s "
+                "saves, so these were not recorded from under it."
+            )
+            _not_in_version_history(new)
+            return
+    # The editor's own capture: one save on the ledger, or a warning naming why not.
+    from haute.routes._save_pipeline import capture_save_in_ledger
+
+    warnings: list[str] = []
+    capture = capture_save_in_ledger(project_dir, new, warnings)
+    if capture.git_sha is not None:
+        click.echo(f"\nRecorded in version history: {', '.join(new)}")
+        click.echo("  (a save on your working branch, which its next Commit takes)")
+        return
+    if not capture.uncaptured:
+        return
+    for warning in warnings:
+        click.echo(f"\n{warning}")
+    _not_in_version_history(capture.uncaptured)
+
+
+def _not_in_version_history(paths: Sequence[str]) -> None:
+    click.echo(f"Not yet in version history: {', '.join(paths)}")
+    click.echo("  git status lists them (git diff does not): add them before you commit.")
+
+
 def _form_folder_problem(project_dir: Path, relative: str, files: Mapping[str, str]) -> str | None:
     """Why the form folder at *relative* cannot be written with *files*: the first path that
     is no ordinary one of the project's (a link or junction on the way, one leading out of
@@ -995,7 +1076,8 @@ def handle_init(config: InitConfig) -> None:
 
     # -- .python-version - one Python for local, CI and the deployed model -----
     python_version_file = project_dir / ".python-version"
-    if not python_version_file.exists():
+    wrote_python_version = not python_version_file.exists()
+    if wrote_python_version:
         python_version_file.write_text(f"{python_version}\n", encoding="utf-8")
 
     # -- Directories -----------------------------------------------------------
@@ -1109,7 +1191,8 @@ def handle_init(config: InitConfig) -> None:
     # haute._gitignore_guard, shared with the unborn-repo seed in haute._git so
     # the two sites cannot drift.
     gitignore_path = project_dir / ".gitignore"
-    if not gitignore_path.exists():
+    wrote_gitignore = not gitignore_path.exists()
+    if wrote_gitignore:
         gitignore_path.write_text("__pycache__/\n*.pyc\n.venv/\n", encoding="utf-8")
     ensure_gitignore_guards(project_dir)
 
@@ -1141,6 +1224,18 @@ def handle_init(config: InitConfig) -> None:
         )
         if workbench != defaults.workbench:
             click.echo(_NODES_TO_REPLACE[workbench])
+        # What the re-run wrote, every generated file among it (one an earlier run wrote and
+        # never committed too): those Git does not track yet are recorded in version history.
+        written = [
+            "haute.toml",
+            *(["pyproject.toml"] if pyproject_changed else []),
+            *([".python-version"] if wrote_python_version else []),
+            *(f"rating/{FORM_FOLDER}/{rel}" for rel in form_files),
+            *([CONNECTIONS_FILE] if write_connections else []),
+            *generated,
+            *([".gitignore"] if wrote_gitignore else []),
+        ]
+        capture_new_files(project_dir, written)
     else:
         click.echo(f"Initialised Haute project '{name}' ({kind} + {ci})\n")
         click.echo(f"  pyproject.toml        - {requirement} added as dependency")
@@ -1172,7 +1267,7 @@ def handle_init(config: InitConfig) -> None:
     if rerun:
         if pyproject_changed:
             click.echo("  uv sync                # install what pyproject.toml now lists")
-        click.echo("  git diff               # review the changes, then commit them")
+        click.echo("  git status; git diff   # review the changes, then commit them")
     else:
         click.echo("  uv sync                # install dependencies")
         click.echo("  cp .env.example .env   # fill in credentials")

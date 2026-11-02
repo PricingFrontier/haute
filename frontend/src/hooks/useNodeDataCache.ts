@@ -10,7 +10,7 @@ import {
 import { apiErrorMessage } from "../api/errors"
 import { nextOperationToken } from "../utils/operationToken"
 import type { NodeDataColumns, NodeDataPointResponse, NodeDataRetention } from "../api/types"
-import type { SimpleEdge, SimpleNode } from "../panels/editors"
+import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import { buildNodeDataCacheIdentity } from "../panels/dataPointIdentity"
 import useNodeDataStore, { columnsCoverDemand } from "../stores/useNodeDataStore"
 import useNodeWorkStore, { registerNodeStop } from "../stores/useNodeWorkStore"
