@@ -462,6 +462,50 @@ describe("TracePanel", () => {
     expect(screen.getByText("Technical details")).toBeInTheDocument()
   })
 
+  it("shows no breakdown of its own under a waterfall the backend refused", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "target",
+          output_value: 120,
+          steps: [
+            makeStep({
+              node_id: "target",
+              node_name: "Calculation",
+              schema_diff: {
+                columns_added: ["premium"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: [],
+              },
+              expression: {
+                expression_text: "base * factor * discount",
+                expression_type: "arithmetic",
+                referenced_columns: ["base", "factor", "discount"],
+              },
+              calculation: {
+                substituted_text: "100 * 1.2 * 1",
+                result_value: 120,
+                input_values: { base: 100, factor: 1.2, discount: 1 },
+              },
+            }),
+          ],
+          waterfall: {
+            error: "expected 120 but accumulated 119",
+            error_type: "WaterfallReconciliationError",
+          },
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The calculation breakdown does not match the traced result.",
+    )
+    expect(screen.queryByTestId("waterfall-total")).not.toBeInTheDocument()
+    expect(screen.queryAllByTestId("waterfall-bar")).toHaveLength(0)
+  })
+
   it("close button, the side panels' shared red Close, calls onClose", () => {
     const onClose = vi.fn()
     render(<TracePanel trace={makeTrace()} onClose={onClose} />)

@@ -91,8 +91,11 @@ preserving the one-level nesting contract.
 
 **`parse_expression`** (`_expression_parser.py`): strip a leading BOM → `_cached_parse(code)` →
 bail to `_opaque(...)` on empty input or `SyntaxError` → `_has_control_flow_wrapping_target`: if
-the `with_columns()` producing `target_column` sits inside `if`/`for`/`while`/`try`/`with`/`match`,
-bail to opaque (the value is branch-dependent and cannot be statically resolved) →
+a `with_columns()`/`select()` inside `if`/`for`/`while`/`try`/`with`/`match` writes
+`target_column`, bail to opaque (the value is branch-dependent and cannot be statically
+resolved). It names each call's outputs exactly as `_find_definition` does (through the
+bindings `_calls_with_bindings` gives the call, and `_infer_auto_name` for an unaliased
+expression), so a block's write is found however it is spelled →
 `_find_definition` scans every call `_calls_with_bindings` returns, "last alias match wins", an
 unaliased expression named after its leftmost column by `_infer_auto_name` →
 `_find_control_flow_assigned_vars` records names assigned *inside* control flow, so an expression

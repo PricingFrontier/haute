@@ -452,11 +452,19 @@ the limited preview shows rather than independent source samples.
      annotated or augmented) rewrites no frame and is skipped; binding `df` or an input, or
      reading a frame (`n = src.height`), fails the proof, and a later use of the bound name
      as a frame fails it on its own;
-   - `filter`, `sort`, `head`, `tail`, `limit`, `slice`, `unique`, `drop`, `drop_nulls`,
-     and `lazy` keep values;
+   - `filter`, `sort`, `head`, `tail`, `limit`, `slice`, `unique`, `drop_nulls`, and
+     `lazy` keep values;
+   - a literal `drop(...)` (names, or lists of names, with an optional literal `strict`)
+     records its columns as `dropped`; a selector or non-literal drop fails the proof;
    - `with_columns` and `select` assign every keyword output and every output that is not a
      bare column; a pure column selection (a literal selector or a literal name list)
-     assigns nothing; an expression rooted at a literal selector whose only naming step is
+     assigns nothing. A `select` also carries only the bare columns it keeps
+     (`carried_only`, intersected with any earlier restriction) and keeps only those of
+     each joined input's same-name keys; `pl.all()` keeps the restriction, and
+     `pl.exclude(<names>)` records its names as `dropped`. A `select` keeping columns a
+     selector chooses fails the proof, since the syntax does not name them. A column the
+     program dropped is never carried, so one a later join brings in under that name is not
+     read as the root input's; an expression rooted at a literal selector whose only naming step is
      its outermost call assigns that call's `alias`, or the selector's expansion (renamed
      by a trailing `.name.suffix`/`.name.prefix`) over the program's proven column superset
      — every input's columns, every column assigned so far, and for each join every
@@ -486,7 +494,8 @@ the limited preview shows rather than independent source samples.
      selector computation, a non-literal selector, `.name` or `.struct` rewrites, `pipe`,
      or an unaliased `when`/`then` — and every other method or statement fail the proof.
 
-   The proven assignments are removed from the carried columns. A column several inputs
+   The proven assignments and dropped columns are removed from the carried columns, and a
+   `carried_only` restriction keeps only its columns (`CarriedColumnProof.carries`). A column several inputs
    share identifies only the program's root input, unless the join that brought in this
    port's input proves it a same-name key of that input, and a non-root input's null value
    is not carried because it may be an outer fill. Every remaining shared column is a

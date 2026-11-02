@@ -2901,11 +2901,11 @@ def test_cardinality_rejects_a_computed_column_selector() -> None:
     ("code", "inputs", "assigned", "join_keys", "carried_only"),
     [
         ("df = src.with_columns(y=pl.col('x') * 2)", ("src",), {"y"}, {}, None),
-        ("df = src.select((pl.col('x') * 2).alias('x'), 'y')", ("src",), {"x"}, {}, None),
-        ("df = src.select(pl.col('x'), 'y')", ("src",), set(), {}, None),
+        ("df = src.select((pl.col('x') * 2).alias('x'), 'y')", ("src",), {"x"}, {}, {"y"}),
+        ("df = src.select(pl.col('x'), 'y')", ("src",), set(), {}, {"x", "y"}),
         ("df = src.select(pl.all())", ("src",), set(), {}, None),
         ("df = src.select(pl.exclude('y'))", ("src",), set(), {}, None),
-        ("df = src.select(['x', 'y'])", ("src",), set(), {}, None),
+        ("df = src.select(['x', 'y'])", ("src",), set(), {}, {"x", "y"}),
         ("df = src.with_columns(pl.col('x').str.to_uppercase())", ("src",), {"x"}, {}, None),
         ("df = src.with_columns(pl.col('x').map_elements(str))", ("src",), {"x"}, {}, None),
         (
@@ -2981,6 +2981,83 @@ def test_carried_column_proof_names_every_rewritten_column(
     assert proof.assigned == assigned
     assert proof.join_keys == {name: frozenset(keys) for name, keys in join_keys.items()}
     assert proof.carried_only == (None if carried_only is None else frozenset(carried_only))
+
+
+@pytest.mark.parametrize(
+    ("code", "inputs", "carried_only", "dropped", "join_keys"),
+    [
+        # A select keeps only its unchanged pass-through columns.
+        ("df = src.select('a', pl.col('b').alias('b_new'))", ("src",), {"a"}, set(), {}),
+        ("df = src.select((pl.col('a') * 2).alias('a'))", ("src",), set(), set(), {}),
+        ("df = src.select(pl.col('a', 'b'))", ("src",), {"a", "b"}, set(), {}),
+        ("df = src.select('a', 'b').select('b')", ("src",), {"b"}, set(), {}),
+        # A column a later join brings in is not the root input's.
+        (
+            "df = src.select('a').join(other, on='a')",
+            ("src", "other"),
+            {"a"},
+            set(),
+            {"other": {"a"}},
+        ),
+        # A key the select drops holds no joined input's value any more.
+        (
+            "df = src.join(other, on='a').select('b')",
+            ("src", "other"),
+            {"b"},
+            set(),
+            {"other": set()},
+        ),
+        # Selecting every column keeps the frame's restriction unchanged.
+        ("df = src.select(pl.all())", ("src",), None, set(), {}),
+        ("df = src.select(pl.exclude('c'))", ("src",), None, {"c"}, {}),
+        ("df = src.drop('c').join(other, on='a')", ("src", "other"), None, {"c"}, {"other": {"a"}}),
+        ("df = src.drop(['a', 'c'], strict=False)", ("src",), None, {"a", "c"}, {}),
+        ("df = src.join(other, on='a').drop('a')", ("src", "other"), None, {"a"}, {"other": set()}),
+    ],
+)
+def test_carried_proof_keeps_only_the_columns_a_select_or_drop_leaves(
+    code: str,
+    inputs: tuple[str, ...],
+    carried_only: set[str] | None,
+    dropped: set[str],
+    join_keys: dict[str, set[str]],
+) -> None:
+    from haute._column_lineage import carried_column_proof
+
+    proof = carried_column_proof(code, inputs)
+
+    assert proof is not None
+    assert proof.carried_only == (None if carried_only is None else frozenset(carried_only))
+    assert proof.dropped == dropped
+    assert proof.join_keys == {name: frozenset(keys) for name, keys in join_keys.items()}
+    for column in dropped:
+        assert not proof.carries(column)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # The columns a selector keeps are not named in the syntax.
+        "df = src.select(cs.numeric())",
+        "df = src.select(pl.col('^a.*$'))",
+        "df = src.drop(cs.numeric())",
+        "df = src.drop(names)",
+        "df = src.drop()",
+        "df = src.drop('a', strict=flag)",
+    ],
+)
+def test_carried_proof_refuses_a_select_or_drop_whose_columns_it_cannot_name(code: str) -> None:
+    from haute._column_lineage import carried_column_proof
+
+    assert (
+        carried_column_proof(
+            code,
+            ("src",),
+            input_columns={"src": ["a", "b"]},
+            selector_aliases=frozenset({"cs"}),
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -3349,7 +3426,7 @@ def test_carried_proof_distinguishes_value_operations_from_pure_selections() -> 
     columns = {"src": ["id", "a", "b"]}
     negated = carried_column_proof("df = src.select(~pl.all())", ("src",), input_columns=columns)
     complement = carried_column_proof(
-        "df = src.select(~cs.numeric())",
+        "df = src.with_columns(~cs.numeric())",
         ("src",),
         input_columns=columns,
         selector_aliases=frozenset({"cs"}),

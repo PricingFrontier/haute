@@ -43,7 +43,7 @@ records corrections to that audit's claims and proposed remedies.
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
 | [Server API](server-api.md) | Generated browser contract; process-mode 422 domain error mapping in `output_assemble_dry_run` and format-keyed Parquet metadata reads in `get_schema` | `API-R03` |
 | [t-boost](t-boost.md) | What rating-table models make possible: cell-level holdout A/E, unfolding into rating steps, model comparison with premium attribution, measured analyst adjustments (all awaiting a decision); `_report_table` relativity overflow guard | `TBOOST-11` |
-| [Tracing](tracing.md) | Proven matches kept strict, and `carried_column_proof` restricted to columns retained by `select(...)` | `TRACE-R04` |
+| [Tracing](tracing.md) | Proven matches kept strict | `TRACE-R03` |
 | [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; managing quotes in the app past the Quotes page: outcomes, many quotes at once; exports from the app (awaiting a decision on formats); test quotes analysts keep and price again, built again after the first version was taken out (awaiting decisions); actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources); the app's sign-in (a decision); typed-in allowed values (a decision); `useQuoteListStore` pagination fencing and submodel `WORKBENCH_OUTPUT` resolution in `priceSample` | `WB-08` |
 
 ## Delivery plan
@@ -115,7 +115,7 @@ inventory ledger with `0` unread files remaining). It maps the verified findings
 new component packages (`ASSIST-62`, `CLI-R07`,
 `EDA-R04`, `FGC-R10` to `FGC-R12`, `FMOU-R07`, `FNED-R07`, `FSH-R13`,
 `GIT-R19`, `IO-R07`, `OPT-R06`,
-`API-R04`, `TBOOST-11`, `TRACE-R04`, `WB-41`) and extensions of `DEP-R12B` and
+`API-R04`, `TBOOST-11`, `WB-41`) and extensions of `DEP-R12B` and
 `DEP-R13`; findings whose packages were delivered have been removed.
 It is a supporting report and owns no work; the packages in the component roadmaps
 above carry the plans.

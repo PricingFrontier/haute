@@ -3277,7 +3277,9 @@ class CarriedColumnProof:
     may rewrite, ``join_keys`` maps each joined input to the literal same-name
     ``on`` keys of the join that brought it in (an output key column holds that
     input's matching value), and ``carried_only`` (when set) is the only set of
-    columns carried at all — a grouping carries just its keys.
+    columns carried at all — a grouping carries just its keys, a ``select`` the
+    columns it keeps unchanged. ``dropped`` are columns a ``drop`` or
+    ``pl.exclude`` removed: an output column of that name came from elsewhere.
     """
 
     root_input: str
@@ -3287,11 +3289,20 @@ class CarriedColumnProof:
     whole_groups: bool = False
     """The program's one grouping reads every root-input row: each output row
     aggregates exactly the input rows sharing all its keys."""
+    dropped: frozenset[str] = frozenset()
+
+    def carries(self, column: str) -> bool:
+        """Whether an output column of this name holds an input's unchanged value."""
+        return (
+            column not in self.assigned
+            and column not in self.dropped
+            and (self.carried_only is None or column in self.carried_only)
+        )
 
 
-# Frame methods that never change a surviving row's values.
+# Frame methods that never change a surviving row's values or remove a column.
 _VALUE_PRESERVING_FRAME_METHODS = frozenset(
-    {"filter", "sort", "head", "tail", "limit", "slice", "unique", "drop", "drop_nulls", "lazy"}
+    {"filter", "sort", "head", "tail", "limit", "slice", "unique", "drop_nulls", "lazy"}
 )
 _ASSIGNING_FRAME_METHODS = frozenset({"with_columns", "with_columns_seq"})
 # Frame methods that may drop, duplicate, or reshape rows: a grouping after one
@@ -3416,6 +3427,22 @@ def _literal_names(node: ast.AST) -> list[str] | None:
         if len(names) == len(node.elts) and all(isinstance(name, str) for name in names):
             return [str(name) for name in names]
     return None
+
+
+def _excluded_names(node: ast.AST) -> list[str]:
+    """Return the names a ``pl.exclude(<names>)`` selection leaves out (none for ``pl.all()``)."""
+    if not _is_polars_call(node, "exclude"):
+        return []
+    assert isinstance(node, ast.Call)
+    return [name for argument in node.args for name in _literal_names(argument) or ()]
+
+
+def _dropped_columns(call: ast.Call) -> frozenset[str] | None:
+    """Return the literal columns a ``drop`` removes; ``None`` for a selector or dynamic drop."""
+    parsed = _parse_drop(call)
+    if isinstance(parsed, _ParseFailure) or parsed.selector_items:
+        return None
+    return parsed.subset_columns
 
 
 def _literal_frame_columns(node: ast.AST) -> list[str] | None:
@@ -3614,6 +3641,7 @@ def carried_column_proof(
     assigned: set[str] = set()
     join_keys: dict[str, frozenset[str]] = {}
     carried_only: set[str] | None = None
+    dropped: set[str] = set()
     superset: set[str] | None = (
         None
         if input_columns is None
@@ -3658,10 +3686,25 @@ def carried_column_proof(
                 rows_intact = False
             if method in _VALUE_PRESERVING_FRAME_METHODS:
                 pass
+            elif method == "drop":
+                removed = _dropped_columns(call)
+                if removed is None:
+                    return None
+                dropped.update(removed)
             elif method in _ASSIGNING_FRAME_METHODS or method == "select":
+                selecting = method == "select"
                 outputs: list[tuple[str, bool]] = []
+                # A ``select`` keeps only its unchanged pass-through columns, or
+                # every column but the excluded ones when it selects them all.
+                keeps_all = False
+                excluded: set[str] = set()
                 for argument in call.args:
                     if _selects_unchanged_columns(argument):
+                        if isinstance(argument, (ast.List, ast.Tuple)):
+                            outputs.extend((name, True) for name in _literal_names(argument) or ())
+                        else:
+                            keeps_all = True
+                            excluded.update(_excluded_names(argument))
                         continue
                     if _selector_nodes(argument, selector_aliases):
                         root_name = root_input or (
@@ -3678,13 +3721,21 @@ def carried_column_proof(
                             superset=None if superset is None else superset | assigned,
                             root_dtypes=root_dtypes,
                         )
-                        if written is None:
+                        if written is None or (selecting and not written):
+                            # A selection by selector keeps columns the syntax
+                            # does not name.
                             return None
                         outputs.extend((name, False) for name in written)
                         continue
                     listed = _name_list_assignment(argument)
                     if listed is not None:
-                        outputs.extend((name, False) for name in listed)
+                        if listed:
+                            outputs.extend((name, False) for name in listed)
+                        else:
+                            names_listed = _listed_column_names(argument)
+                            if names_listed is None:
+                                return None
+                            outputs.extend((name, True) for name in names_listed)
                         continue
                     output = _expression_output(argument)
                     if output is None:
@@ -3696,6 +3747,13 @@ def carried_column_proof(
                 written_names = {name for name, bare in outputs if not bare}
                 assigned.update(written_names)
                 frame_changed = frame_changed or bool(written_names)
+                if selecting:
+                    if keeps_all:
+                        dropped.update(excluded)
+                    else:
+                        kept = {name for name, bare in outputs if bare}
+                        carried_only = kept if carried_only is None else carried_only & kept
+                        join_keys = {key: keys & kept for key, keys in join_keys.items()}
             elif method == "with_row_index":
                 index_name = call.args[0] if call.args else None
                 for keyword in call.keywords:
@@ -3810,9 +3868,10 @@ def carried_column_proof(
     return CarriedColumnProof(
         root_input,
         frozenset(assigned),
-        MappingProxyType(dict(join_keys)),
+        MappingProxyType({key: keys - dropped for key, keys in join_keys.items()}),
         None if carried_only is None else frozenset(carried_only),
         whole_groups,
+        frozenset(dropped),
     )
 
 

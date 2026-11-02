@@ -2246,12 +2246,7 @@ class RowScopeResolver:
         )
         if proof is None:
             return None
-        carried = {
-            name: value
-            for name, value in carried.items()
-            if name not in proof.assigned
-            and (proof.carried_only is None or name in proof.carried_only)
-        }
+        carried = {name: value for name, value in carried.items() if proof.carries(name)}
         edge_input = self.input_names.get((parent_id, child_id, source_handle, target_role))
         if len(input_names) > 1 and proof.root_input != edge_input:
             # A column several inputs share keeps the root input's value (or the

@@ -782,6 +782,23 @@ class TestSymbolTableAndControlFlow:
         expr = parse_expression(code, "target")
         assert expr.expression_type == "opaque"
 
+    @pytest.mark.parametrize(
+        "code",
+        [
+            'if flag:\n    df = df.with_columns(pl.col("target") * 2)\n',
+            'expr = (pl.col("target") * 2).alias("target")\n'
+            "if flag:\n    df = df.with_columns(expr)\n",
+            'exprs = [(pl.col("target") * 2).alias("target")]\n'
+            "for _ in range(2):\n    df = df.with_columns(*exprs)\n",
+            'match mode:\n    case "a":\n        df = df.with_columns(pl.col("target") + 1)\n',
+        ],
+        ids=["unaliased", "bound-expression", "bound-list", "match"],
+    )
+    def test_a_conditional_write_the_parser_names_is_opaque(self, code):
+        """A block's write is found however the unconditional path would name it."""
+        expr = parse_expression(code, "target")
+        assert expr.expression_type == "opaque"
+
     def test_control_flow_assigned_vars(self):
         """Variable assigned in if block references (lines 843–863)."""
         code = (
