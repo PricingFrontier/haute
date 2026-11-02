@@ -132,8 +132,8 @@ def test_a_database_made_from_the_form_s_sql_matches_it(target: Target) -> None:
     assert "nothing to change" in sql(target, RELEASED, comparison)
 
 
-def _statements_reading(target: Target) -> int:
-    """The statements reading *target*'s catalogue, its quotes counted, sends the server."""
+def _read_counting(target: Target) -> tuple[Catalogue, int]:
+    """*target*'s catalogue, its quotes counted, and the statements reading it sent."""
     engine = make_engine(target.url, sign_in=target.sign_in)
     sent: list[str] = []
     try:
@@ -141,10 +141,13 @@ def _statements_reading(target: Target) -> int:
             event.listen(
                 connection, "before_cursor_execute", lambda *executing: sent.append(executing[2])
             )
-            read_catalogue(connection, count=True)
+            return read_catalogue(connection, count=True), len(sent)
     finally:
         engine.dispose()
-    return len(sent)
+
+
+def _statements_reading(target: Target) -> int:
+    return _read_counting(target)[1]
 
 
 def test_a_servers_tables_are_read_in_as_many_statements_however_many_it_holds(
@@ -175,13 +178,56 @@ def test_quotes_counted_a_few_tables_to_a_statement_are_those_counted_at_once(
     made_from_sql(target, RELEASED)
     quote(target, RELEASED, "A-1", region="north", drivers="2")
     quote(target, RELEASED, "A-2", region="south")
-    at_once = catalogue(target)
+    at_once, statements = _read_counting(target)
 
     monkeypatch.setattr(catalogue_module, "COUNTED_AT_ONCE", 2)
+    batched, more = _read_counting(target)
 
-    assert catalogue(target) == at_once
+    assert batched == at_once
+    assert more > statements
     policy = at_once.table("policy")
     assert policy is not None and policy.quotes == 2
+
+
+def test_a_store_of_more_tables_than_a_join_takes_is_counted(tmp_path: Path) -> None:
+    # Each table counted is one of its statement's join, and SQLite joins at most 64 tables.
+    target = Target("sqlite", f"sqlite:///{(tmp_path / 'store.sqlite').as_posix()}")
+    target.script(
+        "".join(
+            f"CREATE TABLE t{index} (quote_reference TEXT, quote_option INTEGER, v INTEGER);"
+            for index in range(70)
+        )
+        + "INSERT INTO t69 VALUES ('A-1', 1, NULL), ('A-1', 2, 5), ('A-2', 1, 7);"
+    )
+
+    counted = {table.name: table for table in catalogue(target).tables}
+
+    assert len(counted) == 70
+    assert counted["t0"].quotes == 0
+    last = counted["t69"]
+    assert last.quotes == 3
+    assert {column.name: column.quotes for column in last.columns}["v"] == 2
+
+
+def test_tables_are_batched_within_each_limit_a_statement_takes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(catalogue_module, "COUNTED_AT_ONCE", 10)
+    monkeypatch.setattr(catalogue_module, "TABLES_AT_ONCE", 3)
+    widths = [2, 2, 2, 2, 6, 4, 15, 1, 1, 1, 1, 1]
+    tables = [
+        (f"t{index}", [*IDENTITY, *(f"c{at}" for at in range(width))])
+        for index, width in enumerate(widths)
+    ]
+
+    batches = catalogue_module._batches(tables)
+
+    assert [table for batch in batches for table in batch] == tables
+    for batch in batches:
+        assert len(batch) <= 3
+        values = sum(1 + len(columns) - len(IDENTITY) for _, columns in batch)
+        # A table wider than a statement's values is counted alone.
+        assert values <= 10 or len(batch) == 1
 
 
 def test_a_wide_forms_quotes_are_counted_binding_no_value() -> None:

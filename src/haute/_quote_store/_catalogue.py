@@ -47,6 +47,9 @@ IDENTITY = ("quote_reference", "quote_option")
 #: The most values one statement counting quotes reads, a table's quotes and each of its
 #: columns', under the engines' limits on a select's columns: PostgreSQL's 1,664 the lowest.
 COUNTED_AT_ONCE = 1000
+#: The most tables one statement counting quotes joins, each table's aggregate one of the
+#: join's: SQLite joins at most 64.
+TABLES_AT_ONCE = 50
 #: The kinds a column's SQL type is told apart by, the first one it is wins: what the store
 #: reads and writes it as, whatever each engine names it.
 _KINDS: tuple[type[TypeEngine[Any]], ...] = (Boolean, Integer, Float, DateTime, Date, String)
@@ -234,13 +237,14 @@ def counting_statement(
 def _batches(
     tables: Sequence[tuple[str, Sequence[str]]],
 ) -> list[list[tuple[str, Sequence[str]]]]:
-    """*tables* in turn, as many to a batch as one statement may count, ``COUNTED_AT_ONCE``
-    values; a table wider than that alone."""
+    """*tables* in turn, as many to a batch as one statement may count: ``COUNTED_AT_ONCE``
+    values and ``TABLES_AT_ONCE`` tables; a table wider than those values alone."""
     batches: list[list[tuple[str, Sequence[str]]]] = []
     values = 0
     for table in tables:
         width = 1 + sum(column not in IDENTITY for column in table[1])
-        if not batches or values + width > COUNTED_AT_ONCE:
+        full = len(batches[-1]) >= TABLES_AT_ONCE if batches else True
+        if full or values + width > COUNTED_AT_ONCE:
             batches.append([])
             values = 0
         batches[-1].append(table)

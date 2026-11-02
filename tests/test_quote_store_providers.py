@@ -443,15 +443,17 @@ def test_a_started_app_names_each_privilege_its_sign_in_lacks(
     assert missing_privileges(connection, schema) == ["DELETE on policy"]  # type: ignore[arg-type]
     # Every privilege asked in one statement, a round trip to the server.
     assert len(asked) == 1
-    kinds = set(asked[0])
+    asked_at_once = asked[0]
+    kinds = set(asked_at_once)
     assert ("[pri]]cing].[quote_details]", "UPDATE") in kinds
     assert ("[pri]]cing].[haute_activity]", "INSERT") in kinds
     # More than a statement may bind are asked a few to a statement, answering the same.
     monkeypatch.setattr(providers_module, "_ASKED_AT_ONCE", 2)
     asked.clear()
     assert missing_privileges(connection, schema) == ["DELETE on policy"]  # type: ignore[arg-type]
-    assert [len(each) for each in asked[:-1]] == [2] * (len(asked) - 1)
-    assert {pair for each in asked for pair in each} == kinds
+    assert len(asked) > 1
+    assert all(len(each) <= 2 for each in asked)
+    assert [pair for each in asked for pair in each] == asked_at_once
     sqlite = SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
     assert missing_privileges(sqlite, schema) == []  # type: ignore[arg-type]
 
