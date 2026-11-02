@@ -282,6 +282,12 @@ function ActiveNodePreviewBody({
   onImported,
   onAskAssistantToFix,
 }: Omit<ActiveNodePreviewProps, "run">) {
+  // The preview reads the active node's training and solve results through the store's
+  // getters, which are stable props; subscribing to what they read re-renders this memoized
+  // pane the moment a result lands.
+  useNodeResultsStore((s) => (activeNodeId === null ? null : s.trainResults[activeNodeId] ?? null))
+  useNodeResultsStore((s) => (activeNodeId === null ? null : s.trainJobs[activeNodeId] ?? null))
+  useNodeResultsStore((s) => (activeNodeId === null ? null : s.solveResults[activeNodeId] ?? null))
   const activeNodeType = activeNode ? effectiveNodeType(activeNode) : undefined
   const canRefresh = Boolean(
     activeNode

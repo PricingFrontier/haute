@@ -1,5 +1,5 @@
 import { memo, type ComponentType, type ReactNode } from "react"
-import { act, cleanup, render } from "@testing-library/react"
+import { act, cleanup, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Node, NodeChange } from "@xyflow/react"
 
@@ -181,7 +181,13 @@ vi.mock("../api/client", () => ({
   ),
 }))
 
+vi.mock("../panels/ModellingPreview", () => ({
+  ModellingPreview: ({ nodeId }: { nodeId: string }) => <div data-testid="modelling-preview">{nodeId}</div>,
+}))
+
 import App from "../App"
+import useNodeResultsStore from "../stores/useNodeResultsStore"
+import { makeTrainResult } from "../test-utils/factories"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useGraphStore from "../stores/useGraphStore"
 import useSettingsStore from "../stores/useSettingsStore"
@@ -329,5 +335,23 @@ describe("App — chrome drag-frame isolation (FGC-R03)", () => {
     expect(renderCounts.toolbar).toBeLessThanOrEqual(1)
     expect(renderCounts.nodePanel).toBeLessThanOrEqual(1)
     expect(renderCounts.dataPreview).toBeLessThanOrEqual(1)
+  })
+
+  it("shows a training result that lands while its node is the active preview", async () => {
+    render(<App />)
+    act(() => {
+      useGraphStore.getState().loadGraphSnapshot({ nodes: initialNodes, edges: [], preamble: "", submodels: {} })
+    })
+    const node = useGraphStore.getState().nodes.find((n) => n.id === "n1")!
+    act(() => {
+      capturedFlowProps.onNodeClick?.({} as React.MouseEvent, node)
+    })
+    expect(document.querySelector('[data-testid="modelling-preview"]')).toBeNull()
+
+    act(() => {
+      useNodeResultsStore.getState().completeTrainJob("n1", makeTrainResult())
+    })
+
+    expect(await screen.findByTestId("modelling-preview")).toHaveTextContent("n1")
   })
 })
