@@ -922,7 +922,8 @@ The behavioural contract is defined in
   identity reading as stale, and keeps the handle: the last completed job is still the server's.
   Both failure paths record the one error result `trainFailureResult` builds. The job's config
   hash is the hash of the training identity `ModellingConfig` renders with
-  (`hashConfig(trainingIdentityConfig(config))`), taken with the lineage before awaiting.
+  (`useStaleConfigEstimate`'s `configHash` of `trainingIdentityConfig(config)`, computed in that
+  render, never debounced), taken with the lineage before awaiting.
   `ModellingConfig`, through `useTrainedJobRestore`, reads the handle when the node has neither a
   result nor a running job: a completed result is put back with `restoreTrainResult`, keeping the
   stored config hash and source, with the current structural version when the `trainingLineage`

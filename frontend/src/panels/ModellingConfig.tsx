@@ -11,7 +11,7 @@ import {
   type UseStaleConfigEstimateResult,
 } from "../hooks/useStaleConfigEstimate"
 import useGraphStore from "../stores/useGraphStore"
-import useNodeResultsStore, { hashConfig, trainFailureResult, type TrainProgress } from "../stores/useNodeResultsStore"
+import useNodeResultsStore, { trainFailureResult, type TrainProgress } from "../stores/useNodeResultsStore"
 import useDocumentStatusStore, {
   captureDocumentExecutionFence,
   documentExecutionKey,
@@ -548,7 +548,8 @@ export default function ModellingConfig({
   // A dispersion estimate reads the document, this node's training settings,
   // the graph feeding it and the data source; a change to any stops it.
   const documentKey = useDocumentStatusStore(documentExecutionKey)
-  const trainingHash = useMemo(() => hashConfig(trainingIdentity), [trainingIdentity])
+  // The estimate hook hashes the training identity in this same render.
+  const trainingHash = estimate.configHash
   const dispersionEstimate = useMemo(() => ({
     scope: JSON.stringify([documentKey, nodeId, activeSource, structuralVersion, trainingHash]),
     run: (param: DispersionParam, signal: AbortSignal) => runDispersionEstimate({
