@@ -626,40 +626,6 @@ class TestSerializableRoundTrip:
 
 
 class TestTargetTypeRespected:
-    def test_int64_target_produces_long_output(self) -> None:
-        """``target_type='Int64'`` yields a ``long`` output for regression."""
-        from haute.modelling._signature import build_signature
-
-        sig = build_signature(
-            features=["x"],
-            feature_types={"x": "Float64"},
-            categorical_features=[],
-            target_name="count",
-            target_type="Int64",
-            task="regression",
-        )
-
-        out_map = _output_type_map(sig)
-        assert out_map["pred"] == DataType.long, (
-            f"Int64 target must yield long regression output, got {out_map['pred']!r}"
-        )
-
-    def test_float64_target_produces_double_output(self) -> None:
-        """``target_type='Float64'`` yields a ``double`` output for regression."""
-        from haute.modelling._signature import build_signature
-
-        sig = build_signature(
-            features=["x"],
-            feature_types={"x": "Int64"},
-            categorical_features=[],
-            target_name="loss",
-            target_type="Float64",
-            task="regression",
-        )
-
-        out_map = _output_type_map(sig)
-        assert out_map["pred"] == DataType.double
-
     def test_classification_pred_label_uses_target_type(self) -> None:
         """For classification, ``pred_label`` should reflect the target's dtype."""
         from haute.modelling._signature import build_signature
@@ -822,3 +788,72 @@ def test_real_mlflow_pyfunc_roundtrip_enforces_temporal_signature(
         assert prediction["pred"].tolist() == [1.0]
     assert mlflow.get_tracking_uri() == original_tracking_uri
     assert {name: os.environ.get(name) for name in original_environment} == original_environment
+
+
+@pytest.mark.parametrize(
+    ("task", "target_dtype", "declared"),
+    [
+        ("regression", pl.Int64, {"pred": "double"}),
+        ("regression", pl.Float64, {"pred": "double"}),
+        ("classification", pl.Int64, {"pred_label": "long", "pred_proba": "double"}),
+    ],
+    ids=["integer-target-regression", "float-target-regression", "integer-label-classifier"],
+)
+def test_a_logged_model_declares_the_dtypes_its_pyfunc_predicts(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, task: str, target_dtype, declared: dict[str, str]
+) -> None:
+    """Train and log through Haute, then read the stored signature and serve the real pyfunc."""
+    import numpy as np
+    from mlflow.tracking import MlflowClient
+
+    from haute._mlflow_utils import mlflow_fluent_operation, resolve_backend
+    from haute._sandbox import set_project_root
+    from haute.modelling._training_job import TrainingJob
+
+    for name in ("MLFLOW_TRACKING_URI", "DATABRICKS_HOST", "DATABRICKS_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)  # conftest restores the original project root.
+    rng = np.random.default_rng(11)
+    x = rng.random(120)
+    frame = pl.DataFrame({"x": x, "y": pl.Series((x * 4).round()).cast(target_dtype)})
+    if task == "classification":
+        frame = frame.with_columns((pl.col("x") > 0.5).cast(target_dtype).alias("y"))
+    TrainingJob(
+        name="claims",
+        data=frame,
+        target="y",
+        task=task,
+        loss_function="RMSE" if task == "regression" else "Logloss",
+        params={"iterations": 10},
+        metrics=["rmse"] if task == "regression" else ["auc"],
+        evaluation={
+            "schema_version": 1,
+            "strategy": "random",
+            "seed": 3,
+            "validation": {"method": "none"},
+        },
+        mlflow_experiment="/signature",
+        output_dir=str(tmp_path / "train"),
+    ).run()
+
+    tracking_uri = resolve_backend("").tracking_uri
+    client = MlflowClient(tracking_uri=tracking_uri)
+    experiment = client.get_experiment_by_name("/signature")
+    (run,) = client.search_runs([experiment.experiment_id])
+    with mlflow_fluent_operation():
+        mlflow.set_tracking_uri(tracking_uri)
+        model_uri = f"runs:/{run.info.run_id}/model"
+        signature = mlflow.models.get_model_info(model_uri).signature
+        served = mlflow.pyfunc.load_model(model_uri).predict(frame.select("x").to_pandas())
+
+    assert {column["name"]: column["type"] for column in signature.outputs.to_dict()} == declared
+    if task == "regression":
+        assert served.dtype == np.float64
+        assert not np.allclose(served, np.round(served))
+    else:
+        assert {name: str(dtype) for name, dtype in served.dtypes.items()} == {
+            "pred_label": "int64",
+            "pred_proba": "float64",
+        }

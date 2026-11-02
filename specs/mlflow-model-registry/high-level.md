@@ -511,7 +511,9 @@ Every native model Haute trains is logged through one pyfunc
 contract. The loader reads the contract's model identity, loads the file with the matching
 flavor, checks it is the model the identity describes, and scores through Haute's own
 scorer: classification returns the original-label `pred_label` and the positive-class
-`pred_proba`, regression the prediction vector. CatBoost is logged this way too, wrapping its
+`pred_proba`, regression the `Float64` prediction vector, and the logged signature's outputs
+declare exactly those types (a regression's `pred` is `double` even for an integer target).
+CatBoost is logged this way too, wrapping its
 `.cbm`, because MLflow's CatBoost flavor serves only the native `predict`. A package without a
 model identity, or whose file is not the model it describes, fails at load, and logging loads
 the package once first so a broken artifact never reaches MLflow.

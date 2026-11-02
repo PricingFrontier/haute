@@ -61,7 +61,6 @@ something this page settles.
 | MOD-R06 | Planned | P3 | The training memory log is opt-in, the dead compatibility fields are gone, and the four native wrappers share one base. |
 | MOD-R07 | Planned | P2 | Stratified test allocation reserves enough of every class for all requested validation and training partitions. |
 | MOD-R08 | Planned | P2 | Training polling and cancellation preserve tuning phase, trial, fold, fit-count and best-score progress. |
-| MOD-R09 | Planned | P2 | MLflow output signatures declare the dtype the pyfunc actually predicts, including floating regression predictions from an integer target. |
 
 ## Planned improvements
 
@@ -287,8 +286,7 @@ name, producing `rmse — Model Card`; importance descriptions name PredictionVa
 even for other families; integer-feature PDP labels include 1.25/1.5/1.75 although the
 scored feature is cast to integer 1. **Plan/acceptance:** preserve model identity, label
 each importance method accurately, and align each PDP x value with the value actually
-scored. Test family-specific card text and integer-grid predictions. The output-signature
-defect has its own P2 owner, [MOD-R09](#mod-r09--output-signatures-describe-predictions).
+scored. Test family-specific card text and integer-grid predictions.
 Evidence: `src/haute/modelling/_model_card.py` and
 `src/haute/modelling/_metrics.py::compute_pdp`.
 
@@ -378,25 +376,3 @@ progress from the response. Do not test only DTO construction.
 **Evidence:** `src/haute/routes/modelling.py::train_status`; `src/haute/routes/modelling.py::cancel_training`;
 `src/haute/routes/_training_lifecycle.py`;
 `frontend/src/panels/modelling/TrainingProgress.tsx`.
-
-### MOD-R09 — Output signatures describe predictions
-
-**Why:** Regression signature construction copies the target dtype. An integer target
-therefore declares a long output although Haute's native-model pyfunc returns floating
-predictions. A real CatBoost fit produced 1.49/2.0328125 with a declared long output.
-The mismatch is measured locally; no remote registry enforcement failure is claimed.
-
-**Plan:** Derive the output signature from the pyfunc prediction contract, independently
-of the training target's storage dtype. Keep classification labels and probabilities
-distinct and preserve the existing shared native-model scoring contract.
-
-**Acceptance:** Fit and save a small regression model with an integer target, load its
-real pyfunc and compare its prediction dtype with the saved MLflow output signature.
-Floating target regression remains consistent, and classifier label/probability outputs
-keep their separately declared types. Test persisted metadata and real predictions,
-not just signature-object construction.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/modelling/_signature.py::build_signature`;
-`src/haute/modelling/_native_pyfunc.py::NativePyfuncModel.predict`.

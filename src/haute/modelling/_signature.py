@@ -56,9 +56,11 @@ def build_signature(
             categorical. Names not in ``features`` raise.
         target_name: Name of the target column (kept for symmetry; not
             embedded in the output schema column names).
-        target_type: Polars dtype string for the target column.
-        task: ``"regression"`` (single ``pred`` output) or ``"classification"``
-            (``pred_label`` + ``pred_proba`` outputs).
+        target_type: Polars dtype string for the target column; it types a
+            classifier's ``pred_label`` and is validated for every task.
+        task: ``"regression"`` (single ``double`` ``pred`` output, whatever the
+            target's dtype) or ``"classification"`` (``pred_label`` +
+            ``pred_proba`` outputs).
         offset_name: Optional offset/exposure column the model was trained
             with. Declared as a required input so scoring payloads must carry
             it — the offset is part of every served prediction, never an
@@ -103,9 +105,13 @@ def build_signature(
         )
     inputs = Schema(input_specs)
 
+    # The outputs describe what the shared native pyfunc returns, not the target's
+    # storage: every family predicts a Float64 regression value (an integer target's
+    # predictions are not integers), and a classifier returns the original label and
+    # the positive-class probability.
     target_dtype = _map_dtype(target_type)
     if task == "regression":
-        outputs = Schema([ColSpec(type=target_dtype, name="pred")])
+        outputs = Schema([ColSpec(type=DataType.double, name="pred")])
     else:
         outputs = Schema(
             [

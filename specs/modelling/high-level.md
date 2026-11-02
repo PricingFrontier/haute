@@ -746,10 +746,9 @@ browser without a server or JS bundle.
 
 ## Failure model
 
-> NOTE: Status routes currently drop recorded tuning progress fields; regression
-> signatures and several diagnostic labels also disagree with their outputs.
-> [MOD-R08](../roadmap/modelling.md#mod-r08--training-status-carries-the-progress-the-worker-records),
-> [MOD-R09](../roadmap/modelling.md#mod-r09--output-signatures-describe-predictions) and
+> NOTE: Status routes currently drop recorded tuning progress fields, and several
+> diagnostic labels disagree with their outputs.
+> [MOD-R08](../roadmap/modelling.md#mod-r08--training-status-carries-the-progress-the-worker-records) and
 > [MOD-R05](../roadmap/modelling.md#mod-r05--diagnostics-measured-as-the-fit-was) track these corrections.
 
 > NOTE: Stratified test allocation can consume the class members needed for later

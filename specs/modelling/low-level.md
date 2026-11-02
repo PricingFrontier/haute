@@ -1201,6 +1201,14 @@ zoned temporal columns to UTC and then removes the zone before prediction.
 Naive temporal values are left unchanged; other flavors retain their existing
 input preparation.
 
+The output schema describes what the shared native pyfunc predicts, not how the target is
+stored: a regression declares one `double` `pred` whatever the target's dtype (the scorer
+returns `Float64` for every family, so an integer target's predictions are not integers),
+and a classifier declares `pred_label` with the target's dtype beside a `double`
+`pred_proba`. `tests/test_mlflow_signature.py` trains and logs an integer-target and a
+floating-target regression and an integer-label classifier through `TrainingJob`, then
+compares the stored signature's outputs with what the reloaded pyfunc predicts.
+
 ### Save-model-after-the-fact
 
 The MODEL node config gains the optional `model_export_path` string — the Export pane's
