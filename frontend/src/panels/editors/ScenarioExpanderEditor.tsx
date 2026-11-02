@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { configField } from "../../utils/configField"
-import { CommittedTextField, SavedValueOption } from "../../components/form"
+import { CommittedTextField, SavedValueOption, ValidatedTextField } from "../../components/form"
 
 type ScenarioRangeNumberField = "min_value" | "max_value"
 type ScenarioRangeDraftState = {
@@ -45,6 +45,36 @@ function activeRangeDraft(
     : null
 }
 
+/** The backend's `scenario_step_count` rule: a whole number of at least 1. */
+function stepCountError(raw: string): string | null {
+  return /^\s*\d+\s*$/.test(raw) && Number(raw) >= 1 ? null : "Steps must be a whole number of at least 1."
+}
+
+function StepsField({
+  steps,
+  onUpdate,
+  ariaLabel,
+  className,
+}: {
+  steps: unknown
+  onUpdate: OnUpdateConfig
+  ariaLabel?: string
+  className: string
+}) {
+  return (
+    <ValidatedTextField
+      dataTestId="scenario-steps"
+      ariaLabel={ariaLabel}
+      containerClassName=""
+      className={className}
+      style={INPUT_STYLE}
+      value={steps === null || steps === undefined ? "" : String(steps)}
+      validate={stepCountError}
+      onCommit={(v) => onUpdate("stepCount", Number(v))}
+    />
+  )
+}
+
 export default function ScenarioExpanderEditor({
   config,
   onUpdate,
@@ -62,7 +92,8 @@ export default function ScenarioExpanderEditor({
   const columnName = configField(config, "column_name", "")
   const minValue = configField(config, "min_value", "")
   const maxValue = configField(config, "max_value", "")
-  const steps = configField(config, "stepCount", "")
+  const steps: unknown = config.stepCount
+  const stepCount = typeof steps === "number" && Number.isInteger(steps) && steps >= 1 ? steps : null
   const stepColumn = configField(config, "step_column", "")
   const committedMinText = numberConfigText(minValue)
   const committedMaxText = numberConfigText(maxValue)
@@ -215,13 +246,10 @@ export default function ScenarioExpanderEditor({
             Steps
             <span className="ml-1.5 normal-case tracking-normal font-normal">rows generated per input row</span>
           </label>
-          <CommittedTextField
-            type="number"
-            min={1}
+          <StepsField
+            steps={steps}
+            onUpdate={onUpdate}
             className="w-full px-2.5 py-1.5 rounded-md text-[12px] font-mono"
-            style={INPUT_STYLE}
-            value={String(steps)}
-            onCommit={(v) => onUpdate("stepCount", Math.max(1, parseInt(v) || 1))}
           />
         </div>
       )}
@@ -281,13 +309,11 @@ export default function ScenarioExpanderEditor({
             </div>
             <div>
               <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Steps</label>
-              <CommittedTextField
-                type="number"
-                min={1}
+              <StepsField
+                steps={steps}
+                onUpdate={onUpdate}
+                ariaLabel="Steps"
                 className="w-full px-2 py-1.5 rounded-md text-[12px] font-mono"
-                style={INPUT_STYLE}
-                value={String(steps)}
-                onCommit={(v) => onUpdate("stepCount", Math.max(1, parseInt(v) || 1))}
               />
             </div>
             <div>
@@ -297,7 +323,7 @@ export default function ScenarioExpanderEditor({
                 style={{ ...INPUT_STYLE, opacity: 0.7 }}
                 data-testid="step-size"
               >
-                {steps && Number(steps) > 1 && parsedMin !== null && parsedMax !== null ? +((parsedMax - parsedMin) / Math.max(Number(steps) - 1, 1)).toFixed(4) : "-"}
+                {stepCount !== null && stepCount > 1 && parsedMin !== null && parsedMax !== null ? +((parsedMax - parsedMin) / (stepCount - 1)).toFixed(4) : "-"}
               </div>
             </div>
           </div>

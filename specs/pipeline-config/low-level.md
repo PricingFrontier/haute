@@ -372,7 +372,9 @@ skips nodes that emit no sidecar (`node_emits_sidecar`: no config folder, or a `
 node without a `steps` list), preserves exact incoming-edge names in Optimiser and Optimiser Apply config
 without node-id remapping. Before allowlist filtering, known removed identity fields are rejected:
 Edge Join's `baseInput`/`joinInput` and Optimiser's `scored_input`/`factors_input` never become a
-silent write-time migration. Each accepted config is then filtered through
+silent write-time migration. A Quote Response's removed `outputFormat` (the response document is
+always JSON) is refused the same way wherever a config is parsed, saved or read, naming the key to
+remove. Each accepted config is then filtered through
 `_prepare_config_for_sidecar` (strips `code` and the `contract` annotation, which lives on the
 decorator so a sidecar copy could only go stale, and refuses any other key outside
 `VALID_KEYS`, an underscore-prefixed one included, with `ConfigError` through

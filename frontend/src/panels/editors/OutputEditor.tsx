@@ -361,7 +361,6 @@ export default function OutputEditor({
       nodeId,
       // The live working copy's mapping — the editor's CURRENT (unsaved) state.
       outputMapping: writeV2(v2).outputMapping as Array<Record<string, unknown>>,
-      outputFormat: v2.outputFormat || "json",
       rowLimit: PREVIEW_ROW_LIMIT,
       source: useSettingsStore.getState().activeSource,
     })
@@ -637,35 +636,6 @@ export default function OutputEditor({
 
   return (
     <div className="px-4 py-3 space-y-3" data-testid="output-editor">
-      {/* RESPONSE CONFIGURATION — its own section, above Response Mapping (a
-          peer of it, not a boxed sub-panel). The output format starts at the
-          "-- select output format --" placeholder (a disabled, hidden option)
-          so a format is never silently chosen. JSON is the only built format
-          today; jsonl/jsonseq join the list later. */}
-      <div data-testid="output-response-config">
-        <EditorLabel className="block" as="div">
-          Response configuration
-        </EditorLabel>
-        <label
-          className="mt-1.5 flex items-center gap-1.5 text-[11px]"
-          style={{ color: "var(--text-muted)" }}
-        >
-          Output format
-          <select
-            data-testid="output-format-select"
-            value={v2.outputFormat || ""}
-            onChange={(e) => writeBack({ ...v2, outputFormat: e.target.value })}
-            className="text-[11px] px-1.5 py-0.5 rounded font-mono"
-            style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-          >
-            <option value="" disabled hidden>
-              -- select output format --
-            </option>
-            <option value="json">JSON</option>
-          </select>
-        </label>
-      </div>
-
       <EditorLabel className="block" as="div">
         Response Mapping
       </EditorLabel>

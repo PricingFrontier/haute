@@ -11,6 +11,7 @@ import {
 } from "../../utils/mlflowDestinations"
 import type { MlflowDestinationKey } from "../../api/types"
 import { optimiserSelectionMode } from "../../utils/mlflowOptimiser"
+import { resolveLoadedVersion } from "../../utils/mlflowModelMetadata"
 import { readJson } from "../../api/client"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import { CommittedTextField } from "../../components/form"
@@ -108,11 +109,14 @@ export default function OptimiserApplyEditor({
     [mlflow.modelVersionsFor, mlflow.modelVersions, selectedRegisteredModel],
   )
   const selectedVersion = configField(config, "version", "latest")
-  const selectedRegisteredVersion = useMemo(() => {
-    if (sourceType !== "registered") return undefined
-    if (selectedVersion === "latest") return registeredModelVersions[0]
-    return registeredModelVersions.find((version) => version.version === selectedVersion)
-  }, [sourceType, selectedVersion, registeredModelVersions])
+  const selectedAlias = configField(config, "alias", "")
+  const selectedRegisteredVersion = useMemo(
+    () =>
+      sourceType === "registered"
+        ? resolveLoadedVersion(registeredModelVersions, selectedVersion, selectedAlias)
+        : undefined,
+    [sourceType, selectedVersion, selectedAlias, registeredModelVersions],
+  )
   const resolvedOptimiserMode = useMemo(() => {
     if (sourceType === "file" && loadedMeta) return loadedMeta.mode
     if (sourceType === "run" && selectedRun !== undefined) return optimiserSelectionMode(selectedRun)

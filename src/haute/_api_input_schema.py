@@ -31,15 +31,16 @@ What lives in v2:
     runtime.
   - ``row_id_column``: optional ``str | None`` — name of a column within
     this table to use as the row ID in the trace UI.
-  - ``columns``: list of ``{name, path, type, status, selected, levels}``
-    entries. ``name`` is the in-frame column name (rename target);
+  - ``columns``: list of ``{name, path, type, status, selected, levels,
+    origin, key}`` entries. ``name`` is the in-frame column name (rename target);
     ``path`` is the source JSONPath; ``type`` is one of
     ``int|float|str|bool|date`` (B1: unknown types are rejected at
     validate-time, not silently downgraded); ``status`` is
     ``"Confirmed"`` or ``"Inferred"``; ``selected`` is bool; ``levels``
     is an optional categorical-values list; a ``date`` column may set
     ``format``, the strftime pattern its source values are written in
-    (ISO ``%Y-%m-%d`` when absent).
+    (ISO ``%Y-%m-%d`` when absent); ``origin`` (``inferred|inherited|manual``)
+    and ``key`` (bool) are the editor's provenance, which the run never reads.
 
 Object-nesting transparency (2026-06-17 ruling): relational depth is the
 ARRAY (``[:]``) nesting depth ONLY. Nesting inside a 1-1 object does not
@@ -62,7 +63,7 @@ from __future__ import annotations
 import keyword
 import re
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, TypedDict, get_args
 
 from haute._graph_utils import _sanitize_identifier_characters, is_frame_label
 from haute._jsonpath import (
@@ -79,8 +80,10 @@ _V2_TABLES_KEY = "tables"
 
 ColumnType = Literal["int", "float", "str", "bool", "date"]
 ColumnStatus = Literal["Confirmed", "Inferred"]
+ColumnOrigin = Literal["inferred", "inherited", "manual"]
 
 _ALLOWED_COLUMN_TYPES: frozenset[str] = frozenset({"int", "float", "str", "bool", "date"})
+_COLUMN_ORIGINS: frozenset[str] = frozenset(get_args(ColumnOrigin))
 
 # Filesystem-safe label form, shared with the `_json_shred` package's
 # `_sanitise_label` alias
@@ -152,6 +155,10 @@ class ColumnV2(TypedDict, total=False):
     levels: list[str | None] | None
     #: A date column's strftime pattern for its source values; ISO ``%Y-%m-%d`` when absent.
     format: str
+    #: Editor provenance the run never reads: where the column came from (inference, a
+    #: parent table's key it inherits, or typed by hand) and whether it serves as a key.
+    origin: ColumnOrigin
+    key: bool
 
 
 class TableV2(TypedDict, total=False):
@@ -494,6 +501,14 @@ def validate_v2_schema(config: dict[str, Any]) -> None:
                     raise ApiInputSchemaError(
                         f"v2 tables[{ti}].columns[{ci}].status must be Confirmed or Inferred",
                     )
+            if "origin" in col and col["origin"] not in _COLUMN_ORIGINS:
+                raise ApiInputSchemaError(
+                    f"v2 tables[{ti}].columns[{ci}].origin must be inferred, inherited or manual",
+                )
+            if "key" in col and type(col["key"]) is not bool:
+                raise ApiInputSchemaError(
+                    f"v2 tables[{ti}].columns[{ci}].key must be a bool",
+                )
             cname = col.get("name")
             if not isinstance(cname, str) or not cname:
                 raise ApiInputSchemaError(

@@ -133,7 +133,6 @@ describe("OutputEditor - inline path edit", () => {
       // a different frame must NOT be touched by a policies-frame edit.
       { source_port: "drivers", source_column: "driver_id", output_path: "$[:].driver_id", enabled: true },
     ],
-    outputFormat: "json",
   }
 
   it("the pencil opens the inline editor in place (no drawer), seeded with the header path", () => {
@@ -242,7 +241,6 @@ describe("OutputEditor - wired FrameTableActions", () => {
           outputMapping: [
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
           ],
-          outputFormat: "json",
         }}
         onUpdateSpy={onUpdateSpy}
       />,
@@ -264,7 +262,6 @@ describe("OutputEditor - wired FrameTableActions", () => {
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
             { source_port: "drivers", source_column: "driver_id", output_path: "$[:].driver_id", enabled: true },
           ],
-          outputFormat: "json",
         }}
         onUpdateSpy={onUpdateSpy}
       />,
@@ -287,7 +284,6 @@ describe("OutputEditor - wired FrameTableActions", () => {
             { source_port: "policies", source_column: "old", output_path: "$[:].old", enabled: true },
             { source_port: "drivers", source_column: "driver_id", output_path: "$[:].driver_id", enabled: true },
           ],
-          outputFormat: "json",
         }}
         onUpdateSpy={onUpdateSpy}
       />,
@@ -319,7 +315,6 @@ describe("OutputEditor - wired FrameTableActions", () => {
           outputMapping: [
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
           ],
-          outputFormat: "json",
         }}
         onUpdateSpy={onUpdateSpy}
       />,

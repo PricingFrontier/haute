@@ -164,7 +164,7 @@ def _roundtrip_graph(config: dict[str, Any]) -> PipelineGraph:
                 data=NodeData(
                     label="out",
                     nodeType=NodeType.OUTPUT,
-                    config={"outputMapping": _output_mapping(), "outputFormat": "json"},
+                    config={"outputMapping": _output_mapping()},
                 ),
             ),
         ],
@@ -223,7 +223,7 @@ def test_nested_output_renders_through_deploy_scorer() -> None:
                 data=NodeData(
                     label="out",
                     nodeType=NodeType.OUTPUT,
-                    config={"outputMapping": mapping, "outputFormat": "json"},
+                    config={"outputMapping": mapping},
                 ),
             ),
         ],

@@ -447,10 +447,9 @@ class OutputMappingEntry(TypedDict):
 
 
 class OutputConfig(TypedDict, total=False):
-    """Config for output nodes."""
+    """Config for output nodes: the response document is JSON."""
 
     outputMapping: list[OutputMappingEntry]
-    outputFormat: str  # "json" (only "json" built initially; jsonl/jsonseq later)
 
 
 class ExploreOverviewConfig(TypedDict, total=False):

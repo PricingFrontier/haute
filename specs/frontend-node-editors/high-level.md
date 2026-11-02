@@ -136,8 +136,11 @@ backend API modules own validation and persistence.
   node to count all rows", or the failure in the server's words — the counts show as pending
   while they are being counted and are absent otherwise, and there is no histogram or "x of N
   rows". A server answer that the data needs caching, which can come for a point that looked
-  current, reads "Not cached" too rather than counting on. Its categorical value list then offers the preview's values without counts, and
-  Generate may start from the preview's range. Editing Banding's rules does not drop the whole
+  current, reads "Not cached" too rather than counting on. Its categorical value list then offers the preview's values without counts,
+  only where the preview gives the text a rule matches (the column cast to text): a text, categorical,
+  integer or boolean column's values, a column of unknown type's text values only, and none for a float,
+  decimal or temporal column (a Float64 `1.0` previews as `1` while execution matches `"1.0"`), which
+  waits for the whole dataset's values. Generate may start from the preview's range. Editing Banding's rules does not drop the whole
   dataset's answer while the new counts are asked: its total, values and distribution stay,
   categorical counts follow the edit at once from the data's value counts, and a count not yet
   known shows as pending.
@@ -311,8 +314,9 @@ backend API modules own validation and persistence.
   component shape.
 - Rating, Output, and API Input expose only their current persisted shapes:
   Rating uses `tables[].entries` plus `combinedOutputs`; Output uses
-  `outputMapping` rows with all four required fields including `enabled`; API
-  Input uses `tables`. Editors do not detect, upgrade, or mirror historical
+  `outputMapping` rows with all four required fields including `enabled` and
+  nothing else, the response document being JSON (no format is chosen or
+  stored); API Input uses `tables`. Editors do not detect, upgrade, or mirror historical
   working-copy formats.
 
 **Transform step builder.** A Transform node's config tab is labelled "Transform" (its config is

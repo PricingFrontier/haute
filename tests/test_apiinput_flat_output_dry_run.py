@@ -95,7 +95,7 @@ def _output_node() -> GraphNode:
         data=NodeData(
             label="out",
             nodeType=NodeType.OUTPUT,
-            config={"outputMapping": _OUTPUT_MAPPING, "outputFormat": "json"},
+            config={"outputMapping": _OUTPUT_MAPPING},
         ),
     )
 

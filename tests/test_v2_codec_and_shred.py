@@ -26,6 +26,7 @@ from hypothesis import strategies as st
 
 from haute._api_input_schema import (
     ApiInputSchemaError,
+    ColumnV2,
     parse_column_path,
     parse_table_path,
     validate_v2_schema,
@@ -184,6 +185,20 @@ def test_validate_v2_schema_accepts_minimal() -> None:
             "v2 tables[0].columns[0].status must be Confirmed or Inferred",
             id="status-list",
         ),
+        pytest.param(
+            "origin",
+            "pasted",
+            "v2 tables[0].columns[0].origin must be inferred, inherited or manual",
+            id="origin-unknown",
+        ),
+        pytest.param(
+            "origin",
+            None,
+            "v2 tables[0].columns[0].origin must be inferred, inherited or manual",
+            id="origin-null",
+        ),
+        pytest.param("key", 1, "v2 tables[0].columns[0].key must be a bool", id="key-int"),
+        pytest.param("key", "true", "v2 tables[0].columns[0].key must be a bool", id="key-string"),
     ],
 )
 def test_validate_v2_schema_rejects_invalid_declared_scalars(
@@ -209,6 +224,18 @@ def test_validate_v2_schema_accepts_declared_scalars(
     cfg["tables"][0]["columns"][0]["status"] = status
 
     validate_v2_schema(cfg)
+
+
+@pytest.mark.parametrize("origin", ["inferred", "inherited", "manual"])
+@pytest.mark.parametrize("key", [False, True])
+def test_validate_v2_schema_accepts_the_editor_provenance(origin: str, key: bool) -> None:
+    """``origin`` and ``key`` are declared column fields the editor writes and the run
+    never reads (``ColumnV2``)."""
+    cfg = _minimal_v2()
+    cfg["tables"][0]["columns"][0].update(origin=origin, key=key)
+
+    validate_v2_schema(cfg)
+    assert {"origin", "key"} <= set(ColumnV2.__annotations__)
 
 
 def test_validate_v2_schema_accepts_missing_declared_scalars() -> None:

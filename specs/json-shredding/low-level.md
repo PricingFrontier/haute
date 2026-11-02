@@ -45,7 +45,10 @@ Submodel graph expansion and boundary rewiring are owned by
   pattern (ISO `%Y-%m-%d` when absent). `ColumnType` is exactly `int|float|str|bool|date`;
   `ColumnStatus` is exactly `Confirmed|Inferred`; optional `emit` and
   `selected` fields, when present, are exact booleans rather than truthy
-  lookalikes;
+  lookalikes; a column's optional `origin` (`ColumnOrigin`, exactly
+  `inferred|inherited|manual`) and `key` (an exact boolean) are the editor's
+  provenance, declared so a sidecar holds only declared fields, validated like
+  `status`, and never read by the run;
   `PathSeg` is `(key, is_array)` and only array segments increase relational
   depth.
 - `ApiInputSchemaError(HauteError)` is the single typed schema/path failure

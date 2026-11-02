@@ -14,7 +14,6 @@ These packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FNED-R01 | Planned | P2 | An editor writes only what the engine reads, shows values as the engine will match them, resolves a registered alias's version, flags only the conflicts the save refuses, and refuses a non-integer step count instead of coercing it. |
 | FNED-R02 | Planned | P2 | Every text control goes through the committed-input kit, so a value changed by undo, redo or a document broadcast is shown, no field commits per keystroke, and every request failure shows the server's detail. Returning to a cached directory clears the previous directory's error. |
 | FNED-R03 | Planned | P3 | The pickers, cards and grouping helpers written twice exist once, and the vestigial `errorLine` prop and the dead exports are gone. |
 | FNED-R04 | Planned | P2 | A banding rule the sidecar writer refuses is marked in the grid and refused by the save validator with a 400, a typed relativity that does not parse is refused rather than replaced, and the step builder's argument controls refuse what the renderer refuses with a visible message. |
@@ -23,53 +22,6 @@ These packages come from the
 | FNED-R07 | Planned | P2 | `CatalogTablePicker` preserves selected catalog and schema when clearing a table, `TargetTablePicker` resets `tablesFor.current`, `OptimiserApplyEditor` cancels stale `readJson` calls, `OutputEditor` invalidates `outputDoc` on mapping edits, `ColumnsTab` handles stale column selections cleanly, `IoArgumentsEditor` flags blank or unbacked invalid JSON arguments, `BandingRulesGrid` strips internal `_id` keys before persisting, `PivotFormulaSection` resets `onFormulaEditorChange` on unmount and Undo, and `CodeMirrorEditor` re-syncs `errorLine` diagnostics on same-line repeats. |
 
 ## Planned improvements
-
-### FNED-R01 — Editors write what the engine reads
-**Why:** The Output editor's "Output format" select writes an `outputFormat` key
-that no backend code reads (it is hashed into the cache identity and copied into
-the config, never consulted by the assembler), so the control and the
-placeholder it makes the user pass do nothing; the node documentation already
-says the response is JSON either way. Before a node's data is cached, Banding's
-categorical value chips are built with JavaScript `String(raw)` over preview
-rows while execution matches on Polars `cast(pl.Utf8)` text, so on a float
-column a chip writes `"1"` where the data reads `"1.0"` and the rule never
-matches. Optimiser Apply resolves a registered version by hand and ignores an
-alias, where Model Score uses the shared `resolveLoadedVersion`; with an alias
-chosen, the mode is taken from the newest version and the mirror effect writes
-that `optimiser_mode` into the config, clearing `ratebook_input` when it reads
-`online`, so codegen wires the node for the wrong mode without the user touching
-anything. The Output editor's conflict warning counts rows with a blank source
-column that the assembler skips, so an added row is flagged although the save
-accepts it. The API Input editor persists two column keys (`origin`, `key`) the
-backend's `ColumnV2` does not declare. The Scenario Expander's Steps control
-silently rewrites `0`, `abc` and `2.7` to `1`, `1` and `2` where the backend
-refuses a non-integer loudly.
-
-**Plan:** Drop the format control and key until a second format exists
-(updating the node documentation's key table) or have the assembler read it;
-format preview values with the server's cast rule or withhold chips for
-non-string columns; use `resolveLoadedVersion` in Optimiser Apply; require a
-non-blank source column in `detectConflicts` or share one `isActiveEntry`
-predicate; declare `origin` and `key` in `ColumnV2`, the specification and the
-docs, or move them beside the config as the node data's editor state; make Steps a
-validated field refusing non-integers and values below 1.
-
-**Acceptance:** No editor writes a key the backend ignores (a test over every
-editor's writes against the node's typed config and its readers); a float
-column's chip matches its rows; an alias pointing at an older version drives
-the mirrored mode; an added row with a blank column raises no conflict; `2.7` in
-Steps is refused with a message.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/editors/OutputEditor.tsx`;
-`frontend/src/panels/editors/outputMappingSchema.ts`;
-`frontend/src/panels/editors/BandingEditor.tsx`; `src/haute/_rating.py`;
-`frontend/src/panels/editors/OptimiserApplyEditor.tsx`;
-`frontend/src/panels/editors/ModelScoreEditor.tsx`;
-`frontend/src/panels/editors/apiInputSchema.ts`;
-`src/haute/_api_input_schema.py::ColumnV2`;
-`frontend/src/panels/editors/ScenarioExpanderEditor.tsx`.
 
 ### FNED-R02 — Drafts in step with the document, errors with their detail
 **Why:** Four Rating Step fields are uncontrolled inputs committing on blur

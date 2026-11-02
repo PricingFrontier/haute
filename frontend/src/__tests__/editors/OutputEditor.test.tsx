@@ -1,7 +1,7 @@
 /**
  * Render tests for the v2 OutputEditor.
  *
- * The OUTPUT node config is v2: { outputMapping: Entry[], outputFormat }.
+ * The OUTPUT node config is v2: { outputMapping: Entry[] }.
  * Each incoming edge (= source FRAME) is one collapsible block; rows inside a
  * block map a frame column → an output_path. Tests cover:
  *   - one block per incoming frame + empty state when there are none;
@@ -399,7 +399,6 @@ describe("OutputEditor - frame blocks", () => {
       outputMapping: [
         { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
       ],
-      outputFormat: "json",
     }
     render(<OutputEditor {...DEFAULT_PROPS} config={config} />, {
       allNodes: MULTI_FRAME_NODES,
@@ -420,7 +419,7 @@ describe("OutputEditor - rows: add / remove / enable / save", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [], outputFormat: "json" }}
+        initialConfig={{ outputMapping: [] }}
         onUpdateSpy={onUpdateSpy}
         allNodes={MULTI_FRAME_NODES}
         edges={MULTI_FRAME_EDGES}
@@ -449,7 +448,6 @@ describe("OutputEditor - rows: add / remove / enable / save", () => {
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
             { source_port: "policies", source_column: "premium", output_path: "$[:].premium", enabled: true },
           ],
-          outputFormat: "json",
         }}
         onUpdateSpy={onUpdateSpy}
         allNodes={MULTI_FRAME_NODES}
@@ -473,7 +471,6 @@ describe("OutputEditor - rows: add / remove / enable / save", () => {
           outputMapping: [
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
           ],
-          outputFormat: "json",
         }}
         onUpdateSpy={onUpdateSpy}
         allNodes={MULTI_FRAME_NODES}
@@ -497,7 +494,6 @@ describe("OutputEditor - rows: add / remove / enable / save", () => {
             { source_port: "policies", source_column: "premium", output_path: "$[:].premium", enabled: true },
             { source_port: "drivers", source_column: "driver_id", output_path: "$[:].driver_id", enabled: true },
           ],
-          outputFormat: "json",
         }}
         onUpdateSpy={onUpdateSpy}
         allNodes={MULTI_FRAME_NODES}
@@ -525,7 +521,6 @@ describe("OutputEditor - rows: add / remove / enable / save", () => {
           outputMapping: [
             { source_port: "policies", source_column: "", output_path: "", enabled: true },
           ],
-          outputFormat: "json",
         }}
         onUpdateSpy={onUpdateSpy}
         allNodes={MULTI_FRAME_NODES}
@@ -543,9 +538,9 @@ describe("OutputEditor - rows: add / remove / enable / save", () => {
 
     const arg = onUpdateSpy.mock.calls[onUpdateSpy.mock.calls.length - 1][0] as {
       outputMapping: Record<string, unknown>[]
-      outputFormat: string
     }
-    expect(arg.outputFormat).toBe("json")
+    // The config holds the mapping and nothing else: the response is JSON.
+    expect(Object.keys(arg)).toEqual(["outputMapping"])
     const entry = arg.outputMapping[0]
     // Exactly the four persisted fields — no editor-only status.
     expect(Object.keys(entry).sort()).toEqual(
@@ -562,7 +557,7 @@ describe("OutputEditor - Infer (Inferred pills)", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [], outputFormat: "json" }}
+        initialConfig={{ outputMapping: [] }}
         onUpdateSpy={onUpdateSpy}
         allNodes={MULTI_FRAME_NODES}
         edges={MULTI_FRAME_EDGES}
@@ -589,7 +584,7 @@ describe("OutputEditor - Infer (Inferred pills)", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [], outputFormat: "json" }}
+        initialConfig={{ outputMapping: [] }}
         onUpdateSpy={onUpdateSpy}
         allNodes={SINGLE_FRAME_API_NODES}
         edges={SINGLE_FRAME_API_EDGES}
@@ -614,7 +609,7 @@ describe("OutputEditor - Infer (Inferred pills)", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [], outputFormat: "json" }}
+        initialConfig={{ outputMapping: [] }}
         onUpdateSpy={onUpdateSpy}
         allNodes={MULTI_FRAME_NODES}
         edges={MULTI_FRAME_EDGES}
@@ -631,7 +626,7 @@ describe("OutputEditor - Infer (Inferred pills)", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [], outputFormat: "json" }}
+        initialConfig={{ outputMapping: [] }}
         onUpdateSpy={onUpdateSpy}
         allNodes={MULTI_FRAME_NODES}
         edges={MULTI_FRAME_EDGES}
@@ -660,7 +655,6 @@ describe("OutputEditor - Clear", () => {
             { source_port: "policies", source_column: "premium", output_path: "$[:].premium", enabled: true },
             { source_port: "drivers", source_column: "driver_id", output_path: "$[:].driver_id", enabled: true },
           ],
-          outputFormat: "json",
         }}
         onUpdateSpy={onUpdateSpy}
         allNodes={MULTI_FRAME_NODES}
@@ -684,7 +678,7 @@ describe("OutputEditor - Clear", () => {
   it("Clear is disabled when the frame has no rows", () => {
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [], outputFormat: "json" }}
+        initialConfig={{ outputMapping: [] }}
         onUpdateSpy={vi.fn()}
         allNodes={MULTI_FRAME_NODES}
         edges={MULTI_FRAME_EDGES}
@@ -699,7 +693,7 @@ describe("OutputEditor - Clear", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [], outputFormat: "json" }}
+        initialConfig={{ outputMapping: [] }}
         onUpdateSpy={onUpdateSpy}
         allNodes={MULTI_FRAME_NODES}
         edges={MULTI_FRAME_EDGES}
@@ -728,7 +722,6 @@ describe("OutputEditor - path validation", () => {
           outputMapping: [
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
           ],
-          outputFormat: "json",
         }}
         onUpdateSpy={onUpdateSpy}
         allNodes={MULTI_FRAME_NODES}
@@ -761,7 +754,6 @@ describe("OutputEditor - path validation", () => {
             outputMapping: [
               { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
             ],
-            outputFormat: "json",
           }}
           onUpdateSpy={onUpdateSpy}
           allNodes={MULTI_FRAME_NODES}
@@ -787,7 +779,6 @@ describe("OutputEditor - path validation", () => {
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].x", enabled: true },
             { source_port: "policies", source_column: "premium", output_path: "$[:].x", enabled: true },
           ],
-          outputFormat: "json",
         }}
       />,
       { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
@@ -808,7 +799,6 @@ describe("OutputEditor - path validation", () => {
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].obj", enabled: true },
             { source_port: "policies", source_column: "premium", output_path: "$[:].obj[:].x", enabled: true },
           ],
-          outputFormat: "json",
         }}
       />,
       { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
@@ -828,7 +818,6 @@ describe("OutputEditor - path validation", () => {
             { source_port: "policies", source_column: "premium", output_path: "$[:].cover", enabled: true },
             { source_port: "drivers", source_column: "driver_id", output_path: "$[:].cover.drivers[:].driver_id", enabled: true },
           ],
-          outputFormat: "json",
         }}
       />,
       { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
@@ -851,7 +840,6 @@ describe("OutputEditor - path validation", () => {
             { source_port: "drivers", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
             { source_port: "drivers", source_column: "driver_id", output_path: "$[:].cover.drivers[:].driver_id", enabled: true },
           ],
-          outputFormat: "json",
         }}
       />,
       { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
@@ -869,7 +857,6 @@ describe("OutputEditor - path validation", () => {
           outputMapping: [
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
           ],
-          outputFormat: "json",
         }}
         onUpdateSpy={onUpdateSpy}
         allNodes={MULTI_FRAME_NODES}
@@ -901,7 +888,7 @@ describe("OutputEditor - source_port derivation (blocker)", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [], outputFormat: "json" }}
+        initialConfig={{ outputMapping: [] }}
         onUpdateSpy={onUpdateSpy}
         allNodes={allNodes}
         edges={edges}
@@ -921,7 +908,7 @@ describe("OutputEditor - source_port derivation (blocker)", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [], outputFormat: "json" }}
+        initialConfig={{ outputMapping: [] }}
         onUpdateSpy={onUpdateSpy}
         allNodes={TWO_SINGLE_PORT_NODES}
         edges={TWO_SINGLE_PORT_EDGES}
@@ -954,7 +941,7 @@ describe("OutputEditor - source_port derivation (blocker)", () => {
 
 describe("OutputEditor - same-resolved-port collision (blocker)", () => {
   it("two sources resolving to the same port show a blocking banner", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [], outputFormat: "json" }} />, {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />, {
       allNodes: COLLIDING_PORT_NODES,
       edges: COLLIDING_PORT_EDGES,
     })
@@ -964,7 +951,7 @@ describe("OutputEditor - same-resolved-port collision (blocker)", () => {
   })
 
   it("no duplicate banner when resolved ports are distinct", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [], outputFormat: "json" }} />, {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />, {
       allNodes: MULTI_FRAME_NODES,
       edges: MULTI_FRAME_EDGES,
     })
@@ -974,7 +961,7 @@ describe("OutputEditor - same-resolved-port collision (blocker)", () => {
   it("expand/collapse is isolated by edge.id even when ports collide", () => {
     // Both frames resolve to "shared"; expanding ONE must not expand the other
     // (expand state is keyed by edge.id, not the resolved port).
-    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [], outputFormat: "json" }} />, {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />, {
       allNodes: COLLIDING_PORT_NODES,
       edges: COLLIDING_PORT_EDGES,
     })
@@ -997,7 +984,6 @@ describe("OutputEditor - one frame per array level (JSON-R02)", () => {
         {...DEFAULT_PROPS}
         config={{
           outputMapping: [row("Source_A", "alpha", "$[:].alpha"), row("Source_B", "beta", "$[:].beta")],
-          outputFormat: "json",
         }}
       />,
       { allNodes: TWO_SINGLE_PORT_NODES, edges: TWO_SINGLE_PORT_EDGES },
@@ -1018,7 +1004,6 @@ describe("OutputEditor - one frame per array level (JSON-R02)", () => {
             row("drivers", "driver_id", "$[:].drivers[:].driver_id"),
             row("claims", "claim_id", "$[:].drivers[:].claim_id"),
           ],
-          outputFormat: "json",
         }}
       />,
       { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
@@ -1036,7 +1021,6 @@ describe("OutputEditor - one frame per array level (JSON-R02)", () => {
             row("policies", "policy_id", "$[:].cover.drivers[:].policy_id"),
             row("drivers", "driver_id", "$[:].cover.drivers[:].driver_id"),
           ],
-          outputFormat: "json",
         }}
       />,
       { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
@@ -1082,7 +1066,7 @@ describe("OutputEditor - one frame per array level (JSON-R02)", () => {
     ],
   ])("shows no banner when %s", (_case, outputMapping) => {
     render(
-      <OutputEditor {...DEFAULT_PROPS} config={{ outputMapping, outputFormat: "json" }} />,
+      <OutputEditor {...DEFAULT_PROPS} config={{ outputMapping }} />,
       { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
     )
     expect(screen.queryByTestId("output-same-level-banner")).toBeNull()
@@ -1094,7 +1078,7 @@ describe("OutputEditor - Inferred pill survives earlier-row removal (major)", ()
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [], outputFormat: "json" }}
+        initialConfig={{ outputMapping: [] }}
         onUpdateSpy={onUpdateSpy}
         allNodes={MULTI_FRAME_NODES}
         edges={MULTI_FRAME_EDGES}
@@ -1126,20 +1110,8 @@ describe("OutputEditor - Inferred pill survives earlier-row removal (major)", ()
   })
 })
 
-describe("OutputEditor - response config (output format)", () => {
-  it("initialises the format dropdown to the placeholder, not an opinionated default", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />)
-    const select = screen.getByTestId("output-format-select") as HTMLSelectElement
-    expect(select.value).toBe("") // "-- select output format --", not "json"
-  })
-
-  it("an existing json config shows JSON selected", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [], outputFormat: "json" }} />)
-    const select = screen.getByTestId("output-format-select") as HTMLSelectElement
-    expect(select.value).toBe("json")
-  })
-
-  it("selecting JSON writes outputFormat", () => {
+describe("OutputEditor - the response document", () => {
+  it("offers no format choice and writes only the mapping, the response being JSON", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
@@ -1149,22 +1121,8 @@ describe("OutputEditor - response config (output format)", () => {
         edges={[]}
       />,
     )
-    fireEvent.change(screen.getByTestId("output-format-select"), { target: { value: "json" } })
-    const arg = onUpdateSpy.mock.calls[0][0] as { outputFormat: string }
-    expect(arg.outputFormat).toBe("json")
-  })
-
-  it("response configuration is its own section ABOVE Response Mapping", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />)
-    const config = screen.getByTestId("output-response-config")
-    const mapping = screen.getByText("Response Mapping")
-    // The config section carries its own header + the format control, and sits
-    // before the Response Mapping label in document order.
-    expect(config.textContent).toContain("Response configuration")
-    expect(config.querySelector('[data-testid="output-format-select"]')).toBeTruthy()
-    expect(
-      config.compareDocumentPosition(mapping) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy()
+    expect(screen.queryByTestId("output-format-select")).toBeNull()
+    expect(screen.queryByText(/output format/i)).toBeNull()
   })
 })
 
@@ -1172,7 +1130,7 @@ describe("OutputEditor - response config (output format)", () => {
 
 describe("OutputEditor - frames-table input schema", () => {
   it("is collapsed by default (no schema container)", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [], outputFormat: "json" }} />, {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />, {
       allNodes: MULTI_FRAME_NODES,
       edges: MULTI_FRAME_EDGES,
     })
@@ -1181,7 +1139,7 @@ describe("OutputEditor - frames-table input schema", () => {
   })
 
   it("expands to show each frame's columns + types (apiInput config source)", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [], outputFormat: "json" }} />, {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />, {
       allNodes: MULTI_FRAME_NODES,
       edges: MULTI_FRAME_EDGES,
     })
@@ -1204,7 +1162,7 @@ describe("OutputEditor - frames-table input schema", () => {
 
   it("excludes unselected columns and shows dtypes for a non-apiInput source", () => {
     // Single-port polars source: columns come from `_columns` ({name, dtype}).
-    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [], outputFormat: "json" }} />, {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />, {
       allNodes: SINGLE_PORT_NODES,
       edges: SINGLE_PORT_EDGES,
     })
@@ -1218,7 +1176,7 @@ describe("OutputEditor - frames-table input schema", () => {
   })
 
   it("a single-frame apiInput omits its unselected column from the schema view", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [], outputFormat: "json" }} />, {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />, {
       allNodes: SINGLE_FRAME_API_NODES,
       edges: SINGLE_FRAME_API_EDGES,
     })
@@ -1231,7 +1189,7 @@ describe("OutputEditor - frames-table input schema", () => {
   })
 
   it("collapses again on a second toggle", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [], outputFormat: "json" }} />, {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />, {
       allNodes: MULTI_FRAME_NODES,
       edges: MULTI_FRAME_EDGES,
     })
@@ -1249,7 +1207,6 @@ describe("OutputEditor - assembled-output preview", () => {
     outputMapping: [
       { source_port: "Upstream Node", source_column: "premium", output_path: "$[:].premium", enabled: true },
     ],
-    outputFormat: "json",
   }
 
   it("renders the Output preview element with Copy + Export visible while collapsed", () => {

@@ -1023,7 +1023,6 @@ export interface OutputAssembleDryRunArgs {
    * swaps this into the OUTPUT node's config, overriding whatever is on disk —
    * so the preview reflects the editor's CURRENT mapping, not the saved file. */
   outputMapping: Array<Record<string, unknown>>
-  outputFormat?: string
   rowLimit?: number
   source?: string
   signal?: AbortSignal
@@ -1048,7 +1047,6 @@ export function outputAssembleDryRun(
     graph,
     nodeId,
     outputMapping,
-    outputFormat,
     rowLimit,
     source,
     signal,
@@ -1060,7 +1058,6 @@ export function outputAssembleDryRun(
       graph,
       node_id: nodeId,
       output_mapping: outputMapping,
-      output_format: outputFormat ?? "json",
       ...(rowLimit !== undefined ? { row_limit: rowLimit } : {}),
       source: source ?? "live",
     },

@@ -2,7 +2,7 @@
  * Render tests for ScenarioExpanderEditor.
  *
  * Tests: row key label, select vs text input, value column, range section,
- * default values, editing min, editing steps with clamping, step column,
+ * default values, editing min, editing and refusing steps, step column,
  * preview line, selecting a column, InputSourcesBar rendering.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
@@ -402,27 +402,41 @@ describe("ScenarioExpanderEditor", () => {
     expect(screen.getByTestId("step-size").textContent).toBe("1")
   })
 
-  it("commits steps on blur with value clamped to min 1", () => {
+  it("commits a whole step count once on blur", () => {
     const onUpdate = vi.fn()
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ stepCount: 21 }} />)
     const stepsInput = screen.getByDisplayValue("21")
 
-    // Normal value — buffered until blur, then committed once.
     fireEvent.change(stepsInput, { target: { value: "10" } })
     expect(onUpdate).not.toHaveBeenCalled()
     fireEvent.blur(stepsInput)
     expect(onUpdate).toHaveBeenCalledTimes(1)
     expect(onUpdate).toHaveBeenCalledWith("stepCount", 10)
+  })
 
-    // Zero should clamp to 1
-    fireEvent.change(stepsInput, { target: { value: "0" } })
-    fireEvent.blur(stepsInput)
-    expect(onUpdate).toHaveBeenCalledWith("stepCount", 1)
+  it.each(["0", "-5", "abc", "2.7", ""])(
+    "refuses %j as a step count with a message, keeping the draft and writing nothing",
+    (typed) => {
+      const onUpdate = vi.fn()
+      render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ stepCount: 21 }} />)
+      const stepsInput = screen.getByDisplayValue("21") as HTMLInputElement
 
-    // Negative should clamp to 1
-    fireEvent.change(stepsInput, { target: { value: "-5" } })
-    fireEvent.blur(stepsInput)
-    expect(onUpdate).toHaveBeenCalledWith("stepCount", 1)
+      fireEvent.change(stepsInput, { target: { value: typed } })
+      fireEvent.blur(stepsInput)
+
+      expect(onUpdate).not.toHaveBeenCalled()
+      expect(stepsInput.value).toBe(typed)
+      expect(screen.getByTestId("scenario-steps-error").textContent).toBe(
+        "Steps must be a whole number of at least 1.",
+      )
+    },
+  )
+
+  it("marks a saved step count the backend refuses", () => {
+    render(<ScenarioExpanderEditor {...DEFAULT_PROPS} config={{ stepCount: 2.7 }} />)
+    expect(screen.getByTestId("scenario-steps-error").textContent).toBe(
+      "Steps must be a whole number of at least 1.",
+    )
   })
 
   it("step size shows calculated interval", () => {

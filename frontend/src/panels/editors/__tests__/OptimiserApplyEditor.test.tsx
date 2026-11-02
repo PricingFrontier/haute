@@ -23,6 +23,7 @@ const mockMlflow = {
     status: string
     description: string
     params?: Record<string, string>
+    aliases?: string[]
   }[],
   modelVersionsFor: "",
   loadingExperiments: false,
@@ -841,6 +842,37 @@ describe("OptimiserApplyEditor", () => {
         ratebook_input: "",
       })
     })
+  })
+
+  it("mirrors the mode of the version an alias targets, not the newest version's", async () => {
+    mockMlflow.modelVersionsFor = "registered-opt"
+    // The versions route lists newest first: the alias points at the older one.
+    mockMlflow.modelVersions = [
+      { version: "3", run_id: "r3", status: "READY", description: "", params: { mode: "online" } },
+      {
+        version: "2",
+        run_id: "r2",
+        status: "READY",
+        description: "",
+        params: { mode: "ratebook" },
+        aliases: ["champion"],
+      },
+    ]
+    const props = defaultProps()
+    props.config = {
+      sourceType: "registered",
+      registered_model: "registered-opt",
+      alias: "champion",
+      ratebook_input: "age_veh_banding",
+    }
+    props.inputSources = [
+      { sourceNodeId: "banding", name: "age_veh_banding", sourceLabel: "Age banding", edgeId: "e2" },
+    ]
+    render(<OptimiserApplyEditor {...props} />)
+
+    await waitFor(() => expect(props.onUpdate).toHaveBeenCalledWith({ optimiser_mode: "ratebook" }))
+    expect(props.onUpdate).not.toHaveBeenCalledWith(expect.objectContaining({ ratebook_input: "" }))
+    expect(screen.getByLabelText("Ratebook Input")).toBeInTheDocument()
   })
 
   it("shows ratebook input selector for selected ratebook registered model versions", () => {
