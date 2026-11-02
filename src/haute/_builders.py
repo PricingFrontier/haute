@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -180,6 +181,27 @@ def apply_source_scan(
     that code consumes, never the ones it creates, and stays full width when the
     code is outside the column lineage model.
     """
+    projected = project_source_scan(
+        frame,
+        profile=profile,
+        required_output_columns=required_output_columns,
+        config=config,
+        code=code,
+        node_id=node_id,
+    )
+    return run_source_code(projected, code=code, preamble_ns=preamble_ns) if code else projected
+
+
+def project_source_scan(
+    frame: pl.LazyFrame,
+    *,
+    profile: str | None,
+    required_output_columns: frozenset[str] | set[str] | None,
+    config: Mapping[str, Any],
+    code: str,
+    node_id: str,
+) -> pl.LazyFrame:
+    """An opened source scan, read for the columns its post-load code and demand need."""
     projected = _source_scan_projection(
         profile,
         required_output_columns,
@@ -188,19 +210,47 @@ def apply_source_scan(
         source_columns=frame.collect_schema().names(),
         node_id=node_id,
     )
-    frame = _select_columns(
+    return _select_columns(
         frame,
         None if projected.columns is None else tuple(projected.columns),
     )
-    if code:
-        return _exec_user_code(
-            code,
-            ["df"],
-            (frame,),
-            extra_ns=preamble_ns,
-            alias_first_input_as_df=True,
-        )
-    return frame
+
+
+def run_source_code(
+    frame: pl.LazyFrame, *, code: str, preamble_ns: dict[str, Any] | None
+) -> _Frame:
+    """Run a source's post-load code on *frame*, which the code reads as ``df``."""
+    return _exec_user_code(
+        code,
+        ["df"],
+        (frame,),
+        extra_ns=preamble_ns,
+        alias_first_input_as_df=True,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class SourceWithCode:
+    """A source node's function as its two halves: opening its scan, and its post-load code.
+
+    Calling it does both. A write of the node's whole output can instead keep the
+    scan it opened and apply the code a slice of it at a time (a write recipe),
+    as a Transform's input is sliced. ``open_scan`` returns ``None`` for a source
+    with nothing to open yet, whose output is an empty frame.
+    """
+
+    open_scan: Callable[[], pl.LazyFrame | None]
+    apply_code: Callable[[pl.LazyFrame], _Frame]
+
+    def opened(self) -> tuple[pl.LazyFrame | None, _Frame]:
+        """The scan this call opened and the node's output built from it."""
+        scan = self.open_scan()
+        if scan is None:
+            return None, pl.LazyFrame()
+        return scan, self.apply_code(scan)
+
+    def __call__(self) -> _Frame:
+        return self.opened()[1]
 
 
 def _allow_empty_source_path(profile: str | None) -> bool:
@@ -558,20 +608,20 @@ def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     code = str(config.get("code") or "").strip()
     preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
-    def data_input_fn(
+    def open_scan(
         _config: Mapping[str, Any] = config,
         _profile: str | None = ctx.execution_profile,
         _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
         _node_id: str = ctx.node.id,
         _schema_only: bool = ctx.schema_only,
-    ) -> _Frame:
+    ) -> pl.LazyFrame | None:
         from haute._input_providers import resolve_data_input
 
         if not _config.get("inputType") and _allow_empty_source_path(_profile):
             # An unsaved, freshly-dropped editor node may preview empty. Strict
             # persisted validation still rejects this shape on save.
-            return pl.LazyFrame()
-        return apply_source_scan(
+            return None
+        return project_source_scan(
             resolve_data_input(
                 _config,
                 base_dir=_configured_pipeline_dir(),
@@ -582,9 +632,20 @@ def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             required_output_columns=_columns,
             config=_config,
             code=code,
-            preamble_ns=preamble,
             node_id=_node_id,
         )
+
+    if code:
+        # The code's two halves are kept apart so a full write can slice the scan.
+        return (
+            ctx.func_name,
+            SourceWithCode(open_scan, partial(run_source_code, code=code, preamble_ns=preamble)),
+            True,
+        )
+
+    def data_input_fn() -> _Frame:
+        scan = open_scan()
+        return pl.LazyFrame() if scan is None else scan
 
     return ctx.func_name, data_input_fn, True
 

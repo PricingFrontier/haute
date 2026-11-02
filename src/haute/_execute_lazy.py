@@ -117,14 +117,15 @@ def _write_recipe(
 ) -> WriteRecipe | None:
     """A chunk-local single-input node's recipe, from the exact frame its builder receives.
 
-    Only a Polars node with exactly one input frame qualifies; anything else
+    Only a Polars node with exactly one input frame qualifies, or a Data Input
+    with post-load code, whose one input is the scan it opened; anything else
     has no recipe and is written natively without recording a decision. When
     eligible, the recipe carries the transform function and the single input
     frame; when ineligible, it carries the classifier's reason and blocking
     operator without a function. The recipe ends with the node's own column
     step (selected columns, then renames), matching how edge joins finish.
     """
-    if node.data.nodeType != NodeType.POLARS or len(input_frames) != 1:
+    if node.data.nodeType not in (NodeType.POLARS, NodeType.DATA_INPUT) or len(input_frames) != 1:
         return None
     frame = input_frames[0]
     input_lf = frame.lazy() if isinstance(frame, pl.DataFrame) else frame

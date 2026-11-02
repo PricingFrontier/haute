@@ -219,7 +219,13 @@ exclusive lock that process holds on its token file, so retirement never removes
 generation another live process reads, and a dead owner's marker is removed. A process's
 first store sweeps the token files of processes that have exited and the publication lock
 files of identities that no longer exist, under a protocol that never leaves two processes
-holding different files for one lock. Retirement
+holding different files for one lock. A capture is not claimed while it is computed: two
+consumers that resolve the same cold capture point at once (a preview while a training run
+reads the same lineage, or an explicit build and an automatic capture of one node) both
+compute it, and each publication applies the publication rule under the identity's lock, so
+the later one either widens what the first published (an explicit build's every column over
+a narrower capture) or is superseded (`node_snapshot_capture_superseded`). A later reader
+seeds from a published generation that covers its demand. Retirement
 renames a generation out of selection under the lock and deletes its files afterwards, as it
 does for an input snapshot. Clear removes a slot's identities, pointers, and pin but never a
 generation another operation still leases; that generation retires when released. Until it
