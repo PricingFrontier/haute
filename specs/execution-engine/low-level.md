@@ -367,13 +367,14 @@ therefore carries the immutable `ExecutionStrategyResult` that produced it; a fu
 installs that result on the new `ExecutionContext`, preserving the same visible bounded
 diagnostic and provenance without re-planning. The current context still reports its
 own admission metrics, while the cached diagnostic describes the execution that created
-the cached data. A miss or partial extension always plans against the current context
-before any execution. On a full hit, cached `eager_outputs`/`errors`/`timings` are served directly.
-On a partial hit (same graph, new target needs more materialised nodes), calls
-`_eager_execute()` for only the newly-needed portion and merges into the cached entry
-— fresh outputs win over stale cached ones for any overlapping node id, and a node
-that re-executed successfully clears any stale cached error. On a full miss, executes
-from scratch. `_eager_execute()` compiles the preamble (`_compile_preamble`, tolerant
+the cached data. A miss always plans against the current context before any
+execution. On a full hit, cached `eager_outputs`/`errors`/`timings` are served directly.
+An entry under the request's key that lacks a node or column the request needs (the key
+names the target, so only an entry stored under a forced key can) is a miss
+(`preview_cache_miss` with `partial=True`): the request executes in full and its result
+replaces the entry, nothing merged from the old one. There is no cache extension: one
+would have to run the whole graph anyway, since the eager executor seeds from no cached
+frame. `_eager_execute()` compiles the preamble (`_compile_preamble`, tolerant
 of failure: the walk then builds through `_refusing_code_without_preamble`, which gives
 every node that runs code, a `POLARS` node or one with code of its own, a function raising
 the preamble's error as an `ExecutionError`, so it is recorded on that node without its
@@ -408,8 +409,7 @@ and executes, while corruption and every other storage error propagate. A plan w
 captures never stores under its pre-execution key: after executing, the core reads the
 runtime inputs again and stores nothing if they moved; otherwise it resolves the plan a
 new request would choose and stores under the key built from the first read and that
-plan's seeds only when every one is a generation it read. A partial hit under such a plan
-executes as a miss. The generations are recorded on the context
+plan's seeds only when every one is a generation it read. The generations are recorded on the context
 (`record_preview_seed_plan`) for the response's `seed_plan`.
 
 An API input bundle containing exactly one labelled frame has one canonical flat
@@ -2848,7 +2848,8 @@ present a structural or schema result as execution evidence.
   a listed generation propagating from a cache hit without executing, an input changed
   after a capture storing nothing, an input changed after the re-check keying the entry
   by the inputs executed, a post-capture plan naming an unread generation storing
-  nothing, a partial hit under captures executing as a miss, an undeclared-dtype CSV API
+  nothing, a partial hit under captures executing as a miss (as every partial hit does,
+  reporting the generations of the plan it ran under), an undeclared-dtype CSV API
   Input seeding and capturing nothing, a killed worker's capture staging removed, the
   preview-inputs endpoint listing only what the seeded execution reads and never an
   unused unbuildable input, the key of a preview seeding nothing equalling one without a

@@ -1392,7 +1392,8 @@ def _execute_graph_core(
                 snapshot_plan=snapshot_plan,
             )
 
-    # Check if we can extend the cache (same graph, new target is a superset)
+    # A hit serves the cached entry; anything else (a miss, or an entry that lacks a
+    # node or column this request needs) executes the request and replaces it.
     with execution_context.stage("preview_cache_lookup"):
         cached = _preview_cache.get(fp)
         if (
@@ -1425,10 +1426,6 @@ def _execute_graph_core(
                 cached_output_columns=cached["output_columns"],
             )
         )
-        if not cache_satisfies_request and captures_planned:
-            # A partial hit under captures executes as a miss: extending it
-            # would store outputs computed before those captures existed.
-            cached = None
     if cached is not None and cache_satisfies_request:
         # Full cache hit — all required nodes already materialised
         with execution_context.stage("preview_cache_hit"):
@@ -1455,85 +1452,13 @@ def _execute_graph_core(
             read_generations = tuple(
                 replace(generation, kind="seeded") for generation in cached.get("seed_plan", ())
             )
-    elif cached is not None:
-        # Partial hit — extend with newly-needed nodes
-        logger.debug(
-            "preview_cache_extend",
-            fingerprint=fp[:8],
-            target=target_node_id,
-            cached_nodes=len(prev_outputs),
-        )
-        (
-            raw_outputs,
-            order,
-            errors,
-            timings,
-            memory_bytes,
-            error_lines,
-            avail_cols,
-            output_cols,
-            frame_cols,
-        ) = _execute("preview_cache_extend")
-        eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
-        if snapshot_plan is not None:
-            read_generations = snapshot_plan.read_generations(order)
-        # Fresh eager outputs win over prev_outputs for any overlap:
-        # the prev_outputs may contain stale entries for nodes that were
-        # re-executed (e.g. delete-then-re-add with same id) and serving
-        # the stale DataFrame would hide legitimate config changes from
-        # the caller.  The extend-path only needs prev_outputs for nodes
-        # the current execution did NOT recompute.
-        merged = {**prev_outputs, **eager_outputs}
-        merged_errors = {**cached["errors"], **errors}
-        merged_timings = {**cached["timings"], **timings}
-        merged_memory = {**cached["memory_bytes"], **memory_bytes}
-        merged_error_lines = {**cached["error_lines"], **error_lines}
-        merged_avail = {**cached["available_columns"], **avail_cols}
-        merged_output_cols = {**cached["output_columns"], **output_cols}
-        merged_frame_cols = {**cached["frame_columns"], **frame_cols}
-        # A node scored again says what it priced now, not what it priced before.
-        merged_notes = {
-            nid: notes for nid, notes in cached["notes"].items() if nid not in eager_outputs
-        } | execution_context.provenance.full_term_notes()
-        merged_order = list(dict.fromkeys(cached["order"] + order))
-        # A node that re-executed successfully in the extend path must
-        # clear any stale cached error from an earlier transient failure.
-        for nid in eager_outputs:
-            if nid not in errors:
-                merged_errors.pop(nid, None)
-                merged_error_lines.pop(nid, None)
-        _store_entry(
-            {
-                "eager_outputs": merged,
-                "errors": merged_errors,
-                "order": merged_order,
-                "timings": merged_timings,
-                "memory_bytes": merged_memory,
-                "error_lines": merged_error_lines,
-                "available_columns": merged_avail,
-                "output_columns": merged_output_cols,
-                "frame_columns": merged_frame_cols,
-                "notes": merged_notes,
-                "execution_strategy": _current_execution_strategy(),
-            }
-        )
-        eager_outputs = merged
-        node_notes = merged_notes
-        errors = merged_errors
-        timings = merged_timings
-        memory_bytes = merged_memory
-        error_lines = merged_error_lines
-        avail_cols = merged_avail
-        output_cols = merged_output_cols
-        frame_cols = merged_frame_cols
-        order = merged_order
     else:
-        # Complete cache miss — execute from scratch
         logger.debug(
             "preview_cache_miss",
             fingerprint=fp[:8],
             target=target_node_id,
             prev_fingerprint=(_preview_cache.most_recent_key or "")[:8],
+            partial=cached is not None,
         )
         (
             raw_outputs,

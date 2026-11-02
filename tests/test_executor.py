@@ -2579,13 +2579,14 @@ class TestResolveBatchScenario:
 
 
 class TestPreviewCachePartialHit:
-    """Verify the cache-extend (partial-hit) path in execute_graph."""
+    """An entry that lacks what a request needs is a miss, never extended."""
 
     @pytest.mark.parametrize("fresh_error", [False, True])
-    def test_partial_hit_extends_cache(self, tmp_path, monkeypatch, fresh_error):
-        """When a cached graph fingerprint exists but the target node is
-        not yet materialized, execute_graph should re-execute for the new
-        target and merge the results.
+    def test_a_partial_hit_executes_as_a_miss_and_replaces_the_entry(
+        self, tmp_path, monkeypatch, fresh_error
+    ):
+        """When a cached entry under the request's key lacks the target, the request
+        executes in full and its result replaces the entry, nothing merged from the old one.
 
         Real failure: clicking a deeper node after an initial preview
         returns 'No output' because the cache returned a hit without
@@ -2609,9 +2610,9 @@ class TestPreviewCachePartialHit:
             }
         )
 
-        # Force both target requests into one lineage slot so this test
-        # exercises the defensive cache-extension path rather than merely
-        # proving that target-specific fingerprints cause two cache misses.
+        # Force both target requests into one lineage slot, so the second finds an
+        # entry that lacks its target, rather than merely proving that
+        # target-specific fingerprints cause two cache misses.
         monkeypatch.setattr(
             "haute.executor.execution_facade.preview_lineage_cache_key",
             lambda *_args, **_kwargs: "partial-hit-regression",
@@ -2643,27 +2644,28 @@ class TestPreviewCachePartialHit:
             def eager_with_partial_error(*args, **kwargs):
                 result = list(real_eager(*args, **kwargs))
                 # A producer can return usable frame evidence alongside a node error.
-                # Cache extension must preserve that error instead of reviving an old success.
+                # The new entry keeps that error instead of reviving the old success.
                 result[2] = {**result[2], "mid": "partial result rejected"}
                 result[5] = {**result[5], "mid": 7}
                 return tuple(result)
 
             monkeypatch.setattr(executor_mod, "_eager_execute", eager_with_partial_error)
 
-        # Second call: same graph, but now requesting "leaf" — partial hit
+        # Second call: same graph, but now requesting "leaf": the entry lacks it
         results2 = execute_graph(graph, target_node_id="leaf")
         assert "leaf" in results2
         assert results2["leaf"].status == "ok"
         assert results2["leaf"].row_count == 3
-        # The merged cache should also still contain "mid" and "src"
         assert "mid" in results2
+        replaced = _preview_cache.get("partial-hit-regression")
+        assert replaced is not None and "leaf" in replaced["eager_outputs"]
         if fresh_error:
             assert results2["mid"].status == "error"
             assert results2["mid"].error == "partial result rejected"
             assert _preview_cache.get("partial-hit-regression")["error_lines"]["mid"] == 7
         else:
             assert results2["mid"].status == "ok"
-        assert plan_calls == 2, "a partial extension must plan against the current request"
+        assert plan_calls == 2, "the miss plans against the current request"
 
         _preview_cache.clear()
 

@@ -27,9 +27,9 @@ running heavy work in a child process the parent can kill on timeout or memory l
   both eagerly (`executor.execute_graph` and `trace.execute_trace`, display walks of
   `_graph_walker.walk_graph`) and
   lazily (`execution.execute_lazy_graph`, a sink walk of `_graph_walker.walk_graph`).
-- The GUI preview cache — reusing materialised node outputs across clicks on the same
-  graph, extending the cache when a new target requires more of the graph, and
-  discarding entries once source data or graph shape changes.
+- The GUI preview cache — reusing materialised node outputs across repeats of the same
+  preview request, executing (and replacing the entry) when a request needs more than it
+  holds, and discarding entries once source data or graph shape changes.
 - Column-contract enforcement at node input/output boundaries (via `_contracts.py`'s
   `Contract`, consumed here) and the column-projection planning that lets captures
   and lazy scans avoid materialising unused columns.
@@ -108,9 +108,10 @@ running heavy work in a child process the parent can kill on timeout or memory l
 - **Preview execution** (`executor.execute_graph`) runs a graph eagerly up to an
   optional `target_node_id`, returning a `NodeResult` per executed node: status
   (`ok`/`error`), row/column counts, a bounded JSON preview of rows, schema, and
-  per-node timing/memory. Repeated calls against the *same* graph reuse previously
-  materialised node outputs from an in-process cache; calls that need more of the
-  graph than is cached extend the cache rather than starting over. Ordinary
+  per-node timing/memory. A repeated preview request reuses the node outputs its
+  first run materialised, from an in-process cache keyed by the request (its target,
+  row limit, columns and frame among it); a request its entry does not satisfy runs
+  as a miss and replaces the entry. Ordinary
   node-local failures are captured per-node (`status="error"`) rather than
   aborting the whole preview. Once
   a display walk is running, every `HauteError` with a stable public
@@ -625,7 +626,7 @@ successful run does no extra work.
   published table generations, never the source.
   A full preview-cache hit also reuses the immutable strategy result that produced the
   cached frame, so it retains projection warnings and provenance without repeating
-  footer estimation. Any miss or cache extension plans afresh before materialisation.
+  footer estimation. Any miss plans afresh before materialisation.
 - **Materialise only at capture points.** A lazy frame read by several branches
   carries its whole upstream plan into each, and Polars' streaming engine accumulates
   memory across a chain of joins run as one query (pola-rs/polars#24206, open at
