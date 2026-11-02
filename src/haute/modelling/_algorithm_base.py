@@ -286,8 +286,7 @@ class NativeModel(ABC):
                 or labels[0] == labels[1]
             ):
                 raise fail(
-                    "has no (negative, positive) pair of distinct labels of one type "
-                    "(class_labels)"
+                    "has no (negative, positive) pair of distinct labels of one type (class_labels)"
                 )
             class_labels = (labels[0], labels[1])
         elif labels is not None:
