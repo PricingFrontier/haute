@@ -1178,6 +1178,7 @@ class _ResourceManager(requests.adapters.BaseAdapter):
             },
         }
         self.updates: list[dict[str, Any]] = []
+        self.reads: list[str] = []
 
     def send(self, request: Any, **kwargs: Any) -> requests.Response:
         if request.method == "PATCH":
@@ -1191,7 +1192,13 @@ class _ResourceManager(requests.adapters.BaseAdapter):
             if "tags" in body:
                 self.app["tags"] = body["tags"]
             return self._answer(request, 202, None, {"Location": _POLL, "Retry-After": "0"})
-        return self._answer(request, 200, self.app)
+        # Only the app's own address and the update's Location answer: a poll anywhere else
+        # is the SDK reading the wrong URL.
+        address = request.url.split("?", 1)[0]
+        self.reads.append(address)
+        if address == _POLL or address.endswith("/containerApps/motor-staging"):
+            return self._answer(request, 200, self.app)
+        return self._answer(request, 404, {"error": {"code": "NotFound", "message": address}})
 
     def close(self) -> None:
         pass
@@ -1255,6 +1262,8 @@ def test_the_real_sdk_takes_the_rollouts_updates() -> None:
     host.record(Recorded(NEW, "rel-1", COMMIT))
 
     assert made == "motor-staging--h261102190710b9a4d9"
+    # Each update was followed to its end at the Location Azure answered it with.
+    assert manager.reads.count(_POLL) == 2
     assert manager.updates[0]["properties"]["template"]["containers"][0]["image"] == NEW
     assert manager.app["tags"] == {
         "owner": "pricing",
