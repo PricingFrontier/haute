@@ -67,7 +67,8 @@ const GUARD_SELECTORS = [
   },
 ]
 // One implementation each of canonical JSON, a YYYY-MM-DD check, the job-status
-// vocabulary, and the locale numbers are shown in (the browser's).
+// vocabulary, and the locale numbers are shown in (the browser's). Every
+// override below keeps them; only their owners are exempt.
 const HELPER_SELECTORS = [
   {
     selector: 'FunctionDeclaration[id.name=/^(sortObjectKeys|sortKeys|canonical|canonicalize|stableValue|stableStringify|stableJson)$/], VariableDeclarator[id.name=/^(sortObjectKeys|sortKeys|canonical|canonicalize|stableValue|stableStringify|stableJson)$/][init.type=/^(ArrowFunctionExpression|FunctionExpression)$/]',
@@ -137,15 +138,15 @@ export default defineConfig([
   },
   {
     files: ['src/api/errors.ts'],
-    rules: restrictedSyntax(POLLING_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS),
   },
   {
     files: ['src/utils/formatBytes.ts', 'src/utils/formatValue.ts', 'src/utils/relativeTime.ts'],
-    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, GUARD_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS),
   },
   {
     files: ['src/types/guards.ts', 'src/utils/objectLiteral.ts'],
-    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_BASE_SELECTORS, FORMAT_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_BASE_SELECTORS, FORMAT_SELECTORS, HELPER_SELECTORS),
   },
   // Exact file/rule debt that predates the blocking severities. New instances
   // elsewhere fail lint; remove each override with its owning-stream fix.
@@ -173,7 +174,7 @@ export default defineConfig([
       'src/utils/connectionValidation.ts',
       'src/workbench/ChartBody.tsx',
     ],
-    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_BASE_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_BASE_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS),
   },
   {
     files: ['e2e/persistence/api-input-v2-native.spec.ts'],

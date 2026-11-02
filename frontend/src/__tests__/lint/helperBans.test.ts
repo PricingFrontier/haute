@@ -85,6 +85,21 @@ describe("helper bans", () => {
     expect(await restrictedMessages(code, filePath)).toEqual([])
   })
 
+  // Files with an override of their own (another helper's owner, or listed
+  // debt) keep the canonical-JSON, date, job-status and locale bans.
+  it.each([
+    ["src/hooks/useTracing.ts", "const stableValue = (v: unknown) => JSON.stringify(v)", "canonicalJson"],
+    ["src/hooks/usePipelineAPI.ts", "function sortObjectKeys(v: unknown) { return v }", "canonicalJson"],
+    ["src/types/guards.ts", "function isDay(t: string) { return t.length === 10 }", "isDay"],
+    ["src/api/errors.ts", "export const STATUSES = ['running', 'memory_limited', 'contract_error']", "JOB_STATUS_VALUES"],
+    ["src/utils/formatValue.ts", "export const text = (n: number) => n.toLocaleString('en-GB')", "browser's locale"],
+    ["src/stores/useSettingsStore.ts", "const isValidDate = (t: string) => t.length === 10", "isDay"],
+  ])("keeps the helper bans in %s", async (filePath, code, helper) => {
+    const messages = await restrictedMessages(code, filePath)
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toContain(helper)
+  })
+
   it("does not police test files", async () => {
     expect(await restrictedMessages("for (;;) { break }", "src/panels/__tests__/probe.test.ts")).toEqual([])
   })
