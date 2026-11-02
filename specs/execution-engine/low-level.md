@@ -497,10 +497,14 @@ are never capped. A materialised node collects its own plan limited to
 selection (each frame of a multi-frame node), and a limited collection never feeds a
 consumer, nor one narrower than the columns its consumers need: consumers then read the
 node's uncapped plan, which `WalkResult.frames` also exposes. A frame several edges read is
-handed to each as it is, never through `cache()`: Polars scopes a cache to one query, so it
-shares no computation between separate collections, and within one query common-subplan
-elimination already computes the frame once; a cache only held a materialised copy of it
-against the preview's budget. Consumers of a collected node share its DataFrame instead,
+handed to each as it is, never through `cache()`. Polars scopes a cache to one query, so it
+shares no computation between separate collections. Within one query, common-subplan
+elimination computes a simple diamond's shared frame once, but not a frame shared again
+below another shared frame (a nested diamond), which each unshared path recomputes, as a
+write of the same graph does. The walker still adds no cache there: a cache keeps a
+preview's row limit from reaching the source and holds a materialised copy of the frame
+against the preview's budget, and the engine prefers the smaller peak to the single
+computation. Consumers of a collected node share its DataFrame instead,
 when it holds every row and column they need.
 
 Under a leased `snapshot_plan` (`haute._seed_plans`, resolved for this exact execution

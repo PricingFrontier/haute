@@ -527,11 +527,13 @@ def test_eager_diamond_reuses_one_cached_lazyframe_and_executes_source_once() ->
     assert len(set(cache_ids)) == 1
 
 
-def test_eager_nested_diamond_has_one_cache_per_shared_lazy_producer() -> None:
-    """Nested fan-out retains one cache identity for each shared producer.
+def test_eager_nested_diamond_adds_no_cache_and_recomputes_the_outer_producer() -> None:
+    """A display walk caches no fan-out input, even in a nested diamond.
 
-    The identities are read from the plan Haute builds: the optimiser may merge
-    nested caches whose intermediate columns nothing reads (Polars 1.44 does).
+    Polars' common-subplan elimination shares a simple diamond's producer but
+    not a producer shared again below a shared frame, so the source runs once
+    per unshared path, as a write of the same graph does. A cache would keep a
+    preview's row limit from reaching the source.
     """
     graph = PipelineGraph(
         nodes=[
@@ -580,10 +582,9 @@ def test_eager_nested_diamond_has_one_cache_per_shared_lazy_producer() -> None:
 
     walk_graph(graph, build, policy=CollectPolicy.display(collect={"sink"}))
 
-    assert calls == 1
-    cache_ids = _cache_ids(plans[0])
-    assert len(set(cache_ids)) == 2
-    assert all(cache_ids.count(cache_id) >= 2 for cache_id in set(cache_ids))
+    # The plan the walker builds, before Polars optimises it, holds no cache.
+    assert _cache_ids(plans[0]) == []
+    assert calls == 2
 
 
 def test_eager_dataframe_parent_is_not_wrapped_in_a_cache_hint() -> None:
