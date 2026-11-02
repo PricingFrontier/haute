@@ -392,6 +392,7 @@ export default function ComparisonView({
       })
       .catch((err) => {
         if (ctrl.signal.aborted) return
+        // The breadcrumbs are optional context the comparison shows without: log, don't toast.
         console.warn(`Commit context fetch failed (${apiErrorStatus(err) ?? apiErrorMessage(err)})`)
       })
     return () => ctrl.abort()
@@ -409,6 +410,7 @@ export default function ComparisonView({
       })
       .catch((err) => {
         if (ctrl.signal.aborted) return
+        // The breadcrumbs are optional context the comparison shows without: log, don't toast.
         console.warn(`Commit context fetch failed (${apiErrorStatus(err) ?? apiErrorMessage(err)})`)
       })
     return () => ctrl.abort()

@@ -574,6 +574,16 @@ describe("useGraphStore structuralVersion", () => {
       expect(store().structuralVersion).toBe(start + 2)
     })
 
+    it("hashes a definition child without node data rather than failing the edit", () => {
+      const store = () => useGraphStore.getState()
+      const start = store().structuralVersion
+      const bare = { id: "bare" } as unknown as Node
+
+      act(() => store().setSubmodelsRaw(definition([makeNode("child"), bare])))
+
+      expect(store().structuralVersion).toBe(start + 1)
+    })
+
     it("advances when Undo restores only a definition", () => {
       const store = () => useGraphStore.getState()
       act(() => store().setNodesAndEdgesAndSubmodels(store().nodes, [], definition([makeNode("child"), makeNode("child2")])))

@@ -438,9 +438,12 @@ function submodelsStructuralHash(submodels: Record<string, unknown>): string {
       return `${id}=${JSON.stringify(definition)}`
     }
     const { graph, ...rest } = definition
-    const nodes = Array.isArray(graph.nodes) ? graph.nodes as StructuralNode[] : []
+    const nodes = Array.isArray(graph.nodes) ? graph.nodes : []
     const edges = Array.isArray(graph.edges) ? graph.edges as StructuralEdge[] : []
-    return `${id}=${JSON.stringify(rest)}{${structuralGraphParts(nodes, edges)}}`
+    // A child with node data hashes by its input keys; anything else hashes whole.
+    const hashable = nodes.filter((node): node is StructuralNode => isPlainObject(node) && isPlainObject(node.data))
+    const other = nodes.filter((node) => !hashable.includes(node as StructuralNode)).map((node) => JSON.stringify(node)).sort()
+    return `${id}=${JSON.stringify(rest)}{${structuralGraphParts(hashable, edges)}||${other.join("|")}}`
   })
   const hash = parts.join("|")
   submodelsStructuralCache.set(submodels, hash)
