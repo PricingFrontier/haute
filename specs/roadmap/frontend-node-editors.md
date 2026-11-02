@@ -51,7 +51,7 @@ format preview values with the server's cast rule or withhold chips for
 non-string columns; use `resolveLoadedVersion` in Optimiser Apply; require a
 non-blank source column in `detectConflicts` or share one `isActiveEntry`
 predicate; declare `origin` and `key` in `ColumnV2`, the specification and the
-docs, or move them to the editor-state field `PCFG-R08` introduces; make Steps a
+docs, or move them beside the config as the node data's editor state; make Steps a
 validated field refusing non-integers and values below 1.
 
 **Acceptance:** No editor writes a key the backend ignores (a test over every
@@ -60,7 +60,7 @@ column's chip matches its rows; an alias pointing at an older version drives
 the mirrored mode; an added row with a blank column raises no conflict; `2.7` in
 Steps is refused with a message.
 
-**Dependencies:** `PCFG-R08` for the editor-state field.
+**Dependencies:** None.
 
 **Evidence:** `frontend/src/panels/editors/OutputEditor.tsx`;
 `frontend/src/panels/editors/outputMappingSchema.ts`;
@@ -361,9 +361,9 @@ warns on a non-empty non-numeric boundary; unmounting or undoing an open formula
 delegates to `writeClipboardText`; and a repeat error on the same line in
 `CodeMirrorEditor` re-highlights that line.
 
-**Dependencies:** Coordinates with `FNED-R03`, `FNED-R04` (which owns strict parsing
-and invalid-cell marking for `ControlledNumberCell`) and `PCFG-R08` (editor state
-outside `node.data.config`).
+**Dependencies:** Coordinates with `FNED-R03` and `FNED-R04` (which owns strict parsing
+and invalid-cell marking for `ControlledNumberCell`); the node data carries editor
+state beside `node.data.config`.
 
 **Evidence:** `frontend/src/panels/editors/_DatabricksSelector.tsx::CatalogTablePicker`;
 `frontend/src/panels/editors/_DatabricksSelector.tsx::TargetTablePicker`;

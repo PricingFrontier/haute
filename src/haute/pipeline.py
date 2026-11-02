@@ -45,6 +45,7 @@ from haute._types import (
     REQUEST_INPUT_NODE_TYPES,
     RESPONSE_NODE_TYPES,
     GraphEdge,
+    NodeEditorState,
     NodeType,
     SubmodelEndpoint,
     SubmodelInputPort,
@@ -1088,6 +1089,8 @@ class Pipeline(NodeRegistry):
                     "config": {
                         key: value for key, value in node.config.items() if not key.startswith("_")
                     },
+                    # A live node has no parsed body, so no parse findings.
+                    "editor": NodeEditorState(),
                     "param_names": positional_param_names,
                     "edge_param_names": positional_param_names,
                 }

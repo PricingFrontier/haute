@@ -602,6 +602,8 @@ export default function usePipelineAPI({
     sourceRevisionRef.current = data.source_revision ?? ""
     preservedBlocksRef.current = data.preserved_blocks
     useDocumentStatusStore.getState().loadDocumentStatus(data, false, documentFingerprint)
+    // Rules set aside by a Banding type switch last until the pipeline reloads.
+    useUIStore.getState().clearBandingRuleStash()
     useGraphStore.getState().loadGraphSnapshot({
       nodes: pipelineNodes,
       edges: normalizeEdges(pipelineEdges),

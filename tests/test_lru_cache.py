@@ -252,7 +252,7 @@ class TestByteAwareEviction:
         with pytest.raises(ValueError, match="non-negative int"):
             cache_negative.put("a", 1)
 
-    def test_oversized_put_reports_rejection_and_retains_existing_entry(
+    def test_oversized_replacement_reports_rejection_and_evicts_existing_entry(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         cache: LRUCache[str, int] = LRUCache(
@@ -261,13 +261,16 @@ class TestByteAwareEviction:
             size_of=lambda value: value,
         )
         assert cache.put("same-fp", 25) is True
+        cache.pin("same-fp")
 
         with caplog.at_level(logging.WARNING, logger="haute._lru_cache"):
             retained = cache.put("same-fp", 75)
 
+        # The value the caller replaced is never served again, pinned or not.
         assert retained is False
-        assert cache.get("same-fp") == 25
-        assert cache.stats()["bytes"] == 25
+        assert cache.get("same-fp") is None
+        assert len(cache) == 0
+        assert cache.stats()["bytes"] == 0
         record = next(
             record
             for record in caplog.records

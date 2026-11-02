@@ -372,22 +372,12 @@ function rememberTrainOutcome(
 // ─── Config hashing ──────────────────────────────────────────────
 
 export function hashConfig(config: Record<string, unknown>): string {
-  const {
-    _nodeId,
-    _columns,
-    _schemaWarnings,
-    _availableColumns,
-    ...semanticConfig
-  } = config
-  void _nodeId
-  void _columns
-  void _schemaWarnings
-  void _availableColumns
-
+  // Editor state travels beside the config (`HauteNodeData.editor` and the
+  // node data's own fields), so the whole config is the node's identity.
   // Normalise through JSON first so identity follows the same value semantics
   // as persisted config: undefined object fields are omitted, non-finite
   // numbers become null, and serialisable values may use toJSON.
-  const json = JSON.stringify(semanticConfig)
+  const json = JSON.stringify(config)
   const jsonValue: unknown = JSON.parse(json)
 
   return JSON.stringify(sortObjectKeys(jsonValue))

@@ -2810,9 +2810,9 @@ class TestStepsFirstAuthoring:
 
         graph = parse_pipeline_to_graph(steps_first_project / "main.py")
         assert [item.id for item in graph.nodes] == [item.id for item in before.nodes]
-        saved = next(item for item in graph.nodes if item.id == node).data.config
-        assert saved["steps"] == steps
-        assert "_steps_error" not in saved and "_steps_discarded" not in saved
+        saved = next(item for item in graph.nodes if item.id == node).data
+        assert saved.config["steps"] == steps
+        assert saved.editor.steps_error is None and saved.editor.steps_discarded is None
         with native_memory_backend_scope("rlimit"):
             result = execute_graph(graph, target_node_id=node)[node]
         assert result.status == "ok", result.error
@@ -5100,13 +5100,19 @@ class TestStepAuthoringViews:
         }
 
 
-def _authoring_facts(steps: list[dict[str, object]] | None = None, **config: object):
-    from haute._types import NodeType
+def _authoring_facts(
+    steps: list[dict[str, object]] | None = None,
+    *,
+    steps_discarded: str | None = None,
+    **config: object,
+):
+    from haute._types import NodeEditorState, NodeType
     from haute.assistant._render import node_authoring
 
     if steps is not None:
         config["steps"] = steps
-    authoring = node_authoring(NodeType.POLARS, config)
+    editor = NodeEditorState(steps_discarded=steps_discarded)
+    authoring = node_authoring(NodeType.POLARS, config, editor)
     assert authoring is not None
     return authoring
 
@@ -5175,7 +5181,7 @@ class TestAuthoringRendering:
 
         policy = _policy(max_sensitivity="internal", executable=False)
         discarded = _authoring_facts(
-            code="df = quotes", _steps_discarded="Steps were discarded because x."
+            code="df = quotes", steps_discarded="Steps were discarded because x."
         )
 
         assert render_authoring(discarded, policy) == {"state": "code", "steps_discarded": True}
@@ -5205,7 +5211,7 @@ class TestAuthoringRendering:
         incomplete = brief(_authoring_facts(self._STEPS), executable=False)
         assert '"t", incomplete at step "band"\n' in incomplete
         assert "Nope" not in incomplete
-        discarded = _authoring_facts(code="df = quotes", _steps_discarded="x")
+        discarded = _authoring_facts(code="df = quotes", steps_discarded="x")
         assert '"t", code (steps discarded)\n' in brief(discarded, executable=False)
 
     def test_a_saved_step_kind_outside_the_known_kinds_renders_as_unknown(self):

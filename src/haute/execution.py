@@ -19,10 +19,8 @@ import polars as pl
 
 from haute._api_input_schema import is_json_api_input_path
 from haute._cache import (
-    CACHE_CONFIG_FIELD_CLASSIFICATIONS,
     CacheConsumer,
     CacheIdentityRecord,
-    CacheInputClass,
     GraphFingerprintMemo,
     LineageCacheKeyRequest,
     canonical_json,
@@ -126,10 +124,53 @@ _SOURCE_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
     NodeType.DATA_INPUT: "path",
     NodeType.EXTERNAL_FILE: "path",
 }
+# Beside its source file's field, the config fields that say which external
+# data or model a node reads: its runtime-input entry signs them beside the
+# state they name. Every other field reaches the identity through the
+# structural graph or lineage identity a runtime-input identity is paired with.
+_MLFLOW_SOURCE_CONFIG_FIELDS = (
+    "alias",
+    "artifact_path",
+    "mlflow_destination",
+    "registered_model",
+    "run_id",
+    "sourceType",
+    "version",
+)
+_RUNTIME_INPUT_CONFIG_FIELDS: dict[NodeType, tuple[str, ...]] = {
+    NodeType.DATA_INPUT: (
+        "code",
+        "connection",
+        "format",
+        "http_path",
+        "inputType",
+        "mode",
+        "query",
+        "table",
+        "uri",
+    ),
+    NodeType.EXTERNAL_FILE: ("code",),
+    NodeType.MODEL_SCORE: (
+        *_MLFLOW_SOURCE_CONFIG_FIELDS,
+        "code",
+        "feature_contract_path",
+        "model_path",
+    ),
+    NodeType.OPTIMISER_APPLY: (*_MLFLOW_SOURCE_CONFIG_FIELDS, "ratebook_input"),
+}
 # The node types whose runtime inputs an execution identity signs.
 _RUNTIME_INPUT_NODE_TYPES = frozenset(
     {*_SOURCE_PATH_CONFIG_BY_NODE_TYPE, NodeType.MODEL_SCORE, NodeType.OPTIMISER_APPLY}
 )
+
+
+def _runtime_input_config_fields(node_type: NodeType) -> tuple[str, ...]:
+    source_path = _SOURCE_PATH_CONFIG_BY_NODE_TYPE.get(node_type)
+    return (
+        *((source_path,) if source_path is not None else ()),
+        *_RUNTIME_INPUT_CONFIG_FIELDS.get(node_type, ()),
+    )
+
 
 _LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE: dict[NodeType, tuple[str, ...]] = {
     NodeType.API_INPUT: ("path",),
@@ -802,20 +843,6 @@ def _config_subset(config: Mapping[str, Any], keys: Iterable[str]) -> Mapping[st
         for key in sorted(keys)
         if key in config and isinstance(config[key], str | int | float | bool | type(None))
     }
-
-
-def _runtime_input_config_fields(node_type: NodeType) -> tuple[str, ...]:
-    included_classes = {
-        CacheInputClass.SOURCE_SELECTION,
-        CacheInputClass.RUNTIME_FILES,
-        CacheInputClass.ARTIFACTS,
-        CacheInputClass.USER_CODE,
-    }
-    return tuple(
-        field_name
-        for field_name, classification in CACHE_CONFIG_FIELD_CLASSIFICATIONS[node_type].items()
-        if classification.input_class in included_classes
-    )
 
 
 def _local_runtime_input_path_fields(node: GraphNode) -> tuple[str, ...]:

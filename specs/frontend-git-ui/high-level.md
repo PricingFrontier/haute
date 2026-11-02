@@ -219,14 +219,18 @@ also publishes the default branch as your merge target." When that explicit push
 <default_branch> and your branch history to <remote>`. Otherwise the ordinary pushed-
 branch-count toast remains. On a non-fast-forward rejection the control shows an honest
 recovery modal: fast-forward catch-up when the fork is behind-only, or "spin off a copy"
-(never a local merge) when it has genuinely diverged.
+(never a local merge) when it has genuinely diverged. The modal's actions act on the remote
+that refused the push, the one it names, even if the dropdown has moved to another remote
+since; the standalone Catch up acts on the remote selected when it is clicked. While a
+push, a catch-up or a spin-off runs, neither Push nor Catch up can start.
 
 Catch up and Spin off a copy rewrite the project's files from the remote, so, like a
 switch, both pass the dirty-project guard: with unsaved edits in the canvas or the
 workbench's form, the standalone Catch up button and the rejection dialog's actions first
 ask "Save them before catching up?" or "Save them before spinning off a copy?", naming the
 remote whose files replace the project's (the question sits inside the rejection dialog
-when that is open, and closing the dialog drops it). Cancel sends nothing, Discard goes
+when that is open, and closing the dialog drops it; on the control's row, selecting another
+remote drops it). Cancel sends nothing, Discard goes
 ahead, and Save first goes ahead only once the save has succeeded. Once either succeeds,
 the edits chosen over are dropped as after a switch, and the readiness, the branch list
 and the history are read again.
@@ -361,10 +365,6 @@ empty remote. The UI reads `default_branch`; it never hardcodes `main`.
   git-integration commit-context endpoint.
 
 ## Failure model
-
-> NOTE: Recovery callbacks currently take the mutable selected remote even when the
-> rejection dialog names another remote. [GIT-R18](../roadmap/git-integration.md#git-r18--recovery-acts-on-the-remote-named-by-its-dialog)
-> tracks binding Catch up and Spin off to the displayed rejection.
 
 This codebase prefers loud failure over silent fallbacks; within that, this component
 draws a hard line between **history/chrome reads**, which degrade silently because they

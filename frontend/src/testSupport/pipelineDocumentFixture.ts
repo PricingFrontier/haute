@@ -93,6 +93,12 @@ function recoveryNode(node: Node, index: number): RecoveryNode {
     availability: nodeAvailability(node),
     display_position: { x: position.x, y: position.y },
     config: structuredClone(record(data.config)) as RecoveryNode["config"],
+    editor: {
+      steps_error: null,
+      steps_discarded: null,
+      discarded_sidecar: null,
+      ...(record(data.editor) as Partial<RecoveryNode["editor"]>),
+    },
     config_reference: nullableString(data._configReference),
     function_name: functionName,
     default_input_name: defaultInputName,

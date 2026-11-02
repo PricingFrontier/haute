@@ -16,6 +16,7 @@ import type { ProjectFolderResponse } from "../../api/types"
 import { fetchParamFile } from "../../api/workbench"
 import BandingEditor from "../../panels/editors/BandingEditor"
 import { GraphProvider } from "../../panels/GraphContext"
+import useUIStore from "../../stores/useUIStore"
 
 /**
  * The editor reads the data its node is banding, so it needs the graph the
@@ -30,7 +31,10 @@ function renderEditor(ui: ReactElement) {
   )
 }
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  useUIStore.getState().clearBandingRuleStash()
+})
 
 /** How the histogram's formatter, if the editor gives it one, shows the data's ends. */
 function endLabels(props: Record<string, unknown>): string[] | null {
@@ -649,26 +653,28 @@ describe("BandingEditor", () => {
     const config = {
       factors: [{ banding: "breakpoints", column: "age", outputColumn: "age_band", rules: existingRules }],
     }
-    const { rerender } = renderEditor(
-      <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
+    const { unmount } = renderEditor(
+      <BandingEditor nodeId="band_1" config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
     )
     // Switch to categorical — should stash the breakpoints
     fireEvent.click(screen.getByText("Categorical"))
     const switched = (onUpdate.mock.lastCall![1] as Record<string, unknown>[])[0]
     expect(switched.banding).toBe("categorical")
-    expect((switched._prevRules as Record<string, unknown>).breakpoints).toEqual(existingRules)
     expect(switched.rules).toEqual([])
+    // The stash is editor state beside the config: the factor written carries none.
+    expect(Object.keys(switched).filter((key) => key.startsWith("_"))).toEqual([])
 
-    // Switching back restores them.
-    rerender(
-      <GraphProvider allNodes={[]} edges={[]} submodels={{}} preamble="">
-        <BandingEditor config={{ factors: [switched] }} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />
-      </GraphProvider>,
+    // Selecting another node unmounts the editor; coming back and switching
+    // back still restores the rules.
+    unmount()
+    renderEditor(
+      <BandingEditor nodeId="band_1" config={{ factors: [switched] }} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
     )
     fireEvent.click(screen.getByText("Numeric"))
     const restored = (onUpdate.mock.lastCall![1] as Record<string, unknown>[])[0]
     expect(restored.banding).toBe("breakpoints")
     expect(restored.rules).toEqual(existingRules)
+    // Loading a document forgets the stash: usePipelineAPI and useWebSocketSync suites.
   })
 
   // ─── Feature 4: Breakpoints mode rendering ────────────────────

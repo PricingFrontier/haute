@@ -1346,7 +1346,7 @@ def _brief_nodes(graph: PipelineGraph, flat: PipelineGraph) -> tuple[BriefNode, 
             continue
         inputs = brief_inputs(node.id)
         output, failure = output_of(node.id)
-        authoring = node_authoring(node_type, node.data.config)
+        authoring = node_authoring(node_type, node.data.config, node.data.editor)
         if authoring is not None and _incomplete(failure):
             # Resolution also checks what the config alone cannot: a Transform's
             # step inputs against its connected edges.

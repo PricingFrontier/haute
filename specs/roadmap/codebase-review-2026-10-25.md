@@ -122,8 +122,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the forty-six packages delivered or settled since (thirteen by 28
-October 2026, twenty-five more on 29 October, eight more by 2 November) have been removed from the sections below; the coverage table keeps the
+The findings of the forty-eight packages delivered or settled since (thirteen by 28
+October 2026, twenty-five more on 29 October, two on 1 November, eight more by 2 November) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -186,8 +186,6 @@ these are the Majors still open.
 - **A graceful server exit joins every in-flight worker** (Major,
   `ROAD-WORKER-06`): a 6 s child in flight at a 2 s exit ends the process at
   7.6 s; no job registry is cancelled at shutdown.
-- **Every save drops authored comments outside the kept regions** (Major,
-  `PCFG-R12`; five kinds reproduced) with no diagnostic.
 - **The optimiser's MLflow log writes the complete result artifact without the
   finiteness gate the save applies** (Major, `OPT-R01`): a missing defence layer
   on a pricing artifact, since the status poll corrects the UI path.
@@ -230,7 +228,6 @@ production:
   can run code on the server without saving. No package is filed; the choice
   is the owner's.
 - `haute run` executes the whole pipeline eagerly in memory (`CLI-R02`).
-- Automatic ledger saves run the project's git hooks (`GIT-R06`).
 
 ## Findings mapped to packages
 
@@ -255,9 +252,7 @@ production:
 | Background jobs | WRK-2 | `ROAD-WORKER-06` |
 | Background jobs | WRK-5, WRK-6, WRK-11, WRK-14 | `ROAD-WORKER-07` |
 | Background jobs | WRK-8, WRK-9, WRK-10 | `ROAD-WORKER-08` |
-| Pipeline config | PCF-3 | `PCFG-R12` |
 | Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
-| Pipeline config | PCR-8 | `PCFG-R19` |
 | Optimiser | OPR-1, OPR-8, OPR-12 | `OPT-R01` |
 | Optimiser | OPR-3 | `OPT-R02` |
 | Optimiser | OPR-4, OPR-5, OPR-6, OPR-7 | `OPT-R03` |
@@ -268,8 +263,6 @@ production:
 | Modelling | MDL-2, MDL-18, MDL-22 | `MOD-R06` |
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
 | Tracing | TRC-8, TRC-9, TRC-10, TRC-14 | `TRACE-R03` |
-| Git integration | GIT-12, GIT-13 | `GIT-R05` |
-| Git integration | GIT-14 | `GIT-R06` (Decision) |
 | Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |
 | Assistant | ASA-3, ASA-4, ASA-6, ASA-9 | `ASSIST-55` |
 | Assistant | ASA-5, ASA-8, ASA-10, ASA-11, ASA-12, ASA-14 | `ASSIST-56` |
@@ -310,7 +303,7 @@ root used by the deploy modules, the underwriter app and the server
 three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
 the hand-maintained
 browser contract (`API-R03`); the cwd-dependent resolvers in the routes and the
-parser (`PCFG-R04`), editor state inside the config (`PCFG-R08`), the per-type
+parser (`PCFG-R04`), the per-type
 validators and branches (`PCFG-R07`, `PCFG-R09`); name-violation reporting
 (`NAME-09`); the test-only config helpers and
 event-bus hooks (`ENGQ-R01`); the optimiser's unshown solve-memory forecast (`OPT-W02`) and its frontier
@@ -323,15 +316,14 @@ assistant's current-directory project root (`PCFG-R04`); the assistant
 catalog's hand tables and
 key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
 (`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the pivot registry at shutdown (`ROAD-WORKER-06`); the
-browser's hand-written contract mirrors (`API-R03`), `hashConfig`'s exclusion
-list (`PCFG-R08`), the results store's optimiser logic (`FSH-R03`) and the dead
+browser's hand-written contract mirrors (`API-R03`), the results store's optimiser logic (`FSH-R03`) and the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
 (`ENGQ-R01`); the editors' unused barrel and unlisted `@lezer/highlight`
-(`ENGQ-R01`), Banding's `_prevRules` stash (`PCFG-R08`) and the API Input label
+(`ENGQ-R01`) and the API Input label
 rule (`NAME-09`); the dead
 `submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
-utilities (`ENGQ-R01`); Banding's `_id` and the step error string inside the config
-(`PCFG-R08`), the editors' barrels (`ENGQ-R01`), the pivot editor writing the
+utilities (`ENGQ-R01`); Banding's `_id` inside the config (`FNED-R07`), the editors'
+barrels (`ENGQ-R01`), the pivot editor writing the
 fields the backend defaults (`EDA-R02`); the panel half of the GPU loss-history
 numbering and the GLM `best_iteration` (`MOD-R05`) and a second fabricated
 train-failure sentinel (`FSH-R06`); the browser's frontier
@@ -341,8 +333,7 @@ panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and
 the app shell, the
 chart theme observer written twice (`EDA-R03`), the params-folder listing in the
 Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`), browser-locale dates (`FSH-R08`), the bootstrap without
-a deadline (`FSH-R05`), Ctrl+S inside a code box (`FSH-R07`), editor state inside
-node data (`PCFG-R08`) and the
+a deadline (`FSH-R05`), Ctrl+S inside a code box (`FSH-R07`) and the
 modelling pane badges (`FMOU-R03`); in the tests, scripts and CI, the floating
 action tags in the generated workflows (`CLI-R06`), the campaign-named test modules
 (`ENGQ-R05`), the test-only reset hooks in production code (`ENGQ-R01`), and the

@@ -38,6 +38,7 @@ __all__ = [
     "LINE_WIDTH",
     "SOFT",
     "SPACE",
+    "WIRE_COMMENT",
     "Doc",
     "Group",
     "IfBreak",
@@ -54,6 +55,8 @@ __all__ = [
 #: ruff format's default line length.
 LINE_WIDTH = 88
 INDENT = "    "
+#: The comment codegen writes above a module's connect calls.
+WIRE_COMMENT = "# Wire nodes together - edges define data flow"
 
 
 @dataclass(frozen=True, slots=True)

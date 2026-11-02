@@ -77,7 +77,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 
 | Priority | Trigger and observed consequence | Owning package | Evidence and practical limit |
 |---|---|---|---|
-| P1 | A keyword-only factor default disappears on Save; a preamble name takes over and changes 120 to 90. | [PCFG-R21](pipeline-config.md#pcfg-r21--node-signatures-retain-their-configuration-bindings) | Actual original and regenerated functions, strict file parse. |
 | P1 | Parser endpoint concatenation and multi-frame paste mint duplicate edge ids; healthy recovery can be refused and deleting one duplicate deletes both. | [NAME-10](name-collisions.md#name-10--every-distinct-connection-has-a-distinct-identity) | Real parser/codegen and actual keyboard/store paste/delete. Healthy recovery rejection follows its duplicate-id validator; malformed documents were not assumed to load normally. |
 | P3 | Delete with a selected node and unrelated selected edge leaves the edge. | [FGC-R07](frontend-graph-canvas.md#fgc-r07--delete-removes-the-complete-eligible-selection) | Actual keyboard/store witness; the remaining edge stays visible and can be deleted again. Undo behavior is an acceptance requirement, not an executed assertion after the failure. |
 | P1 | Pending submodel drill-in replaces a newly loaded root with the old child and mismatched navigation context. | [FGC-R06](frontend-graph-canvas.md#fgc-r06--pending-submodel-navigation-belongs-to-its-document) | Actual navigation hook and stores, delayed layout. A subsequent destructive Save was not executed. |
@@ -89,7 +88,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P3 | Copied Explore node B receives cached result.node_id A for the same producer/card. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual pivot service/cache. Numbers are correct; browser stores them under B, so no numerical cross-node corruption claim. |
 | P2 | Training status discards eight recorded tuning progress fields. | [MOD-R08](modelling.md#mod-r08--training-status-carries-the-progress-the-worker-records) | Real JobStore and async status route. Cancel response has the same omission by source inspection. |
 | P2 | Shared-flight operation TimeoutError is mistaken for a polling timeout; completed work spins until cancellation. | [ROAD-WORKER-09](background-jobs-api.md#road-worker-09--completed-operation-timeouts-are-terminal-failures) | Real SharedFlights and LatestWinsQueue with controlled failure/cancellation. |
-| P2 | Push rejection names origin; after dropdown changes, its Catch up/Spin off submits backup. | [GIT-R18](git-integration.md#git-r18--recovery-acts-on-the-remote-named-by-its-dialog) | Actual component/ApiError/response parser, both actions, with the remote changed mid-push. Spin off sets local work aside on a branch; a real wrong-remote mutation was not executed. |
 | P2 | Returning from a failed directory to a cached parent leaves the error hiding the files. | [FNED-R02](frontend-node-editors.md#fned-r02--drafts-in-step-with-the-document-errors-with-their-detail), extended | Actual FileBrowser and settings cache, list transport substituted. |
 | P2 | Use detected schema applies A's completed schema into B while B loads. | [FNED-R06](frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft), extended | Actual DataInputEditor/hooks, API transport substituted. |
 | P2 | Late GLM dispersion estimate for A overwrites manually chosen theta 7 in newer target B with 3. | [FMOU-R06](frontend-modelling-optimiser-ui.md#fmou-r06--dispersion-estimates-belong-to-the-initiating-training-draft) | Actual GLMTargetConfig, only the estimate promise substituted. |
@@ -208,7 +206,7 @@ adds a finding group or changes the 42-group count.
 | `_submodel_instances.py` merged support code / `_support_code_names.py` | **Ordinary strict-parse conflict is guarded; broader variant unverified.** A confirming case must pass strict parsing with two valid occurrence scopes and then show support-name rebinding after flatten/execution. Existing ordinary preamble rejection is not evidence that dynamic imports/all reuse scopes are safe; the note contains no such witness. |
 | `src/haute/modelling/_ebm.py` grouped categorical axis | **Unverified.** Fit/load a real EBM with multiple category labels sharing one bin; compare exported term labels/scores with native prediction for every grouped level. No completed reproduction or rebuttal was recorded. No GPU issue follows from this shared note. |
 | `src/haute/_rating.py` null-factor/miss handling | **Unverified contract question separate from accepted `value` collision.** Run a valid table containing a null level through ordinary lookup with each declared miss policy, compare with the specified null/missing behavior, and show an incorrect match/default/refusal. The note already says nulls are deliberately treated as misses; it does not prove that policy violates the contract. |
-| `src/haute/_api_input_schema.py` typed codec | **Partly duplicate / otherwise underspecified.** Persisted editor-only `origin`/`key` belongs to FNED-R01/PCFG-R08. Any other claim must first identify an exact unknown key or valid level/path shape, then demonstrate accepted data lost on codec round trip. The general note gives no other concrete case. |
+| `src/haute/_api_input_schema.py` typed codec | **Partly duplicate / otherwise underspecified.** Persisted editor-only `origin`/`key` belongs to FNED-R01. Any other claim must first identify an exact unknown key or valid level/path shape, then demonstrate accepted data lost on codec round trip. The general note gives no other concrete case. |
 | `.github/workflows/performance.yml` execution-engine-platform job | **Unverified.** Inspect or execute the exact macOS locked install and named certification tests, showing a required engine fails import/is skipped unexpectedly. No macOS execution or native dependency failure was recorded. Existing pin/coverage packages do not prove this platform-specific case. |
 | `hatch_build.py` frontend freshness input closure | **Unverified residual suspicion.** Identify a real imported frontend build dependency omitted from the hook's closure, modify it, then demonstrate a build incorrectly reuses stale output. The source note supplies no omitted file. The hook's machine-specific Node fallback, a separate defect, has been removed. |
 | Frontend scratch report; `SchemaTableCard.tsx` search state | **Unverified.** Apply a search while the schema exceeds its search-control threshold, refresh to fewer columns without remounting, and observe hidden search state continuing to filter with no visible way to clear it. The full report explicitly left this without a demonstrated transition. |
@@ -235,7 +233,6 @@ adds a finding group or changes the 42-group count.
 | rating permissive numeric parsing / grids | Duplicate **FNED-R04**; grid/helper duplication belongs **FNED-R03/FNED-R05**. |
 | assistant undo/state fencing | Duplicate **ASSIST-60**. |
 | typed allowed-values onto older form | Duplicate **WB-38**. |
-| recurring Git failures/compensation | Duplicate compensation mechanisms are **GIT-R05**. These broad notes do not establish any additional specific exception path. |
 | non-SQLite form insertion | Duplicate **WB-43** for non-SQLite form insertion (the scratch spelling WB-R10 is not another package). The note gives no additional concrete database defect. |
 | sandbox project globals | Duplicate **PCFG-R04**. |
 | Assistant bounds, blocking tools, factual context, tool hygiene and provider handling | Duplicates **ASSIST-55**, **ASSIST-57**, **ASSIST-58**, **ASSIST-59**, **ASSIST-54** respectively. The recipe-consolidation note names no additional behavior. |
@@ -253,7 +250,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | Earlier candidate note | Accepted owner |
 |---|---|
 | dispersion caller ownership / estimate queued | **FMOU-R06** for same-mounted draft identity; separate helper error-contract wording is **FSH-R06**. |
-| rejection remote “candidate pending” | **GIT-R18**. |
 | cancellation caller / result consumer identity | **FSH-R11**. Native polling's captured-job guard is not itself a new defect. |
 | request-input edits / explicit Auto Layout | **FSH-R10**, **FGC-R05**; mixed Delete **FGC-R07**. |
 | delayed drill-in | **FGC-R06**. |
@@ -265,7 +261,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | tuning status fields | **MOD-R08**. |
 | edge ID collisions | **NAME-10**. |
 | failed new solve identity | **FSH-R12**. |
-| keyword-only defaults | **PCFG-R21**. |
 | pyfunc classifier output shape | **MSC-11**. |
 | predicted output signature dtype | **MOD-R09** after requested split; formerly bundled MOD-R05. |
 | “PDP integer grids … pending contract test” | **MOD-R05**. The copied note belongs to `modelling/_metrics.py::compute_pdp`, not `_gpu.py` or `_shap.py`; it is not a separate unresolved GPU contract concern. |
@@ -309,7 +304,7 @@ The latter has since been delivered. This was same-family review, not cross-fami
 
 The subsequent **cross-family review by Claude** checked the decisive code for all
 42 finding groups and reported no false positives; it did not check MOD-R05's integer
-PDP-label item. It reproduced MOD-R07, PCFG-R21, the parser half of NAME-10 and two
+PDP-label item. It reproduced MOD-R07, the parser half of NAME-10 and three
 findings since delivered, and supplied the hosted evidence for the core-only smoke finding, since delivered. This documentation
 follow-up incorporates its coverage qualifications, candidate dispositions, package
 splits, priorities, ownership, ordering and link corrections. Neither review approval

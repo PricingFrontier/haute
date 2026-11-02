@@ -1,6 +1,7 @@
 import { AlertTriangle } from "lucide-react"
 import { useMemo, type ReactNode } from "react"
 
+import type { NodeEditorState } from "../../../types/node"
 import type { StepStart } from "../../../utils/polarsStepInputs"
 import PolarsStepsEditor from "../polarsSteps/PolarsStepsEditor"
 import { readSteps } from "../polarsSteps/types"
@@ -33,6 +34,8 @@ export type SteppedCodePaneProps = {
   codeHint: ReactNode
   /** Selectable, non-persisted initial text for an empty code box (code mode). */
   starterCode?: string
+  /** The server's editor state for the node, beside its config. */
+  editor?: NodeEditorState
 }
 
 /**
@@ -55,6 +58,7 @@ export default function SteppedCodePane({
   nodeId,
   codeHint,
   starterCode,
+  editor,
 }: SteppedCodePaneProps) {
   const codeColumns = useMemo(() => mergeColumns(upstreamColumns, nodeColumns), [upstreamColumns, nodeColumns])
 
@@ -72,11 +76,12 @@ export default function SteppedCodePane({
         frameColumns={codeColumns}
         start={start}
         nodeId={nodeId}
+        stepsError={editor?.steps_error}
       />
     )
   }
 
-  const discarded = typeof config._steps_discarded === "string" ? config._steps_discarded : null
+  const discarded = editor?.steps_discarded ?? null
 
   return (
     <>

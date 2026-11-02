@@ -741,9 +741,6 @@ _FRONTEND_BLESSED_SANITIZERS = {
 # Every non-blessed module allowed to contain a mint shape, with why.  A new
 # entry needs the same justification review as a new subprocess chokepoint.
 _BACKEND_MINT_ALLOWLIST = {
-    # Git branch-name slug from a username; collisions are cosmetic and
-    # _validate_ref_name guards injection.
-    "src/haute/_git_core.py",
     # One-shot scaffold: project dir name -> package name at `haute init`;
     # single value, no collision space.
     "src/haute/cli/_init_cmd.py",

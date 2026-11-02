@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 # explicitly into this domain's namespace so extracted functions retain their
 # original signatures and semantics without a facade dependency.
 from haute._git_core import (
+    CompensationStep,
     GitDomainError,
     GitError,
     GitFilesInUseError,
@@ -21,19 +22,25 @@ from haute._git_core import (
     _assert_no_git_op_in_progress,
     _canonical_remote,
     _commit_parents,
+    _compensate,
+    _delete_branch_if_present,
     _generate_commit_message,
     _get_current_branch,
+    _git_env,
+    _GitProcessTimeoutError,
     _held_files,
     _is_ancestor,
     _is_valid_full_ref_name,
     _ledger_or_branch_sha,
     _merge_base,
+    _refuse_too_large_for_history,
     _remote_names,
     _rev_parse,
     _rewrite_tree,
     _run_git,
     _run_git_capture,
     _run_git_ok,
+    _run_git_process,
     _serialized_mutation,
     _tracked_changes,
     _tree_of,
@@ -51,7 +58,7 @@ from haute._git_setup import (
     set_working_branch,
 )
 from haute._logging import get_logger
-from haute._project_layout import VERSIONED_FILE_LIMIT_BYTES, versioned_name
+from haute._project_layout import versioned_name
 from haute.schemas import (
     GitCommitResponse,
     GitCreateWorkingBranchResponse,
@@ -77,14 +84,20 @@ _IN_THE_WAY_NAMED = 5
 
 @_serialized_mutation
 def commit_save(
-    paths: list[str], working: str, cwd: Path | None = None, message: str | None = None
+    paths: list[str],
+    working: str,
+    cwd: Path | None = None,
+    message: str | None = None,
+    *,
+    run_hooks: bool = True,
 ) -> str | None:
     """Record one save as one commit on the ledger of *working*.
 
     Pathspec-scoped: only *paths* enter the commit, regardless of any content
     the user may have staged in the meantime. Returns the new commit SHA, or
     None when none of *paths* changed (idempotent saves produce no empty
-    commits).
+    commits). The commit runs the project's git hooks, as any ``git commit`` does,
+    unless *run_hooks* is False: a save the milestone's own hook pass covers.
     """
     if not paths:
         return None
@@ -115,7 +128,8 @@ def commit_save(
     msg = message if message is not None else _generate_commit_message(changed)
     # `git commit -- <paths>` commits the working-tree state of exactly those
     # paths, bypassing unrelated index content the user may have pre-staged.
-    _run_git("commit", "-m", msg, "--", *pathspecs, cwd=cwd)
+    verify = () if run_hooks else ("--no-verify",)
+    _run_git("commit", *verify, "-m", msg, "--", *pathspecs, cwd=cwd)
 
     sha = _run_git("rev-parse", "HEAD", cwd=cwd).strip()
     logger.info("save_committed", ledger=ledger, sha=sha, files=len(changed))
@@ -165,32 +179,12 @@ def _pipeline_folder_new_files(pipeline_folder: str | None, cwd: Path | None = N
     ]
 
 
-def _mib(size: int) -> str:
-    return f"{size / (1024 * 1024):.4g} MiB"
-
-
 def _refuse_unversionable(paths: list[str], pipeline_folder: str, project_root: Path) -> None:
     """Refuse a sweep holding a pipeline-folder file too large for version history."""
     folder = PurePosixPath(pipeline_folder)
-    too_large: list[str] = []
-    for path in paths:
-        # not contained_path: git's repository-relative names, compared lexically
-        if not PurePosixPath(path).is_relative_to(folder):
-            continue
-        target = project_root / path
-        if not target.is_file():
-            continue  # a deletion
-        size = target.stat().st_size
-        if size > VERSIONED_FILE_LIMIT_BYTES:
-            too_large.append(f"{path} ({_mib(size)})")
-    if too_large:
-        one = len(too_large) == 1
-        raise GitDomainError(
-            f"{', '.join(too_large)} {'is' if one else 'are'} too large for version history, "
-            f"which takes files up to {_mib(VERSIONED_FILE_LIMIT_BYTES)}. Move "
-            f"{'it' if one else 'them'} to the project's data/ folder, which stays on this "
-            "machine, and commit again."
-        )
+    # not contained_path: git's repository-relative names, compared lexically
+    in_folder = [path for path in paths if PurePosixPath(path).is_relative_to(folder)]
+    _refuse_too_large_for_history(in_folder, project_root, "commit again")
 
 
 def _residual_tracked_changes(cwd: Path | None = None) -> list[str]:
@@ -414,24 +408,24 @@ def _replay_onto(base: str, commits: list[str], cwd: Path | None = None) -> str:
     return tip
 
 
-def _rollback_fork(name: str, ledger: str, ledger_tip: str, cwd: Path | None = None) -> bool:
-    """Undo a partially-applied fork and report whether every step succeeded."""
-    succeeded = True
+def _rollback_fork(
+    name: str, ledger: str, ledger_tip: str, cwd: Path | None = None
+) -> list[CompensationStep]:
+    """The steps undoing a partially-applied fork of *name* from *ledger*."""
     new_ledger = ledger_name(name)
+    steps: list[CompensationStep] = []
     if _get_current_branch(cwd) == new_ledger:
         # The spawning ledger isn't checked out → safe to restore it, then move
         # HEAD back so the new ledger can be deleted.
-        ok, _ = _run_git_ok("branch", "-f", ledger, ledger_tip, cwd=cwd)
-        succeeded &= ok
-        ok, _ = _run_git_ok("checkout", ledger, cwd=cwd)
-        succeeded &= ok
-    if _rev_parse(new_ledger, cwd=cwd) is not None:
-        ok, _ = _run_git_ok("branch", "-D", new_ledger, cwd=cwd)
-        succeeded &= ok
-    if _rev_parse(name, cwd=cwd) is not None:
-        ok, _ = _run_git_ok("branch", "-D", name, cwd=cwd)
-        succeeded &= ok
-    return succeeded
+        steps += [
+            lambda: _run_git_ok("branch", "-f", ledger, ledger_tip, cwd=cwd)[0],
+            lambda: _run_git_ok("checkout", ledger, cwd=cwd)[0],
+        ]
+    return [
+        *steps,
+        lambda: _delete_branch_if_present(new_ledger, cwd=cwd),
+        lambda: _delete_branch_if_present(name, cwd=cwd),
+    ]
 
 
 @_serialized_mutation
@@ -533,17 +527,14 @@ def create_working_branch(
                 _rewrite_tree("checkout", ledger_name(name), cwd=cwd)
                 write_working_branch(project_root, name)
         except Exception as exc:
-            refs_restored = _rollback_fork(name, ledger, ledger_tip, cwd=cwd)
-            try:
-                write_working_branch(project_root, current)
-                state_restored = True
-            except OSError:
-                state_restored = False
-            if not refs_restored or not state_restored:
-                raise GitTransactionError(
-                    "Creating the branch failed and automatic rollback was incomplete. "
-                    "Inspect the repository before retrying."
-                ) from exc
+            _compensate(
+                exc,
+                "Creating the branch",
+                [
+                    *_rollback_fork(name, ledger, ledger_tip, cwd=cwd),
+                    lambda: write_working_branch(project_root, current),
+                ],
+            )
             raise
         logger.info("working_branch_forked", name=name, at=point[:8], moved=False, switched=switch)
         return GitCreateWorkingBranchResponse(
@@ -596,17 +587,14 @@ def create_working_branch(
         _run_git("branch", "-f", ledger, point, cwd=cwd)
         write_working_branch(project_root, name)
     except Exception as exc:
-        refs_restored = _rollback_fork(name, ledger, ledger_tip, cwd=cwd)
-        try:
-            write_working_branch(project_root, current)
-            state_restored = True
-        except OSError:
-            state_restored = False
-        if not refs_restored or not state_restored:
-            raise GitTransactionError(
-                "Creating and moving to the branch failed and automatic rollback was "
-                "incomplete. Inspect the repository before retrying."
-            ) from exc
+        _compensate(
+            exc,
+            "Creating and moving to the branch",
+            [
+                *_rollback_fork(name, ledger, ledger_tip, cwd=cwd),
+                lambda: write_working_branch(project_root, current),
+            ],
+        )
         raise
     logger.info("working_branch_forked", name=name, at=point[:8], moved=True)
     return GitCreateWorkingBranchResponse(
@@ -615,6 +603,110 @@ def create_working_branch(
         switched=True,
         last_save_sha=_ledger_or_branch_sha(name, cwd=cwd),
     )
+
+
+#: How long one of the project's commit hooks may run before the milestone stops it.
+_HOOK_TIMEOUT_SECONDS = 300.0
+
+
+def _hook_installed(name: str, cwd: Path | None) -> bool:
+    """Whether git would run a *name* hook here (``--git-path`` follows ``core.hooksPath``)."""
+    return _git_path(f"hooks/{name}", cwd).is_file()
+
+
+def _git_path(path: str, cwd: Path | None) -> Path:
+    return (cwd or Path.cwd()) / _run_git("rev-parse", "--git-path", path, cwd=cwd)
+
+
+def _run_hook(name: str, *args: str, env: dict[str, str], cwd: Path | None) -> None:
+    """Run the project's *name* hook as ``git commit`` would, refusing the milestone when it
+    fails, with the end of what it printed."""
+    try:
+        result = _run_git_process(
+            "hook",
+            "run",
+            "--ignore-missing",
+            name,
+            *(("--", *args) if args else ()),
+            cwd=cwd,
+            env=env,
+            timeout=_HOOK_TIMEOUT_SECONDS,
+            errors="replace",
+        )
+    except _GitProcessTimeoutError:
+        raise GitDomainError(
+            f"The project's {name} hook did not finish within "
+            f"{_HOOK_TIMEOUT_SECONDS / 60:.0f} minutes, so nothing was committed."
+        ) from None
+    if result.returncode == 0:
+        return
+    output = (result.stderr.strip() or result.stdout.strip())[-2000:]
+    if "'hook' is not a git command" in output:
+        raise GitDomainError(
+            f"This project has a {name} hook, and running it needs git 2.36 or later. "
+            "Update git, then commit again."
+        )
+    raise GitDomainError(
+        f"The project's {name} hook refused the milestone: {output or 'it gave no reason'}"
+    )
+
+
+def _run_commit_hooks(
+    working: str,
+    message: str,
+    project_root: Path,
+    pipeline_folder: str | None,
+    cwd: Path | None,
+) -> str:
+    """Run the project's ``pre-commit`` and ``commit-msg`` hooks on a milestone, as a
+    ``git commit`` of it would, and return its message, which ``commit-msg`` may rewrite.
+
+    The milestone's saves are already on the ledger, so for the hooks HEAD names the
+    working branch (its last milestone) and a scratch index holds the ledger's tree: the
+    milestone's changes are what is staged, and neither the real index nor HEAD's ledger
+    is touched. What ``pre-commit`` leaves changed on disk is recorded as one more save.
+    """
+    hooks = [name for name in ("pre-commit", "commit-msg") if _hook_installed(name, cwd)]
+    if not hooks:
+        return message
+    ledger = ledger_name(working)
+    index = _git_path("haute-milestone-index", cwd)
+    message_file = _git_path("HAUTE_MILESTONE_MSG", cwd)
+    env = _git_env({"GIT_INDEX_FILE": str(index)})
+
+    _run_git("symbolic-ref", "HEAD", f"refs/heads/{working}", cwd=cwd)
+    try:
+        _run_git("read-tree", ledger, cwd=cwd, env=env)
+        if "pre-commit" in hooks:
+            _run_hook("pre-commit", env=env, cwd=cwd)
+        if "commit-msg" in hooks:
+            message_file.write_text(f"{message}\n", encoding="utf-8")
+            _run_hook("commit-msg", str(message_file), env=env, cwd=cwd)
+            message = message_file.read_text(encoding="utf-8").strip()
+            if not message:
+                raise GitDomainError("The project's commit-msg hook left the message empty.")
+    finally:
+        # HEAD goes back first, whatever ended the hooks (an interrupt included), so no
+        # failure below can leave it on the working branch.
+        head_back, _ = _run_git_ok("symbolic-ref", "HEAD", f"refs/heads/{ledger}", cwd=cwd)
+        if not head_back:
+            raise GitTransactionError(
+                "Running the project's commit hooks left HEAD on the working branch. "
+                "Inspect the repository before retrying."
+            )
+        index.unlink(missing_ok=True)
+        message_file.unlink(missing_ok=True)
+
+    rewritten = _unrecorded_project_files(project_root, pipeline_folder, cwd)
+    if rewritten:
+        commit_save(
+            rewritten,
+            working,
+            cwd=cwd,
+            message="Changes made by the project's pre-commit hook",
+            run_hooks=False,
+        )
+    return message
 
 
 @_serialized_mutation
@@ -672,10 +764,12 @@ def commit_milestone(
     # those into the ledger before creating the milestone so an explicit "Save &
     # commit" leaves the project clean. A new file anywhere else stays untouched
     # and cannot ride into history implicitly.
+    # The milestone's hook pass below covers them.
     residual = _unrecorded_project_files(project_root, pipeline_folder, cwd)
     if residual:
-        commit_save(residual, working, cwd=cwd, message="Updated project files")
+        commit_save(residual, working, cwd=cwd, message="Updated project files", run_hooks=False)
 
+    message = _run_commit_hooks(working, message, project_root, pipeline_folder, cwd)
     sha = merge_to_working(working, message, tag_label=version_label, cwd=cwd)
     logger.info("milestone_committed", working=working, sha=sha, tag=version_label or "")
     return GitCommitResponse(

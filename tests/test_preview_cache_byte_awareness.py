@@ -61,7 +61,7 @@ class TestPreviewCacheByteLimit:
         assert cache.get("c") is not None
         assert cache.stats()["bytes"] == 60
 
-    def test_store_reports_oversized_rejection_and_retains_stale_entry(self) -> None:
+    def test_store_reports_oversized_rejection_and_evicts_stale_entry(self) -> None:
         cache = LRUCache(
             max_size=10,
             max_bytes=50,
@@ -71,8 +71,8 @@ class TestPreviewCacheByteLimit:
         assert cache.put("same-fp", {"payload": {"bytes": 25}}) is True
         assert cache.put("same-fp", {"payload": {"bytes": 75}}) is False
 
-        assert cache.get("same-fp") == {"payload": {"bytes": 25}}
-        assert cache.stats()["bytes"] == 25
+        assert cache.get("same-fp") is None
+        assert cache.stats()["bytes"] == 0
 
     def test_last_completed_concurrent_accepted_same_key_store_wins(self) -> None:
         slow_measure_started = Event()
@@ -137,6 +137,36 @@ class TestPreviewCacheByteLimit:
             release_rejected_measure.set()
             assert rejected_store.result(timeout=5) is False
 
+        assert cache.get("same-fp") == {"payload": {"bytes": 30, "label": "accepted"}}
+        assert cache.stats()["bytes"] == 30
+
+    def test_rejected_replacement_measured_before_a_store_evicts_only_what_it_replaced(
+        self,
+    ) -> None:
+        rejected_measure_started = Event()
+        release_rejected_measure = Event()
+
+        def controlled_size(entry: dict) -> int:
+            payload = entry["payload"]
+            if payload.get("label") == "rejected":
+                rejected_measure_started.set()
+                assert release_rejected_measure.wait(timeout=5)
+            return int(payload["bytes"])
+
+        cache = LRUCache(max_size=10, max_bytes=100, size_of=controlled_size)
+        assert cache.put("same-fp", {"payload": {"bytes": 10, "label": "old"}})
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            rejected_store = pool.submit(
+                cache.put,
+                "same-fp",
+                {"payload": {"bytes": 101, "label": "rejected"}},
+            )
+            assert rejected_measure_started.wait(timeout=5)
+            assert cache.put("same-fp", {"payload": {"bytes": 30, "label": "accepted"}})
+            release_rejected_measure.set()
+            assert rejected_store.result(timeout=5) is False
+
+        # The rejected put replaced "old", which is gone; "accepted" arrived later.
         assert cache.get("same-fp") == {"payload": {"bytes": 30, "label": "accepted"}}
         assert cache.stats()["bytes"] == 30
 

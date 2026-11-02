@@ -307,14 +307,18 @@ or a failed push.
 
 Catch up and Spin off a copy go through the control's `useDirtyNavigation(onSave)` guard,
 `onSave` being the project save `GitPanel` passes down. The standalone Catch up button and
-the rejection dialog's Catch up call `catchUp`, and its Spin off a copy calls `branchAway`;
-each guards `doCatchUp` or `doBranchAway` as bound when clicked (the selected remote then),
-with the question "Save them before catching up? Catching up replaces the project's files
-with <remote>'s." or "Save them before spinning off a copy? Spinning off sets your version
-aside and replaces the project's files with <remote>'s." While the rejection dialog is open
-the question renders inside it, in place of its actions; otherwise it renders on the
-control's own row. Closing the dialog (Escape, its backdrop) cancels a question
-open in it, so it can never run later. On success each drops the edits chosen over (`discardCanvasEdits`, then
+the rejection dialog's Catch up call `catchUp(remote)`, and its Spin off a copy calls
+`branchAway(remote)`: the standalone button passes the remote selected at the click, the
+dialog `rejection.remote`, so a selection moved while the push was pending changes neither.
+Each guards `doCatchUp(remote)` or `doBranchAway(remote)` with the question "Save them
+before catching up? Catching up replaces the project's files with <remote>'s." or "Save
+them before spinning off a copy? Spinning off sets your version aside and replaces the
+project's files with <remote>'s.", naming the remote the request is sent to. While the
+rejection dialog is open the question renders inside it, in place of its actions; otherwise
+it renders on the control's own row. Closing the dialog (Escape, its backdrop) cancels a
+question open in it, and selecting another remote cancels one on the row, so neither can run
+later. Push and the standalone Catch up are disabled while any of a push, a catch-up or a
+spin-off runs (`busy`). On success each drops the edits chosen over (`discardCanvasEdits`, then
 `discardFormEdits`), toasts, closes the dialog, reads the readiness with a request issued
 after the action (`loadStatus({ refresh: true })`), calls `notifyHistoryChanged` so the
 branch list and history refetch, and reloads the remotes; a failure toasts and reads the
@@ -615,7 +619,11 @@ Library component/unit tests (no e2e for this surface).
   edits: the question naming the remote (inside the dialog when it is open), Cancel sending
   no request, Discard sending it, and Save first saving and then sending it; a clean project
   sending it at once; the form's and the canvas's edits dropped once it succeeds and kept
-  when it fails; and closing the dialog dropping its open question.
+  when it fails; and closing the dialog dropping its open question. With the selection moved
+  to another remote while the push was pending, the dialog's Catch up and Spin off a copy
+  each ask about and send the remote that refused the push; selecting another remote drops
+  the standalone Catch up's open question; and neither Push nor Catch up starts while the
+  other runs.
 - **`frontend/src/utils/__tests__/vcHistory.test.ts`** — each `record*` entry's legs call
   the right client function with the right side's branch name, toast and resync on
   success, toast, read the readiness and rethrow on failure. A switch's undo and redo with

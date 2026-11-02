@@ -48,6 +48,7 @@ vi.mock("../../stores/useUIStore.ts", () => {
     setChangeFocus: vi.fn(),
     renameDialog: null as null | { nodeId: string; currentLabel: string },
     setRenameDialog: vi.fn((d: null | { nodeId: string; currentLabel: string }) => { store.renameDialog = d }),
+    clearBandingRuleStash: vi.fn(),
   }
   const useUIStore = Object.assign(() => store, {
     getState: () => store,

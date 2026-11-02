@@ -526,8 +526,8 @@ describe("DataInputEditor", () => {
 
   it.each([
     ["a new node's empty step list", { inputType: "file", format: "parquet", mode: "scan", path: "", arguments: {}, steps: [] }],
-    ["step editor state", { inputType: "file", format: "csv", mode: "scan", path: "quotes.csv", arguments: {}, steps: [{ id: "f", kind: "filter", match: "all", conditions: [] }], _steps_error: "Step 1: Add at least one condition." }],
-    ["a discarded step list on Databricks", { inputType: "databricks", http_path: "/sql/1", table: "cat.schema.t", arguments: {}, code: "", _steps_discarded: "Steps were discarded because the body changed." }],
+    ["an incomplete step list", { inputType: "file", format: "csv", mode: "scan", path: "quotes.csv", arguments: {}, steps: [{ id: "f", kind: "filter", match: "all", conditions: [] }] }],
+    ["code on Databricks", { inputType: "databricks", http_path: "/sql/1", table: "cat.schema.t", arguments: {}, code: "" }],
   ])("reports no configuration error for %s", async (_label, config) => {
     renderEditor(config)
     await screen.findByRole("radiogroup", { name: "Provider" })

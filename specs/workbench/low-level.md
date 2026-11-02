@@ -184,8 +184,8 @@ The Workbench Input reaches across Haute. `src/haute/_types.py` declares
 `NodeType.WORKBENCH_INPUT`, its `workbench_input` decorator name, `WorkbenchInputConfig` and
 `REQUEST_INPUT_NODE_TYPES`; `workbench_input` is a decorator of `NodeRegistry` in
 `src/haute/pipeline.py`, so `Pipeline` and `Submodel` both have it; `src/haute/_config_io.py`,
-`src/haute/_config_validation.py`, `src/haute/_cache.py` and `src/haute/node_defaults.json` give
-it its folder, config shape, cache classification and default; `_build_api_input` in
+`src/haute/_config_validation.py` and `src/haute/node_defaults.json` give it its folder,
+config shape and default; `_build_api_input` in
 `src/haute/_builders.py` and `_gen_api_input` in `src/haute/_codegen_builders.py` are
 registered for both request inputs. Every check under `src/haute` that asks whether a node
 reads the request tests membership of `REQUEST_INPUT_NODE_TYPES` (in execution, projection,

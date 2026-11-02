@@ -99,8 +99,8 @@ class TestRepositoryMutationLock:
 
         monkeypatch.setattr(git_lock, "_find_git_dir", counted_find_git_dir)
 
-        first = git_lock.repository_identity(repo)
-        second = git_lock.repository_identity(repo)
+        first = git_lock._repository_keys(repo)
+        second = git_lock._repository_keys(repo)
 
         assert first == second
         assert calls == 1
@@ -319,10 +319,14 @@ class TestGitOutputIntegrity:
         save = commit_save(["rating.py"], WORKING, cwd=repo, message="pending")
         assert save is not None
 
-        def per_item_probe(*_args: object, **_kwargs: object) -> str:
-            raise AssertionError("commit context must batch milestone parent metadata")
+        real_rev_parse = git_history._rev_parse
 
-        monkeypatch.setattr(git_history, "_ledger_point", per_item_probe)
+        def no_fold_point_probe(ref: str, cwd: Path | None = None) -> str | None:
+            if ref.endswith("^2"):
+                raise AssertionError("commit context must batch milestone parent metadata")
+            return real_rev_parse(ref, cwd=cwd)
+
+        monkeypatch.setattr(git_history, "_rev_parse", no_fold_point_probe)
         commit_context(repo, save, cwd=repo)
 
     def test_commit_context_reads_a_thousand_milestones_within_a_command_line(
@@ -407,7 +411,7 @@ class TestRoutineRemoteReads:
         def unexpected_fetch(*_args: object, **_kwargs: object) -> bool:
             raise AssertionError("routine remote listing must not fetch")
 
-        monkeypatch.setattr(git_remote, "fetch_pair", unexpected_fetch)
+        monkeypatch.setattr(git_remote, "_fetch_refs", unexpected_fetch)
         response = list_remotes(repo, cwd=repo)
 
         assert [remote.name for remote in response.remotes] == ["origin"]
