@@ -33,7 +33,7 @@ verdict can contradict the engine with no error marker.
 `_trace_lineage_alignments` swallows the `ValueError` `edge_input_name` raises
 for an edge it cannot name, so the child's input names lack it and the
 carried-column proof runs on the wrong set with no diagnostic (reachability
-unconfirmed, as for `EXEC-R14`). Any `PolarsError` from the strict match is
+unconfirmed). Any `PolarsError` from the strict match is
 reported as `incompatible_nested_schema` whatever its cause.
 
 **Plan:** Thread `allow_relaxed=False` through `_match_parent_row` when the
@@ -46,8 +46,8 @@ unsupported-match reason.
 relaxed; a failed banding coercion shows `error_type`; an unnameable edge
 produces a diagnostic; a non-nested Polars failure is not labelled nested.
 
-**Dependencies:** `EXEC-R14` makes a null-handle request-input edge fail
-validation.
+**Dependencies:** None. A node fed by a request-input edge with a null handle
+already fails its run with a `ConfigError`.
 
 **Evidence:** `src/haute/_trace_correlation.py::_match_parent_row`;
 `src/haute/_trace_correlation.py::_allows_relaxed_parent_match`;

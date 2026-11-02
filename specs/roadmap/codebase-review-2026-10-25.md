@@ -63,9 +63,6 @@ work; the component roadmaps carry the plans.
   scratch copy of the demo project or a synthetic graph.
 - Line numbers in the reviewers' tables are at `859548a4d` and will drift; the
   packages cite symbols, not lines.
-- One finding is kept with its reachability unconfirmed (a request-input edge
-  with a null handle, `EXEC-R14`); the code path is real, whether the editor
-  can produce the input is not shown.
 - The modelling reviewer scanned `_charts.py` mechanically and did not read
   the modelling test modules systematically, so "a test that would pass
   against a wrong coefficient" is answered only for the GLM level check.
@@ -125,8 +122,8 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the thirty-eight packages delivered or settled since (thirteen by 28
-October 2026, twenty-five more on 29 October) have been removed from the sections below; the coverage table keeps the
+The findings of the forty-six packages delivered or settled since (thirteen by 28
+October 2026, twenty-five more on 29 October, eight more by 2 November) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -139,7 +136,6 @@ target dependency resolution. The component roadmaps now carry the resulting pla
 | Packages | Correction |
 |---|---|
 | `EXEC-R17` | Keep same-size/same-mtime utility freshness and support deferred imports while scoping `sys.path`; bytecode invalidation is a correctness defence. |
-| `EXEC-R13` | Measure actual RSS at a readiness handshake; native VMS, private-commit and cgroup baselines are different accounting. Preserve startup supervision. |
 | `FSH-R07`, `FSH-R05` | Recover a save only from complete canonical saved-content equality, retain newer dirty edits, and distinguish intended other-tab broadcasts from watcher duplicates and self-echoes. |
 | `DEP-R11` | Check every response batch before positional pairing; require explicit first-deploy intent or authoritative absence, never infer absence from an outage. |
 | `DEP-R09` | Resolve and verify dependency locks for each target Python/platform and extras. |
@@ -173,8 +169,7 @@ These probes support the named cases, not every subclaim in every package.
 No cloud deployment or full backend/frontend suite was run for validation. Linux
 memory backends, server-database concurrency and unexecuted browser behaviour remain
 source/documentation based. The original JSON throughput ratio and other performance
-figures were not all remeasured. FGC-R03 remains measure-first; EXEC-R14 retains its
-unconfirmed-reachability qualification. Maintenance packages and product decisions
+figures were not all remeasured. FGC-R03 remains measure-first. Maintenance packages and product decisions
 are not automatically first-release blockers. Release priority is assessed per
 package, independently of the original finding count.
 
@@ -188,21 +183,9 @@ these are the Majors still open.
   did not write.
 - **`haute run` is a full eager preview** (Major, `CLI-R02`): every node is
   collected into memory at once under the preview profile.
-- **A display walk caches every fan-out input** (Major, `EXEC-R11`): 610 MB peak
-  against 329–365 MB without the cache, same results.
-- **A column-free `select` is classified row-local** (Major, `EXEC-R09`): an
-  input-sliced write yields one row per part (native height 1, written 3). The
-  package is P1 because the written generation is wrong and read as fresh.
-- **The RAM estimate reads widths from the nearest source and matches dtype
-  tokens** (two Majors, `EXEC-R10`): a widened graph estimates 48,000 bytes
-  against 4,016,000 actual.
-- **The one-shot and protocol watchdogs measure a bare interpreter** (Major,
-  `EXEC-R13`): 51 MiB tighter than the native cap under a 256 MiB budget.
 - **A graceful server exit joins every in-flight worker** (Major,
   `ROAD-WORKER-06`): a 6 s child in flight at a 2 s exit ends the process at
   7.6 s; no job registry is cancelled at shutdown.
-- **A remote user error replaces the warm worker; one failed replacement
-  disables the slot for the life of the server** (two Majors, `EXEC-R12`).
 - **Every save drops authored comments outside the kept regions** (Major,
   `PCFG-R12`; five kinds reproduced) with no diagnostic.
 - **The optimiser's MLflow log writes the complete result artifact without the
@@ -267,15 +250,7 @@ production:
 | CLI | PM-35 | `CLI-R04` |
 | CLI | PM-27, PM-31, PM-32, PM-33 | `CLI-R05` |
 | CLI | PM-29 (templates), PM-30 | `CLI-R06` |
-| Execution engine | STA-1 | `EXEC-R09` |
-| Execution engine | STA-2, STA-3 | `EXEC-R10` |
-| Execution engine | EXE-2 | `EXEC-R11` |
-| Execution engine | WRK-3, WRK-4, WRK-7, WRK-12, WRK-13 | `EXEC-R12` |
-| Execution engine | WRK-1 | `EXEC-R13` |
-| Execution engine | EXE-10, EXE-11, EXE-12, EXE-13, EXE-14 | `EXEC-R14` |
-| Execution engine | STA-4, STA-5, STA-8 | `EXEC-R15` |
-| Execution engine | EXE-3 | `EXEC-R16` (Decision) |
-| Execution engine | EXE-4, EXE-5, EXE-6, EXE-7, EXE-8, EXE-9, EXE-15, STA-6, STA-7, the preamble `sys.path` edit | `EXEC-R17` |
+| Execution engine | the preamble `sys.path` edit | `EXEC-R17` (Decision) |
 | IO layer | CIO-5, CIO-11 | `IO-R06` |
 | Background jobs | WRK-2 | `ROAD-WORKER-06` |
 | Background jobs | WRK-5, WRK-6, WRK-11, WRK-14 | `ROAD-WORKER-07` |
@@ -347,8 +322,7 @@ their budget
 assistant's current-directory project root (`PCFG-R04`); the assistant
 catalog's hand tables and
 key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
-(`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the Edge
-Join as a boundary (`EXEC-R15`); the pivot registry at shutdown (`ROAD-WORKER-06`); the
+(`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the pivot registry at shutdown (`ROAD-WORKER-06`); the
 browser's hand-written contract mirrors (`API-R03`), `hashConfig`'s exclusion
 list (`PCFG-R08`), the results store's optimiser logic (`FSH-R03`) and the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
@@ -427,8 +401,8 @@ All probes live outside the repository and wrote nothing into it.
 | Tool | Result |
 |---|---|
 | radon | 285 functions with cyclomatic complexity ≥ 20; 27 ≥ 50 (the largest in the optimiser service, the save service, the assistant tools and the RAM estimate). |
-| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `EXEC-R17`, `ROAD-WORKER-08`, `DEP-R13`, `CLI-R05` and `ENGQ-R01`. |
-| jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13`, `EXEC-R17` and `ROAD-WORKER-08`. |
+| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `ROAD-WORKER-08`, `DEP-R13`, `CLI-R05` and `ENGQ-R01`. |
+| jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13` and `ROAD-WORKER-08`. |
 | jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `FNED-R03`, `FNED-R05`, `FMOU-R05`, `EDA-R03` and `FGC-R04`. |
 | knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted; every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
 | sweeps | 35 campaign-named test modules (`ENGQ-R05`). |
