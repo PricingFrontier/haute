@@ -216,7 +216,10 @@ lease, and a store-wide lease lock, always taken after it, makes lease acquisiti
 publication through the publisher's first lease, and retirement atomic. Every lease is also
 a marker file in its generation naming the owning process's token, whose liveness is an
 exclusive lock that process holds on its token file, so retirement never removes a
-generation another live process reads, and a dead owner's marker is removed. Retirement
+generation another live process reads, and a dead owner's marker is removed. A process's
+first store sweeps the token files of processes that have exited and the publication lock
+files of identities that no longer exist, under a protocol that never leaves two processes
+holding different files for one lock. Retirement
 renames a generation out of selection under the lock and deletes its files afterwards, as it
 does for an input snapshot. Clear removes a slot's identities, pointers, and pin but never a
 generation another operation still leases; that generation retires when released. Until it

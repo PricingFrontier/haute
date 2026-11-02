@@ -826,9 +826,10 @@ source and returns `CacheNodesResponse`. The graph is flattened first, so a subm
 are reported the way they are cached — individually. `NodeDataService.points_for_graph`
 resolves every node's point against one `DataPointResolver` and the caller's store — the whole
 report builds one `NodeSnapshotStore` — because the per-node cost is the resolution itself.
-That cost is `CACHE-S17`'s, multiplied by the node count: each signature re-walks the
-canonical graph, so the batch is quadratic in node copies. It is milliseconds per node at the
-sizes measured and is why this endpoint is asked for explicitly rather than polled; a node whose point cannot be resolved becomes a row
+The resolver signs every node with one memo, so the graph is canonicalised, and each input
+read and each record encoded, once for the report; each signature still prepares and hashes
+its own lineage. It is milliseconds per node at the sizes measured and is why this endpoint is
+asked for explicitly rather than polled; a node whose point cannot be resolved becomes a row
 rather than failing the request, because a report about every node is worth least precisely
 when one node is half-configured. An unwired Banding (`NodeDataPointInvalidError`) and a Data
 Input with no path (`PolarsIoConfigError`, raised resolving its own identity) carry

@@ -181,9 +181,29 @@ _LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE: dict[NodeType, tuple[str, ...]] =
 }
 
 
-def canonical_dataframe_execution_graph(graph: PipelineGraph) -> PipelineGraph:
-    """Resolve and contain every local runtime input before execution."""
+def canonical_dataframe_execution_graph(
+    graph: PipelineGraph,
+    *,
+    memo: GraphFingerprintMemo | None = None,
+) -> PipelineGraph:
+    """Resolve and contain every local runtime input before execution.
 
+    With *memo*, a graph it has already canonicalised is not resolved again.
+    """
+
+    if memo is not None:
+        known = memo.canonical_graphs.get(id(graph))
+        if known is not None and known[0] is graph:
+            return known[1]
+    canonical = _canonical_dataframe_execution_graph(graph)
+    if memo is not None:
+        # Canonicalising a canonical graph gives it back unchanged.
+        memo.canonical_graphs[id(graph)] = (graph, canonical)
+        memo.canonical_graphs[id(canonical)] = (canonical, canonical)
+    return canonical
+
+
+def _canonical_dataframe_execution_graph(graph: PipelineGraph) -> PipelineGraph:
     root = _infer_project_root(project_root=None, source_file=graph.source_file)
     pipeline_dir = _cache_pipeline_dir(graph)
     if pipeline_dir is None:
@@ -1002,6 +1022,20 @@ def _runtime_input_fingerprint_entry(
     )
 
 
+def _reused_runtime_input_entry(
+    graph: PipelineGraph,
+    node: GraphNode,
+    entries: dict[str, tuple[GraphNode, str | None, Mapping[str, object]]],
+) -> Mapping[str, object]:
+    # An entry reads the graph only through its source file.
+    known = entries.get(node.id)
+    if known is not None and known[0] is node and known[1] == graph.source_file:
+        return known[2]
+    entry = _runtime_input_fingerprint_entry(graph, node)
+    entries[node.id] = (node, graph.source_file, entry)
+    return entry
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeInputIdentity:
     """The runtime inputs of one scope, read once.
@@ -1062,7 +1096,30 @@ def dataframe_graph_input_identity(
 ) -> RuntimeInputIdentity:
     """Read the runtime inputs :func:`dataframe_graph_input_fingerprint` signs."""
 
-    graph = canonical_dataframe_execution_graph(graph)
+    return canonical_graph_input_identity(
+        canonical_dataframe_execution_graph(graph),
+        target_node_id=target_node_id,
+        source=source,
+        ignore_node_ids=ignore_node_ids,
+        memo=memo,
+    )
+
+
+def canonical_graph_input_identity(
+    graph: PipelineGraph,
+    *,
+    target_node_id: str | None,
+    source: str,
+    ignore_node_ids: Iterable[str] = (),
+    memo: GraphFingerprintMemo | None = None,
+    reuse_entries: bool = False,
+) -> RuntimeInputIdentity:
+    """:func:`dataframe_graph_input_identity` of a graph that is already canonical.
+
+    A subgraph of a canonical graph is canonical. With *reuse_entries*, a node's
+    runtime-input entry is read once per *memo*, as a resolution signing every
+    node of one lineage needs it.
+    """
     if target_node_id is not None and target_node_id not in graph.node_map:
         raise ValueError(f"Cannot fingerprint inputs for unknown node {target_node_id!r}")
     ignored = set(ignore_node_ids)
@@ -1083,8 +1140,11 @@ def dataframe_graph_input_identity(
             ],
         }
     )
+    entries = memo.runtime_input_entries if memo is not None and reuse_entries else None
     source_entries = [
         _runtime_input_fingerprint_entry(scoped_graph, node)
+        if entries is None
+        else _reused_runtime_input_entry(scoped_graph, node, entries)
         for node in sorted(scoped_graph.nodes, key=lambda item: item.id)
         if node.data.nodeType in _RUNTIME_INPUT_NODE_TYPES
     ]

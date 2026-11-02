@@ -24,7 +24,16 @@ layer is primary and caching is a consumer.
   identity that covers a node's config signs the whole config but these (see
   [Node config in identities](#node-config-in-identities)).
 - `GraphFingerprintMemo` pins utility-file hashes consistently within one request while the
-  shared content signature serves unchanged files across requests.
+  shared content signature serves unchanged files across requests. It also keeps, for the
+  graph, node and edge objects it has seen, the canonical execution graph, each node's
+  canonical `graph_node` record, each edge's canonical `graph_edge` record and its canonical
+  JSON, and (for signing) each node's runtime-input entry, so a resolution that signs every
+  node of a lineage canonicalises the graph, encodes each record and reads each input once,
+  not once per node it signs. A record is reused only for the same object, and an entry
+  only for the same node object under the same pipeline file. Reuse changes no digest byte.
+  A memo reads each input once, so a caller that must see an input move, after preparing
+  inputs or to prove one did not change, takes a fresh memo, as each resolution and the
+  post-capture key do.
 - `LineageCacheKeyRequest` carries graph, target node/port, upstream lineage, prepared
   runtime switch state, and utility-file evidence for `lineage_cache_key()`.
 - `LRUCache` stores values in an `OrderedDict` with timestamps, optional sizes, and pins.
@@ -317,7 +326,7 @@ writes a table, for the data-point `building` probe. Schema inference stays on
   structured API Input's emitting tables and their distinct identities (empty for any
   other node, or for a schema the node builder would reject).
 - `DataPointResolver(graph, source, store=NodeSnapshotStore, building=probe)` canonicalises
-  the graph once. `building(kind, digest)` reports a running build of the input-snapshot
+  the graph once and signs its nodes with one `GraphFingerprintMemo`. `building(kind, digest)` reports a running build of the input-snapshot
   identity digest (a Data Input's, or an API-input table's own) or the node-output identity
   digest.
   `resolve(point, demand)` returns a `PointResolution` (kind, state, demand, data version,
@@ -744,7 +753,11 @@ cache lifecycle changes.
   and a status probe returning `building` promptly while a build holds the cache locks.
 - `tests/test_node_snapshot_signature.py` covers the `node_snapshot_signature` field set
   and its invalidation matrix, including a submodel instance's expanded node following its
-  definition.
+  definition; that a resolution's memo signs every node of a corpus (relative paths, a
+  snapshot-backed input, wired handles, a read constant, nested non-ASCII configuration, a
+  file-sourced Model Score and a live switch under two sources) exactly as a fresh signature
+  does; and that a resolution canonicalises its graph and reads each input's entry once,
+  a new resolution reading them again.
 - `tests/test_analysis_results.py` covers a document served only for its own data version and
   removed once the point moves on, other kinds and analysis versions of the same point being
   kept, unparsable, mis-keyed, unknown-schema, and invalid-result documents being discarded
@@ -778,3 +791,6 @@ cache lifecycle changes.
   cover the inference route's errors and path confinement.
 - `tests/performance/test_cache_identity_perf.py` records bounded LRU/stat-gate and lineage
   key performance evidence.
+- `tests/performance/test_seed_plan_planning_perf.py` records cold and warm preview times for
+  10-, 40- and 80-transform lineages below a captured join, and asserts that the number of
+  graph canonicalisations and input-entry reads per preview does not grow with the lineage.
