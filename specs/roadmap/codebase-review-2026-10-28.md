@@ -80,7 +80,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P3 | Relationships target `__w=[10,20]` is overwritten by internal weight alias: means become `[1,1]`, strength 0. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual Parquet, data-point resolver and relationship service; ordinary-name equivalent requires means `[10,20]`, strength 1. |
 | P3 | Copied Explore node B receives cached result.node_id A for the same producer/card. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual pivot service/cache. Numbers are correct; browser stores them under B, so no numerical cross-node corruption claim. |
 | P2 | Shared-flight operation TimeoutError is mistaken for a polling timeout; completed work spins until cancellation. | [ROAD-WORKER-09](background-jobs-api.md#road-worker-09--completed-operation-timeouts-are-terminal-failures) | Real SharedFlights and LatestWinsQueue with controlled failure/cancellation. |
-| P2 | Returning from a failed directory to a cached parent leaves the error hiding the files. | [FNED-R02](frontend-node-editors.md#fned-r02--drafts-in-step-with-the-document-errors-with-their-detail), extended | Actual FileBrowser and settings cache, list transport substituted. |
 | P2 | Use detected schema applies A's completed schema into B while B loads. | [FNED-R06](frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft), extended | Actual DataInputEditor/hooks, API transport substituted. |
 | P2 | Late GLM dispersion estimate for A overwrites manually chosen theta 7 in newer target B with 3. | [FMOU-R06](frontend-modelling-optimiser-ui.md#fmou-r06--dispersion-estimates-belong-to-the-initiating-training-draft) | Actual GLMTargetConfig, only the estimate promise substituted. |
 | P2 | JSON omits an all-null nested pricing object while NDJSON returns pricing:null for the same quote. | [DEP-R17](deploy.md#dep-r17--json-and-ndjson-preserve-the-same-output-document) | Real generated FastAPI app, request shredder, scorer, assembler and materializer; no scorer mock. Batch variant is source-supported. |
@@ -171,7 +170,7 @@ adds a finding group or changes the 42-group count.
 | `frontend/src/api/client.ts::request` / retry policy | **Unverified, hypothesis underspecified.** Name a real retry-enabled PUT/DELETE endpoint with a non-idempotent effect, let its mutation commit while losing the response, and observe a duplicate effect or incorrect retry result. POST is not retried by default; project-file/workbench writes have explicit zero-retry paths. Do not label every mutation unsafe. |
 | `frontend/src/api/projectFiles.ts` XHR upload / `FilesPanel` | **Unverified.** Stall an actual upload transport indefinitely, check whether the panel remains stuck and whether its cancel/close action retires transport and UI ownership. Lack of an automatic timeout alone is not a confirmed failure if intentional long uploads remain cancellable. |
 | `frontend/src/app/useQuoteListStore.ts::more` / `load` | **Unverified.** Hold old-list `more()`, load another list, and try its pagination before/after the old request settles. Confirm new pagination remains blocked or old completion clears a newer loading state. This is distinct from the archive/restore query adoption delivered on 29 October. |
-| `ExplorePivotsConfig` / `PivotFormulaSection` confirmation continuations | **Unverified; previous ownership statement lacked an exact package.** Open a destructive pivot/formula confirmation, apply an independent edit or document switch while it is open, then confirm and inspect current config. Confirmation must show old captured arrays replacing newer state or deleting a no-longer-current target. FSH-R07's identity-resolved creation fences and FNED-R02's committed drafts do not by themselves dispose of this separate continuation. |
+| `ExplorePivotsConfig` / `PivotFormulaSection` confirmation continuations | **Unverified; previous ownership statement lacked an exact package.** Open a destructive pivot/formula confirmation, apply an independent edit or document switch while it is open, then confirm and inspect current config. Confirmation must show old captured arrays replacing newer state or deleting a no-longer-current target. FSH-R07's identity-resolved creation fences and the pivot name's committed draft do not by themselves dispose of this separate continuation. |
 | `frontend/src/panels/modelling/TermTableView.tsx` state, `EBMTermsTab` / `TBoostTablesTab` keys | **Unverified.** Keep the same mounted term key, replace its result with different axis count/levels, and observe an invalid fixed index/axis or wrong slice. First establish the real parent lifecycle preserves that component across results; an isolated rerender is insufficient if production remounts it. |
 | `frontend/src/stores/useSettingsStore.ts::loadPipelineSettings` | **Unverified.** Complete newer load B before older A so `_confirmedPipelineSettings` could regress, then fail a settings save and inspect rollback. Confirmation requires the UI to restore A despite B being the latest accepted settings. The existing save-completion fence may rule out some interleavings; no completed witness is recorded. |
 | `scripts/benchmarks/benchmark_optimiser_pipeline_timing.py::_process_memory_mb` | **Unverified manual-tool measurement issue, not a product claim.** Run or unit-check the helper on Linux/macOS with known `ru_maxrss` units and compare the returned MB to an independent RSS value. Record the affected benchmark output. The fact it is auxiliary does not prove its numbers correct. |
@@ -202,7 +201,6 @@ adds a finding group or changes the 42-group count.
 
 | Candidate scope | Disposition |
 |---|---|
-| uncontrolled Rating/pivot drafts | Duplicate **FNED-R02**. |
 | percentages and auto-range | Duplicate **FMOU-R04**. |
 | save flush, coarse graph creation fence, scoped edited marker | Duplicate **FSH-R07**. |
 | saved-document sync | Duplicate **FSH-R05**. |
@@ -232,7 +230,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | utility async read/save/switch | **FGC-R08**. |
 | blocked recovery inspector | **FGC-R09**. |
 | API Input / Data Input schema identity | **FNED-R06**. |
-| cached file browser error | **FNED-R02**. |
 | cached pivot response consumer node identity | **EDA-R01**; numbers remain correct as recorded in the accepted report. |
 | failed new solve identity | **FSH-R12**. |
 | pyfunc classifier output shape | **MSC-11**. |

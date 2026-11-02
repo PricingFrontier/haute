@@ -4,6 +4,7 @@ import { CHART_COLORS } from "../../../theme/colors"
 import useToastStore from "../../../stores/useToastStore"
 import { buildTsv, parsePastedGrid, writeClipboardText } from "../shared/tableClipboard"
 import type { BandingFactor, CategoricalRule } from "../../../types/banding"
+import { apiErrorMessage } from "../../../api/errors"
 
 const CATEGORICAL_FIELDS = ["value", "assignment"] as const
 const CATEGORICAL_COPY_HEADERS = ["Value", "Maps To"] as const
@@ -190,7 +191,7 @@ export function BandingRulesGrid({
 
   const handleCopyBanding = useCallback(() => {
     void writeClipboardText(rulesToTsv(rules)).catch((error: unknown) => {
-      const detail = error instanceof Error ? error.message : String(error)
+      const detail = apiErrorMessage(error)
       addToast("error", `Could not copy banding TSV: ${detail}`)
     })
   }, [rules, addToast])

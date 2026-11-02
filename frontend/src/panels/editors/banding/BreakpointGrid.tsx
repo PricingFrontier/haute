@@ -3,6 +3,7 @@ import { withAlpha } from "../../../utils/color"
 import useToastStore from "../../../stores/useToastStore"
 import { buildTsv, parsePastedGrid, writeClipboardText } from "../shared/tableClipboard"
 import { boundaryDayNumber, boundaryKind } from "./bandingUtils"
+import { apiErrorMessage } from "../../../api/errors"
 
 type Breakpoint = { boundary: string; label: string }
 
@@ -192,7 +193,7 @@ export function BreakpointGrid({
 
   const copyBanding = () => {
     void writeClipboardText(breakpointsToTsv(breakpoints)).catch((error: unknown) => {
-      const detail = error instanceof Error ? error.message : String(error)
+      const detail = apiErrorMessage(error)
       addToast("error", `Could not copy banding TSV: ${detail}`)
     })
   }

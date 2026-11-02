@@ -14,7 +14,6 @@ These packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FNED-R02 | Planned | P2 | Every text control goes through the committed-input kit, so a value changed by undo, redo or a document broadcast is shown, no field commits per keystroke, and every request failure shows the server's detail. Returning to a cached directory clears the previous directory's error. |
 | FNED-R03 | Planned | P3 | The pickers, cards and grouping helpers written twice exist once, and the vestigial `errorLine` prop and the dead exports are gone. |
 | FNED-R04 | Planned | P2 | A banding rule the sidecar writer refuses is marked in the grid and refused by the save validator with a 400, a typed relativity that does not parse is refused rather than replaced, and the step builder's argument controls refuse what the renderer refuses with a visible message. |
 | FNED-R05 | Planned | P3 | The step builder's open card follows its step through undo, the pivot editor carries no unknown keys the backend refuses, the two banding grids, the two rating grids, the params pickers and the zone cards exist once, and the internal-only exports are un-exported. |
@@ -22,51 +21,6 @@ These packages come from the
 | FNED-R07 | Planned | P2 | `CatalogTablePicker` preserves selected catalog and schema when clearing a table, `TargetTablePicker` resets `tablesFor.current`, `OptimiserApplyEditor` cancels stale `readJson` calls, `OutputEditor` invalidates `outputDoc` on mapping edits, `ColumnsTab` handles stale column selections cleanly, `IoArgumentsEditor` flags blank or unbacked invalid JSON arguments, `BandingRulesGrid` strips internal `_id` keys before persisting, `PivotFormulaSection` resets `onFormulaEditorChange` on unmount and Undo, and `CodeMirrorEditor` re-syncs `errorLine` diagnostics on same-line repeats. |
 
 ## Planned improvements
-
-### FNED-R02 — Drafts in step with the document, errors with their detail
-**Why:** Four Rating Step fields are uncontrolled inputs committing on blur
-instead of the committed-input primitives, so Enter does not commit and an undo,
-redo or broadcast that changes the value leaves the stale text on screen. The
-pivot name draft is seeded once and never re-synced, so after an undo the field
-shows the old name and a blur with no typing re-commits it, silently undoing the
-undo. The chart editor's axis title commits a graph edit on every keystroke, one
-undo entry and one document update per character. Four hand-rolled
-draft-then-commit controls (the chart stack group, the axis bounds, the pivot
-name, the Scenario min and max with their hundred-line draft machine)
-re-implement `ValidatedTextField`. Four request failures are shown as
-`error.message` or a fixed string: an `ApiError`'s message is only
-`HTTP <status>`, so Infer Tables shows "HTTP 422" for a schema error, while every
-other editor uses `apiErrorMessage`; the lint that rejects local copies does not
-catch the ternary form.
-
-**Plan:** Replace the uncontrolled inputs and the hand-rolled drafts with
-`CommittedTextField` and `ValidatedTextField`; key or re-sync the pivot name;
-commit the axis title on blur; route the four error sites through
-`apiErrorMessage` and widen the lint selector to the ternary form.
-
-**Acceptance:** Undo while a Rating Step field or the pivot name is on screen
-updates the field and a blur commits nothing; typing an axis title records one
-undo entry; Infer Tables shows the server's detail; the lint fails on
-`e instanceof Error ? e.message : ...`.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/editors/RatingStepEditor.tsx`;
-`frontend/src/panels/editors/ExplorePivotsConfig.tsx`;
-`frontend/src/panels/editors/ExploreChartsConfig.tsx`;
-`frontend/src/panels/editors/ScenarioExpanderEditor.tsx`;
-`frontend/src/panels/editors/ApiInputEditor.tsx`;
-`frontend/src/panels/editors/_shared.tsx`;
-`frontend/src/panels/editors/_ioFormats.ts`; `frontend/src/api/errors.ts`;
-`frontend/eslint.config.js`.
-
-**28 October full-pass addition:** The shared FileBrowser cache-hit branch returns before
-clearing an earlier directory error. After a child returns Permission denied, Up restores
-cached parent items but continues rendering the error instead of files. **Plan/acceptance:**
-cached navigation resets request/error/loading state coherently; a real picker test visits a
-failed child then returns to a cached parent and can select its file. Evidence:
-`frontend/src/panels/editors/_shared.tsx::FileBrowser` (cache-hit effect) and its error-first render. The witness measured
-the lingering error; selection was blocked before its assertion.
 
 ### FNED-R03 — One copy of each picker, card and helper
 **Why:** The Workbench Output's table card re-implements `WorkbenchTableCard`,

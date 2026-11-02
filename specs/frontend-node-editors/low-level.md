@@ -16,7 +16,7 @@
 | `frontend/src/panels/PanelShell.tsx` | Right-panel shell used by node, global-constants and utility authoring views: haute-ui's `SidePanel` and its header, the width kept in the UI store and shared by every panel. A shell with no stored width chooses 50% of the available space when it mounts and keeps that established width across unrelated rerenders and viewport changes; an explicit drag updates the shared stored width. |
 | `frontend/src/components/ReadOnlyNodeConfig.tsx`, `frontend/src/components/FramesTable.tsx`, `frontend/src/components/KeyPickerModal.tsx` | Inert configuration (`NodeConfigEditor` in read-only mode with no-op callbacks, empty graph context and default panes), API-frame rows and reusable API-input key picker. |
 | `frontend/src/panels/editors/index.ts` | Public editor exports. |
-| `frontend/src/panels/editors/_shared.tsx` | Shared editor types, styles (`INPUT_STYLE` the form kit's), file browser (nullable directory size, numeric file-size rendering), schema preview and the input-source bar (chips keyed by edge id, showing each edge's input name — the code argument — with the source node named in the tooltip). |
+| `frontend/src/panels/editors/_shared.tsx` | Shared editor types, styles (`INPUT_STYLE` the form kit's), file browser (nullable directory size, numeric file-size rendering; one listing answer per open folder, its items and error together, so a folder returned to from the listing cache shows its files and never the error of a folder left; an icon-only Up button named "Up one folder"), schema preview and the input-source bar (chips keyed by edge id, showing each edge's input name — the code argument — with the source node named in the tooltip). |
 | `frontend/src/components/ColumnTable.tsx` | Reusable column-selection table. |
 | `frontend/src/utils/dataInputMode.ts` | Shared `dataInputIsDirect` derivation mirroring the backend's `data_input_is_direct`; drives the Data Input editor's cache surface and [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)'s `ensureInputSnapshots` orchestration. |
 | `frontend/src/panels/editors/CodeEditor.tsx`, `frontend/src/panels/editors/CodeMirrorEditor.tsx`, `frontend/src/panels/editors/shared/PolarsCodePanel.tsx`, `frontend/src/panels/editors/shared/SteppedCodePane.tsx`, `frontend/src/panels/editors/shared/PathPickerField.tsx` | Code-editor wrappers (`CodeMirrorEditor` reports a local edit once typing pauses, 150 ms, and at once on blur and unmount; with `reportEachChange` it reports every change at once, for an owner that saves only when asked), Polars-specific panel, the shared stepped-code pane (step builder while `config.steps` is a list, otherwise the code box with the discard notice; takes the start mode and the eligible step input names), and the shared selected-path picker. |
@@ -135,9 +135,16 @@
    `NodeConfigEditor`. React suspense
    displays its loading boundary while that import is unresolved; already-loaded modules are
    reused by the module loader.
-3. Form controls keep an input draft locally and commit via blur/Enter where using
-   `frontend/src/components/form/CommittedTextField.tsx`; grid components apply the same
-   one-gesture boundary in their own controlled cells. Node-label commits are async and
+3. Every typed text or number control in an editor keeps its draft locally and commits via
+   blur/Enter through `frontend/src/components/form/CommittedTextField.tsx`, or its
+   `ValidatedTextField` where a value can be refused: Rating Step's output column, default,
+   combined output column and base value; the pivot name (blank or another pivot's name refused);
+   a chart's axis titles, stack-group names and axis bounds; Scenario Expander's steps and range
+   bounds. So a value changed by undo, redo or a document broadcast is what the field shows, a
+   blur with no typing commits nothing, and one typed value is one undo entry. Grid components
+   apply the same one-gesture boundary in their own controlled cells. Every failure an editor
+   shows is `apiErrorMessage`'s text (`frontend/src/api/errors.ts`), so a refused request shows
+   the server's detail rather than `HTTP <status>`. Node-label commits are async and
    disabled while the prospective server identity resolves; failure remains inline and
    leaves the graph untouched. API-input frame changes likewise resolve the candidate
    identity before App atomically commits config, rebound edges, and dependent mappings.
@@ -453,7 +460,8 @@ commit — a group never spans axes. A group-name input appears only when the ch
 more than one stack group: renaming atomically rewrites every member of the current group, a
 rename onto another group commits only when that group's axis and normalisation agree
 (a compatible merge), and an incompatible rename shows an inline validation error and persists
-nothing.
+nothing. Axis titles commit at blur or Enter; an axis bound that is not a finite number, or
+that would not leave the minimum below the maximum, is refused inline with its draft kept.
 
 The colour control is a swatch row — an Automatic reset, the theme series palette, and a native
 colour input for custom values — persisting `#RRGGBB` or null with no free-text entry. Swatch
@@ -830,7 +838,9 @@ alongside its canvas geometry assertions).
 filter and XML cache action, and a server name violation shown under the frame label it
 names until that label changes. `frontend/src/panels/editors/__tests__/_shared.test.tsx` pins
 navigation/rendering for a directory whose `size` is null and ensures no numeric/`NaN` size is
-shown.
+shown, and `frontend/src/panels/editors/__tests__/FileBrowserCachedDirectory.test.tsx`, over the
+real listing cache with only the list transport substituted, goes into a folder that is refused,
+back up to the cached parent, and picks its file with no error left on screen.
 
 The Data I/O component matrix covers guarded capabilities, ordered provider
 groups and fields, dependency/build/snapshot states, atomic provider changes

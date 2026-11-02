@@ -268,7 +268,6 @@ production:
 | Explore / EDA | SUB-8, SUB-9, SUB-12 | `EDA-R02` |
 | Frontend shared | FSA-1, FSA-2, FSA-8, FSA-10 | `FSH-R05` |
 | Frontend shared | FSA-3, FSA-4, FSA-5, FSA-6, FSA-7, FSA-9, FSA-12 | `FSH-R06` |
-| Frontend node editors | FNE-3, FNE-5, FNE-6, FNE-9, FNE-11 | `FNED-R02` |
 | Frontend node editors | FNE-10, FNE-12, FNE-13, FNE-14, FNE-15, FNE-16 | `FNED-R03` |
 | Frontend shared | FSB-1, FSB-2, FSB-10, FSB-12, FSB-15 | `FSH-R07` |
 | Frontend shared | FSB-3, FSB-4, FSB-5, FSB-6, FSB-9, FSB-13, FSB-14, FSB-16, FSB-17, FSB-18 | `FSH-R08` |

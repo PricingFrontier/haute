@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useId, useMemo, useState } from "react"
 import {
   ArrowLeft,
   ChartColumn,
@@ -12,7 +12,7 @@ import { confirmed } from "../../stores/useQuestionStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { exploreDataView } from "../explore/exploreDataView"
 import useUIStore from "../../stores/useUIStore"
-import { ColourSwatches } from "../../components/form"
+import { ColourSwatches, CommittedTextField, ValidatedTextField } from "../../components/form"
 import { NODE_GROUP_COLORS } from "../../theme/colors"
 import {
   applyChartPreset,
@@ -64,6 +64,7 @@ import { useGraph } from "../useGraph"
 import type { SimpleNode } from "../editors"
 import useAutoUpdateExplorePivots from "../explore/useAutoUpdateExplorePivots"
 import useExplorePivotActions from "../explore/useExplorePivotActions"
+import { apiErrorMessage } from "../../api/errors"
 
 type ChartAxisChange = Partial<
   Pick<ChartAxisConfig, "title" | "minimum" | "maximum" | "number_format">
@@ -224,6 +225,12 @@ function ConfigError({ error }: { error: string }) {
   )
 }
 
+/** Renaming one style's stack group: the refusal a name would meet, and the rename. */
+type GroupRename = {
+  validate: (name: string) => string | null
+  commit: (name: string) => void
+}
+
 function StyleControls({
   style,
   suffix,
@@ -232,7 +239,7 @@ function StyleControls({
   onChange,
   onAxisChange,
   onStackingChange,
-  onGroupRename,
+  groupRename,
 }: {
   style: ChartStyle
   suffix: string
@@ -241,7 +248,7 @@ function StyleControls({
   onChange: (change: Partial<ChartStyle>) => void
   onAxisChange: (axis: ChartAxis) => void
   onStackingChange: (mode: ChartStackingMode) => void
-  onGroupRename: (name: string) => string | null
+  groupRename: GroupRename
 }) {
   const control = "rounded px-1.5 py-1 text-xs"
   return (
@@ -292,10 +299,10 @@ function StyleControls({
       </Field>
       {multiGroup && style.stack_group !== null ? (
         <StackGroupInput
-          key={style.stack_group}
           suffix={suffix}
           group={style.stack_group}
-          onRename={onGroupRename}
+          validate={groupRename.validate}
+          onRename={groupRename.commit}
         />
       ) : (
         <div aria-hidden="true" />
@@ -327,50 +334,66 @@ function StyleControls({
   )
 }
 
+/** A labelled `ValidatedTextField`, for the chart's typed values that can be refused. */
+function ValidatedField({
+  label,
+  dataTestId,
+  value,
+  validate,
+  onCommit,
+  className,
+  placeholder,
+  inputMode,
+}: {
+  label: string
+  dataTestId: string
+  value: string
+  validate: (candidate: string) => string | null
+  onCommit: (next: string) => void
+  className: string
+  placeholder?: string
+  inputMode?: "decimal"
+}) {
+  const id = useId()
+  return (
+    <div className="flex flex-col gap-1 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+      <label htmlFor={id}>{label}</label>
+      <ValidatedTextField
+        id={id}
+        dataTestId={dataTestId}
+        value={value}
+        validate={validate}
+        onCommit={onCommit}
+        containerClassName=""
+        className={className}
+        style={INPUT_STYLE}
+        placeholder={placeholder}
+        inputMode={inputMode}
+      />
+    </div>
+  )
+}
+
 function StackGroupInput({
   suffix,
   group,
+  validate,
   onRename,
 }: {
   suffix: string
   group: string
-  onRename: (name: string) => string | null
+  validate: (name: string) => string | null
+  onRename: (name: string) => void
 }) {
-  const [draft, setDraft] = useState(group)
-  const [error, setError] = useState<string | null>(null)
-
-  const commit = () => {
-    if (draft.trim() === group) {
-      setError(null)
-      return
-    }
-    setError(onRename(draft))
-  }
-
   return (
-    <div>
-      <Field label={`Stack group for ${suffix}`}>
-        <input
-          aria-label={`Stack group for ${suffix}`}
-          className="rounded px-1.5 py-1 text-xs"
-          style={INPUT_STYLE}
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onBlur={commit}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault()
-              commit()
-            }
-          }}
-        />
-      </Field>
-      {error && (
-        <div role="alert" className="mt-1 text-[10px]" style={{ color: "var(--danger)" }}>
-          {error}
-        </div>
-      )}
-    </div>
+    <ValidatedField
+      label={`Stack group for ${suffix}`}
+      dataTestId={`chart-stack-group-${suffix}`}
+      value={group}
+      validate={validate}
+      onCommit={onRename}
+      className="rounded px-1.5 py-1 text-xs"
+    />
   )
 }
 
@@ -390,11 +413,11 @@ function AxisFields({
   return (
     <div className="grid grid-cols-2 gap-2">
       <Field label={`${prefix} axis title`}>
-        <input
+        <CommittedTextField
           className="rounded px-2 py-1 text-xs"
           style={INPUT_STYLE}
           value={config.title}
-          onChange={(e) => updateAxis(axis, { title: e.target.value })}
+          onCommit={(title) => updateAxis(axis, { title })}
         />
       </Field>
       <Field label={`${prefix} number format`}>
@@ -415,7 +438,6 @@ function AxisFields({
         </select>
       </Field>
       <AxisBoundInput
-        key={`${axis}-minimum-${config.minimum ?? "automatic"}`}
         axis={axis}
         bound="minimum"
         value={config.minimum}
@@ -423,7 +445,6 @@ function AxisFields({
         onCommit={(value) => updateAxis(axis, { minimum: value })}
       />
       <AxisBoundInput
-        key={`${axis}-maximum-${config.maximum ?? "automatic"}`}
         axis={axis}
         bound="maximum"
         value={config.maximum}
@@ -474,7 +495,7 @@ function ValueSeriesOverrides({
   onStyleChange,
   onAxisChange,
   onStackingChange,
-  onGroupRename,
+  groupRename,
 }: {
   valueName: string
   series: ChartSeriesData[]
@@ -486,7 +507,7 @@ function ValueSeriesOverrides({
   onStyleChange: (overrideId: string, change: Partial<ChartStyle>) => void
   onAxisChange: (overrideId: string, axis: ChartAxis) => void
   onStackingChange: (overrideId: string, mode: ChartStackingMode) => void
-  onGroupRename: (overrideId: string, name: string) => string | null
+  groupRename: (overrideId: string) => GroupRename
 }) {
   const [open, setOpen] = useState(false)
   return (
@@ -529,7 +550,7 @@ function ValueSeriesOverrides({
                   onChange={(change) => onStyleChange(override.id, change)}
                   onAxisChange={(axis) => onAxisChange(override.id, axis)}
                   onStackingChange={(mode) => onStackingChange(override.id, mode)}
-                  onGroupRename={(name) => onGroupRename(override.id, name)}
+                  groupRename={groupRename(override.id)}
                 />
               </div>
             ) : (
@@ -585,55 +606,30 @@ function AxisBoundInput({
   other: number | null
   onCommit: (value: number | null) => void
 }) {
-  const label = `${axis === "primary" ? "Primary" : "Secondary"} ${bound}`
-  const [draft, setDraft] = useState(value === null ? "" : String(value))
-  const [error, setError] = useState<string | null>(null)
-
-  const commit = () => {
-    const next = draft.trim() === "" ? null : Number(draft)
-    if (next !== null && !Number.isFinite(next)) {
-      setError("Axis bounds must be finite numbers.")
-      return
+  const parse = (draft: string) => (draft.trim() === "" ? null : Number(draft))
+  const validate = (draft: string): string | null => {
+    const next = parse(draft)
+    if (next === null) return null
+    if (!Number.isFinite(next)) return "Axis bounds must be finite numbers."
+    if (other !== null && (bound === "minimum" ? next >= other : other >= next)) {
+      return "Axis minimum must be less than maximum."
     }
-    if (
-      next !== null &&
-      other !== null &&
-      (bound === "minimum" ? next >= other : other >= next)
-    ) {
-      setError("Axis minimum must be less than maximum.")
-      return
-    }
-    setError(null)
-    if (next !== value) onCommit(next)
+    return null
   }
-
   return (
-    <div>
-      <Field label={label}>
-        <input
-          type="number"
-          step="any"
-          aria-label={label}
-          className="rounded px-2 py-1 text-xs"
-          style={INPUT_STYLE}
-          value={draft}
-          placeholder="Automatic"
-          onChange={(event) => setDraft(event.target.value)}
-          onBlur={commit}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault()
-              commit()
-            }
-          }}
-        />
-      </Field>
-      {error && (
-        <div role="alert" className="mt-1 text-[10px]" style={{ color: "var(--danger)" }}>
-          {error}
-        </div>
-      )}
-    </div>
+    <ValidatedField
+      label={`${axis === "primary" ? "Primary" : "Secondary"} ${bound}`}
+      dataTestId={`chart-axis-${axis}-${bound}`}
+      value={value === null ? "" : String(value)}
+      validate={validate}
+      onCommit={(draft) => {
+        const next = parse(draft)
+        if (next !== value) onCommit(next)
+      }}
+      className="rounded px-2 py-1 text-xs"
+      placeholder="Automatic"
+      inputMode="decimal"
+    />
   )
 }
 
@@ -757,12 +753,16 @@ export default function ExploreChartsConfig({
     const next = setChartStyleAxis(chart, styleId, axis)
     if (next !== chart) commit(next)
   }
-  const commitGroupRename = (styleId: string, name: string): string | null => {
-    const next = renameChartStackGroup(chart, styleId, name)
-    if (typeof next === "string") return next
-    if (next !== chart) commit(next)
-    return null
-  }
+  const groupRename = (styleId: string): GroupRename => ({
+    validate: (name) => {
+      const next = renameChartStackGroup(chart, styleId, name)
+      return typeof next === "string" ? next : null
+    },
+    commit: (name) => {
+      const next = renameChartStackGroup(chart, styleId, name)
+      if (typeof next !== "string" && next !== chart) commit(next)
+    },
+  })
   const multiGroup =
     new Set(
       [...chart.value_encodings, ...chart.series_overrides]
@@ -806,7 +806,7 @@ export default function ExploreChartsConfig({
       try {
         data = adaptPivotChartData(chart, pivot, entry.result)
       } catch (e) {
-        dataError = e instanceof Error ? e.message : "Could not adapt Pivot data."
+        dataError = apiErrorMessage(e, "Could not adapt Pivot data.")
       }
     }
   }
@@ -1112,7 +1112,7 @@ export default function ExploreChartsConfig({
                       onChange={(change) => updateStyle("value_encodings", encoding.id, change)}
                       onAxisChange={(axis) => commitStyleAxis(encoding.id, axis)}
                       onStackingChange={(mode) => commitStacking(encoding.id, mode)}
-                      onGroupRename={(name) => commitGroupRename(encoding.id, name)}
+                      groupRename={groupRename(encoding.id)}
                     />
                     {(pivot.columns.length > 0 || hasOverrides) &&
                       valueSeries.length > 0 && (
@@ -1154,7 +1154,7 @@ export default function ExploreChartsConfig({
                           }
                           onAxisChange={commitStyleAxis}
                           onStackingChange={commitStacking}
-                          onGroupRename={commitGroupRename}
+                          groupRename={groupRename}
                         />
                       )}
                   </div>

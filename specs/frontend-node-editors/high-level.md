@@ -767,9 +767,8 @@ api-input frame-identity helpers owned by
 ## Failure model
 
 > NOTE: Completed Data Input schema can remain applicable after a file change while
-> the new schema loads, and a cached file-browser parent can retain its failed child
-> error. [FNED-R06](../roadmap/frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft)
-> and [FNED-R02](../roadmap/frontend-node-editors.md#fned-r02--drafts-in-step-with-the-document-errors-with-their-detail) track these transitions.
+> the new schema loads. [FNED-R06](../roadmap/frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft)
+> tracks this transition.
 
 > NOTE: A late API Input inference reply can restore its old source path and
 > overwrite newer tables. Source, draft and document fencing is tracked in

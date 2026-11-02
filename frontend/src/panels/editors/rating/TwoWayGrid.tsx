@@ -7,6 +7,7 @@ import { StatsFooter } from "./StatsFooter"
 import { EDITABLE_RELATIVITY_INPUT_STYLE, NON_EDITABLE_LABEL_CELL_STYLE } from "./cellStyles"
 import useToastStore from "../../../stores/useToastStore"
 import { parsePastedGrid } from "../shared/tableClipboard"
+import { apiErrorMessage } from "../../../api/errors"
 
 type PastedNumber = { kind: "value"; value: number } | { kind: "blank" } | { kind: "invalid" }
 
@@ -209,7 +210,7 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
   const copyVisibleTable = () => {
     const text = buildTableTsv(rowFactor, colFactor, rowLabels, colLabels, valueFor)
     void navigator.clipboard.writeText(text).catch((error: unknown) => {
-      const detail = error instanceof Error ? error.message : String(error)
+      const detail = apiErrorMessage(error)
       addToast("error", `Could not copy rating table TSV: ${detail}`)
     })
   }

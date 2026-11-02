@@ -1581,11 +1581,35 @@ describe("ExplorePivotsConfig", () => {
     const name = screen.getByRole("textbox", { name: "Pivot name" })
     fireEvent.change(name, { target: { value: "   " } })
     fireEvent.blur(name)
-    expect(screen.getByRole("alert")).toHaveTextContent(/name cannot be blank/i)
+    expect(screen.getByTestId("pivot-name-error")).toHaveTextContent(/name cannot be blank/i)
 
     fireEvent.change(name, { target: { value: " other PIVOT " } })
     fireEvent.blur(name)
-    expect(screen.getByRole("alert")).toHaveTextContent(/name must be unique/i)
+    expect(screen.getByTestId("pivot-name-error")).toHaveTextContent(/name must be unique/i)
+    expect(
+      JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}").pivots[0].name,
+    ).toBe("Pivot 1")
+  })
+
+  it("shows the pivot name an undo leaves, and a blur then commits nothing", () => {
+    const onUpdate = vi.fn<OnUpdateConfig>(() => ({ ok: true }))
+    const props = (name: string) => ({
+      config: { pivots: [fullPivot({ name })] },
+      onUpdate,
+      nodeId: "explore_1",
+      upstreamColumns,
+      currentConfigHash: "hash",
+    })
+    const view = render(<ExplorePivotsConfig {...props("Claims analysis")} />)
+    fireEvent.click(screen.getByRole("button", { name: "Configure Claims analysis" }))
+    expect(screen.getByRole("textbox", { name: "Pivot name" })).toHaveValue("Claims analysis")
+
+    view.rerender(<ExplorePivotsConfig {...props("Pivot 1")} />)
+
+    const name = screen.getByRole("textbox", { name: "Pivot name" })
+    expect(name).toHaveValue("Pivot 1")
+    fireEvent.blur(name)
+    expect(onUpdate).not.toHaveBeenCalled()
   })
 
   it("blocks deletion while charts depend on a Pivot and lists those charts", async () => {

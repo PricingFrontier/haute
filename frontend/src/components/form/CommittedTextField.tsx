@@ -155,6 +155,8 @@ type ValidatedTextFieldProps = {
   className: string
   style: CSSProperties
   placeholder?: string
+  /** The on-screen keyboard to offer, such as `decimal` for a number typed as text. */
+  inputMode?: InputHTMLAttributes<HTMLInputElement>["inputMode"]
 }
 
 /** The API Input and Output editors' schema fields (labels, paths, column
@@ -176,6 +178,7 @@ export function ValidatedTextField({
   className,
   style,
   placeholder,
+  inputMode,
 }: ValidatedTextFieldProps) {
   const { shown, setDraft, commit } = useCommittedDraft(value, (next) =>
     validate(next) === null ? onCommit(next) : { ok: false },
@@ -187,6 +190,7 @@ export function ValidatedTextField({
         data-testid={dataTestId}
         id={id}
         type="text"
+        inputMode={inputMode}
         value={shown}
         aria-label={ariaLabel}
         aria-invalid={error !== null ? true : undefined}

@@ -45,6 +45,7 @@ import FramesTable, { type FramesTableRow } from "../../components/FramesTable"
 import KeyPickerModal from "../../components/KeyPickerModal"
 import Tooltip from "../../components/Tooltip"
 import { ValidatedTextField } from "../../components/form"
+import { apiErrorMessage } from "../../api/errors"
 
 // The re-infer merge is `reconcileInferredTables` (apiInputInherit.ts): the
 // column-level reconciliation that supersedes the old whole-column-array
@@ -368,7 +369,7 @@ export default function ApiInputEditor({
         setPendingInferred(inferred)
       }
     } catch (e) {
-      setInferError(e instanceof Error ? e.message : String(e))
+      setInferError(apiErrorMessage(e))
     } finally {
       setInferring(false)
     }

@@ -25,6 +25,7 @@ import {
   parseColumnPathFull,
   segmentPrefix,
 } from "./jsonpath"
+import { apiErrorMessage } from "../../api/errors"
 
 /** One key in the path inventory: its source path, the name it should carry
  * (reused across frames so the same field reads identically everywhere), its
@@ -259,13 +260,13 @@ export function validateColumnPathAgainstFrame(
   try {
     parsed = parseColumnPathFull(columnPath)
   } catch (e) {
-    return e instanceof Error ? e.message : "invalid column path"
+    return apiErrorMessage(e, "invalid column path")
   }
   let frame: Seg[]
   try {
     frame = frameSegments(framePath)
   } catch (e) {
-    return e instanceof Error ? e.message : "invalid frame path"
+    return apiErrorMessage(e, "invalid frame path")
   }
   const prefixOrEqual = segmentPrefix(parsed.locating, frame)
   if (parsed.leaf === RESERVED_LEAF) {

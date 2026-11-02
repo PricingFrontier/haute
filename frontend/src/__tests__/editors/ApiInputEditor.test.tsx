@@ -302,6 +302,19 @@ describe("ApiInputEditor", () => {
     expect(arg.tables[0].columns[0].type).toBe("str")
   })
 
+  it("Infer Tables shows the server's detail when inference is refused", async () => {
+    const { ApiError } = await import("../../api/client")
+    mockInferJsonCacheSchema.mockRejectedValue(
+      new ApiError("HTTP 422", 422, "v2 column type must be one of int|float|str|bool|date"),
+    )
+    render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.json", tables: [] }} />)
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+    })
+    expect(await screen.findByText("v2 column type must be one of int|float|str|bool|date")).toBeTruthy()
+    expect(screen.queryByText("HTTP 422")).toBeNull()
+  })
+
   it("Infer Tables does NOT clobber existing user tables without confirmation", async () => {
     mockInferJsonCacheSchema.mockResolvedValue({
       tables: [
