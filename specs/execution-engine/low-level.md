@@ -410,7 +410,9 @@ captures never stores under its pre-execution key: after executing, the core rea
 runtime inputs again and stores nothing if they moved; otherwise it resolves the plan a
 new request would choose and stores under the key built from the first read and that
 plan's seeds only when every one is a generation it read. The generations are recorded on the context
-(`record_preview_seed_plan`) for the response's `seed_plan`.
+(`record_preview_seed_plan`) for the response's `seed_plan`; a hit reports every generation it
+re-validated as `seeded`, since it publishes none, so the canvas raises no node-data epoch for a
+repeated preview.
 
 An API input bundle containing exactly one labelled frame has one canonical flat
 frame, so that frame remains the node's ordinary preview without requiring
@@ -933,7 +935,7 @@ missing column the run itself reads raises `ContractMismatchError`. After the wr
 a second runtime-input check, the capture is published as an automatic generation whose `dependencies` are the closure the plan
 recorded for the node: every seed and published capture read upstream along effective
 edges, each with its own recorded dependencies, and for a capture that kept its own data,
-only what it was built from. Execution continues from the publication's frame. A superseded
+only what it was built from. Execution continues from the publication's frame, so a run stopped later (by the pipeline time limit, a failure or a cancellation) keeps every capture it had published and discards only an unfinished capture's staging. A superseded
 publication or a changed input continues from the
 run's own staged artifact, which the plan owns and removes when it closes; any other store
 error propagates after the staged artifact is removed. The consumed nodes are preserved
