@@ -212,8 +212,8 @@ compatibility facade and route own no duplicate state or worker implementation.
   config or parse, any Polars planning or collection failure raised by the pipeline's own
   code and data), or a bounded-mode refusal; the endpoint never surfaces one as a 500.
 - `POST /api/modelling/export` returns a standalone Python script that trains the
-  identical model the "Train" button would, using the same config → kwargs builder as
-  live training.
+  identical model the "Train" button would, using the same graph preparation and config →
+  kwargs builder as live training, so a modelling node inside a submodel exports too.
 - `POST /api/modelling/mlflow/log` logs an already-completed job's results to MLflow
   after the fact (the "Log to MLflow" button), reusing the persisted feature contract
   so the logged model's signature matches what was actually trained. Haute never
@@ -378,9 +378,13 @@ training block and the requested validation blocks; every training date is stric
 earlier than its validation dates. Rolling windows, embargoes and relative period
 boundaries are not accepted.
 
-Random classification evaluation is stratified by target. Preflight rejects a plan
-when any requested test/validation partition or fold cannot contain every class and
-reports the class counts and required minimum. Regression remains unstratified. Group
+Random classification evaluation is stratified by target. The final test takes
+exactly the rows it asks for, at least one of every class, and leaves every class
+enough rows for what follows: one to train on, two for a validation holdout (one to
+validate, one to train on), or one per fold for cross-validation. A plan that is
+possible is never refused because the test took rows a later partition needed.
+Preflight rejects an impossible plan before fitting and reports the class counts, the
+rows each class needs and what for. Regression remains unstratified. Group
 evaluation canonicalises group keys, keeps each group in exactly one partition, and
 uses a deterministic seeded row-count-balancing assignment. It fails when any
 requested partition/fold would be empty.
@@ -390,7 +394,8 @@ A selection that depends on position (a random split or random evaluation plan, 
 most recent rows' share of a temporal holdout, the SHAP and partial-dependence
 samples) is taken over the rows' canonical order, not the order the pipeline
 delivered them in. The canonical order sorts the rows by the identity columns
-(`id_columns`), then by every other column in the frame's order, ascending with
+(`id_columns`, then a group or temporal evaluation's key), then by every other column
+in the frame's order, ascending with
 nulls last; text and categorical values sort by their characters and an Enum by its
 declared levels. Rows equal in every column keep their arrival order, and no
 selection can tell them apart. The order is built one column at a time, most
@@ -412,9 +417,12 @@ whose order is None, can sample different rows.
 
 After null-target filtering, planning writes and strictly reloads one canonical
 digest-linked `{model}.evaluation-plan.json` for the exact prepared parquet. The artifact
-contains the source digest, exact source positions, development/final-test
-membership, ordered validation-fit train/validation memberships, canonical strategy
-configuration, row counts, and bounded group/date summaries.
+contains the source digest, canonical strategy configuration, row counts, bounded
+group/date summaries, and the exact memberships held compactly (plan schema version 2):
+one label per source row, `T` for the final test or the label of the development group
+the row belongs to (the rows every validation fit treats alike: a fold, a temporal block,
+a holdout's validation or training rows), and for each ordered validation fit the groups
+it trains on and validates on. A two-million-row five-fold plan is about 2 MB.
 
 Planning assigns the final test first. Every validation fit is then derived solely
 from development positions. Single validation has one selection fit; K-fold
@@ -502,7 +510,8 @@ evaluation/tuning artifacts.
 
 Live tuning progress is monotonic over planning, trial/fold fits, final fit and
 publication and exposes phase, one-based trial/fold indices and counts,
-completed/total fits, and best objective so far. Every trial fit draws its own live
+completed/total fits, and best objective so far. Polling and cancellation both answer with the
+progress the job last recorded, so a cancelled or failed tuning run still shows how far it got. Every trial fit draws its own live
 loss curve, but only the final fit contributes model loss history. Live training and exported scripts use the same config builder and
 produce equivalent evaluation plans, fit bounds and result artifacts.
 
@@ -745,17 +754,6 @@ browser without a server or JS bundle.
 
 ## Failure model
 
-> NOTE: Status routes currently drop recorded tuning progress fields; regression
-> signatures and several diagnostic labels also disagree with their outputs.
-> [MOD-R08](../roadmap/modelling.md#mod-r08--training-status-carries-the-progress-the-worker-records),
-> [MOD-R09](../roadmap/modelling.md#mod-r09--output-signatures-describe-predictions) and
-> [MOD-R05](../roadmap/modelling.md#mod-r05--diagnostics-measured-as-the-fit-was) track these corrections.
-
-> NOTE: Stratified test allocation can consume the class members needed for later
-> validation, rejecting an otherwise feasible evaluation plan. The reserve and
-> allocation corrections are tracked in
-> [MOD-R07](../roadmap/modelling.md#mod-r07--stratified-allocation-reserves-every-later-partition).
-
 - Configuration errors (no target, unknown algorithm, incomplete training objective,
   invalid GLM family/link combination) are rejected before any pipeline execution or
   job record is created, as HTTP 400 with a message naming the exact missing/invalid
@@ -884,10 +882,11 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   invalid validation/test objects fail during cheap config validation before a job is created.
 - Evaluation planning rejects group leakage, temporal ties split across partitions, and invalid
   temporal ordering before persistence. The strict plan loader rejects unknown/missing fields,
-  source mismatches, duplicate/out-of-range or non-canonical positions, overlap, empty
-  requested partitions, count/summary disagreement, non-partitioning ordinary CV, and a
-  non-expanding temporal CV sequence; training also compares the reloaded plan with the
-  generated plan before fitting.
+  an earlier plan schema, source mismatches, a membership string that is not one known label
+  per row, a fit naming an unknown, repeated or shared group, a labelling that is not the
+  plan's canonical one, empty requested partitions, count/summary disagreement,
+  non-partitioning ordinary CV, and a non-expanding temporal CV sequence; training also
+  compares the reloaded plan with the generated plan before fitting.
 - Search-space validation for tuning rejects orchestration-owned keys, including objectives/losses,
   device/resource selection, callbacks, write directories, random seed, and `iterations`; the fixed
   `iterations` value is the upper ceiling.
@@ -1047,19 +1046,22 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   an XGBoost GPU job is refused when `estimate_xgboost_gpu_vram_bytes` exceeds free VRAM.
   LightGBM's wheels have no GPU or CUDA learner on Windows and only OpenCL on Linux (no OpenCL
   device under WSL), so LightGBM, like EBM and t-boost, trains on the CPU only.
-- **Model identity.** A version-4 feature contract carries an optional model identity:
+- **Model identity.** A version-5 feature contract carries an optional model identity:
   algorithm, Haute loss or GLM family, link, variance power, class labels, native feature names,
   and exact engine and Haute versions, all inside the hashed payload. Training always writes
   it; a contract supplied for a generic MLflow model may omit it. An earlier contract version
   fails to load with a retrain message.
-- **No level lists.** A version-4 contract records no category values: the
+- **No level lists.** A version-5 contract records no category values: the
   `categorical_levels` field earlier contracts carried is gone, so a contract stays small
   whatever a feature's cardinality, and contracts written by an earlier Haute fail to load
   and are regenerated by retraining.
-- **Offset declaration.** A version-4 contract records how its offset enters the raw score
+- **Offset declaration.** A version-5 contract records how its offset enters the raw score
   (`offset_link`: `log` or `identity`) beside the offset column, so a contract can declare the
-  baseline of a model whose file does not, such as a CatBoost model trained outside Haute.
-  Training writes the link whenever it writes an offset column. The shared MLflow pyfunc and Model Score check a loaded model
+  baseline of a model whose file does not, such as a CatBoost model trained outside Haute,
+  and the dtype the offset was trained with (`offset_type`), which a logged model's signature
+  declares: an integer exposure is signed `long`. Training writes both whenever it writes an
+  offset column, inside the hashed payload; a version-4 contract, which had no offset dtype,
+  fails to load with the retrain message. The shared MLflow pyfunc and Model Score check a loaded model
   against the identity (its model type, and CatBoost's recorded loss) and fail on a mismatch.
   Only the schema fields are compared against live data.
 

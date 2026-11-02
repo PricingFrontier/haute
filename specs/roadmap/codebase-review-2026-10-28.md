@@ -71,7 +71,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P1 | Cancellation of A finishes after B starts; A's reply retires B or publishes A's result under B's calculation identity. | [FSH-R11](frontend-shared.md#fsh-r11--cancellation-replies-belong-to-one-job) | Two pivot hook/store probes. Training has the same source pattern but was not separately executed. |
 | P1 | Inference for `first.json` returns after the user selected `second.json` and added a table; old path/tables are written back. | [FNED-R06](frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft) | Actual API Input editor with delayed inference response. |
 | P1 | Auto-layout finishes after a code edit and restores the old code from its node snapshot. | [FGC-R05](frontend-graph-canvas.md#fgc-r05--auto-layout-cannot-overwrite-edits) | Actual node-handler hook with delayed layout. Node addition/deletion and document-switch variants are source-supported. |
-| P2 | Stratified test allocation consumes class members needed by later validation, refusing feasible plans. | [MOD-R07](modelling.md#mod-r07--stratified-allocation-reserves-every-later-partition) | Real evaluation planner; holdout and five-fold examples below. |
 
 ### Additional full-source findings
 
@@ -81,12 +80,9 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P3 | Delete with a selected node and unrelated selected edge leaves the edge. | [FGC-R07](frontend-graph-canvas.md#fgc-r07--delete-removes-the-complete-eligible-selection) | Actual keyboard/store witness; the remaining edge stays visible and can be deleted again. Undo behavior is an acceptance requirement, not an executed assertion after the failure. |
 | P1 | Pending submodel drill-in replaces a newly loaded root with the old child and mismatched navigation context. | [FGC-R06](frontend-graph-canvas.md#fgc-r06--pending-submodel-navigation-belongs-to-its-document) | Actual navigation hook and stores, delayed layout. A subsequent destructive Save was not executed. |
 | P1 | Failed solve B restamps retained success A with B's identity, making old numbers appear current under a new objective. | [FSH-R12](frontend-shared.md#fsh-r12--failed-solves-cannot-relabel-retained-successful-results) | Actual store/hash/staleness helpers; preview label source checked. Publication already refuses the error state. |
-| P2 | Integer regression target yields a declared long MLflow output although the native pyfunc predicts floats. | [MOD-R09](modelling.md#mod-r09--output-signatures-describe-predictions) | Real small CatBoost fit and generated signature; no remote registry enforcement failure claimed. |
 | P2 | Haute classifier pyfunc's label/probability table is flattened to 40 values for 20 input rows. | [MSC-11](model-scoring.md#msc-11--pyfunc-classification-outputs-have-an-explicit-scoring-shape) | Real saved/loaded CatBoost pyfunc, feature contract and scoring adapter. Explicit pyfunc selection is affected; automatic native selection may avoid it. |
-| P3 | Model card loses its name to a metric, importance method labels disagree with families, and integer PDP labels do not match scored values. | [MOD-R05](modelling.md#mod-r05--diagnostics-measured-as-the-fit-was), extended | Real card generation and model diagnostic calculations; separate from the signature's P2 contract impact. |
 | P3 | Relationships target `__w=[10,20]` is overwritten by internal weight alias: means become `[1,1]`, strength 0. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual Parquet, data-point resolver and relationship service; ordinary-name equivalent requires means `[10,20]`, strength 1. |
 | P3 | Copied Explore node B receives cached result.node_id A for the same producer/card. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual pivot service/cache. Numbers are correct; browser stores them under B, so no numerical cross-node corruption claim. |
-| P2 | Training status discards eight recorded tuning progress fields. | [MOD-R08](modelling.md#mod-r08--training-status-carries-the-progress-the-worker-records) | Real JobStore and async status route. Cancel response has the same omission by source inspection. |
 | P2 | Shared-flight operation TimeoutError is mistaken for a polling timeout; completed work spins until cancellation. | [ROAD-WORKER-09](background-jobs-api.md#road-worker-09--completed-operation-timeouts-are-terminal-failures) | Real SharedFlights and LatestWinsQueue with controlled failure/cancellation. |
 | P2 | Returning from a failed directory to a cached parent leaves the error hiding the files. | [FNED-R02](frontend-node-editors.md#fned-r02--drafts-in-step-with-the-document-errors-with-their-detail), extended | Actual FileBrowser and settings cache, list transport substituted. |
 | P2 | Use detected schema applies A's completed schema into B while B loads. | [FNED-R06](frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft), extended | Actual DataInputEditor/hooks, API transport substituted. |
@@ -122,18 +118,6 @@ Decisive sites: `PipelineApplicationService._prepare_apply`, `_commit` and
 in `src/haute/_workbench_app.py`; `handle_app_serve` in `src/haute/cli/_app.py`.
 The save service already has a conflict precondition, and
 `LocalTrustedHostMiddleware` already implements the local Host boundary.
-
-### Evaluation
-
-The evaluation witnesses use canonical row order `0..99` and seed 42:
-
-| Source classes | Requested plan | Actual refusal | Feasible allocation |
-|---|---|---|---|
-| 97 negative / 3 positive | Test 50%; single validation 10% | Development has only one positive; minimum two required. | Test: 49 negative + 1 positive; validation: 9 negative + 1 positive; training keeps the last positive. |
-| 94 negative / 6 positive | Test 50%; five-fold validation | Development has three positives; minimum five required. | Test: 49 negative + 1 positive; development: 45 negative + 5 positive, enough for every fold. |
-
-These assert allocation behaviour without fitting a model. The defect is in the
-reserve calculation and initial allocation, not an absence of enough source rows.
 
 ### Frontend races
 
@@ -237,7 +221,6 @@ adds a finding group or changes the 42-group count.
 | sandbox project globals | Duplicate **PCFG-R04**. |
 | Assistant bounds, blocking tools, factual context, tool hygiene and provider handling | Duplicates **ASSIST-55**, **ASSIST-57**, **ASSIST-58**, **ASSIST-59**, **ASSIST-54** respectively. The recipe-consolidation note names no additional behavior. |
 | CLI/init/deploy existing gaps | Duplicates **DEP-R11** for impact alignment, **DEP-R12A** for build ownership, **DEP-R09** for dependency closure, and **CLI-R01**, **CLI-R04**, **CLI-R06** for init overwrite, TOML mutation and hook behavior. The scratch shorthand DEP-R12 predates its split; generic CLI errors/eager reads name no additional concrete case. |
-| Model diagnostic weights | Duplicate **MOD-R05**. |
 | Hosted sign-in headers | Duplicate **WB-25**. |
 | Asynchronous assistant tool blocking | Duplicate **ASSIST-57**. |
 
@@ -258,12 +241,9 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | API Input / Data Input schema identity | **FNED-R06**. |
 | cached file browser error | **FNED-R02**. |
 | cached pivot response consumer node identity | **EDA-R01**; numbers remain correct as recorded in the accepted report. |
-| tuning status fields | **MOD-R08**. |
 | edge ID collisions | **NAME-10**. |
 | failed new solve identity | **FSH-R12**. |
 | pyfunc classifier output shape | **MSC-11**. |
-| predicted output signature dtype | **MOD-R09** after requested split; formerly bundled MOD-R05. |
-| “PDP integer grids … pending contract test” | **MOD-R05**. The copied note belongs to `modelling/_metrics.py::compute_pdp`, not `_gpu.py` or `_shap.py`; it is not a separate unresolved GPU contract concern. |
 | completed TimeoutError retry loop | **ROAD-WORKER-09** after requested split; formerly bundled ROAD-WORKER-07. |
 
 The training-import note was attached to a batch including `cli/_app.py`, but its
@@ -303,8 +283,7 @@ probability assertions and a concrete P2 preview fix independent of reuse migrat
 The latter has since been delivered. This was same-family review, not cross-family validation.
 
 The subsequent **cross-family review by Claude** checked the decisive code for all
-42 finding groups and reported no false positives; it did not check MOD-R05's integer
-PDP-label item. It reproduced MOD-R07, the parser half of NAME-10 and three
+42 finding groups and reported no false positives. It reproduced the parser half of NAME-10 and four
 findings since delivered, and supplied the hosted evidence for the core-only smoke finding, since delivered. This documentation
 follow-up incorporates its coverage qualifications, candidate dispositions, package
 splits, priorities, ownership, ordering and link corrections. Neither review approval

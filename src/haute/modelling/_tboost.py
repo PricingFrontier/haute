@@ -31,7 +31,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import polars as pl
@@ -42,6 +42,8 @@ from haute.modelling._algorithm_base import (
     Contributions,
     FitResult,
     IterationCallback,
+    NativeModel,
+    inverse_link,
 )
 from haute.modelling._native_encoding import fit_categorical_levels
 from haute.modelling._shap import require_feature_order
@@ -61,14 +63,6 @@ _STOPPING_REASONS = {
 }
 _MISSING_LEVEL = "__t_boost_missing__"
 _MISSING_LABEL = "Missing"
-
-
-def _inverse_link(link: str, margin: np.ndarray) -> np.ndarray:
-    if link == "log":
-        return np.asarray(np.exp(margin))
-    if link == "logit":
-        return np.asarray(1.0 / (1.0 + np.exp(-margin)))
-    return margin
 
 
 @contextmanager
@@ -168,31 +162,18 @@ def _report_factored(effect: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@dataclass
-class TBoostModel:
+@dataclass(kw_only=True)
+class TBoostModel(NativeModel):
     """A fitted t-boost estimator plus the record every prediction path needs."""
 
+    family: ClassVar[str] = "t-boost"
+
     estimator: Any
-    features: list[str]
-    categorical_levels: dict[str, list[str | None]]
-    task: str
-    link: str
-    offset_column: str | None = None
-    offset_link: str | None = None
-    class_labels: tuple[Any, Any] | None = None
     threads: int | None = field(default=None, compare=False)
     #: The table report on the fit's own rows (absent on a loaded model).
     fit_tables: dict[str, Any] | None = field(default=None, compare=False)
 
     # -- ScoringModel-facing surface ------------------------------------
-    @property
-    def feature_names_(self) -> list[str]:
-        return list(self.features)
-
-    @property
-    def cat_feature_names(self) -> frozenset[str]:
-        return frozenset(self.categorical_levels)
-
     def prepared(self, frame: pl.DataFrame) -> pl.DataFrame:
         """The features in contract order: categoricals as strings, the rest Float64.
 
@@ -208,20 +189,6 @@ class TBoostModel:
                 else series.cast(pl.Float64)
             )
         return pl.DataFrame(columns)
-
-    def baseline(self, frame: pl.DataFrame) -> np.ndarray | None:
-        """The transformed offset each row's margin starts from.
-
-        Under a log link the offset is an exposure and enters as its ``log``;
-        under the identity link it is added verbatim.
-        """
-        if self.offset_column is None:
-            return None
-        from haute.modelling._algorithms import _extract_offset_baseline
-
-        return _extract_offset_baseline(
-            frame, self.offset_column, link=str(self.offset_link), context="t-boost"
-        )
 
     def _raw(self, prepared: pl.DataFrame) -> np.ndarray:
         with _float32_features_accepted():
@@ -239,24 +206,7 @@ class TBoostModel:
 
     def predict_response(self, frame: pl.DataFrame) -> np.ndarray:
         """Response-scale predictions; the positive-class probability for classifiers."""
-        return np.asarray(_inverse_link(self.link, self.predict_margin(frame)), dtype=np.float64)
-
-    def predict(self, frame: pl.DataFrame) -> np.ndarray:
-        """Served predictions: responses, or original labels for classifiers."""
-        response = self.predict_response(frame)
-        if self.task != "classification":
-            return response
-        from haute._mlflow_io import binary_labels
-
-        if self.class_labels is None:
-            raise HauteValidationError("t-boost classifier has no recorded class labels")
-        return binary_labels(response, self.class_labels)
-
-    def predict_proba(self, frame: pl.DataFrame) -> np.ndarray:
-        if self.task != "classification":
-            raise HauteValidationError("t-boost regression models have no class probabilities")
-        positive = self.predict_response(frame)
-        return np.column_stack([1.0 - positive, positive])
+        return np.asarray(inverse_link(self.link, self.predict_margin(frame)), dtype=np.float64)
 
     def _contribution_matrix(self, frame: pl.DataFrame, *, split: bool) -> Any:
         with _float32_features_accepted():
@@ -326,17 +276,6 @@ class TBoostModel:
         return str(self.estimator.objective)
 
     # -- persistence ------------------------------------------------------
-    def record(self) -> dict[str, Any]:
-        return {
-            "features": list(self.features),
-            "categorical_levels": {k: list(v) for k, v in self.categorical_levels.items()},
-            "task": self.task,
-            "link": self.link,
-            "offset_column": self.offset_column,
-            "offset_link": self.offset_link,
-            "class_labels": list(self.class_labels) if self.class_labels is not None else None,
-        }
-
     def save(self, path: Path) -> None:
         """t-boost's JSON model document, Haute's record in its ``metadata`` slot."""
         self.estimator.metadata = {RECORD_KEY: self.record()}
@@ -371,23 +310,21 @@ class TBoostModel:
             )
         if raw_record is None:
             return cls._native_record(text, document, name)
-        record = _validated_record(raw_record, name)
+        record = cls.record_fields(raw_record, name)
+        offset_link, link = record["offset_link"], record["link"]
+        if record["offset_column"] is not None and (link == "logit" or offset_link != link):
+            raise ConfigError(
+                f"{name}: the t-boost model's Haute record has a {offset_link!r} offset under "
+                f"the {link} link; retrain it in Haute.",
+                model_path=name,
+            )
         if _ESTIMATOR_TASKS[estimator_name] != record["task"]:
             raise ConfigError(
                 f"{name} holds a {estimator_name} but its record describes a {record['task']} "
                 "model; retrain it in Haute."
             )
         estimator = _native_estimator(text, document, name)
-        model = cls(
-            estimator=estimator,
-            features=record["features"],
-            categorical_levels=record["categorical_levels"],
-            task=record["task"],
-            link=record["link"],
-            offset_column=record["offset_column"],
-            offset_link=record["offset_link"],
-            class_labels=record["class_labels"],
-        )
+        model = cls(estimator=estimator, **record)
         # t-boost omits ``cat_indices`` for a model with no categorical feature.
         model.validate_native(document.get("cat_indices", []), name)
         return model
@@ -482,70 +419,6 @@ def _native_estimator(text: str, document: dict[str, Any], name: str) -> Any:
             f"t-boost {t_boost.__version__} cannot read {name}: {exc}. Install the "
             "t-boost version it was trained with, or retrain it."
         ) from exc
-
-
-def _validated_record(record: dict[str, Any], name: str) -> dict[str, Any]:
-    """The ``haute`` record with every field checked, or ``ConfigError`` naming the first fault."""
-
-    def fail(problem: str) -> ConfigError:
-        return ConfigError(f"{name}: the t-boost model's Haute record {problem}; retrain it.")
-
-    expected_keys = {
-        "features",
-        "categorical_levels",
-        "task",
-        "link",
-        "offset_column",
-        "offset_link",
-        "class_labels",
-    }
-    if set(record) != expected_keys:
-        raise fail(f"has keys {sorted(record)}, not {sorted(expected_keys)}")
-    features = record["features"]
-    if (
-        not isinstance(features, list)
-        or not features
-        or not all(isinstance(f, str) and f for f in features)
-        or len(set(features)) != len(features)
-    ):
-        raise fail("has no valid feature list")
-    levels = record["categorical_levels"]
-    if not isinstance(levels, dict) or not set(levels) <= set(features):
-        raise fail("names categorical levels for unknown features")
-    for feature, values in levels.items():
-        if not isinstance(values, list) or not all(v is None or isinstance(v, str) for v in values):
-            raise fail(f"has invalid levels for {feature!r}")
-    task, link = record["task"], record["link"]
-    if task not in {"regression", "classification"}:
-        raise fail(f"has an unknown task {task!r}")
-    if link not in {"identity", "log", "logit"} or (link == "logit") != (task == "classification"):
-        raise fail(f"has link {link!r} for a {task} model")
-    offset_column, offset_link = record["offset_column"], record["offset_link"]
-    if offset_column is None:
-        if offset_link is not None:
-            raise fail("has an offset link without an offset column")
-    elif not isinstance(offset_column, str) or not offset_column:
-        raise fail("has an invalid offset column")
-    elif link == "logit" or offset_link != link:
-        raise fail(f"has a {offset_link!r} offset under the {link} link")
-    labels = record["class_labels"]
-    if task == "classification":
-        if not isinstance(labels, list) or len(labels) != 2:
-            raise fail("has no (negative, positive) class labels")
-        class_labels: tuple[Any, Any] | None = (labels[0], labels[1])
-    elif labels is not None:
-        raise fail("has class labels for a regression model")
-    else:
-        class_labels = None
-    return {
-        "features": list(features),
-        "categorical_levels": {feature: list(values) for feature, values in levels.items()},
-        "task": task,
-        "link": link,
-        "offset_column": offset_column,
-        "offset_link": offset_link,
-        "class_labels": class_labels,
-    }
 
 
 def _rows_kwargs(

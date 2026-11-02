@@ -310,7 +310,7 @@ def test_binary_string_labels_score_original_labels_from_the_probability(tmp_pat
 
 def test_a_regression_model_refuses_to_score_as_a_classifier(tmp_path: Path) -> None:
     _job, result = train(tmp_path, target="severity", loss="RMSE")
-    rewrite_record(result.model_path, task="classification")
+    rewrite_record(result.model_path, task="classification", link="logit", class_labels=[0, 1])
     with pytest.raises(
         ConfigError, match="Regressor but its record describes a classification model"
     ):

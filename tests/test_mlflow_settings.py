@@ -216,6 +216,33 @@ class TestLoadSaveSettings:
             )
         assert "hunter2xyz" not in str(excinfo.value)
 
+    @pytest.mark.parametrize("folder", ["", "team-runs"])
+    def test_save_refuses_a_malformed_haute_toml_and_leaves_it_alone(
+        self, project_root: Path, folder: str
+    ) -> None:
+        toml_path = project_root / "haute.toml"
+        toml_path.write_text("[project\nname = 'main'\n", encoding="utf-8")
+        with pytest.raises(MlflowConfigError, match="not valid TOML"):
+            save_mlflow_settings(MlflowSettings(folder=folder), project_root)
+        assert toml_path.read_text(encoding="utf-8") == "[project\nname = 'main'\n"
+
+    def test_a_save_that_cannot_be_published_leaves_haute_toml_whole(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        toml_path = project_root / "haute.toml"
+        before = toml_path.read_text(encoding="utf-8")
+
+        def refuse_replace(self: Path, target: Path) -> Path:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(Path, "replace", refuse_replace)
+        with pytest.raises(OSError, match="disk full"):
+            save_mlflow_settings(MlflowSettings(folder="team-runs"), project_root)
+        assert toml_path.read_text(encoding="utf-8") == before
+        assert [path.name for path in project_root.iterdir() if path.name.startswith("haute.")] == [
+            "haute.toml"
+        ]
+
     def test_save_refuses_symlinked_haute_toml_escaping_the_project(self, tmp_path: Path) -> None:
         outside = tmp_path / "outside.toml"
         outside.write_text("[project]\nname='x'\n", encoding="utf-8")

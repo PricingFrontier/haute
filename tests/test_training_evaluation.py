@@ -290,11 +290,13 @@ def test_fixed_catboost_refit_uses_validation_best_iterations(
     )
     passed_params: list[tuple[int | None, dict[str, Any]]] = []
     logged_params: list[dict[str, Any]] = []
+    # The real scripted logger runs; what it hands the candidate run is recorded.
+    monkeypatch.setattr("haute.modelling._candidate_run.capture_provenance", lambda **_: None)
     monkeypatch.setattr(
-        job,
-        "_log_to_mlflow",
-        lambda _result, **kwargs: logged_params.append(dict(kwargs["final_params"])),
+        "haute.modelling._candidate_run.build_candidate_run",
+        lambda **kwargs: logged_params.append(dict(kwargs["final_params"])),
     )
+    monkeypatch.setattr("haute.modelling._mlflow_log.log_experiment", lambda **_: None)
 
     class FakeJob:
         def __init__(self, fit_index: int | None, plan: EvaluationPlan) -> None:
@@ -365,11 +367,13 @@ def test_holdout_can_publish_validation_fit_without_refit(
     )
     calls: list[tuple[int | None, str]] = []
     logged_params: list[dict[str, Any]] = []
+    # The real scripted logger runs; what it hands the candidate run is recorded.
+    monkeypatch.setattr("haute.modelling._candidate_run.capture_provenance", lambda **_: None)
     monkeypatch.setattr(
-        job,
-        "_log_to_mlflow",
-        lambda _result, **kwargs: logged_params.append(dict(kwargs["final_params"])),
+        "haute.modelling._candidate_run.build_candidate_run",
+        lambda **kwargs: logged_params.append(dict(kwargs["final_params"])),
     )
+    monkeypatch.setattr("haute.modelling._mlflow_log.log_experiment", lambda **_: None)
 
     class FakeJob:
         def __init__(self, fit_index: int | None, plan: EvaluationPlan) -> None:
@@ -601,7 +605,6 @@ def test_a_fits_held_back_last_round_is_sent_when_it_finishes() -> None:
 def test_an_early_stopped_fit_ends_its_live_curve_where_it_stopped(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
     monkeypatch.setenv("HAUTE_TRAINING_THREADS", "1")
     job = TrainingJob(
         name="early",
@@ -632,7 +635,6 @@ def test_an_early_stopped_fit_ends_its_live_curve_where_it_stopped(
 def test_real_selection_fits_stream_their_rounds_without_mixing_final_loss_history(
     tmp_path: Path, validation: dict[str, object], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
     monkeypatch.setenv("HAUTE_TRAINING_THREADS", "1")
     # Unpaced, so every round of every fit reaches the callbacks.
     monkeypatch.setattr(_training_job, "_LIVE_ROUND_SECONDS", 0.0)

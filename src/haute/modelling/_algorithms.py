@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -21,25 +21,15 @@ from haute.modelling._algorithm_base import BaseAlgorithm, FitResult, IterationC
 
 logger = get_logger(component="algorithms")
 
-# Explicit override for the memory-log destination; tests patch this.  When
-# None, the destination is resolved per write by _mem_log_path() so that
-# HAUTE_MEM_LOG (or a cwd change) takes effect without a re-import.
-_MEM_LOG: Path | None = None
 
-_DEFAULT_MEM_LOG = Path(".haute_cache") / "training_mem.log"
+def _mem_log_path() -> Path | None:
+    """The memory log's destination: ``HAUTE_MEM_LOG``, read at write time, or none.
 
-
-def _mem_log_path() -> Path:
-    """Resolve the memory-log destination at write time.
-
-    Precedence: the ``_MEM_LOG`` override if set, else the ``HAUTE_MEM_LOG``
-    environment variable, else ``.haute_cache/training_mem.log`` under the
-    project root (haute's runtime cwd).
+    The log is opt-in debugging evidence; without the variable a checkpoint
+    measures and writes nothing.
     """
-    if _MEM_LOG is not None:
-        return _MEM_LOG
     env = os.environ.get("HAUTE_MEM_LOG")
-    return Path(env) if env else _DEFAULT_MEM_LOG
+    return Path(env) if env else None
 
 
 def _get_rss_mb() -> float:
@@ -59,26 +49,22 @@ def _get_available_mb() -> float:
 
 
 def _mem_checkpoint(label: str) -> None:
-    """Write a memory checkpoint line to the persistent log.
+    """Append a memory checkpoint line to the opt-in ``HAUTE_MEM_LOG``.
 
-    Cross-platform: uses ``/proc`` on Linux, ``resource`` on macOS,
-    and Win32 APIs on Windows.  Flushes immediately so the line
-    survives a crash.
+    A no-op unless the variable names a file. Each line is flushed as written,
+    so it survives the process being killed for memory; runs append, so an
+    earlier failed run's lines are kept.
     """
+    log_path = _mem_log_path()
+    if log_path is None:
+        return
     rss_mb = _get_rss_mb()
     avail_mb = _get_available_mb()
-
     ts = time.strftime("%H:%M:%S")
     entry = f"[{ts}] {label:<45} RSS={rss_mb:>9.1f} MB   Avail={avail_mb:>9.1f} MB\n"
-    log_path = _mem_log_path()
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(entry)
-        f.flush()
-        try:
-            os.fsync(f.fileno())
-        except OSError:
-            pass  # exotic Windows builds may not support fsync on all handles
 
 
 # CatBoost model-metadata keys recording the offset/baseline column a model
@@ -197,6 +183,26 @@ class _CatBoostProgressCallback:
         if self._on_iteration:
             self._on_iteration(it, self._total, metrics, history_entry)
         return True  # True = continue training
+
+
+def _loss_history_from_evals(
+    evals: Mapping[str, Mapping[str, Sequence[float]]],
+) -> list[dict[str, float]]:
+    """A CatBoost ``evals_result_`` as the loss history the CPU callback records.
+
+    Rows are numbered from one, as the callback (and every other family) numbers
+    completed rounds; ``learn`` metrics are ``train_`` keys and every other dataset's
+    ``eval_`` keys.
+    """
+    history: list[dict[str, float]] = []
+    for dataset_name, metrics in evals.items():
+        prefix = "train" if dataset_name == "learn" else "eval"
+        for metric_name, values in metrics.items():
+            for index, value in enumerate(values):
+                while len(history) <= index:
+                    history.append({"iteration": float(len(history) + 1)})
+                history[index][f"{prefix}_{metric_name}"] = value
+    return history
 
 
 # User-friendly loss name → CatBoost loss_function string.
@@ -627,21 +633,10 @@ class CatBoostAlgorithm(BaseAlgorithm):
         if eval_pool is not None and hasattr(model, "best_iteration_"):
             best_iteration = model.best_iteration_
 
-        # On GPU, reconstruct loss history from the model's eval results
-        if is_gpu and eval_pool is not None and hasattr(model, "evals_result_"):
-            evals = model.evals_result_
-            if "validation" in evals:
-                for metric_name, values in evals["validation"].items():
-                    for i, v in enumerate(values):
-                        if i >= len(loss_history):
-                            loss_history.append({"iteration": i})
-                        loss_history[i][f"eval_{metric_name}"] = v
-            if "learn" in evals:
-                for metric_name, values in evals["learn"].items():
-                    for i, v in enumerate(values):
-                        if i >= len(loss_history):
-                            loss_history.append({"iteration": i})
-                        loss_history[i][f"train_{metric_name}"] = v
+        # GPU fits run no callback: the history comes from the model's recorded
+        # metrics, with or without a validation set.
+        if is_gpu:
+            loss_history = _loss_history_from_evals(model.evals_result_)
 
         rounds_fitted = getattr(model, "tree_count_", None)
         rounds_fitted = rounds_fitted if isinstance(rounds_fitted, int) else None

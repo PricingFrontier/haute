@@ -191,6 +191,38 @@ class TestModelCardAllSections:
         assert "Final Test Metrics" in html
 
 
+def test_the_card_keeps_the_model_name_beside_selection_metrics() -> None:
+    kwargs = _minimal_kwargs()
+    kwargs["diagnostics"] = ModelDiagnostics(
+        selection_metrics={"rmse": {"mean": 0.5, "stddev": 0.1, "min": 0.4, "max": 0.6}}
+    )
+    html = generate_model_card(**kwargs)
+    assert "<title>test-model — Model Card</title>" in html
+    assert "<h2>Validation Selection Metrics</h2>" in html
+
+
+@pytest.mark.parametrize(
+    ("algorithm", "method"),
+    [
+        ("catboost", "PredictionValuesChange"),
+        ("glm", "Absolute coefficient"),
+        ("xgboost", "Total gain"),
+        ("lightgbm", "Total gain"),
+        ("ebm", "Mean absolute term score"),
+        ("tboost", "Variance share"),
+    ],
+)
+def test_the_importance_section_names_the_familys_own_measure(algorithm: str, method: str) -> None:
+    kwargs = _minimal_kwargs()
+    kwargs["metadata"] = ModelCardMetadata(algorithm=algorithm, task="regression")
+    kwargs["diagnostics"] = ModelDiagnostics(
+        feature_importance=[{"feature": "x1", "importance": 0.7}]
+    )
+    html = generate_model_card(**kwargs)
+    assert f"<h2>Feature Importance ({method})</h2>" in html
+    assert "PredictionValuesChange" not in html or algorithm == "catboost"
+
+
 class TestModelCardEvaluationAndDiagnostics:
     def test_development_rows_label(self):
         html = generate_model_card(**_minimal_kwargs())

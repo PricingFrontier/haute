@@ -244,21 +244,27 @@ def save_mlflow_settings(settings: MlflowSettings, project_root: Path | None = N
     bare save of an env-derived folder keeps it.
     """
     import tomlkit
+    from tomlkit.exceptions import TOMLKitError
+
+    from haute._file_ops import atomic_write_text
 
     effective = _effective_settings(settings, project_root)
     toml_path = _toml_path(project_root)
     write_target = _project_write_target(toml_path, project_root)
-    document = (
-        tomlkit.parse(toml_path.read_text(encoding="utf-8"))
-        if toml_path.exists()
-        else tomlkit.document()
-    )
+    try:
+        document = (
+            tomlkit.parse(toml_path.read_text(encoding="utf-8"))
+            if toml_path.exists()
+            else tomlkit.document()
+        )
+    except TOMLKitError as exc:
+        raise MlflowConfigError(f"haute.toml is not valid TOML: {exc}") from exc
     table = tomlkit.table()
     if effective.tracking_uri:
         table["tracking_uri"] = effective.tracking_uri
     table["folder"] = effective.folder
     document["mlflow"] = table
-    write_target.write_text(tomlkit.dumps(document), encoding="utf-8")
+    atomic_write_text(write_target, tomlkit.dumps(document))
 
 
 def _project_write_target(toml_path: Path, project_root: Path | None) -> Path:
