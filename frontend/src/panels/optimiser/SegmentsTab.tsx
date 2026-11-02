@@ -37,6 +37,7 @@ import {
   RelativityBars,
   type RelativityBar,
 } from "../RelativityBars"
+import { ViewSwitch } from "../ViewSwitch"
 import { DEPLOYED_FACTOR_DIFFERS_LABEL, formatScenarioValue, formatShare } from "./adjustments"
 import { formatVsNeutral } from "./ratebookFactorTables"
 import RequestFailureNotice from "./RequestFailureNotice"
@@ -212,19 +213,7 @@ function SegmentKeyPane({
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span id={weightById} style={{ color: "var(--text-secondary)" }}>Weight by</span>
-        <div role="group" aria-labelledby={weightById} className="flex flex-wrap gap-1">
-          {weightOptions(solvedResult).map((option) => (
-            <button
-              key={option.key}
-              type="button"
-              aria-pressed={option.key === weight}
-              onClick={() => setWeight(option.key)}
-              className="validation-control"
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
+        <ViewSwitch labelledBy={weightById} options={weightOptions(solvedResult)} value={weight} onChange={setWeight} />
       </div>
       {request.failure ? (
         <RequestFailureNotice

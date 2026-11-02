@@ -383,6 +383,18 @@ describe("Training configuration readiness", () => {
     expect(screen.getByText("Regularization")).toBeInTheDocument()
     expect(screen.queryByText("Target column")).toBeNull()
   })
+  it("shows each GLM conflict once, beside its setting", () => {
+    renderConfig({ activePane: "params", nodeId: "glm_conflicts", config: {
+      algorithm: "glm", family: "poisson", target: "loss_ratio",
+      terms: { age: { type: "bs" } }, regularization: "ridge", cv_folds: 5, cv_selection: "min",
+      robust_standard_errors: "HC1",
+    } })
+    const alerts = screen.getAllByRole("alert").map((alert) => alert.textContent)
+    expect(alerts).toEqual([
+      expect.stringMatching(/^Regularization cannot be combined with automatically smoothed splines \(age\)/),
+      expect.stringMatching(/^Robust standard errors cannot be combined with regularization/),
+    ])
+  })
   it("keeps the missing L1 ratio issue out of Parameters for older Elastic Net configs", () => {
     renderConfig({ activePane: "params", nodeId: "glm_params", config: { algorithm: "glm", family: "poisson", target: "loss_ratio", terms: { age: { type: "linear" } }, regularization: "elastic_net" } })
     expect(screen.getByRole("slider", { name: "L1 ratio" })).toBeInTheDocument()
@@ -1773,6 +1785,32 @@ describe("ModellingConfig", () => {
       const ramToast = toasts.find((t) => t.text.includes("Training estimate failed"))!
       expect(ramToast.type).toBe("warning")
       expect(ramToast.text).toContain("Network error")
+    })
+
+    it("shows a refusal coded as a failed evaluation preview in Split, whatever its words", async () => {
+      mockEstimateTrainingRam.mockRejectedValue(Object.assign(new Error("HTTP 422"), {
+        status: 422,
+        rawDetail: {
+          error_code: "evaluation_preview_failed",
+          message: "Evaluation preview cannot run in bounded mode: unsafe lazy plan",
+        },
+      }))
+      renderConfig({ activePane: "split" })
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Evaluation preview cannot run in bounded mode: unsafe lazy plan",
+      )
+    })
+
+    it("keeps an uncoded estimate failure out of Split", async () => {
+      mockEstimateTrainingRam.mockRejectedValue(Object.assign(new Error("HTTP 422"), {
+        status: 422,
+        detail: "Evaluation preview failed: written like one, but not coded as one",
+      }))
+      renderConfig({ activePane: "split" })
+      await waitFor(() => {
+        expect(useToastStore.getState().toasts.some((t) => t.text.includes("written like one"))).toBe(true)
+      })
+      expect(screen.queryByRole("alert")).toBeNull()
     })
 
     it("does not show inline warning when estimate succeeds", async () => {

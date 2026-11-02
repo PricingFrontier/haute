@@ -28,6 +28,7 @@ import { CHART_COLORS } from "../../theme/colors"
 import ChartFocusDetail from "../ChartFocusDetail"
 import HistogramChart, { type HistogramBar } from "../HistogramChart"
 import { ChartValuesTable, ResponsiveChart } from "../modelling/ChartScaffold"
+import { ViewSwitch } from "../ViewSwitch"
 import {
   DEPLOYED_FACTOR_DIFFERS_LABEL,
   DEPLOYED_FACTOR_DIFFERS_NOTE,
@@ -181,19 +182,7 @@ function AdjustmentsReport({
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span id={weightById} style={{ color: "var(--text-secondary)" }}>Weight by</span>
-        <div role="group" aria-labelledby={weightById} className="flex flex-wrap gap-1">
-          {report.weightings.map((candidate) => (
-            <button
-              key={candidate.key}
-              type="button"
-              aria-pressed={candidate.key === weighting.key}
-              onClick={() => setWeightKey(candidate.key)}
-              className="validation-control"
-            >
-              {candidate.label}
-            </button>
-          ))}
-        </div>
+        <ViewSwitch labelledBy={weightById} options={report.weightings} value={weighting.key} onChange={setWeightKey} />
       </div>
       {report.diagnostics_errors.length > 0 && (
         <ul className="m-0 list-none space-y-0.5 p-0 text-[12px]" style={{ color: "var(--text-muted)" }}>

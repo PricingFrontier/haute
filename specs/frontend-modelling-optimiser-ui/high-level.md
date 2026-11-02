@@ -16,16 +16,18 @@ results are supplied by API and result-store layers.
 ## Behaviour
 
 - Modelling config selects an algorithm, feature/target/evaluation/metric options and
-  algorithm-specific controls, including GLM factors, regularisation, dispersion
-  estimation and optional CatBoost tuning. Training submission
+  algorithm-specific controls, including GLM terms, regularisation and dispersion
+  estimation, and optional tuning for every other family, across the panes defined in
+  [Modelling config panes](#modelling-config-panes). Training submission
   records the returned job handle immediately, keeps an explicit Cancel control visible through
   preparation and fitting, and shows progress, estimates, failures and result actions. An
   insufficient-GPU estimate or terminal 507 asks the user to select CPU and retry (or reduce the
   workload); it never claims that CPU fallback happened automatically.
 - The modelling editor exposes monotonicity as the sole additional cross-algorithm
-  capability lever. It lists only selected numeric input features and writes `-1` or
-  `1` per feature, removing the key when the user selects zero. String/categorical,
-  Boolean, date/datetime, target, weight, and excluded columns are never offered.
+  capability lever. A tree family's selector is enabled only for included numeric input
+  features and writes `-1` or `1` per feature, removing the key when the user selects the
+  dash. String/categorical, Boolean, date/datetime and excluded features never take a
+  direction, and target, weight and other role columns are not listed as features.
 - Modelling preview exposes summary unconditionally as the fallback tab whenever a result
   exists, presents remaining tabs (coefficients/relativities, loss, lift, residuals,
   feature importance, AVE, PDP and SHAP curves) only when backed by non-empty result data, and resets
@@ -182,135 +184,173 @@ result contracts rather than silently charting incorrect values.
 
 ## Modelling config panes
 
-With a supported algorithm (`catboost` or `glm`) selected, the modelling node
-panel presents **Target**, **Features**, **Split**, **Train**, and **Export** panes. CatBoost also
-has a **Params** pane between Features and Split. Both algorithms use the
-same shared equal-width pane-tab strip the Explore editor uses, hosted by the node panel
-([frontend-node-editors](../frontend-node-editors/low-level.md#modelling-config-panes))
-and extended with the accessible active-training indicator by
+With a known algorithm selected, the modelling node panel presents the same six panes for every
+family: **Target**, **Features**, **Parameters**, **Split**, **Train** and **Export**, in the same
+shared equal-width pane-tab strip the Explore editor uses, hosted by the node panel
+([frontend-node-editors](../frontend-node-editors/low-level.md#modelling-config-panes)) and
+carrying the accessible tab indicators of
 [frontend-preview-explore](../frontend-preview-explore/low-level.md#modelling-config-panes).
-One `modellingPanesFor(algorithm)` list drives both the tabs and the pane bodies. The active pane
-is remembered per node in the UI store; a remembered pane the algorithm lacks (GLM Params) opens
-Target, where GLM regularization lives. Without an algorithm, the existing gateway
-renders alone. A non-empty unsupported algorithm renders an explicit inline diagnostic and no pane
-strip; it never falls through to CatBoost. Pane ownership:
+One `modellingPanesFor(algorithm)` list drives both the tabs and the pane bodies. Every family
+but the GLM shares one Target, Features and Parameters body (`usesSharedPanes`); the GLM has its
+own three. The active pane is remembered per node in the UI store, and Target opens when none is
+remembered. Without an algorithm, the existing gateway renders alone. A non-empty unsupported
+algorithm renders an explicit inline diagnostic and no pane strip; it never falls through to
+CatBoost. Pane ownership:
 
-- **Target** — target/weight/offset, a unified loss-function picker and variance power, metrics
-  (CatBoost); family/link/dispersion/intercept/metrics and regularization (GLM). GLM families and
-  links come from the table the backend validates against (RustyStats supports only identity,
-  log, and logit links), and the Tweedie variance power is bounded to 1 to 2. GLM's
-  regularization section is always visible: the selected type is indicated by its button without
-  a duplicate heading badge. Choosing a type writes cross-validation defaults (5 folds, minimum
-  deviance, seed 42), while the seed is hidden; penalty mode is Cross-validated or a Fixed alpha;
-  choosing Elastic Net stores an L1 ratio of 0.5 when absent and shows its slider immediately,
-  without explanatory copy or setup controls. Older Elastic Net configurations with no ratio
-  remain invalid until the slider is changed; inline messages explain why regularization cannot
-  combine with automatically smoothed splines or robust standard errors; and a Solver disclosure
-  holds maximum iterations, tolerance, and robust standard errors. Its read-only
-  algorithm context reads **Algorithm Rustystats**, while the stored algorithm remains `glm`.
+- **Target** — the selected algorithm as read-only context ("Algorithm: CatBoost"; the GLM's
+  reads **Algorithm Rustystats** while the stored algorithm remains `glm`), then **Target and
+  objective**, **Weight and offset** and **Metrics**. The gateway may set the algorithm only
+  while it is unset; after selection, neither this pane nor any other supported-node editor
+  action changes it. To configure another family, the user creates a separate modelling node,
+  preserving the original node and all of its settings.
+  A tree family has a searchable target picker and one **Objective** button per loss the family
+  supports, and no separate task selector: choosing a loss stores its regression or
+  classification task and the metrics the backend defaults to for that objective
+  (`effectiveMetrics`) in one update, and pressing the selected loss clears it. Tweedie reveals
+  a variance-power slider and number field bounded to the open interval 1 to 2; choosing it
+  with no stored power writes the 1.5 midpoint in the same update, and a saved power outside
+  the interval is flagged. A classification loss on a target that is not Boolean shows the
+  positive-class field (see [Model family capabilities](#model-family-capabilities)).
+  The GLM chooses a family, which resets the link to the family's canonical one and writes its
+  default metrics (so a Gamma GLM headlines Gamma deviance), then a link; families and links
+  come from the table the backend validates against (RustyStats supports only identity, log,
+  and logit links), and a saved family or link outside it is flagged. A Tweedie family needs a
+  variance power (1 to 2) and a Negative Binomial family a theta, each set explicitly or
+  estimated from the data; the GLM also has an **Intercept** checkbox.
   The info icon beside **Offset column (optional)** states the families' offset rules: a
   positive exposure multiplier under a log link (a log-link GLM, or a Poisson, Gamma or Tweedie
   loss), read as a full policy term when missing at scoring; added under any other link and
   required when scoring; and no offset with the Logloss loss on XGBoost, LightGBM, t-boost
-  and EBM. CatBoost has no separate task
-  selector: choosing a loss derives and stores its regression/classification task, every supported
-  loss remains visible, and metrics that are incompatible with the selected loss stay visible but
-  disabled. Both families' metric pickers read one table
+  and EBM. Both metric pickers read one table
   (`frontend/src/panels/modelling/metricOptions.ts`): each metric measures a regression or a
   classification, and Tweedie deviance, measured at the model's own variance power, is offered
-  only for a Tweedie loss or family. Choosing a loss or a GLM family writes the metrics the
-  backend defaults to for that objective (`effectiveMetrics`), so a Gamma GLM headlines Gamma
-  deviance. Selecting Tweedie directly reveals its variance-power slider; when no prior value is
-  stored, that selection writes the displayed 1.5 midpoint in the same update instead of showing
-  an intermediate required-value warning action. It also shows the selected algorithm as read-only
-  context. The gateway may set the algorithm only while it is unset; after selection, neither this
-  pane nor any other supported-node editor action changes it. To configure the other algorithm,
-  the user creates a separate modelling node, preserving the original node and all of its settings.
-- **Features** — CatBoost gets an always-expanded feature-card browser with a
-  case-insensitive name-substring search, upstream dtype labels, and the explicit
-  not-found treatment/removal for stored features that are no longer upstream columns, applied
-  only once the upstream columns are known (before then the saved feature count is shown
-  instead). Features are opt-in: every feature starts excluded on a new node, including a column
-  that appears upstream later, and including one writes it to `feature_columns`. Each eligible feature has one compact,
-  single-row bordered card: the name and dtype sit on the left, followed by the current-state
-  inclusion button and monotonicity selector on the right. The green **Include** or red
-  **Exclude** button reports its current state and toggles that state. These are compact,
-  content-width pills using the same soft-tint, accent-border and
-  accent-text treatment as the Data Input **Provider** selector; they do not stretch across the
-  card. **Include all** and **Exclude all** use the same compact green/red treatment and set every
-  eligible feature, including features hidden by the current search. Columns consumed as target, weight,
-  offset, or active evaluation/metadata roles are not presented as trainable features. Each card
-  places a three-option
-  monotonicity selector directly beside the inclusion button without a repeated visible label: a
-  red downward arrow (`-1`), yellow dash (no
-  stored constraint), and green upward arrow (`1`). Each choice uses the Provider-style compact
-  control, with its soft tinted surface and accent border identifying the selected direction. The
-  selector is enabled only for included numeric features. Excluding a feature is immediate and
-  reversible: it does not ask for confirmation or delete that feature's monotonic direction.
-  The stored direction remains visibly selected in the greyed, disabled control, does not apply while the
-  feature is excluded, and becomes active again when the feature is re-included. GLM's Features
+  only for a Tweedie loss or family. Every metric stays visible; one the selected objective
+  cannot report is disabled with the reason.
+- **Features** — a tree family's feature browser: the included and excluded counts, a
+  case-insensitive name search, **All**, **Included** and **Excluded** filters with their
+  counts, and **Include all** and **Exclude all**, which set every eligible feature, including
+  features the search or filter hides. Each eligible feature is one row: an inclusion checkbox,
+  the name, the upstream dtype label coloured by type, and a three-option monotonicity
+  selector without a repeated visible label: a red downward arrow (`-1`), a yellow dash (no
+  stored constraint) and a green upward arrow (`1`), each named for assistive technology and
+  pressed when selected. Features are opt-in: every checkbox starts unticked on a new node,
+  including for a column that appears upstream later, and ticking one writes it to
+  `feature_columns`. Columns consumed as target, weight, offset, or active evaluation/metadata
+  roles are not presented as trainable features. The selector is enabled only for included
+  numeric features. Unticking a feature is immediate and reversible: it asks for no
+  confirmation and keeps the feature's monotonic direction, which stays visibly selected in the
+  greyed, disabled control, does not apply while the feature is excluded, and becomes active
+  again when the feature is re-included. A stored feature that is no longer an upstream column
+  is listed as not found with a remove action, only once the upstream columns are known; before
+  then the saved feature count is stated instead. An EBM adds its pairwise-interaction control
+  (see [Model family capabilities](#model-family-capabilities)). GLM's Features
   pane is its term editor instead: a feature is in the model when it has a term, is read by an
   expression, or is an interaction factor. Fit menus follow the column's dtype class (continuous,
   integer, boolean, categorical; unsupported dtypes are hidden and counted), GLM monotonicity
   lives on each term, and terms that cannot be fitted (role, missing, or unsupported columns, and
   malformed entries) are listed with their reason and removal. Interaction cards show which main
   effects Include main effects adds, which fits each slot may use, and any conflict the backend
-  would refuse, on every card involved. The GLM pane never writes CatBoost's
+  would refuse, on every card involved. The GLM pane never writes the tree families'
   `feature_columns`, `monotone_constraints`, or `feature_weights`.
-- **Params** — immediately below the Hyperparameters heading, CatBoost shows a
-  Target-style **Parameter strategy** radio group with **Fixed parameters** and
-  **Tune parameters** choices. Exactly one strategy body is visible. Fixed parameters
-  shows only the algorithm-neutral **Parameters JSON** object editor; Tune parameters
-  instead shows Trial count, Seed, Selection metric and **Search space JSON**. Neither
-  JSON editor has Apply/Revert controls, an inline explanatory block or a note beneath it.
-  A new CatBoost node's starter parameters include
-  `one_hot_max_size: 10`, visible and editable in that JSON; Haute adds no hidden default, and
-  nodes created earlier keep their parameters. A syntactically
-  valid top-level object updates its corresponding config automatically, except that a
-  fixed-parameter object containing the Train-owned `task_type` key, or a key the backend's
-  CatBoost descriptor reserves (its loss, metric, seed and training-file keys, read from
-  `algorithmCapabilities.json`), is rejected. Invalid,
-  non-object, or reserved-key drafts remain local for that node and contribute only to the
-  ordinary click-time Train validation banner while their strategy is selected. This preserves
-  the complete CatBoost parameter surface without duplicating the algorithm library's evolving
-  catalogue. An empty stored non-GPU projection displays the familiar CatBoost UI defaults as
-  the editable fixed draft; arbitrary current or future keys and nested JSON values round-trip
-  unchanged, and the Train-pane GPU `task_type` remains merged from the latest stored object.
-  Search-space candidate arrays render on one line per parameter while nested conditional objects
-  remain indented. Selecting Tune parameters seeds editable candidate lists for `depth`,
-  `learning_rate`, and `l2_leaf_reg`. When `evaluation.test` is absent and validation is enabled,
-  the same update adds a 20% random/group test or an empty temporal test start for the user to
-  complete; it never rewrites an existing evaluation choice. Selecting Fixed parameters removes
-  tuning without changing the last valid fixed Parameters JSON.
-  The editor component accepts algorithm label/default/reserved-key inputs
-  so another algorithm with a `params` object can reuse it without bespoke controls. GLM has no
-  Params pane; its Target-pane regularization fields remain at the node top level rather than
-  in `config.params`.
-- **Split** — one canonical version-1 evaluation workflow. It asks how data is
-  structured (Random rows, Keep entities together, Respect time order), how candidates
-  are validated (Single validation, Cross-validation, No validation), and whether an
-  untouched final test is reserved. Random/group forms use source-relative validation
-  and test sizes plus a deterministic seed; group additionally selects its entity
-  column. Temporal forms select a date column and explicit validation/test starts;
-  temporal CV is expanding-window only. Once relevant fields are valid, a neutral
-  estimate preview shows development/final-test counts, validation fit count and row
-  bounds, plus group counts or date ranges. The pane uses only **development data**,
-  **validation**, and **final test** terminology.
-- **Train** — the GPU toggle (CatBoost: stored as the GPU task-type parameter; XGBoost:
-  stored as the node's `device: "gpu"`, enabled only when `GET /api/modelling/gpu` reports
-  the server can train on a CUDA GPU, otherwise disabled beside the server's reason, and
-  always switchable back to CPU), row
-  limit beside the RAM/VRAM estimate it modulates (an estimate the server cannot size
-  shows its reason in place of the missing figures, never a memory verdict; the VRAM figure
-  is rescaled from the server's `gpu_vram_rows` to the rows training will use),
-  staleness banner, Train/Cancel actions, click-time validation banner, live progress, completion
-  badge and error card. Its read-only run summary names, for a CatBoost model whose selected
-  features include String or Categorical columns, their encoding: "One-hot up to N levels,
-  target statistics above" when `one_hot_max_size` is set, "Tuned (one_hot_max_size is in the
-  search space)" when tuning varies it, and otherwise "CatBoost's default (target statistics)",
-  without claiming a level count that differs between CPU and GPU training. Its checkbox and text/number controls use the same visible themed borders,
+- **Parameters** — a tree family's pane starts with a **Parameter strategy** radio group,
+  **Fixed parameters** or **Tune parameters**, and shows exactly one strategy body. Fixed
+  parameters shows only the algorithm-neutral **Parameters JSON** object editor. Tune parameters
+  shows a note, Trial count (5 to 50), Seed, Selection metric (one of the reported metrics) and
+  the search space JSON, labelled with the selected family's capability label (for example
+  "XGBoost search space JSON"). The note says whether a test set is held out during tuning ("No
+  test set is reserved. Reserve one in Split for an independent evaluation." otherwise), offers
+  **Review split →**, which opens the Split pane, and states the fit budget in the Train pane's
+  run-summary words, so a t-boost study ends with its winning validation fit rather than a
+  final fit. Neither JSON editor has Apply/Revert controls. Each family's gateway starter
+  parameters are visible and editable in that JSON: CatBoost's include
+  `one_hot_max_size: 10`, and t-boost's are under
+  [Model family capabilities](#model-family-capabilities). Haute adds no hidden default, nodes
+  created earlier keep their parameters, and an empty stored object shows as `{}`. A
+  syntactically valid top-level object updates its corresponding config automatically, except
+  that a fixed-parameter object holding a key the family's descriptor reserves (its loss,
+  metric, seed and training-file keys, read from `algorithmCapabilities.json`), or CatBoost's
+  Train-owned `task_type`, is refused with the reason. An invalid, non-object, or reserved-key
+  draft stays local to that node, is named in an inline alert beneath its editor, and is a
+  Train-guard issue while its strategy is selected. This preserves each library's complete
+  parameter surface without duplicating its evolving catalogue: arbitrary current or future
+  keys and nested JSON values round-trip unchanged, and the Train-pane GPU `task_type` remains
+  merged from the latest stored object. Search-space candidate arrays render on one line per
+  parameter while nested conditional objects remain indented. Selecting Tune parameters seeds
+  the family's own starter search space (CatBoost's candidate lists for `depth`,
+  `learning_rate`, and `l2_leaf_reg`), 20 trials, seed 42 and the first reported metric, and in
+  the same update turns on `refit_on_development`, except for t-boost, which is never refit; it
+  never changes the evaluation. Selecting Fixed parameters removes tuning without changing the
+  last valid fixed Parameters JSON. The editor component accepts the family's label, starter
+  search space and reserved keys, so every tree family uses it without bespoke controls.
+  The GLM's Parameters pane holds its regularization and solver settings, stored at the node
+  top level rather than in `config.params`. Its regularization type (None, Ridge, Lasso, Elastic
+  Net) is indicated by its pressed button without a duplicate heading badge. Choosing a type
+  writes cross-validation defaults (5 folds, minimum deviance, seed 42) when absent, while the
+  seed is hidden; penalty mode is Cross-validated, with folds and a selection rule, or a Fixed
+  alpha; choosing Elastic Net stores an L1 ratio of 0.5 when absent and shows its slider
+  immediately, without explanatory copy or setup controls. Older Elastic Net configurations
+  with no ratio remain invalid until the slider is changed; the Train list names that issue and
+  the pane does not repeat it.
+  Inline alerts, beside the type buttons and under the Solver heading even while it is closed,
+  explain why regularization cannot combine with automatically smoothed splines and why robust
+  standard errors cannot combine with regularization, monotonicity or those splines; they are
+  the Train guard's own issues. A Solver disclosure holds maximum iterations, tolerance, and
+  robust standard errors.
+- **Split** — a **Row limit** first (empty for all rows), then the allocation, then one
+  canonical version-1 evaluation in three sections. **Split strategy** is Random split, Group
+  split with its group column, or Time-based split with its date column. **Validation
+  strategy** is Holdout validation with a Validation set (%) or Validation starts date,
+  Cross-validation with a fold count (expanding windows when time-based), or No validation; a
+  holdout adds **Refit on training + validation**, locked on while tuning (t-boost has neither
+  the box nor Cross-validation; see [Model family capabilities](#model-family-capabilities)).
+  **Test set** is a Test set (%) for random and group splits, where 0 means none, or a Test
+  starts date.
+  Percentages are source-relative and stored as fractions, and the evaluation seed stays
+  internal. Once the relevant fields are valid, the allocation shows exact training,
+  validation and test rows, per-fit row ranges and group counts or date ranges from the
+  estimate's evaluation preview when its strategy and validation method match the editor, and
+  target proportions otherwise. The pane shows its own evaluation issues: a validation and test
+  total of 100% or more (`evaluation-fraction-sum`) beneath the validation settings, and the
+  others above the allocation. A failed evaluation preview, which the server codes
+  `evaluation_preview_failed`, is shown at the foot of the pane in the server's words. The pane
+  uses the Training, Validation and Test vocabulary of the
+  [modelling specification](../modelling/high-level.md#training-configuration-experience).
+- **Train** — the read-only run summary; the GPU toggle (CatBoost: stored as the GPU task-type
+  parameter; XGBoost: stored as the node's `device: "gpu"`, enabled only when
+  `GET /api/modelling/gpu` reports the server can train on a CUDA GPU, otherwise disabled
+  beside the server's reason, and always switchable back to CPU); the staleness banner ("Config
+  changed since last training", with **Re-train**); the RAM/VRAM estimate at the Split pane's
+  row limit (an estimate the server cannot size shows its reason in place of the missing
+  figures, never a memory verdict; the VRAM figure is rescaled from the server's
+  `gpu_vram_rows` to the rows training will use); the Train/Cancel actions with the **Complete
+  before training** list; live progress, the completion badge and the error card. An estimate
+  the server refuses shows in the estimate's place: one coded `evaluation_preview_failed` in the
+  server's own words, which name the failed preview, and any other under "Memory estimate
+  failed". The run summary names the model (the family's label with its loss, or the GLM
+  family), target, feature count, evaluation method and allocation, fit budget (with a
+  cross-validated GLM penalty's internal folds) and compute. For a CatBoost model whose
+  selected features include String or Categorical columns it also names their encoding:
+  "One-hot up to N levels, target statistics above" when `one_hot_max_size` is set, "Tuned
+  (one_hot_max_size is in the search space)" when tuning varies it, and otherwise "CatBoost's
+  default (target statistics)", without claiming a level count that differs between CPU and GPU
+  training. Its checkbox and text/number controls use the same visible themed borders,
   backgrounds, typography and spacing as the rest of the modelling editor; labels never collapse
   into input placeholders.
+  Train stays enabled while idle; with tuning enabled the action reads **Tune & Train**. While
+  the configuration has any frontend Train-guard issue, including an invalid JSON draft for the
+  selected parameter strategy, and no job is starting or running, the **Complete before
+  training** alert directly beneath the main Train button lists every issue with a **Go to**
+  button naming the pane that fixes it (Target, Features, Parameters or Split). A Train or
+  Re-train press sends no request until that list is empty. Live progress renders the
+  backend's existing bounded `train_loss_history` snapshot and
+  `train_loss_history_truncated` state rather than reconstructing iterations from polls; a
+  truncated chart is labelled as the latest retained window. A browser-derived estimated time
+  remaining uses successive distinct increasing `(iteration, elapsed_seconds)` samples for the
+  current job. It is hidden until two valid samples exist, on a duplicate/stalled or
+  non-monotonic update, when iteration/total/rate is non-finite or non-positive, and after
+  completion; a new job clears the estimator. Tuning progress instead displays phase,
+  trial/fold indices, completed/total fits and best objective, and derives ETA only
+  from enough completed increasing fit durations.
 - **Export** — everything that publishes the last trained model, in two sections. **MLflow
   logging** holds the destination selector and experiment path fields (headed by an
   explainer that logging is manual — nothing is logged automatically; the experiment field's
@@ -340,30 +380,17 @@ strip; it never falls through to CatBoost. Pane ownership:
   configuration has changed since that result, a warning says exports use the last trained
   model. The export fields (`mlflow_destination`, `mlflow_experiment`,
   `model_export_path`) are not part of the training identity: editing them neither marks the
-  trained result stale nor requests a new RAM estimate. The setup panes and their tabs never expose missing-field warnings:
-  Target is labelled only `Target`, and Features/Params are equally free of attention badges.
-  Train remains enabled while idle. With tuning enabled the action reads **Tune &
-  Train**. Before the first invalid Train or Re-train attempt, the validation banner is absent.
-  An invalid press sends no request, latches validation presentation on, and reveals one banner
-  directly beneath the main Train button listing every current frontend Train-guard issue,
-  including an invalid JSON draft for the selected parameter strategy. Once revealed, the banner
-  tracks the current non-empty issue list. Reaching an empty list hides the banner and resets the
-  reveal state, so a later invalid configuration again waits for a Train press; a valid press
-  starts training. Live progress renders the
-  backend's existing bounded `train_loss_history` snapshot and
-  `train_loss_history_truncated` state rather than reconstructing iterations from polls; a
-  truncated chart is labelled as the latest retained window. A browser-derived estimated time
-  remaining uses successive distinct increasing `(iteration, elapsed_seconds)` samples for the
-  current job. It is hidden until two valid samples exist, on a duplicate/stalled or
-  non-monotonic update, when iteration/total/rate is non-finite or non-positive, and after
-  completion; a new job clears the estimator. Tuning progress instead displays phase,
-  trial/fold indices, completed/total fits and best objective, and derives ETA only
-  from enough completed increasing fit durations.
+  trained result stale nor requests a new RAM estimate.
 
-Cross-pane signalling is intentionally limited to active work. `NodePanel` derives only the
-active-job descriptor, and the Train tab shows that accessible indicator while a job is running
-so progress is visible from any pane. Configuration completeness never changes a tab's visible
-or assistive label.
+Cross-pane signalling marks where work is needed and where work is running. `ModellingConfig`
+reports the panes that hold a current Train-guard issue to `NodePanel`, which marks each such tab
+with a compact warning indicator whose accessible description is "<Pane> needs attention"; a
+report left by another node's editor never marks this node's tabs. While a job runs, the Train
+tab shows the active-training indicator instead, so progress is visible from any pane. Target,
+Features and Parameters list their own issues in an alert above the pane body, except those the
+body shows beside the setting involved (an invalid JSON draft, the GLM conflicts) and the GLM's
+missing L1 ratio, which only the Train list names; Split shows its evaluation issues as above,
+and Train lists every issue.
 
 **Completed results.** Summary shows final-test metrics first when present. Without a
 test set, when a validation fit ran and the final model was refit on all development rows,
@@ -392,12 +419,12 @@ algorithm switching or in-place algorithm migration.
 
 **Failure and compatibility semantics.** The frontend continuously derives its training-guard
 target, objective, evaluation and bounded-tuning issues, plus any invalid draft for the selected
-CatBoost parameter strategy. The Train pane keeps those messages hidden until an invalid Train or
-Re-train press, suppresses that request, and then reflects the current non-empty issue list beneath
-the button. Resolving the complete list resets that reveal state. The backend remains authoritative
-for the full configuration and candidate/conditional search-space contract and still rejects an
-invalid request if reached.
-Cancellation, terminal-race, GPU-VRAM 507 and estimate-failure behaviour are unchanged. A
+parameter strategy, and shows them as above; a press with any issue sends no request. The backend
+remains authoritative for the full configuration and candidate/conditional search-space contract
+and still rejects an invalid request if reached. An issue the editor places by kind, such as the
+validation and test total or a GLM conflict, is chosen by its issue code, and an estimate failure
+by the server's `error_code`; neither is matched by its words.
+Cancellation, terminal-race and GPU-VRAM 507 behaviour are unchanged. A
 malformed present live-history entry fails at the runtime response boundary exactly like malformed
 completed-result history; absent history produces no chart and is never synthesized from
 latest-loss polls. Under the
@@ -407,20 +434,24 @@ written; the generic section store and any inert in-memory entries need no migra
 
 **Regression evidence.** Suites in
 `frontend/src/panels/__tests__/ModellingConfig.test.tsx` and under
-`frontend/src/panels/modelling/__tests__/` prove: six CatBoost panes and five GLM panes with the
-ownership above, always-visible GLM Target regularization, retired GLM Params selection resolving
-to Target, and the unsupported-algorithm diagnostic; CatBoost's unified all-loss picker,
-loss-derived task/default metrics, and visible disabled incompatible metrics; the common searched/dtype-labelled
-CatBoost feature-card browser, including current-state per-card toggles and
-search-independent bulk actions; confirmation-free reversible exclusion with dormant monotonic
-settings; inline arrow-based, role/final-selection-aware monotonic controls; the GLM term and
-interaction editors against the shared dtype-class and expression-grammar fixtures; unset-only algorithm selection, read-only selected-algorithm
-context, and the absence of an in-place change action; mutually exclusive fixed/tuned Params
-bodies, arbitrary params JSON round trips, valid fixed/search-space autosave, compact default
-draft presentation, CatBoost's starter `one_hot_max_size`, t-boost's eight starter parameters, the run
-summary's categorical encoding, invalid/non-object/reserved-key draft persistence without Apply/Revert or
-inline warnings, selected-strategy click-time validation, and GPU task-type merge; plain setup-tab
-labels, click-time-only aggregate validation beneath Train, authoritative bounded live-history
+`frontend/src/panels/modelling/__tests__/` prove: the panes' ownership for the tree families and
+the GLM (GLM regularization in Parameters), the panes reported for the tab indicators, the GLM
+conflicts shown once beside their settings and the missing L1 ratio kept out of Parameters, and
+the unsupported-algorithm diagnostic; the tree families' all-loss picker, loss-derived
+task/default metrics, and visible disabled incompatible metrics; the searched, filtered,
+dtype-labelled feature rows with per-row checkboxes and search-independent bulk actions;
+confirmation-free reversible exclusion with dormant monotonic settings; role/final-selection-aware
+monotonic controls; the GLM term and interaction editors against the shared dtype-class and
+expression-grammar fixtures; unset-only algorithm selection, read-only selected-algorithm
+context, and the absence of an in-place change action; mutually exclusive fixed/tuned Parameters
+bodies, each family's starter search space, arbitrary params JSON round trips, valid
+fixed/search-space autosave, CatBoost's starter `one_hot_max_size`, t-boost's eight starter
+parameters, the tuning note's family-labelled search space and run-summary fit budget, the run
+summary's fit budget and categorical encoding, invalid/non-object/reserved-key draft persistence
+with an inline alert and no Apply/Revert, and GPU task-type merge; the Complete before training
+list with its Go to links and no request from an invalid press; a coded evaluation-preview
+failure shown in Split and Train in the server's words and an uncoded one kept out of Split;
+the fraction-sum issue picked by its code; authoritative bounded live-history
 rendering including truncation; Export-pane ownership of the MLflow fields and both export
 actions, their no-model/training/stale notes, the save-model request path default and result
 display, export-field edits leaving the trained result current, and a Summary with no export
@@ -429,8 +460,9 @@ show/hide/reset behaviour for valid, insufficient, duplicate/stalled, non-monoto
 new-job samples. `frontend/src/panels/__tests__/NodePanel.test.tsx`,
 `frontend/src/stores/__tests__/useUIStore.test.ts`, and
 `frontend/src/panels/__tests__/PreviewPanelTabs.test.tsx` prove strip gating, per-node memory,
-active-indicator accessibility, and unchanged roving-keyboard behaviour. Runtime/store suites prove
-strict live-history parsing, latest-status retention, and per-job estimator reset.
+the needs-attention and active indicators' accessibility, and unchanged roving-keyboard
+behaviour. Runtime/store suites prove strict live-history parsing, latest-status retention, and
+per-job estimator reset.
 
 ## Optimiser config panes
 
@@ -678,11 +710,11 @@ this discrete solve a positive λ can sit beside positive slack.
   its gradient boosting; the engines are named where the family is chosen. A test maps every family in the
   capability table to its word in that description, so a new family fails it until the
   description names it.
-- A classification objective on a target that is neither Boolean nor 0/1 shows a positive-class
-  field. It is required for a text target, and the Train guard refuses a text target without it;
-  it is optional for an integer target, whose value is saved as a number. Predictions above 0.5
-  are labelled with the positive class.
-- Every family but the GLM shares the Target, Features and Parameters panes and the JSON
+- A classification objective on a target that is not Boolean shows a positive-class field. It is
+  required for a text target, and the Train guard refuses a text target without it; it is
+  optional for a numeric target ("only if the labels are not 0/1"), whose whole-number value is
+  saved as a number. Predictions above 0.5 are labelled with the positive class.
+- Every family but the GLM shares the Target, Features and Parameters pane bodies and the JSON
   parameter editor (`usesSharedPanes`). An EBM's Features pane adds a pairwise-interaction
   control: "Let EBM choose" writes a count to `params.interactions`, "Choose pairs" a list of
   feature pairs picked from the included features, with monotone-constrained features
@@ -727,6 +759,7 @@ this discrete solve a positive λ can sit beside positive slack.
   `publishesValidationFit`) is never refit: its Split pane has no **Refit on training +
   validation** box and no Cross-validation option, choosing a validation method or turning
   on tuning never writes `refit_on_development`, and the readiness issue `validation-fit` (on
-  Split) mirrors the backend's refusals. The Train summary's fit budget counts its one
-  validation fit, or a study's trials plus the winning validation fit.
+  Split) mirrors the backend's refusals. The Train summary's fit budget, and the Parameters
+  pane's tuning note in the same words, count its one validation fit, or a study's trials plus
+  the winning validation fit, never a final fit.
 

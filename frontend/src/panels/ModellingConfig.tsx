@@ -46,7 +46,7 @@ import {
 import { CommonFeatureConfig } from "./modelling/CommonFeatureConfig"
 import { EBMInteractionsConfig } from "./modelling/EBMInteractionsConfig"
 import { ExportPane } from "./modelling/ExportPane"
-import { XGBoostGpuToggle } from "./modelling/GpuTrainingToggle"
+import { GpuTrainingCheckbox, XGBoostGpuToggle } from "./modelling/GpuTrainingToggle"
 import { GLMInteractionsConfig } from "./modelling/GLMInteractionsConfig"
 import { GLMRegularizationConfig } from "./modelling/GLMRegularizationConfig"
 import { GLMTargetConfig } from "./modelling/GLMTargetConfig"
@@ -67,6 +67,7 @@ import { useTrainedJobRestore } from "./modelling/useTrainedJobRestore"
 import { SplitAndMetricsConfig } from "./modelling/SplitAndMetricsConfig"
 import { TrainingRunSummary } from "./modelling/TrainingRunSummary"
 import { estimateAfterSupersededPreviews } from "./modelling/trainingEstimate"
+import { EVALUATION_PREVIEW_FAILED } from "./modelling/evaluationPreview"
 import { TargetAndTaskConfig } from "./modelling/TargetAndTaskConfig"
 import { TrainingActionsAndResults } from "./modelling/TrainingActionsAndResults"
 import type { ReactElement } from "react"
@@ -183,6 +184,13 @@ function reservedParamsFor(algorithm: string): { keys: readonly string[]; help: 
     help: TREE_RESERVED_PARAM_HELP,
   }
 }
+// Issues a pane does not repeat above its body: the GLM Parameters pane shows its
+// conflicts beside the settings involved, and a missing L1 ratio only in Train's list.
+const PANE_BODY_ISSUE_CODES: ReadonlySet<TrainingConfigurationIssue["code"]> = new Set([
+  "glm-elastic-net-l1-ratio",
+  "glm-smooth-regularization",
+  "glm-robust-standard-errors",
+])
 const DEFAULT_EVALUATION: Record<string, unknown> = {
   schema_version: 1,
   strategy: "random",
@@ -314,20 +322,7 @@ function TrainPane({
     <>
       <TrainingRunSummary config={config} columns={columns} preview={estimate.estimate?.evaluation_preview ?? null} />
       {algorithm === "catboost" && (
-        <label className="flex cursor-pointer select-none items-center gap-2">
-          <input
-            type="checkbox"
-            checked={params.task_type === "GPU"}
-            onChange={(event) => toggleGpu(event.target.checked)}
-            className="accent-purple-500"
-          />
-          <span className="text-[11px]" style={{ color: "var(--text-primary)" }}>
-            GPU training
-          </span>
-          <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-            (CUDA)
-          </span>
-        </label>
+        <GpuTrainingCheckbox checked={params.task_type === "GPU"} onToggle={toggleGpu} />
       )}
       {algorithmCapability(algorithm)?.gpu_device === true && (
         <XGBoostGpuToggle
@@ -350,6 +345,7 @@ function TrainPane({
         ramEstimate={estimate.estimate}
         ramEstimateLoading={estimate.loading}
         ramEstimateError={estimate.error}
+        ramEstimateErrorCode={estimate.errorCode}
         estimateWaiting={estimateWaiting}
         rowLimit={rowLimit}
         nodeLabel={nodeLabel}
@@ -637,7 +633,7 @@ export default function ModellingConfig({
       publishesValidationFit={validationFit}
       tuningEnabled={Boolean(tuning)}
       preview={estimate.estimate?.evaluation_preview ?? null}
-      previewError={estimate.error?.startsWith("Evaluation preview failed:") ? estimate.error : null}
+      previewError={estimate.errorCode === EVALUATION_PREVIEW_FAILED ? estimate.error : null}
     />
   )
   const trainPane = (
@@ -708,6 +704,7 @@ export default function ModellingConfig({
           algorithmLabel={algorithmCapability(algorithm)?.label ?? algorithm}
           starterSearchSpace={STARTER_SEARCH_SPACES[algorithm]}
           publishesValidationFit={validationFit}
+          refitOnDevelopment={config.refit_on_development !== false}
           params={params}
           reservedKeys={reservedParams.keys}
           reservedKeysHelp={reservedParams.help}
@@ -743,7 +740,7 @@ export default function ModellingConfig({
 
   return (
     <div key={nodeId} id={`modelling-${pane}-pane`} role="tabpanel" aria-labelledby={`modelling-${pane}-tab`} className="px-4 py-3 space-y-4">
-      {pane !== "train" && pane !== "split" && validationIssues.filter((issue) => trainingIssuePane(issue) === pane && issue.code !== "glm-elastic-net-l1-ratio" && issue !== paramDraftIssue && issue !== searchSpaceDraftIssue).map((issue) => (
+      {pane !== "train" && pane !== "split" && validationIssues.filter((issue) => trainingIssuePane(issue) === pane && !PANE_BODY_ISSUE_CODES.has(issue.code) && issue !== paramDraftIssue && issue !== searchSpaceDraftIssue).map((issue) => (
         <p key={issue.code} role="alert" className="rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: "var(--warning-border)", color: "var(--warning-strong)", background: "var(--warning-soft-subtle)" }}>{issue.message}</p>
       ))}
       {paneBody}

@@ -760,12 +760,14 @@ describe("GLMRelativitiesTab", () => {
     expect(screen.getByText("region_C")).toBeTruthy()
   })
 
-  it("shows sort mode buttons", () => {
+  it("shows the sort modes as one switch that marks the current one", () => {
     const result = makeTrainResult({ glm_relativities: makeGlmRelativities() })
     render(<GLMRelativitiesTab result={result} />)
-    expect(screen.getByRole("button", { name: "By deviation" })).toBeTruthy()
-    expect(screen.getByRole("button", { name: "By value" })).toBeTruthy()
-    expect(screen.getByRole("button", { name: "A–Z" })).toBeTruthy()
+    const sort = screen.getByRole("group", { name: "Sort relativities" })
+    expect(within(sort).getByRole("button", { name: "By deviation" })).toHaveAttribute("aria-pressed", "true")
+    expect(within(sort).getByRole("button", { name: "By value" })).toHaveAttribute("aria-pressed", "false")
+    fireEvent.click(within(sort).getByRole("button", { name: "A–Z" }))
+    expect(within(sort).getByRole("button", { name: "A–Z" })).toHaveAttribute("aria-pressed", "true")
   })
 
   it("default sort is by deviation (largest first)", () => {
