@@ -358,6 +358,7 @@ def real_ratebook_artifact_payload(real_ratebook_solve: dict[str, Any]) -> dict[
     )
 
 
+@pytest.mark.usefixtures("_widen_sandbox_root")
 class TestRealSolverEndToEnd:
     def test_solver_emits_colon_named_unit_separator_levels(
         self, real_ratebook_solve: dict[str, Any]

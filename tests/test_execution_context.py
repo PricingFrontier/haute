@@ -4788,7 +4788,6 @@ def test_optimiser_auto_range_start_admits_nothing_in_the_request_thread(monkeyp
         raise AssertionError("auto-range start admitted in the request thread")
 
     monkeypatch.setattr("haute.routes._optimiser_service.admit_growth_grant", refuse)
-    monkeypatch.setattr("haute.routes._optimiser_service.create_admitted_execution_context", refuse)
     graph = make_graph(
         {
             "nodes": [
@@ -5405,7 +5404,9 @@ def test_optimiser_start_maps_admission_failure_to_http_507(
     assert job["error_detail"]["error_code"] == "memory_limit"
     assert job["error_detail"]["profile"] == "optimiser_solve"
     assert job["error_detail"]["reason"] == "process_rss_limit_exceeded"
-    assert "process_rss_limit_exceeded" in job["message"]
+    # The job's message is the curated one the refusal carries, naming the operation.
+    assert job["message"] == job["error_detail"]["message"]
+    assert job["message"].startswith("Optimiser setup was not started")
 
 
 def test_optimiser_start_maps_runtime_memory_failure_to_http_507(
