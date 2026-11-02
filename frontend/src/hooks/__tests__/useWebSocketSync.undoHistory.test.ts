@@ -383,6 +383,30 @@ describe("useWebSocketSync - WS sync must not corrupt undo history (#8)", () => 
       expect(useDocumentStatusStore.getState().executionGeneration).toBe(generation)
     })
 
+    it("drops a frame of the document shown before the save instead of holding it", async () => {
+      const { document } = loadSavedCanvas()
+      const asLoaded = JSON.stringify(pipelineDocumentFrame(document, "fingerprint-as-loaded"))
+      await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: asLoaded })) })
+      vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockClear()
+      let answer!: () => void
+      const saving = new Promise<void>((resolve) => { answer = resolve })
+      trackPendingSave(SOURCE_FILE, saving)
+
+      // A git action broadcasts the unchanged document while the save is in flight.
+      await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: asLoaded })) })
+      await act(async () => {
+        useDocumentStatusStore.getState().acknowledgeSave("revision-saved", "fingerprint-as-saved")
+        answer()
+        await saving
+      })
+
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      expect(useDocumentStatusStore.getState()).toMatchObject({
+        sourceRevision: "revision-saved",
+        documentFingerprint: "fingerprint-as-saved",
+      })
+    })
+
     it("applies a held frame when the save fails", async () => {
       const { document, saved } = loadSavedCanvas()
       await act(async () => {

@@ -381,21 +381,23 @@ export default function useWebSocketSync({
           if (!isCurrentSourceFile(frame.sourceFile, currentDocumentSource())) {
             return
           }
+          // The document already shown: a git action's broadcast, the answer to a
+          // resync, or this tab's own save, of what the canvas holds. Nothing to
+          // apply or announce.
+          const showsFrame = () => (
+            useDocumentStatusStore.getState().graphSynchronized
+            && frame.documentFingerprint === acceptedDocumentFingerprintFor(frame.sourceFile)
+          )
+          if (showsFrame()) return
           // A resync answered while this tab's save is in flight may carry the
           // document that save wrote: its answer decides, so the frame waits for it.
+          // A frame of the document shown before the save was dropped above, so a
+          // held one can never put the pre-save document back.
           const saves = pendingSavesSettled(currentDocumentSource() ?? frame.sourceFile)
           if (saves) {
             await saves
             if (!mounted || !isCurrentSourceFile(frame.sourceFile, currentDocumentSource())) return
-          }
-          // The document already shown: a git action's broadcast, the answer to a
-          // resync, or this tab's own save, of what the canvas holds. Nothing to
-          // apply or announce.
-          if (
-            useDocumentStatusStore.getState().graphSynchronized
-            && frame.documentFingerprint === acceptedDocumentFingerprintFor(frame.sourceFile)
-          ) {
-            return
+            if (showsFrame()) return
           }
           const updateSeq = ++graphUpdateSeq
           const graphState = useGraphStore.getState()
