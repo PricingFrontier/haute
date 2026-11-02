@@ -576,7 +576,6 @@ strict = [
     "22ee01c87b75519b",  # TestResolveArtifactLocal.test_disk_cache_hit
 ]
 "tests/test_optimiser_service_coverage.py" = [
-    "b1b7eb7ff66a2261",  # test_load_ratebook_factors_rejects_corrupt_parquet
     "8f44369b7dd8987c",  # test_load_rejects_corrupt_parquet
 ]
 # ``main()`` regenerates the checked-in compatibility corpus offline; it

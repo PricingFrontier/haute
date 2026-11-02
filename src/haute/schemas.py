@@ -136,9 +136,8 @@ PipelineDiagnosticScope = Literal["pipeline", "node", "edge", "submodel"]
 def _normalise_frontier_range_pair(value: Any, *, field: str) -> tuple[float, float]:
     """Validate one ``(min, max)`` frontier-range value.
 
-    Single source of truth for both the request-body schema layer and the
-    config-side path in ``_optimiser_service``.  Accepts either a dict
-    ``{"min": ..., "max": ...}`` or a 2-element list/tuple.
+    The config-side check behind ``swept_frontier_ranges``. Accepts either a
+    dict ``{"min": ..., "max": ...}`` or a 2-element list/tuple.
     """
     if isinstance(value, dict):
         raw_min = value.get("min")
@@ -4565,30 +4564,6 @@ class OptimiserFrontierAutoRangeStatusResponse(BaseModel):
     execution_metrics: ExecutionMetricsPayload | None = None
 
 
-class OptimiserFrontierRequest(BaseModel):
-    job_id: BoundedName
-    threshold_ranges: dict[
-        BoundedName, Annotated[list[float], Field(max_length=MAX_REQUEST_ITEMS)]
-    ] = Field(default_factory=dict, max_length=MAX_REQUEST_ITEMS)
-    n_points_per_dim: int = Field(default=5, ge=1, le=100)
-
-    @field_validator("threshold_ranges", mode="after")
-    @classmethod
-    def _validate_threshold_ranges(
-        cls,
-        value: dict[str, list[float]],
-    ) -> dict[str, list[float]]:
-        for name, range_value in value.items():
-            # Re-use the canonical validator so request-body and config-side
-            # error messages match.  We discard the normalised tuple — the
-            # field type stays as ``list[float]`` for JSON-payload simplicity.
-            _normalise_frontier_range_pair(
-                range_value,
-                field=f"threshold_ranges.{name}",
-            )
-        return value
-
-
 class OptimiserFrontierResponse(BaseModel):
     status: str
     points: list[OptimiserFrontierPoint] = Field(default_factory=list)
@@ -4603,21 +4578,6 @@ class OptimiserFrontierResponse(BaseModel):
     """The constraints the sweep varied (a subset of ``constraint_names``)."""
     points_limit: int | None = None
     points_truncated: bool = False
-    frontier_generation: int | None = Field(default=None, ge=0)
-    """The solve job's frontier generation this frontier belongs to: ``0`` for the
-    solve-time frontier, incremented by every recompute. Every computed frontier
-    carries it; only the ``status == "started"`` handle has none."""
-    job_id: str | None = None
-    """Pollable frontier job handle when ``status == "started"``."""
-
-    @model_validator(mode="after")
-    def _generation_iff_computed(self) -> OptimiserFrontierResponse:
-        started = self.status == "started"
-        if started and self.frontier_generation is not None:
-            raise ValueError("A started frontier handle has no frontier_generation")
-        if not started and self.frontier_generation is None:
-            raise ValueError("A computed frontier requires frontier_generation")
-        return self
 
     @model_validator(mode="after")
     def _points_cover_the_constraints(self) -> OptimiserFrontierResponse:
@@ -4628,7 +4588,7 @@ class OptimiserFrontierResponse(BaseModel):
             raise ValueError(f"swept_axes {unknown_axes} are not in constraint_names {names}")
         if len({point.mode for point in self.points}) > 1:
             raise ValueError("Frontier points must all be of one mode")
-        if self.status != "started" and len(self.point_summaries) != len(self.points):
+        if len(self.point_summaries) != len(self.points):
             raise ValueError(
                 f"A computed frontier needs one summary per point: {len(self.point_summaries)} "
                 f"summaries for {len(self.points)} points"
@@ -4638,19 +4598,6 @@ class OptimiserFrontierResponse(BaseModel):
         for index, summary in enumerate(self.point_summaries):
             _require_constraint_names(summary.constraints, names, field=f"point_summaries[{index}]")
         return self
-
-
-class OptimiserFrontierStatusResponse(BaseModel):
-    status: JobStatus
-    progress: float = 0.0
-    message: str = ""
-    elapsed_seconds: float = 0.0
-    result: OptimiserFrontierResponse | None = None
-    terminal_reason: str | None = None
-    error_code: str | None = None
-    http_status_code: int | None = None
-    error_detail: ExecutionMemoryLimitErrorPayload | dict[str, Any] | str | None = None
-    execution_metrics: ExecutionMetricsPayload | None = None
 
 
 def _require_constraint_names(keys: Mapping[str, Any], names: list[str], *, field: str) -> None:
@@ -5061,8 +5008,6 @@ class OptimiserSegmentsResponse(BaseModel):
     weight: str
     weight_label: str
     point_index: int | None = Field(ge=0)
-    # The frontier generation the point index refers to.
-    frontier_generation: int = Field(ge=0)
     n_quotes: int = Field(gt=0)
     # Bins, or the distinct non-missing values before truncation to the top 15.
     n_levels: int = Field(ge=0)
@@ -5106,7 +5051,6 @@ class OptimiserSegmentIndexResponse(BaseModel):
     model_config = _STRICT_ROW
 
     point_index: int | None = Field(ge=0)
-    frontier_generation: int = Field(ge=0)
     statistic: OptimiserSegmentIndexStatistic
     keys: list[OptimiserSegmentIndexKey]
 
@@ -5231,8 +5175,6 @@ class OptimiserSolveResult(BaseModel):
     frontier: OptimiserFrontierResponse | None = None
     frontier_error: str | None = None
     selected_frontier_point: int | None = None
-    # The job's frontier generation (0 until a recompute); see OptimiserFrontierResponse.
-    frontier_generation: int = Field(ge=0)
     # What the solve ran on: the job's input provenance and solver settings.
     input_summary: OptimiserInputSummary
     # Diagnostics that could not be produced (the frontier's failure among them).
@@ -5353,9 +5295,6 @@ class OptimiserApplyResponse(BaseModel):
     offset: int = Field(ge=0)
     preview_row_count: int = Field(ge=0)
     preview_row_limit: int = Field(ge=1, le=APPLY_PREVIEW_ROW_LIMIT)
-    # The frontier generation the page was answered for, so a client can refuse
-    # a page from a frontier recomputed after its request.
-    frontier_generation: int = Field(ge=0)
     error: str | None = None
 
     @model_validator(mode="after")
@@ -5410,8 +5349,6 @@ class OptimiserFrontierSelectResponse(BaseModel):
     clamp_rate: float | None = None
     # Ratebook only: the solve's collar, shared by every frontier point.
     combined_factor_bounds: OptimiserCombinedFactorBounds | None = None
-    # The frontier generation the point index refers to.
-    frontier_generation: int = Field(ge=0)
     # The selected point's (always empty) or, with no point, the solve's.
     diagnostics_errors: list[OptimiserDiagnosticError]
     error: str | None = None
@@ -6140,5 +6077,4 @@ class IoCapabilitiesResponse(_StrictIoCapabilitiesModel):
 # threads completing it at once can leave the class without a validator. Build
 # them at import instead.
 OptimiserFrontierResponse.model_rebuild()
-OptimiserFrontierStatusResponse.model_rebuild()
 GitMilestoneFork.model_rebuild()

@@ -27,7 +27,6 @@ import type {
   WriteOutputResponse as GeneratedWriteOutputResponse,
   OptimiserFrontierAutoRangeStatusResponse as GeneratedOptimiserFrontierAutoRangeStatusResponse,
   OptimiserFrontierResponse as GeneratedOptimiserFrontierResponse,
-  OptimiserFrontierStatusResponse as GeneratedOptimiserFrontierStatusResponse,
   OptimiserSolveResponse as GeneratedOptimiserSolveResponse,
   OptimiserSolveResult as GeneratedOptimiserSolveResult,
   OptimiserStatusResponse as GeneratedOptimiserStatusResponse,
@@ -1207,11 +1206,8 @@ export type FrontierPoint = GeneratedOptimiserFrontierResponse["points"][number]
 
 export type FrontierResponse = GeneratedOptimiserFrontierResponse
 
-/** A solve's frontier as the results store keeps it: always a computed
- *  frontier, so it always has its generation. */
-export type FrontierData = Omit<FrontierResponse, "status" | "job_id" | "frontier_generation"> & {
-  frontier_generation: number
-}
+/** A solve's frontier as the results store keeps it. */
+export type FrontierData = Omit<FrontierResponse, "status">
 
 export const JOB_STATUS_VALUES = [
   "running",
@@ -1239,14 +1235,6 @@ export const TERMINAL_JOB_STATUSES: ReadonlySet<JobStatus> = new Set([
   "completed",
   ...FAILED_JOB_STATUSES,
 ])
-
-export type FrontierStatusResponse = Omit<
-  GeneratedOptimiserFrontierStatusResponse,
-  "result" | "execution_metrics"
-> & {
-  result: FrontierResponse | null
-  execution_metrics: ExecutionMetrics | null
-}
 
 export type FrontierAutoRangeStatusResponse = Omit<
   GeneratedOptimiserFrontierAutoRangeStatusResponse,

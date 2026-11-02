@@ -13,7 +13,7 @@ Bounded choice queries (OPT-V09B) read one target's per-quote apply frame --
 the as-solved result or a frontier point -- inside leases, join the side
 table 1:1 when there is one, and run a reducer in the lazy plan so only a
 small result is ever collected. Each run is admitted with its own estimate
-and single-flighted by job, frontier generation, target and reducer.
+and single-flighted by job, target and reducer.
 
 A ratebook target's frame is price-contour's canonical per-quote evaluation
 (OPT-V09C): the online columns plus the factor product and the clamp flags,
@@ -965,13 +965,10 @@ class ChoiceQueryService:
         the job's point queue). A disconnected caller (*cancellation_token*)
         detaches from the shared run without stopping it for the others.
         """
-        from haute.routes._optimiser_frontier import _frontier_generation_or_raise
-
         job = self._store.require_completed_job(job_id)
         spec = _choice_spec(job)
         reducer.validate(spec)
         if target.point_index is None:
-            generation = _frontier_generation_or_raise(job)
             handle_key = _optimiser_artifacts._APPLY_RESULT_HANDLE_KEY
             unavailable: str | Mapping[str, str] = (
                 _optimiser_artifacts.APPLY_RESULT_UNAVAILABLE_DETAIL
@@ -979,12 +976,12 @@ class ChoiceQueryService:
         else:
             ticket = self._frontier.request_point_apply(job_id, target.point_index)
             ticket.wait(cancellation_token)
-            generation, handle_key = ticket.generation, ticket.handle_key
+            handle_key = ticket.handle_key
             unavailable = _optimiser_artifacts.frontier_point_unavailable_detail(
                 target.point_index, grid_expired=False
             )
         subscription = self._flights.subscribe(
-            (job_id, generation, target, reducer),
+            (job_id, target, reducer),
             lambda token: self._run(job_id, handle_key, unavailable, reducer, token),
         )
         return subscription.wait(cancellation_token, operation=_CHOICE_OPERATION)

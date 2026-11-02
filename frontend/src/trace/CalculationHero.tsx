@@ -49,7 +49,8 @@ export interface CalculationHeroProps {
   frame?: boolean
   // Backend emits either a successful entries list or a structured error
   // (e.g. "row had 2+ passes — waterfall not well-defined").  Pass both
-  // through and let resolveWaterfallProp split them into steps vs error.
+  // through: an error suppresses the hero's own breakdown, and StepCard
+  // shows the error's alert.
   waterfall?: WaterfallEntryProp[] | WaterfallErrorProp | null
 }
 

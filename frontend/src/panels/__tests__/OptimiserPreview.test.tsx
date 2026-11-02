@@ -218,7 +218,6 @@ describe("OptimiserPreview", () => {
       baseline_constraints: { loss_ratio: 0.60 },
       lambdas: { loss_ratio: 0.006 },
       converged: true,
-      frontier_generation: 0,
       error: null,
     })
     mockSaveOptimiser.mockResolvedValue({ status: "ok", path: "output/optimiser_My_Optimiser_opt_1.json", message: "" })
@@ -727,7 +726,6 @@ describe("OptimiserPreview", () => {
             point_summaries: [],
             n_points: 0,
             points_returned: 0,
-            frontier_generation: 0,
             constraint_names: [],
             swept_axes: [],
             points_limit: 2000,
@@ -870,7 +868,6 @@ describe("OptimiserPreview", () => {
         swept_axes: ["loss_ratio", "volume"],
         points_limit: 2000,
         points_truncated: false,
-        frontier_generation: 0,
       }
       renderPreview({
         data: makeData({

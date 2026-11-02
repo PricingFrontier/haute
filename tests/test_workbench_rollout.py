@@ -768,7 +768,10 @@ def server() -> Any:
 
         def do_GET(self) -> None:
             if self.path == "/stall":
+                # The client has given up by now; writing to its closed socket
+                # would print a broken pipe into whichever test runs next.
                 clock.sleep(3)
+                return
             if self.path in ("/truncated", "/error-truncated"):
                 self.send_response(200 if self.path == "/truncated" else 500)
                 self.send_header("Content-Length", "100")

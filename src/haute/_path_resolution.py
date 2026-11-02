@@ -143,6 +143,45 @@ def runtime_project_root_scope(
         _RUNTIME_PROJECT_ROOT.reset(token)
 
 
+@contextmanager
+def standalone_project_root_scope(source_file: str | Path | None) -> Iterator[Path]:
+    """Scope a standalone run's root from its pipeline file, unless one is already scoped.
+
+    ``Pipeline.run()`` and ``score()`` run outside any execution entry point, so
+    without this their node loaders would anchor to the working directory. A
+    pipeline runs in the nearest Haute project (``haute.toml``) that holds its
+    file, whatever the working directory; a script in no project falls back to
+    ``_infer_project_root``'s rule (the current project if it holds the file,
+    else the file's folder). An execution that already scoped a root (deploy's
+    validated one) keeps it.
+    """
+    active = _RUNTIME_PROJECT_ROOT.get()
+    if active is not None:
+        yield active
+        return
+    with runtime_project_root_scope(
+        source_file, project_root=_enclosing_haute_project(source_file)
+    ) as root:
+        yield root
+
+
+def _enclosing_haute_project(source_file: str | Path | None) -> Path | None:
+    """The nearest Haute project holding a pipeline file, if there is one."""
+    if not source_file:
+        return None
+    source = Path(_normalise_path_text(source_file))
+    if not source.is_absolute():
+        return None
+    from haute._project import get_project_root
+    from haute.errors import ConfigError
+
+    try:
+        return get_project_root(source.resolve().parent)
+    except ConfigError:
+        # Not inside a Haute project: the pipeline's folder is its root.
+        return None
+
+
 def runtime_project_root_scoped(function: _CallableT) -> _CallableT:
     """Decorate an execution entry point whose first argument is a graph."""
 

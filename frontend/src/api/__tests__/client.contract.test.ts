@@ -38,7 +38,6 @@ import {
   getExplorePivotStatus,
   getMilestones,
   getMilestoneSaves,
-  getFrontierStatus,
   getOptimiserFrontierAutoRangeStatus,
   getOptimiserStatus,
   cancelOptimiserSolve,
@@ -947,42 +946,6 @@ describe("client runtime contracts", () => {
       message: "Could not read pivot status: ExplorePivotStatusResponse: invalid contract at /progress: type",
       cause: expect.any(Error),
     })
-  })
-
-  it("getFrontierStatus checks the frontier job and its one summary per point", async () => {
-    const frontier = loadUiContractFixture<Record<string, unknown>>("optimiser_frontier_response")
-    const status = (result: unknown) => ({
-      status: "completed",
-      progress: 1,
-      message: "Frontier ready",
-      elapsed_seconds: 3,
-      result,
-      terminal_reason: null,
-      error_code: null,
-      http_status_code: null,
-      error_detail: null,
-      execution_metrics: null,
-    })
-
-    mockFetch.mockReturnValue(jsonResponse(status(frontier)))
-    const parsed = await getFrontierStatus("frontier-job-1")
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/optimiser/frontier/status/frontier-job-1")
-    expect(parsed.result?.points[0]?.total_objective).toBe(125)
-    expect(parsed.result?.point_summaries[0]?.lambdas).toEqual({ loss: 0.3 })
-
-    const summaries = frontier.point_summaries as Record<string, unknown>[]
-    mockFetch.mockReturnValue(jsonResponse(status({
-      ...frontier,
-      point_summaries: [{ ...summaries[0], converged: "yes" }],
-    })))
-    await expect(getFrontierStatus("frontier-job-1")).rejects.toThrow(
-      "OptimiserFrontierStatusResponse: invalid contract at /result/point_summaries/0/converged: type",
-    )
-
-    mockFetch.mockReturnValue(jsonResponse(status({ ...frontier, point_summaries: [] })))
-    await expect(getFrontierStatus("frontier-job-1")).rejects.toThrow(
-      "parseOptimiserStatusResponse: expected result.point_summaries to hold one summary per point, got 0 for 1 points",
-    )
   })
 
   it("preserves optimiser auto-range start contract metadata", async () => {

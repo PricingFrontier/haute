@@ -58,7 +58,6 @@ export interface FrontierSlicing {
 /** The user's slice choice, which holds only under the state it was made in. */
 export interface FrontierSliceChoice {
   xName: string
-  generation: number | null
   key: string
   /** The selected point when the choice was made. */
   selection: number | null
@@ -174,19 +173,17 @@ export function sliceNeighbours(slicing: FrontierSlicing, index: number): { prev
 
 /**
  * The slice on display: the user's choice while it still holds (same x
- * constraint, frontier generation and selection), else the selected point's
+ * constraint and selection), else the selected point's
  * slice, else point 1's.
  */
 export function displayedSlicePosition(
   slicing: FrontierSlicing,
   selectedIdx: number | null,
   choice: FrontierSliceChoice | null,
-  generation: number | null,
 ): number {
   if (
     choice
     && choice.xName === slicing.xName
-    && choice.generation === generation
     && choice.selection === selectedIdx
   ) {
     const position = slicing.slices.findIndex((slice) => slice.key === choice.key)

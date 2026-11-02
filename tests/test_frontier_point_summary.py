@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import price_contour
 import pytest
-from pydantic import ValidationError
 
 from haute.routes._frontier_point_summary import (
     NON_CONVERGED_WARNING,
@@ -273,13 +272,12 @@ def test_the_bound_is_the_library_absolute_bound_not_the_fractional_threshold() 
 # ---------------------------------------------------------------------------
 
 
-def _payload(frame=None, *, mode: str = "online", kinds=None, swept=None, generation: int = 0):
+def _payload(frame=None, *, mode: str = "online", kinds=None, swept=None):
     return limited_frontier_payload(
         frame if frame is not None else _online_frame(),
         mode=mode,
         constraint_kinds=kinds if kinds is not None else _KINDS,
         swept_axes=swept if swept is not None else ["volume"],
-        frontier_generation=generation,
     )
 
 
@@ -328,39 +326,6 @@ def test_a_frame_for_other_constraints_fails_the_frontier() -> None:
 
     with pytest.raises(FrontierPointDataError, match="missing"):
         _payload(frame)
-
-
-# ---------------------------------------------------------------------------
-# OPT-V02: every computed frontier reports the job's frontier generation
-# ---------------------------------------------------------------------------
-
-
-def test_the_frontier_payload_reports_its_generation() -> None:
-    payload = _payload(generation=3)
-
-    assert payload["frontier_generation"] == 3
-    assert OptimiserFrontierResponse(**payload).frontier_generation == 3
-
-
-def test_a_computed_frontier_without_a_generation_is_rejected() -> None:
-    payload = _payload()
-    del payload["frontier_generation"]
-
-    with pytest.raises(ValidationError, match="frontier_generation"):
-        OptimiserFrontierResponse(**payload)
-
-
-def test_a_negative_generation_is_rejected() -> None:
-    with pytest.raises(ValidationError, match="frontier_generation"):
-        OptimiserFrontierResponse(status="ok", frontier_generation=-1)
-
-
-def test_only_the_started_handle_has_no_generation() -> None:
-    started = OptimiserFrontierResponse(status="started", job_id="sweep_1")
-    assert started.frontier_generation is None
-
-    with pytest.raises(ValidationError, match="frontier_generation"):
-        OptimiserFrontierResponse(status="started", job_id="sweep_1", frontier_generation=0)
 
 
 # ---------------------------------------------------------------------------

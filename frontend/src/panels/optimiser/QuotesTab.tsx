@@ -5,10 +5,9 @@
  *
  * Sorting, the quote-id search and the filters run on the server over every
  * quote; the tab only holds the query. Each page is read through the result
- * store's `/apply` cache under its full request identity (job, frontier
- * generation, target and the canonical query), so reopening the tab or
- * returning to a page already seen makes no request, while a new job or a
- * recomputed frontier loads afresh. A response that arrives after the query or
+ * store's `/apply` cache under its full request identity (job, target and the
+ * canonical query), so reopening the tab or returning to a page already seen
+ * makes no request, while a new job loads afresh. A response that arrives after the query or
  * target moved on is dropped. Viewing detail never consumes the result: saving
  * and logging still work.
  */
@@ -28,7 +27,6 @@ import useNodeResultsStore, {
   type OptimiserApplyQuery,
 } from "../../stores/useNodeResultsStore"
 import { formatValue } from "../../utils/formatValue"
-import { frontierGenerationMismatch } from "./optimiserHelpers"
 import {
   SortableValuesTable,
   ValuesTableSearch,
@@ -152,18 +150,16 @@ interface QuotesTabProps {
   nodeId: string
   jobId: string
   mode: "online" | "ratebook"
-  /** The solve's frontier generation: point indices are only meaningful within one. */
-  frontierGeneration: number
   /** The publish target: a frontier point, or null for the solved result. */
   pointIndex: number | null
 }
 
-export default function QuotesTab({ nodeId, jobId, mode, frontierGeneration, pointIndex }: QuotesTabProps) {
+export default function QuotesTab({ nodeId, jobId, mode, pointIndex }: QuotesTabProps) {
   const [query, setQuery] = useState<OptimiserApplyQuery>(DEFAULT_QUERY)
   const [searchText, setSearchText] = useState("")
   const target = pointIndex ?? "solved"
   // A new target starts at its first page (adjusted during render, so no stale page is requested).
-  const targetKey = `${jobId}:${frontierGeneration}:${target}`
+  const targetKey = `${jobId}:${target}`
   const [shownTarget, setShownTarget] = useState(targetKey)
   if (shownTarget !== targetKey) {
     setShownTarget(targetKey)
@@ -181,8 +177,8 @@ export default function QuotesTab({ nodeId, jobId, mode, frontierGeneration, poi
   }, [searchText, query.quote_id_prefix])
 
   const identity = useMemo<OptimiserApplyIdentity>(
-    () => ({ jobId, frontierGeneration, target, query }),
-    [jobId, frontierGeneration, target, query],
+    () => ({ jobId, target, query }),
+    [jobId, target, query],
   )
   const key = optimiserApplyKey(identity)
   const cached = useNodeResultsStore((s) => s.optimiserApplyCache.find((entry) => entry.key === key))
@@ -210,17 +206,8 @@ export default function QuotesTab({ nodeId, jobId, mode, frontierGeneration, poi
     )
       .then((response) => {
         // Aborted means this tab's identity (its query included) moved on; the
-        // store also refuses an identity whose job, generation or target did.
+        // store also refuses an identity whose job or target did.
         if (controller.signal.aborted) return
-        // The server may have recomputed the frontier after this request.
-        const mismatch = frontierGenerationMismatch(
-          response.frontier_generation,
-          identity.frontierGeneration,
-        )
-        if (mismatch) {
-          setFailure({ key, error: mismatch, gone: false })
-          return
-        }
         recordApply(nodeId, identity, response)
       })
       .catch((error) => {

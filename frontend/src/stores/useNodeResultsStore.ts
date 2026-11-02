@@ -49,11 +49,9 @@ export const MAX_CACHED_OPTIMISER_APPLY = 16
 /** The `/apply` request's query beyond its target (OPT-V12): sort, search, filters and page. */
 export type { OptimiserApplyQuery }
 
-/** Everything an `/apply` response depends on: a recompute reuses point
- *  indices for different points, so the frontier generation is part of it. */
+/** Everything an `/apply` response depends on. */
 export interface OptimiserApplyIdentity {
   jobId: string
-  frontierGeneration: number
   target: "solved" | number
   query: OptimiserApplyQuery
 }
@@ -523,41 +521,34 @@ export function effectiveConstraintBounds(result: OptimiserSolveResult): Record<
 export function optimiserApplyKey(identity: OptimiserApplyIdentity): string {
   return JSON.stringify([
     identity.jobId,
-    identity.frontierGeneration,
     identity.target,
     sortObjectKeys(identity.query),
   ])
 }
 
-/** The `/apply` identity a node's cached solve shows now: its job, frontier
- *  generation and selected target. */
+/** The `/apply` identity a node's cached solve shows now: its job and selected target. */
 export function optimiserApplyIdentityFor(
   cached: SolvedCachedSolveResult,
   query: OptimiserApplyQuery,
 ): OptimiserApplyIdentity {
   return {
     jobId: cached.jobId,
-    frontierGeneration: cached.originalResult.frontier_generation,
     target: cached.selectedPointIndex ?? "solved",
     query,
   }
 }
 
 function sameApplyTarget(a: OptimiserApplyIdentity, b: OptimiserApplyIdentity): boolean {
-  return a.jobId === b.jobId && a.frontierGeneration === b.frontierGeneration && a.target === b.target
+  return a.jobId === b.jobId && a.target === b.target
 }
 
-/** The node's entries for any job or generation other than the one installed. */
+/** The node's entries for any job other than the one installed. */
 function withoutSupersededApplyEntries(
   entries: OptimiserApplyCacheEntry[],
   nodeId: string,
-  installed: { jobId: string; frontierGeneration: number },
+  installedJobId: string,
 ): OptimiserApplyCacheEntry[] {
-  const kept = entries.filter((entry) => (
-    entry.nodeId !== nodeId
-    || (entry.identity.jobId === installed.jobId
-      && entry.identity.frontierGeneration === installed.frontierGeneration)
-  ))
+  const kept = entries.filter((entry) => entry.nodeId !== nodeId || entry.identity.jobId === installedJobId)
   return kept.length === entries.length ? entries : kept
 }
 
@@ -571,23 +562,12 @@ function withoutApplyEntriesForNodes(
   return kept.length === entries.length ? entries : kept
 }
 
-/**
- * Whether a frontier select reply answers the node's installed solve: the same
- * job and the same frontier generation. A recompute keeps the job and reuses
- * point indices for different points, so a reply from another generation (a
- * late one, or one the node has not installed yet) describes another point.
- */
+/** Whether a frontier select reply answers the node's installed solve: the same job. */
 function selectReplyIsCurrent(
   cached: CachedSolveResult | undefined,
   jobId: string,
-  selectResult: FrontierSelectResponse,
 ): cached is SolvedCachedSolveResult {
-  return (
-    cached !== undefined
-    && cached.result !== null
-    && cached.jobId === jobId
-    && cached.originalResult.frontier_generation === selectResult.frontier_generation
-  )
+  return cached !== undefined && cached.result !== null && cached.jobId === jobId
 }
 
 /** A select response is the server's complete result for its point. */
@@ -767,22 +747,20 @@ interface NodeResultsState {
   selectFrontierPoint: (nodeId: string, pointIndex: number | null) => void
   /**
    * Store the reply for a point the user selected, and display it unless the
-   * selection has moved on. A reply for a job or frontier generation other
-   * than the node's installed one is dropped.
+   * selection has moved on. A reply for a job other than the node's installed
+   * one is dropped.
    */
   updateFrontierAfterSelect: (nodeId: string, jobId: string, pointIndex: number, selectResult: FrontierSelectResponse) => void
   /**
    * Store a materialised point summary for one job without changing the
-   * selection: a reply for a job or frontier generation the node does not hold
-   * is dropped, and the displayed result changes only if that point is (still)
-   * selected.
+   * selection: a reply for a job the node does not hold is dropped, and the
+   * displayed result changes only if that point is (still) selected.
    */
   recordFrontierPointSummary: (nodeId: string, jobId: string, pointIndex: number, selectResult: FrontierSelectResponse) => void
   /**
    * Cache an `/apply` response under its request identity. It is stored only
-   * while that identity's job, frontier generation and target are still the
-   * node's; otherwise it is a late response and dropped. Returns whether it
-   * was stored.
+   * while that identity's job and target are still the node's; otherwise it
+   * is a late response and dropped. Returns whether it was stored.
    */
   recordOptimiserApply: (nodeId: string, identity: OptimiserApplyIdentity, response: ApplyOptimiserResponse) => boolean
   /** Mark a cached `/apply` response most recently used. */
@@ -964,12 +942,6 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       const { [nodeId]: _removedJob, ...remainingJobs } = s.solveJobs; void _removedJob
       // Extract frontier data from the result if present
       const rawFrontier = result.frontier
-      if (rawFrontier && rawFrontier.frontier_generation !== result.frontier_generation) {
-        throw new Error(
-          `Optimiser frontier generation ${rawFrontier.frontier_generation} does not match `
-          + `its result's generation ${result.frontier_generation}`,
-        )
-      }
       const frontier: FrontierData | null = rawFrontier && rawFrontier.points?.length
         ? {
             points: rawFrontier.points,
@@ -980,7 +952,6 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
             swept_axes: rawFrontier.swept_axes,
             points_limit: rawFrontier.points_limit,
             points_truncated: rawFrontier.points_truncated,
-            frontier_generation: result.frontier_generation,
           }
         : null
       const initialPointIndex = frontier ? 0 : null
@@ -1017,13 +988,9 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         delete _optimiserPreviewCache[evictedNodeId]
       }
       if (bounded.records[nodeId]) cacheOptimiserPreview(nodeId, bounded.records[nodeId])
-      // A new job or a recomputed frontier makes the node's /apply responses
-      // answers to other requests.
+      // A new job makes the node's /apply responses answers to other requests.
       const optimiserApplyCache = withoutApplyEntriesForNodes(
-        withoutSupersededApplyEntries(s.optimiserApplyCache, nodeId, {
-          jobId: job.jobId,
-          frontierGeneration: result.frontier_generation,
-        }),
+        withoutSupersededApplyEntries(s.optimiserApplyCache, nodeId, job.jobId),
         bounded.evicted,
       )
       return {
@@ -1116,7 +1083,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     }
     set((s) => {
       const cached = s.solveResults[nodeId]
-      if (!selectReplyIsCurrent(cached, jobId, selectResult)) return s
+      if (!selectReplyIsCurrent(cached, jobId)) return s
       touchCachedResult(solveResultRecency, nodeId)
       const summary = frontierPointSummaryFromSelect(selectResult)
       // Keep the richer summary so re-selecting this point needs no round trip.
@@ -1167,7 +1134,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => {
       const cached = s.solveResults[nodeId]
       if (
-        !selectReplyIsCurrent(cached, jobId, selectResult)
+        !selectReplyIsCurrent(cached, jobId)
         || !cached.frontier?.point_summaries[pointIndex]
       ) return s
       touchCachedResult(solveResultRecency, nodeId)

@@ -209,13 +209,10 @@
         "loss"
       ],
       "points_limit": 2000,
-      "points_truncated": false,
-      "frontier_generation": 0,
-      "job_id": null
+      "points_truncated": false
     },
     "frontier_error": null,
     "selected_frontier_point": null,
-    "frontier_generation": 0,
     "input_summary": {
       "node_id": "optimiser_1",
       "data_source": "batch",
@@ -323,9 +320,7 @@
       "loss"
     ],
     "points_limit": 2000,
-    "points_truncated": false,
-    "frontier_generation": 0,
-    "job_id": null
+    "points_truncated": false
   },
   "terminal_reason": "completed",
   "execution_metrics": null

@@ -377,8 +377,8 @@ def test_optimiser_artifact_creators_write_owner_markers(
     apply_handle = artifacts._persist_apply_result_artifact(
         SimpleNamespace(dataframe=pl.DataFrame({"value": [1]}))
     )
-    factors_handle = artifacts._persist_ratebook_factors_artifact(
-        pl.DataFrame({"factor": ["a"], "value": [1.0]})
+    factors_handle = artifacts._persist_ratebook_factors_lazy_artifact(
+        pl.DataFrame({"factor": ["a"], "value": [1.0]}).lazy()
     )
 
     assert apply_handle is not None
@@ -401,12 +401,13 @@ def test_optimiser_reaper_targets_only_owned_marked_roots(
     apply_root = tmp_path / "apply"
     factors_root = tmp_path / "factors"
     analysis_root = tmp_path / "analysis"
-    apply_root.mkdir()
-    factors_root.mkdir()
-    analysis_root.mkdir()
+    scratch_root = tmp_path / "scratch"
+    for root in (apply_root, factors_root, analysis_root, scratch_root):
+        root.mkdir()
     _marker(apply_root / "stale", owner="optimiser_apply")
     _marker(factors_root / "stale", owner="optimiser_ratebook_factors")
     _marker(analysis_root / "stale", owner="optimiser_quote_analysis")
+    _marker(scratch_root / "stale", owner="optimiser_scratch")
     # A marker owned by another family is not this root's to reap.
     _marker(analysis_root / "foreign", owner="optimiser_apply")
     unrelated = apply_root / "unrelated"
@@ -414,13 +415,84 @@ def test_optimiser_reaper_targets_only_owned_marked_roots(
     monkeypatch.setattr(artifacts, "_apply_artifact_root", lambda: apply_root)
     monkeypatch.setattr(artifacts, "_ratebook_factors_artifact_root", lambda: factors_root)
     monkeypatch.setattr(artifacts, "_quote_analysis_artifact_root", lambda: analysis_root)
+    monkeypatch.setattr(artifacts, "_scratch_artifact_root", lambda: scratch_root)
     reports = artifacts.reap_stale_optimiser_artifacts(0)
 
     assert reports["apply"]["removed"] == 1
     assert reports["ratebook_factors"]["removed"] == 1
     assert reports["quote_analysis"]["removed"] == 1
+    assert reports["scratch"]["removed"] == 1
     assert unrelated.exists()
     assert (analysis_root / "foreign").exists()
+
+
+def test_setup_scratch_lives_under_the_marked_scratch_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OPT-R02: the solver input, a worker's scratch and the auto-range parts are
+    marked directories of the optimiser's scratch root, which startup reaps."""
+    from haute.routes import _optimiser_artifacts as artifacts
+    from haute.routes._optimiser_worker import worker_scratch_directory
+
+    scratch_root = tmp_path / "scratch"
+    monkeypatch.setattr(artifacts, "_scratch_artifact_root", lambda: scratch_root)
+    solver_input = Path(artifacts._new_solver_input_path())
+    with worker_scratch_directory() as worker_dir, artifacts._range_parts_directory() as parts:
+        made = [solver_input.parent, Path(worker_dir), parts]
+        assert {path.parent for path in made} == {scratch_root}
+        markers = [json.loads((path / ".haute-artifact.json").read_text()) for path in made]
+        assert {marker["owner"] for marker in markers} == {"optimiser_scratch"}
+        assert {marker["pid"] for marker in markers} == {os.getpid()}
+    artifacts._remove_solver_input(str(solver_input))
+    assert list(scratch_root.iterdir()) == []
+
+
+def test_reaping_keeps_a_running_servers_files_and_removes_a_dead_ones(tmp_path: Path) -> None:
+    """A directory whose creator still runs is never reaped, at any age; one a
+    killed process left is reaped once stale."""
+    import subprocess
+    import sys
+
+    from haute._artifact_housekeeping import create_owned_artifact_directory
+
+    root = tmp_path / "scratch"
+    killed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import os, sys; from pathlib import Path; "
+            "from haute._artifact_housekeeping import create_owned_artifact_directory; "
+            "print(create_owned_artifact_directory("
+            "Path(sys.argv[1]), 'input_', 'optimiser_scratch')); "
+            "sys.stdout.flush(); os._exit(9)",
+            str(root),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert killed.returncode == 9, killed.stderr
+    abandoned = Path(killed.stdout.strip())
+    live = create_owned_artifact_directory(root, "input_", "optimiser_scratch")
+
+    report = reap_stale_artifact_directories(root, "optimiser_scratch", 0)
+
+    assert report["removed"] == 1
+    assert not abandoned.exists()
+    assert live.exists()
+
+
+def test_optimiser_modules_create_no_unmarked_temporary_files() -> None:
+    """OPT-R02: every optimiser scratch file goes through the marked root."""
+    routes = Path(__file__).resolve().parents[1] / "src" / "haute" / "routes"
+    modules = [routes / "optimiser.py", *sorted(routes.glob("_optimiser*.py"))]
+    offenders = [
+        f"{module.name}: {name}"
+        for module in modules
+        for name in ("mkstemp", "mkdtemp", "TemporaryDirectory", "NamedTemporaryFile")
+        if name in module.read_text(encoding="utf-8")
+    ]
+    assert offenders == []
 
 
 def test_optimiser_reaper_rejects_invalid_stale_configuration(
@@ -567,3 +639,70 @@ def test_server_lifespan_cleans_partial_interactive_startup(
     assert all(task.cancelled for task in created)
     assert server._watcher_task is None
     assert server._artifact_reaper_task is None
+
+
+@pytest.mark.parametrize(
+    "creator",
+    [
+        pytest.param({"pid": "1"}, id="pid-not-an-int"),
+        pytest.param({"pid": 0, "process_started_at": 1.0}, id="pid-not-positive"),
+        pytest.param({"pid": 1}, id="no-start-time"),
+        pytest.param({"pid": 1, "process_started_at": "x"}, id="start-time-not-a-number"),
+        pytest.param({"pid": 1, "process_started_at": float("inf")}, id="start-time-not-finite"),
+    ],
+)
+def test_a_malformed_creator_makes_the_marker_invalid(tmp_path: Path, creator: dict) -> None:
+    child = tmp_path / "child"
+    child.mkdir()
+    (child / ".haute-artifact.json").write_text(
+        json.dumps({"schema_version": 1, "owner": "test-owner", "created_at": 0.0, **creator}),
+        encoding="utf-8",
+    )
+
+    report = reap_stale_artifact_directories(tmp_path, "test-owner", 0)
+
+    assert report["removed"] == 0
+    assert child.exists()
+
+
+def test_a_creator_whose_start_time_cannot_be_read_counts_as_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import psutil
+
+    directory = create_owned_artifact_directory(tmp_path, "input_", "test-owner")
+
+    def denied(_pid: int) -> float:
+        raise psutil.AccessDenied(_pid)
+
+    monkeypatch.setattr(artifact_housekeeping, "_process_started_at", denied)
+
+    report = reap_stale_artifact_directories(tmp_path, "test-owner", 0)
+
+    assert report["removed"] == 0
+    assert directory.exists()
+
+
+def test_a_failed_scratch_removal_is_logged_not_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute.routes import _optimiser_artifacts as artifacts
+
+    def refuse(_path: object) -> None:
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(artifacts.shutil, "rmtree", refuse)
+
+    artifacts.remove_scratch_directory(tmp_path / "scratch")
+
+
+def test_only_a_solver_input_this_server_created_is_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute.routes import _optimiser_artifacts as artifacts
+
+    monkeypatch.setattr(artifacts, "_scratch_artifact_root", lambda: tmp_path / "scratch")
+    foreign = tmp_path / "elsewhere" / "solver_input.parquet"
+
+    with pytest.raises(ValueError, match="not a solver input this server created"):
+        artifacts._remove_solver_input(str(foreign))

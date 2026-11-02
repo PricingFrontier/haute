@@ -573,7 +573,7 @@ describes. Stale, changed or already-applied plans fail before
   dispatch and canonical `_types.py` graph models used by the executor.
 - **[background-jobs](../background-jobs/high-level.md)** — job-status response shapes
   (`TrainStatusResponse`, `OptimiserStatusResponse`, `ExploreStatusResponse`,
-  `OptimiserFrontierAutoRangeStatusResponse`, `OptimiserFrontierStatusResponse`,
+  `OptimiserFrontierAutoRangeStatusResponse`,
   `DispersionEstimateStatusResponse`) are defined in `schemas.py`; the polling/job-
   runner mechanics live in that component's own routers.
 - **[git-integration](../git-integration/high-level.md)** — every `Git*` schema

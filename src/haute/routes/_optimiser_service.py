@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NotRequired, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, NotRequired, cast
 
 import numpy as np
 
@@ -40,7 +40,6 @@ from haute._env import int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
     admit_growth_grant,
-    create_admitted_execution_context,
     isolated_execution_budget,
 )
 from haute._execution_context import (
@@ -105,7 +104,6 @@ from haute.routes._contract_errors import (
     contract_error_job_fields,
     contract_error_refusal,
     contract_error_terminal_reason,
-    memory_limit_refusal,
 )
 from haute.routes._job_lifecycle import (
     TERMINAL_REASONS,
@@ -174,12 +172,16 @@ from haute.routes._optimiser_solver import (
     solver_worker_context,
 )
 from haute.routes._optimiser_worker import (
+    AUTO_RANGE_OPERATION_NOUN,
+    SETUP_OPERATION_NOUN,
     FrontierAutoRangeWorkerOutcome,
     FrontierAutoRangeWorkerRequest,
+    OptimiserWorkerFailure,
     OptimiserWorkerFailureError,
     SolveInput,
     SolveInputWorkerOutcome,
     SolveInputWorkerRequest,
+    classify_optimiser_failure,
     frontier_auto_range_worker,
     materialise_solve_input_worker,
     resolve_optimiser_polars_threads,
@@ -240,7 +242,6 @@ _JOB_TYPE_KEY = "job_type"
 _SOLVE_JOB_TYPE: Literal["solve"] = "solve"
 _ESTIMATE_JOB_TYPE: Literal["estimate"] = "estimate"
 _FRONTIER_AUTO_RANGE_JOB_TYPE: Literal["frontier_auto_range"] = "frontier_auto_range"
-_FRONTIER_RECOMPUTE_JOB_TYPE: Literal["frontier_recompute"] = "frontier_recompute"
 _GRAPH_NODE_SETUP_COORDINATION_TYPE = "optimiser_graph_node_setup"
 _FRONTIER_AUTO_RANGE_CANCELLED_STATUS = "cancelled"
 _FRONTIER_AUTO_RANGE_SUPERSEDED_STATUS = "superseded"
@@ -299,10 +300,6 @@ _NON_BLOCKING_RUNNING_JOB_TYPES = frozenset(
     {
         _ESTIMATE_JOB_TYPE,
         _FRONTIER_AUTO_RANGE_JOB_TYPE,
-        # A frontier recompute re-solves on a completed job's stored runtime
-        # state; it never reserved the solve slot when it ran inline, and the
-        # background offload keeps that semantics.
-        _FRONTIER_RECOMPUTE_JOB_TYPE,
     }
 )
 
@@ -328,96 +325,6 @@ def _with_flattened_optimiser_graph(
     if flat_graph is body.graph:
         return body
     return body.model_copy(update={"graph": flat_graph})
-
-
-def _is_memory_limit_refusal(exc: RequestRefusedError) -> bool:
-    return (
-        exc.status_code == 507
-        and isinstance(exc.detail, Mapping)
-        and exc.detail.get("error_code") == "memory_limit"
-    )
-
-
-def _normalise_memory_limit_payload(detail: object) -> dict[str, object]:
-    if isinstance(detail, Mapping):
-        payload = {str(key): value for key, value in detail.items()}
-    else:
-        payload = {"message": str(detail)}
-    payload.setdefault("error_code", "memory_limit")
-    return payload
-
-
-def _memory_limit_message(payload: Mapping[str, object]) -> str:
-    # A "message" key can only have been stamped by memory_limit_refusal
-    # (the exceptions' to_payload() carries no message) — prefer that curated
-    # wording so the job's terminal message matches the HTTP surface.
-    message = payload.get("message")
-    if isinstance(message, str) and message:
-        return message
-    reason = payload.get("reason")
-    if isinstance(reason, str) and reason:
-        return f"Auto-range exceeded its memory budget ({reason})."
-    return "Auto-range exceeded its memory budget."
-
-
-def _memory_limit_job_update(
-    *,
-    detail: object,
-    elapsed_seconds: float,
-    execution_context: ExecutionContext,
-) -> dict[str, object]:
-    payload = _normalise_memory_limit_payload(detail)
-    error_code = payload.get("error_code")
-    if not isinstance(error_code, str) or not error_code:
-        error_code = "memory_limit"
-        payload["error_code"] = error_code
-    return {
-        "message": _memory_limit_message(payload),
-        "elapsed_seconds": elapsed_seconds,
-        "error_code": error_code,
-        "http_status_code": 507,
-        "error_detail": payload,
-        "execution_metrics": execution_context.metrics_payload(
-            status="memory_limited",
-            terminal_reason="memory_limited",
-        ),
-    }
-
-
-def _refusal_job_update(
-    *,
-    status_code: int,
-    detail: object,
-    elapsed_seconds: float,
-    execution_context: ExecutionContext,
-    terminal_reason: TerminalReason,
-) -> dict[str, object]:
-    return {
-        "message": str(detail),
-        "elapsed_seconds": elapsed_seconds,
-        "http_status_code": status_code,
-        "error_detail": detail,
-        "execution_metrics": execution_context.metrics_payload(
-            status=terminal_reason,
-            terminal_reason=terminal_reason,
-        ),
-    }
-
-
-def _refusal_exception_job_update(
-    *,
-    exc: RequestRefusedError,
-    elapsed_seconds: float,
-    execution_context: ExecutionContext,
-    terminal_reason: TerminalReason,
-) -> dict[str, object]:
-    return _refusal_job_update(
-        status_code=exc.status_code,
-        detail=exc.detail,
-        elapsed_seconds=elapsed_seconds,
-        execution_context=execution_context,
-        terminal_reason=terminal_reason,
-    )
 
 
 def _coerce_stopped_terminal_reason(reason: str) -> TerminalReason:
@@ -962,13 +869,15 @@ class _ScenarioFrontierRangeAccumulator:
         if check_cancelled is not None:
             check_cancelled()
         if self.row_count == 0:
-            raise ValueError("Unable to estimate frontier ranges from an empty scenario frame.")
+            raise InvalidRequestError(
+                "Unable to estimate frontier ranges from an empty scenario frame."
+            )
         if self.null_quote_id_count > 0:
             detail = (
                 f"{_NULL_QUOTE_ID_DETAIL_PREFIX} ({self.null_quote_id_count} rows). "
                 "Every row must have a non-null quote_id; check upstream filters and joins."
             )
-            raise ValueError(detail)
+            raise InvalidRequestError(detail)
 
         totals = self._carry_totals() if self.carry_path else None
         if totals is None:
@@ -981,10 +890,9 @@ class _ScenarioFrontierRangeAccumulator:
         for cname, (min_alias, max_alias) in self.aliases.items():
             min_value = totals[self.extrema_columns.index(min_alias)]
             max_value = totals[self.extrema_columns.index(max_alias)]
+            # Each bound is a sum of per-quote extrema, so min <= max whenever both are finite.
             if not np.isfinite(min_value) or not np.isfinite(max_value):
-                raise ValueError(f"Estimated frontier range for {cname!r} is not finite.")
-            if min_value > max_value:
-                raise ValueError(f"Estimated frontier range for {cname!r} is invalid.")
+                raise InvalidRequestError(f"Estimated frontier range for {cname!r} is not finite.")
             ranges[cname] = {"min": min_value, "max": max_value}
         return ranges
 
@@ -2042,27 +1950,7 @@ class OptimiserSolveService:
     ) -> None:
         """Publish one solve-setup failure as the job's terminal state."""
         elapsed_seconds = time.monotonic() - start_time
-        if isinstance(exc, OptimiserWorkerFailureError):
-            failure = exc.failure
-            fields = dict(failure.fields)
-            worker_metrics = fields.get("execution_metrics")
-            if execution_context is not None:
-                fields["execution_metrics"] = (
-                    execution_context.metrics_with_worker_evidence(worker_metrics)
-                    if isinstance(worker_metrics, Mapping)
-                    else execution_context.metrics_payload(
-                        status=failure.terminal_reason,
-                        terminal_reason=failure.terminal_reason,
-                    )
-                )
-            self._lifecycle.transition(
-                job_id,
-                to=failure.terminal_reason,
-                message=failure.message,
-                fields=fields,
-                elapsed_seconds=elapsed_seconds,
-            )
-        elif isinstance(exc, BackgroundJobStoppedError):
+        if isinstance(exc, BackgroundJobStoppedError):
             terminal_reason = _coerce_stopped_terminal_reason(exc.terminal_reason)
             self._lifecycle.transition(
                 job_id,
@@ -2080,116 +1968,46 @@ class OptimiserSolveService:
                 ),
                 elapsed_seconds=elapsed_seconds,
             )
-        elif isinstance(exc, RequestRefusedError):
-            http_terminal_reason: TerminalReason = (
-                "memory_limited"
-                if _is_memory_limit_refusal(exc)
-                else "contract_error"
-                if exc.status_code in (400, 422)
-                else "error"
-            )
-            error_update: dict[str, Any] = {
-                "message": str(exc.detail),
-                "http_status_code": exc.status_code,
-                "error_detail": exc.detail,
-            }
-            if execution_context is not None:
-                error_update["execution_metrics"] = execution_context.metrics_payload(
-                    status=http_terminal_reason,
-                    terminal_reason=http_terminal_reason,
+            return
+        failure = classify_optimiser_failure(
+            exc,
+            operation_noun=SETUP_OPERATION_NOUN,
+            log_event="optimiser_setup_failed",
+            node_id=node_id,
+            job_id=job_id,
+        )
+        self._publish_failure(
+            job_id, failure, execution_context=execution_context, elapsed_seconds=elapsed_seconds
+        )
+
+    def _publish_failure(
+        self,
+        job_id: str,
+        failure: OptimiserWorkerFailure,
+        *,
+        execution_context: ExecutionContext | None,
+        elapsed_seconds: float,
+    ) -> None:
+        """Record a classified failure as the job's terminal state, with its metrics."""
+        fields = dict(failure.fields)
+        fields["elapsed_seconds"] = elapsed_seconds
+        if execution_context is not None:
+            worker_metrics = fields.get("execution_metrics")
+            fields["execution_metrics"] = (
+                execution_context.metrics_with_worker_evidence(worker_metrics)
+                if isinstance(worker_metrics, Mapping)
+                else execution_context.metrics_payload(
+                    status=failure.terminal_reason,
+                    terminal_reason=failure.terminal_reason,
                 )
-            self._lifecycle.transition(
-                job_id,
-                to=http_terminal_reason,
-                fields=error_update,
-                elapsed_seconds=elapsed_seconds,
             )
-        elif isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
-            refusal = memory_limit_refusal(exc, operation_noun="Optimisation")
-            if execution_context is not None:
-                memory_error_update = _memory_limit_job_update(
-                    detail=refusal.detail,
-                    elapsed_seconds=elapsed_seconds,
-                    execution_context=execution_context,
-                )
-            else:
-                payload = _normalise_memory_limit_payload(refusal.detail)
-                memory_error_update = {
-                    "message": str(payload),
-                    "elapsed_seconds": elapsed_seconds,
-                    "error_code": payload.get("error_code", "memory_limit"),
-                    "http_status_code": refusal.status_code,
-                    "error_detail": payload,
-                }
-            self._lifecycle.transition(
-                job_id,
-                to="memory_limited",
-                fields=memory_error_update,
-                elapsed_seconds=elapsed_seconds,
-            )
-        elif isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES):
-            contract_reason = contract_error_terminal_reason(exc)
-            contract_fields = contract_error_job_fields(exc)
-            contract_fields["elapsed_seconds"] = elapsed_seconds
-            if execution_context is not None:
-                contract_fields["execution_metrics"] = execution_context.metrics_payload(
-                    status=contract_reason,
-                    terminal_reason=contract_reason,
-                )
-            self._lifecycle.transition(
-                job_id,
-                to=contract_reason,
-                message=str(exc),
-                fields=contract_fields,
-                elapsed_seconds=elapsed_seconds,
-            )
-        elif isinstance(exc, BoundedMemoryUnsupportedError):
-            detail = f"Optimiser setup cannot run in bounded streaming mode: {exc}"
-            logger.warning(
-                "optimiser_setup_bounded_streaming_unsupported",
-                error=str(exc),
-                node_id=node_id,
-                job_id=job_id,
-            )
-            bounded_fields: dict[str, Any] = {
-                "http_status_code": 422,
-                "error_detail": detail,
-                "elapsed_seconds": elapsed_seconds,
-            }
-            if execution_context is not None:
-                bounded_fields["execution_metrics"] = execution_context.metrics_payload(
-                    status="contract_error",
-                    terminal_reason="contract_error",
-                )
-            self._lifecycle.transition(
-                job_id,
-                to="contract_error",
-                message=detail,
-                fields=bounded_fields,
-                elapsed_seconds=elapsed_seconds,
-            )
-        else:
-            detail = f"Optimiser setup failed: {exc}"
-            logger.error(
-                "optimiser_setup_failed",
-                error=str(exc),
-                node_id=node_id,
-                job_id=job_id,
-                exc_info=True,
-            )
-            error_fields: dict[str, Any] = {"elapsed_seconds": elapsed_seconds}
-            if execution_context is not None:
-                error_fields["execution_metrics"] = execution_context.metrics_payload(
-                    status="error",
-                    terminal_reason="error",
-                )
-            self._lifecycle.transition(
-                job_id,
-                to="error",
-                message=detail,
-                fields=error_fields,
-                elapsed_seconds=elapsed_seconds,
-            )
+        self._lifecycle.transition(
+            job_id,
+            to=failure.terminal_reason,
+            message=failure.message,
+            fields=fields,
+            elapsed_seconds=elapsed_seconds,
+        )
 
     def start_frontier_auto_range(
         self,
@@ -2595,6 +2413,32 @@ class OptimiserSolveService:
             elapsed_seconds=elapsed_seconds,
         )
 
+    def _fail_auto_range(
+        self,
+        job_id: str,
+        exc: Exception,
+        *,
+        node_id: str,
+        execution_context: ExecutionContext | None,
+    ) -> NoReturn:
+        """Record an auto-range failure on its job, then refuse the request with it."""
+        failure = classify_optimiser_failure(
+            exc,
+            operation_noun=AUTO_RANGE_OPERATION_NOUN,
+            log_event="frontier_auto_range_failed",
+            node_id=node_id,
+            job_id=job_id,
+        )
+        self._publish_failure(
+            job_id,
+            failure,
+            execution_context=execution_context,
+            elapsed_seconds=self._job_elapsed(job_id),
+        )
+        raise RequestRefusedError(
+            failure.http_detail, status_code=failure.http_status_code
+        ) from None
+
     def _prepare_frontier_auto_range(
         self,
         body: OptimiserFrontierAutoRangeRequest,
@@ -2679,13 +2523,7 @@ class OptimiserSolveService:
             reason = self._jobs.cancellation_reason(job_id) or "cancelled"
             raise BackgroundJobStoppedError(job_id, reason) from exc
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
-            refusal = memory_limit_refusal(exc, operation_noun="Auto-range")
-            self._lifecycle.transition(
-                job_id,
-                to="memory_limited",
-                message=str(refusal.detail),
-            )
-            raise refusal from None
+            self._fail_auto_range(job_id, exc, node_id=body.node_id, execution_context=None)
         try:
             bind_running_execution_metrics_publisher(self._store, job_id, owned_context)
             return self._run_admitted_frontier_auto_range_job(
@@ -2778,133 +2616,13 @@ class OptimiserSolveService:
                 return response
         except BackgroundJobStoppedError:
             raise
-        except OptimiserWorkerFailureError as exc:
-            failure = exc.failure
-            fields = dict(failure.fields)
-            failed_metrics = fields.get("execution_metrics")
-            fields["execution_metrics"] = (
-                execution_context.metrics_with_worker_evidence(failed_metrics)
-                if isinstance(failed_metrics, Mapping)
-                else execution_context.metrics_payload(
-                    status=failure.terminal_reason,
-                    terminal_reason=failure.terminal_reason,
-                )
-            )
-            fields["elapsed_seconds"] = self._job_elapsed(job_id)
-            self._lifecycle.transition(
-                job_id,
-                to=failure.terminal_reason,
-                message=failure.message,
-                fields=fields,
-            )
-            raise RequestRefusedError(
-                failure.http_detail, status_code=failure.http_status_code
-            ) from None
         except ExecutionCancelledError as exc:
             reason = self._jobs.cancellation_reason(job_id) or "cancelled"
             raise BackgroundJobStoppedError(job_id, reason) from exc
-        except ExecutionMemoryLimitExceededError as exc:
-            refusal = memory_limit_refusal(exc, operation_noun="Auto-range")
-            self._lifecycle.transition(
-                job_id,
-                to="memory_limited",
-                fields=_memory_limit_job_update(
-                    detail=refusal.detail,
-                    elapsed_seconds=self._job_elapsed(job_id),
-                    execution_context=execution_context,
-                ),
-            )
-            raise refusal from None
-        except RequestRefusedError as exc:
-            if _is_memory_limit_refusal(exc):
-                self._lifecycle.transition(
-                    job_id,
-                    to="memory_limited",
-                    fields=_memory_limit_job_update(
-                        detail=exc.detail,
-                        elapsed_seconds=self._job_elapsed(job_id),
-                        execution_context=execution_context,
-                    ),
-                )
-                raise
-            terminal_reason: TerminalReason = (
-                "contract_error" if exc.status_code in (400, 422) else "error"
-            )
-            self._lifecycle.transition(
-                job_id,
-                to=terminal_reason,
-                fields=_refusal_exception_job_update(
-                    exc=exc,
-                    elapsed_seconds=self._job_elapsed(job_id),
-                    execution_context=execution_context,
-                    terminal_reason=terminal_reason,
-                ),
-            )
-            raise
-        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-            elapsed_seconds = self._job_elapsed(job_id)
-            contract_reason = contract_error_terminal_reason(exc)
-            fields = contract_error_job_fields(exc)
-            fields["elapsed_seconds"] = elapsed_seconds
-            fields["execution_metrics"] = execution_context.metrics_payload(
-                status=contract_reason,
-                terminal_reason=contract_reason,
-            )
-            self._lifecycle.transition(job_id, to=contract_reason, fields=fields)
-            raise contract_error_refusal(exc) from None
-        except BoundedMemoryUnsupportedError as exc:
-            detail = f"Frontier auto range cannot run in bounded streaming mode: {exc}"
-            logger.warning(
-                "frontier_auto_range_bounded_streaming_unsupported",
-                error=str(exc),
-                node_id=body.node_id,
-                job_id=job_id,
-            )
-            self._lifecycle.transition(
-                job_id,
-                to="contract_error",
-                fields=_refusal_job_update(
-                    status_code=422,
-                    detail=detail,
-                    elapsed_seconds=self._job_elapsed(job_id),
-                    execution_context=execution_context,
-                    terminal_reason="contract_error",
-                ),
-            )
-            raise UnprocessableError(detail) from exc
-        except ValueError as exc:
-            detail = str(exc)
-            self._lifecycle.transition(
-                job_id,
-                to="contract_error",
-                fields=_refusal_job_update(
-                    status_code=400,
-                    detail=detail,
-                    elapsed_seconds=self._job_elapsed(job_id),
-                    execution_context=execution_context,
-                    terminal_reason="contract_error",
-                ),
-            )
-            raise InvalidRequestError(detail) from exc
         except Exception as exc:
-            logger.error(
-                "frontier_auto_range_failed",
-                error=str(exc),
-                node_id=body.node_id,
-                exc_info=True,
+            self._fail_auto_range(
+                job_id, exc, node_id=body.node_id, execution_context=execution_context
             )
-            self._lifecycle.transition(
-                job_id,
-                to="error",
-                fields={
-                    "message": f"Frontier auto range failed: {exc}",
-                    "elapsed_seconds": self._job_elapsed(job_id),
-                    "execution_metrics": execution_context.metrics_payload(status="error"),
-                },
-            )
-            raise ServiceFailedError(
-                "Frontier auto range failed. Check the server logs for details."
-            ) from exc
 
     def _frontier_ranges(
         self,
@@ -3800,14 +3518,20 @@ class OptimiserSolveService:
     ) -> None:
         """Start the solver in a background thread.
 
-        The solve adopts *quote_analysis_handle* at completion; the worker
-        removes it when the job never did.
+        Setup hands over the admitted execution context it registered for the
+        job; the solve runs under it. The solve adopts *quote_analysis_handle*
+        at completion; the worker removes it when the job never did.
         """
         job_id = ctx.job_id
         node_id = ctx.node_id
         mode = ctx.mode
         setup_singleflight_key = ctx.setup_singleflight_key
         execution_context = ctx.execution_context
+        if execution_context is None or not ctx.registration_already_active:
+            raise RuntimeError(
+                "A solve launches only with the admitted, registered execution context its "
+                "setup created."
+            )
 
         existing_job: Mapping[str, Any] = self._store.get_job(job_id) or {}
         raw_start_time = existing_job.get("start_time")
@@ -3823,25 +3547,6 @@ class OptimiserSolveService:
                 "timeout": _solve_timeout_from_config(config),
             },
         )
-        if execution_context is None:
-            execution_token = ExecutionCancellationToken()
-            self._jobs.register_latest(
-                (_SOLVE_JOB_TYPE, job_id),
-                job_id,
-                execution_token=execution_token,
-            )
-            execution_context = create_admitted_execution_context(
-                operation="optimiser_solve_worker",
-                profile=ExecutionProfile.OPTIMISER_SETUP,
-                job_id=job_id,
-                cancellation_token=execution_token,
-            )
-        elif not ctx.registration_already_active:
-            self._jobs.register_latest(
-                (_SOLVE_JOB_TYPE, job_id),
-                job_id,
-                execution_token=execution_context.cancellation_token,
-            )
 
         def _solve_background() -> None:
             # Set only by a published completion; the job then owns the handles.

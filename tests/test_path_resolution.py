@@ -406,3 +406,22 @@ def test_runtime_project_root_scope_rejects_non_graph_argument() -> None:
 
     with pytest.raises(TypeError, match="PipelineGraph"):
         selected_root("not-a-graph")  # type: ignore[arg-type]
+
+
+def test_a_standalone_run_inside_a_scoped_execution_keeps_that_root(tmp_path: Path) -> None:
+    """Deploy scopes its validated root before scoring; a standalone scope keeps it."""
+    from haute._path_resolution import (
+        runtime_project_root_scope,
+        standalone_project_root_scope,
+    )
+
+    with runtime_project_root_scope(None, project_root=tmp_path) as scoped:
+        with standalone_project_root_scope(tmp_path / "other" / "main.py") as standalone:
+            assert standalone == scoped
+
+
+def test_a_relative_pipeline_file_names_no_enclosing_project() -> None:
+    from haute._path_resolution import _enclosing_haute_project
+
+    assert _enclosing_haute_project("rating/main.py") is None
+    assert _enclosing_haute_project(None) is None

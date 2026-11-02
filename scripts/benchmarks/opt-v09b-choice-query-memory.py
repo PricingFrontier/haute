@@ -144,7 +144,6 @@ def _measure(fixture_path: str, reducer_name: str, with_analysis: bool) -> dict[
             },
             "scenario_grid": fixture["scenario_grid"],
             "artifact_handles": handles,
-            "frontier_generation": 0,
             "result": {"mode": "online"},
         },
     )

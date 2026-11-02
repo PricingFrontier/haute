@@ -535,7 +535,7 @@ class TestSessionLifecycle:
         assert response.status_code == 500, response.text
         assert _session_of(job_id).alive
 
-    def test_a_point_applies_and_a_recompute_runs_in_the_session(
+    def test_a_point_applies_in_the_session(
         self, client, project: Path, process_mode: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         graph = _online_graph(
@@ -554,23 +554,6 @@ class TestSessionLifecycle:
         page = _apply_point(client, job_id, 1)
         assert page.status_code == 200, page.text
         assert page.json()["preview"] == thread_page.json()["preview"]
-        recompute = client.post(
-            "/api/optimiser/frontier",
-            json={
-                "job_id": job_id,
-                "threshold_ranges": {"volume": [0.6, 1.8]},
-                "n_points_per_dim": 4,
-            },
-        )
-        assert recompute.status_code == 200, recompute.text
-        sweep_id = recompute.json()["job_id"]
-        deadline = time.monotonic() + 60
-        while True:
-            sweep = client.get(f"/api/optimiser/frontier/status/{sweep_id}").json()
-            if sweep["status"] != "running" or time.monotonic() > deadline:
-                break
-            time.sleep(0.1)
-        assert sweep["status"] == "completed", sweep
         assert _session_of(job_id).alive
 
 
@@ -698,77 +681,6 @@ class TestSessionCommandLifetime:
         assert not created[0].exists()
         assert _gone(pid)
         assert _job(job_id)[RUNTIME_UNAVAILABLE_KEY]["reason"] == "expired"
-
-    def test_cancelling_a_recompute_is_cooperative_and_keeps_the_session(
-        self,
-        client,
-        project: Path,
-        process_mode: None,
-        signals: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        job_id = _solved_session_job(client, project)
-        session = _session_of(job_id)
-        real_sweep = _optimiser_frontier.session_sweep
-        monkeypatch.setattr(_optimiser_frontier, "session_sweep", block_until_released)
-        started = client.post(
-            "/api/optimiser/frontier",
-            json={"job_id": job_id, "threshold_ranges": {"volume": [0.6, 1.8]}},
-        )
-        assert started.status_code == 200, started.text
-        sweep_id = started.json()["job_id"]
-        _wait_for_entry(session)
-        cancelled = client.post(f"/api/optimiser/frontier/cancel/{sweep_id}")
-        assert cancelled.status_code == 200, cancelled.text
-        time.sleep(0.5)
-        assert session.alive
-        (signals / "release").write_text("1")
-        monkeypatch.setattr(_optimiser_frontier, "session_sweep", real_sweep)
-        deadline = time.monotonic() + 30
-        while True:
-            page = _apply_point(client, job_id, 1)
-            if page.status_code != 409 or time.monotonic() > deadline:
-                break
-            time.sleep(0.1)
-        assert page.status_code == 200, page.text
-        assert session.alive
-        assert client.get(f"/api/optimiser/frontier/status/{sweep_id}").json()["status"] == (
-            "cancelled"
-        )
-
-
-class TestSweepPublication:
-    def test_a_recompute_whose_runtime_goes_before_it_publishes_does_not_publish(
-        self, client, project: Path, process_mode: None, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        job_id = _solved_session_job(client, project)
-        generation = _job(job_id)["frontier_generation"]
-        real = _optimiser_frontier._invalidate_frontier_apply_artifact_handles
-
-        def runtime_gone_at_publication(job: Any) -> Any:
-            # Inside the publication, after the parent job was read: the runtime goes.
-            _optimiser_service_store().clear_result_data(job_id, keys=(SESSION_KEY,))
-            return real(job)
-
-        monkeypatch.setattr(
-            _optimiser_frontier,
-            "_invalidate_frontier_apply_artifact_handles",
-            runtime_gone_at_publication,
-        )
-        started = client.post(
-            "/api/optimiser/frontier",
-            json={"job_id": job_id, "threshold_ranges": {"volume": [0.6, 1.8]}},
-        )
-        assert started.status_code == 200, started.text
-        sweep_id = started.json()["job_id"]
-        deadline = time.monotonic() + 60
-        while True:
-            sweep = client.get(f"/api/optimiser/frontier/status/{sweep_id}").json()
-            if sweep["status"] != "running" or time.monotonic() > deadline:
-                break
-            time.sleep(0.1)
-        assert sweep["status"] == "contract_error", sweep
-        assert _job(job_id)["frontier_generation"] == generation
 
 
 class TestSolveOwnership:

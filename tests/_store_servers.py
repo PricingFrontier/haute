@@ -2,8 +2,8 @@
 SQL Server or PostgreSQL server the environment names, as the CI job's containers do.
 
 A server is named by ``HAUTE_TEST_SQLSERVER_URL`` or ``HAUTE_TEST_POSTGRESQL_URL``, its URL
-with no sign-in in it, naming a database the login may connect to (SQL Server's ``master``,
-which a pyodbc URL needs or it takes the server for a DSN, or PostgreSQL's ``postgres``), and
+with no sign-in in it, naming a database the login may connect to (SQL Server's ``master``
+or PostgreSQL's ``postgres``), and
 signed in to as the login ``HAUTE_TEST_<NAME>_USER`` and
 ``HAUTE_TEST_<NAME>_PASSWORD`` name, which may make and drop databases. Each test is given a
 database of its own on it, dropped after the test, so its tables are its own and a plain SQL
@@ -104,7 +104,7 @@ class Target:
             cursor = raw.cursor()
             cursor.execute(script)
             if self.backend == "sqlserver":
-                # pyodbc raises a statement's error once its result is reached.
+                # The driver raises a statement's error once its result is reached.
                 while cursor.nextset():
                     pass
         finally:

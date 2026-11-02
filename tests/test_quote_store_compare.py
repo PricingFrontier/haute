@@ -13,15 +13,18 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sqlalchemy import event
+from sqlalchemy.dialects import mssql
 
+import haute._quote_store._catalogue as catalogue_module
 from haute._quote_store import QuoteStoreEnvironmentError, StoreLocation, open_book, render_sql
-from haute._quote_store._catalogue import Catalogue, read_catalogue
+from haute._quote_store._catalogue import IDENTITY, Catalogue, counting_statement, read_catalogue
 from haute._quote_store._compare import Comparison, Rename, compare, read_store_catalogue
 from haute._quote_store._migrate import PROVIDER_DIALECTS
 from haute._quote_store._providers import PROVIDERS
 from haute._quote_store._store import make_engine
 from haute._workbench_form import FormSpec, with_quote_details
-from tests._store_servers import Target, backends, database
+from tests._store_servers import Target, backends, configured, database
 
 ENVIRONMENT = "dev"
 
@@ -60,6 +63,15 @@ RELEASED = form(table("policy", column("region"), column("drivers"), column("val
 
 @pytest.fixture(params=backends())
 def target(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Target]:
+    with database(request.param, tmp_path) as made:
+        yield made
+
+
+@pytest.fixture(
+    params=[pytest.param(name, marks=pytest.mark.store_servers) for name in configured()]
+)
+def server(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Target]:
+    """A database of the test's own on each server the run has."""
     with database(request.param, tmp_path) as made:
         yield made
 
@@ -118,6 +130,114 @@ def test_a_database_made_from_the_form_s_sql_matches_it(target: Target) -> None:
     assert comparison.matches
     assert comparison.extras == ()
     assert "nothing to change" in sql(target, RELEASED, comparison)
+
+
+def _read_counting(target: Target) -> tuple[Catalogue, int]:
+    """*target*'s catalogue, its quotes counted, and the statements reading it sent."""
+    engine = make_engine(target.url, sign_in=target.sign_in)
+    sent: list[str] = []
+    try:
+        with engine.connect() as connection:
+            event.listen(
+                connection, "before_cursor_execute", lambda *executing: sent.append(executing[2])
+            )
+            return read_catalogue(connection, count=True), len(sent)
+    finally:
+        engine.dispose()
+
+
+def _statements_reading(target: Target) -> int:
+    return _read_counting(target)[1]
+
+
+def test_a_servers_tables_are_read_in_as_many_statements_however_many_it_holds(
+    server: Target,
+) -> None:
+    # Each statement is a round trip to the server, and the Compare waits on every one: read
+    # table by table, a store of fifteen tables took seconds on a database across a network.
+    made_from_sql(server, RELEASED)
+    few = _statements_reading(server)
+
+    # Each holds the quote's identity, so its quotes are counted too.
+    server.run(
+        *(
+            f"CREATE TABLE extra_{index} (quote_reference VARCHAR(80), quote_option BIGINT, v INT)"
+            for index in range(5)
+        )
+    )
+
+    assert _statements_reading(server) == few
+
+
+def test_quotes_counted_a_few_tables_to_a_statement_are_those_counted_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A statement reads at most COUNTED_AT_ONCE values, under the engines' limit on a select's
+    # columns: a form wider than that is counted in as many statements as it needs.
+    target = Target("sqlite", f"sqlite:///{(tmp_path / 'store.sqlite').as_posix()}")
+    made_from_sql(target, RELEASED)
+    quote(target, RELEASED, "A-1", region="north", drivers="2")
+    quote(target, RELEASED, "A-2", region="south")
+    at_once, statements = _read_counting(target)
+
+    monkeypatch.setattr(catalogue_module, "COUNTED_AT_ONCE", 2)
+    batched, more = _read_counting(target)
+
+    assert batched == at_once
+    assert more > statements
+    policy = at_once.table("policy")
+    assert policy is not None and policy.quotes == 2
+
+
+def test_a_store_of_more_tables_than_a_join_takes_is_counted(tmp_path: Path) -> None:
+    # Each table counted is one of its statement's join, and SQLite joins at most 64 tables.
+    target = Target("sqlite", f"sqlite:///{(tmp_path / 'store.sqlite').as_posix()}")
+    target.script(
+        "".join(
+            f"CREATE TABLE t{index} (quote_reference TEXT, quote_option INTEGER, v INTEGER);"
+            for index in range(70)
+        )
+        + "INSERT INTO t69 VALUES ('A-1', 1, NULL), ('A-1', 2, 5), ('A-2', 1, 7);"
+    )
+
+    counted = {table.name: table for table in catalogue(target).tables}
+
+    assert len(counted) == 70
+    assert counted["t0"].quotes == 0
+    last = counted["t69"]
+    assert last.quotes == 3
+    assert {column.name: column.quotes for column in last.columns}["v"] == 2
+
+
+def test_tables_are_batched_within_each_limit_a_statement_takes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(catalogue_module, "COUNTED_AT_ONCE", 10)
+    monkeypatch.setattr(catalogue_module, "TABLES_AT_ONCE", 3)
+    widths = [2, 2, 2, 2, 6, 4, 15, 1, 1, 1, 1, 1]
+    tables = [
+        (f"t{index}", [*IDENTITY, *(f"c{at}" for at in range(width))])
+        for index, width in enumerate(widths)
+    ]
+
+    batches = catalogue_module._batches(tables)
+
+    assert [table for batch in batches for table in batch] == tables
+    for batch in batches:
+        assert len(batch) <= 3
+        values = sum(1 + len(columns) - len(IDENTITY) for _, columns in batch)
+        # A table wider than a statement's values is counted alone.
+        assert values <= 10 or len(batch) == 1
+
+
+def test_a_wide_forms_quotes_are_counted_binding_no_value() -> None:
+    # SQL Server binds at most 2,100 values to a statement, and one statement counts many
+    # tables' columns: the numbers it counts with are written into its SQL.
+    tables = [(f"t{index}", [*IDENTITY, *(f"c{at}" for at in range(30))]) for index in range(40)]
+
+    compiled = counting_statement(tables, "pricing").compile(dialect=mssql.dialect())
+
+    assert compiled.params == {}
 
 
 def test_the_quotes_holding_values_are_counted_by_table_and_column(target: Target) -> None:

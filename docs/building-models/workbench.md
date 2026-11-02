@@ -821,6 +821,21 @@ builder on screen. With a quote store it is where they manage their quotes too.
   prod can share a database; for `sqlite`, `HAUTE_STORE_DATABASE` (the file's path) or
   `HAUTE_STORE_URL`. Install `haute[sqlserver]` or `haute[postgresql]` wherever you build
   the release, as the image installs the versions installed there.
+
+  Your database's owners set up, once, for each hosted environment's database:
+
+  | What | Why |
+  |---|---|
+  | A database user for the app's sign-in, allowed to read, insert and change `quote_details`, to read, insert and delete in the form's other tables, and to read and insert in `haute_activity` | the app checks each as it starts, and keeps its quotes closed, naming each it lacks, until it has them |
+  | A way through from the app to the server: on Azure SQL, a private endpoint the Container Apps environment's network reaches, or a firewall rule for the environment's outbound address | the server refuses an address it has not been told of |
+
+  On Azure SQL, the user for a Container App's system-assigned managed identity takes the
+  app's name, and a Microsoft Entra ID administrator of the server makes it in each database:
+
+  ```sql
+  CREATE USER [motor-staging] FROM EXTERNAL PROVIDER;
+  GRANT SELECT, INSERT, UPDATE, DELETE ON SCHEMA::dbo TO [motor-staging];
+  ```
 - On your machine, the editor and `haute app serve` reach each environment's database
   through `connections.toml` at the project root, which `haute init` writes with the sign-in
   you chose and

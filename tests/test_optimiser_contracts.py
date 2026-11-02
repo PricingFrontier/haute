@@ -17,7 +17,6 @@ from haute.errors import ConfigError, RequestRefusedError
 from haute.executor import _build_node_fn
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import OptimiserSolveService
-from haute.schemas import OptimiserFrontierRequest
 from tests.conftest import (
     make_edge,
     make_graph,
@@ -1078,57 +1077,15 @@ def test_build_grid_sanitises_a_refusal_that_is_not_the_quote_layout() -> None:
         ({"volume": [0.9, float("inf")]}, "must contain finite min and max values"),
     ],
 )
-def test_explicit_frontier_ranges_rejected_at_schema_layer(
-    threshold_ranges,
-    message,
-) -> None:
-    """Schema validator rejects malformed ranges with the same wording as the
-    config-side path, so request-body and saved-config UX agree."""
-    from pydantic import ValidationError
+def test_malformed_frontier_ranges_are_refused_by_name(threshold_ranges, message) -> None:
+    from haute.routes._optimiser_solver import swept_frontier_ranges
 
-    with pytest.raises(ValidationError) as exc_info:
-        OptimiserFrontierRequest(
-            job_id="job",
-            threshold_ranges=threshold_ranges,
-        )
+    config = {"constraints": {"volume": {"min": 0.9}}, "frontier_ranges": threshold_ranges}
 
-    # Pydantic prefixes the field path; the underlying message is preserved.
-    assert message in str(exc_info.value)
+    with pytest.raises(ValueError, match=message) as exc_info:
+        swept_frontier_ranges(config)
 
-
-def test_explicit_frontier_route_rejects_bad_ranges_without_calling_solver(
-    client,
-    clean_job_store,
-) -> None:
-    """End-to-end: the solver must never be invoked for malformed ranges.
-
-    FastAPI surfaces Pydantic validation as 422; the previous 400 came from
-    the duplicated runtime check that has now been removed.
-    """
-    solver = MagicMock()
-    seed_job(
-        clean_job_store,
-        "frontier_bad_ranges",
-        {
-            "status": "completed",
-            "solver": solver,
-            "quote_grid": MagicMock(),
-            "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
-            "created_at": time.time(),
-        },
-    )
-
-    resp = client.post(
-        "/api/optimiser/frontier",
-        json={
-            "job_id": "frontier_bad_ranges",
-            "threshold_ranges": {"volume": [1.1, 0.9]},
-        },
-    )
-
-    assert resp.status_code == 422
-    assert "min must be less than or equal to max" in resp.text
-    solver.frontier.assert_not_called()
+    assert "frontier_ranges.volume" in str(exc_info.value)
 
 
 @pytest.mark.usefixtures("_widen_sandbox_root")
@@ -1557,7 +1514,6 @@ class TestSolveResultContract:
             "lambdas": {"volume": 0.0},
             "converged": True,
             "diagnostics_errors": [],
-            "frontier_generation": 0,
         }
         OptimiserFrontierSelectResponse.model_validate(response)
         del response[missing]
@@ -1765,7 +1721,6 @@ class TestInputSummary:
 
 class TestStatusFiniteWalk:
     def _seed(self, store: JobStore, job_id: str, **overrides: Any) -> None:
-        from tests.job_store_support import seed_job
 
         seed_job(store, job_id, make_completed_job(**overrides))
 
@@ -1795,9 +1750,7 @@ class TestStatusFiniteWalk:
         assert body["status"] == "error"
         assert "frontier.points[0].sv_mean" in body["message"]
 
-    def test_a_clean_walk_is_cached_for_its_generation_and_selection(
-        self, client, clean_job_store
-    ) -> None:
+    def test_a_clean_walk_is_cached_for_its_selection(self, client, clean_job_store) -> None:
         self._seed(clean_job_store, "clean_job")
 
         first = client.get("/api/optimiser/solve/status/clean_job")
@@ -1806,7 +1759,7 @@ class TestStatusFiniteWalk:
         assert first.json()["status"] == "completed"
         assert "_result_finite_validated_for" not in first.text
         job = clean_job_store.require_job("clean_job")
-        assert job["_result_finite_validated_for"] == [0, None]
+        assert job["_result_finite_validated_for"] == [None]
 
         # A later selection rewrites the result: the next poll walks it again.
         clean_job_store.atomic_update(
@@ -1818,3 +1771,19 @@ class TestStatusFiniteWalk:
             expected_status="completed",
         )
         assert client.get("/api/optimiser/solve/status/clean_job").json()["status"] == "error"
+
+
+def test_a_summary_with_many_non_finite_values_names_five_and_counts_them() -> None:
+    from fastapi import HTTPException
+
+    from haute.routes.optimiser import _require_finite_summary_artifacts
+
+    summary = {"artifacts": {"lambdas": {f"c{i}": float("nan") for i in range(6)}}}
+
+    with pytest.raises(HTTPException) as caught:
+        _require_finite_summary_artifacts(summary)
+
+    assert caught.value.status_code == 400
+    assert "lambdas.c4" in caught.value.detail
+    assert "lambdas.c5" not in caught.value.detail
+    assert "(6 in total)" in caught.value.detail

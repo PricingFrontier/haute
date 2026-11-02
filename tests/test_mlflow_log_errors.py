@@ -303,7 +303,9 @@ class TestOptimiserLogRoute:
     ) -> None:
         self._seed(clean_job_store)
         store = use_local_mlflow_store(tmp_path, monkeypatch)
-        with patch("haute.routes.optimiser._build_artifact_payload", return_value={}):
+        # The smallest payload the log's artifact gate accepts.
+        payload = {"lambdas": {}, "total_objective": 1.0}
+        with patch("haute.routes.optimiser._build_artifact_payload", return_value=payload):
             response = client.post(
                 "/api/optimiser/mlflow/log", json={"job_id": "opt_job", "experiment_name": ""}
             )

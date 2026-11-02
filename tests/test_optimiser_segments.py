@@ -47,8 +47,13 @@ from haute.routes.optimiser import (
     _store,
 )
 from haute.schemas import OptimiserSegmentKey, OptimiserSegmentRow
-from tests.optimiser_fixtures import run_frontier_and_wait
-from tests.test_optimiser_outcomes import _data_graph, _scored, _side_graph, _solved
+from tests.test_optimiser_outcomes import (
+    VOLUME_FRONTIER,
+    _data_graph,
+    _scored,
+    _side_graph,
+    _solved,
+)
 
 _GRID = (0.9, 1.0, 1.1)
 
@@ -139,7 +144,6 @@ def _run(
         _key(column, binning),
         weight,
         point_index=None,
-        frontier_generation=0,
     )
 
 
@@ -542,7 +546,6 @@ class TestFactorLevels:
             key,
             "quotes",
             point_index=None,
-            frontier_generation=0,
         )
 
         assert response.n_levels == n_levels
@@ -782,22 +785,17 @@ class TestSegmentsRoute:
         assert sum(row["quotes"] for row in body["rows"]) == 9
 
     def test_a_frontier_point_is_described_from_its_own_choices(self, client, tmp_path):
-        job_id, _status = _solved(
-            client, _data_graph(_scored(tmp_path), analysis_columns=["region"])
-        )
-        frontier = run_frontier_and_wait(
+        job_id, status = _solved(
             client,
-            {"job_id": job_id, "threshold_ranges": {"volume": [5.0, 8.0]}, "n_points_per_dim": 3},
+            _data_graph(_scored(tmp_path), analysis_columns=["region"], **VOLUME_FRONTIER),
         )
-        assert frontier["status"] == "completed", frontier
-        point = frontier["result"]["points"][2]
+        point = status["frontier"]["points"][2]
 
         response = _segments(client, job_id, "region", point_index=2, weight="optimal_volume")
 
         assert response.status_code == 200, response.text
         body = response.json()
         assert body["point_index"] == 2
-        assert body["frontier_generation"] == _store.require_job(job_id)["frontier_generation"] == 1
         assert math.fsum(row["weight_total"] for row in body["rows"]) == pytest.approx(
             point["totals"]["volume"], rel=1e-9
         )
@@ -810,13 +808,9 @@ class TestSegmentsRoute:
 
     def test_an_unavailable_target_is_a_410(self, client, tmp_path):
         job_id, _status = _solved(
-            client, _data_graph(_scored(tmp_path), analysis_columns=["region"])
-        )
-        frontier = run_frontier_and_wait(
             client,
-            {"job_id": job_id, "threshold_ranges": {"volume": [5.0, 8.0]}, "n_points_per_dim": 3},
+            _data_graph(_scored(tmp_path), analysis_columns=["region"], **VOLUME_FRONTIER),
         )
-        assert frontier["status"] == "completed", frontier
         _store.clear_result_data(job_id)
 
         gone = _segments(client, job_id, "region", point_index=1)
@@ -893,8 +887,7 @@ class TestSegmentIndexRoute:
             assert spreads[key] == pytest.approx(expected, abs=1e-12)
         ranked = [key["key"] for key in body["keys"]]
         assert ranked == sorted(spreads, key=lambda k: (-spreads[k], k))
-        generation = _store.require_job(job_id)["frontier_generation"]
-        assert set(_store.require_job(job_id)[SEGMENT_INDEXES_KEY]) == {(generation, None)}
+        assert set(_store.require_job(job_id)[SEGMENT_INDEXES_KEY]) == {None}
 
         # A cached index is answered without a query.
         def refuse(*_args: Any, **_kwargs: Any) -> Any:
@@ -903,13 +896,6 @@ class TestSegmentIndexRoute:
         with monkeypatch.context() as patched:
             patched.setattr(optimiser_routes._choice_service, "choice_query", refuse)
             assert _index(client, job_id).json() == body
-
-        recomputed = run_frontier_and_wait(
-            client,
-            {"job_id": job_id, "threshold_ranges": {"volume": [5.0, 8.0]}, "n_points_per_dim": 3},
-        )
-        assert recomputed["status"] == "completed", recomputed
-        assert _store.require_job(job_id)[SEGMENT_INDEXES_KEY] == {}
 
     def test_sixteen_levels_are_broken_down_and_ranked(self, client, tmp_path):
         # k0..k15, one quote each: the fifteen largest by value are listed and the

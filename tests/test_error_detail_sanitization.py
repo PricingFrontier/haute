@@ -22,7 +22,6 @@ from fastapi.testclient import TestClient
 
 from haute._graph_walker import CollectPolicy, walk_graph
 from tests.job_store_support import seed_job
-from tests.optimiser_fixtures import make_solved_result, run_frontier_and_wait
 from tests.training_artifacts_support import publish_trained_job
 
 # -- Shared constants and helpers ------------------------------------------
@@ -557,37 +556,6 @@ class TestOptimiserRoutesSafeDetail:
         assert "segfault" not in detail
         assert "0xdead" not in detail
         assert detail == _SAFE_DETAIL
-
-    def test_frontier_500_no_leak(self, client: TestClient, clean_job_store) -> None:
-        store = clean_job_store
-        mock_solver = MagicMock()
-        mock_solver.frontier.side_effect = RuntimeError(
-            "Rust panic: thread 'solver' panicked at core/src/lib.rs:42"
-        )
-        seed_job(
-            store,
-            "test_frontier_err",
-            {
-                "status": "completed",
-                "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
-                "result": make_solved_result(),
-                "solver": mock_solver,
-                "quote_grid": MagicMock(),
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
-        )
-        status = run_frontier_and_wait(
-            client,
-            {
-                "job_id": "test_frontier_err",
-                "threshold_ranges": {"volume": [0.9, 1.1]},
-            },
-        )
-        assert status["status"] == "error"
-        message = status["message"]
-        assert "lib.rs:42" not in message
-        assert message == _SAFE_DETAIL
 
     def test_save_oserror_no_path_leak(
         self, client: TestClient, clean_job_store, tmp_path, monkeypatch
