@@ -2,7 +2,7 @@
  * Render tests for ScenarioExpanderEditor.
  *
  * Tests: row key label, select vs text input, value column, range section,
- * default values, editing min, editing steps with clamping, step column,
+ * default values, editing min, editing and refusing steps, step column,
  * preview line, selecting a column, InputSourcesBar rendering.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
@@ -202,64 +202,6 @@ describe("ScenarioExpanderEditor", () => {
     expect(onUpdate).toHaveBeenCalledWith("min_value", -0.5)
   })
 
-  it("clears an invalid range draft when switching to another node", () => {
-    function Harness() {
-      const [activeNode, setActiveNode] = useState<"a" | "b">("a")
-      const configs = {
-        a: { column_name: "sv", min_value: 1, max_value: 2 },
-        b: { column_name: "sv", min_value: 1, max_value: 2 },
-      } satisfies Record<string, Record<string, unknown>>
-
-      return (
-        <>
-          <ScenarioExpanderEditor {...DEFAULT_PROPS} config={configs[activeNode]} />
-          <button type="button" onClick={() => setActiveNode("b")}>
-            switch node
-          </button>
-        </>
-      )
-    }
-
-    render(<Harness />)
-    const minInput = screen.getByDisplayValue("1") as HTMLInputElement
-    fireEvent.change(minInput, { target: { value: "abc" } })
-    expect(screen.getByDisplayValue("abc")).toHaveAttribute("aria-invalid", "true")
-
-    fireEvent.click(screen.getByText("switch node"))
-
-    expect(screen.queryByDisplayValue("abc")).toBeNull()
-    expect(screen.getByDisplayValue("1")).not.toHaveAttribute("aria-invalid")
-  })
-
-  it("clears a valid formatted range draft when switching to another node with the same committed value", () => {
-    function Harness() {
-      const [activeNode, setActiveNode] = useState<"a" | "b">("a")
-      const configs = {
-        a: { column_name: "sv", min_value: 0, max_value: 2 },
-        b: { column_name: "sv", min_value: 0, max_value: 2 },
-      } satisfies Record<string, Record<string, unknown>>
-
-      return (
-        <>
-          <ScenarioExpanderEditor {...DEFAULT_PROPS} config={configs[activeNode]} />
-          <button type="button" onClick={() => setActiveNode("b")}>
-            switch node
-          </button>
-        </>
-      )
-    }
-
-    render(<Harness />)
-    const minInput = screen.getByDisplayValue("0") as HTMLInputElement
-    fireEvent.change(minInput, { target: { value: "0." } })
-    expect(screen.getByDisplayValue("0.")).toBeTruthy()
-
-    fireEvent.click(screen.getByText("switch node"))
-
-    expect(screen.queryByDisplayValue("0.")).toBeNull()
-    expect(screen.getByDisplayValue("0")).toBeTruthy()
-  })
-
   it("keeps a valid formatted range draft local while typing (no mid-edit commit to echo)", () => {
     const onUpdate = vi.fn()
 
@@ -383,46 +325,71 @@ describe("ScenarioExpanderEditor", () => {
     expect(onUpdate).not.toHaveBeenCalledWith("max_value", 0)
   })
 
-  it("uses draft min and max edits for step-size feedback before config commit", () => {
+  it("shows the min and max an undo leaves, and a blur then commits nothing", () => {
     const onUpdate = vi.fn()
-    render(
-      <ScenarioExpanderEditor
-        {...DEFAULT_PROPS}
-        onUpdate={onUpdate}
-        config={{ column_name: "sv", min_value: 0, max_value: 10, stepCount: 6 }}
-      />,
-    )
-    const minInput = screen.getByDisplayValue("0") as HTMLInputElement
+    const props = (min: number, max: number) => ({
+      ...DEFAULT_PROPS,
+      onUpdate,
+      config: { column_name: "sv", min_value: min, max_value: max, stepCount: 6 },
+    })
+    const view = render(<ScenarioExpanderEditor {...props(0, 10)} />)
+    view.rerender(<ScenarioExpanderEditor {...props(5, 15)} />)
 
-    fireEvent.change(minInput, { target: { value: "5" } })
-
-    // The step-size preview reads the LOCAL draft — live feedback works
-    // even though nothing has been committed yet.
+    const minInput = screen.getByRole("textbox", { name: "Min" })
+    const maxInput = screen.getByRole("textbox", { name: "Max" })
+    expect(minInput).toHaveValue("5")
+    expect(maxInput).toHaveValue("15")
+    fireEvent.blur(minInput)
+    fireEvent.blur(maxInput)
     expect(onUpdate).not.toHaveBeenCalled()
-    expect(screen.getByTestId("step-size").textContent).toBe("1")
+    expect(screen.getByTestId("step-size").textContent).toBe("2")
   })
 
-  it("commits steps on blur with value clamped to min 1", () => {
+  it("refuses a bound that is not a number, saying so", () => {
+    const onUpdate = vi.fn()
+    render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ column_name: "sv", min_value: 0.8 }} />)
+    const minInput = screen.getByDisplayValue("0.8")
+    fireEvent.change(minInput, { target: { value: "abc" } })
+    fireEvent.blur(minInput)
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(screen.getByTestId("scenario-min_value-error").textContent).toBe("Enter a number, or leave it blank.")
+  })
+
+  it("commits a whole step count once on blur", () => {
     const onUpdate = vi.fn()
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ stepCount: 21 }} />)
     const stepsInput = screen.getByDisplayValue("21")
 
-    // Normal value — buffered until blur, then committed once.
     fireEvent.change(stepsInput, { target: { value: "10" } })
     expect(onUpdate).not.toHaveBeenCalled()
     fireEvent.blur(stepsInput)
     expect(onUpdate).toHaveBeenCalledTimes(1)
     expect(onUpdate).toHaveBeenCalledWith("stepCount", 10)
+  })
 
-    // Zero should clamp to 1
-    fireEvent.change(stepsInput, { target: { value: "0" } })
-    fireEvent.blur(stepsInput)
-    expect(onUpdate).toHaveBeenCalledWith("stepCount", 1)
+  it.each(["0", "-5", "abc", "2.7", ""])(
+    "refuses %j as a step count with a message, keeping the draft and writing nothing",
+    (typed) => {
+      const onUpdate = vi.fn()
+      render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ stepCount: 21 }} />)
+      const stepsInput = screen.getByDisplayValue("21") as HTMLInputElement
 
-    // Negative should clamp to 1
-    fireEvent.change(stepsInput, { target: { value: "-5" } })
-    fireEvent.blur(stepsInput)
-    expect(onUpdate).toHaveBeenCalledWith("stepCount", 1)
+      fireEvent.change(stepsInput, { target: { value: typed } })
+      fireEvent.blur(stepsInput)
+
+      expect(onUpdate).not.toHaveBeenCalled()
+      expect(stepsInput.value).toBe(typed)
+      expect(screen.getByTestId("scenario-steps-error").textContent).toBe(
+        "Steps must be a whole number of at least 1.",
+      )
+    },
+  )
+
+  it("marks a saved step count the backend refuses", () => {
+    render(<ScenarioExpanderEditor {...DEFAULT_PROPS} config={{ stepCount: 2.7 }} />)
+    expect(screen.getByTestId("scenario-steps-error").textContent).toBe(
+      "Steps must be a whole number of at least 1.",
+    )
   })
 
   it("step size shows calculated interval", () => {

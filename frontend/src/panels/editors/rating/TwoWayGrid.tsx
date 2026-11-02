@@ -1,21 +1,14 @@
-import { useMemo, useRef, useState } from "react"
+import { useMemo } from "react"
 import { Copy } from "lucide-react"
 import type { RatingTable } from "./ratingTableUtils"
-import { tableStats, resolveDefault } from "./ratingTableUtils"
+import { parseRelativity, tableStats, resolveDefault } from "./ratingTableUtils"
 import { ControlledNumberCell } from "./ControlledNumberCell"
 import { StatsFooter } from "./StatsFooter"
 import { EDITABLE_RELATIVITY_INPUT_STYLE, NON_EDITABLE_LABEL_CELL_STYLE } from "./cellStyles"
+import { useGridCellSelection } from "./useGridCellSelection"
 import useToastStore from "../../../stores/useToastStore"
-import { parsePastedGrid } from "../shared/tableClipboard"
-
-type PastedNumber = { kind: "value"; value: number } | { kind: "blank" } | { kind: "invalid" }
-
-function parsePastedNumber(value: string): PastedNumber {
-  const trimmed = value.trim()
-  if (!trimmed) return { kind: "blank" }
-  const parsed = Number(trimmed)
-  return Number.isFinite(parsed) ? { kind: "value", value: parsed } : { kind: "invalid" }
-}
+import { parsePastedGrid, writeClipboardText } from "../shared/tableClipboard"
+import { apiErrorMessage } from "../../../api/errors"
 
 function buildTableTsv(
   rowFactor: string,
@@ -57,14 +50,7 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
   const entries = useMemo(() => table.entries || [], [table.entries])
   const stats = useMemo(() => tableStats(entries), [entries])
   const safeDefault = resolveDefault(table.defaultValue)
-  const gridRegionRef = useRef<HTMLDivElement>(null)
-  const [selection, setSelection] = useState<{
-    anchorRow: number
-    anchorCol: number
-    focusRow: number
-    focusCol: number
-  } | null>(null)
-  const [isDraggingSelection, setIsDraggingSelection] = useState(false)
+  const { regionRef, regionProps, cellProps, isCellSelected } = useGridCellSelection()
 
   if (!rowFactor || !colFactor) return null
 
@@ -80,32 +66,6 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
   }
 
   const valueFor = (row: string, col: string) => lookup.get(`${row}\x1F${col}`) ?? safeDefault
-
-  const selectedRange = selection
-    ? {
-      startRow: Math.min(selection.anchorRow, selection.focusRow),
-      endRow: Math.max(selection.anchorRow, selection.focusRow),
-      startCol: Math.min(selection.anchorCol, selection.focusCol),
-      endCol: Math.max(selection.anchorCol, selection.focusCol),
-    }
-    : null
-  const isCellSelected = (rowIndex: number, colIndex: number) =>
-    Boolean(selectedRange &&
-      rowIndex >= selectedRange.startRow &&
-      rowIndex <= selectedRange.endRow &&
-      colIndex >= selectedRange.startCol &&
-      colIndex <= selectedRange.endCol)
-
-  const selectedValuesTsv = () => {
-    if (!selectedRange) return ""
-    return rowLabels
-      .slice(selectedRange.startRow, selectedRange.endRow + 1)
-      .map(row => colLabels
-        .slice(selectedRange.startCol, selectedRange.endCol + 1)
-        .map(col => String(valueFor(row, col)))
-        .join("\t"))
-      .join("\n")
-  }
 
   const applyCellUpdates = (updates: Map<string, number>) => {
     const used = new Set<string>()
@@ -143,7 +103,7 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
       pastedRowIndex: number,
       pastedColIndex: number,
     ): boolean => {
-      const parsed = parsePastedNumber(rawValue)
+      const parsed = parseRelativity(rawValue)
       if (parsed.kind === "blank") return true
       if (parsed.kind === "invalid") {
         addToast("error", `Could not paste rating table TSV: invalid number at ${formatInvalidPasteLocation(
@@ -188,9 +148,9 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
     if (updates.size > 0) applyCellUpdates(updates)
   }
 
-  const updateCell = (row: string, col: string, val: string) => {
-    const parsed = parseFloat(val)
-    const numVal = val === "" ? safeDefault : (Number.isNaN(parsed) ? safeDefault : parsed)
+  /** A cell's committed relativity; a cleared cell takes the table's default. */
+  const updateCell = (row: string, col: string, value: number | null) => {
+    const numVal = value ?? safeDefault
     const matchRow = (e: Record<string, string | number>) =>
       String(e[rowFactor]) === row && String(e[colFactor]) === col &&
       Object.entries(sliceKey).every(([k, v]) => String(e[k]) === v)
@@ -208,30 +168,10 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
 
   const copyVisibleTable = () => {
     const text = buildTableTsv(rowFactor, colFactor, rowLabels, colLabels, valueFor)
-    void navigator.clipboard.writeText(text).catch((error: unknown) => {
-      const detail = error instanceof Error ? error.message : String(error)
+    void writeClipboardText(text).catch((error: unknown) => {
+      const detail = apiErrorMessage(error)
       addToast("error", `Could not copy rating table TSV: ${detail}`)
     })
-  }
-
-  const handleCopy = (e: React.ClipboardEvent<HTMLElement>) => {
-    if (
-      e.target instanceof HTMLInputElement &&
-      e.target.selectionStart !== null &&
-      e.target.selectionEnd !== null &&
-      e.target.selectionStart !== e.target.selectionEnd
-    ) {
-      return
-    }
-    const text = selectedValuesTsv()
-    if (!text) return
-    e.preventDefault()
-    e.clipboardData.setData("text/plain", text)
-  }
-
-  const clearSelection = () => {
-    setSelection(null)
-    setIsDraggingSelection(false)
   }
 
   if (rowLabels.length === 0 || colLabels.length === 0) {
@@ -241,19 +181,14 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
   return (
     <div className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--border)' }}>
       <div
-        ref={gridRegionRef}
+        ref={regionRef}
         className="rating-editor-grid-region overflow-x-auto"
         data-testid="two-way-grid-scroll-container"
         role="region"
         tabIndex={0}
         aria-label={`${rowFactor} by ${colFactor} rating grid`}
         onPaste={(e) => handlePaste(e, 0, 0)}
-        onCopy={handleCopy}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") clearSelection()
-        }}
-        onMouseLeave={() => setIsDraggingSelection(false)}
-        onMouseUp={() => setIsDraggingSelection(false)}
+        {...regionProps({ rows: rowLabels, cols: colLabels, cellText: (row, col) => String(valueFor(row, col)) })}
       >
         <table className="w-full text-[11px]" style={{ borderCollapse: 'separate', borderSpacing: 0 }}>
           <thead>
@@ -286,29 +221,7 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
                     <td
                       key={col}
                       className="rating-editor-value-cell px-0.5 py-0.5"
-                      data-selected={isCellSelected(ri, ci) || undefined}
-                      aria-selected={isCellSelected(ri, ci) || undefined}
-                      onMouseDown={() => {
-                        gridRegionRef.current?.focus({ preventScroll: true })
-                        setSelection({ anchorRow: ri, anchorCol: ci, focusRow: ri, focusCol: ci })
-                        setIsDraggingSelection(true)
-                      }}
-                      onMouseEnter={() => {
-                        if (isDraggingSelection) {
-                          setSelection(current => current ? { ...current, focusRow: ri, focusCol: ci } : current)
-                        }
-                      }}
-                      onMouseUp={(e) => {
-                        setIsDraggingSelection(false)
-                        if (
-                          selection?.anchorRow === ri &&
-                          selection.anchorCol === ci &&
-                          selection.focusRow === ri &&
-                          selection.focusCol === ci
-                        ) {
-                          e.currentTarget.querySelector("input")?.focus()
-                        }
-                      }}
+                      {...cellProps(ri, ci)}
                       style={{
                         background: isCellSelected(ri, ci) ? 'var(--accent-soft)' : 'transparent',
                         borderBottom: '1px solid var(--border)',

@@ -197,7 +197,7 @@ def _output_graph(frames: dict[str, pl.LazyFrame], mapping: list[dict[str, Any]]
                 data=NodeData(
                     label="out",
                     nodeType=NodeType.OUTPUT,
-                    config={"outputMapping": mapping, "outputFormat": "json"},
+                    config={"outputMapping": mapping},
                 ),
             ),
         ],

@@ -1,9 +1,10 @@
-import { useMemo, useRef, useState } from "react"
+import { useMemo } from "react"
 import type { RatingTable } from "./ratingTableUtils"
 import { tableStats, resolveDefault } from "./ratingTableUtils"
 import { ControlledNumberCell } from "./ControlledNumberCell"
 import { StatsFooter } from "./StatsFooter"
 import { EDITABLE_RELATIVITY_INPUT_STYLE, NON_EDITABLE_LABEL_CELL_STYLE } from "./cellStyles"
+import { useGridCellSelection } from "./useGridCellSelection"
 
 export function OneWayEditor({ table, bandingLevels, onUpdateEntries }: {
   table: RatingTable
@@ -14,9 +15,7 @@ export function OneWayEditor({ table, bandingLevels, onUpdateEntries }: {
   const defaultValue = table.defaultValue
   const entries = useMemo(() => table.entries || [], [table.entries])
   const stats = useMemo(() => tableStats(entries), [entries])
-  const gridRegionRef = useRef<HTMLDivElement>(null)
-  const [selection, setSelection] = useState<{ anchorRow: number; focusRow: number } | null>(null)
-  const [isDraggingSelection, setIsDraggingSelection] = useState(false)
+  const { regionRef, regionProps, cellProps, isCellSelected } = useGridCellSelection()
 
   if (!factor) return null
   const levels = bandingLevels[factor] || []
@@ -30,67 +29,25 @@ export function OneWayEditor({ table, bandingLevels, onUpdateEntries }: {
 
   const safeDefault = resolveDefault(defaultValue)
 
-  const selectedRowRange = selection
-    ? {
-      start: Math.min(selection.anchorRow, selection.focusRow),
-      end: Math.max(selection.anchorRow, selection.focusRow),
-    }
-    : null
-  const isRowSelected = (rowIndex: number) =>
-    Boolean(selectedRowRange && rowIndex >= selectedRowRange.start && rowIndex <= selectedRowRange.end)
-
-  const selectedValuesTsv = () => {
-    if (!selectedRowRange) return ""
-    return levels
-      .slice(selectedRowRange.start, selectedRowRange.end + 1)
-      .map(level => String(lookup.get(level) ?? safeDefault))
-      .join("\n")
-  }
-
-  const handleCopy = (e: React.ClipboardEvent<HTMLElement>) => {
-    if (
-      e.target instanceof HTMLInputElement &&
-      e.target.selectionStart !== null &&
-      e.target.selectionEnd !== null &&
-      e.target.selectionStart !== e.target.selectionEnd
-    ) {
-      return
-    }
-    const text = selectedValuesTsv()
-    if (!text) return
-    e.preventDefault()
-    e.clipboardData.setData("text/plain", text)
-  }
-
-  const updateCell = (level: string, val: string) => {
-    const parsed = parseFloat(val)
-    const num = val === "" ? safeDefault : (Number.isNaN(parsed) ? safeDefault : parsed)
+  /** A level's committed relativity; a cleared cell takes the table's default. */
+  const updateCell = (level: string, value: number | null) => {
+    const num = value ?? safeDefault
     const next = entries.map(e => String(e[factor]) === level ? { ...e, value: num } : e)
     if (!next.some(e => String(e[factor]) === level)) {
-      next.push({ [factor]: level, value: Number.isNaN(num) ? 0 : num })
+      next.push({ [factor]: level, value: num })
     }
     onUpdateEntries(next)
   }
 
-  const clearSelection = () => {
-    setSelection(null)
-    setIsDraggingSelection(false)
-  }
-
   return (
     <div
-      ref={gridRegionRef}
+      ref={regionRef}
       className="rating-editor-grid-region rounded-lg overflow-hidden"
       role="region"
       tabIndex={0}
       aria-label={`${factor} rating grid`}
       style={{ border: '1px solid var(--border)' }}
-      onCopy={handleCopy}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") clearSelection()
-      }}
-      onMouseLeave={() => setIsDraggingSelection(false)}
-      onMouseUp={() => setIsDraggingSelection(false)}
+      {...regionProps({ rows: levels, cols: ["Relativity"], cellText: (level) => String(lookup.get(level) ?? safeDefault) })}
     >
       <table className="w-full text-[11px]" style={{ borderCollapse: 'separate', borderSpacing: 0 }}>
         <thead>
@@ -118,24 +75,9 @@ export function OneWayEditor({ table, bandingLevels, onUpdateEntries }: {
                   style={{ ...NON_EDITABLE_LABEL_CELL_STYLE, borderBottom: '1px solid var(--border)' }}>{level}</th>
                 <td
                   className="rating-editor-value-cell px-0.5 py-0.5"
-                  data-selected={isRowSelected(ri) || undefined}
-                  aria-selected={isRowSelected(ri) || undefined}
-                  onMouseDown={() => {
-                    gridRegionRef.current?.focus({ preventScroll: true })
-                    setSelection({ anchorRow: ri, focusRow: ri })
-                    setIsDraggingSelection(true)
-                  }}
-                  onMouseEnter={() => {
-                    if (isDraggingSelection) setSelection(current => current ? { ...current, focusRow: ri } : current)
-                  }}
-                  onMouseUp={(e) => {
-                    setIsDraggingSelection(false)
-                    if (selection?.anchorRow === ri && selection.focusRow === ri) {
-                      e.currentTarget.querySelector("input")?.focus()
-                    }
-                  }}
+                  {...cellProps(ri, 0)}
                   style={{
-                    background: isRowSelected(ri) ? 'var(--accent-soft)' : 'transparent',
+                    background: isCellSelected(ri, 0) ? 'var(--accent-soft)' : 'transparent',
                     borderBottom: '1px solid var(--border)',
                     borderRight: '1px solid var(--border)',
                   }}

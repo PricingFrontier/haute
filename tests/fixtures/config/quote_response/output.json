@@ -8,6 +8,5 @@
     {"source_port": "calculate_premium", "source_column": "Exposure", "output_path": "$[:].Exposure", "enabled": true},
     {"source_port": "calculate_premium", "source_column": "area_factor", "output_path": "$[:].area_factor", "enabled": true},
     {"source_port": "calculate_premium", "source_column": "premium", "output_path": "$[:].premium", "enabled": true}
-  ],
-  "outputFormat": "json"
+  ]
 }

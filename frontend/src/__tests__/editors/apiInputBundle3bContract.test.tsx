@@ -40,7 +40,7 @@ import { render, screen, fireEvent, cleanup } from "@testing-library/react"
 
 import NodePanel from "../../panels/NodePanel"
 import { GraphProvider } from "../../panels/GraphContext"
-import type { SimpleNode, SimpleEdge } from "../../panels/editors"
+import type { SimpleNode, SimpleEdge } from "../../panels/editors/_shared"
 import useUIStore from "../../stores/useUIStore"
 
 // ---------------------------------------------------------------------------

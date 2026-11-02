@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type CSSProperties } from "react"
 import { Search } from "lucide-react"
-import type { OnUpdateConfig } from "../editors"
+import type { OnUpdateConfig } from "../editors/_shared"
 import { getDtypeColor } from "../../utils/dtypeColors"
 import { MAX_ANALYSIS_COLUMNS, type OptimiserInputs } from "./solveReadiness"
 

@@ -10,10 +10,7 @@ import { MODEL_FILE_SUFFIXES } from "../../utils/modelFamilies"
 import { useMlflowBrowser } from "../../hooks/useMlflowBrowser"
 import { configField } from "../../utils/configField"
 import MlflowDestinationSelector from "../../components/MlflowDestinationSelector"
-import {
-  effectiveMlflowDestination,
-  mlflowDestinationConfigValue,
-} from "../../utils/mlflowDestinations"
+import { clearedMlflowSelection, effectiveMlflowDestination } from "../../utils/mlflowDestinations"
 import type { MlflowDestinationKey } from "../../api/types"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import { CommittedTextField } from "../../components/form"
@@ -65,7 +62,6 @@ export default function ModelScoreEditor({
   onUpdate: OnUpdateConfig
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
-  errorLine?: number | null
   accentColor: string
 }) {
   const sourceType = configField(config, "sourceType", "registered")
@@ -126,17 +122,7 @@ export default function ModelScoreEditor({
 
   const handleDestinationChange = (next: MlflowDestinationKey) => {
     if (next === effectiveMlflowDestination(mlflowDestination)) return
-    onUpdate({
-      mlflow_destination: mlflowDestinationConfigValue(next),
-      run_id: "",
-      run_name: "",
-      experiment_id: "",
-      experiment_name: "",
-      artifact_path: "",
-      registered_model: "",
-      version: "latest",
-      alias: undefined,
-    })
+    onUpdate(clearedMlflowSelection(next))
     setSelectionCleared(true)
   }
 

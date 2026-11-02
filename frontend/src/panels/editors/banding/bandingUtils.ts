@@ -19,7 +19,7 @@ export function inferBandingType(colName: string, colMap: Record<string, string>
 
 /** Whether execution applies the factor rather than skipping it as a draft
  *  (the backend's `banding_factor_is_active`). */
-export function bandingFactorIsActive(factor: BandingFactor): boolean {
+function bandingFactorIsActive(factor: BandingFactor): boolean {
   return Boolean(factor.column && factor.outputColumn && (factor.rules ?? []).length > 0)
 }
 
@@ -45,25 +45,42 @@ export function bandingOutputCollisionMessage(others: number[], outputColumn: st
 }
 
 // ---------------------------------------------------------------------------
-// Categorical duplicate detection
+// What the save refuses in a rule row
 // ---------------------------------------------------------------------------
 
-export function detectDuplicateCategorical(
+/**
+ * What the save refuses in each categorical rule (the sidecar writer's checks):
+ * a blank value, a blank mapping, or a value an earlier rule already has. Keyed
+ * by rule index; each message names the rule by its number.
+ */
+export function categoricalRuleIssues(
   rules: CategoricalRule[],
-): { indices: number[]; value: string }[] {
-  const byValue = new Map<string, number[]>()
-  rules.forEach((r, i) => {
-    const v = r.value ?? ""
-    if (!v) return
-    const arr = byValue.get(v)
-    if (arr) arr.push(i)
-    else byValue.set(v, [i])
+): Map<number, { value?: string; assignment?: string }> {
+  const issues = new Map<number, { value?: string; assignment?: string }>()
+  const firstByValue = new Map<string, number>()
+  rules.forEach((rule, index) => {
+    const issue: { value?: string; assignment?: string } = {}
+    const value = String(rule.value ?? "")
+    if (value === "") {
+      issue.value = `Rule ${index + 1} needs a value.`
+    } else if (firstByValue.has(value)) {
+      issue.value = `Rule ${index + 1} repeats the value "${value}" of rule ${firstByValue.get(value)! + 1}.`
+    } else {
+      firstByValue.set(value, index)
+    }
+    if (String(rule.assignment ?? "") === "") issue.assignment = `Rule ${index + 1} needs what it maps to.`
+    if (issue.value || issue.assignment) issues.set(index, issue)
   })
-  const result: { indices: number[]; value: string }[] = []
-  for (const [value, indices] of byValue) {
-    if (indices.length > 1) result.push({ indices, value })
-  }
-  return result
+  return issues
+}
+
+/** The breakpoints the save refuses for want of a band name, keyed by index. */
+export function breakpointLabelIssues(breakpoints: ReadonlyArray<{ boundary: string; label: string }>): Map<number, string> {
+  const issues = new Map<number, string>()
+  breakpoints.forEach((breakpoint, index) => {
+    if ((breakpoint.label ?? "") === "") issues.set(index, `Breakpoint ${index + 1} needs a band name.`)
+  })
+  return issues
 }
 
 /**
@@ -112,6 +129,19 @@ export interface GenerateSettings {
 
 /** Drop binary noise such as 0.30000000000000004, as the generator does. */
 const tidy = (value: number) => +value.toFixed(10)
+
+/**
+ * The step Generate suggests for a range: about ten bands, on a round number at the
+ * range's own scale (1, 2, 2.5 or 5 times a power of ten), so 0.2 to 0.9 gets 0.1 and
+ * 4,000 to 13,600 gets 1,000, rather than a whole-number step that would give a
+ * small range a single band.
+ */
+export function suggestedBandStep(range: number): number {
+  const target = range / 10
+  const magnitude = 10 ** Math.floor(Math.log10(target))
+  const multiple = [1, 2, 2.5, 5, 10].find((candidate) => tidy(candidate * magnitude) >= target) ?? 10
+  return tidy(multiple * magnitude)
+}
 
 /**
  * Upper-bound boundaries from `start + step` up to `end`, always ending at
@@ -313,7 +343,7 @@ export interface CalendarGenerateSettings {
 }
 
 /** The most bands Generate makes on a date column. */
-export const MAX_CALENDAR_BANDS = 10000
+const MAX_CALENDAR_BANDS = 10000
 
 /**
  * The day `count` units after `start`. Months and years count from `start`

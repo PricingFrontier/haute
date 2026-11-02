@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import { MODEL_COLORS } from "../../theme/colors"
-import type { OnUpdateConfig } from "../editors"
+import type { OnUpdateConfig } from "../editors/_shared"
 import { NumberField } from "./NumberField"
 import { MODELLING_INPUT_STYLE } from "./styles"
 import { trainingFitBudget } from "./trainingFitBudget"

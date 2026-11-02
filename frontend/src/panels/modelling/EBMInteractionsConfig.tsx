@@ -9,7 +9,7 @@
  */
 import { useMemo } from "react"
 import { Plus, X } from "lucide-react"
-import type { OnUpdateConfig } from "../editors"
+import type { OnUpdateConfig } from "../editors/_shared"
 import { configField } from "../../utils/configField"
 import {
   finalSelectedFeatureNames,

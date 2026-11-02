@@ -8,6 +8,7 @@ import { INPUT_STYLE } from "../../components/form/fieldStyle"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { formatValue } from "../../utils/formatValue"
 import { formatBytes } from "../../utils/formatBytes"
+import { apiErrorMessage } from "../../api/errors"
 
 // ─── Shared Styles ───────────────────────────────────────────────
 // The input's look is the form kit's, which every panel shares.
@@ -112,46 +113,45 @@ export function FileBrowser({
     const lastSlash = currentPath.lastIndexOf("/")
     return lastSlash > 0 ? currentPath.substring(0, lastSlash) : "."
   })
-  const [items, setItems] = useState<FileItem[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  // One answer per listing, items and error together, so what is shown is always
+  // the open folder's: loading until its answer arrives, from the cache or a request.
+  const [listing, setListing] = useState<{ key: string; items: FileItem[]; error: string | null } | null>(null)
   const [selectedPath, setSelectedPath] = useState<string | undefined>(currentPath)
   const getFileListCache = useSettingsStore((s) => s.getFileListCache)
   const setFileListCache = useSettingsStore((s) => s.setFileListCache)
+  const listingKey = `${dir}|${extensions || ""}`
 
   useEffect(() => {
     let cancelled = false
-    const cacheKey = `${dir}|${extensions || ""}`
-    const cached = getFileListCache(cacheKey)
+    const cached = getFileListCache(listingKey)
     if (cached) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- cache-hit fast path: show cached file list immediately without async fetch
-      setItems(cached as FileItem[])
-      setLoading(false)
+      setListing({ key: listingKey, items: cached as FileItem[], error: null })
       return
     }
-    setError(null)
     listFiles(dir, extensions)
       .then((data) => {
         if (cancelled) return
         const fileItems = data.items || []
-        setItems(fileItems)
-        setFileListCache(cacheKey, fileItems)
-        setLoading(false)
+        setFileListCache(listingKey, fileItems)
+        setListing({ key: listingKey, items: fileItems, error: null })
       })
       .catch((e: unknown) => {
         if (cancelled) return
-        setError(e instanceof Error ? e.message : "Failed to load files")
-        setItems([])
-        setLoading(false)
+        setListing({ key: listingKey, items: [], error: apiErrorMessage(e, "Failed to load files") })
       })
     return () => { cancelled = true }
-  }, [dir, extensions, getFileListCache, setFileListCache])
+  }, [dir, extensions, listingKey, getFileListCache, setFileListCache])
+
+  const current = listing?.key === listingKey ? listing : null
+  const loading = current === null
+  const error = current?.error ?? null
+  const items = current?.items ?? []
 
   const goUp = () => {
     if (dir === ".") return
     const parts = dir.split("/")
     parts.pop()
-    setLoading(true)
     setDir(parts.length > 0 ? parts.join("/") : ".")
   }
 
@@ -174,6 +174,7 @@ export function FileBrowser({
           <button
             onClick={goUp}
             disabled={dir === "."}
+            aria-label="Up one folder"
             className="p-0.5 rounded disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
             style={{ color: 'var(--text-secondary)' }}
           >
@@ -210,7 +211,6 @@ export function FileBrowser({
                   key={item.path}
                   onClick={() => {
                     if (item.type === "directory") {
-                      setLoading(true)
                       setDir(item.path)
                     } else {
                       handleFileClick(item.path)

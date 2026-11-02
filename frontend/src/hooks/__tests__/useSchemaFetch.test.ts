@@ -62,17 +62,18 @@ describe("useSchemaFetch", () => {
     expect(result.current.error).toBe("Unsupported delimiter")
   })
 
-  it("fetchForPath triggers manual fetch", async () => {
-    mockFetchSchema.mockResolvedValue(fakeSchema)
-    const { result } = renderHook(() => useSchemaFetch())
+  it("fetchForPath fetches the current path again, as a retry does", async () => {
+    mockFetchSchema.mockRejectedValueOnce(new Error("busy")).mockResolvedValueOnce(fakeSchema)
+    const { result } = renderHook(() => useSchemaFetch("data.csv"))
+    await waitFor(() => expect(result.current.error).toBe("busy"))
     act(() => {
-      result.current.fetchForPath("manual.csv")
+      result.current.fetchForPath("data.csv")
     })
-    await waitFor(() => {
-      expect(result.current.loading).toBe(false)
-    })
+    expect(result.current.error).toBeNull()
+    expect(result.current.loading).toBe(true)
+    await waitFor(() => expect(result.current.loading).toBe(false))
     expect(result.current.schema).toEqual(fakeSchema)
-    expect(mockFetchSchema).toHaveBeenCalledWith("manual.csv", { signal: undefined }, undefined)
+    expect(mockFetchSchema).toHaveBeenLastCalledWith("data.csv", { signal: undefined }, undefined)
   })
 
   it("loading state is true while fetch is pending", async () => {
@@ -100,28 +101,45 @@ describe("useSchemaFetch", () => {
     expect(result.current.error).toBeNull()
   })
 
-  it("error is cleared when a new fetch succeeds", async () => {
-    mockFetchSchema.mockRejectedValueOnce(new Error("network error"))
-    const { result } = renderHook(() => useSchemaFetch())
+  it("gives a schema only for the current path, ignoring a late reply for an earlier one", async () => {
+    const replies = new Map<string, (value: unknown) => void>()
+    mockFetchSchema.mockImplementation((path: string) => new Promise((resolve) => { replies.set(path, resolve) }))
+    const { result, rerender } = renderHook(({ path }) => useSchemaFetch(path), { initialProps: { path: "a.csv" } })
+    rerender({ path: "b.csv" })
+    await act(async () => {
+      replies.get("a.csv")!({ ...fakeSchema, path: "a.csv" })
+    })
+    expect(result.current.schema).toBeNull()
+    expect(result.current.loading).toBe(true)
+    await act(async () => {
+      replies.get("b.csv")!({ ...fakeSchema, path: "b.csv" })
+    })
+    expect(result.current.schema).toEqual({ ...fakeSchema, path: "b.csv" })
+  })
 
-    // First fetch fails
-    act(() => {
-      result.current.fetchForPath("bad.csv")
-    })
-    await waitFor(() => {
-      expect(result.current.error).toBe("network error")
-    })
+  it("fetches again, and withholds the earlier schema, when the reader settings change", async () => {
+    mockFetchSchema.mockResolvedValue(fakeSchema)
+    const { result, rerender } = renderHook(
+      ({ separator }) => useSchemaFetch("data.csv", { format: "csv", arguments: { separator } }),
+      { initialProps: { separator: "," } },
+    )
+    await waitFor(() => expect(result.current.schema).toEqual(fakeSchema))
+    mockFetchSchema.mockReturnValue(new Promise(() => {}))
+    rerender({ separator: ";" })
+    expect(result.current.schema).toBeNull()
+    expect(result.current.loading).toBe(true)
+    expect(mockFetchSchema).toHaveBeenLastCalledWith(
+      "data.csv", { signal: expect.any(AbortSignal) }, { format: "csv", arguments: { separator: ";" } },
+    )
+  })
 
-    // Second fetch succeeds
-    mockFetchSchema.mockResolvedValueOnce(fakeSchema)
-    act(() => {
-      result.current.fetchForPath("good.csv")
-    })
-    await waitFor(() => {
-      expect(result.current.loading).toBe(false)
-    })
-    expect(result.current.error).toBeNull()
-    expect(result.current.schema).toEqual(fakeSchema)
+  it("has no schema once the path is cleared", async () => {
+    mockFetchSchema.mockResolvedValue(fakeSchema)
+    const { result, rerender } = renderHook(({ path }) => useSchemaFetch(path), { initialProps: { path: "data.csv" as string | undefined } })
+    await waitFor(() => expect(result.current.schema).toEqual(fakeSchema))
+    rerender({ path: undefined })
+    expect(result.current.schema).toBeNull()
+    expect(result.current.loading).toBe(false)
   })
 
   it("non-Error rejection is stringified", async () => {

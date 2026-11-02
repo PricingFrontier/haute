@@ -10,6 +10,7 @@ import {
   Check,
 } from "lucide-react"
 import { writeClipboardText, downloadTextFile, clipboardWriteAvailable } from "./shared/tableClipboard"
+import { apiErrorMessage } from "../../api/errors"
 
 // ─── JsonPreview ──────────────────────────────────────────────────
 //
@@ -93,7 +94,7 @@ export function JsonPreview({
   const onCopy = useCallback(() => {
     writeClipboardText(json).then(
       () => flashAck("Copied"),
-      (e: unknown) => setActionError(e instanceof Error ? e.message : "Copy failed"),
+      (e: unknown) => setActionError(apiErrorMessage(e, "Copy failed")),
     )
   }, [json, flashAck])
 
@@ -267,5 +268,3 @@ export function JsonPreview({
     </div>
   )
 }
-
-export default JsonPreview

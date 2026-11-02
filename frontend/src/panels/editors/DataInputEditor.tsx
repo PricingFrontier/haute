@@ -100,7 +100,6 @@ export default function DataInputEditor({
   onUpdate: OnUpdateConfig
   onReplaceConfig: OnReplaceConfig
   accentColor: string
-  errorLine?: number | null
 }) {
   const { capabilities, error } = useIoCapabilities()
   const groups = (capabilities?.groups ?? []).filter((group) => group.input_available)

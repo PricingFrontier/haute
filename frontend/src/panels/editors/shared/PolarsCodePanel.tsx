@@ -11,6 +11,8 @@ type PolarsCodePanelProps = {
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
   errorLine?: number | null
+  /** Changes with each run's result, so a repeat error line is marked again. */
+  errorRevision?: unknown
   /** The columns the code can name, completed inside a string literal. */
   codeColumns?: { name: string; dtype: string }[]
   hint: ReactNode
@@ -24,6 +26,7 @@ export default function PolarsCodePanel({
   inputSources,
   onDeleteInput,
   errorLine,
+  errorRevision,
   codeColumns,
   hint,
   starterCode,
@@ -48,6 +51,7 @@ export default function PolarsCodePanel({
         defaultValue={defaultCode}
         onChange={(val) => onUpdate("code", val)}
         errorLine={errorLine}
+        errorRevision={errorRevision}
         availableColumns={columnNames}
       />
       <div className="text-[11px] font-mono shrink-0" style={{ color: "var(--text-muted)", opacity: 0.6 }}>

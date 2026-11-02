@@ -11,9 +11,7 @@ Each incoming connection is one frame. A single frame is the usual case; several
 
 The node's panel has no tabs: its settings sit on one page, and it has no **COLUMNS** tab because the mapping below chooses the fields.
 
-**RESPONSE CONFIGURATION**
-
-**Output format** is the response format. **JSON** is the only format; a new node shows **-- select output format --** until you pick it, and the response is JSON either way.
+The response is a JSON document.
 
 **RESPONSE MAPPING**
 
@@ -48,9 +46,8 @@ The panel warns when two connected frames resolve to the same name (give the sou
 Returning the quote ID, the final premium and the area factor:
 
 1. Connect your priced frame (here `priced`) to the Quote Response node.
-2. Choose **JSON** as the **Output format**.
-3. Expand the `priced` block and click **Add row** three times. Map `quote_id` to `$[:].quote_id`, `final_premium` to `$[:].final_premium` and `area_factor` to `$[:].area_factor`. (Or click **Infer** and untick or remove the rows you don't want.)
-4. Expand **Output preview** to check the document.
+2. Expand the `priced` block and click **Add row** three times. Map `quote_id` to `$[:].quote_id`, `final_premium` to `$[:].final_premium` and `area_factor` to `$[:].area_factor`. (Or click **Infer** and untick or remove the rows you don't want.)
+3. Expand **Output preview** to check the document.
 
 The API response then holds only the quote ID, the final premium, and the area factor. All other columns (raw inputs, intermediate calculations) are still computed but not exposed. Fields whose value is null, and empty arrays or objects, are left out of the response.
 
@@ -65,7 +62,6 @@ The API response then holds only the quote ID, the final premium, and the area f
 
     | Setting in the editor | Stored as |
     |---|---|
-    | **Output format** | `outputFormat`: `"json"` (a new node stores `""`) |
     | Mapping rows | `outputMapping`: one entry per row |
     | Row's frame | `outputMapping[].source_port`: the incoming frame's name |
     | Row's column | `outputMapping[].source_column` |
@@ -80,8 +76,7 @@ The API response then holds only the quote ID, the final premium, and the area f
         { "source_port": "priced", "source_column": "quote_id", "output_path": "$[:].quote_id", "enabled": true },
         { "source_port": "priced", "source_column": "final_premium", "output_path": "$[:].final_premium", "enabled": true },
         { "source_port": "priced", "source_column": "area_factor", "output_path": "$[:].area_factor", "enabled": true }
-      ],
-      "outputFormat": "json"
+      ]
     }
     ```
 

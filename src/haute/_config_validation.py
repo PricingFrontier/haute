@@ -113,6 +113,9 @@ _REMOVED_FEATURE_SELECTION_KEYS: dict[NodeType, frozenset[str]] = {
 _REMOVED_COLUMN_MAPPING_KEYS: dict[NodeType, frozenset[str]] = {
     NodeType.WORKBENCH_OUTPUT: frozenset({"mapping"}),
 }
+_REMOVED_RESPONSE_FORMAT_KEYS: dict[NodeType, frozenset[str]] = {
+    NodeType.OUTPUT: frozenset({"outputFormat"}),
+}
 #: The keys a workbench node is given from the project's form wherever the pipeline runs
 #: (``haute._workbench_nodes``), so a config file or a saved config never holds them: an
 #: earlier Haute kept copies there (specs/workbench).
@@ -189,6 +192,13 @@ def reject_removed_config_keys(
             "filled from the connected frame's column of exactly its name: name the frame's "
             "columns as the workbench does upstream and remove mapping.",
             removed_config_keys=removed_mapping,
+        )
+    removed_format = sorted(_REMOVED_RESPONSE_FORMAT_KEYS.get(nt, frozenset()).intersection(config))
+    if removed_format:
+        raise ConfigError(
+            f"{nt.value} config contains the removed outputFormat field. The response "
+            "document is always JSON: remove outputFormat.",
+            removed_config_keys=removed_format,
         )
 
 

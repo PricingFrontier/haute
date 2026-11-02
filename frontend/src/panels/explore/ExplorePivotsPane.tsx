@@ -6,7 +6,7 @@ import useNodeResultsStore, {
   explorePivotResultKey,
 } from "../../stores/useNodeResultsStore"
 import { NODE_GROUP_COLORS } from "../../theme/colors"
-import type { SimpleEdge, SimpleNode } from "../editors"
+import type { SimpleEdge, SimpleNode } from "../editors/_shared"
 import {
   ExploreResultEmptyState,
   PivotRunStatusActions,

@@ -5,7 +5,7 @@ import ExecutionDiagnosticsSummary from "../../components/ExecutionDiagnosticsSu
 import { CommittedTextField } from "../../components/form"
 import { safeParseInt } from "../../utils/configField"
 import { withAlpha } from "../../utils/color"
-import type { OnUpdateConfig } from "../editors"
+import type { OnUpdateConfig } from "../editors/_shared"
 import { useOptimiserAutoRange, type FrontierRange } from "./useOptimiserAutoRange"
 import { sweptConstraintNames } from "./solveReadiness"
 

@@ -620,8 +620,7 @@ describe("client runtime contracts", () => {
   }
 
   it("outputAssembleDryRun sends every optional field and a custom timeout", async () => {
-    // Exercises the present branches of `outputFormat ?? "json"` (an explicit
-    // format), the `rowLimit !== undefined` ternary, and `source ?? "live"`
+    // Exercises the `rowLimit !== undefined` ternary and `source ?? "live"`
     // (an explicit source), plus the non-default `timeout = 120_000` path.
     mockFetch.mockReturnValue(jsonResponse(outputAssembleResponse))
 
@@ -629,26 +628,27 @@ describe("client runtime contracts", () => {
       graph: dummyGraph,
       nodeId: "out1",
       outputMapping: [{ field: "premium" }],
-      outputFormat: "csv",
       rowLimit: 25,
       source: "cache",
       timeout: 5_000,
     })
 
-    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({
+    const sent = JSON.parse(String(mockFetch.mock.calls[0][1]?.body))
+    expect(sent).toMatchObject({
       node_id: "out1",
       output_mapping: [{ field: "premium" }],
-      output_format: "csv",
       row_limit: 25,
       source: "cache",
     })
+    // The response is always JSON: no format is sent.
+    expect(sent).not.toHaveProperty("output_format")
     expect(result.row_count).toBe(1)
   })
 
   it("outputAssembleDryRun applies defaults and omits row_limit when unset", async () => {
-    // Exercises the fallback branches: `outputFormat ?? "json"` (absent →
-    // "json"), the `rowLimit !== undefined` absent branch (key omitted), and
-    // `source ?? "live"` (absent → "live"), plus the default timeout path.
+    // Exercises the fallback branches: the `rowLimit !== undefined` absent
+    // branch (key omitted) and `source ?? "live"` (absent → "live"), plus the
+    // default timeout path.
     mockFetch.mockReturnValue(jsonResponse(outputAssembleResponse))
 
     await outputAssembleDryRun({
@@ -660,7 +660,6 @@ describe("client runtime contracts", () => {
     const body = JSON.parse(String(mockFetch.mock.calls[0][1]?.body))
     expect(body).toMatchObject({
       node_id: "out1",
-      output_format: "json",
       source: "live",
     })
     expect(body).not.toHaveProperty("row_limit")

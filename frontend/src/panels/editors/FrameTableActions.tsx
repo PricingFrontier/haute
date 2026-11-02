@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback } from "react"
 import { Copy, Share2, Save, ClipboardPaste, Check } from "lucide-react"
+import { apiErrorMessage } from "../../api/errors"
 import {
   buildTsv,
   buildCsv,
@@ -81,7 +82,7 @@ export function FrameTableActions({
     const tsv = buildTsv([headers, ...rows])
     writeClipboardText(tsv).then(
       () => flashAck("Copied"),
-      (e: unknown) => setError(e instanceof Error ? e.message : "Copy failed"),
+      (e: unknown) => setError(apiErrorMessage(e, "Copy failed")),
     )
   }, [getGrid, flashAck])
 
@@ -89,7 +90,7 @@ export function FrameTableActions({
     const json = JSON.stringify(getSchema(), null, 2)
     writeClipboardText(json).then(
       () => flashAck("Copied JSON"),
-      (e: unknown) => setError(e instanceof Error ? e.message : "Copy failed"),
+      (e: unknown) => setError(apiErrorMessage(e, "Copy failed")),
     )
   }, [getSchema, flashAck])
 
@@ -264,5 +265,3 @@ export function FrameTableActions({
     </div>
   )
 }
-
-export default FrameTableActions

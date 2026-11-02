@@ -139,8 +139,12 @@ export function IoArgumentsEditor({
             const name = row.name.trim()
             const unknownName =
               name !== "" && !argumentNames.includes(name)
+            const missingValue = name !== "" && row.valueText.trim() === ""
             const invalidValue =
-              row.valueText !== "" && !parsesAsJson(row.valueText)
+              row.valueText.trim() !== "" && !parsesAsJson(row.valueText)
+            // What a commit keeps of a row that does not parse: the saved value
+            // under its name, if there is one.
+            const keepsSavedValue = Object.hasOwn(args, name)
             return (
               <div key={row.id}>
                 <div className="flex items-center gap-1.5">
@@ -199,12 +203,26 @@ export function IoArgumentsEditor({
                     the backend can reject it explicitly.
                   </p>
                 )}
+                {missingValue && (
+                  <p
+                    className="mt-0.5 text-[11px]"
+                    style={{ color: "var(--danger-text)" }}
+                  >
+                    {keepsSavedValue
+                      ? `${name} has no value, so its saved value is kept. Enter a JSON value, or remove the argument.`
+                      : `${name} has no value, so it is not saved. Enter a JSON value such as ",".`}
+                  </p>
+                )}
                 {invalidValue && (
                   <p
                     className="mt-0.5 text-[11px]"
                     style={{ color: "var(--danger-text)" }}
                   >
-                    Invalid JSON. The previous value is kept until this parses.
+                    {keepsSavedValue
+                      ? "Invalid JSON. The previous value is kept until this parses."
+                      : name
+                        ? `Invalid JSON. ${name} is not saved until this parses.`
+                        : "Invalid JSON."}
                   </p>
                 )}
               </div>

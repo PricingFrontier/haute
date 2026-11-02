@@ -15,6 +15,8 @@ export default function ExploreCodeEditor(props: {
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
   errorLine?: number | null
+  /** Changes with each run's result, so a repeat error line is marked again. */
+  errorRevision?: unknown
   /** The last run's error message for this node, if it failed. */
   runError?: string | null
   upstreamColumns?: { name: string; dtype: string }[]

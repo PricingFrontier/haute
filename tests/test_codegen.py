@@ -434,7 +434,6 @@ class TestNodeToCode:
                                 "enabled": True,
                             },
                         ],
-                        "outputFormat": "json",
                     },
                 },
             }

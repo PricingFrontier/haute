@@ -246,7 +246,6 @@ class TestBuildOutput:
                 }
                 for f in fields
             ],
-            "outputFormat": "json",
         }
 
     def test_flat_mapping_renders_array_of_rows(self) -> None:

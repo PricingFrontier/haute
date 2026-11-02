@@ -2,7 +2,7 @@
  * Pure path-string tools for the OUTPUT editor's mass-edit affordances.
  *
  * Storage is LITERAL — an entry's `output_path` is a plain string with no
- * header/suffix split — so both transforms below operate on literal path
+ * header/suffix split — so the transforms below operate on literal path
  * strings, exactly as specified. Kept in their own module (no React) so the
  * OutputEditor file stays a components-only module (react-refresh) and the
  * transforms are unit-testable in isolation.
@@ -18,31 +18,6 @@
 export function substitutePrefix(path: string, oldPrefix: string, newPrefix: string): string {
   if (oldPrefix === "" || !path.startsWith(oldPrefix)) return path
   return newPrefix + path.slice(oldPrefix.length)
-}
-
-/**
- * PREFIX-COMPOSE (the prefix-helper "apply" affordance). Distribute a reusable
- * prefix across a column path: insert the prefix segments AFTER the leading
- * `$[:]` (or `$`) root marker and BEFORE the rest, composing
- * `$[:].<prefix>...<column>`. The prefix is given in segment form (no leading
- * `$`/dot), e.g. `addr` or `addr.geo`; an empty prefix is a no-op.
- *
- * Examples (prefix = `addr`):
- *   `$[:].city`        → `$[:].addr.city`
- *   `$[:].geo[:].lat`  → `$[:].addr.geo[:].lat`
- *   `$.city`           → `$.addr.city`
- */
-export function composePrefix(path: string, prefix: string): string {
-  const clean = prefix.replace(/^\$?\.?/, "").replace(/\.$/, "")
-  if (clean === "") return path
-  // Find the root marker length: `$[:]` (4) or bare `$` (1).
-  const rootLen = path.startsWith("$[:]") ? 4 : path.startsWith("$") ? 1 : 0
-  const root = path.slice(0, rootLen)
-  let rest = path.slice(rootLen)
-  // Drop a single leading dot on the remainder so we don't double it.
-  if (rest.startsWith(".")) rest = rest.slice(1)
-  const composed = rest ? `${clean}.${rest}` : clean
-  return `${root}.${composed}`
 }
 
 /**

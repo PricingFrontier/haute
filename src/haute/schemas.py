@@ -2361,7 +2361,6 @@ class OutputAssembleDryRunRequest(BaseModel):
     node_id: BoundedName
     #: The in-progress (volatile, unsaved) outputMapping to preview.
     output_mapping: list[RequestEntry] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
-    output_format: BoundedName = "json"
     #: Cap upstream source rows so the preview stays cheap.
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: BoundedName = "live"

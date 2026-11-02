@@ -112,6 +112,7 @@ export default function PolarsStepsEditor({
   inputNames,
   onDeleteInput,
   errorLine,
+  errorRevision,
   runError,
   frameColumns,
   start,
@@ -127,6 +128,8 @@ export default function PolarsStepsEditor({
   inputNames: string[]
   onDeleteInput?: (edgeId: string) => void
   errorLine?: number | null
+  /** Changes with each run's result, so a repeat error line is marked again. */
+  errorRevision?: unknown
   /** The last run's error message for this node; render errors stay quiet until a run has failed. */
   runError?: string | null
   /** The columns a frame-mode list starts its suggestions from: the pane's code columns. */
@@ -141,9 +144,19 @@ export default function PolarsStepsEditor({
   const steps = useMemo(() => readSteps(config) ?? [], [config])
   // The constants each form reads, so a card is titled as its form reads its calculation.
   const constants = useFittingConstants(ALL_CONSTANT_TYPES)
-  const [openIndex, setOpenIndex] = useState<number | null>(null)
-  // The step whose generated lines are tinted: the card or code line under the pointer or focus.
-  const [pointedStep, setPointedStep] = useState<number | null>(null)
+  // The open card and the step whose generated lines are tinted (the card or code
+  // line under the pointer or focus) are held by step id, so each follows its step
+  // through a move, a delete, an undo or a redo; an id no longer present is none.
+  const [openId, setOpenId] = useState<string | null>(null)
+  const [pointedId, setPointedId] = useState<string | null>(null)
+  const indexOf = (id: string | null): number | null => {
+    const index = id === null ? -1 : steps.findIndex((step) => step.id === id)
+    return index < 0 ? null : index
+  }
+  const openIndex = indexOf(openId)
+  const pointedStep = indexOf(pointedId)
+  const setOpenIndex = (index: number | null) => setOpenId(index === null ? null : steps[index]?.id ?? null)
+  const setPointedStep = (index: number | null) => setPointedId(index === null ? null : steps[index]?.id ?? null)
   // A step just added, whose first field takes focus once its card has rendered.
   const focusStepId = useRef<string | null>(null)
   // The start card's select and every step card's disclosure button, by schema index.
@@ -201,9 +214,6 @@ export default function PolarsStepsEditor({
   const setStart = (input: string) => {
     const sourceStep: Step = { id: startStep?.id ?? newStepId(), kind: "source", input }
     setSteps(steps[0]?.kind === "source" ? [sourceStep, ...steps.slice(1)] : [sourceStep, ...steps])
-    if (steps.length > 0 && steps[0]?.kind !== "source") {
-      setOpenIndex((current) => current === null ? null : current + 1)
-    }
   }
 
   // As soon as the start input is known (chosen, or the node's only input),
@@ -236,7 +246,7 @@ export default function PolarsStepsEditor({
     // With one input there is nothing to join; the card says to connect one.
     if (step.kind === "join") step.input = inputNames.find((name) => name !== effectiveStart) ?? ""
     setSteps([...base, step])
-    setOpenIndex(base.length)
+    setOpenId(step.id)
     focusStepId.current = step.id
   }
 
@@ -244,8 +254,7 @@ export default function PolarsStepsEditor({
   const deleteStep = (index: number) => {
     const next = steps.filter((_, i) => i !== index)
     setSteps(next)
-    setOpenIndex((current) => (current === index ? null : current !== null && current > index ? current - 1 : current))
-    setPointedStep(null)
+    setPointedId(null)
     const nextIndex = index < next.length ? index : next.length > firstMovable ? next.length - 1 : null
     requestAnimationFrame(() => focusDisclosure(nextIndex))
   }
@@ -255,8 +264,7 @@ export default function PolarsStepsEditor({
     const next = [...steps]
     ;[next[index], next[target]] = [next[target], next[index]]
     setSteps(next)
-    setOpenIndex((current) => (current === index ? target : current === target ? index : current))
-    setPointedStep(null)
+    setPointedId(null)
   }
 
   // Drag a card by its header and drop it on another card to put it there.
@@ -266,13 +274,6 @@ export default function PolarsStepsEditor({
     const [moved] = next.splice(from, 1)
     next.splice(to, 0, moved)
     setSteps(next)
-    setOpenIndex((current) => {
-      if (current === null) return null
-      if (current === from) return to
-      if (from < current && current <= to) return current - 1
-      if (to <= current && current < from) return current + 1
-      return current
-    })
   }
   const dragFor = useListReorder(reorder)
 
@@ -511,6 +512,7 @@ export default function PolarsStepsEditor({
                           inputNames,
                           firstFieldId: `${step.id}-first`,
                           errorLine: step.kind === "free_code" ? runtimeErrorLineFor(index) : null,
+                          errorRevision,
                         }}
                       />}
                     </StepCard>

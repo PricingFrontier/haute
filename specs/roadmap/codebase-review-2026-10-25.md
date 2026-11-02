@@ -198,10 +198,6 @@ these are the Majors still open.
   and the undo history** (Major, `FSH-R05`): the save stores no document
   fingerprint, so the resync is answered with a full document the client takes
   for an external change.
-- **A banding rule the grid leaves unmarked fails the save with a 500** (Major,
-  `FNED-R04`): the save validator accepts a blank band name, a blank categorical
-  value or a repeated value, the sidecar writer refuses them, and the writer's
-  error has no HTTP handler.
 - **Saving the pipeline cancels an auto-range run in flight, and a percentage
   constraint is shown as "at least 0" and rewritten as an absolute bound on
   edit** (two Majors, `FMOU-R04`).
@@ -256,17 +252,11 @@ production:
 | Assistant | ASB-4, ASB-5, ASB-6, ASB-8, ASB-9 | `ASSIST-58` |
 | Assistant | ASB-3, ASB-7, ASB-11 | `ASSIST-59` |
 | Explore / EDA | SUB-5, SUB-6, SUB-7, SUB-10 | `EDA-R01` |
-| Explore / EDA | SUB-8, SUB-9, SUB-12 | `EDA-R02` |
 | Frontend shared | FSA-1, FSA-2, FSA-8, FSA-10 | `FSH-R05` |
 | Frontend shared | FSA-3, FSA-4, FSA-5, FSA-6, FSA-7, FSA-9, FSA-12 | `FSH-R06` |
-| Frontend node editors | FNE-1, FNE-2, FNE-4, FNE-7, FNE-8, FNE-17 | `FNED-R01` |
-| Frontend node editors | FNE-3, FNE-5, FNE-6, FNE-9, FNE-11 | `FNED-R02` |
-| Frontend node editors | FNE-10, FNE-12, FNE-13, FNE-14, FNE-15, FNE-16 | `FNED-R03` |
 | Frontend shared | FSB-1, FSB-2, FSB-10, FSB-12, FSB-15 | `FSH-R07` |
 | Frontend shared | FSB-3, FSB-4, FSB-5, FSB-6, FSB-9, FSB-13, FSB-14, FSB-16, FSB-17, FSB-18 | `FSH-R08` |
 | Frontend shared | FSB-7, FSB-8, FSB-11 | `FSH-R09` |
-| Frontend node editors | FNB-1, FNB-2, FNB-3, FNB-5, FNB-13 | `FNED-R04` |
-| Frontend node editors | FNB-4, FNB-6, FNB-7, FNB-8, FNB-9, FNB-10, FNB-11, FNB-12, FNB-14, FNB-15 | `FNED-R05` |
 | Frontend modelling | FMD-7, FMD-8, FMD-9, FMD-10, FMD-11, FMD-13, FMD-14, FMD-15 | `FMOU-R03` |
 | Frontend optimiser | FOX-1, FOX-2, FOX-3 | `FMOU-R04` |
 | Frontend optimiser | FOX-4, FOX-5, FOX-6, FOX-8, FOX-10 (optimiser part) | `FMOU-R05` |
@@ -299,18 +289,14 @@ key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
 (`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the pivot registry at shutdown (`ROAD-WORKER-06`); the
 browser's hand-written contract mirrors (`API-R03`), the results store's optimiser logic (`FSH-R03`) and the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
-(`ENGQ-R01`); the editors' unused barrel and unlisted `@lezer/highlight`
 (`ENGQ-R01`); the dead
 `submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
-utilities (`ENGQ-R01`); Banding's `_id` inside the config (`FNED-R07`), the editors'
-barrels (`ENGQ-R01`), the pivot editor writing the
-fields the backend defaults (`EDA-R02`); a second fabricated
+utilities (`ENGQ-R01`); a second fabricated
 train-failure sentinel (`FSH-R06`); the optimiser
 panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and
 `applyFrontierPointSummary`'s null handling (`FSH-R03`); in the workbench UI and
 the app shell, the
-chart theme observer written twice (`EDA-R03`), the params-folder listing in the
-Allowed field (`FNED-R05`), knip's export-only symbols (`ENGQ-R01`), browser-locale dates (`FSH-R08`), the bootstrap without
+chart theme observer written twice (`EDA-R03`), knip's export-only symbols (`ENGQ-R01`), browser-locale dates (`FSH-R08`), the bootstrap without
 a deadline (`FSH-R05`), Ctrl+S inside a code box (`FSH-R07`) and the
 modelling pane badges (`FMOU-R03`); in the tests, scripts and CI, the floating
 action tags in the generated workflows (`CLI-R06`), the campaign-named test modules
@@ -372,6 +358,6 @@ All probes live outside the repository and wrote nothing into it.
 | radon | 285 functions with cyclomatic complexity ≥ 20; 27 ≥ 50 (the largest in the optimiser service, the save service, the assistant tools and the RAM estimate). |
 | vulture (60 %) | 61 candidates; those confirmed unreferenced are in `ROAD-WORKER-08`, `DEP-R13`, `CLI-R05` and `ENGQ-R01`. |
 | jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13` and `ROAD-WORKER-08`. |
-| jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `FNED-R03`, `FNED-R05`, `FMOU-R05` and `EDA-R03`. |
-| knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted; every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
+| jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `FMOU-R05` and `EDA-R03`. |
+| knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted (since declared); every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
 | sweeps | 35 campaign-named test modules (`ENGQ-R05`). |

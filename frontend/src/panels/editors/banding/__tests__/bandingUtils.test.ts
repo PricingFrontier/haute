@@ -1,12 +1,13 @@
 /**
  * Tests for banding utilities:
  * inferBandingType and friends,
- * detectDuplicateCategorical, categoricalRuleCounts, suggestOutputColumn, even breakpoints,
+ * categoricalRuleIssues, breakpointLabelIssues, categoricalRuleCounts, suggestOutputColumn, even breakpoints,
  * date boundaries, day numbers and calendar-step breakpoints
  */
 import { describe, it, expect } from "vitest"
 import {
-  detectDuplicateCategorical,
+  breakpointLabelIssues,
+  categoricalRuleIssues,
   categoricalRuleCounts,
   generateEvenBreakpoints,
   generateSettingsFromBreakpoints,
@@ -23,48 +24,38 @@ import {
 } from "../bandingUtils"
 import type { BreakpointRule, CategoricalRule } from "../../../../types/banding"
 
-describe("detectDuplicateCategorical", () => {
-  it("returns empty when no duplicates", () => {
+describe("categoricalRuleIssues", () => {
+  it("finds nothing in complete, distinct rules", () => {
     const rules: CategoricalRule[] = [
       { value: "A", assignment: "Group1" },
       { value: "B", assignment: "Group2" },
     ]
-    expect(detectDuplicateCategorical(rules)).toEqual([])
+    expect(categoricalRuleIssues(rules).size).toBe(0)
   })
 
-  it("detects single duplicate", () => {
-    const rules: CategoricalRule[] = [
-      { value: "A", assignment: "Group1" },
-      { value: "B", assignment: "Group2" },
-      { value: "A", assignment: "Group3" },
-    ]
-    const dupes = detectDuplicateCategorical(rules)
-    expect(dupes).toHaveLength(1)
-    expect(dupes[0].value).toBe("A")
-    expect(dupes[0].indices).toEqual([0, 2])
-  })
-
-  it("detects multiple duplicates", () => {
+  it("names a blank value, a blank mapping and each later repeat of a value", () => {
     const rules: CategoricalRule[] = [
       { value: "A", assignment: "G1" },
-      { value: "B", assignment: "G2" },
-      { value: "A", assignment: "G3" },
-      { value: "B", assignment: "G4" },
-    ]
-    const dupes = detectDuplicateCategorical(rules)
-    expect(dupes).toHaveLength(2)
-  })
-
-  it("ignores empty values", () => {
-    const rules: CategoricalRule[] = [
-      { value: "", assignment: "G1" },
       { value: "", assignment: "G2" },
+      { value: "B", assignment: "" },
+      { value: "A", assignment: "G3" },
+      { value: "A", assignment: "G4" },
     ]
-    expect(detectDuplicateCategorical(rules)).toEqual([])
+    expect(Object.fromEntries(categoricalRuleIssues(rules))).toEqual({
+      1: { value: "Rule 2 needs a value." },
+      2: { assignment: "Rule 3 needs what it maps to." },
+      3: { value: 'Rule 4 repeats the value "A" of rule 1.' },
+      4: { value: 'Rule 5 repeats the value "A" of rule 1.' },
+    })
   })
+})
 
-  it("returns empty for empty rules", () => {
-    expect(detectDuplicateCategorical([])).toEqual([])
+describe("breakpointLabelIssues", () => {
+  it("names each band without a name", () => {
+    expect(Object.fromEntries(breakpointLabelIssues([
+      { boundary: "10", label: "Low" },
+      { boundary: "", label: "" },
+    ]))).toEqual({ 1: "Breakpoint 2 needs a band name." })
   })
 })
 

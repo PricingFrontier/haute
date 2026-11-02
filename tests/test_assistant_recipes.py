@@ -402,7 +402,6 @@ def test_response_output_recipe_emits_canonical_mapping_and_edge() -> None:
                     }
                     for column in ("quote_id", "region")
                 ],
-                "outputFormat": "json",
             },
         },
         {
@@ -459,7 +458,6 @@ def test_recipe_can_own_one_connected_response_output(recipe_id: str) -> None:
                         "enabled": True,
                     }
                 ],
-                "outputFormat": "json",
             },
         }
     ]

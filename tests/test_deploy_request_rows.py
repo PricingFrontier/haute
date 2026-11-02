@@ -56,7 +56,6 @@ def _output(fields: list[str], port: str) -> dict[str, Any]:
             {"source_port": port, "source_column": f, "output_path": f"$[:].{f}", "enabled": True}
             for f in fields
         ],
-        "outputFormat": "json",
     }
 
 
@@ -1220,7 +1219,7 @@ def _response_graph(mapping: list[dict[str, Any]], remap: dict[str, str]) -> Pip
             "nodes": [
                 _node("quotes", "apiInput", {"path": ""}),
                 _lookup("rates", remap["rates__rates.parquet"]),
-                _node("out", "output", {"outputMapping": mapping, "outputFormat": "json"}),
+                _node("out", "output", {"outputMapping": mapping}),
             ],
             "edges": [_quotes_edge("out"), _edge("rates", "out")],
         }

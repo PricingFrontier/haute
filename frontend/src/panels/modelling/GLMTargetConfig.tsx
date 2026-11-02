@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import type { OnUpdateConfig } from "../editors"
+import type { OnUpdateConfig } from "../editors/_shared"
 import { apiErrorMessage } from "../../api/errors"
 import type { DispersionParam } from "../../api/types"
 import { configField } from "../../utils/configField"

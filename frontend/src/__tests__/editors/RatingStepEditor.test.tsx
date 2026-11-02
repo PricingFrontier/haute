@@ -258,6 +258,69 @@ describe("RatingStepEditor", () => {
     expect(screen.getByLabelText("Output Column")).toHaveValue("telematics_adjustment")
   })
 
+  it.each([
+    { label: "Output Column", before: "age_factor", after: "region_factor", key: "outputColumn" },
+    { label: "Default", before: "1.5", after: "2.5", key: "defaultValue" },
+  ])("shows $label as undo leaves it, and a blur then commits nothing", ({ label, before, after, key }) => {
+    const table = (value: string) => ({ factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [], [key]: value })
+    const onUpdate = vi.fn()
+    const view = render(
+      <RatingStepEditor config={{ tables: [table(before)] }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+    )
+    const input = screen.getByLabelText(label) as HTMLInputElement
+    expect(input.value).toBe(before)
+
+    // An undo (or a broadcast) changes the value while the field is on screen.
+    view.rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <RatingStepEditor config={{ tables: [table(after)] }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />
+      </GraphProvider>,
+    )
+    expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe(after)
+    fireEvent.blur(screen.getByLabelText(label))
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { label: "Combined Output Column", key: "outputColumn", before: "technical_price", after: "loaded_price" },
+    { label: "Base Value", key: "baseValue", before: "1.0", after: "2.5" },
+  ])("shows the combined output's $label as undo leaves it, and a blur commits nothing", ({ label, key, before, after }) => {
+    const combined = (value: string) => ({ outputColumn: "technical_price", operation: "multiply", baseValue: "1.0", [key]: value })
+    const onUpdate = vi.fn()
+    const config = (value: string) => ({
+      tables: [{ factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] }],
+      combinedOutputs: [combined(value)],
+    })
+    const view = render(
+      <RatingStepEditor config={config(before)} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+    )
+    expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe(before)
+    view.rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <RatingStepEditor config={config(after)} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />
+      </GraphProvider>,
+    )
+    expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe(after)
+    fireEvent.blur(screen.getByLabelText(label))
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it("commits the output column on Enter", () => {
+    const onUpdate = vi.fn()
+    render(
+      <RatingStepEditor
+        config={{ tables: [{ factors: [], outputColumn: "", defaultValue: "1.0", entries: [] }] }}
+        onUpdate={onUpdate}
+        inputSources={[]}
+        accentColor="#14b8a6"
+      />,
+    )
+    const input = screen.getByLabelText("Output Column")
+    fireEvent.change(input, { target: { value: "age_factor" } })
+    fireEvent.keyDown(input, { key: "Enter" })
+    expect(onUpdate).toHaveBeenCalledWith("tables", [expect.objectContaining({ outputColumn: "age_factor" })])
+  })
+
   it("persists only the output column on blur", () => {
     const onUpdate = vi.fn()
     render(

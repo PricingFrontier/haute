@@ -1389,7 +1389,6 @@ class TestCodegenExecValidation:
                         "enabled": True,
                     },
                 ],
-                "outputFormat": "json",
             },
             label="result",
         )
@@ -1432,7 +1431,6 @@ class TestCodegenExecValidation:
                     "enabled": True,
                 },
             ],
-            "outputFormat": "json",
         }
         node = _make_codegen_node("output", config, label="Quote_Response")
         frame_names = ["quotes", "drivers", "licences", "vehicles"]

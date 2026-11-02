@@ -33,7 +33,7 @@ import {
   trainingIssuePane,
   type TrainingConfigurationIssue,
 } from "../utils/trainingObjective"
-import type { OnUpdateConfig } from "./editors"
+import type { OnUpdateConfig } from "./editors/_shared"
 import { useGraph } from "./useGraph"
 import {
   ALGORITHM_CAPABILITIES,

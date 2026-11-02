@@ -39,7 +39,7 @@ With the data counted, a **Numeric** factor shows a histogram of the whole datas
 
 A **Numeric** factor with no breakpoints offers two ways to start:
 
-- **Generate even bands** asks for a **Start**, **End** and **Step** and fills in evenly spaced breakpoints, each labelled by its range (such as `18–25`); the last band ends at **End**, so it may be shorter. On a date column, **Start** and **End** are dates and **Step** is a number of days, weeks, months or years. The fields start from the data's lowest and highest values when they are known. Mistakes are reported in the box, such as "End must be greater than start".
+- **Generate even bands** asks for a **Start**, **End** and **Step** and fills in evenly spaced breakpoints, each labelled by its range (such as `18–25`); the last band ends at **End**, so it may be shorter. On a date column, **Start** and **End** are dates and **Step** is a number of days, weeks, months or years. The fields start from the data's lowest and highest values when they are known, with a **Step** of about ten bands at the range's own scale (0.1 for values from 0.2 to 0.9, 1000 for 4000 to 13600). Mistakes are reported in the box, such as "End must be greater than start".
 - **Add manually** adds one empty breakpoint.
 
 After that, **BREAKPOINTS (N)** lists them, with **Generate** to replace them with generated ones (its fields start from the settings the current breakpoints imply). Each row has:
@@ -50,7 +50,7 @@ After that, **BREAKPOINTS (N)** lists them, with **Generate** to replace them wi
 | **Band name** | The label rows in this band get. |
 | **Matches** | How many rows fall in the band, once the data is counted. |
 
-- **Add** adds a breakpoint, and the bin deletes one.
+- **Add** adds a breakpoint, and the bin deletes one. A breakpoint without a **Band name** is marked in red until it has one; a save is refused while one remains.
 - A boundary out of order is shaded with a warning, such as "Breakpoint 3 is out of order; enter a value greater than 45."
 - The copy button at the foot of the table (**Copy banding as TSV**) copies the breakpoints as tab-separated text with the headers `Up to` and `Band name`. Pasting tab-separated rows into a cell fills the rows from that cell down.
 
@@ -74,7 +74,7 @@ After that, **RULES (N)** lists the rules, with **Import** to add a rule for eac
 | **Matches** | How many rows have the value, once the data is counted. |
 
 - The bin deletes a rule.
-- A value listed twice is flagged, such as "Duplicate value "Petrol" in rules 1, 3".
+- A rule the pipeline cannot save is marked in red, with the reason on its warning icon: a rule without a **Value** or **Maps To**, and a value an earlier rule already lists (such as "Rule 3 repeats the value "Petrol" of rule 1."). Fix or delete it before saving; a save is refused while one remains.
 - **Copy banding as TSV** copies the rules with the headers `Value` and `Maps To`; pasting tab-separated rows adds them as rules.
 
 ## The COLUMNS tab

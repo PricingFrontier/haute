@@ -287,6 +287,41 @@ describe("BreakpointGrid", () => {
     expect(screen.getByLabelText("Breakpoint 3 boundary")).not.toHaveAttribute("aria-invalid")
   })
 
+  it("warns on a boundary that is not a number, as it does on one out of order", () => {
+    render(
+      <BreakpointGrid
+        breakpoints={[
+          { boundary: "10", label: "Low" },
+          { boundary: "abc", label: "Mid" },
+          { boundary: "", label: "High" },
+        ]}
+        onUpdate={vi.fn()}
+        accentColor={ACCENT}
+      />,
+    )
+    expect(screen.getByLabelText("Breakpoint 2 boundary")).toHaveAttribute("aria-invalid", "true")
+    expect(screen.getByRole("img", { name: "Breakpoint 2 is not a number; enter a number such as 25." })).toBeInTheDocument()
+    expect(screen.getByLabelText("Breakpoint 3 boundary")).not.toHaveAttribute("aria-invalid")
+  })
+
+  it("marks a band without a name, which the save refuses, and only that one", () => {
+    render(
+      <BreakpointGrid
+        breakpoints={[
+          { boundary: "10", label: "Low" },
+          { boundary: "", label: "" },
+        ]}
+        onUpdate={vi.fn()}
+        accentColor={ACCENT}
+      />,
+    )
+
+    expect(screen.getByLabelText("Breakpoint 1 label")).not.toHaveAttribute("aria-invalid")
+    const blank = screen.getByLabelText("Breakpoint 2 label")
+    expect(blank).toHaveAttribute("aria-invalid", "true")
+    expect(screen.getByRole("img", { name: "Breakpoint 2 needs a band name." })).toBeInTheDocument()
+  })
+
   describe("on a date column", () => {
     const renderDates = (boundaries: string[]) =>
       render(

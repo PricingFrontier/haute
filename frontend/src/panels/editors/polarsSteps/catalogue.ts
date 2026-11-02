@@ -102,7 +102,7 @@ export const AGGREGATIONS: Array<{ value: Aggregation; label: string; hint?: str
 export const AGGREGATION_OPTIONS = AGGREGATIONS.map((a) => ({ value: a.value, label: a.hint ? `${a.label} (${a.hint})` : a.label }))
 
 /** Window-only aggregates, offered after the plain ones in a window expression. */
-export const WINDOW_ONLY_AGGREGATIONS: Array<{ value: WindowOnlyAggregation; label: string }> = [
+const WINDOW_ONLY_AGGREGATIONS: Array<{ value: WindowOnlyAggregation; label: string }> = [
   { value: "row_number", label: "row number" },
   { value: "cum_sum", label: "running total" },
   { value: "shift", label: "previous row's value" },
@@ -292,7 +292,7 @@ export const CAST_FAMILIES: CastFamily[] = [
  * with `strict=False` (the renderer's `CAST_REFUSALS`): a text column reaches
  * Date and Datetime only by parsing with a format.
  */
-export const CAST_REFUSALS: Record<CastFamily, CastDtype[]> = {
+const CAST_REFUSALS: Record<CastFamily, CastDtype[]> = {
   integer: ["Categorical"],
   float: ["Categorical"],
   decimal: ["Date", "Datetime", "Categorical"],

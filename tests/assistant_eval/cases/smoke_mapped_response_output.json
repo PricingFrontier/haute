@@ -48,8 +48,7 @@
                 "output_path": "$[:].region",
                 "enabled": true
               }
-            ],
-            "outputFormat": "json"
+            ]
           }
         },
         "execution": [],

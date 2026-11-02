@@ -1,5 +1,4 @@
 {
-  "outputFormat": "json",
   "outputMapping": [
     {
       "source_port": "base_premium",

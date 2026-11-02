@@ -376,6 +376,34 @@ describe("step forms only build schema-valid payloads", () => {
     expect(screen.getByRole("button", { name: "Remove part 3" })).toBeInTheDocument()
   })
 
+  it("refuses a negative or fractional number of decimal places with a message", () => {
+    const spy = vi.fn()
+    const step: Step = {
+      id: "w",
+      kind: "with_column",
+      name: "r",
+      expr: { type: "function", fn: "round", operand: { kind: "column", name: "premium" }, args: [{ kind: "literal", type: "number", value: 2 }] },
+    }
+    render(<Stateful initial={step} spy={spy} />)
+    const places = screen.getByLabelText("Decimal places")
+    expect(places).toHaveAttribute("min", "0")
+    fireEvent.change(places, { target: { value: "-1" } })
+    fireEvent.blur(places)
+    expect(spy).not.toHaveBeenCalled()
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a value of at least 0.")
+  })
+
+  it("refuses a quantile above 1 instead of clamping it", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "g", kind: "group_by", keys: [], aggregations: [{ column: "premium", agg: "quantile", name: "p", quantile: 0.5 }] }
+    render(<Stateful initial={step} spy={spy} />)
+    const quantile = screen.getByLabelText("Aggregation 1 quantile")
+    fireEvent.change(quantile, { target: { value: "1.5" } })
+    fireEvent.blur(quantile)
+    expect(spy).not.toHaveBeenCalled()
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a value of at most 1.")
+  })
+
   it("group-by aggregations take an optional quantile and row filter", () => {
     const spy = vi.fn()
     const step: Step = { id: "g", kind: "group_by", keys: [], aggregations: [{ column: "premium", agg: "sum", name: "total" }] }
@@ -1523,6 +1551,19 @@ describe("steps offer only what Polars 2 runs on the column types the editor kno
     expect(screen.queryByLabelText("Cast 1 format")).not.toBeInTheDocument()
   })
 
+  it("Change types shows a saved format on a column that is no longer text, so it can be cleared", () => {
+    const spy = vi.fn()
+    const context = contextFor([["start", "Date"]])
+    render(<StatefulIn initial={{ id: "c", kind: "cast", strict: true, casts: [{ column: "start", dtype: "Datetime", format: "%Y-%m-%d" }] }} spy={spy} context={context} />)
+
+    expect(screen.getByText("start is not text, so it takes no format: clear it.")).toBeInTheDocument()
+    const format = screen.getByLabelText("Cast 1 format")
+    fireEvent.change(format, { target: { value: "" } })
+    fireEvent.blur(format)
+    expect(spy).toHaveBeenLastCalledWith({ id: "c", kind: "cast", strict: true, casts: [{ column: "start", dtype: "Datetime" }] })
+    expect(screen.queryByLabelText("Cast 1 format")).not.toBeInTheDocument()
+  })
+
   it("Change types offers a category only text, and says why a saved number cast fails", () => {
     const context = contextFor([["band", "Categorical"]])
     render(<StatefulIn initial={{ id: "c", kind: "cast", strict: true, casts: [{ column: "band", dtype: "Int64" }] }} spy={vi.fn()} context={context} />)
@@ -1649,6 +1690,22 @@ describe("steps offer only what Polars 2 runs on the column types the editor kno
     expect(optionValues(screen.getByLabelText("Part 1 expression type"))).toContain("to_date")
     fireEvent.change(screen.getByLabelText("Part 1 expression type"), { target: { value: "to_date" } })
     expect(spy).toHaveBeenLastCalledWith(across({ kind: "expr", expr: toDate }))
+  })
+
+  it("refuses a date format without a % directive, saying so", () => {
+    const context = contextFor([["start", "String"], ["fee", "Float64"]])
+    // A window has no formula, so the parse shows its own Format box.
+    const window: Expr = { type: "window", agg: "first", of: { kind: "column", name: "start" }, over: ["region"] }
+    const toDate: Expr = { type: "function", fn: "to_date", operand: { kind: "expr", expr: window }, args: [{ kind: "literal", type: "text", value: "%Y-%m-%d" }] }
+    const step: Step = { id: "w", kind: "with_column", name: "d", expr: { type: "sum_horizontal", parts: [{ kind: "expr", expr: toDate }, { kind: "column", name: "fee" }] } }
+    const spy = vi.fn()
+    render(<StatefulIn initial={step} spy={spy} context={context} />)
+    const format = screen.getByLabelText("Format")
+    fireEvent.change(format, { target: { value: "dd/mm/yyyy" } })
+    fireEvent.blur(format)
+    expect(spy).not.toHaveBeenCalled()
+    expect(format).toHaveValue("dd/mm/yyyy")
+    expect(screen.getByText("Enter a date format such as %d/%m/%Y.")).toBeInTheDocument()
   })
 
   it("Computed as leaves out the functions a typed column cannot take", () => {

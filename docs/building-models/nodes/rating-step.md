@@ -41,7 +41,7 @@ Under the fields, the table itself:
 - **Two factors**: a grid, with the first factor's levels as rows and the second's as columns. **Copy visible table as TSV** copies it; pasting tab-separated values into a cell fills the grid from that cell.
 - **Three factors**: a list for the third factor chooses which level's grid to show; the grid is the first factor by the second, as for two factors.
 
-Type a relativity into a cell; it is saved when you leave the cell, and an empty or non-numeric cell takes the table's **DEFAULT** (`1` when **DEFAULT** is empty). Drag across cells to select several, and **Ctrl+C** copies their values. A line under the table gives the number of entries and the range of values.
+Type a relativity into a cell; it is saved when you leave the cell, and an emptied cell takes the table's **DEFAULT** (`1` when **DEFAULT** is empty). A value that is not a number, such as `1,5` (write `1.5`), is not saved: the cell is marked in red and keeps what you typed until you correct it. Drag across cells to select several, and **Ctrl+C** copies their values. A line under the table gives the number of entries and the range of values.
 
 A factor with many levels can make a table too large to edit: past 20,000 cells the editor says how big it would be, for example "area (2000) × vehicle_model (400) would be 800,000 cells - too many to edit here. Band the column first, or rate it in a table of its own."
 

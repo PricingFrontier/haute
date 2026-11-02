@@ -199,6 +199,25 @@ describe("ColumnsTab", () => {
     )
   })
 
+  it("commits the removal of the only, stale column, leaving every column selected", () => {
+    const onUpdate = vi.fn()
+    render(
+      <ColumnsTab config={{ selected_columns: ["gone"] }} onUpdate={onUpdate} availableColumns={COLUMNS} columns={[]} />,
+    )
+    fireEvent.click(screen.getByText("gone"))
+    expect(onUpdate).toHaveBeenCalledWith("selected_columns", [])
+    expect(screen.queryByText("Select at least one column to apply.")).not.toBeInTheDocument()
+  })
+
+  it("keeps a stale column when the last available one is ticked", () => {
+    const onUpdate = vi.fn()
+    render(
+      <ColumnsTab config={{ selected_columns: ["a", "b", "gone"] }} onUpdate={onUpdate} availableColumns={COLUMNS} columns={COLUMNS.slice(0, 2)} />,
+    )
+    fireEvent.click(screen.getByText("c"))
+    expect(onUpdate).toHaveBeenCalledWith("selected_columns", ["a", "b", "gone", "c"])
+  })
+
   it("shows empty state when no columns available", () => {
     render(
       <ColumnsTab

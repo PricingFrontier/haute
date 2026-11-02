@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react"
 import { Search, X } from "lucide-react"
-import type { OnUpdateConfig } from "../editors"
+import type { OnUpdateConfig } from "../editors/_shared"
 import { configField } from "../../utils/configField"
 import { isNumericDtype } from "../../utils/polarsDtypes"
 import { NODE_GROUP_COLORS } from "../../theme/colors"

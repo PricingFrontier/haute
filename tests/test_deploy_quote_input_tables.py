@@ -101,7 +101,7 @@ def _graph(
             "nodes": [
                 _node("request", "apiInput", {"path": str(sample), "tables": tables}),
                 _node("banded", "polars", {"code": band}),
-                _node("out", "output", {"outputMapping": mapping, "outputFormat": "json"}),
+                _node("out", "output", {"outputMapping": mapping}),
             ],
             "edges": [
                 {"id": "q", "source": "request", "target": "out", "sourceHandle": "quote"},
@@ -366,7 +366,6 @@ def test_a_rejoin_of_a_quote_s_drivers_answers_a_batch_quote_by_quote(sample):
             "output",
             {
                 "outputMapping": [_entry("joined", "min_age", "$[:].min_age")],
-                "outputFormat": "json",
             },
         )
     )

@@ -3,7 +3,7 @@ import { GitMerge, Plus, Table2, X } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
-import { SavedValueOption } from "../../components/form"
+import { CommittedTextField, SavedValueOption } from "../../components/form"
 import SearchableItemList from "./shared/SearchableItemList"
 import { useSearchableList, type SearchableListItem } from "./shared/useSearchableList"
 import { withAlpha } from "../../utils/color"
@@ -189,7 +189,6 @@ export default function RatingStepEditor({
   upstreamColumns?: RatingFactorColumn[]
   previewRows?: Record<string, unknown>[]
   accentColor: string
-  errorLine?: number | null
   nodeId?: string
 }) {
   const graph = useGraph()
@@ -628,12 +627,9 @@ export default function RatingStepEditor({
       <div className="grid grid-cols-[2fr_1fr_1.3fr] gap-2">
         <div>
           <label htmlFor={outputColumnInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: outputColumnInvalid ? 'var(--danger)' : 'var(--text-muted)' }}>Output Column</label>
-          <input key={`out-${safeIdx}`} type="text" defaultValue={table.outputColumn}
+          <CommittedTextField key={`out-${safeIdx}`} type="text" value={table.outputColumn}
             id={outputColumnInputId}
-            onBlur={(e) => {
-              const outputColumn = e.target.value
-              updateTable(safeIdx, { outputColumn })
-            }}
+            onCommit={(outputColumn) => updateTable(safeIdx, { outputColumn })}
             aria-invalid={outputColumnInvalid}
             aria-describedby={outputColumnInvalid ? outputColumnErrorId : undefined}
             className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
@@ -646,8 +642,8 @@ export default function RatingStepEditor({
         </div>
         <div>
           <label htmlFor={defaultInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>Default</label>
-          <input key={`def-${safeIdx}`} id={defaultInputId} type="number" step="0.01" defaultValue={table.defaultValue ?? ""}
-            onBlur={(e) => setDefaultValue(safeIdx, e.target.value)}
+          <CommittedTextField key={`def-${safeIdx}`} id={defaultInputId} type="number" step="0.01" value={table.defaultValue ?? ""}
+            onCommit={(value) => setDefaultValue(safeIdx, value)}
             className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
             style={INPUT_STYLE} placeholder="none" />
         </div>
@@ -840,12 +836,12 @@ export default function RatingStepEditor({
           <div role="tabpanel" id="combined-output-tabpanel" aria-labelledby={`combined-output-tab-${safeCombinedIdx}`} className="space-y-3">
             <div>
               <label htmlFor={combinedColumnInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: combinedColumnInvalid ? 'var(--danger)' : 'var(--text-muted)' }}>Combined Output Column</label>
-              <input
+              <CommittedTextField
                 key={`combined-out-${safeCombinedIdx}`}
                 type="text"
-                defaultValue={combinedOutput.outputColumn}
+                value={combinedOutput.outputColumn}
                 id={combinedColumnInputId}
-                onBlur={(e) => updateCombinedOutput(safeCombinedIdx, { outputColumn: e.target.value })}
+                onCommit={(outputColumn) => updateCombinedOutput(safeCombinedIdx, { outputColumn })}
                 aria-invalid={combinedColumnInvalid}
                 aria-describedby={combinedColumnInvalid ? combinedColumnErrorId : undefined}
                 className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
@@ -884,13 +880,13 @@ export default function RatingStepEditor({
               </div>
               <div>
                 <label htmlFor={combinedBaseValueInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: combinedBaseValueInvalid ? 'var(--danger)' : 'var(--text-muted)' }}>Base Value</label>
-                <input
-                  key={`combined-base-${safeCombinedIdx}-${combinedOutput.operation}`}
+                <CommittedTextField
+                  key={`combined-base-${safeCombinedIdx}`}
                   id={combinedBaseValueInputId}
                   type="number"
                   step="any"
-                  defaultValue={combinedOutput.baseValue}
-                  onBlur={(e) => updateCombinedOutput(safeCombinedIdx, { baseValue: e.target.value })}
+                  value={combinedOutput.baseValue}
+                  onCommit={(baseValue) => updateCombinedOutput(safeCombinedIdx, { baseValue })}
                   aria-invalid={combinedBaseValueInvalid}
                   aria-describedby={combinedBaseValueInvalid ? combinedBaseValueErrorId : undefined}
                   className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none"

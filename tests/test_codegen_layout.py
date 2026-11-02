@@ -205,7 +205,6 @@ _OUTPUT = {
             "enabled": True,
         }
     ],
-    "outputFormat": "json",
 }
 _DATA_OUTPUT = {
     "outputType": "file",

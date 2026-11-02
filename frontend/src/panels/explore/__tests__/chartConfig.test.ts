@@ -32,6 +32,8 @@ function pivot(
       aggregation: "sum",
       reference: "amount_sum",
       display_name: "Amount",
+      sort_rows: "none",
+      color_scale: "none",
       color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
     },
     {
@@ -40,6 +42,8 @@ function pivot(
       aggregation: "count",
       reference: "count_count",
       display_name: "Count",
+      sort_rows: "none",
+      color_scale: "none",
       color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
     },
     {
@@ -48,6 +52,8 @@ function pivot(
       aggregation: "average",
       reference: "rate_mean",
       display_name: "Rate",
+      sort_rows: "none",
+      color_scale: "none",
       color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
     },
   ]
@@ -994,6 +1000,8 @@ describe("reconcileValueEncodings", () => {
           aggregation: "sum",
           reference: "exposure_sum",
           display_name: "Exposure",
+          sort_rows: "none",
+          color_scale: "none",
           color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
         },
       ],

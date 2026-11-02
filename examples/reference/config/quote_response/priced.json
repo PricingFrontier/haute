@@ -24,6 +24,5 @@
       "output_path": "$[:].sum_insured",
       "enabled": true
     }
-  ],
-  "outputFormat": "json"
+  ]
 }

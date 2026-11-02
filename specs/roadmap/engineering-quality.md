@@ -36,10 +36,8 @@ states.
 `get_exec` and `get_codegen`. Twenty-five `*_for_tests`, `_reset_*` and `_clear_*` hooks live
 in production modules, and `routes/_train_service.py` is a compatibility
 facade that re-exports private names mainly for tests. In the frontend, knip
-reports 8 unused files (including the banding and rating editor barrels), the
-whole `panels/editors/index.ts` barrel of 22 editors (consumers use the lazy
-editors), 33 unused exports, 91 unused exported types and an unlisted
-`@lezer/highlight` dependency. The API client's `checkHauteSession` has no
+reports unused files (besides the node editors' barrels, since removed), 33
+unused exports and 91 unused exported types. The API client's `checkHauteSession` has no
 production caller left. The 25 October 2026 review added a parameter that is
 accepted and never read, `render_ave_feature_svg(is_categorical=...)`, which every
 caller computes and passes. `TrainService._join_preparation` says shutdown uses it, but only tests
@@ -72,9 +70,6 @@ is gone; tests import the owning modules.
 `src/haute/_ram_estimate.py::_resolve_target_column_names`;
 `src/haute/_path_case_audit.py::wrap_path_case_audit`;
 `src/haute/_registry.py::get_exec`; `src/haute/routes/_train_service.py`;
-`frontend/src/panels/editors/index.ts`;
-`frontend/src/panels/editors/banding/index.ts`;
-`frontend/src/panels/editors/rating/index.ts`;
 `frontend/src/api/client.ts::checkHauteSession`;
 `src/haute/modelling/_charts.py::render_ave_feature_svg`;
 `src/haute/routes/_training_lifecycle.py::TrainService._join_preparation`;

@@ -16,7 +16,7 @@ import type {
 } from "../../api/types"
 import { MODEL_COLORS } from "../../theme/colors"
 import { configField } from "../../utils/configField"
-import type { OnUpdateConfig } from "../editors"
+import type { OnUpdateConfig } from "../editors/_shared"
 import PathPickerField from "../editors/shared/PathPickerField"
 import { FieldHelpIcon } from "./FieldHelpIcon"
 import { modelFileExtension, type ExportableAlgorithm } from "./modelExport"

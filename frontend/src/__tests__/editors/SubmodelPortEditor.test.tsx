@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import SubmodelPortEditor from "../../panels/editors/SubmodelPortEditor"
-import type { SimpleNode } from "../../panels/editors"
+import type { SimpleNode } from "../../panels/editors/_shared"
 import type { PipelineNameViolation } from "../../types/pipelineDocument"
 
 afterEach(cleanup)

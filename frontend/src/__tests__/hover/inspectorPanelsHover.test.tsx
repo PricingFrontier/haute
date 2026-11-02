@@ -85,7 +85,7 @@ import TracePanel from "../../panels/TracePanel"
 import CalculationHero from "../../trace/CalculationHero"
 
 import { GraphProvider } from "../../panels/GraphContext"
-import type { SimpleNode, SimpleEdge } from "../../panels/editors"
+import type { SimpleNode, SimpleEdge } from "../../panels/editors/_shared"
 import type { TraceResult, TraceStep } from "../../types/trace"
 import useUIStore from "../../stores/useUIStore"
 

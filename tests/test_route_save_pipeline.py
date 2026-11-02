@@ -411,6 +411,92 @@ class TestValidateOptimiserInputSelectors:
         assert not (tmp_path / "pipeline.py").exists()
 
 
+class TestValidateBandingRulesTheWriterRefuses:
+    """A banding rule the sidecar writer cannot write is refused by save validation, a 400
+    naming the node and the rule, before anything is written."""
+
+    @staticmethod
+    def _graph(factor: dict) -> PipelineGraph:
+        return _make_graph(_make_node("band", "age_bands", "banding", {"factors": [factor]}))
+
+    @pytest.mark.parametrize(
+        ("factor", "message"),
+        [
+            pytest.param(
+                {
+                    "banding": "breakpoints",
+                    "column": "age",
+                    "outputColumn": "age_band",
+                    "rules": [{"boundary": "40", "label": ""}, {"boundary": "", "label": "old"}],
+                },
+                "breakpoint rule '40' requires label (rules[0])",
+                id="blank-band-name",
+            ),
+            pytest.param(
+                {
+                    "banding": "categorical",
+                    "column": "region",
+                    "outputColumn": "region_group",
+                    "rules": [
+                        {"value": "North", "assignment": "N"},
+                        {"value": "", "assignment": ""},
+                    ],
+                },
+                "categorical rules[1] requires value",
+                id="blank-categorical-value",
+            ),
+            pytest.param(
+                {
+                    "banding": "categorical",
+                    "column": "region",
+                    "outputColumn": "region_group",
+                    "rules": [
+                        {"value": "North", "assignment": "N"},
+                        {"value": "South", "assignment": ""},
+                    ],
+                },
+                "categorical rule 'South' requires assignment (rules[1])",
+                id="blank-maps-to",
+            ),
+            pytest.param(
+                {
+                    "banding": "categorical",
+                    "column": "region",
+                    "outputColumn": "region_group",
+                    "rules": [
+                        {"value": "North", "assignment": "N"},
+                        {"value": "North", "assignment": "S"},
+                    ],
+                },
+                "duplicate categorical rule key 'North'",
+                id="repeated-value",
+            ),
+            pytest.param(
+                {
+                    "banding": "breakpoints",
+                    "column": "",
+                    "outputColumn": "",
+                    "rules": [{"boundary": "", "label": ""}],
+                },
+                "breakpoint rule '' requires label (rules[0])",
+                id="draft-factor-blank-row",
+            ),
+        ],
+    )
+    def test_refused_with_the_node_and_rule_before_anything_is_written(
+        self, tmp_path: Path, factor: dict, message: str
+    ) -> None:
+        service = SavePipelineService(tmp_path)
+
+        with pytest.raises(RequestRefusedError) as exc_info:
+            service.validate_graph(self._graph(factor), source_file="pipeline.py")
+
+        assert exc_info.value.status_code == 400
+        assert "age_bands" in exc_info.value.detail
+        assert message in exc_info.value.detail
+        assert list(tmp_path.iterdir()) == []
+
+
 class TestValidateScenarioExpanderGridSize:
     """The grid size has no incomplete form (a new node carries an explicit
     count), so save refuses a config the builder would reject."""

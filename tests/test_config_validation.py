@@ -268,6 +268,27 @@ class TestBuildNodeConfigProducesValidKeys:
             )
 
 
+def _node_defaults() -> dict[str, dict[str, Any]]:
+    import json
+    from pathlib import Path
+
+    import haute
+
+    return json.loads((Path(haute.__file__).parent / "node_defaults.json").read_text())
+
+
+@pytest.mark.parametrize("node_type", sorted(_node_defaults()))
+def test_a_new_nodes_config_holds_only_keys_its_type_reads(node_type: str) -> None:
+    """The palette's starting config for each node type, which its editor then edits,
+    holds no key the type does not declare and none it has removed (such as a Quote
+    Response's ``outputFormat``)."""
+    from haute._config_validation import reject_removed_config_keys
+
+    config = _node_defaults()[node_type]
+    assert unrecognized_config_keys(NodeType(node_type), config) == []
+    reject_removed_config_keys(NodeType(node_type), config)
+
+
 # ---------------------------------------------------------------------------
 # B7: selected_columns is universally valid (executor applies it to all nodes)
 # ---------------------------------------------------------------------------

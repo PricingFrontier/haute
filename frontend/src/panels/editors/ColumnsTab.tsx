@@ -70,9 +70,11 @@ export default function ColumnsTab({ config, onUpdate, availableColumns, columns
       : isAllSelected || selectedColumns.includes(col)
 
   const commit = (next: string[]) => {
-    const selectsEveryAvailableColumn = allColumns.every((column) =>
-      next.includes(column.name),
-    )
+    // Exactly the available columns is every column, stored as none; a stale
+    // name beside them is kept, so it stays visible to be removed.
+    const selectsEveryAvailableColumn =
+      next.length === allColumns.length &&
+      allColumns.every((column) => next.includes(column.name))
     const normalized = selectsEveryAvailableColumn ? [] : next
     setDraft(null)
     if (sameSelection(normalized, selectedColumns)) return
@@ -86,7 +88,9 @@ export default function ColumnsTab({ config, onUpdate, availableColumns, columns
     const next = base.includes(col)
       ? base.filter((candidate) => candidate !== col)
       : [...base, col]
-    if (next.length === 0) {
+    // Unticking the last real column waits for a choice; removing the last,
+    // stale name leaves no selection, which is every column.
+    if (next.length === 0 && allColumnNames.has(col)) {
       setDraft([])
       return
     }

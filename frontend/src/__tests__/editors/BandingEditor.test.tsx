@@ -819,7 +819,7 @@ describe("BandingEditor", () => {
     renderEditor(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
-    expect(screen.getByText('Duplicate value "London" in rules 1, 3')).toBeInTheDocument()
+    expect(screen.getByRole("img", { name: 'Rule 3 repeats the value "London" of rule 1.' })).toBeInTheDocument()
   })
 
 
@@ -931,6 +931,63 @@ describe("BandingEditor", () => {
     expect(JSON.parse(screen.getByTestId("categorical-value-picker").getAttribute("data-values")!)).toEqual([
       { value: "London" },
       { value: "Manchester" },
+    ])
+  })
+
+  it.each([
+    { dtype: "Int64", rows: [{ band: 2 }, { band: 1 }], values: ["1", "2"] },
+    { dtype: "Boolean", rows: [{ band: true }, { band: false }], values: ["false", "true"] },
+    { dtype: "Categorical", rows: [{ band: "B" }, { band: "A" }], values: ["A", "B"] },
+  ])("offers a $dtype column's preview values as the text execution matches on", ({ dtype, rows, values }) => {
+    const config = { factors: [{ banding: "categorical", column: "band", outputColumn: "g", rules: [] }] }
+    renderEditor(
+      <BandingEditor
+        config={config}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        accentColor="#22d3ee"
+        previewRows={rows}
+        upstreamColumns={[{ name: "band", dtype }]}
+      />,
+    )
+    expect(JSON.parse(screen.getByTestId("categorical-value-picker").getAttribute("data-values")!)).toEqual(
+      values.map((value) => ({ value })),
+    )
+  })
+
+  it.each(["Float64", "Decimal(precision=10, scale=2)", "Date", "Datetime(time_unit='us', time_zone=None)"])(
+    "offers no preview values for a %s column, whose text the preview cannot give",
+    (dtype) => {
+      // A Float64 1.0 arrives in the preview as the number 1, while execution matches
+      // the text Polars casts it to, "1.0": a chip written from the preview never matches.
+      const config = { factors: [{ banding: "categorical", column: "band", outputColumn: "g", rules: [] }] }
+      renderEditor(
+        <BandingEditor
+          config={config}
+          onUpdate={vi.fn()}
+          inputSources={[]}
+          accentColor="#22d3ee"
+          previewRows={[{ band: 1 }, { band: 2.5 }]}
+          upstreamColumns={[{ name: "band", dtype }]}
+        />,
+      )
+      expect(screen.queryByTestId("categorical-value-picker")).toBeNull()
+    },
+  )
+
+  it("offers only the text values of a column whose type is not known", () => {
+    const config = { factors: [{ banding: "categorical", column: "band", outputColumn: "g", rules: [] }] }
+    renderEditor(
+      <BandingEditor
+        config={config}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        accentColor="#22d3ee"
+        previewRows={[{ band: "A" }, { band: 1 }]}
+      />,
+    )
+    expect(JSON.parse(screen.getByTestId("categorical-value-picker").getAttribute("data-values")!)).toEqual([
+      { value: "A" },
     ])
   })
 

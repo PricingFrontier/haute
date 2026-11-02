@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { apiErrorMessage } from "../../../api/errors"
-import { listProjectFiles } from "../../../api/projectFiles"
 import { fetchParamFile } from "../../../api/workbench"
+import { useParamsFiles } from "../../../hooks/useParamsFiles"
 import { latest } from "../../../utils/latest"
 
 const SELECT_CLASS = "w-full px-1.5 py-1 rounded text-[11px] font-mono focus:outline-none"
@@ -11,9 +11,6 @@ const SELECT_STYLE = {
   border: "1px solid var(--border)",
   color: "var(--text-primary)",
 }
-
-/** Whether a file in the params folder is a CSV, whatever the case of its extension. */
-const isCsv = (name: string): boolean => name.toLowerCase().endsWith(".csv")
 
 /**
  * Categorical's Import from params (specs/frontend-node-editors): a CSV in the pipeline
@@ -32,17 +29,11 @@ export function ImportParamValues({
   onImport: (values: string[]) => void
   onClose: () => void
 }) {
-  // The CSV files in the params folder; null while they are listed.
-  const [files, setFiles] = useState<readonly string[] | null>(null)
-  // Why the params folder could not be listed, and the listing asked for again by Retry.
-  const [unlisted, setUnlisted] = useState<string | null>(null)
-  const [listing, setListing] = useState(0)
   const [file, setFile] = useState("")
-  // Each file's header as read, its columns to pick from.
-  const [headers, setHeaders] = useState<Readonly<Record<string, readonly string[]>>>({})
   const [column, setColumn] = useState("")
   const [problem, setProblem] = useState<string | null>(null)
   const [nothingNew, setNothingNew] = useState(false)
+  const { files, unlisted, retry, header } = useParamsFiles(file, setProblem)
 
   // The values ruled when a read answers, and the editor's handler then, rather than when it was asked.
   const existingRef = useRef(existingValues)
@@ -59,33 +50,6 @@ export function ImportParamValues({
       mounted.current = false
     }
   }, [])
-
-  useEffect(() => {
-    let current = true
-    void listProjectFiles("pipeline", "params")
-      .then((folder) => {
-        if (current) setFiles(folder.entries.filter((entry) => entry.kind === "file" && isCsv(entry.name)).map((entry) => entry.name))
-      })
-      .catch((error: unknown) => {
-        if (current) setUnlisted(apiErrorMessage(error, "The params files could not be listed."))
-      })
-    return () => {
-      current = false
-    }
-  }, [listing])
-
-  const header = file === "" ? undefined : headers[file]
-  useEffect(() => {
-    if (file === "" || header !== undefined) return
-    const ticket = reads.take()
-    void fetchParamFile(file)
-      .then(({ columns }) => {
-        if (mounted.current) setHeaders((read) => ({ ...read, [file]: columns }))
-      })
-      .catch((error: unknown) => {
-        if (mounted.current && reads.is(ticket)) setProblem(apiErrorMessage(error))
-      })
-  }, [file, header, reads])
 
   const chooseFile = (chosen: string) => {
     // A column of the file left still being read no longer answers.
@@ -191,10 +155,7 @@ export function ImportParamValues({
           <button
             type="button"
             className="underline"
-            onClick={() => {
-              setUnlisted(null)
-              setListing((count) => count + 1)
-            }}
+            onClick={retry}
           >
             Retry
           </button>

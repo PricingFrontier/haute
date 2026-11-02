@@ -24,7 +24,7 @@ import {
   executionTerminalReasonFromError,
 } from "../../utils/executionDiagnostics"
 import { apiErrorMessage } from "../../api/errors"
-import type { OnUpdateConfigResult } from "../editors"
+import type { OnUpdateConfigResult } from "../editors/_shared"
 
 const POLL_INTERVAL_MS = 1_000
 

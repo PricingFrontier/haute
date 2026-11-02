@@ -219,7 +219,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // The name-collisions roadmap (NAME-09, NAME-10): the identity-response validator's
 // violation binding, the inline input-binding violations and the shared edge-id
 // encoding bring it to 1,772.7 KiB; 1,773 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1773
+// The frontend node editors roadmap (FNED-R01 to FNED-R07): the shared params-files and
+// row-key hooks, now chunks of their own, the inline grid-issue marks and the source-bound
+// inference bring it to 1,773.8 KiB; 1,774 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1774
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

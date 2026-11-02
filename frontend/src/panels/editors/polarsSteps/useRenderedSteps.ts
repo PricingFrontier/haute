@@ -8,6 +8,7 @@ import { EVERY_CONSTANT, nodeConstantReads } from "../../../utils/globalConstant
 import type { StepStart } from "../../../utils/polarsStepInputs"
 import type { ColumnInfo } from "./derivedColumns"
 import type { Step } from "./types"
+import { apiErrorMessage } from "../../../api/errors"
 
 /** The columns the editor knows: each input's by name, and a frame-mode surface's `df`. */
 export type KnownColumns = { inputs: Readonly<Record<string, ColumnInfo[]>>; frame: ColumnInfo[] }
@@ -169,7 +170,7 @@ export function useRenderedSteps(
                 if (!current()) return
                 if (err instanceof DOMException && err.name === "AbortError") return
                 // A failed request is each free-code step's reason, never a silent gap.
-                const message = `the request failed: ${err instanceof Error ? err.message : String(err)}`
+                const message = `the request failed: ${apiErrorMessage(err)}`
                 setResolved(steps.flatMap((s, index) => (s.kind === "free_code" ? [resolvedAt(index, { columns: null, message })] : [])))
               })
           } else {
@@ -186,7 +187,7 @@ export function useRenderedSteps(
         .catch((err: unknown) => {
           if (controller.signal.aborted || revision !== revisionRef.current) return
           if (err instanceof DOMException && err.name === "AbortError") return
-          const message = err instanceof Error ? err.message : String(err)
+          const message = apiErrorMessage(err)
           setState((prev) => ({
             ...prev,
             status: "error",

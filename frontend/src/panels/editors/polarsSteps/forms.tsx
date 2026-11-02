@@ -82,7 +82,7 @@ import {
 } from "./fields"
 import { StepSchemaContext, UNKNOWN_SCHEMA, schemaFor, useStepSchema, type StepSchema } from "./stepSchema"
 import { useCompletionList, type Completion } from "./useCompletionList"
-import { useRowKeys } from "./useRowKeys"
+import { useRowKeys } from "../shared/useRowKeys"
 import { CALCULATIONS, calculationEntry, calculationExpr, calculationLabel, calculationOf, computedValue, stepSection, type CalculationId, type FunctionSection } from "./calculations"
 import type {
   AggregationSpec,
@@ -139,6 +139,8 @@ export type StepFormContext = {
   firstFieldId: string
   /** Snippet-relative runtime error line for an authored free-code step. */
   errorLine?: number | null
+  /** Changes with each run's result, so a repeat error line is marked again. */
+  errorRevision?: unknown
 }
 
 type FormProps<S extends Step> = { step: S; onChange: (next: S) => void; ctx: StepFormContext }
@@ -677,7 +679,8 @@ function FunctionArgs({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { ty
               <ArgumentField value={plainOrConstant} onChange={set} constantTypes={ARG_CONSTANT_TYPES.format} plainValue={defaultArgFor("format")} plainLabel="text" ariaLabel={label}>
                 <TextField
                   value={plain.type === "text" ? String(plain.value) : ""}
-                  onCommit={(format) => format.includes("%") && set(literal("text", format))}
+                  onCommit={(format) => set(literal("text", format))}
+                  validate={(format) => (format.includes("%") ? null : "Enter a date format such as %d/%m/%Y.")}
                   ariaLabel={label}
                   mono
                 />
@@ -702,6 +705,7 @@ function FunctionArgs({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { ty
                 onChange={set}
                 ariaLabel={label}
                 integer={arg === "integer" || arg === "int"}
+                min={arg === "integer" ? 0 : undefined}
               />
             </ArgumentField>
           </Field>
@@ -1082,7 +1086,9 @@ function CastForm({ step, onChange, ctx }: FormProps<CastStep>) {
           const dtype = entry.column ? schema.typeOf(entry.column) : null
           const targets = castTargetsFor(dtype)
           const options = DTYPE_OPTIONS.filter((option) => targets.includes(option.value) || option.value === entry.dtype)
-          const parsing = parsesText(entry.dtype) && (castFamily(dtype) === "text" || (castFamily(dtype) === null && entry.format !== undefined))
+          // A saved format shows whatever the column's type is now, so a stale one can be cleared.
+          const staleFormat = entry.format !== undefined && castFamily(dtype) !== null && castFamily(dtype) !== "text"
+          const parsing = entry.format !== undefined || (parsesText(entry.dtype) && castFamily(dtype) === "text")
           const refused = castFamily(dtype) !== null && !targets.includes(entry.dtype)
           return (
             <>
@@ -1117,6 +1123,11 @@ function CastForm({ step, onChange, ctx }: FormProps<CastStep>) {
                     />
                   </div>
                 </>
+              )}
+              {staleFormat && (
+                <p role="alert" className="m-0 basis-full text-[11px]" style={{ color: "var(--warning)" }}>
+                  {entry.column} is not text, so it takes no format: clear it.
+                </p>
               )}
               {refused && (
                 <p role="alert" className="m-0 basis-full text-[11px]" style={{ color: "var(--warning)" }}>
@@ -1195,9 +1206,11 @@ function renamed(previous: ColumnAggregation, next: ColumnAggregation): ColumnAg
 }
 
 /** The common column types an aggregation can take every column of, offered after the column names. */
-const TYPE_WIDE_ENTRIES: Completion[] = DTYPE_OPTIONS.slice(0, 7).map((option) => ({
-  value: `dtype:${option.value}`,
-  label: `every ${option.value} column`,
+/** The column types an aggregation can take every column of: one list for the column box and the type select. */
+const TYPE_WIDE_TARGETS = DTYPE_OPTIONS.map((option) => ({ dtype: option.value, label: `every ${option.value} column` }))
+const TYPE_WIDE_ENTRIES: Completion[] = TYPE_WIDE_TARGETS.map(({ dtype, label }) => ({
+  value: `dtype:${dtype}`,
+  label,
   note: "type",
 }))
 
@@ -1262,7 +1275,7 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx, boxed, showFilt
 const DTYPE_AGGREGATIONS = AGGREGATION_OPTIONS.filter((a) => a.value !== "len") as Array<{ value: DtypeAggregation["agg"]; label: string }>
 /** One column again, or every column of one type. */
 const ONE_COLUMN = "column"
-const TYPE_TARGETS = [...DTYPE_OPTIONS.map((option) => ({ value: option.value, label: `every ${option.value} column` })), { value: ONE_COLUMN, label: "one column…" }]
+const TYPE_TARGETS = [...TYPE_WIDE_TARGETS.map(({ dtype, label }) => ({ value: dtype, label })), { value: ONE_COLUMN, label: "one column…" }]
 
 /** `*_suffix = function of every <type> column`: one output per column of the type. */
 function DtypeAggregationRow({ entry, index, onChange, onRemove, boxed }: {
@@ -1644,6 +1657,7 @@ function FreeCodeForm({ step, onChange, ctx }: FormProps<FreeCodeStep>) {
         defaultValue={step.code}
         onChange={(code) => onChange({ ...step, code })}
         errorLine={ctx.errorLine}
+        errorRevision={ctx.errorRevision}
         availableColumns={ctx.columns}
         placeholder={'df = df.with_columns(pl.col("premium") * 2)'}
       />

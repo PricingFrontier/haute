@@ -1,5 +1,3 @@
-import { GripVertical } from "lucide-react"
-
 import {
   PIVOT_AGGREGATION_LABELS,
   isNumericPivotDtype,
@@ -17,9 +15,9 @@ import type {
 } from "../../explore/pivotConfig"
 import { INPUT_STYLE } from "../_shared"
 import FilterMemberPicker from "./FilterMemberPicker"
+import PlacementCard from "./PlacementCard"
+import type { PlacementDrag } from "./PlacementCard"
 import {
-  PIVOT_PLACEMENT_MIME,
-  ZONES,
   normalizePivotOrdering,
   removeFromZone,
   zoneLabel,
@@ -27,37 +25,17 @@ import {
 } from "./placements"
 import type {
   Column,
-  DraggedPlacement,
   LoadPivotFilterMembers,
   Placement,
-  PlacementDropTarget,
   Zone,
   ZoneDropState,
 } from "./placements"
 
-type ZoneSectionProps = {
+type ZoneSectionProps = PlacementDrag & {
   pivot: ExplorePivotConfig
   zone: Zone
   columnsByName: ReadonlyMap<string, Column>
   persistPivot: (pivot: ExplorePivotConfig) => void
-  draggedPlacement: DraggedPlacement | null
-  activeDropTarget: PlacementDropTarget | null
-  canPositionPlacement: (
-    sourceZone: Zone,
-    placementId: string,
-    targetZone: Zone,
-    targetIndex: number,
-  ) => boolean
-  onDragPlacementStart: (placement: DraggedPlacement) => void
-  onDragPlacementOver: (target: PlacementDropTarget) => void
-  onDropPlacement: (target: PlacementDropTarget) => void
-  onDragPlacementEnd: () => void
-  onPositionPlacement: (
-    sourceZone: Zone,
-    placementId: string,
-    targetZone: Zone,
-    targetIndex: number,
-  ) => void
   loadFilterMembers?: LoadPivotFilterMembers
   currentConfigHash: string | null
 }
@@ -73,17 +51,18 @@ export default function ZoneSection({
   zone,
   columnsByName,
   persistPivot,
-  draggedPlacement,
-  activeDropTarget,
-  canPositionPlacement,
-  onDragPlacementStart,
-  onDragPlacementOver,
-  onDropPlacement,
-  onDragPlacementEnd,
-  onPositionPlacement,
   loadFilterMembers,
   currentConfigHash,
+  ...drag
 }: ZoneSectionProps) {
+  const {
+    draggedPlacement,
+    activeDropTarget,
+    canPositionPlacement,
+    onDragPlacementOver,
+    onDropPlacement,
+    onDragPlacementEnd,
+  } = drag
   const label = zoneLabel(zone)
   const placements = zone === "values" ? pivotOutputs(pivot) : zonePlacements(pivot, zone)
   const endTarget = { zone, index: placements.length }
@@ -146,119 +125,45 @@ export default function ZoneSection({
         )}
         {placements.map((placement, index) => {
           if (zone === "values" && isFormulaPlacement(placement)) {
-            const canDropBefore = draggedPlacement !== null && canPositionPlacement(
-              draggedPlacement.sourceZone, draggedPlacement.placementId, zone, index,
-            )
-            const isDropBeforeActive = activeDropTarget?.zone === zone && activeDropTarget.index === index
             return (
-              <div
+              <PlacementCard
                 key={placement.id}
-                role="group"
-                aria-label={`${placement.display_name} in Values`}
-                aria-describedby="pivot-formula-keyboard-instructions"
-                aria-grabbed={
-                  draggedPlacement?.sourceZone === zone &&
-                  draggedPlacement.placementId === placement.id
-                }
-                data-drop-position={isDropBeforeActive ? "before" : undefined}
-                tabIndex={0}
-                draggable
-                onDragStart={(event) => {
-                  const dragged = { sourceZone: zone, placementId: placement.id }
-                  event.dataTransfer.effectAllowed = "move"
-                  event.dataTransfer.setData(PIVOT_PLACEMENT_MIME, JSON.stringify(dragged))
-                  onDragPlacementStart(dragged)
-                }}
-                onDragEnd={onDragPlacementEnd}
-                onDragOver={(event) => {
-                  event.stopPropagation()
-                  if (!canDropBefore) return
-                  event.preventDefault()
-                  event.dataTransfer.dropEffect = "move"
-                  onDragPlacementOver({ zone, index })
-                }}
-                onDrop={(event) => {
-                  event.stopPropagation()
-                  if (!canDropBefore) {
-                    onDragPlacementEnd()
-                    return
-                  }
-                  event.preventDefault()
-                  onDropPlacement({ zone, index })
-                }}
-                onKeyDown={(event) => {
-                  if (event.target !== event.currentTarget) return
-                  const targetIndex = event.key === "ArrowUp"
-                    ? index - 1
-                    : event.key === "ArrowDown"
-                      ? index + 2
-                      : null
-                  if (
-                    targetIndex !== null &&
-                    canPositionPlacement(zone, placement.id, zone, targetIndex)
-                  ) {
-                    event.preventDefault()
-                    onPositionPlacement(zone, placement.id, zone, targetIndex)
-                  }
-                }}
-                className="focus-ring cursor-grab rounded p-1.5 active:cursor-grabbing"
-                style={{
-                  background: "var(--bg-panel)",
-                  border: "1px solid var(--border)",
-                  color: "var(--text-primary)",
-                  boxShadow: isDropBeforeActive
-                    ? "inset 0 2px 0 var(--accent)"
-                    : undefined,
-                  opacity:
-                    draggedPlacement?.sourceZone === zone &&
-                    draggedPlacement.placementId === placement.id
-                      ? 0.55
-                      : 1,
-                }}
+                {...drag}
+                pivot={pivot}
+                zone={zone}
+                index={index}
+                placementId={placement.id}
+                kind="formula"
+                name={placement.display_name}
+                onRemove={() => persistPivot({
+                  ...pivot,
+                  formulas: pivot.formulas.filter(
+                    (candidate) => candidate.id !== placement.id,
+                  ),
+                  value_order: pivot.value_order.filter(
+                    (id) => id !== placement.id,
+                  ),
+                })}
               >
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <GripVertical
-                    size={12}
-                    aria-hidden="true"
-                    style={{ color: "var(--text-muted)" }}
-                  />
-                  <span className="text-xs font-medium">{placement.display_name}</span>
-                  <span
-                    className="rounded px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide"
-                    style={{
-                      color: "var(--text-muted)",
-                      background: "var(--bg-input)",
-                    }}
-                  >
-                    Formula
-                  </span>
-                  <span
-                    className="rounded px-1 py-0.5 font-mono text-[9px]"
-                    style={{
-                      color: "var(--text-muted)",
-                      background: "var(--bg-input)",
-                    }}
-                  >
-                    {placement.reference}
-                  </span>
-                  <button
-                    type="button"
-                    aria-label={`Remove ${placement.display_name} from Values`}
-                    onClick={() => persistPivot({
-                      ...pivot,
-                      formulas: pivot.formulas.filter(
-                        (candidate) => candidate.id !== placement.id,
-                      ),
-                      value_order: pivot.value_order.filter(
-                        (id) => id !== placement.id,
-                      ),
-                    })}
-                    className="ml-auto rounded px-1 text-[10px]"
-                  >
-                    Remove
-                  </button>
-                </div>
-              </div>
+                <span
+                  className="rounded px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide"
+                  style={{
+                    color: "var(--text-muted)",
+                    background: "var(--bg-input)",
+                  }}
+                >
+                  Formula
+                </span>
+                <span
+                  className="rounded px-1 py-0.5 font-mono text-[9px]"
+                  style={{
+                    color: "var(--text-muted)",
+                    background: "var(--bg-input)",
+                  }}
+                >
+                  {placement.reference}
+                </span>
+              </PlacementCard>
             )
           }
           const column = columnsByName.get(placement.field as string)
@@ -273,188 +178,20 @@ export default function ZoneSection({
                 ]),
               ]
             : []
-          const canDropBefore =
-            draggedPlacement !== null &&
-            canPositionPlacement(
-              draggedPlacement.sourceZone,
-              draggedPlacement.placementId,
-              zone,
-              index,
-            )
-          const isDropBeforeActive =
-            activeDropTarget?.zone === zone && activeDropTarget.index === index
 
           return (
-            <div
+            <PlacementCard
               key={placement.id}
-              role="group"
-              aria-label={`${placement.field} in ${label}`}
-              aria-invalid={missing || undefined}
-              aria-describedby="pivot-field-keyboard-instructions"
-              aria-grabbed={
-                draggedPlacement?.sourceZone === zone &&
-                draggedPlacement.placementId === placement.id
-              }
-              data-drop-position={isDropBeforeActive ? "before" : undefined}
-              tabIndex={0}
-              draggable
-              onDragStart={(event) => {
-                const dragged = { sourceZone: zone, placementId: placement.id }
-                event.dataTransfer.effectAllowed = "move"
-                event.dataTransfer.setData(
-                  PIVOT_PLACEMENT_MIME,
-                  JSON.stringify(dragged),
-                )
-                onDragPlacementStart(dragged)
-              }}
-              onDragEnd={onDragPlacementEnd}
-              onDragOver={(event) => {
-                event.stopPropagation()
-                if (!canDropBefore) return
-                event.preventDefault()
-                event.dataTransfer.dropEffect = "move"
-                onDragPlacementOver({ zone, index })
-              }}
-              onDrop={(event) => {
-                event.stopPropagation()
-                if (!canDropBefore) {
-                  onDragPlacementEnd()
-                  return
-                }
-                event.preventDefault()
-                onDropPlacement({ zone, index })
-              }}
-              onKeyDown={(event) => {
-                if (event.target !== event.currentTarget) return
-
-                let targetZone = zone
-                let targetIndex: number | null = null
-                if (event.key === "ArrowUp") {
-                  targetIndex = index - 1
-                } else if (event.key === "ArrowDown") {
-                  targetIndex = index + 2
-                } else if (event.key === "ArrowLeft") {
-                  const zoneIndex = ZONES.findIndex((candidate) => candidate.key === zone)
-                  const target = ZONES[zoneIndex - 1]
-                  if (target) {
-                    targetZone = target.key
-                    targetIndex = zonePlacements(pivot, targetZone).length
-                  }
-                } else if (event.key === "ArrowRight") {
-                  const zoneIndex = ZONES.findIndex((candidate) => candidate.key === zone)
-                  const target = ZONES[zoneIndex + 1]
-                  if (target) {
-                    targetZone = target.key
-                    targetIndex = targetZone === "values"
-                      ? pivotOutputs(pivot).length
-                      : zonePlacements(pivot, targetZone).length
-                  }
-                }
-
-                if (
-                  targetIndex !== null &&
-                  canPositionPlacement(
-                    zone,
-                    placement.id,
-                    targetZone,
-                    targetIndex,
-                  )
-                ) {
-                  event.preventDefault()
-                  onPositionPlacement(
-                    zone,
-                    placement.id,
-                    targetZone,
-                    targetIndex,
-                  )
-                }
-              }}
-              className="focus-ring cursor-grab rounded p-1.5 active:cursor-grabbing"
-              style={{
-                background: "var(--bg-panel)",
-                border: "1px solid var(--border)",
-                boxShadow: isDropBeforeActive
-                  ? "inset 0 2px 0 var(--accent)"
-                  : undefined,
-                color: "var(--text-primary)",
-                opacity:
-                  draggedPlacement?.sourceZone === zone &&
-                  draggedPlacement.placementId === placement.id
-                    ? 0.55
-                    : 1,
-              }}
-            >
-              <div className="flex flex-wrap items-center gap-1.5">
-                <GripVertical
-                  size={12}
-                  aria-hidden="true"
-                  style={{ color: "var(--text-muted)" }}
-                />
-                <span className="text-xs font-medium">{placement.field as string}</span>
-                {missing && (
-                  <span className="text-[10px]" style={{ color: "var(--danger)" }}>
-                    No longer available
-                  </span>
-                )}
-                {value && (
-                  <select
-                    aria-label={`Aggregation for ${placement.field}`}
-                    value={value.aggregation}
-                    onChange={(event) => {
-                      const aggregation = event.target.value as PivotAggregation
-                      const reference = nextPivotValueReference(
-                        pivot,
-                        value.field,
-                        aggregation,
-                        value.id,
-                      )
-                      persistPivot({
-                        ...pivot,
-                        values: pivot.values.map((candidate) =>
-                          candidate.id === value.id
-                            ? {
-                                ...candidate,
-                                aggregation,
-                                reference,
-                                color_scale:
-                                  aggregation === "count" ||
-                                  aggregation === "distinct_count" ||
-                                  (column !== undefined && isNumericPivotDtype(column.dtype))
-                                    ? candidate.color_scale
-                                    : "none",
-                                color_scale_split_by:
-                                  aggregation === "count" ||
-                                  aggregation === "distinct_count" ||
-                                  (column !== undefined && isNumericPivotDtype(column.dtype))
-                                    ? candidate.color_scale_split_by ?? null
-                                    : null,
-                              }
-                            : candidate,
-                        ),
-                      })
-                    }}
-                    className="rounded px-1 py-0.5 text-[10px]"
-                    style={INPUT_STYLE}
-                  >
-                    {aggregations.map((aggregation) => (
-                      <option key={aggregation} value={aggregation}>
-                        {PIVOT_AGGREGATION_LABELS[aggregation]}
-                      </option>
-                    ))}
-                  </select>
-                )}
-
-                <button
-                  type="button"
-                  aria-label={`Remove ${placement.field} from ${label}`}
-                  onClick={() => persistPivot(normalizePivotOrdering(removeFromZone(pivot, zone, placement.id)))}
-                  className="ml-auto rounded px-1 text-[10px]"
-                >
-                  Remove
-                </button>
-              </div>
-
-              {filter && (
+              {...drag}
+              pivot={pivot}
+              zone={zone}
+              index={index}
+              placementId={placement.id}
+              kind="field"
+              name={placement.field as string}
+              invalid={missing}
+              onRemove={() => persistPivot(normalizePivotOrdering(removeFromZone(pivot, zone, placement.id)))}
+              below={filter && (
                 <FilterMemberPicker
                   placement={filter}
                   loadMembers={loadFilterMembers}
@@ -469,7 +206,60 @@ export default function ZoneSection({
                   }
                 />
               )}
-            </div>
+            >
+              {missing && (
+                <span className="text-[10px]" style={{ color: "var(--danger)" }}>
+                  No longer available
+                </span>
+              )}
+              {value && (
+                <select
+                  aria-label={`Aggregation for ${placement.field}`}
+                  value={value.aggregation}
+                  onChange={(event) => {
+                    const aggregation = event.target.value as PivotAggregation
+                    const reference = nextPivotValueReference(
+                      pivot,
+                      value.field,
+                      aggregation,
+                      value.id,
+                    )
+                    persistPivot({
+                      ...pivot,
+                      values: pivot.values.map((candidate) =>
+                        candidate.id === value.id
+                          ? {
+                              ...candidate,
+                              aggregation,
+                              reference,
+                              color_scale:
+                                aggregation === "count" ||
+                                aggregation === "distinct_count" ||
+                                (column !== undefined && isNumericPivotDtype(column.dtype))
+                                  ? candidate.color_scale
+                                  : "none",
+                              color_scale_split_by:
+                                aggregation === "count" ||
+                                aggregation === "distinct_count" ||
+                                (column !== undefined && isNumericPivotDtype(column.dtype))
+                                  ? candidate.color_scale_split_by ?? null
+                                  : null,
+                            }
+                          : candidate,
+                      ),
+                    })
+                  }}
+                  className="rounded px-1 py-0.5 text-[10px]"
+                  style={INPUT_STYLE}
+                >
+                  {aggregations.map((aggregation) => (
+                    <option key={aggregation} value={aggregation}>
+                      {PIVOT_AGGREGATION_LABELS[aggregation]}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </PlacementCard>
           )
         })}
       </div>

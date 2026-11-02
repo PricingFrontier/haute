@@ -4,7 +4,7 @@ import useOptimiserPublishStore from "../../stores/useOptimiserPublishStore"
 import OptimiserPreview from "../OptimiserPreview"
 import type { OptimiserPreviewData, FrontierData } from "../OptimiserPreview"
 import type { OptimiserSolveResult } from "../../api/types"
-import type { SimpleNode } from "../editors"
+import type { SimpleNode } from "../editors/_shared"
 import type { MlflowInventoryState } from "../../utils/mlflowDestinations"
 import {
   makeAdjustmentReport,

@@ -152,7 +152,7 @@ factor/weight/offset/family/source or manual parameter edit. An unchanged reques
 field; unmount still aborts. Test real component state with controlled response order,
 including the request graph/source construction in ModellingConfig.
 
-**Dependencies:** None. `FNED-R06` owns schema inference; this package owns model-derived parameter edits.
+**Dependencies:** None. Schema inference is already bound to its file and draft ([frontend node editors](../frontend-node-editors/high-level.md)); this package owns model-derived parameter edits.
 
 **Evidence:** `frontend/src/panels/modelling/GLMTargetConfig.tsx::GLMTargetConfig` (unmount abort effect); `frontend/src/panels/modelling/GLMTargetConfig.tsx::GLMTargetConfig.handleEstimate`; `frontend/src/panels/ModellingConfig.tsx::ModellingConfig.onEstimateDispersion`.
 

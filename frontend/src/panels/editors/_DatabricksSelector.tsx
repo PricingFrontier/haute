@@ -274,11 +274,152 @@ export function WarehousePicker({
   )
 }
 
-// ─── CatalogTablePicker ───────────────────────────────────────────
+// ─── Catalog and schema ───────────────────────────────────────────
+//
+// Both table pickers start from a Unity Catalog catalog and schema. Each list
+// loads when its select is focused (and the schemas when a catalog is chosen);
+// a saved name the list lacks still shows as an option.
 
 type CatalogItem = { name: string; comment: string }
 type SchemaItem = { name: string; comment: string }
 type TableItem = { name: string; full_name: string; table_type: string; comment: string }
+
+const SELECT_STYLE = {
+  background: 'var(--bg-input)',
+  border: '1px solid var(--border)',
+  color: 'var(--text-primary)',
+}
+const SELECT_CLASS = "w-full px-2.5 py-1.5 text-xs rounded-lg focus:outline-none focus:ring-2 disabled:opacity-40"
+
+function CatalogSchemaSelects({
+  catalog,
+  schema,
+  onCatalogChange,
+  onSchemaChange,
+  onError,
+}: {
+  catalog: string
+  schema: string
+  onCatalogChange: (catalog: string) => void
+  onSchemaChange: (schema: string) => void
+  /** A list's failure, or null when a list is asked for again. */
+  onError: (message: string | null) => void
+}) {
+  const [catalogs, setCatalogs] = useState<CatalogItem[]>([])
+  // The schemas of one catalog, so another catalog's never show.
+  const [schemas, setSchemas] = useState<{ catalog: string; items: SchemaItem[] } | null>(null)
+  const [loadingCatalogs, setLoadingCatalogs] = useState(false)
+  const [loadingSchemas, setLoadingSchemas] = useState(false)
+
+  const refreshCatalogs = () => {
+    setLoadingCatalogs(true)
+    onError(null)
+    getCatalogs()
+      .then((data) => { setCatalogs(data.catalogs || []); setLoadingCatalogs(false) })
+      .catch((e: unknown) => { onError(apiErrorMessage(e)); setLoadingCatalogs(false) })
+  }
+  const refreshSchemas = (cat: string) => {
+    setLoadingSchemas(true)
+    onError(null)
+    getSchemas(cat)
+      .then((data) => { setSchemas({ catalog: cat, items: data.schemas || [] }); setLoadingSchemas(false) })
+      .catch((e: unknown) => { onError(apiErrorMessage(e)); setLoadingSchemas(false) })
+  }
+  const schemaItems = schemas?.catalog === catalog ? schemas.items : []
+
+  return (
+    <>
+      <select
+        aria-label="Catalog"
+        value={catalog}
+        onFocus={refreshCatalogs}
+        onChange={(e) => {
+          const cat = e.target.value
+          onCatalogChange(cat)
+          if (cat) refreshSchemas(cat)
+        }}
+        className={SELECT_CLASS}
+        style={SELECT_STYLE}
+      >
+        <option value="">{loadingCatalogs ? "Loading..." : "Select catalog..."}</option>
+        {catalog && catalogs.every((c) => c.name !== catalog) && (
+          <option value={catalog}>{catalog}</option>
+        )}
+        {catalogs.map((c) => (
+          <option key={c.name} value={c.name}>{c.name}{c.comment ? ` - ${c.comment}` : ""}</option>
+        ))}
+      </select>
+
+      <select
+        aria-label="Schema"
+        value={schema}
+        disabled={!catalog}
+        onFocus={() => { if (catalog) refreshSchemas(catalog) }}
+        onChange={(e) => onSchemaChange(e.target.value)}
+        className={SELECT_CLASS}
+        style={SELECT_STYLE}
+      >
+        <option value="">{loadingSchemas ? "Loading..." : catalog ? "Select schema..." : "Select catalog first"}</option>
+        {schema && schemaItems.every((s) => s.name !== schema) && (
+          <option value={schema}>{schema}</option>
+        )}
+        {schemaItems.map((s) => (
+          <option key={s.name} value={s.name}>{s.name}{s.comment ? ` - ${s.comment}` : ""}</option>
+        ))}
+      </select>
+    </>
+  )
+}
+
+/**
+ * A picker's own choice of table, told apart from a change made elsewhere (undo,
+ * redo, another editor): `choose` records what it sends, and `isEcho` says
+ * whether the `table` that came back is that choice, which the picker's local
+ * state already holds.
+ */
+function useOwnChoice(onSelect: (fullName: string) => void) {
+  const chosen = useRef<string | null>(null)
+  const choose = (fullName: string) => {
+    chosen.current = fullName
+    onSelect(fullName)
+  }
+  const isEcho = (table: string) => {
+    const echoed = table === chosen.current
+    chosen.current = null
+    return echoed
+  }
+  return { choose, isEcho }
+}
+
+/**
+ * The tables of the schema on show: `load(catalog, schema)` asks for a schema's
+ * tables, and only the answer to the latest ask, for the schema on show, is listed.
+ */
+function useSchemaTables(catalog: string, schema: string, onError: (message: string) => void) {
+  const key = catalog && schema ? `${catalog}.${schema}` : ""
+  const [listed, setListed] = useState<{ key: string; items: TableItem[] } | null>(null)
+  const [requested, setRequested] = useState("")
+  const latest = useRef({ requested: "", onError })
+  useEffect(() => {
+    latest.current.onError = onError
+  })
+  const load = useCallback((cat: string, sch: string) => {
+    const asked = `${cat}.${sch}`
+    latest.current.requested = asked
+    setRequested(asked)
+    getTables(cat, sch)
+      .then((data) => {
+        if (latest.current.requested === asked) setListed({ key: asked, items: data.tables || [] })
+      })
+      .catch((e: unknown) => {
+        if (latest.current.requested === asked) latest.current.onError(apiErrorMessage(e))
+      })
+  }, [])
+  const tables = listed?.key === key ? listed.items : null
+  return { tables, loading: key !== "" && requested === key && tables === null, load }
+}
+
+// ─── CatalogTablePicker ───────────────────────────────────────────
 
 export function CatalogTablePicker({
   table,
@@ -291,133 +432,70 @@ export function CatalogTablePicker({
   const [catalog, setCatalog] = useState(parts[0] || "")
   const [dbSchema, setDbSchema] = useState(parts[1] || "")
   const [tableName, setTableName] = useState(parts[2] || "")
+  const [error, setError] = useState<string | null>(null)
+  const { choose, isEcho } = useOwnChoice(onSelect)
 
   /* eslint-disable react-hooks/set-state-in-effect -- sync local state from prop */
   useEffect(() => {
+    // Clearing the table on a new catalog or schema comes back as `""`: the
+    // catalog and schema just chosen stay.
+    if (isEcho(table)) return
     const p = table ? table.split(".") : []
     setCatalog(p[0] || "")
     setDbSchema(p[1] || "")
     setTableName(p[2] || "")
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- isEcho reads a ref
   }, [table])
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  const [catalogs, setCatalogs] = useState<CatalogItem[]>([])
-  const [schemas, setSchemas] = useState<SchemaItem[]>([])
-  const [tables, setTables] = useState<TableItem[]>([])
-
-  const [loadingCatalogs, setLoadingCatalogs] = useState(false)
-  const [loadingSchemas, setLoadingSchemas] = useState(false)
-  const [loadingTables, setLoadingTables] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  const refreshCatalogs = () => {
-    setLoadingCatalogs(true)
-    setError(null)
-    getCatalogs()
-      .then((data) => { setCatalogs(data.catalogs || []); setLoadingCatalogs(false) })
-      .catch((e: Error) => { setError(apiErrorMessage(e)); setLoadingCatalogs(false) })
-  }
-
-  const refreshSchemas = (cat: string) => {
-    setLoadingSchemas(true)
-    setError(null)
-    getSchemas(cat)
-      .then((data) => { setSchemas(data.schemas || []); setLoadingSchemas(false) })
-      .catch((e: Error) => { setError(apiErrorMessage(e)); setLoadingSchemas(false) })
-  }
-
+  const { tables, loading: loadingTables, load: loadTables } = useSchemaTables(catalog, dbSchema, setError)
   const refreshTables = (cat: string, sch: string) => {
-    setLoadingTables(true)
     setError(null)
-    getTables(cat, sch)
-      .then((data) => { setTables(data.tables || []); setLoadingTables(false) })
-      .catch((e: Error) => { setError(apiErrorMessage(e)); setLoadingTables(false) })
+    loadTables(cat, sch)
   }
-
-  const selectStyle = {
-    background: 'var(--bg-input)',
-    border: '1px solid var(--border)',
-    color: 'var(--text-primary)',
-  }
+  const tableItems = tables ?? []
 
   return (
     <div>
       <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>Table</label>
 
       <div className="mt-1 space-y-1.5">
-        {/* Catalog */}
-        <select
-          value={catalog}
-          onFocus={refreshCatalogs}
-          onChange={(e) => {
-            const cat = e.target.value
+        <CatalogSchemaSelects
+          catalog={catalog}
+          schema={dbSchema}
+          onCatalogChange={(cat) => {
             setCatalog(cat)
             setDbSchema("")
             setTableName("")
-            setSchemas([])
-            setTables([])
-            onSelect("")
-            if (cat) refreshSchemas(cat)
+            choose("")
           }}
-          className="w-full px-2.5 py-1.5 text-xs rounded-lg focus:outline-none focus:ring-2"
-          style={selectStyle}
-        >
-          <option value="">{loadingCatalogs ? "Loading..." : "Select catalog..."}</option>
-          {catalog && catalogs.every((c) => c.name !== catalog) && (
-            <option value={catalog}>{catalog}</option>
-          )}
-          {catalogs.map((c) => (
-            <option key={c.name} value={c.name}>{c.name}{c.comment ? ` - ${c.comment}` : ""}</option>
-          ))}
-        </select>
-
-        {/* Schema */}
-        <select
-          value={dbSchema}
-          disabled={!catalog}
-          onFocus={() => { if (catalog) refreshSchemas(catalog) }}
-          onChange={(e) => {
-            const sch = e.target.value
+          onSchemaChange={(sch) => {
             setDbSchema(sch)
             setTableName("")
-            setTables([])
-            onSelect("")
+            choose("")
             if (sch) refreshTables(catalog, sch)
           }}
-          className="w-full px-2.5 py-1.5 text-xs rounded-lg focus:outline-none focus:ring-2 disabled:opacity-40"
-          style={selectStyle}
-        >
-          <option value="">{loadingSchemas ? "Loading..." : catalog ? "Select schema..." : "Select catalog first"}</option>
-          {dbSchema && schemas.every((s) => s.name !== dbSchema) && (
-            <option value={dbSchema}>{dbSchema}</option>
-          )}
-          {schemas.map((s) => (
-            <option key={s.name} value={s.name}>{s.name}{s.comment ? ` - ${s.comment}` : ""}</option>
-          ))}
-        </select>
+          onError={setError}
+        />
 
-        {/* Table */}
         <select
+          aria-label="Table"
           value={tableName}
           disabled={!dbSchema}
           onFocus={() => { if (catalog && dbSchema) refreshTables(catalog, dbSchema) }}
           onChange={(e) => {
             const tbl = e.target.value
             setTableName(tbl)
-            if (tbl) {
-              onSelect(`${catalog}.${dbSchema}.${tbl}`)
-            } else {
-              onSelect("")
-            }
+            choose(tbl ? `${catalog}.${dbSchema}.${tbl}` : "")
           }}
-          className="w-full px-2.5 py-1.5 text-xs rounded-lg focus:outline-none focus:ring-2 disabled:opacity-40"
-          style={selectStyle}
+          className={SELECT_CLASS}
+          style={SELECT_STYLE}
         >
           <option value="">{loadingTables ? "Loading..." : dbSchema ? "Select table..." : "Select schema first"}</option>
-          {tableName && tables.every((t) => t.name !== tableName) && (
+          {tableName && tableItems.every((t) => t.name !== tableName) && (
             <option value={tableName}>{tableName}</option>
           )}
-          {tables.map((t) => (
+          {tableItems.map((t) => (
             <option key={t.name} value={t.name}>
               {t.name}{t.table_type ? ` (${t.table_type})` : ""}{t.comment ? ` - ${t.comment}` : ""}
             </option>
@@ -460,73 +538,31 @@ export function TargetTablePicker({
   const [dbSchema, setDbSchema] = useState(parts[1] || "")
   const tableName = parts[2] || ""
   const [draftName, setDraftName] = useState(tableName)
-
-  // The destination this picker just chose, until `table` next changes. When that
-  // change is the choice coming back, the local state already holds it; re-syncing
-  // would wipe an invalid draft name (whose commit cleared the destination) along
-  // with its error. Any later change (undo, redo) re-syncs.
-  const chosen = useRef<string | null>(null)
-  const choose = (fullName: string) => {
-    chosen.current = fullName
-    onSelect(fullName)
-  }
+  const [error, setError] = useState<string | null>(null)
+  // When the change of `table` is this picker's choice coming back, the local
+  // state already holds it; re-syncing would wipe an invalid draft name (whose
+  // commit cleared the destination) along with its error.
+  const { choose, isEcho } = useOwnChoice(onSelect)
 
   /* eslint-disable react-hooks/set-state-in-effect -- sync local state from prop */
   useEffect(() => {
-    const echoed = table === chosen.current
-    chosen.current = null
-    if (echoed) return
+    if (isEcho(table)) return
     const p = table ? table.replace(/`/g, "").split(".") : []
     if (p[0]) setCatalog(p[0])
     if (p[1]) setDbSchema(p[1])
     setDraftName(p[2] || "")
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- isEcho reads a ref
   }, [table])
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  const [catalogs, setCatalogs] = useState<CatalogItem[]>([])
-  const [schemas, setSchemas] = useState<SchemaItem[]>([])
-  const [tables, setTables] = useState<TableItem[] | null>(null)
-  const [loadingCatalogs, setLoadingCatalogs] = useState(false)
-  const [loadingSchemas, setLoadingSchemas] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  const refreshCatalogs = () => {
-    setLoadingCatalogs(true)
-    setError(null)
-    getCatalogs()
-      .then((data) => { setCatalogs(data.catalogs || []); setLoadingCatalogs(false) })
-      .catch((e: Error) => { setError(apiErrorMessage(e)); setLoadingCatalogs(false) })
-  }
-
-  const refreshSchemas = (cat: string) => {
-    setLoadingSchemas(true)
-    setError(null)
-    getSchemas(cat)
-      .then((data) => { setSchemas(data.schemas || []); setLoadingSchemas(false) })
-      .catch((e: Error) => { setError(apiErrorMessage(e)); setLoadingSchemas(false) })
-  }
-
-  const refreshTables = useCallback((cat: string, sch: string) => {
-    getTables(cat, sch)
-      .then((data) => setTables(data.tables || []))
-      .catch((e: Error) => setError(apiErrorMessage(e)))
-  }, [])
-
-  const tablesFor = useRef("")
+  // The schema's tables, for suggestions and to say whether the name exists.
+  const { tables, load: loadTables } = useSchemaTables(catalog, dbSchema, setError)
   useEffect(() => {
-    const key = catalog && dbSchema ? `${catalog}.${dbSchema}` : ""
-    if (!key || tablesFor.current === key) return
-    tablesFor.current = key
-    refreshTables(catalog, dbSchema)
-  }, [catalog, dbSchema, refreshTables])
+    if (catalog && dbSchema) loadTables(catalog, dbSchema)
+  }, [catalog, dbSchema, loadTables])
 
   const nameValid = draftName === "" || TABLE_NAME_RE.test(draftName)
   const exists = tables?.some((t) => t.name.toLowerCase() === tableName.toLowerCase())
-  const selectStyle = {
-    background: 'var(--bg-input)',
-    border: '1px solid var(--border)',
-    color: 'var(--text-primary)',
-  }
 
   const commitName = (value: string) => {
     const name = value.trim()
@@ -545,57 +581,20 @@ export function TargetTablePicker({
       <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>Table</label>
 
       <div className="mt-1 space-y-1.5">
-        <select
-          aria-label="Catalog"
-          value={catalog}
-          onFocus={refreshCatalogs}
-          onChange={(e) => {
-            const cat = e.target.value
+        <CatalogSchemaSelects
+          catalog={catalog}
+          schema={dbSchema}
+          onCatalogChange={(cat) => {
             setCatalog(cat)
             setDbSchema("")
-            setSchemas([])
-            setTables(null)
             choose("")
-            if (cat) refreshSchemas(cat)
           }}
-          className="w-full px-2.5 py-1.5 text-xs rounded-lg focus:outline-none focus:ring-2"
-          style={selectStyle}
-        >
-          <option value="">{loadingCatalogs ? "Loading..." : "Select catalog..."}</option>
-          {catalog && catalogs.every((c) => c.name !== catalog) && (
-            <option value={catalog}>{catalog}</option>
-          )}
-          {catalogs.map((c) => (
-            <option key={c.name} value={c.name}>{c.name}{c.comment ? ` - ${c.comment}` : ""}</option>
-          ))}
-        </select>
-
-        <select
-          aria-label="Schema"
-          value={dbSchema}
-          disabled={!catalog}
-          onFocus={() => { if (catalog) refreshSchemas(catalog) }}
-          onChange={(e) => {
-            const sch = e.target.value
+          onSchemaChange={(sch) => {
             setDbSchema(sch)
-            setTables(null)
-            if (sch && draftName && TABLE_NAME_RE.test(draftName)) {
-              choose(`${catalog}.${sch}.${draftName}`)
-            } else {
-              choose("")
-            }
+            choose(sch && draftName && TABLE_NAME_RE.test(draftName) ? `${catalog}.${sch}.${draftName}` : "")
           }}
-          className="w-full px-2.5 py-1.5 text-xs rounded-lg focus:outline-none focus:ring-2 disabled:opacity-40"
-          style={selectStyle}
-        >
-          <option value="">{loadingSchemas ? "Loading..." : catalog ? "Select schema..." : "Select catalog first"}</option>
-          {dbSchema && schemas.every((s) => s.name !== dbSchema) && (
-            <option value={dbSchema}>{dbSchema}</option>
-          )}
-          {schemas.map((s) => (
-            <option key={s.name} value={s.name}>{s.name}{s.comment ? ` - ${s.comment}` : ""}</option>
-          ))}
-        </select>
+          onError={setError}
+        />
 
         <CommittedTextField
           type="text"
@@ -606,7 +605,7 @@ export function TargetTablePicker({
           value={draftName}
           onCommit={commitName}
           className="focus-ring w-full px-2.5 py-1.5 text-xs rounded-lg disabled:opacity-40"
-          style={{ ...selectStyle, borderColor: nameValid ? 'var(--border)' : 'var(--danger)' }}
+          style={{ ...SELECT_STYLE, borderColor: nameValid ? 'var(--border)' : 'var(--danger)' }}
         />
         <datalist id="databricks-target-tables">
           {(tables ?? []).map((t) => (
