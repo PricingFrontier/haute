@@ -3,6 +3,8 @@ import { render, screen, cleanup } from "@testing-library/react"
 import { TrainingProgress } from "../TrainingProgress"
 import type { TrainProgress } from "../../../stores/useNodeResultsStore"
 import { makeExecutionMetricsFixture } from "../../../testSupport/executionMetricsFixture"
+import { makeTrainStatus } from "../../../test-utils/factories"
+import { parseTrainStatusResponse } from "../../../types/trainGuards"
 
 function makeProgress(overrides: Partial<TrainProgress> = {}): TrainProgress {
   return {
@@ -129,22 +131,19 @@ describe("TrainingProgress", () => {
     expect(screen.queryByText(/Estimated remaining/)).toBeNull()
   })
 
-  it("renders tuning trial, fold, fit count, and best objective", () => {
-    render(
-      <TrainingProgress
-        trainProgress={makeProgress({
-          phase: "trial_fit",
-          trial_index: 7,
-          trial_count: 20,
-          fold_index: 2,
-          fold_count: 5,
-          completed_fits: 31,
-          total_fits: 101,
-          best_objective: 0.4172,
-          total_iterations: 0,
-        })}
-      />,
-    )
+  it("renders tuning trial, fold, fit count, and best objective from a polled status", () => {
+    const polled = parseTrainStatusResponse(makeTrainStatus({
+      message: "Tuning",
+      phase: "trial_fit",
+      trial_index: 7,
+      trial_count: 20,
+      fold_index: 2,
+      fold_count: 5,
+      completed_fits: 31,
+      total_fits: 101,
+      best_objective: 0.4172,
+    }))
+    render(<TrainingProgress trainProgress={polled} />)
 
     expect(screen.getByText(
       "Trial 7 of 20 · Fold 2 of 5 · 31 of 101 fits · Best objective 0.4172",

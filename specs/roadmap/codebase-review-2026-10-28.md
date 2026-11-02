@@ -85,7 +85,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P3 | Model card loses its name to a metric, importance method labels disagree with families, and integer PDP labels do not match scored values. | [MOD-R05](modelling.md#mod-r05--diagnostics-measured-as-the-fit-was), extended | Real card generation and model diagnostic calculations; separate from the signature's P2 contract impact. |
 | P3 | Relationships target `__w=[10,20]` is overwritten by internal weight alias: means become `[1,1]`, strength 0. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual Parquet, data-point resolver and relationship service; ordinary-name equivalent requires means `[10,20]`, strength 1. |
 | P3 | Copied Explore node B receives cached result.node_id A for the same producer/card. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual pivot service/cache. Numbers are correct; browser stores them under B, so no numerical cross-node corruption claim. |
-| P2 | Training status discards eight recorded tuning progress fields. | [MOD-R08](modelling.md#mod-r08--training-status-carries-the-progress-the-worker-records) | Real JobStore and async status route. Cancel response has the same omission by source inspection. |
 | P2 | Shared-flight operation TimeoutError is mistaken for a polling timeout; completed work spins until cancellation. | [ROAD-WORKER-09](background-jobs-api.md#road-worker-09--completed-operation-timeouts-are-terminal-failures) | Real SharedFlights and LatestWinsQueue with controlled failure/cancellation. |
 | P2 | Returning from a failed directory to a cached parent leaves the error hiding the files. | [FNED-R02](frontend-node-editors.md#fned-r02--drafts-in-step-with-the-document-errors-with-their-detail), extended | Actual FileBrowser and settings cache, list transport substituted. |
 | P2 | Use detected schema applies A's completed schema into B while B loads. | [FNED-R06](frontend-node-editors.md#fned-r06--inference-stays-bound-to-its-source-and-draft), extended | Actual DataInputEditor/hooks, API transport substituted. |
@@ -260,7 +259,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | API Input / Data Input schema identity | **FNED-R06**. |
 | cached file browser error | **FNED-R02**. |
 | cached pivot response consumer node identity | **EDA-R01**; numbers remain correct as recorded in the accepted report. |
-| tuning status fields | **MOD-R08**. |
 | edge ID collisions | **NAME-10**. |
 | failed new solve identity | **FSH-R12**. |
 | pyfunc classifier output shape | **MSC-11**. |

@@ -550,7 +550,11 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 5. `GET /train/status/{job_id}` first compares a running job's `start_time` with its
    configured/default timeout; an overdue job requests child termination and atomically
    transitioned to `timed_out` before the response is assembled. It then returns
-   progress/loss history/result. On the first read of a completed result,
+   progress/loss history/result through `_train_status_response`, the one projection of a
+   job record that `POST /train/cancel/{job_id}` answers with too: it carries every stored
+   tuning progress field (`phase`, `trial_index`, `trial_count`, `fold_index`, `fold_count`,
+   `completed_fits`, `total_fits`, `best_objective`) as recorded, zero as zero and a field
+   not yet known as `None`, and the export receipts. On the first read of a completed result,
    `_assert_json_finite` re-validates it and the outcome
    is cached on the job (`_result_finite_validated`) via `atomic_update` so later polls
    skip the recursive walk; a validation failure instead flips the job to `"error"`

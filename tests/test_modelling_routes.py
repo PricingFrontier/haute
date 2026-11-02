@@ -894,6 +894,78 @@ class TestTrainStatusTimeout:
         finally:
             _store.delete_job("train_cancel_me")
 
+    @pytest.mark.parametrize(
+        ("status", "progress"),
+        [
+            (
+                "running",
+                {
+                    "phase": "trial_fit",
+                    "trial_index": 2,
+                    "trial_count": 5,
+                    "fold_index": 1,
+                    "fold_count": 3,
+                    "completed_fits": 4,
+                    "total_fits": 16,
+                    "best_objective": 0.0,
+                },
+            ),
+            (
+                "running",
+                {
+                    "phase": "planning",
+                    "trial_index": None,
+                    "trial_count": 5,
+                    "fold_index": None,
+                    "fold_count": 1,
+                    "completed_fits": 0,
+                    "total_fits": 6,
+                    "best_objective": None,
+                },
+            ),
+            (
+                "error",
+                {
+                    "phase": "trial_complete",
+                    "trial_index": 3,
+                    "trial_count": 5,
+                    "fold_index": None,
+                    "fold_count": 1,
+                    "completed_fits": 3,
+                    "total_fits": 6,
+                    "best_objective": -1.25,
+                },
+            ),
+        ],
+        ids=["trial-fit", "planning", "failed-after-a-trial"],
+    )
+    def test_poll_and_cancel_return_the_recorded_tuning_progress(
+        self, client, status: str, progress: dict[str, object]
+    ):
+        from haute.routes.modelling import _store
+
+        seed_job(
+            _store,
+            "train_tuning",
+            {
+                "status": status,
+                "job_type": "training",
+                "progress": 0.4,
+                "message": "Tuning",
+                "start_time": time.monotonic() - 1,
+                "created_at": time.time(),
+                **progress,
+            },
+        )
+        try:
+            polled = client.get("/api/modelling/train/status/train_tuning").json()
+            assert {key: polled[key] for key in progress} == progress
+            cancelled = client.post("/api/modelling/train/cancel/train_tuning").json()
+            assert cancelled["status"] == ("cancelled" if status == "running" else status)
+            assert {key: cancelled[key] for key in progress} == progress
+        finally:
+            _store.delete_job("train_tuning")
+
     def test_completed_job_not_overwritten_by_timeout(self, client):
         from haute.routes.modelling import _store
 

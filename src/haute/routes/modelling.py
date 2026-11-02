@@ -109,6 +109,41 @@ async def gpu_status() -> ModellingGpuStatusResponse:
     return ModellingGpuStatusResponse(xgboost=GpuFamilyStatus(**status.to_plain_data()))
 
 
+def _train_status_response(job: Mapping[str, Any]) -> TrainStatusResponse:
+    """The one projection of a training job record that polling and cancellation answer."""
+    return TrainStatusResponse(
+        status=require_job_status(job),
+        progress=job.get("progress", 0.0),
+        message=job.get("message", ""),
+        iteration=job.get("iteration", 0),
+        total_iterations=job.get("total_iterations", 0),
+        train_loss=job.get("train_loss", {}),
+        train_loss_history=job.get("train_loss_history", []),
+        train_loss_history_truncated=job.get("train_loss_history_truncated", False),
+        elapsed_seconds=job.get("elapsed_seconds", 0.0),
+        result=job.get("result"),
+        warning=job.get("warning"),
+        terminal_reason=job.get("terminal_reason"),
+        execution_metrics=job.get("execution_metrics"),
+        feature_selection=job.get("feature_selection"),
+        error_code=job.get("error_code"),
+        http_status_code=job.get("http_status_code"),
+        error_detail=job.get("error_detail"),
+        worker_remote_traceback=job.get("worker_remote_traceback"),
+        export_receipts=TrainExportReceipts.model_validate(export_receipts(job)),
+        # The tuning progress the lifecycle records from the worker's events, as
+        # stored: a field not yet known stays None.
+        phase=job.get("phase"),
+        trial_index=job.get("trial_index"),
+        trial_count=job.get("trial_count"),
+        fold_index=job.get("fold_index"),
+        fold_count=job.get("fold_count"),
+        completed_fits=job.get("completed_fits"),
+        total_fits=job.get("total_fits"),
+        best_objective=job.get("best_objective"),
+    )
+
+
 @router.get("/train/status/{job_id}", response_model=TrainStatusResponse)
 async def train_status(job_id: str) -> TrainStatusResponse:
     """Poll training job progress."""
@@ -124,7 +159,7 @@ async def train_status(job_id: str) -> TrainStatusResponse:
     # ``_result_finite_validated`` is an internal cache flag — it MUST stay
     # private to this module.  Never include it in ``TrainStatusResponse`` or
     # log it in a structured payload that gets shipped to the user; the
-    # whitelist in the response constructor below already enforces that.
+    # whitelist in ``_train_status_response`` already enforces that.
     if result is not None and not job.get("_result_finite_validated"):
         try:
             _assert_json_finite(result)
@@ -149,27 +184,7 @@ async def train_status(job_id: str) -> TrainStatusResponse:
             )
             job = _store.require_job(job_id)
 
-    return TrainStatusResponse(
-        status=require_job_status(job),
-        progress=job.get("progress", 0.0),
-        message=job.get("message", ""),
-        iteration=job.get("iteration", 0),
-        total_iterations=job.get("total_iterations", 0),
-        train_loss=job.get("train_loss", {}),
-        train_loss_history=job.get("train_loss_history", []),
-        train_loss_history_truncated=job.get("train_loss_history_truncated", False),
-        elapsed_seconds=job.get("elapsed_seconds", 0.0),
-        result=job.get("result"),
-        warning=job.get("warning"),
-        terminal_reason=job.get("terminal_reason"),
-        execution_metrics=job.get("execution_metrics"),
-        feature_selection=job.get("feature_selection"),
-        error_code=job.get("error_code"),
-        http_status_code=job.get("http_status_code"),
-        error_detail=job.get("error_detail"),
-        worker_remote_traceback=job.get("worker_remote_traceback"),
-        export_receipts=TrainExportReceipts.model_validate(export_receipts(job)),
-    )
+    return _train_status_response(job)
 
 
 def _log_response_from_receipt(receipt: Mapping[str, Any]) -> LogExperimentResponse:
@@ -188,27 +203,7 @@ def _log_response_from_receipt(receipt: Mapping[str, Any]) -> LogExperimentRespo
 @router.post("/train/cancel/{job_id}", response_model=TrainStatusResponse)
 async def cancel_training(job_id: str) -> TrainStatusResponse:
     """Cancel an in-progress training job."""
-    job = _train_service.cancel(job_id)
-    return TrainStatusResponse(
-        status=require_job_status(job),
-        progress=job.get("progress", 0.0),
-        message=job.get("message", ""),
-        iteration=job.get("iteration", 0),
-        total_iterations=job.get("total_iterations", 0),
-        train_loss=job.get("train_loss", {}),
-        train_loss_history=job.get("train_loss_history", []),
-        train_loss_history_truncated=job.get("train_loss_history_truncated", False),
-        elapsed_seconds=job.get("elapsed_seconds", 0.0),
-        result=job.get("result"),
-        warning=job.get("warning"),
-        terminal_reason=job.get("terminal_reason"),
-        execution_metrics=job.get("execution_metrics"),
-        feature_selection=job.get("feature_selection"),
-        error_code=job.get("error_code"),
-        http_status_code=job.get("http_status_code"),
-        error_detail=job.get("error_detail"),
-        worker_remote_traceback=job.get("worker_remote_traceback"),
-    )
+    return _train_status_response(_train_service.cancel(job_id))
 
 
 def _dispersion_status_response(job: Mapping[str, Any]) -> DispersionEstimateStatusResponse:

@@ -60,7 +60,6 @@ something this page settles.
 | MOD-R05 | Planned | P3 | Diagnostics are measured as the fit was: weighted loss importance, one-based GPU iterations, no GLM `best_iteration`, a dispersion search that stops on `MemoryError`, the offset dtype in the contract, params logged whole. Model-card names, family importance labels and PDP x-values also describe what was actually scored. |
 | MOD-R06 | Planned | P3 | The training memory log is opt-in, the dead compatibility fields are gone, and the four native wrappers share one base. |
 | MOD-R07 | Planned | P2 | Stratified test allocation reserves enough of every class for all requested validation and training partitions. |
-| MOD-R08 | Planned | P2 | Training polling and cancellation preserve tuning phase, trial, fold, fit-count and best-score progress. |
 
 ## Planned improvements
 
@@ -353,26 +352,3 @@ evaluation-plan tests rather than fitting models to test the allocator.
 **Evidence:** `src/haute/modelling/_evaluation.py::_stratified_sample`;
 `src/haute/modelling/_evaluation.py::generate_evaluation_plan`;
 `src/haute/modelling/_evaluation.py::_stratified_parts`.
-
-### MOD-R08 — Training status carries the progress the worker records
-
-**Why:** The lifecycle stores tuning progress, but `train_status` and `cancel_train` manually
-rebuild `TrainStatusResponse` without its eight phase/trial/fold/fit-count/best-value fields. A
-real JobStore plus status-route probe returns all eight as None despite populated job data. The
-frontend's phase display and fit-based estimate cannot use information that never crosses the
-API.
-
-**Plan:** Use one typed job-to-status projection for polling and cancellation, explicitly
-including the declared progress fields and maintaining the existing terminal/error semantics.
-Keep phase semantics defined in the modelling contract rather than inferring them from text.
-
-**Acceptance:** Seed representative running tuning and terminal jobs through the real store;
-polling and cancellation return their recorded progress exactly, including zero values and
-absent/not-yet-known values. The real training progress component can render trial/fold
-progress from the response. Do not test only DTO construction.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/routes/modelling.py::train_status`; `src/haute/routes/modelling.py::cancel_training`;
-`src/haute/routes/_training_lifecycle.py`;
-`frontend/src/panels/modelling/TrainingProgress.tsx`.

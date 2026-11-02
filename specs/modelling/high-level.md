@@ -503,7 +503,8 @@ evaluation/tuning artifacts.
 
 Live tuning progress is monotonic over planning, trial/fold fits, final fit and
 publication and exposes phase, one-based trial/fold indices and counts,
-completed/total fits, and best objective so far. Every trial fit draws its own live
+completed/total fits, and best objective so far. Polling and cancellation both answer with the
+progress the job last recorded, so a cancelled or failed tuning run still shows how far it got. Every trial fit draws its own live
 loss curve, but only the final fit contributes model loss history. Live training and exported scripts use the same config builder and
 produce equivalent evaluation plans, fit bounds and result artifacts.
 
@@ -746,10 +747,8 @@ browser without a server or JS bundle.
 
 ## Failure model
 
-> NOTE: Status routes currently drop recorded tuning progress fields, and several
-> diagnostic labels disagree with their outputs.
-> [MOD-R08](../roadmap/modelling.md#mod-r08--training-status-carries-the-progress-the-worker-records) and
-> [MOD-R05](../roadmap/modelling.md#mod-r05--diagnostics-measured-as-the-fit-was) track these corrections.
+> NOTE: Several diagnostic labels disagree with their outputs.
+> [MOD-R05](../roadmap/modelling.md#mod-r05--diagnostics-measured-as-the-fit-was) tracks these corrections.
 
 > NOTE: Stratified test allocation can consume the class members needed for later
 > validation, rejecting an otherwise feasible evaluation plan. The reserve and
