@@ -592,6 +592,7 @@ jobs:
         run: >
           uv run pytest -m store_servers
           tests/test_quote_book.py tests/test_quote_store_providers.py
+          tests/test_quote_store_compare.py
           -q --timeout=300
 
   package-smoke:
