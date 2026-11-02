@@ -7,7 +7,7 @@
  * specs/frontend-modelling-optimiser-ui.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
+import { act, render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import { MlflowExportSection } from "../MlflowExportSection"
 import useSettingsStore from "../../../stores/useSettingsStore"
 import useUIStore from "../../../stores/useUIStore"
@@ -390,6 +390,40 @@ describe("MlflowExportSection", () => {
     fireEvent.click(logButton())
     expect(await screen.findByRole("alert")).toHaveTextContent("MLflow denied permission")
     expect(screen.queryByRole("button", { name: /test connection/i })).toBeNull()
+  })
+
+  describe("Log again", () => {
+    const RECEIPT = {
+      backend: "local",
+      destination: "" as const,
+      experiment_name: "model",
+      logged_at: "2026-11-02T10:00:00Z",
+      operation_id: "op-1",
+      run_id: "run-1",
+      run_url: null,
+      tracking_uri: "file:///proj/mlruns",
+    }
+
+    it("withdraws the confirmation once the experiment it was asked for changes", () => {
+      const { rerender } = render(<MlflowExportSection {...makeProps({ lastReceipt: RECEIPT })} />)
+      fireEvent.click(screen.getByRole("button", { name: "Log again" }))
+      expect(screen.getByRole("button", { name: "Log as a new run" })).toBeEnabled()
+
+      rerender(<MlflowExportSection {...makeProps({ lastReceipt: RECEIPT, config: { mlflow_experiment: "other" } })} />)
+      expect(screen.queryByRole("button", { name: "Log as a new run" })).toBeNull()
+      expect(mockLogToMlflow).not.toHaveBeenCalled()
+    })
+
+    it("withdraws the confirmation when the destination becomes unavailable", () => {
+      const { rerender } = render(<MlflowExportSection {...makeProps({ lastReceipt: RECEIPT, config: { mlflow_destination: "databricks" } })} />)
+      fireEvent.click(screen.getByRole("button", { name: "Log again" }))
+      expect(screen.getByRole("button", { name: "Log as a new run" })).toBeEnabled()
+
+      act(() => setInventory({ destinations: [{ ...DATABRICKS, configured: false, detail: "Sign in to Databricks." }, LOCAL] }))
+      rerender(<MlflowExportSection {...makeProps({ lastReceipt: RECEIPT, config: { mlflow_destination: "databricks" } })} />)
+      expect(screen.queryByRole("button", { name: "Log as a new run" })).toBeNull()
+      expect(mockLogToMlflow).not.toHaveBeenCalled()
+    })
   })
 
   it("calls onMlflowResult callback with result", async () => {

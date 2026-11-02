@@ -61,7 +61,7 @@ function solveFailureStatus(error: unknown, message: string): SolveProgress | un
   }
 }
 
-export type StartSolveArgs = {
+type StartSolveArgs = {
   nodeId: string
   /** The node's current config: what the job is keyed by and what it solves. */
   config: Record<string, unknown>

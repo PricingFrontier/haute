@@ -346,6 +346,47 @@ function jobFenceIsCurrent(job: { documentFence?: DocumentExecutionFence }): boo
  * started through `startTrainJob` is remembered under its document; an error,
  * or a direct completion with no job, forgets the node's handle.
  */
+/**
+ * Cache a node's training result, the most recent first under the cache bound,
+ * with its preview: from its job's identity, or with no job an identity that
+ * never matches a real source, so it reads as stale.
+ */
+function installTrainResult(
+  s: Pick<NodeResultsState, "trainResults" | "expiredTrainJobs" | "pinnedPreviewNodeId">,
+  nodeId: string,
+  result: TrainResult,
+  terminalStatus: TrainProgress | null,
+  job: ActiveTrainJob | undefined,
+): Pick<NodeResultsState, "trainResults" | "expiredTrainJobs"> {
+  touchCachedResult(trainResultRecency, nodeId)
+  const nextCached: CachedTrainResult = {
+    result,
+    terminalStatus,
+    jobId: job?.jobId ?? "",
+    configHash: job?.configHash ?? "",
+    source: job?.source ?? "",
+    structuralVersion: job?.structuralVersion ?? -1,
+  }
+  const bounded = trimCacheByRecency(
+    { ...s.trainResults, [nodeId]: nextCached },
+    trainResultRecency,
+    MAX_CACHED_TRAIN_RESULTS,
+    s.pinnedPreviewNodeId,
+  )
+  for (const evictedNodeId of bounded.evicted) {
+    delete _modellingPreviewCache[evictedNodeId]
+  }
+  if (bounded.records[nodeId]?.result.status === "error") {
+    delete _modellingPreviewCache[nodeId]
+  } else if (bounded.records[nodeId]) {
+    cacheModellingPreview(nodeId, bounded.records[nodeId], undefined)
+  }
+  return {
+    trainResults: bounded.records,
+    expiredTrainJobs: forgetExpiredTrainJob(s.expiredTrainJobs, nodeId),
+  }
+}
+
 function rememberTrainOutcome(
   nodeId: string,
   job: ActiveTrainJob | undefined,
@@ -365,6 +406,14 @@ function rememberTrainOutcome(
     source: job.source,
     lineage: job.lineage,
   })
+}
+
+/**
+ * The error result a training failure is recorded as: a failed job, or a
+ * request the server refused before any job existed.
+ */
+export function trainFailureResult(error: string): TrainResult {
+  return { status: "error", job_id: null, diagnostic_metrics: {}, final_test_metrics: {}, feature_importance: [], model_path: "", development_rows: 0, final_test_rows: 0, diagnostics_set: "development", features: [], cat_features: [], error, best_iteration: null, loss_history: [], loss_history_truncated: false, validation_loss_history: [], validation_loss_history_truncated: false, double_lift: [], shap_summary: [], shap_beeswarm: [], shap_curves: [], shap_link: null, feature_importance_loss: [], ave_per_feature: [], residuals_histogram: [], residuals_stats: {}, actual_vs_predicted: [], lorenz_curve: [], lorenz_curve_perfect: [], pdp_data: [], warning: null, total_source_rows: null, glm_coefficients: [], glm_relativities: [], glm_fit_statistics: {}, glm_inference: null, glm_smooth_terms: [], glm_regularization: null, ebm_terms: [], tboost_tables: null, diagnostics_errors: [], feature_selection: null, final_tree_count: null, fit_evidence: null }
 }
 
 // ─── Config hashing ──────────────────────────────────────────────
@@ -781,6 +830,8 @@ interface NodeResultsState {
    */
   markTrainResultExpired: (nodeId: string, jobId: string) => void
   failTrainJob: (nodeId: string, error: string, terminalStatus?: TrainProgress) => void
+  /** Record a training request refused before any job existed, keeping the remembered handle. */
+  failTrainStart: (nodeId: string, result: TrainResult, terminalStatus?: TrainProgress) => void
 
   startExplorePivotJob: (key: string, jobId: string, nodeId: string, pivotId: string, nodeLabel: string, pivotName: string, calculationIdentity: string, source: string, structuralVersion: number, requestedDataVersion?: string | null) => void
   updateExplorePivotProgress: (key: string, progress: ExplorePivotProgress) => void
@@ -1241,44 +1292,22 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         return { trainJobs: omitRecordKey(s.trainJobs, nodeId) }
       }
       // Remove the active job if present; also works for direct completion
-      // (no active job) used by ModellingConfig for sync/error results.
+      // (no active job) used by ModellingConfig for a synchronous result.
       const { [nodeId]: _removedJob, ...remainingJobs } = s.trainJobs; void _removedJob
-      touchCachedResult(trainResultRecency, nodeId)
-      const nextCached: CachedTrainResult = {
-        result,
-        terminalStatus: terminalStatus ?? null,
-        jobId: job?.jobId ?? "",
-        configHash: job?.configHash ?? "",
-        // Direct completion with no active job has no recorded source; the
-        // empty sentinel never matches a real source, so it reads as stale.
-        source: job?.source ?? "",
-        structuralVersion: job?.structuralVersion ?? -1,
-      }
-      const bounded = trimCacheByRecency(
-        {
-          ...s.trainResults,
-          [nodeId]: nextCached,
-        },
-        trainResultRecency,
-        MAX_CACHED_TRAIN_RESULTS,
-        s.pinnedPreviewNodeId,
-      )
-      for (const evictedNodeId of bounded.evicted) {
-        delete _modellingPreviewCache[evictedNodeId]
-      }
-      if (bounded.records[nodeId]?.result.status === "error") {
-        delete _modellingPreviewCache[nodeId]
-      } else if (bounded.records[nodeId]) {
-        cacheModellingPreview(nodeId, bounded.records[nodeId], undefined)
-      }
       return {
         trainJobs: job ? remainingJobs : s.trainJobs,
-        trainResults: bounded.records,
-        expiredTrainJobs: forgetExpiredTrainJob(s.expiredTrainJobs, nodeId),
+        ...installTrainResult(s, nodeId, result, terminalStatus ?? null, job),
       }
     })
     if (fenceCurrent) rememberTrainOutcome(nodeId, completingJob, result)
   },
+
+  failTrainStart: (nodeId, result, terminalStatus) =>
+    // The request was refused before any job existed: the node shows the
+    // failure, while a running job's tracking and the browser's handle to the
+    // last completed job, which this attempt neither replaced nor
+    // invalidated on the server, stay as they are.
+    set((s) => installTrainResult(s, nodeId, result, terminalStatus ?? null, undefined)),
 
   markTrainResultExpired: (nodeId, jobId) =>
     set((s) => {
@@ -1318,7 +1347,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       const { [nodeId]: _removedJob, ...remainingJobs } = s.trainJobs; void _removedJob
       touchCachedResult(trainResultRecency, nodeId)
       const nextCached: CachedTrainResult = {
-        result: { status: "error", job_id: null, diagnostic_metrics: {}, final_test_metrics: {}, feature_importance: [], model_path: "", development_rows: 0, final_test_rows: 0, diagnostics_set: "development", features: [], cat_features: [], error, best_iteration: null, loss_history: [], loss_history_truncated: false, validation_loss_history: [], validation_loss_history_truncated: false, double_lift: [], shap_summary: [], shap_beeswarm: [], shap_curves: [], shap_link: null, feature_importance_loss: [], ave_per_feature: [], residuals_histogram: [], residuals_stats: {}, actual_vs_predicted: [], lorenz_curve: [], lorenz_curve_perfect: [], pdp_data: [], warning: null, total_source_rows: null, glm_coefficients: [], glm_relativities: [], glm_fit_statistics: {}, glm_inference: null, glm_smooth_terms: [], glm_regularization: null, ebm_terms: [], tboost_tables: null, diagnostics_errors: [], feature_selection: null, final_tree_count: null, fit_evidence: null },
+        result: trainFailureResult(error),
         terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,
         configHash: job.configHash,

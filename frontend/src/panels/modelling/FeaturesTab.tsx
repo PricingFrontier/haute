@@ -1,14 +1,12 @@
 /**
- * Full feature importance tab for the ModellingPreview panel.
- *
- * Unlike the existing FeatureImportance.tsx (which caps at top 10 and is
- * designed for the sidebar), this displays ALL features with a full-width
- * horizontal bar chart and a type switcher, plus the SHAP beeswarm for the
- * families that compute SHAP.
+ * The ModellingPreview panel's feature importance tab: every feature as a
+ * full-width horizontal bar chart with a measure switch, plus the SHAP
+ * beeswarm for the families that compute SHAP.
  */
 import { useState, useMemo } from "react"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { MODEL_COLORS } from "../../theme/colors"
+import { ViewSwitch } from "../ViewSwitch"
 import { formatChartNumber } from "../../utils/chartHelpers"
 import ShapBeeswarm from "./ShapBeeswarm"
 
@@ -76,24 +74,12 @@ export function FeaturesTab({ result }: FeaturesTabProps) {
     <section className="space-y-3" aria-label="Feature importance">
       <div className="flex flex-wrap items-center gap-2">
         {types.length > 1 && (
-          <div className="flex gap-1">
-            {types.map((t) => (
-              <button
-                key={t.key}
-                type="button"
-                aria-pressed={importanceType === t.key}
-                onClick={() => setImportanceType(t.key)}
-                className="focus-ring px-2 py-1 rounded text-[13px] font-medium"
-                style={{
-                  background:
-                    importanceType === t.key ? MODEL_COLORS.accentSoft : "var(--chrome-hover)",
-                  color: importanceType === t.key ? MODEL_COLORS.accent : "var(--text-muted)",
-                }}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
+          <ViewSwitch
+            label="Importance measure"
+            options={types}
+            value={importanceType}
+            onChange={setImportanceType}
+          />
         )}
         {!beeswarm && (
           <label className="ml-auto text-[12px]" style={{ color: "var(--text-secondary)" }}>

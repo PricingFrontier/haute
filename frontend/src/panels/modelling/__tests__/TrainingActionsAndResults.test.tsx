@@ -362,12 +362,20 @@ describe("TrainingActionsAndResults", () => {
     expect(screen.queryByText("Est. training RAM")).toBeNull()
   })
 
-  it("distinguishes an evaluation failure from an unavailable memory estimate", () => {
-    render(<TrainingActionsAndResults {...makeProps({
+  it("tells an evaluation-preview failure from a failed memory estimate by its error code", () => {
+    const { rerender } = render(<TrainingActionsAndResults {...makeProps({
       ramEstimateError: "Evaluation preview failed: validation partition is empty",
+      ramEstimateErrorCode: "evaluation_preview_failed",
     })} />)
-    expect(screen.getByText("Evaluation preview failed")).toBeInTheDocument()
-    expect(screen.getByText("validation partition is empty")).toBeInTheDocument()
+    expect(screen.getByText("Evaluation preview failed: validation partition is empty")).toBeInTheDocument()
+    expect(screen.queryByText("Memory estimate failed")).toBeNull()
     expect(screen.queryByText("Memory estimate unavailable")).toBeNull()
+
+    // The same words without the code are a failed memory estimate: the text is never matched.
+    rerender(<TrainingActionsAndResults {...makeProps({
+      ramEstimateError: "Evaluation preview failed: validation partition is empty",
+      ramEstimateErrorCode: null,
+    })} />)
+    expect(screen.getByText("Memory estimate failed")).toBeInTheDocument()
   })
 })

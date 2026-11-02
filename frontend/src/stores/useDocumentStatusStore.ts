@@ -212,6 +212,11 @@ export function documentReadOnlyReason(): string {
   return "This pipeline is read-only until its load diagnostics are resolved."
 }
 
+/** Whether the editor may change the document now: it may mutate it and its graph is in step. */
+export function isDocumentEditable(state: DocumentStatusState): boolean {
+  return state.capabilities?.can_mutate === true && state.graphSynchronized
+}
+
 function executionFence(state: DocumentStatusState): DocumentExecutionFence {
   return {
     sourceFile: state.sourceFile,
@@ -223,6 +228,23 @@ function executionFence(state: DocumentStatusState): DocumentExecutionFence {
 
 export function captureDocumentExecutionFence(): DocumentExecutionFence {
   return executionFence(useDocumentStatusStore.getState())
+}
+
+/**
+ * The execution fence, with the graph's synchronisation, as one comparable
+ * key: a store selector that changes exactly when a running request's fence
+ * stops being current. A save advances only the source revision, so it never
+ * changes the key.
+ */
+export function documentExecutionKey(state: DocumentStatusState): string {
+  const fence = executionFence(state)
+  return JSON.stringify([
+    fence.sourceFile,
+    fence.executionGeneration,
+    fence.loadStatus,
+    fence.canExecute,
+    state.graphSynchronized,
+  ])
 }
 
 export function isDocumentExecutionFenceCurrent(

@@ -93,6 +93,30 @@ describe("useDataInputColumns", () => {
     expect(result.current[1].name).toBe("premium")
   })
 
+  it("never shows the previous input's columns for the next one", () => {
+    mockPreview.mockReturnValue(new Promise(() => {}))
+    useNodeResultsStore.setState({
+      columnCache: {
+        "ds1:live": { columns: sampleColumns, structuralVersion: 0 },
+        "t1:live": { columns: [{ name: "region", dtype: "str" }], structuralVersion: 0 },
+      },
+    })
+    const seen: string[][] = []
+    const { rerender } = renderHook(({ input }) => {
+      const columns = useDataInputColumns(input, nodes, edges)
+      seen.push(columns.map((column) => column.name))
+      return columns
+    }, { initialProps: { input: "ds1" } })
+
+    seen.length = 0
+    rerender({ input: "t1" })
+    expect(seen).toEqual(seen.map(() => ["region"]))
+
+    seen.length = 0
+    rerender({ input: "unfetched" })
+    expect(seen.every((names) => names.length === 0)).toBe(true)
+  })
+
   it("uses cached columns immediately when available", () => {
     // Cache key is now "nodeId:source"
     useNodeResultsStore.setState({

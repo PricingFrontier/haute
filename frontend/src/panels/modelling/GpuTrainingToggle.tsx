@@ -7,6 +7,32 @@ type Props = {
   onToggle: (enabled: boolean) => void
 }
 
+/** The Train pane's GPU training checkbox; *device* names the CUDA device when one is known. */
+export function GpuTrainingCheckbox({
+  checked,
+  onToggle,
+  disabled = false,
+  device = null,
+}: Props & { disabled?: boolean; device?: string | null }) {
+  return (
+    <label className="flex cursor-pointer select-none items-center gap-2">
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onToggle(event.target.checked)}
+        className="accent-purple-500"
+      />
+      <span className="text-[11px]" style={{ color: "var(--text-primary)" }}>
+        GPU training
+      </span>
+      <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+        {device ? `(CUDA, ${device})` : "(CUDA)"}
+      </span>
+    </label>
+  )
+}
+
 /**
  * XGBoost GPU training. The server probes its XGBoost build and device once;
  * the toggle is offered only when a CUDA fit works there, and otherwise says
@@ -35,21 +61,12 @@ export function XGBoostGpuToggle({ checked, onToggle }: Props) {
 
   return (
     <div className="space-y-1">
-      <label className="flex cursor-pointer select-none items-center gap-2">
-        <input
-          type="checkbox"
-          checked={checked}
-          disabled={!checked && !available}
-          onChange={(event) => onToggle(event.target.checked)}
-          className="accent-purple-500"
-        />
-        <span className="text-[11px]" style={{ color: "var(--text-primary)" }}>
-          GPU training
-        </span>
-        <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-          {available && status?.device ? `(CUDA, ${status.device})` : "(CUDA)"}
-        </span>
-      </label>
+      <GpuTrainingCheckbox
+        checked={checked}
+        disabled={!checked && !available}
+        device={available ? status?.device : null}
+        onToggle={onToggle}
+      />
       {detail !== null && (
         <p className="text-[10px]" style={{ color: checked ? "var(--danger-text)" : "var(--text-muted)" }}>
           {detail}

@@ -12,12 +12,7 @@
 import { useState } from "react"
 import { AlertTriangle, Download, Loader2, Save, Upload } from "lucide-react"
 import { selectFrontierPoint as selectFrontierPointApi } from "../../api/client"
-import { apiErrorMessage } from "../../api/errors"
 import { CommittedTextField } from "../../components/form"
-import {
-  captureDocumentExecutionFence,
-  isDocumentExecutionFenceCurrent,
-} from "../../stores/useDocumentStatusStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useOptimiserPublishStore, { usePublishState } from "../../stores/useOptimiserPublishStore"
 import { useMlflowDestinations } from "../../stores/useSettingsStore"
@@ -29,8 +24,11 @@ import { NODE_TYPES } from "../../utils/nodeTypes"
 import { downloadTextFile } from "../editors/shared/tableClipboard"
 import type { OnUpdateConfig, OnUpdateConfigResult } from "../editors/_shared"
 import { useGraph } from "../useGraph"
+import { formatScenarioValue } from "./adjustments"
 import { optimiserResultSavePath } from "./optimiserHelpers"
 import { factorTablesCsv, hasFactorTables } from "./ratebookFactorTables"
+import RequestFailureNotice from "./RequestFailureNotice"
+import { useLatestRequest } from "./useLatestRequest"
 
 const SECTION_LABEL_CLASS = "text-[11px] font-bold uppercase tracking-[0.08em]"
 const INPUT_STYLE = { background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }
@@ -100,7 +98,31 @@ export default function OptimiserPublishSection({
   const [version, setVersion] = useState("")
   const [applyNodeId, setApplyNodeId] = useState("")
   const [applyMessage, setApplyMessage] = useState<string | null>(null)
-  const [tablesLoad, setTablesLoad] = useState<{ key: string; status: "loading" | "error"; error?: string } | null>(null)
+  // A ratebook frontier point's factor tables arrive only when it is
+  // materialised: the Rates tab does that on view, and Export loads them on
+  // request. The load is identified by (job, point) and goes through
+  // `useLatestRequest`; its reply is stored against that job and point and
+  // never changes the selection.
+  const [tablesWanted, setTablesWanted] = useState<string | null>(null)
+  const tablesPoint = cached && jobId && cached.result !== null
+    && cached.originalResult.mode === "ratebook"
+    && cached.selectedPointIndex !== null
+    && !hasFactorTables(cached.result.factor_tables)
+    ? { key: `${jobId}:${cached.selectedPointIndex}`, jobId, pointIndex: cached.selectedPointIndex }
+    : null
+  const tablesLoad = useLatestRequest(
+    tablesPoint !== null && tablesPoint.key === tablesWanted ? tablesPoint : null,
+    (wanted, signal) => selectFrontierPointApi(
+      { job_id: wanted.jobId, point_index: wanted.pointIndex, include_ratebook_tables: true },
+      { signal },
+    ),
+    (wanted, response) => {
+      recordPointSummary(nodeId, wanted.jobId, wanted.pointIndex, response)
+      if (!hasFactorTables(response.factor_tables)) {
+        throw new Error(`No factor tables were returned for frontier point ${wanted.pointIndex + 1}.`)
+      }
+    },
+  )
 
   const nodeLabel = allNodes.find((node) => node.id === nodeId)?.data.label ?? "optimiser"
   const defaultPath = optimiserResultSavePath(nodeLabel, nodeId)
@@ -138,26 +160,7 @@ export default function OptimiserPublishSection({
     // solve's grid, so the solve's collar is the collar of whichever target is
     // published; the Apply node clips the combined factor to it.
     const collar = isRatebook ? cached.originalResult.combined_factor_bounds : null
-    // A frontier point's tables arrive only when it is materialised; the Rates
-    // tab does that on view, and Export can ask for them here.
-    const tablesKey = `${jobId}:${target ?? "solved"}`
-    // The reply is stored against the job and point that asked for
-    // it; the selection is never changed by it.
-    const loadPointTables = async () => {
-      if (target === null) return
-      const pointIndex = target
-      const documentFence = captureDocumentExecutionFence()
-      setTablesLoad({ key: tablesKey, status: "loading" })
-      try {
-        const response = await selectFrontierPointApi({ job_id: jobId, point_index: pointIndex, include_ratebook_tables: true })
-        if (!isDocumentExecutionFenceCurrent(documentFence)) return
-        recordPointSummary(nodeId, jobId, pointIndex, response)
-        setTablesLoad((current) => (current?.key === tablesKey ? null : current))
-      } catch (error) {
-        setTablesLoad({ key: tablesKey, status: "error", error: apiErrorMessage(error, "The request failed.") })
-      }
-    }
-    const pointTablesLoad = tablesLoad?.key === tablesKey ? tablesLoad : null
+    const tablesLoading = tablesPoint !== null && tablesPoint.key === tablesWanted && !tablesLoad.failure
     const applyNodes = allNodes.filter((node) => node.data.nodeType === NODE_TYPES.OPTIMISER_APPLY)
     const saveReceipt = publish?.saveReceipt ?? null
     const logReceipt = publish?.logReceipt ?? null
@@ -172,10 +175,13 @@ export default function OptimiserPublishSection({
       stale: isStale,
     })
     // The confirmation belongs to the refused request: it applies only while the
-    // form still names the same file and result, and Replace resends exactly that.
+    // form still names the same file, result, version label and staleness, and
+    // Replace resends exactly that.
     const overwritePrompt = publish?.overwritePrompt
       && publish.overwritePrompt.request.outputPath === (outputPath || defaultPath)
       && publish.overwritePrompt.request.pointIndex === target
+      && publish.overwritePrompt.request.version === version.trim()
+      && publish.overwritePrompt.request.stale === isStale
       ? publish.overwritePrompt
       : null
     const runLog = () => log({
@@ -285,11 +291,11 @@ export default function OptimiserPublishSection({
               tone="save"
             />
           )}
-          {isRatebook && !factorTables && target !== null && (
+          {tablesPoint && !tablesLoad.failure && (
             <ActionButton
-              onClick={() => void loadPointTables()}
-              disabled={pointTablesLoad?.status === "loading"}
-              busy={pointTablesLoad?.status === "loading"}
+              onClick={() => setTablesWanted(tablesPoint.key)}
+              disabled={tablesLoading}
+              busy={tablesLoading}
               icon={<Download size={12} />}
               label="Load factor tables for CSV"
               tone="save"
@@ -298,7 +304,7 @@ export default function OptimiserPublishSection({
         </div>
         {collar && (
           <p data-testid="optimiser-combined-factor-collar" className="text-xs" style={{ color: "var(--text-secondary)" }}>
-            {`Combined factor collar [${collar.min}, ${collar.max}] — apply it in your rating engine. `}
+            {`Combined factor collar [${formatScenarioValue(collar.min)}, ${formatScenarioValue(collar.max)}] — apply it in your rating engine. `}
             <span style={{ color: "var(--text-muted)" }}>
               The optimiser scored only this range, so the Apply Optimisation node clips each quote&apos;s product of
               factors to it. The CSV repeats it on every row.
@@ -311,10 +317,12 @@ export default function OptimiserPublishSection({
             the solve.
           </div>
         )}
-        {pointTablesLoad?.status === "error" && (
-          <div role="alert" className="px-3 py-2 rounded-lg text-xs" style={{ background: "var(--danger-soft)", color: "var(--danger)" }}>
-            Factor tables could not be loaded: {pointTablesLoad.error}
-          </div>
+        {tablesLoad.failure && (
+          <RequestFailureNotice
+            what="Factor tables could not be loaded"
+            failure={tablesLoad.failure}
+            onRetry={tablesLoad.retry}
+          />
         )}
         {!availability.available && (
           <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>

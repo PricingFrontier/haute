@@ -450,10 +450,9 @@ describe("OptimiserPreview store integration", () => {
     expect(final.frontier!.point_summaries[1]).toEqual(
       expect.objectContaining({ factor_tables: point1Response.factor_tables }),
     )
-    // Point 0's late response is COMPLETELY discarded — the
-    // OptimiserPreview rates effect cleanup aborts the stale fetch and
-    // its sequence-id guard bails the .then() handler before the store
-    // is ever touched.  Re-selecting point 0 will trigger a fresh
+    // Point 0's late response is COMPLETELY discarded — moving to point 1
+    // aborts the stale fetch, and an aborted request's reply never
+    // reaches the store.  Re-selecting point 0 will trigger a fresh
     // request, not stale leftovers.  This is the safer contract: no
     // partial enrichment from a request the user has already moved past.
     expect(final.frontier!.point_summaries[0].factor_tables).toBeNull()
@@ -626,5 +625,65 @@ describe("OptimiserPreview store integration", () => {
 
     expect(await screen.findAllByText("North")).not.toHaveLength(0)
     expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(2)
+  })
+
+  describe("the shared point-request policy on Rates", () => {
+    const RATES_REPLY = {
+      status: "ok",
+      point_index: 0,
+      total_objective: 120,
+      constraints: { volume: 0.9 },
+      baseline_objective: 80,
+      baseline_constraints: { volume: 0.8 },
+      effective_bounds: { volume: { kind: "min", bound: 0.9 } },
+      lambdas: { volume: 0.1 },
+      converged: true,
+      cd_iterations: 5,
+      factor_tables: {
+        region: [{ __factor_group__: "North", optimal_scenario_value: 1.08, quote_count: 120 }],
+      },
+      diagnostics_errors: [],
+      error: null,
+    }
+
+    function openSelectedPointRates() {
+      const store = useNodeResultsStore.getState()
+      store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1", "live", 0)
+      store.completeSolveJob("opt_1", makeRatebookSolveResult({
+        frontier: makeFrontier(makeRatebookFrontier([{ objective: 120, volume: 0.9, lambda: 0.1 }])),
+      }))
+      const data = useNodeResultsStore.getState().getOptimiserPreview("opt_1")!
+      render(<OptimiserPreview data={data} nodeId="opt_1" allNodes={[]} edges={[]} />)
+      fireEvent.click(screen.getByRole("tab", { name: "Rates" }))
+    }
+
+    it("says a point that is gone cannot load its rates, with no Retry", async () => {
+      const { ApiError } = await vi.importActual<typeof import("../../api/client")>("../../api/client")
+      mockSelectFrontierPoint.mockRejectedValueOnce(new ApiError("HTTP 410", 410, "gone", undefined, {
+        error_code: "frontier_point_unavailable",
+        message: "Frontier point 1 is no longer available. Re-run the solve to inspect it.",
+      }))
+      openSelectedPointRates()
+
+      expect(await screen.findByText(
+        "Rate table load failed: Frontier point 1 is no longer available. Re-run the solve to inspect it.",
+      )).toBeInTheDocument()
+      expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
+    })
+
+    it("reissues a materialisation another point's apply replaced, without an error", async () => {
+      const { ApiError } = await vi.importActual<typeof import("../../api/client")>("../../api/client")
+      mockSelectFrontierPoint
+        .mockRejectedValueOnce(new ApiError("HTTP 409", 409, "replaced", undefined, {
+          error_code: "frontier_point_apply_replaced",
+          message: "Another frontier point was requested while this one waited.",
+        }))
+        .mockResolvedValueOnce(RATES_REPLY)
+      openSelectedPointRates()
+
+      expect(await screen.findAllByText("North")).not.toHaveLength(0)
+      expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(2)
+      expect(screen.queryByText(/Rate table load failed/)).not.toBeInTheDocument()
+    })
   })
 })

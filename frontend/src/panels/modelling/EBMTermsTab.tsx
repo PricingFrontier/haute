@@ -12,7 +12,8 @@ import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { ChartEmptyState } from "./ChartScaffold"
 import { formatChartNumber } from "../../utils/chartHelpers"
 import { FeatureBrowser } from "./FeatureBrowser"
-import { TERM_DISPLAY_OPTIONS, TermTableView, ViewSwitch, type TermDisplay } from "./TermTableView"
+import { ViewSwitch } from "../ViewSwitch"
+import { TERM_DISPLAY_OPTIONS, TermTableView, type TermDisplay } from "./TermTableView"
 
 export function EBMTermsTab({ result }: { result: TrainResult }) {
   const terms = result.ebm_terms ?? []

@@ -54,7 +54,7 @@
 | `frontend/src/panels/editors/shared/useWholeDataAnswer.ts` | The one whole-dataset request hook for editors that otherwise work from preview rows: it asks only while the node's shared data point is current, 250 ms after the last change to the question, aborts the request it supersedes, publishes an answer only for the identity and document it was asked under, and reports the shared cache, whether the answer describes all rows, a sample, or a stale point, and `cacheRequired` when the server answers that the data is not cached for the question although the local point looks current. That answer also raises the node-data epoch, so every consumer reads its point again and this one's availability, and what its node's Refresh does, follow the server's. An editor may name the question's `subject`, the part its question-independent facts depend on: while a newer question with the same subject about the same current point is outstanding, the last answer stays published with `answerIsCurrent` false instead of the editor dropping back to the sample. |
 | `frontend/src/panels/editors/banding/useBandingStats.ts` | Asks `/api/banding/stats`, through `useWholeDataAnswer`, about the factor being edited; renaming the output column does not ask again. Its subject is the column, banding type and histogram size, so a rule edit keeps the last answer's total, values, histogram and range on screen while the new counts are asked; the editor then takes each categorical rule's count from the whole dataset's value counts (last rule naming a value wins, as execution remaps; a value missing from a truncated list is pending) and shows every other count it cannot settle yet as pending (`…`), never the sample's. It passes `cacheRequired` through, which the editor shows as needing a Refresh rather than as counting. |
 | `frontend/src/stores/useNodeResultsStore.ts`, `frontend/src/stores/useUIStore.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned active-job state and per-node pane memory consumed by node-panel modelling chrome. |
-| `frontend/src/utils/trainingObjective.ts` | Click-time training issue aggregation owned and consumed by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md). |
+| `frontend/src/utils/trainingObjective.ts` | Training issue aggregation, and the pane each issue belongs to for the modelling tab indicators, owned and consumed by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md). |
 | `frontend/src/panels/editors/banding/bandingUtils.ts` | Banding rule/level utility functions, including the date helpers that read a boundary's kind (number, date, date and time) as the backend's boundary parser does and turn dates and preview values into wall-clock day numbers (days since 1970-01-01, the unit of the banding statistics) for ordering and drawing (and preview values, for Generate's starting range), and the calendar-step generator and its read-back for Generate on a date column. |
 | `frontend/src/panels/editors/banding/BreakpointGrid.tsx`, `frontend/src/panels/editors/banding/BandingRulesGrid.tsx`, `frontend/src/panels/editors/banding/CategoricalValuePicker.tsx` | Numeric breakpoints, editable rules and categorical selection. Each grid marks inline, as an error on the cell (`aria-invalid`, a danger border and a `CellIssueMark` naming the reason, from `frontend/src/panels/editors/shared/CellIssueMark.tsx`), every row the sidecar writer refuses and so save validation refuses: a breakpoint without a band name (`breakpointLabelIssues`), and a categorical rule without a value or a mapping or repeating an earlier rule's value (`categoricalRuleIssues`, the later repeat marked with the rule it repeats). An out-of-order boundary, a non-date one on a date factor, or a non-number on a numeric one is a warning in the same mark. The categorical grid writes each rule as its value and mapping only. TwoWayGrid copies through `writeClipboardText`, so a missing clipboard is a toast. |
 | `frontend/src/panels/editors/banding/ImportParamValues.tsx` | Categorical's Import from params: lists the params folder's CSVs and reads the chosen file's header through `useParamsFiles` (frontend-shared), the listing's failure shown with Retry, then reads the chosen column's distinct values through `fetchParamFile` (`GET /api/workbench/params`), and hands the values to the editor, which appends a `{ value, assignment: value }` rule for each value no rule has; a refusal (409) shows its message under the choices, and a read the user has moved on from (another file or column, or the panel closed) answers nothing. It holds no factor state of its own. |
@@ -896,27 +896,27 @@ cover new/edit/save/reload shapes; there are no migration-specific fixtures.
 The behaviour and non-goals are defined by
 [the modelling/optimiser UI contract](../frontend-modelling-optimiser-ui/high-level.md#modelling-config-panes).
 
-`frontend/src/panels/NodePanel.tsx` renders a modelling strip with Target, Features, Split, Train,
-and Export; CatBoost additionally has Params between Features and Split. It uses the shared
-preview tab control and per-node UI-store selection memory. A remembered GLM Params selection
-resolves to Target for both the selected tab and editor body, without changing model config. It is
-shown only when the modelling node has a supported
-`catboost` or `glm` algorithm; an unset algorithm leaves the gateway as the only editor content.
-A non-empty unsupported value also suppresses the strip and is handed to the modelling editor's
-explicit diagnostic rather than treated as CatBoost.
+`frontend/src/panels/NodePanel.tsx` renders a modelling strip with Target, Features,
+Parameters, Split, Train and Export for every known family, from `modellingPanesFor`. It uses the
+shared preview tab control and per-node UI-store selection memory, and opens Target when none is
+remembered, for both the tab and the editor body, without changing model config. The strip is
+shown only when the modelling node's algorithm is one the capability table lists; an unset
+algorithm leaves the gateway as the only editor content, and a non-empty unsupported value also
+suppresses the strip and is handed to the modelling editor's explicit diagnostic rather than
+treated as CatBoost.
 
 `NodePanel` reads the remembered pane and selects only the Boolean presence of
-`trainJobs[node.id]`. Its tab descriptors leave Target/Features/Params/Split/Export as plain labels and
-add only the active indicator on Train. Configuration completeness is deliberately not derived or
-displayed by the node panel; `ModellingConfig` owns click-time validation beneath its Train
-button. There is no child-to-parent registration or effect, so node changes cannot flash a
-previous node's state and progress-only updates do not rerender the panel chrome. The active tab
-panel keeps the shared `id`/`aria-labelledby` relationship.
+`trainJobs[node.id]`. Its tab descriptors add the active indicator on Train while that job
+exists, and otherwise a compact warning indicator ("<Pane> needs attention") on each pane
+`ModellingConfig` reports through `onPaneIssuesChange` as holding a Train-guard issue. The report
+carries its node id and a report from another node's editor never marks this one, so a node
+change cannot show a previous node's state, and progress-only updates do not rerender the panel
+chrome. The active tab panel keeps the shared `id`/`aria-labelledby` relationship.
 
 `frontend/src/panels/__tests__/NodePanel.test.tsx` proves unset/supported/unsupported-algorithm
-strip gating, algorithm-specific routes, retired GLM Params selection, same-node memory,
-independent memory for two nodes, plain setup-tab
-labels, active-indicator routing, and no stale active state after a node change. The generic
+strip gating, the six panes for CatBoost and the GLM with a remembered Parameters pane restored,
+same-node memory, independent memory for two nodes, the issue indicators for the reporting node
+only, active-indicator routing, and no stale active state after a node change. The generic
 indicator and keyboard
 contract is owned by
 [frontend-preview-explore](../frontend-preview-explore/low-level.md#modelling-config-panes).

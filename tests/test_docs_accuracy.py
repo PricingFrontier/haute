@@ -154,7 +154,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "docs",
     "engineering-quality",
     "explore-eda",
-    "frontend-modelling-optimiser-ui",
     "frontend-shared",
     "io-layer",
     "model-scoring",

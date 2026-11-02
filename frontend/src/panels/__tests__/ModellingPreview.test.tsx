@@ -4,11 +4,14 @@
  * ModellingPreview uses Zustand stores (useNodeResultsStore) and useDragResize,
  * so we mock them to keep tests focused on render logic.
  */
-import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
+import { act, render, screen, fireEvent, cleanup, within } from "@testing-library/react"
 import { ModellingPreview } from "../ModellingPreview"
 import type { ModellingPreviewData } from "../ModellingPreview"
+import useDocumentStatusStore, { documentReadOnlyReason } from "../../stores/useDocumentStatusStore"
+import type { PipelineDocumentCapabilities } from "../../types/pipelineDocument"
 import useGraphStore from "../../stores/useGraphStore"
+import useToastStore from "../../stores/useToastStore"
 import { makeNode, makeTrainResult, makeTuningReport } from "../../test-utils/factories"
 import { answerQuestion, asked } from "../../test-utils/question"
 
@@ -43,7 +46,33 @@ function makeData(overrides: Partial<ModellingPreviewData> = {}): ModellingPrevi
   }
 }
 
+function editableCapabilities(): PipelineDocumentCapabilities {
+  return {
+    can_mutate: true,
+    can_save: true,
+    can_execute: true,
+    can_preview: true,
+    can_manage_submodels: true,
+    can_repair: false,
+    reserved_api_input_frame_labels: [],
+  }
+}
+
+/** An editable loaded document, as the editor shows a trained model in. */
+function editableDocument() {
+  useDocumentStatusStore.setState({
+    ...useDocumentStatusStore.getInitialState(),
+    capabilities: editableCapabilities(),
+    graphSynchronized: true,
+  })
+}
+
 describe("ModellingPreview", () => {
+  beforeEach(() => {
+    editableDocument()
+    useToastStore.setState({ toasts: [] })
+  })
+
   it("fixes the winning parameters once asked, turning tuning off", async () => {
     const tuning = makeTuningReport()
     useGraphStore.getState().setNodes([makeNode("n1", "modelling", { data: { config: { tuning: { trials: 12 }, params: { depth: 6 } } } })])
@@ -58,6 +87,27 @@ describe("ModellingPreview", () => {
     fireEvent.click(screen.getByRole("button", { name: "Use best as fixed parameters" }))
     await answerQuestion("confirm")
     expect(config()).toEqual({ params: tuning.final_params })
+  })
+
+  it("leaves the parameters alone when the document went read-only while the question was open", async () => {
+    const tuning = makeTuningReport()
+    useGraphStore.getState().setNodes([makeNode("n1", "modelling", { data: { config: { tuning: { trials: 12 }, params: { depth: 6 } } } })])
+    render(<ModellingPreview data={makeData({ result: makeTrainResult({ tuning }) })} nodeId="n1" />)
+    const config = () => (useGraphStore.getState().nodes[0].data as { config: Record<string, unknown> }).config
+
+    fireEvent.click(screen.getByRole("button", { name: "Use best as fixed parameters" }))
+    act(() => useDocumentStatusStore.getState().setGraphSynchronized(false))
+    await answerQuestion("confirm")
+    expect(config()).toEqual({ tuning: { trials: 12 }, params: { depth: 6 } })
+  })
+
+  it("asks nothing in a read-only document and says why", () => {
+    useDocumentStatusStore.setState({ capabilities: { ...editableCapabilities(), can_mutate: false } })
+    render(<ModellingPreview data={makeData({ result: makeTrainResult({ tuning: makeTuningReport() }) })} nodeId="n1" />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Use best as fixed parameters" }))
+    expect(asked()).toBeNull()
+    expect(useToastStore.getState().toasts.map((toast) => toast.text)).toEqual([documentReadOnlyReason()])
   })
 
   it("shows a completed result's own elapsed time (FMOU-R01)", () => {

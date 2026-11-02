@@ -45,10 +45,18 @@ export function fractionToPercent(fraction: number): number {
   return Number((fraction * 100).toPrecision(12))
 }
 
-/** Format large numbers compactly: 1234567 → "1.23M", 12345 → "12.3K". */
+/**
+ * Format large numbers compactly: 1234567 → "1.23M", 12345 → "12.3K".
+ *
+ * The unit follows the value as it would be printed, so rounding carries into
+ * the next unit: 999,999 is 999.999K, which would print as "1000.0K", so it
+ * reads "1.00M"; 999.99999 reads "1.0K", not "1000.0000".
+ */
 export function formatNumber(n: number): string {
-  if (Math.abs(n) >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M"
-  if (Math.abs(n) >= 1_000) return (n / 1_000).toFixed(1) + "K"
+  const printsAtLeastThousand = (divisor: number, digits: number) =>
+    Math.abs(Number((n / divisor).toFixed(digits))) >= 1_000
+  if (printsAtLeastThousand(1_000, 1)) return (n / 1_000_000).toFixed(2) + "M"
+  if (printsAtLeastThousand(1, 4)) return (n / 1_000).toFixed(1) + "K"
   if (Number.isInteger(n)) return String(n)
   return n.toFixed(4)
 }

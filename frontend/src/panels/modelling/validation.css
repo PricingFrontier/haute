@@ -20,6 +20,15 @@
   background: var(--results-accent-soft);
   border-left-color: var(--results-accent);
 }
+/* ViewSwitch.tsx: every result view switch, the pressed view in the accent. */
+.view-switch-option {
+  background: var(--chrome-hover);
+  color: var(--text-muted);
+}
+.validation-workspace .view-switch-option[aria-pressed="true"] {
+  background: var(--results-accent-soft);
+  color: var(--results-accent);
+}
 .validation-feature-list {
   max-height: 400px;
   overflow-y: auto;

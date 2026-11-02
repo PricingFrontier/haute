@@ -26,7 +26,7 @@ export interface ConstraintAttainment {
   status: AttainmentStatus
 }
 
-export interface ConstraintAttainmentRow extends ConstraintAttainment {
+interface ConstraintAttainmentRow extends ConstraintAttainment {
   name: string
   lambda: number
 }

@@ -24,6 +24,7 @@ export type SplitAndMetricsConfigProps = {
   publishesValidationFit?: boolean
   tuningEnabled: boolean
   preview: EvaluationPreview | null
+  /** The server's message for a failed evaluation preview; it names the preview. */
   previewError?: string | null
 }
 
@@ -91,9 +92,7 @@ export function SplitAndMetricsConfig({
   const validationFraction = number(current.size, 0.2)
   const testFraction = number(test?.size, 0)
   const issues = evaluationConfigurationIssues(evaluation)
-  const sumIssue = issues.find((x) =>
-    /total below 100%|fraction|sum/i.test(x.message),
-  )
+  const sumIssue = issues.find((x) => x.code === "evaluation-fraction-sum")
   const update = (x: Evaluation) => onEvaluationChange({ ...evaluation, ...x })
   const updateTest = (value: Evaluation | null) => {
     if (value === null) {
@@ -367,9 +366,7 @@ export function SplitAndMetricsConfig({
       </ConfigSection>
       {previewError && (
         <p role="alert" className="text-xs" style={{ color: "var(--danger)" }}>
-          {previewError.startsWith("Evaluation preview failed:")
-            ? previewError
-            : `Evaluation preview failed: ${previewError}`}
+          {previewError}
         </p>
       )}
     </div>

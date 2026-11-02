@@ -2,8 +2,8 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import useOptimiserPublishStore from "../../stores/useOptimiserPublishStore"
 import OptimiserPreview from "../OptimiserPreview"
-import type { OptimiserPreviewData, FrontierData } from "../OptimiserPreview"
-import type { OptimiserSolveResult } from "../../api/types"
+import type { OptimiserPreviewData } from "../OptimiserPreview"
+import type { FrontierData, OptimiserSolveResult } from "../../api/types"
 import type { SimpleNode } from "../editors/_shared"
 import type { MlflowInventoryState } from "../../utils/mlflowDestinations"
 import {
@@ -982,6 +982,26 @@ describe("OptimiserPreview", () => {
       expect(screen.getByText(/This slice holds 3 of the 6 frontier points\./)).toBeInTheDocument()
     })
 
+    it("labels a held percentage constraint's threshold as a percentage of its baseline", () => {
+      const frontier = gridFrontier()
+      renderPreview({
+        data: gridData({
+          frontier: {
+            ...frontier,
+            points: frontier.points.map((point) => ({
+              ...point,
+              thresholds: { ...point.thresholds, margin: point.thresholds.margin === 400 ? 0.95 : 1.05 },
+            })),
+          },
+          constraints: { volume: { min: 5.5 }, margin: { max_pct: 0.95 } },
+        }),
+      })
+
+      const holding = screen.getByLabelText("Holding margin at")
+      expect(within(holding).getAllByRole("option").map((option) => option.textContent))
+        .toEqual(["95% of baseline", "105% of baseline"])
+    })
+
     it("offers only the swept constraints on the X axis and re-slices when it changes", () => {
       renderPreview({ data: gridData() })
 
@@ -1319,9 +1339,22 @@ describe("OptimiserPreview", () => {
 
     it("keeps Re-run disabled with the reason while the Solve pane would refuse", () => {
       mockSolveState.results = { opt_1: { configHash: "an-older-config", source: "live", structuralVersion: 0 } }
+      const withVolume = {
+        ...QUOTES_NODE,
+        data: {
+          ...QUOTES_NODE.data,
+          _columns: [
+            { name: "profit", dtype: "Float64" },
+            { name: "volume", dtype: "Float64" },
+            { name: "quote_id", dtype: "String" },
+            { name: "scenario_index", dtype: "Int64" },
+            { name: "scenario_value", dtype: "Float64" },
+          ],
+        },
+      }
       renderPreview({
         allNodes: [
-          QUOTES_NODE,
+          withVolume,
           optimiserNode({
             objective: "profit",
             constraints: { volume: { min: 1 } },

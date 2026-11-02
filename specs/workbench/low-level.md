@@ -1305,7 +1305,10 @@ no longer has; and `InputSource` in
     connection and read bounded by `REQUEST_TIMEOUT_SECONDS`, retried at most twice through a
     retry policy that waits no longer than ten seconds whatever `Retry-After` asks, and given
     the SDK's `timeout`, its retries and their waits included, of at most a minute and what is
-    left of the bound `limit` set, a request asked once it is spent refused), Azure's update
+    left of the bound `limit` set, a request asked once it is spent refused; an update, here
+    and in `record`, given a poller of its own, `_update_poller`'s `ARMPolling`, since
+    `begin_update` builds its poller from the request's keyword arguments, whose `timeout`
+    is its first parameter, and so failed after Azure had taken the update), Azure's update
     waited on with
     `LROPoller.wait` no longer than what is left, and the revision Azure answers refused unless
     its name ends with the suffix, since the resource Azure answers may already hold another
