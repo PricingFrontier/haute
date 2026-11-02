@@ -12,7 +12,6 @@ packages come from the [25 October 2026 codebase review](codebase-review-2026-10
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | CLI-R02 | Planned | P2 | `haute run` walks the pipeline lazily to its output node under the batch profile, with a named source, instead of materialising every node in memory. |
-| CLI-R03 | Planned | P2 | `haute lint` applies the editor's save-time validation, so CI's lint step refuses what the editor would refuse. |
 
 ## Planned improvements
 
@@ -41,20 +40,3 @@ pipeline and asserts no node but the output is collected.
 `src/haute/execution.py::execute_lazy_graph`; `tests/test_cli_architecture.py` (the
 mocked `handle_run` test).
 
-### CLI-R03 — `haute lint` runs the editor's validators
-**Why:** The generated CI's "Pipeline lint" step runs `haute lint`, which parses the file
-and checks only dangling edges and disconnected nodes; it runs none of the save-time
-validation the editor applies (node config validation, name violations, global constants,
-statements a save would drop), so CI's lint passes a pipeline the editor would refuse to
-save and only the deploy dry run catches it. It parses unflattened, unlike `haute run`.
-
-**Plan:** Run the save validators over the parsed document and report their diagnostics
-with file and line; parse flattened.
-
-**Acceptance:** A pipeline with a node config the editor's save refuses fails `haute
-lint` with the same message.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/cli/_lint.py::handle_lint`; `src/haute/routes/_save_pipeline.py`
-(the save-time validation).

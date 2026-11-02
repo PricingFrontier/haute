@@ -999,7 +999,11 @@ class TestHandleLintCallable:
             nodes=[
                 GraphNode(
                     id="a",
-                    data=NodeData(label="a", nodeType="dataInput", config={"path": "d.parquet"}),
+                    data=NodeData(
+                        label="a",
+                        nodeType="dataInput",
+                        config={"inputType": "file", "format": "parquet", "path": "d.parquet"},
+                    ),
                 ),
                 GraphNode(
                     id="b",
@@ -1522,7 +1526,7 @@ class TestCliAutoDiscoveryEndToEnd:
                     data=NodeData(
                         label="a",
                         nodeType="dataInput",
-                        config={"path": "d.parquet"},
+                        config={"inputType": "file", "format": "parquet", "path": "d.parquet"},
                     ),
                 ),
                 GraphNode(

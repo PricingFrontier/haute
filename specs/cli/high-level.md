@@ -117,10 +117,15 @@ Out of scope, owned elsewhere:
   definition's nodes, and a Workbench node takes its tables from the project's form folder,
   [workbench](../workbench/high-level.md)), printing a per-node row/column summary and a
   preview of the final node's output.
-- `haute lint [pipeline_file]` strictly parses a pipeline and exits non-zero on syntax,
-  configuration, topology, or other parse failures. For a valid canonical graph it reports
-  structural problems (edges pointing at missing nodes and orphan nodes) without executing
-  anything.
+- `haute lint [pipeline_file]` checks a pipeline as the editor's save does, without
+  executing anything, so the generated CI's lint step refuses what the editor would refuse
+  to save. It strictly parses the pipeline and exits non-zero on syntax, configuration,
+  topology, or other parse failures; then reports, all in one run, the editor document's
+  diagnostics with file and line (a statement or comment a save would drop among them),
+  what the editor's save-time validation refuses (names, global constants, joins, selectors
+  and the rest, each with the save's own message), and structural problems of the flattened
+  graph (edges pointing at missing nodes and orphan nodes). The save's warnings are printed
+  without failing.
 - `haute train <training_script>` runs a training script that must define a module-level `job`
   object with a callable `run(progress=...)` method (normally a `TrainingJob`), streaming a
   live progress bar and printing the returned result's model path, feature counts, and metrics.

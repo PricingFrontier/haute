@@ -699,7 +699,7 @@ class TestLint:
         pipeline_file = str(project_dir / "main.py")
         result = runner.invoke(cli, ["lint", pipeline_file], catch_exceptions=False)
         assert result.exit_code == 0, result.output
-        assert "No structural issues" in result.output
+        assert "No issues found" in result.output
 
     def test_lint_auto_discover(
         self,
