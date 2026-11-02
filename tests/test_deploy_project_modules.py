@@ -176,7 +176,7 @@ def test_pyfunc_model_scores_with_its_own_utility_package(
 ) -> None:
     import mlflow.pyfunc
 
-    from haute.deploy._mlflow import _pyfunc_model_arguments, _stage_artifacts
+    from haute.deploy._mlflow import _pyfunc_model_arguments, _stage_artifacts, served_lock
     from haute.deploy._utils import build_manifest
 
     project = tmp_path / "project"
@@ -195,6 +195,7 @@ def test_pyfunc_model_scores_with_its_own_utility_package(
                 manifest_path,
                 _stage_artifacts(resolved, staging),
                 ServedHaute(f"haute=={haute.__version__}"),
+                served_lock(resolved, ServedHaute(f"haute=={haute.__version__}")),
             ),
         )
 
@@ -217,7 +218,7 @@ def test_a_served_haute_wheel_is_where_the_environment_installs_it_from(
     import mlflow.pyfunc
     import yaml
 
-    from haute.deploy._mlflow import _pyfunc_model_arguments, _stage_artifacts
+    from haute.deploy._mlflow import _pyfunc_model_arguments, _stage_artifacts, served_lock
     from haute.deploy._utils import build_manifest
 
     project = tmp_path / "project"
@@ -239,6 +240,7 @@ def test_a_served_haute_wheel_is_where_the_environment_installs_it_from(
                 manifest_path,
                 _stage_artifacts(resolved, staging),
                 ServedHaute(f"code/{wheel.name}", wheel),
+                served_lock(resolved, ServedHaute(f"code/{wheel.name}", wheel)),
             ),
         )
 

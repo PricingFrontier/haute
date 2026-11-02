@@ -20,7 +20,7 @@ import os
 import urllib.error
 import weakref
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -4943,21 +4943,39 @@ class TestBuildSignature:
 
 
 class TestCondaEnvAndPipRequirements:
-    """Tests for _conda_env() and _pip_requirements()."""
+    """Tests for served_lock(), _conda_env() and _pip_requirements()."""
+
+    @staticmethod
+    def _lock(resolved: Any, haute: str = "haute==0.6.0") -> Any:
+        from haute.deploy._mlflow import served_lock
+        from haute.deploy._served_haute import ServedHaute
+
+        return served_lock(resolved, ServedHaute(haute))
 
     def test_pip_requirements_pin_the_served_haute_and_the_served_runtime(self):
         """The haute that validated the deploy, and this environment's MLflow, Polars,
-        pandas and NumPy."""
+        pandas and NumPy, each at its locked version (the offline resolver adds none)."""
         from importlib.metadata import version
 
         from haute.deploy._mlflow import _pip_requirements
 
-        reqs = _pip_requirements("haute==0.6.0", _make_resolved())
+        reqs = _pip_requirements("haute==0.6.0", self._lock(_make_resolved()))
 
         assert reqs == [
             "haute==0.6.0",
-            *(f"{name}=={version(name)}" for name in ("mlflow", "polars", "pandas", "numpy")),
+            *sorted(f"{name}=={version(name)}" for name in ("mlflow", "polars", "pandas", "numpy")),
         ]
+
+    def test_the_served_closure_is_locked_for_model_serving(self, tmp_path):
+        """DEP-R09: resolved for Linux x86_64 and the project's Python, whatever the host."""
+        from haute._project_python import deployed_python_version
+
+        resolved = _make_resolved()
+        lock = self._lock(resolved)
+
+        assert lock.platform == "x86_64-manylinux_2_28"
+        assert lock.python_version == deployed_python_version(resolved.project_root)
+        assert lock.roots[0] == "haute==0.6.0"
 
     def test_pip_requirements_pin_each_bundled_engine_once(self, tmp_path):
         """DEP-R06: a bundled model serves under the engine release that trained it."""
@@ -4972,7 +4990,7 @@ class TestCondaEnvAndPipRequirements:
             }
         )
 
-        reqs = _pip_requirements("haute==0.6.0", resolved)
+        reqs = _pip_requirements("haute==0.6.0", self._lock(resolved))
 
         # The pins a container image of these artefacts carries: each engine's installed
         # distribution (XGBoost's may be xgboost-cpu) at its installed version.
@@ -4987,7 +5005,7 @@ class TestCondaEnvAndPipRequirements:
     def test_conda_env_structure(self):
         from haute.deploy._mlflow import _conda_env
 
-        env = _conda_env("3.13", "haute==0.6.0", _make_resolved())
+        env = _conda_env("3.13", "haute==0.6.0", self._lock(_make_resolved()))
 
         assert env["name"] == "mlflow-env"
         assert "conda-forge" in env["channels"]
@@ -4999,7 +5017,7 @@ class TestCondaEnvAndPipRequirements:
         """The model serves on the Python the project ran on, at the precision it names."""
         from haute.deploy._mlflow import _conda_env
 
-        env = _conda_env(version, "haute==0.6.0", _make_resolved())
+        env = _conda_env(version, "haute==0.6.0", self._lock(_make_resolved()))
         assert env["dependencies"][0] == f"python={version}"
 
 

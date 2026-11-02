@@ -31,6 +31,7 @@ from haute.deploy._container import (
     _generate_app_source,
     _generate_dockerfile,
     _git_sha_short,
+    _pinned_dockerfile_deps,
     _validate_base_image,
     _validate_model_name,
     build_and_push_image,
@@ -150,18 +151,10 @@ class _FakeRequest:
 _EXPECTED_XGBOOST = "xgboost" if sys.platform == "darwin" else "xgboost-cpu"
 
 
-def _dockerfile_install_lines(dockerfile: str) -> tuple[list[str], str]:
-    """The scoring-runtime requirements and the ``--no-deps`` haute requirement."""
-    prefix = "RUN pip install --no-cache-dir "
-    install_lines = [line for line in dockerfile.splitlines() if line.startswith(prefix)]
-    assert len(install_lines) == 2, "Dockerfile installs the runtime, then haute"
-    runtime, haute = (line.removeprefix(prefix) for line in install_lines)
-    assert haute.startswith("--no-deps "), haute
-    return runtime.split(), haute.removeprefix("--no-deps ")
-
-
-def _dockerfile_pip_install_deps(dockerfile: str) -> list[str]:
-    return _dockerfile_install_lines(dockerfile)[0]
+def _runtime_roots(resolved: ResolvedDeploy) -> tuple[list[str], str]:
+    """The roots a scoring image's runtime lock resolves, and its haute requirement."""
+    haute, *roots = _pinned_dockerfile_deps(resolved)
+    return roots, haute
 
 
 # ---------------------------------------------------------------------------
@@ -1045,17 +1038,22 @@ class TestGenerateDockerfile:
         assert "EXPOSE 9090" in df
         assert '"9090"' in df
 
-    def test_includes_base_deps(self) -> None:
-        resolved = _make_resolved()
-        df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
-        for dep in ("haute", "polars", "fastapi", "uvicorn[standard]"):
-            assert dep in df
+    def test_installs_the_bundles_locks_by_hash_and_checks_the_runtime(self) -> None:
+        """DEP-R09: the image resolves nothing; it installs the locks and checks them."""
+        df = _generate_dockerfile("python:3.11-slim", 8080, _make_resolved())
+
+        installs = [line for line in df.splitlines() if line.startswith("RUN pip install")]
+        assert installs == [
+            "RUN pip install --no-cache-dir --no-deps --require-hashes --only-binary :all: \\",
+            "RUN pip install --no-cache-dir --no-deps --require-hashes -r haute.lock",
+        ]
+        assert "    -r requirements.lock\n" in df
+        assert "COPY requirements.lock haute.lock dependency_lock.json ./\n" in df
+        check = "RUN python -m haute.deploy._runtime_check dependency_lock.json\n"
+        assert df.index(check) > df.index("-r haute.lock")
 
     def test_pins_core_runtime_dependencies(self) -> None:
-        resolved = _make_resolved()
-        df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
-
-        deps, haute = _dockerfile_install_lines(df)
+        deps, haute = _runtime_roots(_make_resolved())
 
         assert haute == f"haute=={version('haute')}"
         assert f"polars=={version('polars')}" in deps
@@ -1067,17 +1065,14 @@ class TestGenerateDockerfile:
         self,
     ) -> None:
         # DEP-R02: haute's own dependencies bring the assistant, tuning, editor
-        # and MLflow stacks; the image installs haute --no-deps plus a pinned
+        # and MLflow stacks; the image installs haute --no-deps plus a locked
         # scoring runtime instead.
-        df = _generate_dockerfile("python:3.11-slim", 8080, _make_resolved())
-
-        deps, haute = _dockerfile_install_lines(df)
+        deps, haute = _runtime_roots(_make_resolved())
         names = {dep.split("==")[0].split("[")[0] for dep in deps}
 
         assert haute == f"haute=={version('haute')}"
         assert names == {name for name, _ in _SCORING_RUNTIME_DEPENDENCIES}
         assert not names & {"anthropic", "openai", "optuna", "libcst", "mlflow", "tomlkit"}
-        assert df.index("--no-deps") > df.index(deps[0])
 
     @pytest.mark.parametrize(("source_type", "needs_mlflow"), [("run", True), ("file", False)])
     def test_an_mlflow_sourced_optimiser_apply_adds_mlflow(
@@ -1102,9 +1097,7 @@ class TestGenerateDockerfile:
             ),
         )
 
-        deps = _dockerfile_pip_install_deps(
-            _generate_dockerfile("python:3.11-slim", 8080, resolved)
-        )
+        deps, _haute = _runtime_roots(resolved)
 
         assert (f"mlflow=={version('mlflow')}" in deps) is needs_mlflow
 
@@ -1122,13 +1115,11 @@ class TestGenerateDockerfile:
         monkeypatch.setattr(_container, "metadata_version", fake_version)
 
         with pytest.raises(DeployError, match="Cannot pin dependency 'fastapi'"):
-            _generate_dockerfile("python:3.11-slim", 8080, _make_resolved())
+            _pinned_dockerfile_deps(_make_resolved())
 
     def test_includes_catboost_for_cbm(self) -> None:
         resolved = _make_resolved(artifacts={"freq.cbm": Path("models/freq.cbm")})
-        df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
-
-        deps = _dockerfile_pip_install_deps(df)
+        deps, _haute = _runtime_roots(resolved)
 
         assert f"catboost=={version('catboost')}" in deps
         assert "catboost" not in deps
@@ -1139,9 +1130,7 @@ class TestGenerateDockerfile:
         install whatever is latest at image-build time and load the pickle
         under a different version than wrote it."""
         resolved = _make_resolved(artifacts={"model.pkl": Path("models/model.pkl")})
-        df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
-
-        deps = _dockerfile_pip_install_deps(df)
+        deps, _haute = _runtime_roots(resolved)
 
         assert f"scikit-learn=={version('scikit-learn')}" in deps
         assert "scikit-learn" not in deps
@@ -1150,9 +1139,7 @@ class TestGenerateDockerfile:
         resolved = _make_resolved(
             artifacts={"sev.lgbm": Path("sev.lgbm"), "freq.cbm": Path("freq.cbm")}
         )
-        df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
-
-        deps = _dockerfile_pip_install_deps(df)
+        deps, _haute = _runtime_roots(resolved)
 
         assert deps[-3:] == [
             f"catboost=={version('catboost')}",
@@ -1178,7 +1165,7 @@ class TestGenerateDockerfile:
         resolved = _make_resolved(artifacts={"model.lgb": Path("models/model.lgb")})
 
         with pytest.raises(DeployError) as excinfo:
-            _generate_dockerfile("python:3.11-slim", 8080, resolved)
+            _pinned_dockerfile_deps(resolved)
 
         message = str(excinfo.value)
         assert "'lightgbm'" in message
@@ -1234,9 +1221,7 @@ class TestDetectExtraDeps:
         # metadata, so naming the wrong distribution fails Dockerfile generation.
         resolved = _make_resolved(artifacts={"m.ubj": Path("m.ubj")})
 
-        deps = _dockerfile_pip_install_deps(
-            _generate_dockerfile("python:3.11-slim", 8080, resolved)
-        )
+        deps, _haute = _runtime_roots(resolved)
 
         assert f"{_EXPECTED_XGBOOST}=={version(_EXPECTED_XGBOOST)}" in deps
         assert f"pandas=={version('pandas')}" in deps
@@ -1604,14 +1589,33 @@ class TestBuildAndPushImage:
 
         assert result.build_dir is not None
         manifest = json.loads((result.build_dir / "deploy_manifest.json").read_text())
-        assert manifest["container_dependencies"] == [
-            f"haute=={version('haute')}",
+        # The roots, each at the version installed here, and (the offline resolver adds
+        # none) their closure, locked for the image: haute first, then every lock pin.
+        roots = [
             *(
                 f"{install_name}=={version(distribution)}"
                 for distribution, install_name in _SCORING_RUNTIME_DEPENDENCIES
             ),
             f"catboost=={version('catboost')}",
         ]
+        assert manifest["dependency_lock"]["roots"] == roots
+        assert manifest["dependency_lock"]["platform"] == "x86_64-manylinux_2_28"
+        assert manifest["dependency_lock"]["python_version"] == "3.11.9"
+        assert manifest["container_dependencies"] == [
+            f"haute=={version('haute')}",
+            *sorted(root.replace("[standard]", "") for root in roots),
+        ]
+        # The image installs the lock and checks its runtime against the record.
+        build_dir = result.build_dir
+        assert "--hash=sha256:" in (build_dir / "requirements.lock").read_text()
+        haute_lock = (build_dir / "haute.lock").read_text()
+        assert f"\nhaute=={version('haute')} \\\n    --hash=sha256:" in haute_lock
+        # The index is recorded without the credential the resolve used.
+        assert "s3cret" not in haute_lock + (build_dir / "requirements.lock").read_text()
+        record = json.loads((build_dir / "dependency_lock.json").read_text())
+        assert record["pins"]["catboost"] == version("catboost")
+        assert "catboost" not in record["haute_omitted"], "a selected engine is never omitted"
+        assert "optuna" in record["haute_omitted"]
 
     @patch("haute.deploy._container._generate_dockerfile", return_value="FROM python:3.11-slim\n")
     @patch("haute.deploy._container._generate_app_source", return_value="# app\n")

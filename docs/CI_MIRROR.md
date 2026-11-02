@@ -78,7 +78,7 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
    together run exactly the unsharded suite, so one local run covers all of
    them; to reproduce a single CI shard, pass its `--shard`, e.g.
    `uv run pytest tests/ -q -n 4 --shard=2/4 --shard-lane=coverage` (add
-   `-m "not perf and not meta"` for a `backend-compat` shard, whose count is 3).
+   `-m "not perf and not meta and not index"` for a `backend-compat` shard, whose count is 3).
    Preflight itself still runs one interpreter (the `.venv`). See
    "Multi-Python matrix" below.
 2. **`frontend-static` + `frontend-tests`** → `bash scripts/preflight.sh --frontend-only` —

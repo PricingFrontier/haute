@@ -145,20 +145,27 @@ def test_a_recorded_file_missing_from_the_install_is_refused(tmp_path: Path) -> 
         repack_installed_wheel(distribution, tmp_path / "wheel")
 
 
-def test_the_served_environment_installs_that_haute_and_mlflow() -> None:
+def test_the_served_environment_installs_that_haute_and_mlflow(tmp_path: Path) -> None:
     from importlib.metadata import version
 
-    from haute.deploy._mlflow import _conda_env
+    from haute.deploy._mlflow import _conda_env, served_lock
+    from haute.deploy._served_haute import ServedHaute
     from tests._deploy_helpers import make_resolved_deploy
 
-    env = _conda_env("3.13", "code/haute-0.6.0-py3-none-any.whl", make_resolved_deploy())
+    wheel = tmp_path / "haute-0.6.0-py3-none-any.whl"
+    wheel.write_bytes(b"PK")
+    served = ServedHaute("code/haute-0.6.0-py3-none-any.whl", wheel)
+    lock = served_lock(make_resolved_deploy(), served)
+    env = _conda_env("3.13", served.requirement, lock)
 
+    # The closure is resolved from the wheel the model carries, which it installs from code/.
+    assert lock.roots[0] == str(wheel)
     assert env["dependencies"][:2] == ["python=3.13", "pip"]
     # Model Serving builds the container only with mlflow itself in the environment.
     assert env["dependencies"][2] == {
         "pip": [
             "code/haute-0.6.0-py3-none-any.whl",
-            *(f"{name}=={version(name)}" for name in ("mlflow", "polars", "pandas", "numpy")),
+            *sorted(f"{name}=={version(name)}" for name in ("mlflow", "polars", "pandas", "numpy")),
         ]
     }
 

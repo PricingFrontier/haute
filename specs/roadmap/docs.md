@@ -11,9 +11,9 @@ day's live check, which added a submodel to a project scaffolded before the curr
 init`. The building-models and Workbench pages were not part of that check.
 
 A defect in the behaviour a page describes belongs to the component that owns the behaviour,
-and a package here names it as a dependency rather than copying it:
-[DEP-R08](deploy.md#dep-r08--the-mlflow-targets-version-credential-and-default)
-(an expired token named as one).
+and a package here names it as a dependency rather than copying it. The one such dependency,
+an expired token named as one, is delivered: deploy's connectivity check names the token
+on a 401 (`src/haute/deploy/_mlflow.py::_check_databricks_connectivity`).
 
 The site describes `main`, decided on 25 October 2026: the next release, due soon, ships
 `main`, so every page here is written for what `main` does.
@@ -61,9 +61,8 @@ reaches the workflows only through `haute ci update`.
 
 **Plan:** Step 9 calls `<name>-staging` and says the production name answers once the
 production workflow has run. "Endpoint not found" says a finished deploy's endpoint already
-serves, so the name or the workspace is wrong. "Token expired" quotes the message DEP-R08
-gives an expired token; until DEP-R08 lands it names the traceback's last line instead of
-promising the step. The scale-to-zero note sets `HAUTE_SERVING_SCALE_TO_ZERO=false` on the
+serves, so the name or the workspace is wrong. "Token expired" quotes the message deploy's
+connectivity check gives an expired token. The scale-to-zero note sets `HAUTE_SERVING_SCALE_TO_ZERO=false` on the
 production job for a production-only setting. The suffix row says to run `haute ci update`
 after changing it.
 
@@ -71,7 +70,7 @@ after changing it.
 A parity test reads the staging suffix in the page's examples from `haute_toml`, and the
 scale-to-zero override's name from `_apply_env_overrides`.
 
-**Dependencies:** DEP-R08 for the expired-token message; the rest is independent.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/deploy/_mlflow.py::_create_or_update_serving_endpoint` (the endpoint
 named with the suffix, and the wait before it returns), `::_check_databricks_connectivity` and

@@ -246,6 +246,25 @@ def _watcher_unpaused(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _offline_dependency_resolver(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lock deployments with ``tests/_fake_uv.py``, which never reaches a package index.
+
+    Every deploy and app build locks its runtime through ``uv pip compile``
+    (``haute.deploy._lock``). The fake runs through the same subprocess path, pinning each
+    root as given, so the suite stays offline and quick; a test marked ``index`` resolves
+    against the real index with the real uv and is run by the dependencies workflow.
+    """
+    if request.node.get_closest_marker("index") is not None:
+        return
+    from haute.deploy import _lock
+
+    fake = [sys.executable, str(Path(__file__).with_name("_fake_uv.py"))]
+    monkeypatch.setattr(_lock, "uv_command", lambda: fake)
+
+
+@pytest.fixture(autouse=True)
 def _patient_preparation_join(monkeypatch: pytest.MonkeyPatch) -> None:
     """Wait longer for a preparation thread than a production shutdown does.
 

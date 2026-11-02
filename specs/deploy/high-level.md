@@ -339,9 +339,10 @@ definition file's own preamble, would be refused like any other unbundled projec
   and pointing at a container target, rather than shipping a promise the runtime cannot
   keep.
 - **Container**: generates a FastAPI app (`POST /quote`, `GET /health`) and a Dockerfile
-  pinned to dependency versions actually installed in the build environment, builds the
-  image, and pushes it to a registry if one is configured. The image installs `haute`
-  without its dependencies plus the pinned scoring runtime (see **Scoring runtime**), so
+  installing the dependency lock the bundle carries (see **Dependency locks**), builds the
+  image for `linux/amd64`, and pushes it to a registry if one is configured. The image
+  installs `haute` without its dependencies plus the locked scoring runtime (see **Scoring
+  runtime**), so
   it carries no assistant, tuning or editor package. `/quote` accepts a single JSON
   object or an array, enforces a byte limit before materialisation, and either returns a
   stable JSON envelope capped at 1,000 returned rows or streams all rows as ordered NDJSON
@@ -446,10 +447,10 @@ never because it could not be reached.
 - **Reproducible container builds.** `container.base_image` must be pinned to an explicit
   patch version or a digest (`src/haute/deploy/_config.py::_validate_base_image_pinning`) — floating tags
   like `python:3.11-slim` are rejected outright, because the image bytes tested today
-  must be the image bytes served tomorrow. Dockerfile dependency versions (`haute` and
-  every scoring-runtime package) are pinned to whatever is actually installed in the build
-  environment rather than left unpinned or hardcoded, so a build environment drift is
-  caught rather than silently propagated to a fresh, possibly incompatible pull.
+  must be the image bytes served tomorrow. The same holds for the Python packages: every
+  distribution the image installs is locked when the bundle is built (see **Dependency
+  locks**), never resolved at the image's build, so two builds of one bundle install the
+  same runtime.
 - **Schema-cache identity tracks served bytes, not just graph shape.** The output-schema
   dry-run cache key folds in `artifact_identity_fingerprint()` — the runtime fingerprint
   of every bundled artefact's resolved path, size, mtime, and shared content signature — so retraining a model in
@@ -632,14 +633,53 @@ MLflow stacks. A container image installs only what scoring imports (decided
 and `price-contour` — then `haute` itself with
 `--no-deps`. To that it adds each bundled artefact's model runtime by file suffix, and
 `mlflow` when the served graph has an optimiser apply that loads its artefact from MLflow
-at run time. Every package is pinned to the version installed in the deploying
-environment. `price-contour` is pinned to the version haute's compatibility guard verified
+at run time. Every one of these roots is pinned to the version installed in the deploying
+environment, and their whole closure is locked for the image (see **Dependency locks**),
+bounded by haute's own requirement ranges, since haute is installed beside it.
+`price-contour` is pinned to the version haute's compatibility guard verified
 (see [optimiser](../optimiser/low-level.md#the-price-contour-guard)); a build from an editable
 checkout or a direct URL refuses to deploy with a `DeployError`, because the container
 reinstalls from the package index by version and would not run the same solver code. A third-party package that the pipeline's own code imports, and that is
-neither in the runtime nor detected from an artefact, is not installed. A test serves
-the container smoke example in process with every other `haute` dependency made
-unimportable, and the weekly container-smoke lane builds and serves the real image.
+neither in the runtime nor detected from an artefact, is not installed. haute's own
+requirements the image leaves out are a reviewed list (`HAUTE_SCORING_OMISSIONS`: the
+editor, assistant, training, tuning, workbench-store and registry stacks, and the engines no
+artefact needs); `pip check` would report exactly those, so the image checks itself
+instead (below). A test serves the container smoke example in process with every other
+`haute` dependency made unimportable, and the weekly container-smoke lane builds and serves
+the real image.
+
+## Dependency locks
+
+A deployment installs a lock, never a resolution made where it is built (decided
+2 November 2026). One resolver (`haute.deploy._lock`, `uv pip compile`) locks each target's
+closure for the platform it runs on, Linux x86_64 (`x86_64-manylinux_2_28`), and its Python:
+a container image's (its official `python` base image's, else the project's) and the
+Databricks model's (the project's). Only wheels are accepted: a dependency without one for
+the target fails the build naming it, rather than being built from source there; a test
+resolves every profile against the index for each supported Python whenever the
+dependencies change, so a release without a wheel is caught before a deploy meets it. Every
+distribution is pinned by version and hash, the index is recorded without its credentials,
+and a deploying host on another platform (Windows, macOS) never decides what Linux installs:
+the lock is resolved for the target, so a Linux-only dependency such as `uvloop` is in it.
+Locking needs `uv` on the deploying host, which the generated CI installs.
+
+- **Container**: the bundle carries `requirements.lock` (the runtime), `haute.lock` (haute
+  alone: the bundled wheel by its digest, or the index release, hashed) and
+  `dependency_lock.json`, the record of what was resolved, for which Python and platform,
+  with which resolver and from which index. The image installs both locks with
+  `--no-deps --require-hashes`, so a changed file fails the build, and then checks itself
+  (`haute.deploy._runtime_check`): every locked distribution installed at its version and
+  nothing else but haute and the base image's tooling; every requirement of every locked
+  distribution, under this interpreter's markers and the extras the roots selected,
+  installed at a version it admits; and each of haute's own requirements installed and
+  admitted, or one of the reviewed omissions. A missing transitive dependency or an
+  incompatible version fails the build. A rebuild of the bundle installs the same runtime.
+- **Databricks**: the logged `conda_env` names every distribution of the closure locked for
+  Model Serving (haute with all its dependencies, the served runtime and the bundled
+  engines), each at its locked version, so Model Serving resolves nothing; the manifest
+  records the lock. `pip check` holds for this full profile.
+- **Hosted app**: its bundle script locks haute with the `databricks` extra with the same
+  options ([hosted-databricks-app](../hosted-databricks-app/low-level.md)).
 
 ## Model families in deployment
 

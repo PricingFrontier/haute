@@ -4,7 +4,7 @@ A whole-codebase functional and full-inventory source review at `edde9e169` (`ma
 recorded on `argon-review`. The working tree had no tracked changes when review began.
 This report supports the component roadmaps and owns no work. New work is assigned to
 23 new packages across 19 component roadmaps, plus extensions to `DEP-R12B`, `DEP-R13`
-and `MOD-R05`. It does not implement fixes or certify the repository as bug-free.
+(both since delivered, with the deploy roadmap retired) and `MOD-R05`. It does not implement fixes or certify the repository as bug-free.
 
 ## Method and limits
 

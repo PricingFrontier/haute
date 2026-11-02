@@ -180,6 +180,8 @@ As an analyst, **you can stop reading here** - your job is done after Step 5 abo
     | `deploy_manifest.json` | Metadata about what was deployed (version, schemas, artifacts) |
     | `artifacts/` | Copies of model files |
     | `utility/` | Your project's utility package, when the pipeline imports it |
+    | `requirements.lock`, `haute.lock` | Every Python package the image installs, pinned by version and hash, resolved for Linux (`linux/amd64`) and the image's Python when Haute deploys; the image installs exactly these and resolves nothing |
+    | `dependency_lock.json` | What the lock was resolved for and from; the image checks its installed packages against it as it builds |
 
     These are generated fresh on every deploy, in a new directory each time, which is removed once the image is built and pushed. Run `haute deploy --keep-build` to keep it for inspection.
 

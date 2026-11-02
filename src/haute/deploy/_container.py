@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -21,6 +22,7 @@ from haute._price_contour import DISTRIBUTION as PRICE_CONTOUR_DISTRIBUTION
 from haute._price_contour import PriceContourCompatibilityError, price_contour_install
 from haute._types import NodeType
 from haute.deploy._config import ResolvedDeploy
+from haute.deploy._lock import DOCKER_PLATFORM, TARGET_PLATFORM, lock_requirements
 from haute.deploy._mlflow import DeployResult
 from haute.deploy._project_modules import UTILITY_PACKAGE
 from haute.deploy._request_limits import (
@@ -63,6 +65,41 @@ _SCORING_RUNTIME_DEPENDENCIES: tuple[tuple[str, str], ...] = (
     ("packaging", "packaging"),
     (PRICE_CONTOUR_DISTRIBUTION, PRICE_CONTOUR_DISTRIBUTION),
 )
+
+#: haute's own requirements a scoring image leaves out, reviewed against the scoring
+#: runtime policy (specs/deploy, Scoring runtime): the editor, assistant, training,
+#: tuning, workbench-store and registry stacks, and each model engine, which the image
+#: installs only when a bundled artefact needs it (``_extra_deps_by_artifact``) or the
+#: graph loads from MLflow. The image's runtime check accepts haute's requirement on one of
+#: these being absent, and no other: a requirement haute adds is reviewed here first.
+HAUTE_SCORING_OMISSIONS: frozenset[str] = frozenset(
+    {
+        "alembic",
+        "anthropic",
+        "catboost",
+        "interpret-core",
+        "libcst",
+        "lightgbm",
+        "mlflow",
+        "openai",
+        "optuna",
+        "pandas",
+        "python-multipart",
+        "rustystats",
+        "scipy",
+        "sqlalchemy",
+        "t-boost",
+        "tomlkit",
+        "xgboost",
+        "xgboost-cpu",
+    }
+)
+
+#: The lock files a bundle carries beside its Dockerfile: the runtime, haute (installed
+#: without its dependencies) and the record the image's runtime check reads.
+RUNTIME_LOCK_FILE = "requirements.lock"
+HAUTE_LOCK_FILE = "haute.lock"
+LOCK_RECORD_FILE = "dependency_lock.json"
 
 
 def _validate_base_image(base_image: str) -> None:
@@ -206,18 +243,43 @@ def prepare_build_directory(
         _pinned_dockerfile_dependency(name, name, required_by=["the app"])
         for name in extra_dependencies
     ]
+    haute_root, *runtime_roots = _pinned_dockerfile_deps(resolved, haute_requirement=haute_pip_dep)
+    python_version = container_python_version(resolved)
+    # The closure is resolved once, here, for the image's Python and platform, and the
+    # image installs exactly it: a rebuild of this bundle installs the same runtime.
+    lock = lock_requirements(
+        [*runtime_roots, *extra_pins],
+        python_version=python_version,
+        platform=TARGET_PLATFORM,
+        constraints=haute_constraints(),
+    )
     manifest_path = write_bundle(
         resolved,
         build_dir,
         {
             "container_dependencies": [
-                *_pinned_dockerfile_deps(resolved, haute_requirement=haute_pip_dep),
-                *extra_pins,
-            ]
+                haute_root,
+                *(f"{name}=={version}" for name, version in sorted(lock.pins.items())),
+            ],
+            "dependency_lock": lock.provenance(),
         },
     )
     if wheel_path is not None:
         shutil.copy2(wheel_path, build_dir / wheel_path.name)
+    (build_dir / RUNTIME_LOCK_FILE).write_text(lock.requirements, encoding="utf-8")
+    (build_dir / HAUTE_LOCK_FILE).write_text(
+        _haute_lock(haute_root, wheel_path, python_version), encoding="utf-8"
+    )
+    (build_dir / LOCK_RECORD_FILE).write_text(
+        json.dumps(
+            {
+                **lock.provenance(),
+                "haute_omitted": sorted(HAUTE_SCORING_OMISSIONS - set(lock.pins)),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     app_source = _generate_app_source(config.model_name, ct.port)
     (build_dir / "app.py").write_text(app_source, encoding="utf-8")
@@ -226,10 +288,8 @@ def prepare_build_directory(
         ct.base_image,
         ct.port,
         resolved,
-        haute_pip_dep=haute_pip_dep,
         wheel_name=wheel_name,
         extra_files=extra_files,
-        extra_pins=extra_pins,
         sqlserver_odbc=sqlserver_odbc,
     )
     (build_dir / "Dockerfile").write_text(dockerfile, encoding="utf-8")
@@ -966,17 +1026,15 @@ def _generate_dockerfile(
     port: int,
     resolved: ResolvedDeploy,
     *,
-    haute_pip_dep: str | None = None,
     wheel_name: str | None = None,
     extra_files: Sequence[str] = (),
-    extra_pins: Sequence[str] = (),
     sqlserver_odbc: bool = False,
 ) -> str:
-    """Generate a Dockerfile for the scoring container, copying *extra_files* beside app.py and
-    installing *extra_pins*, pinned requirements, with the runtime, and the libraries SQL
-    Server's driver loads first when *sqlserver_odbc* (:data:`SQLSERVER_ODBC_STEPS`)."""
-    haute_dep, *runtime_deps = _pinned_dockerfile_deps(resolved, haute_requirement=haute_pip_dep)
-    runtime_line = " ".join([*runtime_deps, *extra_pins])
+    """Generate a Dockerfile for the scoring container, copying *extra_files* beside app.py, and
+    the libraries SQL Server's driver loads first when *sqlserver_odbc*
+    (:data:`SQLSERVER_ODBC_STEPS`). It installs the bundle's locks (``prepare_build_directory``)
+    with ``--require-hashes``, never resolving anything, and then checks the installed
+    runtime against them (``haute.deploy._runtime_check``)."""
     copy_wheel = f"COPY {wheel_name} .\n" if wheel_name else ""
     utility = resolved.project_modules.utility
     if utility is None:
@@ -1002,11 +1060,16 @@ ENV HAUTE_EXECUTION_MEMORY_POLICY=strict_server
 # Keep Polars' out-of-core spilling off and inside the container's storage,
 # and load an unknown Arrow extension column as its storage type.
 {polars_env}
-{odbc_steps}# Install the pinned scoring runtime, then haute itself without its
-# dependencies: they include the editor, assistant, training and tuning
-# stacks, which a scoring container never runs.
-RUN pip install --no-cache-dir {runtime_line}
-{copy_wheel}RUN pip install --no-cache-dir --no-deps {haute_dep}
+{odbc_steps}# Install the locked scoring runtime, every distribution pinned by version and hash
+# and resolved for this image's Python and platform when the bundle was built, then
+# haute itself without its dependencies: they include the editor, assistant, training
+# and tuning stacks, which a scoring container never runs. Then check the installed
+# runtime against the lock.
+COPY {RUNTIME_LOCK_FILE} {HAUTE_LOCK_FILE} {LOCK_RECORD_FILE} ./
+RUN pip install --no-cache-dir --no-deps --require-hashes --only-binary :all: \\
+    -r {RUNTIME_LOCK_FILE}
+{copy_wheel}RUN pip install --no-cache-dir --no-deps --require-hashes -r {HAUTE_LOCK_FILE}
+RUN python -m haute.deploy._runtime_check {LOCK_RECORD_FILE}
 
 # Copy application code and artifacts
 COPY deploy_manifest.json .
@@ -1017,6 +1080,45 @@ EXPOSE {port}
 
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "{port}"]
 """
+
+
+def container_python_version(resolved: ResolvedDeploy) -> str:
+    """The Python a scoring image runs: its official ``python`` base image's, else the
+    project's (``deployed_python_version``), which resolution keeps the image in step with."""
+    from haute._project_python import base_image_python_version, deployed_python_version
+
+    return base_image_python_version(
+        resolved.config.container.base_image
+    ) or deployed_python_version(resolved.project_root)
+
+
+def haute_constraints() -> list[str]:
+    """haute's own requirements as constraints for a scoring image's lock: haute is
+    installed without its dependencies beside it, so whatever the lock holds must be a
+    version haute admits. Extras and the requirements of haute's own extras are left out."""
+    from importlib import metadata
+
+    from packaging.requirements import Requirement
+
+    constraints: list[str] = []
+    for line in metadata.distribution("haute").requires or ():
+        requirement = Requirement(line)
+        if requirement.marker is not None and "extra" in str(requirement.marker):
+            continue
+        requirement.extras = set()
+        constraints.append(str(requirement))
+    return constraints
+
+
+def _haute_lock(haute_root: str, wheel_path: Path | None, python_version: str) -> str:
+    """The lock haute itself installs from, without its dependencies: the bundled wheel by
+    its digest, or the index release resolved alone, hashed."""
+    if wheel_path is not None:
+        digest = hashlib.sha256(wheel_path.read_bytes()).hexdigest()
+        return f"./{wheel_path.name} --hash=sha256:{digest}\n"
+    return lock_requirements(
+        [haute_root], python_version=python_version, platform=TARGET_PLATFORM, no_deps=True
+    ).requirements
 
 
 def _pinned_dockerfile_deps(
@@ -1203,7 +1305,7 @@ def _check_docker_available() -> None:
 def _docker_build(build_dir: Path, image_tag: str) -> None:
     """Build a Docker image from the build directory."""
     result = subprocess.run(
-        ["docker", "build", "-t", image_tag, "."],
+        ["docker", "build", "--platform", DOCKER_PLATFORM, "-t", image_tag, "."],
         cwd=build_dir,
         capture_output=True,
         text=True,
