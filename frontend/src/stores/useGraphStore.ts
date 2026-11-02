@@ -709,7 +709,11 @@ const useGraphStore = create<GraphStore>()((set, get) => {
    */
   function commitGraphChange(state: GraphStore, change: Partial<GraphFields>, history: boolean): Partial<GraphStore> {
     const patch = derivedPatch(state, { ...state, ...change })
-    const recorded = history && patch.persistedFingerprint !== state.persistedFingerprint
+    // A drag's position-only raw updates leave the cached fingerprint behind, so
+    // the state before the change is fingerprinted as it is.
+    const recorded = history && patch.persistedFingerprint !== computePersistedFingerprint(
+      state.nodes, state.edges, state.preamble, state.submodels, state.globalConstants,
+    )
     return {
       ...(recorded ? { undoStack: pushSnapshotInternal(), redoStack: [] } : {}),
       ...change,
