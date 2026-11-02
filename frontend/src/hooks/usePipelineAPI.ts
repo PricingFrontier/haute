@@ -1526,6 +1526,7 @@ export default function usePipelineAPI({
     const requestGraph = toCanonicalGraphPayload(savedSnapshot)
     const saveRequestId = ++saveRequestSeq.current
     const savePipelineName = pipelineNameRef.current
+    const saveDescription = descriptionRef.current
     const savePreservedBlocks = preservedBlocksRef.current
     // Mark the exact graph snapshot that reached the backend, unless a newer
     // save has already been applied or another revision arrived meanwhile.
@@ -1552,6 +1553,8 @@ export default function usePipelineAPI({
         const document = parsePipelineEditorDocument(read.document)
         if (document.source_revision === null || !documentHoldsSave(document, {
           sourceFile: saveSourceFile,
+          pipelineName: savePipelineName,
+          description: saveDescription,
           snapshot: savedSnapshot,
           constantsSent: globalConstantsError === null,
           preservedBlocks: savePreservedBlocks,
@@ -1572,7 +1575,7 @@ export default function usePipelineAPI({
     try {
       const data = await savePipeline({
         name: savePipelineName,
-        description: descriptionRef.current,
+        description: saveDescription,
         graph: {
           nodes: requestGraph.nodes,
           edges: requestGraph.edges,

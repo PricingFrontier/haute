@@ -86,7 +86,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/utils/nodeTypeRegistry.ts` | React Flow node-type registry built from canonical metadata, shared by editable and read-only canvases. |
 | `frontend/src/utils/graphSnapshot.ts` | Four-field graph snapshot serialization/cloning and canonical request projection: every graph sent to a canonical backend schema recursively strips editor-only identities and React Flow presentation without mutating live state; dirty serialization uses the same projection, while live history clones retain only the server-owned identity subset. |
 | `frontend/src/utils/structuralFingerprint.ts` | Pure structural fingerprint of a graph (node ids and kinds, edge endpoints, and every submodel definition's public port ids and labels) that the boundary-editing hook compares to decide whether the workspace changed while parent identities were resolving; positions, selection, dragging, and dimensions are excluded on purpose. |
-| `frontend/src/utils/savedDocument.ts` | `documentHoldsSave`: whether a document read back is the saved file and holds exactly what a save submitted (its `serializeSnapshot`, with the constants only when they were sent, plus preserved blocks, sources and active source), the test that confirms a save whose answer was lost. |
+| `frontend/src/utils/savedDocument.ts` | `documentHoldsSave`: whether a document read back is the saved file and holds exactly what a save submitted (its `serializeSnapshot`, nodes and edges known by node name (`byAuthoredName`), with the constants only when they were sent, plus pipeline name, description, preserved blocks, sources and active source), the test that confirms a save whose answer was lost. |
 | `frontend/src/utils/shallowNodeHash.ts` | Stable shallow data hashing used by structural and panel-context fingerprint calculations; Explore presentation keys and the modelling and optimiser export settings (`exportConfigKeysFor`) do not contribute to a node's config hash. |
 | `frontend/src/components/ComparisonInspector.tsx` | Read-only comparison-view config panel: renders the real node editor `inert` for the available side(s), with a Historical/Current switcher. |
 | `frontend/src/components/ComparisonView.tsx` | The historical-vs-current comparison canvas pair: fetches the historical pipeline (rendering `apiErrorMessage` on failure) and best-effort breadcrumb commit contexts (logging the status on failure), diffs it, and renders two non-interactive `ReactFlow` instances (`ReadonlyCanvas`) with diff-ring highlighting, a draggable split, and orientation toggle. |
@@ -913,8 +913,11 @@ reconciliation rather than dropping them or committing a second mutation.
     the same source file and holds exactly what was submitted
     (`documentHoldsSave`): its dirty-state serialisation (`serializeSnapshot`:
     nodes with their layout, edges, preamble, submodels and, when the save sent
-    them, the global constants) equals the submitted snapshot's, and its
-    preserved blocks, sources and active source equal those submitted. The
+    them, the global constants) equals the submitted snapshot's, each node and
+    edge known by the node names, as the file names them, since a node renamed
+    or created on the canvas keeps an editor id the file does not, and its
+    pipeline name, description, preserved blocks, sources and active source
+    equal those submitted. The
     submitted base revision proves nothing; it is the old version. A confirmed
     save is acknowledged as an answered one is, under the same
     `saveRequestSeq`/`appliedSaveSeq` and observed-revision fences, marking only

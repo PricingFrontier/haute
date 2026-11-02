@@ -24,6 +24,8 @@ function savedAsLoaded(document = loaded): SubmittedSave {
   const adapted = adaptPipelineEditorDocument(document)
   return {
     sourceFile: document.source_file,
+    pipelineName: document.pipeline_name ?? "",
+    description: document.pipeline_description ?? "",
     snapshot: captureGraphSnapshot({
       nodes: adapted.nodes,
       edges: normalizeEdges(adapted.edges),
@@ -49,6 +51,8 @@ describe("documentHoldsSave", () => {
     ["a preserved block", { preserved_blocks: ["# kept", "# added"] }],
     ["the sources", { sources: ["live", "batch"] }],
     ["the active source", { active_source: "batch", sources: ["live", "batch"] }],
+    ["the description another writer saved", { pipeline_description: "Edited elsewhere" }],
+    ["the pipeline name", { pipeline_name: "renamed" }],
   ])("refuses a document that differs by %s", (_name, change) => {
     const read = makePipelineEditorDocument({
       source_file: "rating/main.py",
@@ -62,6 +66,30 @@ describe("documentHoldsSave", () => {
       ...change,
     })
     expect(documentHoldsSave(read, savedAsLoaded())).toBe(false)
+  })
+
+  it("knows a node by its name, as a read of the file does after a rename or a creation", () => {
+    const submitted = savedAsLoaded()
+    // The canvas still holds the provisional id of a node it created and named "price".
+    const provisional = (id: string) => (id === "price" ? "polars_3" : id)
+    const canvas = {
+      ...submitted,
+      snapshot: {
+        ...submitted.snapshot,
+        nodes: submitted.snapshot.nodes.map((node) => ({ ...node, id: provisional(node.id) })),
+        edges: submitted.snapshot.edges.map((edge) => ({ ...edge, id: "e-provisional", target: provisional(edge.target) })),
+      },
+    }
+    expect(documentHoldsSave({ ...loaded, source_revision: "revision-after" }, canvas)).toBe(true)
+    // A node named differently is different content.
+    const renamed = {
+      ...canvas,
+      snapshot: {
+        ...canvas.snapshot,
+        nodes: canvas.snapshot.nodes.map((node) => node.id === "polars_3" ? { ...node, data: { ...node.data, label: "premium" } } : node),
+      },
+    }
+    expect(documentHoldsSave({ ...loaded, source_revision: "revision-after" }, renamed)).toBe(false)
   })
 
   it("leaves constants out when the save sent none", () => {

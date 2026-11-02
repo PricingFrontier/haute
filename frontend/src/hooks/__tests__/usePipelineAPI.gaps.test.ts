@@ -303,6 +303,7 @@ describe("usePipelineAPI - gap tests", () => {
       const onDisk = () => makePipelineEditorDocument({
         source_file: "rating/main.py",
         source_revision: "revision-test",
+        pipeline_name: "test",
         nodes: [makeNode("n1")],
         preserved_blocks: ["# kept"],
       })
