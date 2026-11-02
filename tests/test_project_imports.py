@@ -218,6 +218,32 @@ def test_the_fingerprint_and_the_deploy_bundle_read_the_utility_the_finder_loads
     assert resolve_project_modules("import utility\n", pipeline_dir).utility == loaded
 
 
+def test_a_namespace_package_utility_is_fingerprinted_as_it_is_imported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A project ``utility/`` without ``__init__.py`` wins over a regular ``utility``
+    elsewhere on the path, in the import and in the fingerprint, so an edit to it
+    reaches the next compile."""
+    pipeline_dir = _project(tmp_path / "project", {"rating/utility/helpers.py": "WHERE = 1\n"})
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "utility").mkdir(parents=True)
+    (elsewhere / "utility" / "__init__.py").write_text("", encoding="utf-8")
+    (elsewhere / "utility" / "helpers.py").write_text("WHERE = 0\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path / "project")
+    monkeypatch.syspath_prepend(str(elsewhere))
+    helpers = tmp_path / "project" / "rating" / "utility" / "helpers.py"
+    stat = helpers.stat()
+
+    statement = "from utility.helpers import WHERE\n"
+    first = _compile_preamble(statement, pipeline_dir=str(pipeline_dir))
+    assert _resolve_utility_locations(pipeline_dir) == [(pipeline_dir / "utility").resolve()]
+    helpers.write_text("WHERE = 2\n", encoding="utf-8")
+    os.utime(helpers, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    second = _compile_preamble(statement, pipeline_dir=str(pipeline_dir))
+
+    assert (first["WHERE"], second["WHERE"]) == (1, 2)
+
+
 def test_a_project_without_utility_leaves_the_name_to_the_import_system(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

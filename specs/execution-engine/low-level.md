@@ -7,7 +7,7 @@
 | `src/haute/_cpu_performance.py` | Process-local Windows HighQoS read/set/verify policy, invoked at CLI, server and worker startup; preserves unrelated power-policy bits and reports unsupported or rejected native operations. |
 | `src/haute/executor.py` | GUI-facing eager entry point: `execute_graph()` (preview, with the `_preview_cache` `LRUCache`), `write_data_output()` (batch/data-output writes), preamble compilation + single-flight cache (`_compile_preamble`), preview-column projection/schema-warning assembly, and output-destination containment. |
 | `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points, runtime-input fingerprints, `preview_lineage_cache_key`, and `PREVIEW_EXECUTION_SEMANTICS_VERSION`. It is the stable application import boundary, but is not currently a thin re-export module. |
-| `src/haute/_project_imports.py` | The project's `utility` package imported without editing `sys.path`: `utility_search_dirs` (the pipeline directory, then the working directory, one entry when they coincide), the meta-path finder that answers `utility` and every `utility.*` name from the project `bind_project_utility` last bound (installed ahead of every other finder on first use), its source-only loader, and `evict_utility_modules`. The cache fingerprint (`src/haute/_cache.py`) and the deploy bundle (`src/haute/deploy/_project_modules.py`) read `utility` from the same directories. |
+| `src/haute/_project_imports.py` | The project's `utility` package imported without editing `sys.path`: `utility_search_dirs` (the pipeline directory, then the working directory, one entry when they coincide), `find_utility_spec` (the `utility` an import loads: those directories first, then the rest of the path for a project without one, so a project namespace package wins over a regular package elsewhere, as it does when imported), the meta-path finder that answers `utility` and every `utility.*` name from the project `bind_project_utility` last bound (installed ahead of every other finder on first use), its source-only loader, and `evict_utility_modules`. The cache fingerprint (`src/haute/_cache.py`) hashes what `find_utility_spec` resolves, and the deploy bundle (`src/haute/deploy/_project_modules.py`) reads `utility` from the same directories. |
 | `src/haute/_path_resolution.py` | Cross-component dependency owned by [sandbox-security](../sandbox-security/low-level.md); canonical local-runtime-path resolution: separator normalization, project/pipeline candidate choice, symlink-aware containment, selected-external-pipeline root inference, and the context-local root used by eager/lazy builders. |
 | `src/haute/_execute_lazy.py` | Node-boundary machinery the graph walker uses: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), and `_PlannedCaptures` (seed-plan closures and captures), with the contract, column-shaping, recipe and runtime-demand helpers each node step uses, and the recorded-failure line helpers `_extract_error_line` and `_located_step`. |
 | `src/haute/_graph_walker.py` | The graph walker: `walk_graph(graph, build_node_fn, *, policy: CollectPolicy, ...)` walks a graph once and returns a `WalkResult` (each built node's frame, the prepared order, parents, names, and the join and write recipes and pre-shaping frames it built). `WalkRequest` holds the execution-independent inputs, `CollectPolicy` what the walk collects, at which row and column limits, whether it records node failures, and its purpose (`WalkPurpose.SINK` hands lazy frames to a sink; `WalkPurpose.DISPLAY` reports schemas and collects for a person; `WalkPurpose.MEASURE` builds a lineage as a display walk does but, at each checked node, collects the caller's `MeasurementQueries` over its input frames and then its output ports, each cut to a row bound, and returns one `NodeMeasurement` per checked node, never a frame, with each failure an `AttributedFailure` naming the node it is attributed to). The Data Output sink, every lazy execution through the execution facade, the preview, the trace and the assistant's data check walk through it. No function in the module exceeds a cyclomatic complexity of 15, held by ruff's C901 rule scoped to this module alone. |
@@ -510,8 +510,14 @@ frame once per path reads only the rows the limit lets through, so a frame sever
 read is shared only when two of those edges reach one collected node and that collection
 has no row limit, or the frame's lineage holds a node whose `limit_blocker` names an
 operation the limit cannot reach (an aggregation, a window, `unique`, opaque Python). A
-limited collection feeds its consumers its plan, so a path runs on through it; one without
-a limit feeds them its DataFrame, so a path stops there. A seeded node is read from its
+lineage runs up only the inputs the limit reaches (`_inputs_the_limit_reaches`): a node's one
+input, or an Edge Join's base input, its probe side, since its join side is read whole
+either way; of a node with several inputs it names none, as the analysis cannot tell which
+the limit reaches. A limited collection feeds its consumers its plan, so a path runs on
+through it; one without a limit feeds them its DataFrame, so a path stops there; and a node
+whose builder reads its input through a Python scan, which collects it in a query of its
+own (`_SEPARATE_QUERY_NODE_TYPES`: Model Score, Rating Step, Optimiser Apply, Scenario
+Expander, Output, Workbench Output), ends every path into it. A seeded node is read from its
 snapshot, so the lineage stops at it, and a frame the analysis cannot classify is
 recomputed. A shared frame reaches every edge through one `cache()` per source frame,
 picked by port. Polars scopes a cache to one query, so separate collections never share
@@ -2301,10 +2307,15 @@ present a structural or schema result as execution evidence.
   `unresolved_callback:<name>`, `opaque:<name>`, `syntax_error`, `blank_code`, and `cheap`.
   `full_input_work` is true when a reported registered call is full-input work.
   `limit_blocker` names the first reported registered call that is costly to recompute and
-  passes no row slice, other than `sort`, `top_k`, `bottom_k`, `join` and `join_asof`, which a
-  preview's row limit still reaches (it turns a sort into a top-k and streams a join's probe
-  side; measured over a 5M-row source, sharing them peaked 17 to 56 % higher than recomputing
-  them); an unregistered, unresolved or unparseable call names none. The boundary
+  passes no row slice, other than `sort`, `top_k` and `bottom_k`, which a preview's row limit
+  still reaches (it turns a sort into a top-k), and other than a call that says its function
+  is elementwise (a literal `is_elementwise=True`, which passes the slice: a 1,000-row
+  limit's function saw 5 of 5M rows); code holding a `join` or `join_asof` names none, since
+  the limit reaches the join's probe side and the analyser cannot tell which side an
+  aggregation in the same code feeds (measured over a 5M-row source, sharing a sort peaked
+  17 % and a left join 34 to 56 % higher than recomputing them); and an unregistered,
+  unresolved or unparseable call names none. (`LazyFrame.map_batches(..., slice_pushdown=True)`
+  is not exempt: on Polars 2.0 its function still sees every row under a limit.) The boundary
   walk's own output is unchanged: the report mode is an optional argument and builtin fact
   rules apply only in report mode.
 - **Every builder declares its recompute cost.** `NodeRegistryEntry` carries

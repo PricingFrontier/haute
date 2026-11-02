@@ -1200,18 +1200,21 @@ class _Walk:
             submodels=self.graph.submodels,
             preamble=self.graph.preamble or "",
         )
+        limit_inputs = self._inputs_the_limit_reaches(run)
         blocks_the_limit: dict[str, bool] = {}
         for node_id in self.run_order:
             node_facts = facts.get(node_id)
             blocks_the_limit[node_id] = node_id not in self.seed_frames and (
                 (node_facts is not None and node_facts.limit_blocker is not None)
-                or any(
-                    blocks_the_limit.get(parent, False)
-                    for parent in self.parents_of.get(node_id, ())
-                )
+                or any(blocks_the_limit.get(parent, False) for parent in limit_inputs[node_id])
             )
         collected_below: dict[str, frozenset[str]] = {}
         for node_id in reversed(self.run_order):
+            if self.node_map[node_id].data.nodeType in _SEPARATE_QUERY_NODE_TYPES:
+                # Its builder reads its input in a query of its own (a Python scan), so
+                # no path through it meets another in a collected query.
+                collected_below[node_id] = frozenset()
+                continue
             collects = self.policy.collects(node_id)
             below = {node_id} if collects else set()
             if not (collects and self.policy.row_limit_for(node_id) is None):
@@ -1230,6 +1233,28 @@ class _Walk:
             ):
                 shared.add(key)
         return frozenset(shared)
+
+    def _inputs_the_limit_reaches(self, run: frozenset[str]) -> dict[str, tuple[str, ...]]:
+        """Each node's parents a row limit on its output reaches through it.
+
+        A node with one input passes the limit to it, and an Edge Join to its base
+        input, the probe side; its join side is read whole either way. Of a node with
+        several inputs the analysis cannot tell which the limit reaches, so it names
+        none: a blocker above it is not a reason to share its frame.
+        """
+        inputs: dict[str, list[GraphEdge]] = {node_id: [] for node_id in self.run_order}
+        for edge in self.graph_plan.relevant_edges:
+            if edge.source in run and edge.target in run:
+                inputs[edge.target].append(edge)
+        reached: dict[str, tuple[str, ...]] = {}
+        for node_id, edges in inputs.items():
+            if self.node_map[node_id].data.nodeType is NodeType.EDGE_JOIN:
+                reached[node_id] = tuple(e.source for e in edges if e.targetHandle == "base")
+            elif len(edges) == 1:
+                reached[node_id] = (edges[0].source,)
+            else:
+                reached[node_id] = ()
+        return reached
 
     def _node_inputs(self, boundary: NodeBoundary) -> list[_Frame]:
         """Route, project and contract-check the frames a node receives."""
@@ -2138,6 +2163,20 @@ _NODE_STAGES = {WalkPurpose.SINK: "lazy_build"}
 # does not share a subplan of its own: its common-subplan elimination caches a simple
 # diamond's producer, which stops a preview's row limit reaching the source.
 _DISPLAY_COLLECT_OPTIMIZATIONS = pl.QueryOptFlags(comm_subplan_elim=False)
+
+# Node types whose builders read their input through a Python scan (eager scoring, the
+# rating miss guard, online optimiser apply, scenario expansion, OUTPUT assembly, the
+# Workbench Output's tables), which collects it in a query of its own.
+_SEPARATE_QUERY_NODE_TYPES = frozenset(
+    {
+        NodeType.MODEL_SCORE,
+        NodeType.RATING_STEP,
+        NodeType.OPTIMISER_APPLY,
+        NodeType.SCENARIO_EXPANDER,
+        NodeType.OUTPUT,
+        NodeType.WORKBENCH_OUTPUT,
+    }
+)
 
 
 @dataclass(slots=True)

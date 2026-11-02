@@ -839,6 +839,140 @@ def test_a_preview_without_a_row_limit_shares_every_frame_its_branches_meet_belo
     assert "CACHE" in result.frames["low"].explain(optimized=False)
 
 
+def _shared_by(graph: PipelineGraph, collect: str, *, row_limit: int | None = 10) -> set[str]:
+    """The frames a display walk of *graph* collected at *collect* decides to share."""
+    walk = _Walk(
+        WalkRequest(
+            graph=graph, build_node_fn=_builder(pl.LazyFrame({"x": [1]})), target_node_id=collect
+        ),
+        CollectPolicy.display(collect=[collect], row_limit=row_limit),
+    )
+    return {source for source, _port in walk._frames_to_share()}
+
+
+@pytest.mark.parametrize("reader", [NodeType.MODEL_SCORE, NodeType.OUTPUT, NodeType.RATING_STEP])
+def test_a_frame_read_through_a_python_scan_is_not_shared(reader: NodeType) -> None:
+    """A Python scan collects its input in a query of its own, so two of them meeting
+    below a frame never compute it in one query: a cache would hold a copy for each."""
+    graph = PipelineGraph(
+        nodes=[
+            _node("src", NodeType.DATA_INPUT),
+            _node("grouped", NodeType.POLARS, code="df = src.group_by('x').agg(pl.len())"),
+            _node("left", reader),
+            _node("right", reader),
+            _node("both", NodeType.POLARS, code="df = pl.concat([left, right])"),
+        ],
+        edges=[
+            _edge("src", "grouped"),
+            _edge("grouped", "left"),
+            _edge("grouped", "right"),
+            _edge("left", "both"),
+            _edge("right", "both"),
+        ],
+    )
+
+    assert _shared_by(graph, "both") == set()
+
+
+def _joined_graph(*, grouped_side: str) -> PipelineGraph:
+    """An Edge Join of quotes and a grouped lookup, read by two branches that meet."""
+    other_side = "join" if grouped_side == "base" else "base"
+    return PipelineGraph(
+        nodes=[
+            _node("quotes", NodeType.DATA_INPUT),
+            _node("lookup", NodeType.DATA_INPUT),
+            _node("grouped", NodeType.POLARS, code="df = lookup.group_by('k').agg(pl.len())"),
+            _node("joined", NodeType.EDGE_JOIN, how="left", on=["k"]),
+            _node("a", NodeType.POLARS, code="df = joined.select('k')"),
+            _node("b", NodeType.POLARS, code="df = joined.select(k2='k')"),
+            _node("both", NodeType.POLARS, code="df = pl.concat([a, b], how='diagonal')"),
+        ],
+        edges=[
+            _edge("lookup", "grouped"),
+            _edge("grouped", "joined", target_handle=grouped_side),
+            _edge("quotes", "joined", target_handle=other_side),
+            _edge("joined", "a"),
+            _edge("joined", "b"),
+            _edge("a", "both"),
+            _edge("b", "both"),
+        ],
+    )
+
+
+def test_a_blocker_on_a_joins_lookup_side_does_not_share_the_join() -> None:
+    """The limit still reaches the join's probe side, which a cache would read whole."""
+    assert _shared_by(_joined_graph(grouped_side="join"), "both") == set()
+
+
+def test_a_blocker_on_a_joins_probe_side_shares_the_join() -> None:
+    assert _shared_by(_joined_graph(grouped_side="base"), "both") == {"joined"}
+
+
+_COUNTING_PREAMBLE = """
+SEEN = []
+
+def score(frame):
+    SEEN.append(frame.height)
+    return frame
+
+def seen(values):
+    SEEN.append(len(values))
+    return values
+"""
+
+
+def _real_diamond(scratch: Path, shared_code: str) -> tuple[WalkResult, list[int]]:
+    """The executor's own builders run every node's declared code; SEEN counts the rows a
+    Python function in *shared* is handed."""
+    graph = PipelineGraph(
+        nodes=[
+            _source(scratch, "src", pl.DataFrame({"x": list(range(1_000))})),
+            _node("shared", NodeType.POLARS, code=shared_code),
+            _node("low", NodeType.POLARS, code="df = shared.select('x')"),
+            _node("high", NodeType.POLARS, code="df = shared.select(x=pl.col('x') + 1_000)"),
+            _node("both", NodeType.POLARS, code="df = pl.concat([low, high])"),
+        ],
+        edges=[
+            _edge("src", "shared"),
+            _edge("shared", "low"),
+            _edge("shared", "high"),
+            _edge("low", "both"),
+            _edge("high", "both"),
+        ],
+        preamble=_COUNTING_PREAMBLE,
+    )
+    namespace = _compile_preamble(_COUNTING_PREAMBLE)
+    namespace["SEEN"].clear()
+    result = walk_graph(
+        graph,
+        _build_node_fn,
+        policy=CollectPolicy.display(collect=["both"], row_limit=10, record_failures=True),
+        target_node_id="both",
+        preamble_ns=namespace,
+    )
+    assert result.errors == {}
+    return result, list(namespace["SEEN"])
+
+
+def test_a_limited_preview_computes_a_python_step_it_shares_once(haute_scratch: Path) -> None:
+    result, seen = _real_diamond(haute_scratch, "df = src.map_batches(score)")
+
+    assert sum(seen) == 1_000
+    assert result.collected["both"].height == 10
+
+
+def test_a_limited_preview_lets_its_limit_reach_an_elementwise_step(haute_scratch: Path) -> None:
+    result, seen = _real_diamond(
+        haute_scratch,
+        "df = src.with_columns(y=pl.col('x').map_batches(seen, return_dtype=pl.Int64, "
+        "is_elementwise=True))",
+    )
+
+    assert sum(seen) < 1_000
+    assert "CACHE" not in result.frames["low"].explain(optimized=False)
+    assert result.collected["both"]["x"].to_list() == list(range(10))
+
+
 def test_a_preview_collect_runs_without_polars_subplan_sharing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

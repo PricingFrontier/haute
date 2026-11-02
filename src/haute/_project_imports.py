@@ -46,6 +46,24 @@ def utility_search_dirs(
     return list(dict.fromkeys(dirs))
 
 
+def find_utility_spec(
+    pipeline_dir: str | Path | None, *, working_dir: str | Path | None = None
+) -> ModuleSpec | None:
+    """The ``utility`` an import loads, resolved without importing it.
+
+    The finder's search of the project's directories first, then, for a project without
+    a ``utility``, the rest of the import path, as the import system falls through. A
+    project ``utility`` that is a namespace package (no ``__init__.py``) therefore wins
+    over a regular package of that name elsewhere on the path, as it does when imported.
+    """
+    spec = PathFinder.find_spec(
+        UTILITY_PACKAGE, utility_search_dirs(pipeline_dir, working_dir=working_dir)
+    )
+    if spec is not None:
+        return spec
+    return PathFinder.find_spec(UTILITY_PACKAGE, sys.path)
+
+
 class _SourceOnlyLoader(SourceFileLoader):
     """Loads a ``utility`` module from its source every time, never from bytecode."""
 

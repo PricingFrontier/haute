@@ -631,6 +631,11 @@ def test_selector_expression_recompute_facts(
         ("df = df.with_columns(pl.col('x').sum().over('k'))", "over"),
         ("df = df.map_batches(score)", "map_batches"),
         ("df = df.with_columns(pl.col('x').map_elements(score))", "map_elements"),
+        # An elementwise function passes the slice (measured: 5 of 5M rows seen).
+        ("df = df.with_columns(pl.col('x').map_batches(score, is_elementwise=True))", None),
+        # A join in the same code: the analyser cannot tell which side the
+        # aggregation feeds, and the limit reaches the probe side.
+        ("df = df.join(claims.group_by('k').agg(pl.len()), on='k', how='left')", None),
         # A limit turns a sort into a top-k and streams a join's probe side.
         ("df = df.sort('x')", None),
         ("df = df.join(claims, on='k', how='left')", None),

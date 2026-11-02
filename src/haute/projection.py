@@ -1700,6 +1700,9 @@ class ReportedCall:
     name: str
     entries: tuple[PolarsOperation, ...]
     positional_arguments: int
+    elementwise: bool
+    """Whether the call says its function is elementwise (``is_elementwise=True``), which
+    lets a row slice through it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -2058,6 +2061,13 @@ def _materialising_calls_in_source_order(
                 name=name,
                 entries=entries,
                 positional_arguments=positional_arguments,
+                elementwise=isinstance(call_node, ast.Call)
+                and any(
+                    keyword.arg == "is_elementwise"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value is True
+                    for keyword in call_node.keywords
+                ),
             )
         )
 
@@ -2695,19 +2705,26 @@ def _registered_expression_call(call: ast.Call) -> PolarsOperation | None:
 # bottom-k is already one), and a join's probe side streams under it. Measured over a
 # 5M-row source: a shared sort peaked 17 % higher and a shared left join 34 to 56 %
 # higher than recomputing them for a 1,000-row preview.
-_ROW_LIMIT_REACHES = frozenset({"sort", "top_k", "bottom_k", "join", "join_asof"})
+_ROW_LIMIT_REACHES = frozenset({"sort", "top_k", "bottom_k"})
+_JOINS = frozenset({"join", "join_asof"})
 
 
 def _row_limit_blocker(report: list[ReportedCall]) -> str | None:
     """The first registered call a preview's row limit cannot reach, or None.
 
     An unregistered or unresolved call names none: what the analyser cannot classify
-    is never a reason to share a frame.
+    is never a reason to share a frame. Neither does code holding a join: the limit
+    reaches the join's probe side, and the analyser cannot tell which side an
+    aggregation in the same code feeds. An elementwise Python function
+    (``is_elementwise=True``) passes the slice.
     """
+    if any(call.category == "registered" and call.name in _JOINS for call in report):
+        return None
     for call in report:
         if (
             call.category == "registered"
             and call.name not in _ROW_LIMIT_REACHES
+            and not call.elementwise
             and any(
                 entry.costly_to_recompute and not entry.slice_transparent for entry in call.entries
             )
