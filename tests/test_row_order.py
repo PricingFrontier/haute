@@ -421,9 +421,8 @@ def _prepared(path: Path, rows: int) -> _PreparedData:
     ids=["random", "temporal_holdout"],
 )
 def test_a_training_run_splits_the_same_rows_from_a_permuted_source(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, split: dict[str, Any]
+    tmp_path: Path, split: dict[str, Any]
 ) -> None:
-    monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
 
     def split_rows(frame: pl.DataFrame, name: str) -> pl.DataFrame:
         path = tmp_path / f"{name}.parquet"

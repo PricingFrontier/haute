@@ -78,6 +78,7 @@ def test_descriptor_without_a_suffix_fails_at_registration() -> None:
             feature_controls=frozenset(),
             suffix="",
             engine_module="none",
+            importance_method="Gain",
         )
 
 
@@ -246,6 +247,7 @@ def test_allowlisted_family_rejects_reserved_alias_duplicate_and_unknown_keys() 
         feature_controls=frozenset(),
         suffix=".demo",
         engine_module="demo",
+        importance_method="Gain",
     )
     family.validate_params({"eta": 0.1, "depth": 3})
     with pytest.raises(TrainingConfigError, match="cannot set 'seed'"):

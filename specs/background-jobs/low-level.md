@@ -203,7 +203,9 @@ swap. A cancellation or timeout therefore wins wholly before publication, or wai
 and observes the completed record after publication; no reader can observe durable
 artifacts paired with a still-running or cancelled in-memory result. The caller-supplied
 publisher must not mutate its own job record (raises `RuntimeError`) and must return
-a mapping (raises `ValueError`). Publisher exceptions propagate and leave the job record
+a mapping (raises `ValueError`). A publisher does no slow work under the lock: training
+reads and validates its artifacts before it claims, and its publisher only hands over the
+validated fields. Publisher exceptions propagate and leave the job record
 unchanged. Filesystem transaction and rollback semantics remain owned by the job-specific
 publisher.
 

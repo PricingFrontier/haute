@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
 import numpy as np
 import polars as pl
@@ -48,13 +48,6 @@ class SplitConfig:
                 raise HauteValidationError("cutoff_date is required for temporal split")
         if self.strategy == "group" and not self.group_column:
             raise HauteValidationError("group_column is required for group split")
-
-
-DEFAULT_SPLIT_DICT: dict[str, Any] = {
-    "strategy": "random",
-    "validation_size": 0.2,
-    "seed": 42,
-}
 
 
 # Partition constants

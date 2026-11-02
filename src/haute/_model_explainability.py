@@ -9,6 +9,7 @@ import polars as pl
 
 from haute._logging import get_logger
 from haute.errors import HauteValidationError
+from haute.modelling._algorithm_base import inverse_link
 
 logger = get_logger(component="model_explainability")
 
@@ -561,14 +562,6 @@ def explain_rustystats_glm_prediction(
     }
 
 
-def _inverse_link(link: str, margin: float) -> float:
-    if link == "log":
-        return float(np.exp(margin))
-    if link == "logit":
-        return float(1.0 / (1.0 + np.exp(-margin)))
-    return margin
-
-
 def explain_native_prediction(
     scoring_model: Any,
     input_row: dict[str, Any],
@@ -627,7 +620,7 @@ def explain_native_prediction(
             f"contributions reconstruct {reconstructed}, model margin is {margin}."
         )
     response = float(model.predict_response(row)[0])
-    linked = _inverse_link(model.link, margin)
+    linked = float(inverse_link(model.link, np.asarray(margin)))
     if abs(linked - response) > prediction_tolerance(response):
         raise ModelExplanationError(
             f"{label} explanation's inverse link does not reproduce the model response: "

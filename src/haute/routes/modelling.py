@@ -109,6 +109,41 @@ async def gpu_status() -> ModellingGpuStatusResponse:
     return ModellingGpuStatusResponse(xgboost=GpuFamilyStatus(**status.to_plain_data()))
 
 
+def _train_status_response(job: Mapping[str, Any]) -> TrainStatusResponse:
+    """The one projection of a training job record that polling and cancellation answer."""
+    return TrainStatusResponse(
+        status=require_job_status(job),
+        progress=job.get("progress", 0.0),
+        message=job.get("message", ""),
+        iteration=job.get("iteration", 0),
+        total_iterations=job.get("total_iterations", 0),
+        train_loss=job.get("train_loss", {}),
+        train_loss_history=job.get("train_loss_history", []),
+        train_loss_history_truncated=job.get("train_loss_history_truncated", False),
+        elapsed_seconds=job.get("elapsed_seconds", 0.0),
+        result=job.get("result"),
+        warning=job.get("warning"),
+        terminal_reason=job.get("terminal_reason"),
+        execution_metrics=job.get("execution_metrics"),
+        feature_selection=job.get("feature_selection"),
+        error_code=job.get("error_code"),
+        http_status_code=job.get("http_status_code"),
+        error_detail=job.get("error_detail"),
+        worker_remote_traceback=job.get("worker_remote_traceback"),
+        export_receipts=TrainExportReceipts.model_validate(export_receipts(job)),
+        # The tuning progress the lifecycle records from the worker's events, as
+        # stored: a field not yet known stays None.
+        phase=job.get("phase"),
+        trial_index=job.get("trial_index"),
+        trial_count=job.get("trial_count"),
+        fold_index=job.get("fold_index"),
+        fold_count=job.get("fold_count"),
+        completed_fits=job.get("completed_fits"),
+        total_fits=job.get("total_fits"),
+        best_objective=job.get("best_objective"),
+    )
+
+
 @router.get("/train/status/{job_id}", response_model=TrainStatusResponse)
 async def train_status(job_id: str) -> TrainStatusResponse:
     """Poll training job progress."""
@@ -124,7 +159,7 @@ async def train_status(job_id: str) -> TrainStatusResponse:
     # ``_result_finite_validated`` is an internal cache flag — it MUST stay
     # private to this module.  Never include it in ``TrainStatusResponse`` or
     # log it in a structured payload that gets shipped to the user; the
-    # whitelist in the response constructor below already enforces that.
+    # whitelist in ``_train_status_response`` already enforces that.
     if result is not None and not job.get("_result_finite_validated"):
         try:
             _assert_json_finite(result)
@@ -149,27 +184,7 @@ async def train_status(job_id: str) -> TrainStatusResponse:
             )
             job = _store.require_job(job_id)
 
-    return TrainStatusResponse(
-        status=require_job_status(job),
-        progress=job.get("progress", 0.0),
-        message=job.get("message", ""),
-        iteration=job.get("iteration", 0),
-        total_iterations=job.get("total_iterations", 0),
-        train_loss=job.get("train_loss", {}),
-        train_loss_history=job.get("train_loss_history", []),
-        train_loss_history_truncated=job.get("train_loss_history_truncated", False),
-        elapsed_seconds=job.get("elapsed_seconds", 0.0),
-        result=job.get("result"),
-        warning=job.get("warning"),
-        terminal_reason=job.get("terminal_reason"),
-        execution_metrics=job.get("execution_metrics"),
-        feature_selection=job.get("feature_selection"),
-        error_code=job.get("error_code"),
-        http_status_code=job.get("http_status_code"),
-        error_detail=job.get("error_detail"),
-        worker_remote_traceback=job.get("worker_remote_traceback"),
-        export_receipts=TrainExportReceipts.model_validate(export_receipts(job)),
-    )
+    return _train_status_response(job)
 
 
 def _log_response_from_receipt(receipt: Mapping[str, Any]) -> LogExperimentResponse:
@@ -188,27 +203,7 @@ def _log_response_from_receipt(receipt: Mapping[str, Any]) -> LogExperimentRespo
 @router.post("/train/cancel/{job_id}", response_model=TrainStatusResponse)
 async def cancel_training(job_id: str) -> TrainStatusResponse:
     """Cancel an in-progress training job."""
-    job = _train_service.cancel(job_id)
-    return TrainStatusResponse(
-        status=require_job_status(job),
-        progress=job.get("progress", 0.0),
-        message=job.get("message", ""),
-        iteration=job.get("iteration", 0),
-        total_iterations=job.get("total_iterations", 0),
-        train_loss=job.get("train_loss", {}),
-        train_loss_history=job.get("train_loss_history", []),
-        train_loss_history_truncated=job.get("train_loss_history_truncated", False),
-        elapsed_seconds=job.get("elapsed_seconds", 0.0),
-        result=job.get("result"),
-        warning=job.get("warning"),
-        terminal_reason=job.get("terminal_reason"),
-        execution_metrics=job.get("execution_metrics"),
-        feature_selection=job.get("feature_selection"),
-        error_code=job.get("error_code"),
-        http_status_code=job.get("http_status_code"),
-        error_detail=job.get("error_detail"),
-        worker_remote_traceback=job.get("worker_remote_traceback"),
-    )
+    return _train_status_response(_train_service.cancel(job_id))
 
 
 def _dispersion_status_response(job: Mapping[str, Any]) -> DispersionEstimateStatusResponse:
@@ -370,8 +365,8 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
         CandidateArtifacts,
         CandidateProvenance,
         build_candidate_run,
+        candidate_final_params,
     )
-    from haute.modelling._descriptors import algorithm_descriptor, project_refit_params
     from haute.modelling._mlflow_log import (
         log_experiment,
         resolve_experiment_name,
@@ -416,53 +411,20 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
         )
 
         try:
-            diagnostics = ModelDiagnostics(
-                feature_importance=result.feature_importance,
-                shap_summary=result.shap_summary,
-                feature_importance_loss=result.feature_importance_loss,
-                double_lift=result.double_lift,
-                loss_history=result.loss_history,
-                ave_per_feature=result.ave_per_feature,
-                residuals_histogram=result.residuals_histogram,
-                residuals_stats=result.residuals_stats,
-                actual_vs_predicted=result.actual_vs_predicted,
-                lorenz_curve=result.lorenz_curve,
-                lorenz_curve_perfect=result.lorenz_curve_perfect,
-                pdp_data=result.pdp_data,
-                final_test_metrics=result.final_test_metrics,
-                selection_metrics={
-                    name: summary.model_dump(mode="json")
-                    for name, summary in result.evaluation.selection_metrics.items()
-                },
+            diagnostics = ModelDiagnostics.from_result(
+                result,
                 evaluation=result.evaluation.model_dump(mode="json"),
-                tuning=(
-                    result.tuning.model_dump(mode="json") if result.tuning is not None else None
-                ),
-                diagnostics_set=result.diagnostics_set,
-                glm_coefficients=result.glm_coefficients,
-                glm_relativities=result.glm_relativities,
-                glm_fit_statistics=result.glm_fit_statistics,
-                glm_inference=result.glm_inference,
-                glm_smooth_terms=result.glm_smooth_terms,
-                glm_regularization=result.glm_regularization,
-                ebm_terms=result.ebm_terms,
-                tboost_tables=result.tboost_tables,
+                tuning=result.tuning.model_dump(mode="json") if result.tuning is not None else None,
             )
-            if result.tuning is not None:
-                final_params = result.tuning.final_params
-            elif (
-                result.final_tree_count is not None
-                and result.evaluation.refit_on_development
-                and algorithm_descriptor(str(config.get("algorithm", "catboost"))).refit_policy
-                == "validation_weighted_rounds"
-            ):
-                final_params = project_refit_params(
-                    algorithm_descriptor(str(config.get("algorithm", "catboost"))),
-                    dict(config.get("params") or {}),
-                    result.final_tree_count,
-                )
-            else:
-                final_params = config.get("params", {})
+            final_params = candidate_final_params(
+                str(config.get("algorithm", "catboost")),
+                config.get("params") or {},
+                tuned_final_params=(
+                    result.tuning.final_params if result.tuning is not None else None
+                ),
+                final_tree_count=result.final_tree_count,
+                refit_on_development=result.evaluation.refit_on_development,
+            )
             candidate = build_candidate_run(
                 provenance=CandidateProvenance.from_plain_data(job["provenance"]),
                 algorithm=str(config.get("algorithm", "catboost")),
@@ -631,7 +593,10 @@ def save_model(body: SaveModelRequest) -> SaveModelResponse:
 @router.post("/export", response_model=ExportScriptResponse)
 async def export_script(body: ExportScriptRequest) -> ExportScriptResponse:
     """Generate a standalone training script from a modelling node's config."""
-    node = _find_modelling_node(body.graph, body.node_id)
+    # Prepared as /train prepares it, so a node inside a submodel is found by its
+    # flattened id.
+    graph = await run_in_threadpool(_prepare_runtime_graph, body.graph)
+    node = _find_modelling_node(graph, body.node_id)
     config = dict(node.data.config)
 
     # Script and live training share the executable node name, never an editor/runtime id.

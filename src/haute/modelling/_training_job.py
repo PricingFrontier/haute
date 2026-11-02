@@ -799,8 +799,12 @@ class TrainingJob:
                 )
                 if evaluation_key in glm_columns:
                     raise HauteValidationError("evaluation key cannot be a GLM term")
-            if evaluation_key not in self.id_columns:
-                self.id_columns.append(evaluation_key)
+        # The configured identifiers stay as given: they are part of the training
+        # identity. The evaluation key joins them only where rows are ordered
+        # canonically and where it is kept out of the features.
+        self._row_key_columns = list(self.id_columns)
+        if evaluation_key and evaluation_key not in self._row_key_columns:
+            self._row_key_columns.append(evaluation_key)
         # Parse split config
         if isinstance(split, SplitConfig):
             self.split_config = split
@@ -994,13 +998,6 @@ class TrainingJob:
             ):
                 result.final_tree_count = fit_result.rounds_fitted
 
-            # An internal final evaluation fit must attach the persisted
-            # evaluation/tuning report before the one MLflow handoff.
-            if self.mlflow_experiment and self.evaluation_plan is None:
-                _checkpoint()
-                with _training_stage(execution_context, "training_mlflow_log"):
-                    self._log_to_mlflow(result, check_cancelled=_checkpoint)
-
             _report("Done", 1.0)
             _checkpoint()
             return result
@@ -1065,7 +1062,7 @@ class TrainingJob:
             _training_row_order(
                 pl.scan_parquet(prepared.data_path),
                 prepared.total_rows,
-                self.id_columns,
+                self._row_key_columns,
                 stage_name="evaluation_plan_row_order",
                 execution_context=execution_context,
             )
@@ -2075,7 +2072,6 @@ class TrainingJob:
                 ):
                     self._log_to_mlflow(
                         result,
-                        final_params=final_params,
                         check_cancelled=lambda: checkpoint("evaluation_mlflow_checkpoint"),
                     )
             report("Done", 1.0)
@@ -2358,7 +2354,7 @@ class TrainingJob:
                 _training_row_order(
                     split_lf,
                     total_rows,
-                    self.id_columns,
+                    self._row_key_columns,
                     stage_name="training_split_row_order",
                     execution_context=execution_context,
                 )
@@ -2911,7 +2907,7 @@ class TrainingJob:
         if hasattr(algo, "shap_values"):
             _report("Computing SHAP values", 0.85)
             try:
-                diag_row_order = frame_row_order(diag_df, self.id_columns)
+                diag_row_order = frame_row_order(diag_df, self._row_key_columns)
                 # One bounded sample for every family; every view or none.
                 shap_rows = shap_sample(diag_df, diag_row_order)
                 views = shap_diagnostics(
@@ -2932,11 +2928,14 @@ class TrainingJob:
         if hasattr(algo, "feature_importance_typed"):
             _report("Computing loss-based feature importance", 0.855)
             try:
+                # The loss the model was fitted under: a weight- or exposure-trained
+                # model's loss change is weighted as its training loss was.
                 _diag_pool = _build_pool(
                     diag_df,
                     features,
                     cat_features,
                     target=self.target,
+                    weight=self.weight,
                     offset=self.offset,
                     offset_link=self._offset_link() if self.offset else None,
                 )
@@ -3082,6 +3081,7 @@ class TrainingJob:
                 task="classification" if self.task == "classification" else "regression",
                 offset_column=self.offset,
                 offset_link=self._contract_offset_link(),
+                offset_type=self._offset_dtype_for_contract(),
                 model=self._model_identity(),
             )
             contract_path = output_dir / model_contract_filename(self.name)
@@ -3177,7 +3177,7 @@ class TrainingJob:
             non_features.add(self.offset)
         if self.fold_column:
             non_features.add(self.fold_column)
-        non_features.update(self.id_columns)
+        non_features.update(self._row_key_columns)
         if self.split_config.strategy == "temporal" and self.split_config.date_column:
             non_features.add(self.split_config.date_column)
         if self.split_config.strategy == "group" and self.split_config.group_column:
@@ -3266,6 +3266,17 @@ class TrainingJob:
             )
         return {f: self._contract_feature_dtypes[f] for f in features}
 
+    def _offset_dtype_for_contract(self) -> str | None:
+        """The offset column's dtype seen at data-prep time; ``None`` without an offset."""
+        if not self.offset:
+            return None
+        if not self._contract_offset_dtype:
+            raise HauteValidationError(
+                f"No dtype was recorded for the offset {self.offset!r}; the feature contract "
+                "never guesses one."
+            )
+        return self._contract_offset_dtype
+
     def _target_dtype_for_contract(self) -> str:
         """Return the target dtype seen at data-prep time."""
         if not self._contract_target_dtype:
@@ -3292,6 +3303,7 @@ class TrainingJob:
                 "feature_columns": list(self.feature_columns) or None,
                 "fold_column": self.fold_column,
                 "id_columns": list(self.id_columns) or None,
+                "refit_on_development": self.refit_on_development,
                 "algorithm": self.algorithm,
                 "task": self.task,
                 "params": self.params,
@@ -3312,7 +3324,6 @@ class TrainingJob:
         self,
         result: TrainResult,
         *,
-        final_params: Mapping[str, Any] | None = None,
         check_cancelled: Callable[[], None] | None = None,
     ) -> None:
         """Log this scripted run to MLflow as a contracted candidate run."""
@@ -3322,6 +3333,7 @@ class TrainingJob:
         from haute.modelling._candidate_run import (
             CandidateArtifacts,
             build_candidate_run,
+            candidate_final_params,
             capture_provenance,
         )
         from haute.modelling._mlflow_log import log_experiment
@@ -3332,32 +3344,8 @@ class TrainingJob:
         if result.evaluation is None:
             raise HauteValidationError("MLflow logging requires an evaluated training run")
 
-        diagnostics = ModelDiagnostics(
-            feature_importance=result.feature_importance,
-            shap_summary=result.shap_summary,
-            feature_importance_loss=result.feature_importance_loss,
-            double_lift=result.double_lift,
-            loss_history=result.loss_history,
-            ave_per_feature=result.ave_per_feature,
-            residuals_histogram=result.residuals_histogram,
-            residuals_stats=result.residuals_stats,
-            actual_vs_predicted=result.actual_vs_predicted,
-            lorenz_curve=result.lorenz_curve,
-            glm_coefficients=result.glm_coefficients,
-            glm_relativities=result.glm_relativities,
-            glm_fit_statistics=result.glm_fit_statistics,
-            glm_inference=result.glm_inference,
-            glm_smooth_terms=result.glm_smooth_terms,
-            glm_regularization=result.glm_regularization,
-            ebm_terms=result.ebm_terms,
-            tboost_tables=result.tboost_tables,
-            lorenz_curve_perfect=result.lorenz_curve_perfect,
-            pdp_data=result.pdp_data,
-            final_test_metrics=result.final_test_metrics,
-            selection_metrics=dict(result.evaluation.get("selection_metrics", {})),
-            evaluation=result.evaluation,
-            tuning=result.tuning,
-            diagnostics_set=result.diagnostics_set,
+        diagnostics = ModelDiagnostics.from_result(
+            result, evaluation=result.evaluation, tuning=result.tuning
         )
         model_path = Path(result.model_path)
         evidence = {
@@ -3373,12 +3361,15 @@ class TrainingJob:
                     "tuning_report": Path(result.tuning["report_path"]),
                 }
             )
-        if final_params is not None:
-            logged_final_params = dict(final_params)
-        elif result.tuning is not None:
-            logged_final_params = dict(result.tuning["final_params"])
-        else:
-            logged_final_params = self.params
+        logged_final_params = candidate_final_params(
+            self.algorithm,
+            self.params,
+            tuned_final_params=(
+                result.tuning["final_params"] if result.tuning is not None else None
+            ),
+            final_tree_count=result.final_tree_count,
+            refit_on_development=self.refit_on_development,
+        )
         assert self.evaluation is not None  # result.evaluation implies the contract
         candidate = build_candidate_run(
             provenance=capture_provenance(

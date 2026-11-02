@@ -11,6 +11,7 @@ standalone run and a deployed bundle is in ``test_model_family_acceptance``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from haute._mlflow_io import load_local_model
 from haute._model_source import (
     FileModelSource,
     ModelSource,
@@ -490,6 +492,75 @@ class TestInspectionEndpoint:
         body = response.json()
         assert (body["offset_column"], body["offset_link"]) == (None, None)
         assert body["contract_path"] is None
+
+
+def _rewrite_native_record(model_path: Path, change: Callable[[dict[str, Any]], None]) -> None:
+    """Apply *change* to the Haute record a native model file stores, in place."""
+    import json
+
+    if model_path.suffix == ".ebm":
+        head, rest = model_path.read_bytes().split(b"\n", 1)
+        record = json.loads(head[len(b"haute-ebm:") :])
+        change(record)
+        model_path.write_bytes(b"haute-ebm:" + json.dumps(record).encode() + b"\n" + rest)
+    elif model_path.suffix == ".lgbm":
+        lines = model_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        index = next(i for i, line in enumerate(lines) if line.startswith("haute:"))
+        record = json.loads(lines[index][len("haute:") :])
+        change(record)
+        lines[index] = "haute:" + json.dumps(record) + "\n"
+        model_path.write_text("".join(lines), encoding="utf-8")
+    else:
+        import xgboost as xgb
+
+        booster = xgb.Booster()
+        booster.load_model(str(model_path))
+        record = json.loads(booster.attr("haute"))
+        change(record)
+        booster.set_attr(haute=json.dumps(record))
+        booster.save_model(str(model_path))
+
+
+_RECORD_FAULTS = [
+    ("no-features", lambda record: record.pop("features"), "features"),
+    ("no-task", lambda record: record.pop("task"), "task"),
+    ("features-not-a-list", lambda record: record.update(features="region"), "features"),
+    ("task-not-a-name", lambda record: record.update(task=None), "task"),
+    ("task-a-list", lambda record: record.update(task=[]), "task"),
+    ("link-an-object", lambda record: record.update(link={}), "link"),
+    (
+        "offset-link-a-list",
+        lambda record: record.update(offset_column="exposure", offset_link=[]),
+        "offset_link",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("algorithm", "change", "field"),
+    [
+        *[
+            pytest.param(algorithm, change, field, id=f"{algorithm}-{name}")
+            for algorithm in ("ebm", "xgboost", "lightgbm")
+            for name, change, field in _RECORD_FAULTS
+        ],
+        # Read before anything is unpickled.
+        pytest.param(
+            "ebm", lambda record: record.pop("engine_version"), "engine_version", id="ebm-no-engine"
+        ),
+    ],
+)
+def test_a_malformed_native_record_is_refused_naming_the_field(
+    project: Path, client: Any, algorithm: str, change: Any, field: str
+) -> None:
+    model_path = train(project, algorithm, **dict(FAMILIES)[algorithm])
+    _rewrite_native_record(model_path, change)
+
+    with pytest.raises(ConfigError, match=field):
+        load_local_model(str(model_path))
+    response = client.get("/api/model-file", params={"path": model_path.name})
+    assert response.status_code == 400, response.text
+    assert field in response.json()["detail"]
 
 
 def _model_score_graph(config: dict[str, Any]) -> Any:

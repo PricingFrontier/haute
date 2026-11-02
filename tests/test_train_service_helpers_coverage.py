@@ -78,6 +78,41 @@ class TestEvaluationPreviewPayload:
         }
         assert "final_test_date_range" not in preview
 
+    def test_temporal_preview_orders_offsets_by_instant_after_the_plan_accepts_them(
+        self,
+    ) -> None:
+        config = EvaluationConfig.from_plain_data(
+            {
+                "schema_version": 1,
+                "strategy": "temporal",
+                "date_column": "as_of",
+                "validation": {"method": "none"},
+            }
+        )
+        # 00:30+01:00 is 23:30 UTC the day before, so it is the earliest instant.
+        dates = ["2024-06-01T00:15:00+00:00", "2024-06-01T00:30:00+01:00", "2024-05-31T23:45Z"]
+        plan = generate_evaluation_plan(
+            config, source_sha256="c" * 64, row_count=3, task="regression", date_values=dates
+        )
+        assert _evaluation_preview_payload(plan, date_values=dates)["development_date_range"] == {
+            "start": "2024-06-01T00:30:00+01:00",
+            "end": "2024-06-01T00:15:00+00:00",
+        }
+
+        # What the preview could not order never reaches it: the plan refuses it first.
+        for unorderable, error in (
+            (["2024/01/15", "2024/02/15"], "Invalid isoformat string"),
+            (["2024-01-01", "2024-02-01T00:00:00+00:00"], "must not mix timezone awareness"),
+        ):
+            with pytest.raises(ValueError, match=error):
+                generate_evaluation_plan(
+                    config,
+                    source_sha256="c" * 64,
+                    row_count=2,
+                    task="regression",
+                    date_values=unorderable,
+                )
+
 
 class TestStringListConfig:
     def test_missing_key_returns_empty(self) -> None:

@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import polars as pl
@@ -27,6 +27,8 @@ from haute.modelling._algorithm_base import (
     Contributions,
     FitResult,
     IterationCallback,
+    NativeModel,
+    inverse_link,
 )
 from haute.modelling._native_encoding import (
     encode_frame,
@@ -41,26 +43,13 @@ _DEFAULT_ROUNDS = 1000
 _DEFAULT_EARLY_STOPPING = 50
 
 
-def _inverse_link(link: str, margin: np.ndarray) -> np.ndarray:
-    if link == "log":
-        return np.asarray(np.exp(margin))
-    if link == "logit":
-        return np.asarray(1.0 / (1.0 + np.exp(-margin)))
-    return margin
-
-
-@dataclass
-class LightGBMModel:
+@dataclass(kw_only=True)
+class LightGBMModel(NativeModel):
     """A booster plus the record every prediction path needs."""
 
+    family: ClassVar[str] = "LightGBM"
+
     booster: Any
-    features: list[str]
-    categorical_levels: dict[str, list[str | None]]
-    task: str
-    link: str
-    offset_column: str | None = None
-    offset_link: str | None = None
-    class_labels: tuple[Any, Any] | None = None
     threads: int | None = field(default=None, compare=False)
     #: A model trained outside Haute: the category values LightGBM recorded
     #: where they are not strings.
@@ -71,29 +60,11 @@ class LightGBMModel:
     native_response: bool = field(default=False, compare=False)
 
     # -- ScoringModel-facing surface ------------------------------------
-    @property
-    def feature_names_(self) -> list[str]:
-        return list(self.features)
-
-    @property
-    def cat_feature_names(self) -> frozenset[str]:
-        return frozenset(self.categorical_levels)
-
     def encoded(self, frame: pl.DataFrame) -> Any:
         """Features as pandas with contract-order categoricals."""
         return restore_native_categories(
             encode_frame(frame, self.features, self.categorical_levels, unseen="missing"),
             self.native_levels,
-        )
-
-    def baseline(self, frame: pl.DataFrame) -> np.ndarray | None:
-        """The transformed offset each row's raw score starts from."""
-        if self.offset_column is None:
-            return None
-        from haute.modelling._algorithms import _extract_offset_baseline
-
-        return _extract_offset_baseline(
-            frame, self.offset_column, link=str(self.offset_link), context="LightGBM"
         )
 
     def predict_margin(self, frame: pl.DataFrame) -> np.ndarray:
@@ -112,24 +83,7 @@ class LightGBMModel:
                 self.booster.predict(self.encoded(frame), num_threads=self._threads()),
                 dtype=np.float64,
             )
-        return np.asarray(_inverse_link(self.link, self.predict_margin(frame)), dtype=np.float64)
-
-    def predict(self, frame: pl.DataFrame) -> np.ndarray:
-        """Served predictions: responses, or original labels for classifiers."""
-        response = self.predict_response(frame)
-        if self.task != "classification":
-            return response
-        from haute._mlflow_io import binary_labels
-
-        if self.class_labels is None:
-            raise HauteValidationError("LightGBM classifier has no recorded class labels")
-        return binary_labels(response, self.class_labels)
-
-    def predict_proba(self, frame: pl.DataFrame) -> np.ndarray:
-        if self.task != "classification":
-            raise HauteValidationError("LightGBM regression models have no class probabilities")
-        positive = self.predict_response(frame)
-        return np.column_stack([1.0 - positive, positive])
+        return np.asarray(inverse_link(self.link, self.predict_margin(frame)), dtype=np.float64)
 
     def contributions(self, frame: pl.DataFrame) -> Contributions:
         """Native ``pred_contrib``; the adapter adds the offset to the bias column."""
@@ -153,22 +107,11 @@ class LightGBMModel:
         return self.threads or 0  # 0 = LightGBM's default (OpenMP) thread count
 
     # -- persistence ------------------------------------------------------
-    def metadata(self) -> dict[str, Any]:
-        return {
-            "features": list(self.features),
-            "categorical_levels": {k: list(v) for k, v in self.categorical_levels.items()},
-            "task": self.task,
-            "link": self.link,
-            "offset_column": self.offset_column,
-            "offset_link": self.offset_link,
-            "class_labels": list(self.class_labels) if self.class_labels is not None else None,
-        }
-
     def save(self, path: Path) -> None:
         """LightGBM's model text with the ``haute:`` record inserted."""
         path.parent.mkdir(parents=True, exist_ok=True)
         lines = self.booster.model_to_string().splitlines(keepends=True)
-        record = _META_PREFIX + json.dumps(self.metadata()) + "\n"
+        record = _META_PREFIX + json.dumps(self.record()) + "\n"
         index = next(
             (i for i, line in enumerate(lines) if line.startswith("pandas_categorical:")),
             len(lines),
@@ -189,17 +132,9 @@ class LightGBMModel:
                 f"{path} holds {len(records)} '{_META_PREFIX}' records, not one; retrain it in "
                 "Haute."
             )
-        meta = json.loads(records[0][len(_META_PREFIX) :])
-        labels = meta.get("class_labels")
         return cls(
             booster=lgb.Booster(model_str=text),
-            features=list(meta["features"]),
-            categorical_levels={k: list(v) for k, v in meta["categorical_levels"].items()},
-            task=str(meta["task"]),
-            link=str(meta["link"]),
-            offset_column=meta.get("offset_column"),
-            offset_link=meta.get("offset_link"),
-            class_labels=(labels[0], labels[1]) if labels is not None else None,
+            **cls.parse_record(records[0][len(_META_PREFIX) :], Path(path).name),
         )
 
     @classmethod

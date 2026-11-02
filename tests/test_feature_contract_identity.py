@@ -49,8 +49,8 @@ def test_identity_round_trips_through_save_and_load(tmp_path: Path) -> None:
     save_contract(contract(), path)
     loaded = load_contract(path)
     assert loaded.model == IDENTITY
-    assert loaded.contract_version == CONTRACT_VERSION == 4
-    assert json.loads(path.read_text(encoding="utf-8"))["contract_version"] == 4
+    assert loaded.contract_version == CONTRACT_VERSION == 5
+    assert json.loads(path.read_text(encoding="utf-8"))["contract_version"] == 5
 
 
 def test_schema_only_contract_keeps_model_null(tmp_path: Path) -> None:
@@ -102,6 +102,38 @@ def test_offset_link_round_trips_and_is_hashed(tmp_path: Path, link: str | None)
     )
 
 
+def test_the_offset_dtype_round_trips_is_hashed_and_needs_a_column(tmp_path: Path) -> None:
+    from haute.modelling._feature_contract import assert_contracts_match
+
+    def signed(offset_type: str | None, column: str | None = "exposure"):
+        return build_contract(
+            features=["a"],
+            feature_types={"a": "Float64"},
+            categorical_features=[],
+            target_name="y",
+            target_type="Float64",
+            task="regression",
+            offset_column=column,
+            offset_link="log" if column else None,
+            offset_type=offset_type,
+        )
+
+    path = tmp_path / "c.json"
+    save_contract(signed("Int64"), path)
+    assert load_contract(path).offset_type == "Int64"
+    assert signed("Int64").contract_hash != signed("Float64").contract_hash
+    # Scoring casts any numeric offset, so live data never disagrees on it.
+    assert_contracts_match(signed("Int64"), signed(None))
+    with pytest.raises(FeatureMismatchError, match="offset_type is set but offset_column is null"):
+        signed("Int64", column=None)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    for malformed in (64, ""):
+        raw["offset_type"] = malformed
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        with pytest.raises(FeatureMismatchError, match="offset_type must be a dtype name"):
+            load_contract(path, verify_hash=False)
+
+
 @pytest.mark.parametrize(
     ("column", "link", "message"),
     [
@@ -133,11 +165,11 @@ def test_an_earlier_contract_version_is_rejected_with_a_retrain_message(tmp_path
     path = tmp_path / "c.json"
     save_contract(contract(), path)
     raw = json.loads(path.read_text(encoding="utf-8"))
-    # A version-3 contract carried a category-level list.
-    raw["contract_version"] = 3
-    raw["categorical_levels"] = {"region": ["north", "south"]}
+    # A version-4 contract did not record its offset's dtype.
+    raw["contract_version"] = 4
+    del raw["offset_type"]
     path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(FeatureMismatchError, match="not a version-4 feature contract; retrain"):
+    with pytest.raises(FeatureMismatchError, match="not a version-5 feature contract; retrain"):
         load_contract(path)
 
 

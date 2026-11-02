@@ -72,6 +72,8 @@ class AlgorithmDescriptor:
     feature_controls: frozenset[FeatureControl]
     suffix: str
     engine_module: str
+    #: What the family's own ``feature_importance`` measures, as the model card names it.
+    importance_method: str
     #: Losses whose native objective refuses, or silently breaks, monotone
     #: constraints.
     monotone_unsupported_losses: frozenset[str] = frozenset()
@@ -270,6 +272,7 @@ CATBOOST = AlgorithmDescriptor(
     feature_controls=frozenset({"monotone_constraints", "feature_weights"}),
     suffix=".cbm",
     engine_module="catboost",
+    importance_method="PredictionValuesChange",
 )
 
 GLM = AlgorithmDescriptor(
@@ -289,6 +292,7 @@ GLM = AlgorithmDescriptor(
     feature_controls=frozenset(),
     suffix=".rsglm",
     engine_module="rustystats",
+    importance_method="Absolute coefficient",
 )
 
 
@@ -402,6 +406,7 @@ XGBOOST = AlgorithmDescriptor(
     feature_controls=frozenset({"monotone_constraints"}),
     suffix=".ubj",
     engine_module="xgboost",
+    importance_method="Total gain",
     # reg:absoluteerror re-fits each leaf to a residual quantile after the
     # tree is built, which ignores the constraint: a constrained MAE model
     # scores non-monotone on CPU and GPU alike (MOD-F06 probe).
@@ -546,6 +551,7 @@ LIGHTGBM = AlgorithmDescriptor(
     feature_controls=frozenset({"monotone_constraints"}),
     suffix=".lgbm",
     engine_module="lightgbm",
+    importance_method="Total gain",
     # LightGBM 4.7 refuses monotone_constraints with regression_l1.
     monotone_unsupported_losses=frozenset({"MAE"}),
 )
@@ -667,6 +673,7 @@ EBM = AlgorithmDescriptor(
     feature_controls=frozenset({"monotone_constraints", "interactions"}),
     suffix=".ebm",
     engine_module="interpret",
+    importance_method="Mean absolute term score",
     value_check=ebm_value_issue,
 )
 
@@ -772,6 +779,7 @@ TBOOST = AlgorithmDescriptor(
     feature_controls=frozenset({"monotone_constraints"}),
     suffix=".tboost",
     engine_module="t_boost",
+    importance_method="Variance share",
     value_check=tboost_value_issue,
 )
 

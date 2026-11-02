@@ -19,7 +19,7 @@ import math
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import polars as pl
@@ -30,6 +30,7 @@ from haute.modelling._algorithm_base import (
     Contributions,
     FitResult,
     IterationCallback,
+    NativeModel,
 )
 from haute.modelling._native_encoding import encode_frame, fit_categorical_levels
 
@@ -40,14 +41,6 @@ _RECORD_PREFIX = b"haute-ebm:"
 #: The longest record line read before the file is refused.
 _RECORD_LIMIT = 4 * 1024 * 1024
 _MISSING_LABEL = "Missing"
-
-
-def _inverse_link(link: str, margin: np.ndarray) -> np.ndarray:
-    if link == "log":
-        return np.asarray(np.exp(margin))
-    if link == "logit":
-        return np.asarray(1.0 / (1.0 + np.exp(-margin)))
-    return margin
 
 
 def _intercept(estimator: Any) -> float:
@@ -73,41 +66,18 @@ def _estimator_levels(
     return levels
 
 
-@dataclass
-class EBMModel:
+@dataclass(kw_only=True)
+class EBMModel(NativeModel):
     """A fitted EBM plus the facts its file records for every prediction path."""
 
+    family: ClassVar[str] = "EBM"
+
     estimator: Any
-    features: list[str]
-    categorical_levels: dict[str, list[str | None]]
-    task: str
-    link: str
-    offset_column: str | None = None
-    offset_link: str | None = None
-    class_labels: tuple[Any, Any] | None = None
 
     # -- ScoringModel-facing surface ------------------------------------
-    @property
-    def feature_names_(self) -> list[str]:
-        return list(self.features)
-
-    @property
-    def cat_feature_names(self) -> frozenset[str]:
-        return frozenset(self.categorical_levels)
-
     def encoded(self, frame: pl.DataFrame) -> Any:
         """Features as pandas; an unseen category keeps its label for the unknown bin."""
         return encode_frame(frame, self.features, self.categorical_levels, unseen="label")
-
-    def baseline(self, frame: pl.DataFrame) -> np.ndarray | None:
-        """The transformed offset each row's margin starts from."""
-        if self.offset_column is None:
-            return None
-        from haute.modelling._algorithms import _extract_offset_baseline
-
-        return _extract_offset_baseline(
-            frame, self.offset_column, link=str(self.offset_link), context="EBM"
-        )
 
     def predict_margin(self, frame: pl.DataFrame) -> np.ndarray:
         """Intercept plus every term score plus the offset (link scale)."""
@@ -122,23 +92,6 @@ class EBMModel:
             proba = self.estimator.predict_proba(encoded)
             return np.asarray(proba[:, 1], dtype=np.float64)
         return np.asarray(self.estimator.predict(encoded, init_score=baseline), dtype=np.float64)
-
-    def predict(self, frame: pl.DataFrame) -> np.ndarray:
-        """Served predictions: responses, or original labels for classifiers."""
-        response = self.predict_response(frame)
-        if self.task != "classification":
-            return response
-        from haute._mlflow_io import binary_labels
-
-        if self.class_labels is None:
-            raise HauteValidationError("EBM classifier has no recorded class labels")
-        return binary_labels(response, self.class_labels)
-
-    def predict_proba(self, frame: pl.DataFrame) -> np.ndarray:
-        if self.task != "classification":
-            raise HauteValidationError("EBM regression models have no class probabilities")
-        positive = self.predict_response(frame)
-        return np.column_stack([1.0 - positive, positive])
 
     def contributions(self, frame: pl.DataFrame) -> Contributions:
         """Native term scores; the bias is the intercept plus the transformed offset."""
@@ -161,18 +114,19 @@ class EBMModel:
 
     # -- persistence ------------------------------------------------------
     def metadata(self) -> dict[str, Any]:
-        """What the estimator alone does not say, and the version that pickled it."""
+        """What the estimator alone does not say, and the version that pickled it.
+
+        The shared record, with the categorical features named rather than their
+        levels (the estimator's own bins hold those).
+        """
         import interpret
 
+        record = self.record()
+        del record["categorical_levels"]
         return {
             "engine_version": interpret.__version__,
-            "features": list(self.features),
+            **record,
             "categorical_features": [f for f in self.features if f in self.categorical_levels],
-            "task": self.task,
-            "link": self.link,
-            "offset_column": self.offset_column,
-            "offset_link": self.offset_link,
-            "class_labels": list(self.class_labels) if self.class_labels is not None else None,
         }
 
     def save(self, path: Path) -> None:
@@ -206,30 +160,62 @@ class EBMModel:
                 "trained elsewhere with MLflow's sklearn flavour, which scores as an MLflow model.",
                 model_path=str(path),
             )
-        meta = json.loads(line[len(_RECORD_PREFIX) :])
-        if meta["engine_version"] != interpret.__version__:
+        engine_version, categorical, fields = cls._record_fields(
+            line[len(_RECORD_PREFIX) :], Path(path).name
+        )
+        if engine_version != interpret.__version__:
             raise ArtifactVersionMismatchError(
-                f"This EBM was trained with interpret-core {meta['engine_version']}, but "
+                f"This EBM was trained with interpret-core {engine_version}, but "
                 f"interpret-core {interpret.__version__} is installed; retrain the model or "
                 "install the recorded version."
             )
         estimator = restricted_joblib_load(path, offset=len(line))
-        features = list(meta["features"])
-        labels = meta["class_labels"]
-        model = cls(
-            estimator=estimator,
-            features=features,
-            categorical_levels=_estimator_levels(
-                estimator, features, set(meta["categorical_features"])
-            ),
-            task=str(meta["task"]),
-            link=str(meta["link"]),
-            offset_column=meta["offset_column"],
-            offset_link=meta["offset_link"],
-            class_labels=(labels[0], labels[1]) if labels is not None else None,
+        fields["categorical_levels"] = _estimator_levels(
+            estimator, fields["features"], set(categorical)
         )
+        model = cls(estimator=estimator, **fields)
         model.validate()
         return model
+
+    @classmethod
+    def _record_fields(cls, text: bytes, name: str) -> tuple[str, list[str], dict[str, Any]]:
+        """The ``haute-ebm:`` record checked before anything is unpickled.
+
+        Returns the interpret-core version, the categorical features and the shared
+        record's fields; a malformed record raises ``ConfigError`` naming the field.
+        """
+        try:
+            meta = json.loads(text)
+        except ValueError as exc:
+            raise ConfigError(
+                f"{name}: the EBM model's Haute record is not valid JSON; retrain it in Haute.",
+                model_path=name,
+            ) from exc
+        if not isinstance(meta, dict):
+            raise ConfigError(
+                f"{name}: the EBM model's Haute record is not an object; retrain it in Haute.",
+                model_path=name,
+            )
+        engine_version = meta.pop("engine_version", None)
+        if not isinstance(engine_version, str) or not engine_version:
+            raise ConfigError(
+                f"{name}: the EBM model's Haute record names no interpret-core version "
+                "(engine_version); retrain it in Haute.",
+                model_path=name,
+            )
+        categorical = meta.pop("categorical_features", None)
+        fields = cls.record_fields({**meta, "categorical_levels": {}}, name)
+        if (
+            not isinstance(categorical, list)
+            or not all(isinstance(feature, str) for feature in categorical)
+            or not set(categorical) <= set(fields["features"])
+        ):
+            raise ConfigError(
+                f"{name}: the EBM model's Haute record names categorical features it does not "
+                "list (categorical_features); retrain it in Haute.",
+                model_path=name,
+            )
+        return engine_version, categorical, fields
 
     def validate(self) -> None:
         """Check the unpickled estimator is the model its record describes."""
