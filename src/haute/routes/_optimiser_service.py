@@ -890,10 +890,9 @@ class _ScenarioFrontierRangeAccumulator:
         for cname, (min_alias, max_alias) in self.aliases.items():
             min_value = totals[self.extrema_columns.index(min_alias)]
             max_value = totals[self.extrema_columns.index(max_alias)]
+            # Each bound is a sum of per-quote extrema, so min <= max whenever both are finite.
             if not np.isfinite(min_value) or not np.isfinite(max_value):
                 raise InvalidRequestError(f"Estimated frontier range for {cname!r} is not finite.")
-            if min_value > max_value:
-                raise InvalidRequestError(f"Estimated frontier range for {cname!r} is invalid.")
             ranges[cname] = {"min": min_value, "max": max_value}
         return ranges
 

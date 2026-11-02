@@ -733,3 +733,33 @@ def test_totals_match_the_reference_on_random_frames(
     _assert_close(ranges, expected, quotes=quote_count, scale=scale)
     if grouped:
         assert accumulator.fallback_reason is None
+
+
+# --- typed refusals (OPT-R03) ---------------------------------------------
+
+
+def test_an_empty_frame_is_the_inputs_refusal(tmp_path: Path) -> None:
+    from haute.errors import InvalidRequestError
+
+    with pytest.raises(InvalidRequestError, match="empty scenario frame"):
+        _accumulator(tmp_path, ["volume"]).finish()
+
+
+def test_null_quote_ids_are_the_inputs_refusal(tmp_path: Path) -> None:
+    from haute.errors import InvalidRequestError
+
+    accumulator = _accumulator(tmp_path, ["volume"])
+    batch = pl.DataFrame({QID: ["q1", None], "volume": [1.0, 2.0]})
+    accumulator.add_batch(_projected(batch, ["volume"]), batch_index=0)
+
+    with pytest.raises(InvalidRequestError, match="1 rows"):
+        accumulator.finish()
+
+
+def test_a_non_finite_range_is_the_inputs_refusal(tmp_path: Path) -> None:
+    from haute.errors import InvalidRequestError
+
+    df = _frame(["q1", "q1", "q2"], volume=[1.0, math.inf, 2.0])
+
+    with pytest.raises(InvalidRequestError, match="'volume' is not finite"):
+        _reduce(tmp_path, [df], ["volume"])

@@ -1286,3 +1286,43 @@ def test_a_memory_error_behind_the_estimates_setup_answer_is_the_typed_507(
         optimiser_routes._optimiser_input_metrics(body)
     assert answered.value.status_code == 507
     assert answered.value.detail["error_code"] == "memory_limit"
+
+
+def test_a_setup_refusal_keeps_its_own_classification() -> None:
+    from haute.routes._optimiser_input import OptimiserSetupError
+
+    failure = classify_optimiser_failure(
+        OptimiserSetupError(422, "no streaming", reason="contract_error"),
+        operation_noun="Optimiser setup",
+        log_event="test_failure",
+    )
+
+    assert failure.terminal_reason == "contract_error"
+    assert failure.message == "no streaming"
+    assert failure.http_status_code == 422
+
+
+def test_a_507_that_is_not_a_memory_refusal_is_a_server_error() -> None:
+    failure = classify_optimiser_failure(
+        RequestRefusedError({"error_code": "storage_full"}, status_code=507),
+        operation_noun="Auto-range",
+        log_event="test_failure",
+    )
+
+    assert failure.terminal_reason == "error"
+    assert failure.http_status_code == 507
+
+
+def test_a_failure_before_the_job_mapping_ran_is_classified_in_the_worker() -> None:
+    from haute.routes._job_store import JobStore
+    from haute.routes._optimiser_worker import _recorded_failure
+
+    store = JobStore()
+    job_id = store.create_job({"status": "running"})
+
+    failure = _recorded_failure(
+        store, job_id, InvalidRequestError("bad config"), operation_noun="Optimiser setup"
+    )
+
+    assert failure.terminal_reason == "contract_error"
+    assert failure.http_detail == "bad config"

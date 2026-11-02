@@ -1611,3 +1611,13 @@ def test_trace_reads_the_artifact_the_apply_runs_from_any_working_directory(
     assert detail is not None
     assert detail["status"] == "ok"
     assert detail["output"]["value"] == pytest.approx(1.1)
+
+
+def test_a_trace_without_a_configured_artifact_source_is_refused() -> None:
+    from haute._optimiser_apply_explainability import (
+        OptimiserApplyTraceError,
+        _load_artifact_from_config,
+    )
+
+    with pytest.raises(OptimiserApplyTraceError, match="configured file or MLflow"):
+        _load_artifact_from_config({"sourceType": "run", "run_id": ""})

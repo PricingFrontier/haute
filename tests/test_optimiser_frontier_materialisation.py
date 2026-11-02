@@ -1042,3 +1042,26 @@ def test_an_eviction_during_a_read_waits_for_the_reader(client, clean_job_store)
             assert "frontier_apply_result:0" not in handles
             assert pl.read_parquet(handle["path"]).height == 3
         assert not Path(handle["directory"]).exists()
+
+
+@pytest.mark.parametrize(("baseline", "uplift"), [(0.0, None), (90.0, 10.0)])
+def test_a_points_summary_reports_uplift_only_against_a_non_zero_baseline(
+    baseline: float, uplift: float | None
+) -> None:
+    """price-contour's summary scheme: ``uplift_pct`` only when the baseline is not 0."""
+    from haute.routes._optimiser_frontier import (
+        _frontier_point_mlflow_summary,
+        _frontier_point_result_for_job,
+    )
+
+    job = _online_frontier_job()
+    job["result"]["baseline_objective"] = baseline
+    result = _frontier_point_result_for_job(job, 0)
+
+    metrics = _frontier_point_mlflow_summary(job, result, 0)["metrics"]
+
+    if uplift is None:
+        assert "uplift_pct" not in metrics
+    else:
+        expected = (result["total_objective"] - baseline) / baseline * 100
+        assert metrics["uplift_pct"] == pytest.approx(expected)

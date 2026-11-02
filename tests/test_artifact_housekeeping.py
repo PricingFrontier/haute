@@ -639,3 +639,70 @@ def test_server_lifespan_cleans_partial_interactive_startup(
     assert all(task.cancelled for task in created)
     assert server._watcher_task is None
     assert server._artifact_reaper_task is None
+
+
+@pytest.mark.parametrize(
+    "creator",
+    [
+        pytest.param({"pid": "1"}, id="pid-not-an-int"),
+        pytest.param({"pid": 0, "process_started_at": 1.0}, id="pid-not-positive"),
+        pytest.param({"pid": 1}, id="no-start-time"),
+        pytest.param({"pid": 1, "process_started_at": "x"}, id="start-time-not-a-number"),
+        pytest.param({"pid": 1, "process_started_at": float("inf")}, id="start-time-not-finite"),
+    ],
+)
+def test_a_malformed_creator_makes_the_marker_invalid(tmp_path: Path, creator: dict) -> None:
+    child = tmp_path / "child"
+    child.mkdir()
+    (child / ".haute-artifact.json").write_text(
+        json.dumps({"schema_version": 1, "owner": "test-owner", "created_at": 0.0, **creator}),
+        encoding="utf-8",
+    )
+
+    report = reap_stale_artifact_directories(tmp_path, "test-owner", 0)
+
+    assert report["removed"] == 0
+    assert child.exists()
+
+
+def test_a_creator_whose_start_time_cannot_be_read_counts_as_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import psutil
+
+    directory = create_owned_artifact_directory(tmp_path, "input_", "test-owner")
+
+    def denied(_pid: int) -> float:
+        raise psutil.AccessDenied(_pid)
+
+    monkeypatch.setattr(artifact_housekeeping, "_process_started_at", denied)
+
+    report = reap_stale_artifact_directories(tmp_path, "test-owner", 0)
+
+    assert report["removed"] == 0
+    assert directory.exists()
+
+
+def test_a_failed_scratch_removal_is_logged_not_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute.routes import _optimiser_artifacts as artifacts
+
+    def refuse(_path: object) -> None:
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(artifacts.shutil, "rmtree", refuse)
+
+    artifacts.remove_scratch_directory(tmp_path / "scratch")
+
+
+def test_only_a_solver_input_this_server_created_is_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute.routes import _optimiser_artifacts as artifacts
+
+    monkeypatch.setattr(artifacts, "_scratch_artifact_root", lambda: tmp_path / "scratch")
+    foreign = tmp_path / "elsewhere" / "solver_input.parquet"
+
+    with pytest.raises(ValueError, match="not a solver input this server created"):
+        artifacts._remove_solver_input(str(foreign))

@@ -1771,3 +1771,19 @@ class TestStatusFiniteWalk:
             expected_status="completed",
         )
         assert client.get("/api/optimiser/solve/status/clean_job").json()["status"] == "error"
+
+
+def test_a_summary_with_many_non_finite_values_names_five_and_counts_them() -> None:
+    from fastapi import HTTPException
+
+    from haute.routes.optimiser import _require_finite_summary_artifacts
+
+    summary = {"artifacts": {"lambdas": {f"c{i}": float("nan") for i in range(6)}}}
+
+    with pytest.raises(HTTPException) as caught:
+        _require_finite_summary_artifacts(summary)
+
+    assert caught.value.status_code == 400
+    assert "lambdas.c4" in caught.value.detail
+    assert "lambdas.c5" not in caught.value.detail
+    assert "(6 in total)" in caught.value.detail
