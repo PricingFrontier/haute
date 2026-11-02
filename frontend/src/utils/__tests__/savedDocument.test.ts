@@ -68,28 +68,57 @@ describe("documentHoldsSave", () => {
     expect(documentHoldsSave(read, savedAsLoaded())).toBe(false)
   })
 
-  it("knows a node by its name, as a read of the file does after a rename or a creation", () => {
-    const submitted = savedAsLoaded()
-    // The canvas still holds the provisional id of a node it created and named "price".
-    const provisional = (id: string) => (id === "price" ? "polars_3" : id)
-    const canvas = {
+  it("knows a node by the name the file gives it, as a read does after a creation or a rename", () => {
+    // The file holds each node as its function name (`_sanitize_func_name` of the
+    // label); a read gives that as both id and label.
+    const transform = { label: "Transform_3", nodeType: "polars", _functionName: "Transform_3" }
+    const read = makePipelineEditorDocument({
+      source_file: "rating/main.py",
+      source_revision: "revision-after",
+      nodes: [
+        makeNode("quotes", "dataSource", { position: { x: 10, y: 20 } }),
+        makeNode("Transform_3", "polars", { position: { x: 300, y: 20 }, data: transform }),
+      ],
+      edges: [{ id: "e-quotes-Transform_3", source: "quotes", target: "Transform_3" }],
+    })
+    const submitted = savedAsLoaded(read)
+    // The canvas holds the node it created under its provisional id and display
+    // label, with the function name the server resolved for that label.
+    const onCanvas = (label: string, functionName: string) => ({
       ...submitted,
       snapshot: {
         ...submitted.snapshot,
-        nodes: submitted.snapshot.nodes.map((node) => ({ ...node, id: provisional(node.id) })),
-        edges: submitted.snapshot.edges.map((edge) => ({ ...edge, id: "e-provisional", target: provisional(edge.target) })),
+        nodes: submitted.snapshot.nodes.map((node) => node.id === "Transform_3"
+          ? { ...node, id: "polars_3", data: { ...node.data, label, _functionName: functionName } }
+          : node),
+        edges: submitted.snapshot.edges.map((edge) => ({ ...edge, id: "e-provisional", target: "polars_3" })),
       },
-    }
-    expect(documentHoldsSave({ ...loaded, source_revision: "revision-after" }, canvas)).toBe(true)
-    // A node named differently is different content.
-    const renamed = {
-      ...canvas,
-      snapshot: {
-        ...canvas.snapshot,
-        nodes: canvas.snapshot.nodes.map((node) => node.id === "polars_3" ? { ...node, data: { ...node.data, label: "premium" } } : node),
-      },
-    }
-    expect(documentHoldsSave({ ...loaded, source_revision: "revision-after" }, renamed)).toBe(false)
+    })
+
+    expect(documentHoldsSave(read, onCanvas("Transform 3", "Transform_3"))).toBe(true)
+    // A node the file names differently is different content.
+    expect(documentHoldsSave(read, onCanvas("Premium", "Premium"))).toBe(false)
+  })
+
+  it("keeps the order of a node's inputs, which the file keeps, and of nothing else", () => {
+    const inputs = (edges: { source: string; target: string }[]) => makePipelineEditorDocument({
+      source_file: "rating/main.py",
+      source_revision: "revision-after",
+      nodes: ["a", "b", "x", "y"].map((id) => makeNode(id, "polars")),
+      edges: edges.map((edge) => ({ id: `e-${edge.source}-${edge.target}`, ...edge })),
+    })
+    const sent = savedAsLoaded(inputs([{ source: "a", target: "x" }, { source: "b", target: "x" }, { source: "a", target: "y" }]))
+
+    // Another node's edges listed first: the same file.
+    expect(documentHoldsSave(
+      inputs([{ source: "a", target: "y" }, { source: "a", target: "x" }, { source: "b", target: "x" }]),
+      sent,
+    )).toBe(true)
+    // The same node's inputs reversed: its first input (an External File hook's frame) changed.
+    expect(documentHoldsSave(
+      inputs([{ source: "b", target: "x" }, { source: "a", target: "x" }, { source: "a", target: "y" }]),
+      sent,
+    )).toBe(false)
   })
 
   it("leaves constants out when the save sent none", () => {

@@ -28,19 +28,31 @@ function sameList(a: readonly string[], b: readonly string[]): boolean {
 type Graph = Pick<GraphSnapshot, "nodes" | "edges">
 
 /**
- * The graph with each node known by its name, as the file names it: an editor
- * id that predates a rename, or a new node's provisional id, is not the id a
- * read of the file gives it. Nodes and edges are ordered by that identity.
+ * The name the file gives a node: the function name the server resolved for its
+ * label. A read gives it as both the node's id and its label, while the canvas
+ * may hold a provisional id, an id from before a rename, or a display label
+ * ("Transform 3" persists as `Transform_3`).
  */
-function byAuthoredName(graph: Graph): Graph {
-  const names = new Map(graph.nodes.map((node) => [
-    node.id,
-    typeof node.data?.label === "string" && node.data.label !== "" ? node.data.label : node.id,
-  ]))
+function persistedName(node: Graph["nodes"][number]): string {
+  const data = node.data ?? {}
+  if (typeof data._functionName === "string" && data._functionName !== "") return data._functionName
+  return typeof data.label === "string" && data.label !== "" ? data.label : node.id
+}
+
+/**
+ * The graph as the file holds it: each node known, and labelled, by its persisted
+ * name, nodes in name order, and edges in their targets' name order. That sort is
+ * stable, so a node's inputs keep their order, which the file keeps (an External
+ * File hook's first input is its frame); nothing else about edge order is saved.
+ */
+function asPersisted(graph: Graph): Graph {
+  const names = new Map(graph.nodes.map((node) => [node.id, persistedName(node)]))
   const name = (id: string) => names.get(id) ?? id
-  const byId = <T extends { id: string }>(a: T, b: T) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  const byName = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
   return {
-    nodes: graph.nodes.map((node) => ({ ...node, id: name(node.id) })).sort(byId),
+    nodes: graph.nodes
+      .map((node) => ({ ...node, id: name(node.id), data: { ...node.data, label: name(node.id) } }))
+      .sort((a, b) => byName(a.id, b.id)),
     edges: graph.edges
       .map((edge) => ({
         ...edge,
@@ -48,15 +60,15 @@ function byAuthoredName(graph: Graph): Graph {
         source: name(edge.source),
         target: name(edge.target),
       }))
-      .sort(byId),
+      .sort((a, b) => byName(a.target, b.target)),
   }
 }
 
 /**
  * The document is the saved file and its persisted authored state equals the
  * submitted save's, compared as the dirty state compares them (`serializeSnapshot`:
- * nodes with their layout, edges, preamble, submodels, constants), each node known
- * by its name, together with the pipeline's name and description, the preserved
+ * nodes with their layout, edges, preamble, submodels, constants) as the file holds
+ * it (`asPersisted`), together with the pipeline's name and description, the preserved
  * blocks, sources and active source. Transient execution and UI
  * fields take no part; the revision proves nothing, so it is not compared.
  */
@@ -65,14 +77,14 @@ export function documentHoldsSave(document: PipelineEditorDocument, submitted: S
   const adapted = adaptPipelineEditorDocument(document)
   const noConstants: GlobalConstantDraft[] = []
   const read = serializeSnapshot({
-    ...byAuthoredName({ nodes: adapted.nodes, edges: normalizeEdges(adapted.edges) }),
+    ...asPersisted({ nodes: adapted.nodes, edges: normalizeEdges(adapted.edges) }),
     preamble: document.preamble ?? "",
     submodels: adapted.submodels,
     globalConstants: submitted.constantsSent ? constantDrafts(document.global_constants) : noConstants,
   })
   const sent = serializeSnapshot({
     ...submitted.snapshot,
-    ...byAuthoredName(submitted.snapshot),
+    ...asPersisted(submitted.snapshot),
     globalConstants: submitted.constantsSent ? submitted.snapshot.globalConstants : noConstants,
   })
   return read === sent
