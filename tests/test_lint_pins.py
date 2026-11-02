@@ -653,3 +653,18 @@ def test_annotations_escape_workflow_command_characters(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "p%2520w.whl'%0Asecond" in out
     assert out.count("::error") == 1
+
+
+def test_the_workflows_haute_init_generates_pin_every_action(tmp_path):
+    from haute._scaffold import ci_files, workbench_ci_files
+    from haute.cli._init_cmd import HOST_CHOICES, TARGET_CHOICES
+
+    generated = [ci_files(target, "github") for target in TARGET_CHOICES]
+    generated += [workbench_ci_files(host, "github") for host in HOST_CHOICES]
+    for index, files in enumerate(generated):
+        project = tmp_path / str(index)
+        for relative, text in files.items():
+            (project / relative).parent.mkdir(parents=True, exist_ok=True)
+            (project / relative).write_text(text, "utf-8")
+        assert any("uses:" in text for text in files.values())
+        assert lint_pins.check_action_pins(project) == []

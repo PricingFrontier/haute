@@ -57,7 +57,9 @@ Out of scope, owned elsewhere:
   and sign-in, which have none, are refused naming their flags; a flag of the other kind of
   project (`--target` with `--workbench`, or `--host`, `--store` or `--sign-in` without it)
   is refused. Every new project gets a blank `rating/` pipeline package, `.env.example`,
-  test-quote fixtures, CI/CD workflow files for the chosen provider, a git pre-commit hook,
+  test-quote fixtures, CI/CD workflow files for the chosen provider (each GitHub action
+  pinned to a commit), a git pre-commit hook that fixes and formats only what is staged and
+  stops a commit on a problem ruff cannot fix,
   and `.gitignore` guard entries; a starter file of `rating/` or `tests/` is written only
   where the folder has none, so a `rating/main.py` already there is kept and the summary
   names what was kept, and no workflow already in the folder is pruned. The hook is installed in `.git/hooks/` too inside a git repository,

@@ -13,9 +13,7 @@ packages come from the [25 October 2026 codebase review](codebase-review-2026-10
 |---|---|---:|---|
 | CLI-R02 | Planned | P2 | `haute run` walks the pipeline lazily to its output node under the batch profile, with a named source, instead of materialising every node in memory. |
 | CLI-R03 | Planned | P2 | `haute lint` applies the editor's save-time validation, so CI's lint step refuses what the editor would refuse. |
-| CLI-R04 | Planned | P3 | `haute init` edits `pyproject.toml` through `tomlkit` instead of a hand-written TOML scanner. |
 | CLI-R05 | Planned | P3 | Unexpected errors keep their tracebacks, the transport helper raises instead of exiting, and `haute serve` opens the browser when the server is ready. |
-| CLI-R06 | Planned | P3 | Generated workflows pin actions by commit, and the generated pre-commit hook formats only what is staged. |
 | CLI-R07 | Planned | P2 | `haute impact` confines `impact_dataset` to the project root and preserves non-string scalar fields from `test_quotes_dir`, and `haute lint` and `haute run` catch `ConfigError` from `resolve_pipeline_file`. |
 
 ## Planned improvements
@@ -63,22 +61,6 @@ lint` with the same message.
 **Evidence:** `src/haute/cli/_lint.py::handle_lint`; `src/haute/routes/_save_pipeline.py`
 (the save-time validation).
 
-### CLI-R04 — `pyproject.toml` through `tomlkit`
-**Why:** About 250 lines of `_init_cmd.py` hand-roll a TOML header scanner and splicer to
-insert `"haute"` into `[project].dependencies`, each with its own edge cases, while
-`tomlkit`, a style-preserving TOML editor, is already a runtime dependency.
-
-**Plan:** Edit the document with `tomlkit` and delete the scanner, the bracket matcher and
-the string serialiser.
-
-**Acceptance:** The existing `init` tests pass against the `tomlkit` edit; the scanner
-functions are gone.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/cli/_init_cmd.py::_ensure_haute_dependency`,
-`::_rewrite_project_dependencies`, `::_scan_table_headers` and `::_find_matching_bracket`.
-
 ### CLI-R05 — Error reporting and helpers
 **Why:** `deploy`, `run`, `lint` and `train` catch `Exception` around resolution, parsing
 and execution and exit 1 with one line, so a programmer error loses its traceback, which
@@ -104,24 +86,6 @@ traceback; `haute serve` opens the browser only once the port accepts connection
 `src/haute/cli/_helpers.py::resolve_transport` and `::resolve_model_name`;
 `src/haute/cli/_serve.py::_run_prod_mode`, `::_schedule_browser_open` and
 `::_open_browser_after_backend_ready`.
-
-### CLI-R06 — Generated CI hygiene
-**Why:** The generated deploy workflows, which hold registry and Databricks tokens, pin
-actions by floating major tag (`actions/checkout@v4`), so a compromised tag runs with the
-secrets. The generated pre-commit hook runs `git add $FILES`, staging whole files so an
-unstaged hunk of a partially staged file is committed, and `|| true` hides a failing
-`ruff check --fix`.
-
-**Plan:** Pin actions to commit SHAs with the tag in a comment; format only the staged
-content and let the check's failure stop the commit.
-
-**Acceptance:** Every `uses:` in the generated workflows names a 40-hex commit; a
-partially staged file commits only its staged hunks under the hook.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_scaffold.py::github_ci_yml`, `::github_deploy_yml`,
-`::github_deploy_prod_yml` and `::pre_commit_hook`.
 
 ### CLI-R07 — `impact` dataset confinement and non-string scalar fields, and `lint`/`run` pipeline resolution errors
 **Why:** Two CLI defects affect `haute impact`, `haute lint` and `haute run`:

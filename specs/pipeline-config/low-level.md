@@ -527,6 +527,16 @@ scaffolded `haute.toml` names, which holds the form folder too, and the test quo
 folder, and `_RELEASE_INPUT_FILES`) and rendered by
 `_github_trigger_paths` and `_azure_devops_trigger_paths`, the same with or without a
 workbench.
+Every action a generated GitHub workflow runs is pinned to a 40-hex commit with its tag in a
+comment (`_CHECKOUT`, `_SETUP_UV`, `_UPLOAD_ARTIFACT`, the commits Haute's own CI runs), so
+a tag moved to other code never runs in a job holding the deploy's secrets;
+`scripts/lint_pins.py`'s action rule holds the generated workflows to it. `pre_commit_hook`
+fixes (`ruff check --fix`) then formats (`ruff format`) each staged Python file's staged
+content through ruff's standard input and writes the result back to the index
+(`git update-index --cacheinfo`), so an unstaged hunk of a partially staged file stays out
+of the commit; a file with nothing unstaged takes the result in the working tree too
+(`git checkout-index`). A problem `ruff check --fix` cannot fix exits non-zero and stops the
+commit.
 Every CI generator also takes `python_version`
 (default `DEFAULT_CI_PYTHON`, `haute._project_python.DEFAULT_PYTHON`, 3.11):
 `_pin_ci_python` moves each job's Python pin (setup-uv's `python-version`, Azure's

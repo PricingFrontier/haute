@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import stat
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -1790,3 +1792,93 @@ class TestInitCiRunsTheProjectsPython:
             assert pins, relative
             assert {next(v for v in pin if v) for pin in pins} == {expected}, relative
 
+
+class TestPreCommitHookFormatsWhatIsStaged:
+    """The generated pre-commit hook, run by git with the real ruff, formats and checks the
+    staged content only, and a problem ruff cannot fix stops the commit."""
+
+    @pytest.fixture
+    def repository(self, tmp_path: Path) -> tuple[Path, dict[str, str]]:
+        from tests._git_helpers import init_repo, install_hook
+
+        (tmp_path / "repo").mkdir()
+        repository = init_repo(tmp_path / "repo")
+        git_run(repository, "config", "core.hooksPath", ".git/hooks")
+        install_hook(repository, "pre-commit", pre_commit_hook())
+        # `uv run ruff ...` as the hook runs it, on this interpreter's ruff.
+        shims = tmp_path / "shims"
+        shims.mkdir()
+        python = Path(sys.executable).as_posix()
+        shim = (
+            "#!/bin/sh",
+            'while [ "$1" != ruff ]; do shift; done',
+            "shift",
+            f'exec "{python}" -m ruff "$@"',
+        )
+        (shims / "uv").write_text(
+            "\n".join(shim) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        (shims / "uv").chmod(0o755)
+        env = {**os.environ, "PATH": f"{shims}{os.pathsep}{os.environ['PATH']}"}
+        return repository, env
+
+    @staticmethod
+    def _commit(repository: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "commit", "-m", "change"],
+            cwd=repository,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_a_partially_staged_file_commits_only_its_formatted_staged_hunk(
+        self, repository: tuple[Path, dict[str, str]]
+    ):
+        repo, env = repository
+        module = repo / "pricing.py"
+        module.write_text("x  =  1\n", encoding="utf-8", newline="\n")
+        git_run(repo, "add", "pricing.py")
+        module.write_text("x  =  1\ny  =  2\n", encoding="utf-8", newline="\n")
+
+        result = self._commit(repo, env)
+
+        assert result.returncode == 0, result.stderr
+        assert git_run(repo, "show", "HEAD:pricing.py") == "x = 1"
+        # The unstaged line stays unstaged, in the working tree as it was written.
+        assert module.read_text(encoding="utf-8") == "x  =  1\ny  =  2\n"
+        assert "+y  =  2" in git_run(repo, "diff", "--", "pricing.py")
+
+    def test_a_wholly_staged_file_is_formatted_in_the_working_tree_too(
+        self, repository: tuple[Path, dict[str, str]]
+    ):
+        repo, env = repository
+        module = repo / "pricing.py"
+        module.write_text("import os\nx  =  1\n", encoding="utf-8", newline="\n")
+        git_run(repo, "add", "pricing.py")
+
+        result = self._commit(repo, env)
+
+        assert result.returncode == 0, result.stderr
+        assert git_run(repo, "show", "HEAD:pricing.py") == "x = 1"
+        assert module.read_text(encoding="utf-8") == "x = 1\n"
+        assert git_run(repo, "status", "--porcelain", "--", "pricing.py") == ""
+
+    def test_a_problem_ruff_cannot_fix_stops_the_commit(
+        self, repository: tuple[Path, dict[str, str]]
+    ):
+        repo, env = repository
+        (repo / "pricing.py").write_text(
+            "def price():\n    return undefined_rate\n", encoding="utf-8", newline="\n"
+        )
+        git_run(repo, "add", "pricing.py")
+        head = git_run(repo, "rev-parse", "HEAD")
+
+        result = self._commit(repo, env)
+
+        assert result.returncode != 0
+        assert "F821" in result.stderr
+        assert "ruff stopped the commit at pricing.py" in result.stderr
+        assert git_run(repo, "rev-parse", "HEAD") == head
