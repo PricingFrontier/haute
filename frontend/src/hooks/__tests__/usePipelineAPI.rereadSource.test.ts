@@ -131,9 +131,9 @@ function makeParams() {
 async function renderPipelineAPI(nodes: Node[]) {
   mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
   const params = makeParams()
-  params.graphRef.current = { nodes, edges: [] }
   const hook = renderHook(() => usePipelineAPI(params))
   await waitFor(() => expect(hook.result.current.loading).toBe(false))
+  params.graphRef.current = { nodes, edges: [] }
   return { ...hook, params }
 }
 

@@ -172,9 +172,10 @@ async function fetchTables(answer: WorkbenchTablesResponse) {
 
 async function renderLoaded(nodes: Node[], edges: Edge[] = []) {
   const params = makeParams()
-  params.graphRef.current = { nodes, edges }
   const rendered = renderHook(() => usePipelineAPI(params))
   await waitFor(() => expect(rendered.result.current.loading).toBe(false))
+  // The canvas as edited after the initial load, which sets the graph it loaded.
+  params.graphRef.current = { nodes, edges }
   return rendered
 }
 

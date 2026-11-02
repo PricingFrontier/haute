@@ -160,9 +160,9 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
     }))
     const node = makeNode("browser_apply", "optimiserApply")
     const params = makeParams()
-    params.graphRef.current = { nodes: [node], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    params.graphRef.current = { nodes: [node], edges: [] }
 
     act(() => result.current.fetchPreview(node, { debounceMs: 0 }))
     await waitFor(() => expect(ensureInputSnapshots).toHaveBeenCalledTimes(1))
@@ -193,7 +193,6 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
       .mockImplementationOnce(() => new Promise<void>((resolve) => { finishSecond = resolve }))
     const node = makeNode("browser_apply", "optimiserApply")
     const params = makeParams()
-    params.graphRef.current = { nodes: [node], edges: [] }
     // The graph each request sends is the one the editor holds when it is resolved.
     vi.mocked(resolveGraphFromRefs).mockImplementation((graphRef) => ({
       nodes: graphRef.current.nodes,
@@ -202,6 +201,7 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
     }) as unknown as ReturnType<typeof resolveGraphFromRefs>)
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    params.graphRef.current = { nodes: [node], edges: [] }
 
     act(() => result.current.fetchPreview(node, { debounceMs: 0 }))
     await waitFor(() => expect(ensureInputSnapshots).toHaveBeenCalledTimes(1))
@@ -244,9 +244,9 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
     })
     const node = makeNode("browser_apply", "optimiserApply")
     const params = makeParams()
-    params.graphRef.current = { nodes: [node], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    params.graphRef.current = { nodes: [node], edges: [] }
 
     act(() => result.current.fetchPreview(node, { debounceMs: 0 }))
 
@@ -275,10 +275,10 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
 
     const applyNode = makeNode("browser_apply", "optimiserApply")
     const params = makeParams()
-    params.graphRef.current = { nodes: [applyNode], edges: [] }
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    params.graphRef.current = { nodes: [applyNode], edges: [] }
     const requestStructuralVersion = useGraphStore.getState().structuralVersion
 
     act(() => { result.current.fetchPreview(applyNode, { debounceMs: 0 }) })
@@ -326,10 +326,10 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
 
     const applyNode = makeNode("browser_apply", "optimiserApply")
     const params = makeParams()
-    params.graphRef.current = { nodes: [applyNode], edges: [] }
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    params.graphRef.current = { nodes: [applyNode], edges: [] }
 
     act(() => {
       result.current.previewNodeFrame(applyNode.id, "optimised")
@@ -359,10 +359,10 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
 
     const applyNode = makeNode("browser_apply", "optimiserApply")
     const params = makeParams()
-    params.graphRef.current = { nodes: [applyNode], edges: [] }
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    params.graphRef.current = { nodes: [applyNode], edges: [] }
 
     act(() => { result.current.fetchPreview(applyNode, { debounceMs: 0 }) })
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
@@ -398,10 +398,10 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
 
     const scoringNode = makeNode("competitor_scoring", "modelScore")
     const params = makeParams()
-    params.graphRef.current = { nodes: [scoringNode], edges: [] }
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    params.graphRef.current = { nodes: [scoringNode], edges: [] }
 
     act(() => { result.current.fetchPreview(scoringNode, { debounceMs: 0 }) })
 
@@ -425,10 +425,10 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
 
     const applyNode = makeNode("browser_apply", "optimiserApply")
     const params = makeParams()
-    params.graphRef.current = { nodes: [applyNode], edges: [] }
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    params.graphRef.current = { nodes: [applyNode], edges: [] }
 
     act(() => { result.current.fetchPreview(applyNode, { debounceMs: 0 }) })
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
