@@ -361,8 +361,10 @@ the limited preview shows rather than independent source samples.
    the child's row came from the child's own head frame; the clicked target row starts
    head-resolved. A head-frame match compares the child's carried values (item 4) when
    they carry no cast, so a column the child's code rewrote is left out rather than
-   relaxed around; a child whose code the proof cannot read keeps name-based matching,
-   whose relaxed match is reported low-confidence. `schema_for` reads a node's schema from
+   relaxed around; each carried value is a strict constraint (`_match_parent_row`'s
+   `proven`), so a parent row absent from the head frame is omitted, never relaxed onto
+   another. A child whose code the proof cannot read keeps name-based matching, whose
+   relaxed match is reported low-confidence. `schema_for` reads a node's schema from
    the frame this click already holds for it (its head frame or looked-up rows, both read
    from its plan) before building the uncapped plans, so head-frame matching never builds
    them. Every other port correlates in a row-scoped frame (`lookup`): the
@@ -701,7 +703,13 @@ its public facade.
    runtime skipped for having no usable operator/value pair cannot be selected
    by enrichment. A traced value is compared in the kind its breakpoints share
    (`_match_interval_rule` reads a date or date-and-time input as the runtime's
-   `banding_comparison_expr` does), so a date band the engine chose is credited.
+   `banding_comparison_expr` does), so a date band the engine chose is credited. A number
+   is compared in the precision the engine compares it in: Polars types a rule's float
+   threshold as a float column's own dtype, so a `Float32` (or `Float16`) value and
+   threshold are both rounded through that dtype, and every other numeric column compares
+   in `Float64`, the supertype of an integer and a float
+   (`_coerce_pair_through_dtype`). Nothing is caught there: a failure reaches
+   `enrich_banding`'s error boundary as an `error` with its `error_type`.
 6. Classifies `step.row_lineage_type` via `detect_row_lineage_type()`, using the
    node type first (source nodes and constants → `"created"`, `liveSwitch` →
    `"selected"`, `edgeJoin` → `"joined"`, `scenarioExpander` → `"expanded"`,
@@ -813,7 +821,10 @@ snapshot deterministically.
   representations with timezone-awareness preserved; Decimal uses exact
   lossless rescaling and never floats; Categorical/Enum compares normalised
   string values; compatible List/Array/Struct uses a typed one-row Polars
-  literal. Object and incompatible nested schemas are unsupported.
+  literal. Object and incompatible nested schemas are unsupported. A Polars
+  failure evaluating the strict predicate is reported as
+  `incompatible_nested_schema` only when a compared column is nested; with no
+  nested column it is a defect and propagates.
 - **Ambiguity and relaxation are explicit.** Multiple candidates never select
   the first row. Relaxation is attempted only after zero strict candidates,
   may omit keys but cannot weaken a retained key's value contract, and emits a

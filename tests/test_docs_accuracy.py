@@ -168,7 +168,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "polars-node-clarity",
     "server-api",
     "t-boost",
-    "tracing",
     "workbench",
 )
 _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (

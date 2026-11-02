@@ -2484,6 +2484,45 @@ class TestEnrichRowLineageType:
 # ===========================================================================
 
 
+@pytest.mark.parametrize(
+    ("dtype", "value", "boundary"),
+    [
+        # A float column narrower than Float64 compares in its own precision.
+        (pl.Float32, 0.1, "0.1"),
+        (pl.Float32, 16777217.0, "16777216"),
+        # Any other numeric column compares in Float64.
+        (pl.Float64, 0.1, "0.1"),
+        (pl.Int64, 3, "2.5"),
+        (pl.Int64, 2**53 + 1, str(2**53)),
+        (pl.Int8, 100, "300"),
+        (pl.UInt8, 5, "-1"),
+    ],
+)
+def test_a_breakpoint_verdict_agrees_with_the_band_the_engine_applied(dtype, value, boundary):
+    from haute._rating import apply_banding_factors
+    from haute._trace_enrichment import enrich_banding
+
+    factor = {
+        "column": "x",
+        "outputColumn": "band",
+        "banding": "breakpoints",
+        "rules": [{"boundary": boundary, "label": "low"}],
+        "default": "high",
+    }
+    frame = pl.DataFrame({"x": pl.Series([value], dtype=dtype)})
+    band = apply_banding_factors(frame.lazy(), [factor]).collect().item(0, "band")
+
+    detail = enrich_banding(
+        {"factors": [factor]},
+        frame.row(0, named=True),
+        {"band": band},
+        factor_input_dtypes={"x": dtype},
+    )
+
+    assert "error" not in detail
+    assert detail["status"] == ("matched" if band == "low" else "default")
+
+
 class TestMatchIntervalRule:
     """Tests for _match_interval_rule with every interval operator."""
 

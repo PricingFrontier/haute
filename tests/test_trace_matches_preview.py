@@ -1355,6 +1355,44 @@ class TestLimitedPreviewTrace:
         # The rewritten value is left out of the match, not relaxed around.
         assert looked_up == []
 
+    def test_a_proven_parent_row_outside_the_head_frame_is_not_relaxed_onto_another(
+        self, tmp_path, monkeypatch
+    ):
+        from haute._trace_correlation import RowScopeResolver
+
+        path = tmp_path / "data.parquet"
+        pl.DataFrame(
+            {"id": list(range(20)), "region": [f"r{i % 3}" for i in range(20)]}
+        ).write_parquet(path)
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(path)),
+                    _transform_node("flagged", "df = src.with_columns(flag=pl.lit(1))"),
+                ],
+                "edges": [_edge("src", "flagged")],
+            }
+        )
+        real_head_frame = RowScopeResolver._head_frame
+
+        def head_frame_without_policy_4(self, parent_id, source_handle):
+            # A parent whose order differs between runs: its head frame no
+            # longer holds the row the child's head row came from.
+            frame = real_head_frame(self, parent_id, source_handle)
+            if parent_id != "src" or frame is None:
+                return frame
+            return frame.filter(pl.col("id") != 4)
+
+        monkeypatch.setattr(RowScopeResolver, "_head_frame", head_frame_without_policy_4)
+
+        row, result = self._trace(graph, "flagged", 4, row_limit=5, column=None)
+
+        # The one remaining head row sharing policy 4's region is policy 1.
+        assert row == {"id": 4, "region": "r1", "flag": 1}
+        assert "src" not in {step.node_id for step in result.steps}
+        codes = {diagnostic.get("code") for diagnostic in result.correlation_diagnostics}
+        assert "low_confidence_relaxed_match" not in codes
+
     def test_a_grouped_row_reports_the_rows_it_aggregates(self, tmp_path):
         path = tmp_path / "claims.parquet"
         pl.DataFrame({"quote_id": ["a", "a", "b"], "amount": [1.0, 2.0, 5.0]}).write_parquet(path)

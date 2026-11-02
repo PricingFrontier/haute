@@ -249,25 +249,22 @@ def _coerce_pair_through_dtype(
     right: float,
     dtype: pl.DataType | None,
 ) -> tuple[float, float]:
-    """Round both operands into *dtype*'s numeric domain for comparison.
+    """Round both operands into the precision the engine compares them in.
 
-    The engine bands the factor column in its own dtype (often
-    ``Float32``), but the trace boundary widens every cell to Python
-    ``float`` (``float64``).  A ``Float32`` value the engine matched with
-    an ``=`` rule then reads as ``no_match`` under exact ``float64`` ``==``
-    (e.g. ``0.1`` widened to ``0.10000000149…`` != literal ``0.1``).
-    Canonicalising BOTH the observed cell and the rule threshold through
-    the source dtype reproduces the engine's own comparison, so the trace
-    cannot contradict the band it actually applied.  ``None`` (dtype
-    unknown) leaves the operands untouched.
+    The engine compares the factor column against each rule's threshold as a
+    Python ``float`` literal. Polars gives that literal a float column's own
+    dtype, so a ``Float32`` column compares in ``Float32``; any other numeric
+    column compares in ``Float64``, the supertype of an integer and a float.
+    The trace boundary widens every cell to ``float64``, so a ``Float32`` value
+    the engine matched with an ``=`` rule would read as ``no_match`` (``0.1``
+    widened to ``0.10000000149…`` != literal ``0.1``) unless both operands are
+    rounded through the column's dtype first. ``None`` (dtype unknown) leaves
+    the operands untouched.
     """
-    if dtype is None:
+    if dtype is None or not dtype.is_float() or dtype == pl.Float64:
         return left, right
-    try:
-        coerced = pl.Series([left, right], dtype=dtype)
-        return float(coerced[0]), float(coerced[1])
-    except (pl.exceptions.PolarsError, ValueError, TypeError, OverflowError):
-        return left, right
+    coerced = pl.Series([left, right], dtype=dtype)
+    return float(coerced[0]), float(coerced[1])
 
 
 def _match_interval_rule(
