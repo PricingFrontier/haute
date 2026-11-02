@@ -475,16 +475,26 @@ Pane ownership:
   only), then one bordered card per constraint, all laid out the same way so each reads as a
   sentence. There is no result-type choice: the solve is a single point unless a constraint is
   swept. A card's first row holds the constraint column selector and the remove action; its
-  second row holds the bound type (**at least** / **at most**, stored as `min` / `max`), a
+  second row holds the bound type (**at least** / **at most**, stored as `min` / `max`, an
+  absolute total; or **at least % of baseline** / **at most % of baseline**, stored as
+  `min_pct` / `max_pct`, a fraction of the constraint's baseline total), a
   **Fixed | Sweep** switch, and the value area: one value when Fixed, or the **from** and **to**
-  ends of that constraint's frontier range when swept. A swept card shows no fixed value; the
+  ends of that constraint's frontier range when swept. A percentage bound's value and range are
+  shown and typed in percent beside a % sign (`{min_pct: 0.95}` reads 95) and stored as the
+  fraction. Switching between at least and at most keeps the value; switching between an
+  absolute and a percentage bound starts it afresh, at 100% of baseline or at 0 as a new
+  constraint starts, and a swept constraint's range restarts from that value in the same
+  update. A constraint that holds none of the four bounds, or several, shows no bound type
+  until one is chosen. A swept card shows no fixed value; the
   solve runs a swept constraint at its range's start, and a fixed constraint is held at its value
   at every frontier point. Switching to Sweep writes a `frontier_ranges` entry starting at the
   fixed value; switching back to Fixed removes it, and the saved fixed value applies again. A
   swept card carries its own **Auto range** button beneath its from/to, which fills that
   constraint's range only, merged over the other constraints' current ranges; the running card's
   button reads **Restart auto range**, and a failure shows on the card that asked. One auto-range
-  run exists at a time, so starting another card's supersedes it;
+  run exists at a time, so starting another card's supersedes it; saving the pipeline while it
+  runs leaves it running. Auto range fills absolute totals, so on a percentage card it is
+  disabled beside "Auto range sets absolute totals" and the range is typed;
   clearing both ends keeps the constraint swept. With no constraints the pane says the objective
   is maximised alone. When any constraint is swept, a **Frontier** section follows the cards with
   **Points per swept constraint** (`frontier_steps`). The frontier is a sweep over the
@@ -511,7 +521,8 @@ Pane ownership:
   once the input's columns are known); a Validation input that is not connected, more than twelve
   validation factors, or a validation factor the validation input does not have (checked once its
   columns are known); in ratebook mode no connected Rating Factor Source or no
-  selected factor; and a swept constraint whose range is missing an end or whose minimum is not
+  selected factor; a constraint without exactly one bound, or a fixed one without a value; and a
+  swept constraint whose range is missing an end or whose minimum is not
   below its maximum, or more than 10,000 frontier solves in total over the swept constraints. Warnings
   that do not block — one scenario per quote, or quotes with differing scenario counts — appear
   under the estimate. Ctrl+Enter inside the optimiser editor starts the solve, or re-runs it when
@@ -609,9 +620,12 @@ Selecting a frontier point never removes a view: Convergence stays available and
 (or not converged), K iterations", and the frontier chart's as-solved marker stays at the solve's
 position. The Frontier chart fits the pane, names its axes (the objective
 column and the x constraint) at 12 px, and has a legend. A multi-constraint sweep is shown one
-slice at a time ("Holding <other> at"), drawn as a line in bound order, so it reads as a frontier
+slice at a time ("Holding <other> at", a percentage constraint's held value reading "95% of
+baseline"), drawn as a line in bound order, so it reads as a frontier
 rather than a projected cloud; every point keeps its global number wherever it is selected,
-stepped or published, and selecting a point elsewhere brings its slice into view. The line joins
+stepped or published, and selecting a point elsewhere brings its slice into view. Points that
+land on one pixel share one marker, which shows the selected point when it is one of them, so
+the marker drawn as selected is the one a click selects. The line joins
 only feasible points — converged and meeting every bound, judged by haute in both modes because
 a converged ratebook point can still breach a bound; a non-converged point is hollow and a
 converged-but-breached one a cross labelled "breached", both still selectable, with its status in

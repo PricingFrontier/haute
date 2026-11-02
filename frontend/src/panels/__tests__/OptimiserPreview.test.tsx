@@ -982,6 +982,26 @@ describe("OptimiserPreview", () => {
       expect(screen.getByText(/This slice holds 3 of the 6 frontier points\./)).toBeInTheDocument()
     })
 
+    it("labels a held percentage constraint's threshold as a percentage of its baseline", () => {
+      const frontier = gridFrontier()
+      renderPreview({
+        data: gridData({
+          frontier: {
+            ...frontier,
+            points: frontier.points.map((point) => ({
+              ...point,
+              thresholds: { ...point.thresholds, margin: point.thresholds.margin === 400 ? 0.95 : 1.05 },
+            })),
+          },
+          constraints: { volume: { min: 5.5 }, margin: { max_pct: 0.95 } },
+        }),
+      })
+
+      const holding = screen.getByLabelText("Holding margin at")
+      expect(within(holding).getAllByRole("option").map((option) => option.textContent))
+        .toEqual(["95% of baseline", "105% of baseline"])
+    })
+
     it("offers only the swept constraints on the X axis and re-slices when it changes", () => {
       renderPreview({ data: gridData() })
 

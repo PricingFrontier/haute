@@ -11,6 +11,7 @@ import { configField } from "../../utils/configField"
 import { NODE_TYPES } from "../../utils/nodeTypes"
 import type { SimpleEdge, SimpleNode } from "../editors/_shared"
 import type { SolveIssue } from "./OptimiserSolveStatus"
+import { constraintBoundKind, constraintBoundValue } from "./constraintBounds"
 
 /** The solver's frontier workload cap: steps ** constraints solves (mirrors the backend). */
 export const FRONTIER_COMPUTE_LIMIT = 10_000
@@ -236,6 +237,16 @@ export function optimiserSolveReadiness(
           message: `Validation factor “${column}” is not a column of the validation input.`,
         })
       }
+    }
+  }
+  // A constraint holds exactly one bound; a swept one runs from its range, so
+  // only a fixed one needs its value.
+  for (const [name, spec] of Object.entries(constraints)) {
+    const kind = constraintBoundKind(spec)
+    if (kind === null) {
+      issues.push({ pane: "constraints", label: "Constraints", message: `Choose a bound for the ${name} constraint.` })
+    } else if (constraintBoundValue(spec, kind) === undefined && !Object.hasOwn(frontierRanges, name)) {
+      issues.push({ pane: "constraints", label: "Constraints", message: `Set a value for the ${name} constraint.` })
     }
   }
   // Auto range needs only a solvable setup: it exists to fill the frontier

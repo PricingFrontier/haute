@@ -1,11 +1,18 @@
 import { useCallback } from "react"
 import type { OnUpdateConfig } from "../panels/editors/_shared"
+import {
+  constraintBoundKind,
+  constraintBoundValue,
+  isPercentBound,
+  startingBoundValue,
+  type ConstraintBoundKind,
+} from "../panels/optimiser/constraintBounds"
 
 /**
  * Pure constraint CRUD handlers for optimiser config.
- * Operates on a constraints dict: { columnName: { constraintType: number } }.
- * The UI supports one active absolute threshold per row, matching the
- * optimiser's sum-constraint contract.
+ * Operates on a constraints dict: { columnName: { boundKind: number } }.
+ * Each constraint holds one bound (`min`, `max`, `min_pct` or `max_pct`),
+ * matching the optimiser's sum-constraint contract.
  */
 export function useConstraintHandlers(
   constraints: Record<string, Record<string, number>>,
@@ -57,14 +64,35 @@ export function useConstraintHandlers(
     onUpdate("constraints", newConstraints)
   }, [constraints, frontierRanges, onUpdate])
 
-  const handleConstraintValueChange = useCallback((name: string, type: string, value: number) => {
-    onUpdate("constraints", { ...constraints, [name]: { [type]: value } })
+  const handleConstraintValueChange = useCallback((name: string, kind: ConstraintBoundKind, value: number) => {
+    onUpdate("constraints", { ...constraints, [name]: { [kind]: value } })
   }, [constraints, onUpdate])
+
+  // Between at least and at most the value stays. Between an absolute and a
+  // percentage bound it means something else, so the bound starts afresh, and
+  // a swept constraint's range, in the old unit, restarts from it too.
+  const handleConstraintKindChange = useCallback((name: string, kind: ConstraintBoundKind) => {
+    const spec = constraints[name] ?? {}
+    const currentKind = constraintBoundKind(spec)
+    const sameUnit = currentKind !== null && isPercentBound(currentKind) === isPercentBound(kind)
+    const kept = sameUnit ? constraintBoundValue(spec, currentKind) : undefined
+    const value = kept ?? startingBoundValue(kind)
+    const nextConstraints = { ...constraints, [name]: { [kind]: value } }
+    if (!sameUnit && Object.hasOwn(frontierRanges, name)) {
+      onUpdate({
+        constraints: nextConstraints,
+        frontier_ranges: { ...frontierRanges, [name]: { min: value } },
+      })
+      return
+    }
+    onUpdate("constraints", nextConstraints)
+  }, [constraints, frontierRanges, onUpdate])
 
   return {
     handleAddConstraint,
     handleRemoveConstraint,
     handleConstraintColumnChange,
     handleConstraintValueChange,
+    handleConstraintKindChange,
   }
 }

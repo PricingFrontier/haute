@@ -59,6 +59,7 @@ const mockHandleAddConstraint = vi.fn()
 const mockHandleRemoveConstraint = vi.fn()
 const mockHandleConstraintColumnChange = vi.fn()
 const mockHandleConstraintValueChange = vi.fn()
+const mockHandleConstraintKindChange = vi.fn()
 
 vi.mock("../../hooks/useDataInputColumns", () => ({
   useDataInputColumns: vi.fn(() => [
@@ -76,6 +77,7 @@ vi.mock("../../hooks/useConstraintHandlers", () => ({
     handleRemoveConstraint: mockHandleRemoveConstraint,
     handleConstraintColumnChange: mockHandleConstraintColumnChange,
     handleConstraintValueChange: mockHandleConstraintValueChange,
+    handleConstraintKindChange: mockHandleConstraintKindChange,
   })),
 }))
 
@@ -1045,6 +1047,26 @@ describe("OptimiserConfig", () => {
       ])
     })
 
+    it("blocks a constraint without one bound, or a fixed one without a value", () => {
+      renderConfig(makeProps({
+        config: {
+          mode: "online",
+          objective: "premium",
+          constraints: {
+            loss_ratio: { min: 0.5, max: 1 },
+            volume: { min_pct: null },
+            premium_share: { max: null },
+          },
+          frontier_ranges: { premium_share: { min: 0.1, max: 0.2 } },
+        },
+      }))
+      const alert = screen.getByRole("alert")
+      expect(within(alert).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+        "Choose a bound for the loss_ratio constraint.Go to Constraints",
+        "Set a value for the volume constraint.Go to Constraints",
+      ])
+    })
+
     it("needs no range for a constraint that is not swept", () => {
       renderConfig(makeProps({
         config: {
@@ -1688,7 +1710,7 @@ describe("OptimiserConfig", () => {
       expect(valueInput).toHaveValue(1.05)
     })
 
-    it("changing the constraint type dropdown calls handleConstraintValueChange", () => {
+    it("changing the constraint type dropdown calls handleConstraintKindChange", () => {
       renderConfig(makeProps({
             config: {
               mode: "online",
@@ -1699,8 +1721,67 @@ describe("OptimiserConfig", () => {
       const typeSelect = screen.getByRole("combobox", {
         name: "loss_ratio constraint bound type",
       })
-      fireEvent.change(typeSelect, { target: { value: "min" } })
-      expect(mockHandleConstraintValueChange).toHaveBeenCalledWith("loss_ratio", "min", 1.05)
+      expect(Array.from(typeSelect.querySelectorAll("option")).map((option) => option.textContent)).toEqual([
+        "at least", "at most", "at least % of baseline", "at most % of baseline",
+      ])
+      fireEvent.change(typeSelect, { target: { value: "min_pct" } })
+      expect(mockHandleConstraintKindChange).toHaveBeenCalledWith("loss_ratio", "min_pct")
+    })
+
+    it("shows a percentage constraint in percent and keeps its key when the value is edited", () => {
+      renderConfig(makeProps({
+            config: {
+              mode: "online",
+              objective: "premium",
+              constraints: { volume: { min_pct: 0.95 } },
+            },
+          }))
+      expect(screen.getByRole("combobox", { name: "volume constraint bound type" }))
+        .toHaveDisplayValue("at least % of baseline")
+      const valueInput = screen.getByRole("spinbutton", {
+        name: "volume constraint value (% of baseline)",
+      })
+      expect(valueInput).toHaveValue(95)
+      fireEvent.change(valueInput, { target: { value: "90" } })
+      fireEvent.blur(valueInput)
+      expect(mockHandleConstraintValueChange).toHaveBeenCalledWith("volume", "min_pct", 0.9)
+    })
+
+    it("sweeps a percentage constraint in percent and withholds Auto range", () => {
+      const onUpdate = vi.fn()
+      renderConfig(makeProps({
+            config: {
+              mode: "online",
+              objective: "premium",
+              constraints: { volume: { max_pct: 1.05 } },
+              frontier_ranges: { volume: { min: 0.9 } },
+            },
+            onUpdate,
+          }))
+      const from = screen.getByRole("spinbutton", { name: "volume sweep from (% of baseline)" })
+      const to = screen.getByRole("spinbutton", { name: "volume sweep to (% of baseline)" })
+      expect(from).toHaveValue(90)
+      expect(to).toHaveValue(null)
+      fireEvent.change(to, { target: { value: "110" } })
+      fireEvent.blur(to)
+      expect(onUpdate).toHaveBeenCalledWith({ frontier_ranges: { volume: { min: 0.9, max: 1.1 } } })
+      const autoRange = screen.getByRole("button", { name: "Auto range volume" })
+      expect(autoRange).toBeDisabled()
+      expect(autoRange).toHaveAccessibleDescription("Auto range sets absolute totals")
+    })
+
+    it("asks for a bound when a constraint holds none of the bound keys", () => {
+      renderConfig(makeProps({
+            config: {
+              mode: "online",
+              objective: "premium",
+              constraints: { volume: { min_abs: 1000 } },
+            },
+          }))
+      const typeSelect = screen.getByRole("combobox", { name: "volume constraint bound type" })
+      expect(typeSelect).toHaveValue("")
+      expect(typeSelect).toHaveAttribute("aria-invalid", "true")
+      expect(screen.getByRole("spinbutton", { name: "volume constraint value" })).toBeDisabled()
     })
 
     it("shows multiple constraints with correct count", () => {

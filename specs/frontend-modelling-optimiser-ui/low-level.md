@@ -4,7 +4,8 @@
 
 A successful save of the current canvas advances its persisted source revision
 without replacing its execution identity. Active and starting training, optimiser,
-Explore and pivot jobs keep their handles, progress polling and result delivery.
+Explore and pivot jobs and a running optimiser auto range keep their handles, progress
+polling and result delivery.
 Their original config/source/structural-version stamps remain intact so edits made
 since launch still mark results stale. Loading another document or accepting an
 external revision replaces the execution identity; capability loss, unsynchronised
@@ -23,9 +24,10 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/OptimiserConfig.tsx` | Optimiser pane router, solve submission, source/factor derivation and the solve-blocking issue list. It receives the active pane from `NodePanel` and renders one pane at a time; auto-range request identity and terminal presentation stay in `useOptimiserAutoRange`. |
 | `frontend/src/panels/optimiser/OptimiserFactorsTable.tsx` | The Factors pane's factor table: the Validation input select over the connected inputs (the Objectives & Constraints input first, stored as no `analysis_input`), a search, one row per rating factor or validation-frame column with Ratebook (`factorColumns`, ratebook mode and source factors only) and Validation (`analysis_columns`, capped, frame columns only) checkboxes, the switch-time removal of validation factors the new frame lacks, and the missing-input and missing-column flags. |
 | `frontend/src/panels/optimiser/optimiserPanes.ts` | The optimiser pane list (the same in both modes) and resolution of a remembered pane, Data when none. |
-| `frontend/src/panels/optimiser/OptimiserConstraintSettings.tsx` | The Constraints pane body: the Result line, then one card per constraint holding its column and remove action, then its at least / at most bound type, Fixed | Sweep switch and either its fixed value or its from/to range, then, when any constraint is swept, the Frontier section with points per swept constraint. Each swept card has its own Auto range button and error. It composes one `useOptimiserAutoRange` for the pane, running it for one constraint at a time and merging the filled range over the latest `frontier_ranges` (read through a ref when the run completes), keeping request state out of the parent form. |
+| `frontend/src/panels/optimiser/OptimiserConstraintSettings.tsx` | The Constraints pane body: the Result line, then one card per constraint holding its column and remove action, then its bound type (the four kinds of `constraintBounds.ts`), Fixed | Sweep switch and either its fixed value or its from/to range (in percent for a percentage bound), then, when any constraint is swept, the Frontier section with points per swept constraint. Each swept card has its own Auto range button and error; a percentage card's is disabled. It composes one `useOptimiserAutoRange` for the pane, running it for one constraint at a time and merging the filled range over the latest `frontier_ranges` (read through a ref when the run completes), keeping request state out of the parent form. |
+| `frontend/src/panels/optimiser/constraintBounds.ts` | A constraint's bound: the four kinds (`min`, `max`, `min_pct`, `max_pct`) with their labels, `constraintBoundKind` (the spec's one kind, `null` for none or several), `constraintBoundValue`, the percent display and entry conversions (0.95 ↔ 95) and `startingBoundValue` (1 for a percentage, 0 for an absolute bound). |
 | `frontend/src/panels/optimiser/OptimiserSolveStatus.tsx` | Pure solve estimate, stale-result, progress, terminal diagnostics, action, and convergence-result presentation. It receives the parent-owned solve transition and owns no request lifecycle state. Its convergence result is the as-solved result (`originalResult`), never the frontier point the preview shows. |
-| `frontend/src/panels/optimiser/useOptimiserAutoRange.ts` | The single state authority for auto-range lifecycle: reducer-owned pending/error/terminal diagnostics, monotonic restart generation, document/config fence, abort/cancel ownership, polling, response validation, and completed-range publication. `run(targets)` names the constraints a run fills and the state reports them (`autoRangeTargets`), so a pane can show the run on the card that asked; the caller's `writeRanges` merges the result. |
+| `frontend/src/panels/optimiser/useOptimiserAutoRange.ts` | The single state authority for auto-range lifecycle: reducer-owned pending/error/terminal diagnostics, monotonic restart generation, the document execution fence, structural version and node id (never the source revision a save advances), abort/cancel ownership, polling, response validation, and completed-range publication. `run(targets)` names the constraints a run fills and the state reports them (`autoRangeTargets`), so a pane can show the run on the card that asked; the caller's `writeRanges` merges the result. |
 | `frontend/src/panels/OptimiserPreview.tsx` | Solve-result tab orchestration on the `ResultsWorkspace` shell (ariaLabel "Optimiser validation", `idPrefix` "optimiser-preview", the `--optimiser-accent`/`--optimiser-accent-soft` pair, `optimiserPreviewHeight`, `HeaderPointStepper` as a header action), no tab intros, point selection, the stale-result strip with Re-run, ratebook detail materialisation and the Frontier tab layout; it has no publish actions. |
 | `frontend/src/panels/optimiser/resultViews.ts` | The result views in tab order with their labels; no view has an intro. A failed solve with no earlier result has no result, so no preview. |
 | `frontend/src/panels/DiagnosticsIssues.tsx` | The "Diagnostics Issues" `role="alert"` (accessible name "Diagnostic issues") both result workspaces' Summary tabs show for diagnostics that could not be produced: per issue its label (the caller's `formatLabel`), raw diagnostic id, error type and message. Modelling passes its training result's diagnostics errors (their error text as the message); the optimiser passes its solve result's. |
@@ -39,7 +41,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/OptimiserDataPreview.tsx`, `frontend/src/panels/optimiser/useOptimiserScenarioData.ts`, `frontend/src/panels/optimiser/OptimiserScenarioPanes.tsx` | The pre-solve scenario view: the hook groups the bounded preview rows by quote and owns series visibility, quote navigation (reset during render when the series list or quote count changes) and on-demand statistics; the panes (quote navigation, Curves, Statistics, the no-objective/no-data notice) render in the data preview's frame and as the result workspace's Curves and Statistics tabs. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-memory and rejected-strategy banner shared with modelling progress, optimiser actions, and Explore. |
 | `frontend/src/panels/optimiserScenarioStats.ts` | Strict finite-number parsing and per-scenario statistical aggregation used by the optimiser data preview. |
-| `frontend/src/hooks/useConstraintHandlers.ts`, `frontend/src/hooks/useDataInputColumns.ts` | Constraint mutation handlers and stale-aware data-input column fetching. |
+| `frontend/src/hooks/useConstraintHandlers.ts`, `frontend/src/hooks/useDataInputColumns.ts` | Constraint mutation handlers (add, remove, rename, a bound's value, and its kind: between at least and at most the value stays, between an absolute and a percentage bound it restarts at `startingBoundValue`, with a swept constraint's range in the same update) and stale-aware data-input column fetching. |
 | `frontend/src/api/types.ts`, `frontend/src/types/trainGuards.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned API types and dynamically loaded strict JSON response parsing consumed by modelling progress/results. |
 | `frontend/src/stores/useNodeResultsStore.ts`, `frontend/src/stores/useUIStore.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned result/job state and per-node modelling-pane memory consumed by the modelling workflow. |
 | `frontend/src/utils/configField.ts`, `frontend/src/utils/trainingObjective.ts`, `frontend/src/utils/executionDiagnostics.ts` | Typed config reads/parsing, training-configuration issue derivation with click-time presentation, and structured execution-error/metric display helpers. |
@@ -79,7 +81,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/optimiser/AdjustmentsTab.tsx`, `frontend/src/panels/optimiser/adjustments.ts` | The online Adjustments view (see Control flow): the adjustment report's bars against the 1.0 base price, the Weight by switch, the quantile row, the shares, a detail line for the active bar, a values table, and the lazy per-point load; and the copy and formatting Summary shares with it (the point-report key, the no-1.0 note, grid values and shares, and `rangeEdgeShare`, the union of the minimum and maximum edge shares, counted once on a one-step grid). |
 | `frontend/src/panels/optimiser/SegmentsTab.tsx` | The Segments view (see Control flow): the result's segment keys in the per-feature diagnostic layout, ranked by the index's adjustment spread (unranked while it loads), the selected key's per-level mean scenario value as `RelativityBars` around 1.0 with an aligned quote strip, a `ChartFocusDetail` line, a values table, the Weight by switch, and the review-owned caches of loaded breakdowns and indexes. |
 | `frontend/src/panels/optimiser/constraintAttainment.ts`, `frontend/src/panels/optimiser/ConstraintAttainmentTable.tsx` | The one pure attainment judgement (`constraintAttainment({kind, bound, achieved})` → bound, achieved, signed slack and slack %, `met`/`breached`; non-finite input throws) and the Constraint / Kind / Bound / Achieved / Slack / Status / λ table Summary and the detail card share. |
-| `frontend/src/panels/optimiser/ConvergenceChart.tsx`, `frontend/src/panels/optimiser/FrontierChart.tsx` | Iteration convergence (online history or the ratebook `ratebook_cd_trace` as `IterationLinesChart` small multiples with a `ChartValuesTable`; an online solve without history throws), the selectable frontier slice chart and the Frontier tab's points table, which the result preview draws beside it. `FrontierChart` draws one slice on `ResponsiveChart`, `ChartSvg`, `ChartValueGrid` and `ChartLegend` at the container width with 12 px axes named by the objective column and the x constraint; it keeps the overlap bucketing (one focusable marker per coordinate, preferring global point 2, then the selected point) and keyboard selection, joins only feasible points in bound order (an infeasible point breaks the line), draws a non-converged point hollow and a converged-but-breached point as a cross, and, while no point is selected, reports the hovered or focused point through `ChartFocusDetail`; its ticks span `chartTickSpan`, so a flat series spreads them over its padded axis. Both charts scale through the shared `chartDomain`/`chartTicks`; their axes are labelled by `formatChartTicks` (through `ChartValueGrid`, and directly for the frontier's x axis) and single values by `formatChartNumber`. |
+| `frontend/src/panels/optimiser/ConvergenceChart.tsx`, `frontend/src/panels/optimiser/FrontierChart.tsx` | Iteration convergence (online history or the ratebook `ratebook_cd_trace` as `IterationLinesChart` small multiples with a `ChartValuesTable`; an online solve without history throws), the selectable frontier slice chart and the Frontier tab's points table, which the result preview draws beside it. `FrontierChart` draws one slice on `ResponsiveChart`, `ChartSvg`, `ChartValueGrid` and `ChartLegend` at the container width with 12 px axes named by the objective column and the x constraint; it keeps the overlap bucketing (one focusable marker per coordinate, showing the selected point when it is in the bucket, else the first in bound order) and keyboard selection, joins only feasible points in bound order (an infeasible point breaks the line), draws a non-converged point hollow and a converged-but-breached point as a cross, and, while no point is selected, reports the hovered or focused point through `ChartFocusDetail`; its ticks span `chartTickSpan`, so a flat series spreads them over its padded axis. Both charts scale through the shared `chartDomain`/`chartTicks`; their axes are labelled by `formatChartTicks` (through `ChartValueGrid`, and directly for the frontier's x axis) and single values by `formatChartNumber`. |
 | `frontend/src/panels/optimiser/frontierSlices.ts` | The frontier's pure slice and feasibility model: `frontierConstraintKinds` (each constraint's min/max from the solve's bounds via `effectiveConstraintBounds`; a missing one throws), `assessFrontierPoint` (feasible = `converged` and every constraint's `totals` meets its absolute `bounds` by `constraintAttainment`, swept or not; a missing bound or total throws), `sliceFrontier` (groups the points by the other constraints' `thresholds` with exact equality, since they come from linspace; each slice lists **global** indices in ascending x bound, ties by index), `sliceNeighbours`, `displayedSlicePosition` and `asSolvedOnSlice`. |
 | `frontend/src/panels/ChartFocusDetail.tsx` | The polite `role="status"` line under a chart that states the hovered or focused item's exact values, or an optional placeholder (the optimiser's frontier points pass one; the modelling detail lines stay empty until an item is active); AvE bins and frontier points use it. |
 | `frontend/src/panels/optimiser/RatebookRatesTab.tsx`, `frontend/src/panels/optimiser/RatebookImpactBeeswarm.tsx`, `frontend/src/panels/optimiser/ratebookFactorTables.ts` | Ratebook Rates tab, impact beeswarm and factor-table helpers over the generated `OptimiserFactorTableRow` (`__factor_group__`, `optimal_scenario_value`, `quote_count`), read directly with no per-row parsing or fallbacks: banding order, `factorRateSpread` (the quote-weighted mean \|ln rate\|, which ranks factors in both views), `levelQuoteShares` (per-level quote shares rounded by largest remainder to sum to exactly 100.0%), `formatVsNeutral`, and `factorTablesCsv(factorTables, collar)`, which appends `combined_factor_min`/`combined_factor_max` to every row. A non-positive rate or a factor with no quotes throws. |
@@ -262,13 +264,17 @@ Only a current, accepted save response may acknowledge this revision transition.
    errors/progress.
 3. `useOptimiserAutoRange` is the only authority for auto-range state and
    request identity. Starting or restarting increments a monotonic generation,
-   captures the current document/config fence, aborts and best-effort cancels
+   captures the current document execution fence and structural version, aborts and best-effort cancels
    the prior owned job, and waits for the status through the shared
    `waitForJob`, polling every second with the generation's abort signal.
    Only the current generation may publish terminal state or apply completed
    ranges, and completed output is accepted only when every configured
-   constraint has a returned finite range. A document/config replacement or
-   unmount retires and cancels the active generation. The action remains
+   constraint has a returned finite range. The run's scope is the node id, the
+   structural version and the execution fence (source file, execution generation,
+   load status, execute capability, graph synchronisation), as the solve's: a
+   document/config replacement or unmount retires and cancels the active
+   generation, while a save, which advances only the source revision, leaves it
+   polling and publishing its ranges. The action remains
    available as **Restart auto range** while a request is active. A locally
    aborted or superseded request is silent; a cancelled or other terminal
    status returned by the server is shown in the reducer-owned auto-range
@@ -495,7 +501,8 @@ without broadening the exactly-one-direct fallback.
   drawn as a line in ascending x bound. With another swept axis a "Holding
   <other> at" select picks the slice (one select naming every other swept axis;
   its options are the slices, so a truncated grid never offers a missing
-  combination). The footnote states the slice size and, when the payload is
+  combination; a held threshold of a percentage constraint, by the solve's own
+  `constraints`, reads as its percentage of baseline, "95% of baseline"). The footnote states the slice size and, when the payload is
   capped at `FRONTIER_POINT_LIMIT`, the truncation. **Global identity:** every
   point keeps its global index through slicing, overlap grouping, the stepper,
   the values table and `/frontier/select`; nothing uses a slice-local index. The
@@ -634,6 +641,7 @@ its truncation note, the values table and the "live solves only" state.
 the single-constraint identity, feasibility (non-converged, converged-but-breached including
 an unswept breach);
 `frontend/src/panels/optimiser/__tests__/FrontierChart.test.tsx` the axes, legend, markers, the
+overlap marker showing (and a click keeping) the selected point, the
 feasible-only line and the as-solved anchor;
 and `frontend/src/panels/__tests__/OptimiserPreview.test.tsx` the slice switching, the points
 table's highlighted and clickable rows,
@@ -687,8 +695,9 @@ fields, selects and applies the backend `point_index`, and intercepts the
 MLflow API to assert request/result identity without contacting a live service.
 After its solve it walks every online pane: the Solve pane's status against the
 as-solved result, the tablist, the Summary attainment row
-(Bound, Slack, Status consistent with each other), frontier point 2's row highlighted in the
-points table and its attainment on Summary, the Adjustments bars and base-price
+(Bound, Slack, Status consistent with each other), frontier point 2 (selected by its own chart
+marker, which no other point of the fixture's frontier shares) highlighted in the points table
+and its attainment on Summary, the Adjustments bars and base-price
 line, a Segments level of the fixture's `region` analysis column, the Quotes
 "Highest adjustment" preset's descending order, the Convergence axes, and the
 Focus view closing on Escape with its tab kept. A second journey solves the
@@ -697,7 +706,14 @@ frontier) and reads its Rates chart. `frontend/e2e/core-flows.spec.ts` reads a
 trained model's Lift and AvE panes. The screenshot baselines are regenerated only
 through `.github/workflows/e2e-snapshots.yml`.
 Hook/component tests also inspect atomic constraint-range rename/removal and
-prove no global frontier bounds are read or written.
+prove no global frontier bounds are read or written;
+`frontend/src/__tests__/hooks/useConstraintHandlers.test.ts` covers the bound-kind switch
+(value kept between at least and at most, restarted with the swept range between absolute and
+percentage), `frontend/src/panels/__tests__/OptimiserConfig.test.tsx` a percentage constraint shown and edited in percent
+under its pct key, its range in percent with Auto range withheld, and the Solve issues for a
+constraint without one bound, and
+`frontend/src/panels/optimiser/__tests__/useOptimiserAutoRange.test.ts` a save mid-run leaving
+the job polling and its ranges published while a document reset retires it.
 
 ## Modelling config panes
 

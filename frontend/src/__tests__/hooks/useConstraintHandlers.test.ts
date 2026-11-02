@@ -256,4 +256,66 @@ describe("useConstraintHandlers", () => {
       })
     })
   })
+
+  // ─── handleConstraintKindChange ─────────────────────────────────
+
+  describe("handleConstraintKindChange", () => {
+    it("keeps the value between at least and at most", () => {
+      const onUpdate = vi.fn()
+      const { result } = renderHook(() =>
+        useConstraintHandlers({ volume: { min_pct: 0.95 } }, "premium", COLUMNS, onUpdate),
+      )
+
+      act(() => result.current.handleConstraintKindChange("volume", "max_pct"))
+
+      expect(onUpdate).toHaveBeenCalledWith("constraints", { volume: { max_pct: 0.95 } })
+    })
+
+    it("starts a percentage at the baseline and an absolute bound at 0", () => {
+      const onUpdate = vi.fn()
+      const { result, rerender } = renderHook(
+        ({ constraints }) => useConstraintHandlers(constraints, "premium", COLUMNS, onUpdate),
+        { initialProps: { constraints: { volume: { min: 950000 } } as Record<string, Record<string, number>> } },
+      )
+
+      act(() => result.current.handleConstraintKindChange("volume", "min_pct"))
+      expect(onUpdate).toHaveBeenLastCalledWith("constraints", { volume: { min_pct: 1 } })
+
+      rerender({ constraints: { volume: { max_pct: 0.95 } } })
+      act(() => result.current.handleConstraintKindChange("volume", "max"))
+      expect(onUpdate).toHaveBeenLastCalledWith("constraints", { volume: { max: 0 } })
+    })
+
+    it("restarts a swept constraint's range when the unit changes, in one update", () => {
+      const onUpdate = vi.fn()
+      const ranges = { volume: { min: 900000, max: 1100000 }, loss_ratio: { min: 0.6, max: 0.7 } }
+      const { result } = renderHook(() =>
+        useConstraintHandlers(
+          { volume: { min: 1000000 }, loss_ratio: { max: 0.65 } },
+          "premium",
+          COLUMNS,
+          onUpdate,
+          ranges,
+        ),
+      )
+
+      act(() => result.current.handleConstraintKindChange("volume", "min_pct"))
+
+      expect(onUpdate).toHaveBeenCalledWith({
+        constraints: { volume: { min_pct: 1 }, loss_ratio: { max: 0.65 } },
+        frontier_ranges: { volume: { min: 1 }, loss_ratio: { min: 0.6, max: 0.7 } },
+      })
+    })
+
+    it("gives a constraint without a bound key the chosen kind's starting value", () => {
+      const onUpdate = vi.fn()
+      const { result } = renderHook(() =>
+        useConstraintHandlers({ volume: { min_abs: 1000 } }, "premium", COLUMNS, onUpdate),
+      )
+
+      act(() => result.current.handleConstraintKindChange("volume", "max"))
+
+      expect(onUpdate).toHaveBeenCalledWith("constraints", { volume: { max: 0 } })
+    })
+  })
 })

@@ -197,7 +197,6 @@ adds a finding group or changes the 42-group count.
 
 | Candidate scope | Disposition |
 |---|---|
-| percentages and auto-range | Duplicate **FMOU-R04**. |
 | save flush, coarse graph creation fence, scoped edited marker | Duplicate **FSH-R07**. |
 | saved-document sync | Duplicate **FSH-R05**. |
 | utility error wording | Duplicate **FGC-R04**; distinct accepted read/draft race remains FGC-R08. |

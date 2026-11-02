@@ -198,9 +198,6 @@ these are the Majors still open.
   and the undo history** (Major, `FSH-R05`): the save stores no document
   fingerprint, so the resync is answered with a full document the client takes
   for an external change.
-- **Saving the pipeline cancels an auto-range run in flight, and a percentage
-  constraint is shown as "at least 0" and rewritten as an absolute bound on
-  edit** (two Majors, `FMOU-R04`).
 - **Ctrl+S with the cursor in a code box saves without the last keystrokes**
   (Major, `FSH-R07`): the save helper blurs only text fields, the code editor's
   debounced commit flushes only on blur, and the toolbar shows "Saved" while the
@@ -258,7 +255,6 @@ production:
 | Frontend shared | FSB-3, FSB-4, FSB-5, FSB-6, FSB-9, FSB-13, FSB-14, FSB-16, FSB-17, FSB-18 | `FSH-R08` |
 | Frontend shared | FSB-7, FSB-8, FSB-11 | `FSH-R09` |
 | Frontend modelling | FMD-7, FMD-8, FMD-9, FMD-10, FMD-11, FMD-13, FMD-14, FMD-15 | `FMOU-R03` |
-| Frontend optimiser | FOX-1, FOX-2, FOX-3 | `FMOU-R04` |
 | Frontend optimiser | FOX-4, FOX-5, FOX-6, FOX-8, FOX-10 (optimiser part) | `FMOU-R05` |
 | Frontend Explore | FOX-7, FOX-9, FOX-10 (Explore part), FOX-11, FOX-12 | `EDA-R03` |
 | Assistant UI | FTG-5, FTG-18, FTG-20 | `ASSIST-60` |

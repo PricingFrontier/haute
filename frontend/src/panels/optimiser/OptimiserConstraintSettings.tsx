@@ -8,6 +8,16 @@ import { withAlpha } from "../../utils/color"
 import type { OnUpdateConfig } from "../editors/_shared"
 import { useOptimiserAutoRange, type FrontierRange } from "./useOptimiserAutoRange"
 import { sweptConstraintNames } from "./solveReadiness"
+import {
+  boundFromDisplay,
+  boundToDisplay,
+  CONSTRAINT_BOUND_KINDS,
+  CONSTRAINT_BOUND_LABELS,
+  constraintBoundKind,
+  constraintBoundValue,
+  isPercentBound,
+  type ConstraintBoundKind,
+} from "./constraintBounds"
 
 export type FrontierRangeConfig = { min?: number; max?: number }
 type ConstraintConfig = Record<string, Record<string, number>>
@@ -29,13 +39,9 @@ type OptimiserConstraintSettingsProps = {
   onUpdate: OnUpdateConfig
   onRemoveConstraint: (name: string) => void
   onConstraintColumnChange: (oldName: string, newName: string) => void
-  onConstraintValueChange: (name: string, type: string, value: number) => void
+  onConstraintValueChange: (name: string, kind: ConstraintBoundKind, value: number) => void
+  onConstraintKindChange: (name: string, kind: ConstraintBoundKind) => void
 }
-
-const CONSTRAINT_TYPES = [
-  { value: "min", label: "at least" },
-  { value: "max", label: "at most" },
-]
 
 const BOUND_MODES = [
   { swept: false, label: "Fixed" },
@@ -52,7 +58,8 @@ function parseOptionalNumber(raw: string): number | undefined {
 /**
  * The Constraints pane's cards and frontier settings. Each card reads as a
  * sentence: the column must be at least / at most a fixed value, or swept
- * from one value to another. With nothing swept the solve is a single point.
+ * from one value to another, as an absolute total or a percentage of its
+ * baseline. With nothing swept the solve is a single point.
  */
 export default function OptimiserConstraintSettings({
   constraints,
@@ -69,6 +76,7 @@ export default function OptimiserConstraintSettings({
   onRemoveConstraint,
   onConstraintColumnChange,
   onConstraintValueChange,
+  onConstraintKindChange,
 }: OptimiserConstraintSettingsProps) {
   const constraintEntries = Object.entries(constraints)
   const swept = sweptConstraintNames(constraints, frontierRanges)
@@ -113,9 +121,9 @@ export default function OptimiserConstraintSettings({
   // Sweeping starts from the fixed value; going back to Fixed drops the range
   // and the saved bound applies again.
   const setSweep = useCallback(
-    (name: string, on: boolean, fixedValue: number) => {
+    (name: string, on: boolean, fixedValue: number | undefined) => {
       const nextRanges = { ...frontierRanges }
-      if (on) nextRanges[name] = { min: fixedValue }
+      if (on) nextRanges[name] = fixedValue === undefined ? {} : { min: fixedValue }
       else delete nextRanges[name]
       onUpdate({ frontier_ranges: nextRanges })
     },
@@ -165,13 +173,26 @@ export default function OptimiserConstraintSettings({
 
       <div className="space-y-1.5">
         {constraintEntries.map(([name, spec]) => {
-          const constraintType = Object.keys(spec)
-            .find((key) => key === "min" || key === "max") ?? "min"
-          const constraintValue = spec[constraintType] ?? 0
+          // A spec without exactly one bound shows no kind until one is chosen;
+          // the Solve issue list names it.
+          const boundKind = constraintBoundKind(spec)
+          const storedValue = boundKind === null ? undefined : constraintBoundValue(spec, boundKind)
+          const percent = boundKind !== null && isPercentBound(boundKind)
+          const shown = (stored: number | undefined) =>
+            stored === undefined || boundKind === null ? "" : String(boundToDisplay(boundKind, stored))
+          const stored = (raw: string) => {
+            const parsed = parseOptionalNumber(raw)
+            return parsed === undefined || boundKind === null ? undefined : boundFromDisplay(boundKind, parsed)
+          }
+          const unit = percent
+            ? <span aria-hidden="true" style={{ color: "var(--text-muted)" }}>%</span>
+            : null
           const isSwept = swept.includes(name)
           const range = rangeForConstraint(name)
           const minMissing = range.min === undefined
           const maxMissing = range.max === undefined
+          const autoRangeRunning = autoRangeLoading && autoRangeTargets.includes(name)
+          const autoRangeNoteId = `${nodeId}-${name}-auto-range-note`
           return (
             <div
               key={name}
@@ -220,14 +241,16 @@ export default function OptimiserConstraintSettings({
               <div className="flex flex-wrap items-start gap-1.5">
                 <select
                   aria-label={`${name} constraint bound type`}
-                  value={constraintType}
+                  aria-invalid={boundKind === null || undefined}
+                  value={boundKind ?? ""}
                   onChange={(event) =>
-                    onConstraintValueChange(name, event.target.value, constraintValue)}
-                  className="w-24 px-1.5 py-1 rounded text-[11px]"
+                    onConstraintKindChange(name, event.target.value as ConstraintBoundKind)}
+                  className="shrink-0 px-1.5 py-1 rounded text-[11px]"
                   style={{ ...inputStyle, color: "var(--text-secondary)" }}
                 >
-                  {CONSTRAINT_TYPES.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
+                  {boundKind === null && <option value="" disabled>choose a bound</option>}
+                  {CONSTRAINT_BOUND_KINDS.map((kind) => (
+                    <option key={kind} value={kind}>{CONSTRAINT_BOUND_LABELS[kind]}</option>
                   ))}
                 </select>
                 <div
@@ -245,7 +268,7 @@ export default function OptimiserConstraintSettings({
                         role="radio"
                         aria-checked={selected}
                         onClick={() => {
-                          if (!selected) setSweep(name, mode.swept, constraintValue)
+                          if (!selected) setSweep(name, mode.swept, storedValue)
                         }}
                         className="px-2.5 py-0.5 rounded text-[11px] font-medium transition-colors"
                         style={{
@@ -260,67 +283,80 @@ export default function OptimiserConstraintSettings({
                 </div>
                 <div className="flex-1 basis-40 min-w-0">
                   {isSwept ? (
-                    <div className="grid grid-cols-[2rem_minmax(0,1fr)] items-center gap-x-1.5 gap-y-1 text-[11px]">
+                    <div className={`grid ${percent ? "grid-cols-[2rem_minmax(0,1fr)_auto]" : "grid-cols-[2rem_minmax(0,1fr)]"} items-center gap-x-1.5 gap-y-1 text-[11px]`}>
                       <span style={{ color: "var(--text-muted)" }}>from</span>
                       <CommittedTextField
                         type="number"
                         step="any"
-                        value={range.min === undefined ? "" : String(range.min)}
-                        aria-label={`${name} sweep from`}
+                        value={shown(range.min)}
+                        aria-label={`${name} sweep from${percent ? " (% of baseline)" : ""}`}
                         aria-invalid={minMissing || undefined}
                         placeholder="Required"
-                        onCommit={(raw) => handleFrontierRangeChange(name, "min", parseOptionalNumber(raw))}
+                        onCommit={(raw) => handleFrontierRangeChange(name, "min", stored(raw))}
                         className={valueClass}
                         style={rangeInputStyle(minMissing)}
                       />
+                      {unit}
                       <span style={{ color: "var(--text-muted)" }}>to</span>
                       <CommittedTextField
                         type="number"
                         step="any"
-                        value={range.max === undefined ? "" : String(range.max)}
-                        aria-label={`${name} sweep to`}
+                        value={shown(range.max)}
+                        aria-label={`${name} sweep to${percent ? " (% of baseline)" : ""}`}
                         aria-invalid={maxMissing || undefined}
                         placeholder="Required"
-                        onCommit={(raw) => handleFrontierRangeChange(name, "max", parseOptionalNumber(raw))}
+                        onCommit={(raw) => handleFrontierRangeChange(name, "max", stored(raw))}
                         className={valueClass}
                         style={rangeInputStyle(maxMissing)}
                       />
-                      <div className="col-start-2 flex justify-end">
+                      {unit}
+                      <div className="col-start-2 flex items-center justify-end gap-1.5">
+                        {/* Auto range fills absolute totals; a percentage range is typed. */}
+                        {percent && (
+                          <span id={autoRangeNoteId} className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                            Auto range sets absolute totals
+                          </span>
+                        )}
                         <button
                           type="button"
-                          aria-label={`${autoRangeLoading && autoRangeTargets.includes(name) ? "Restart auto range" : "Auto range"} ${name}`}
+                          aria-label={`${autoRangeRunning ? "Restart auto range" : "Auto range"} ${name}`}
+                          aria-describedby={percent ? autoRangeNoteId : undefined}
                           onClick={() => handleAutoRange([name])}
-                          disabled={!canAutoRange}
+                          disabled={!canAutoRange || percent}
                           className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium disabled:opacity-50"
                           style={{
                             background: withAlpha(accentColor, 0.12),
                             color: accentColor,
                           }}
                         >
-                          {autoRangeLoading && autoRangeTargets.includes(name) ? (
+                          {autoRangeRunning ? (
                             <Loader2 size={10} className="animate-spin" />
                           ) : (
                             <RefreshCw size={10} />
                           )}
-                          {autoRangeLoading && autoRangeTargets.includes(name) ? "Restart auto range" : "Auto range"}
+                          {autoRangeRunning ? "Restart auto range" : "Auto range"}
                         </button>
                       </div>
                     </div>
                   ) : (
-                    <CommittedTextField
-                      aria-label={`${name} constraint value`}
-                      type="number"
-                      step="any"
-                      value={String(constraintValue)}
-                      onCommit={(raw) => {
-                        // A cleared or unreadable bound keeps its stored value:
-                        // committing 0 would silently relax the constraint.
-                        const parsed = parseOptionalNumber(raw)
-                        if (parsed !== undefined) onConstraintValueChange(name, constraintType, parsed)
-                      }}
-                      className={valueClass}
-                      style={inputStyle}
-                    />
+                    <div className="flex items-center gap-1.5 text-[11px]">
+                      <CommittedTextField
+                        aria-label={`${name} constraint value${percent ? " (% of baseline)" : ""}`}
+                        type="number"
+                        step="any"
+                        value={shown(storedValue)}
+                        disabled={boundKind === null}
+                        onCommit={(raw) => {
+                          // A cleared or unreadable bound keeps its stored value:
+                          // committing 0 would silently relax the constraint.
+                          const value = stored(raw)
+                          if (value !== undefined && boundKind !== null) onConstraintValueChange(name, boundKind, value)
+                        }}
+                        className={valueClass}
+                        style={inputStyle}
+                      />
+                      {unit}
+                    </div>
                   )}
                 </div>
               </div>

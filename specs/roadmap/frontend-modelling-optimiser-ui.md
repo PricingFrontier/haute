@@ -15,7 +15,6 @@ These packages come from the
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | FMOU-R03 | Planned | P3 | The frontend modelling specification describes the editor that exists; the dead sidebar component, the duplicated GLM conflict derivations and view switches, the message-prefix matching and the family-blind tune copy are gone. |
-| FMOU-R04 | Planned | P2 | A save never retires an auto-range run, a percentage constraint is shown and edited as one instead of being rewritten as an absolute bound, and the frontier marker that looks selected is the selected point. |
 | FMOU-R05 | Planned | P3 | The optimiser workspace has one fenced point-request lifecycle, one formatter, no raw Float32 collar, a specification that matches its Summary, and no dead exports. |
 | FMOU-R06 | Planned | P2 | A late theta/power estimate cannot replace a parameter edited for a newer target, source or training configuration. |
 | FMOU-R07 | Planned | P2 | Pre-job training failures preserve any retained model handle, `onTrain` hashes the current training identity synchronously, `OptimiserPublishSection` and `MlflowExportSection` fence prompts and log-again state, `ModelFileExportSection` keys destination checks by `(path, algorithm)`, `OptimiserFactorsTable` disarms `pendingPrune` on identical schemas, `ModellingPreview` fences `fixBestParameters`, `useConstraintHandlers` generates unique fallback keys, `useOptimiserScenarioData` and `buildSeriesScale` handle quote-set and constant-series changes, and `optimiserSolveReadiness` checks objective/constraint columns in `dataInputColumns`. |
@@ -58,46 +57,6 @@ previews.
 `frontend/src/panels/modelling/TermTableView.tsx`;
 `frontend/src/panels/ModellingConfig.tsx`;
 `frontend/src/panels/modelling/HyperparametersConfig.tsx`.
-
-### FMOU-R04 — Auto-range survives a save; constraints keep their kind
-**Why:** Saving the pipeline while an auto-range run is in flight silently
-retires and cancels it: the hook's scope key includes the document's
-`sourceRevision`, which every successful save advances, so the effect that
-retires an active run on a scope change fires on a save, aborts the request,
-posts a cancel and resets the button with no message, against the
-specification's "Saving during background work"; the solve itself fences on the
-execution identity and is unaffected. A `min_pct`/`max_pct` constraint, which the
-backend accepts and the assistant's node card advertises, renders in the
-Constraints pane as "at least 0" (the pane looks for `min` or `max` only and
-defaults to 0) and a commit of the bound type or the value rewrites it as
-`{min: value}`, silently replacing the percentage constraint with an absolute
-one; the Frontier tab's "Holding at" select shows the fraction unlabelled beside
-absolute values. When the selected frontier point shares a pixel with global
-point 2, the shared marker is drawn in the selected style but activating it
-selects point 2; the preference was written for an end-to-end journey and a unit
-test pins it.
-
-**Plan:** Fence the auto-range run on the execution fence, the structural
-version and the node id, as the solve does, and test that `acknowledgeSave`
-mid-run leaves the job polling; render percentage constraints as such (bound
-type and value in percent, committed under the pct key) or refuse to edit an
-unknown bound key with a readiness issue, and label the held value with its
-unit; prefer the selected point in an overlap bucket and move the journey's
-selection into the journey.
-
-**Acceptance:** A save during an auto-range run leaves it running and its
-ranges published; `{min_pct: 0.95}` shows as "at least 95% of baseline" and a
-value edit keeps the pct key; clicking the marker drawn as selected keeps the
-selection.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/optimiser/useOptimiserAutoRange.ts::useOptimiserAutoRange`;
-`frontend/src/panels/optimiser/OptimiserConstraintSettings.tsx`;
-`frontend/src/hooks/useConstraintHandlers.ts`;
-`frontend/src/panels/optimiser/frontierSlices.ts::sliceFrontier`;
-`frontend/src/panels/optimiser/FrontierChart.tsx`;
-`src/haute/assistant/assets/node_cards/optimiser.json`.
 
 ### FMOU-R05 — One point-request lifecycle and one formatter
 **Why:** The fenced frontier-point request (abort on identity change, request

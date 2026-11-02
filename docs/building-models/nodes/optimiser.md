@@ -50,11 +50,12 @@ Each constraint has:
 | Field | What it does |
 |---|---|
 | Column | The column whose portfolio total is bounded. The list leaves out the objective and columns that already have a constraint. The **×** removes the constraint. |
-| **at least** / **at most** | Whether the total must stay at or above the bound, or at or below it. |
+| **at least** / **at most** | Whether the total must stay at or above the bound, or at or below it, as an absolute total. |
+| **at least % of baseline** / **at most % of baseline** | The same, as a percentage of the column's baseline total (the portfolio priced at the scenario nearest 1.0): at least 95 keeps the total at 95% of where it is today or above. Switching between an absolute and a percentage bound starts the value afresh (at 100% or 0). |
 | **Fixed** / **Sweep** | **Fixed** (the default) holds the bound at the value you type. **Sweep** turns the constraint into a frontier axis (see below). |
-| Value | The bound, as an absolute portfolio total. Clearing it keeps the stored value, so a bound is never relaxed to 0 by accident. |
-| **from** / **to** | For a swept constraint: the range of totals to sweep (**Required** until set). The minimum must be below the maximum. |
-| **Auto range** | For a swept constraint: runs the pipeline and fills a viable range from the data. Click again (**Restart auto range**) to start over. |
+| Value | The bound: an absolute portfolio total, or a percentage for a % of baseline bound. Clearing it keeps the stored value, so a bound is never relaxed to 0 by accident. |
+| **from** / **to** | For a swept constraint: the range of totals (or percentages) to sweep (**Required** until set). The minimum must be below the maximum. |
+| **Auto range** | For a swept constraint: runs the pipeline and fills a viable range from the data. Click again (**Restart auto range**) to start over. Saving the pipeline meanwhile does not stop it. It fills absolute totals, so a % of baseline constraint's range is typed instead. |
 
 Above the list, **Result:** says what the solve will produce: **single point**, or a frontier over the swept constraints with its number of solves.
 
@@ -109,7 +110,7 @@ A ratebook result also states its **Combined factor collar**: the optimiser scor
 
 A finished solve opens in a results panel under the canvas. Its header shows whether the solve converged, its iterations and its number of quotes. Every figure is an expected value from the scoring models on the solve's quotes, not an observed outcome. The views:
 
-- **Frontier** (when a frontier was computed): each point is a solve at a different constraint target, the highest expected objective found at that level. The line joins feasible points (converged, with every bound met); a hollow point did not converge and a cross converged but breaches a bound. The ringed marker is the solve itself. The points table beside the chart lists each point's bound, achieved total, objective and status. Selecting a point in either makes it what the **EXPORT** pane publishes, and the summary under the chart describes it. With more than one swept constraint, **X axis:** chooses the constraint to plot against and **Holding … at** chooses the values the others are held at. The arrows in the panel header step to the previous or next point.
+- **Frontier** (when a frontier was computed): each point is a solve at a different constraint target, the highest expected objective found at that level. The line joins feasible points (converged, with every bound met); a hollow point did not converge and a cross converged but breaches a bound. The ringed marker is the solve itself. The points table beside the chart lists each point's bound, achieved total, objective and status. Selecting a point in either makes it what the **EXPORT** pane publishes, and the summary under the chart describes it. With more than one swept constraint, **X axis:** chooses the constraint to plot against and **Holding … at** chooses the values the others are held at (a % of baseline constraint's as percentages). Points that land on the same spot share one marker, which shows the selected point when it is one of them. The arrows in the panel header step to the previous or next point.
 - **Summary** (under the frontier chart, or a view of its own when nothing was swept): the objective and, per constraint, the bound the result was solved at, the achieved total, the slack, whether the bound is met, and λ, the constraint's multiplier. A min constraint enters each quote's choice as +λ × its column and a max constraint as −λ × its column. In ratebook mode, the clamp rate is the mean, over every grouped solve, of the share of (quote, candidate) targets strictly outside the scenario range; quotes at a grid edge are not counted. For the solve itself, it also shows the shares of quotes adjusted up, down and to the edge of the range, with a link to **Adjustments**. A ratebook result adds a **MECHANICAL PRICE EFFECT** chart: a dot for each level of the factors whose rates move most (the top 8, or **All**), placed by the effect of its rate on a log scale and coloured by the level's value.
 - **Rates** (ratebook): the rate chosen for each factor level. A quote's combined factor is the product of its levels' rates, collared to the scenario range the solve scored.
 - **Adjustments**: how many quotes (or how much weight) sit at each scenario value of the grid, against 1.0, the base price with no adjustment.
@@ -146,7 +147,7 @@ To see the trade-off instead, switch `claims` to **Sweep**, fill in **from** and
     | **Ratebook** tick boxes | `factor_columns`: a list of factor groups, each a one-item list such as `[["driver_age_band"]]` |
     | **Validation input** | `analysis_input`: the exact input name of the connected edge; absent uses `data_input` |
     | **Validation** tick boxes | `analysis_columns`: up to 12 column names |
-    | Constraints | `constraints`: a map of column to `{"min": …}` (**at least**) or `{"max": …}` (**at most**). May be empty. |
+    | Constraints | `constraints`: a map of column to `{"min": …}` (**at least**), `{"max": …}` (**at most**), or `{"min_pct": …}` / `{"max_pct": …}` (the % of baseline bounds, as a fraction: `0.95` is 95%). May be empty. |
     | **Sweep**, **from**, **to** | `frontier_ranges`: a map of swept constraint to its absolute `min` and `max` totals; a frontier is computed when any constraint has one |
     | **Points per swept constraint** | `frontier_steps` (defaults to 15) |
     | **Max iterations** | `max_iter` (defaults to 50) |

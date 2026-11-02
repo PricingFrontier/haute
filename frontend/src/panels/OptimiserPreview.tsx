@@ -12,7 +12,7 @@ import { useId, useState, useMemo, useCallback, useEffect, useRef } from "react"
 import { AlertCircle, ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react"
 import { selectFrontierPoint as selectFrontierPointApi } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
-import { formatNumber } from "../utils/formatValue"
+import { formatNumber, fractionToPercent } from "../utils/formatValue"
 import useGraphStore from "../stores/useGraphStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
@@ -32,6 +32,7 @@ import type { SimpleEdge, SimpleNode } from "./editors/_shared"
 import FrontierChart, { type FrontierChartPoint } from "./optimiser/FrontierChart"
 import ConvergenceChart from "./optimiser/ConvergenceChart"
 import SummaryTab from "./optimiser/SummaryTab"
+import { constraintBoundKind, isPercentBound } from "./optimiser/constraintBounds"
 import {
   assessFrontierPoint,
   asSolvedOnSlice,
@@ -597,6 +598,7 @@ export default function OptimiserPreview({
             slicePosition={displayedSlicePosition(slicing, selectedIdx, sliceChoice)}
             onSliceChange={handleSliceChange}
             objectiveName={objectiveName}
+            solvedConstraints={data.constraints}
             onPointClick={handlePointClick}
           />
           <div className="optimiser-frontier-summary">
@@ -704,6 +706,8 @@ interface FrontierTabProps {
   onSliceChange: (key: string) => void
   /** The y axis name: the objective column, or "Objective" when it is not known. */
   objectiveName: string
+  /** The constraints the solve was configured with, which say whether a held threshold is a percentage. */
+  solvedConstraints: Record<string, Record<string, number>>
   onPointClick: (index: number) => void
 }
 
@@ -717,6 +721,14 @@ function formatFrontierValue(value: number): string {
   return value.toLocaleString("en-US", { maximumFractionDigits: 6 })
 }
 
+/** A held threshold in its unit: a percentage constraint's fraction reads as a percentage of its baseline. */
+function formatHeldThreshold(value: number, spec: Record<string, number> | undefined): string {
+  const kind = constraintBoundKind(spec)
+  return kind !== null && isPercentBound(kind)
+    ? `${formatFrontierValue(fractionToPercent(value))}% of baseline`
+    : formatFrontierValue(value)
+}
+
 function FrontierTab({
   frontier,
   solvedResult,
@@ -727,6 +739,7 @@ function FrontierTab({
   slicePosition,
   onSliceChange,
   objectiveName,
+  solvedConstraints,
   onPointClick,
 }: FrontierTabProps) {
   const xPickerId = useId()
@@ -810,7 +823,7 @@ function FrontierTab({
                 >
                   {slicing.slices.map((option, i) => (
                     <option key={option.key} value={i}>
-                      {slicing.heldNames.map((name) => formatFrontierValue(option.held[name])).join(", ")}
+                      {slicing.heldNames.map((name) => formatHeldThreshold(option.held[name], solvedConstraints[name])).join(", ")}
                     </option>
                   ))}
                 </select>

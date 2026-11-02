@@ -196,10 +196,16 @@ export type UseOptimiserAutoRangeOptions = {
   writeRanges: (ranges: Record<string, FrontierRange>) => OnUpdateConfigResult
 }
 
+/**
+ * The document's execution identity, as the solve fences on it. A save
+ * advances the source revision without replacing that identity, so it never
+ * retires a run; loading another document, accepting an external revision,
+ * losing the right to execute or an unsynchronised graph does.
+ */
 function documentScopeKey(state: ReturnType<typeof useDocumentStatusStore.getState>): string {
   return JSON.stringify([
     state.sourceFile,
-    state.sourceRevision,
+    state.executionGeneration,
     state.loadStatus,
     state.capabilities?.can_execute === true,
     state.graphSynchronized,
