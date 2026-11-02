@@ -17,7 +17,7 @@ import {
   updateUtilityFile,
   deleteUtilityFile,
 } from "../api/client"
-import { apiErrorStatus } from "../api/errors"
+import { apiErrorMessage, apiErrorStatus } from "../api/errors"
 import type { UtilityFile } from "../api/types"
 
 /**
@@ -162,9 +162,9 @@ export default function UtilityPanel({
           setErrorMsg(syntaxErr.error)
         } else if (apiErrorStatus(err) === 412) {
           conflictModuleRef.current = module
-          setConflict({ module, message: err instanceof Error ? err.message : String(err) })
+          setConflict({ module, message: apiErrorMessage(err) })
         } else {
-          const detail = err instanceof Error ? err.message : "unknown error"
+          const detail = apiErrorMessage(err, "unknown error")
           addToast("error", `Failed to save utility file "${module}": ${detail}`)
           setErrorMsg("Failed to save")
         }
@@ -268,7 +268,7 @@ export default function UtilityPanel({
       const res = await listUtilityFiles()
       setFiles(res.files)
     } catch (err) {
-      const detail = err instanceof Error ? err.message : "unknown error"
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Failed to list utility files: ${detail}`)
       setFiles([])
     }
@@ -294,7 +294,7 @@ export default function UtilityPanel({
       setErrorLine(null)
       setErrorMsg(null)
     } catch (err) {
-      const detail = err instanceof Error ? err.message : "unknown error"
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Failed to load utility file "${module}": ${detail}`)
       setErrorMsg(`Failed to load ${module}`)
     }
@@ -314,7 +314,7 @@ export default function UtilityPanel({
       try {
         read = await readUtilityFile(module)
       } catch (err) {
-        const detail = err instanceof Error ? err.message : "unknown error"
+        const detail = apiErrorMessage(err, "unknown error")
         addToast("error", `Failed to load utility file "${module}": ${detail}`)
         return
       }
@@ -382,7 +382,7 @@ export default function UtilityPanel({
       loadFile(res.module)
     } catch (err) {
       const syntaxErr = parseSyntaxError(err)
-      setCreateError(syntaxErr ? syntaxErr.error : err instanceof Error ? err.message : "Failed to create")
+      setCreateError(syntaxErr ? syntaxErr.error : apiErrorMessage(err, "Failed to create"))
     }
   }, [newName, loadFiles, loadFile, onImportAdded])
 
@@ -401,7 +401,7 @@ export default function UtilityPanel({
       setContent("")
       await loadFiles()
     } catch (err) {
-      const detail = err instanceof Error ? err.message : "unknown error"
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Failed to delete utility file "${activeModule}": ${detail}`)
       setErrorMsg("Failed to delete")
     }

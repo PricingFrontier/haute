@@ -185,7 +185,7 @@ describe("UtilityPanel", () => {
   it("shows a refused create in the empty panel, keeping the typed name", async () => {
     mockListFiles.mockResolvedValue({ files: [] })
     mockCreateFile.mockRejectedValue(
-      new MockApiError("Invalid module name: 'class' is a Python keyword", 400),
+      new MockApiError("HTTP 400", 400, "Invalid module name: 'class' is a Python keyword"),
     )
 
     render(<UtilityPanel {...defaultProps} />)
