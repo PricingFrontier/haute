@@ -315,9 +315,13 @@ export interface EditorIdentityResponseNode {
  *
  * A support-code violation that involves no node (two helpers binding one
  * name, a statement the inventory cannot read) has no parties, and an
- * unreadable statement has no name.
+ * unreadable statement has no name. A ``reserved_input`` or ``support_input``
+ * violation whose input a frame or a public input port names carries that
+ * ``binding``, so the editor that set it can show the violation; any other
+ * violation's is ``None``.
  */
 export interface PipelineNameViolation {
+  binding: (PipelineNameViolationFrameBinding | PipelineNameViolationPortBinding) | null;
   kind:
     | 'duplicate'
     | 'reserved'
@@ -332,6 +336,23 @@ export interface PipelineNameViolation {
   message: string;
   name: string;
   parties: PipelineNameViolationParty[];
+}
+/**
+ * A request input's frame, which names the input its consumers receive.
+ */
+export interface PipelineNameViolationFrameBinding {
+  handle: string;
+  kind: 'frame';
+  node_id: string;
+  submodel: string | null;
+}
+/**
+ * A submodel's public input port, which names the input its targets receive.
+ */
+export interface PipelineNameViolationPortBinding {
+  kind: 'submodel_input';
+  port: string;
+  submodel: string;
 }
 /**
  * A node taking part in a name violation; ``submodel`` is its definition, if any.

@@ -938,6 +938,38 @@ describe("ApiInputEditor - W1.4 label validation (blank / duplicate / sanitised 
     expect(screen.getByTestId("api-input-table-0-label-error")).toBeTruthy()
     expect(screen.getByTestId("api-input-table-1-label-error")).toBeTruthy()
   })
+
+  it("shows the server's name violation under the committed label it names, until the label changes", () => {
+    const message = "Node 'rated' (the pipeline) receives an input named `rate_lookup`, which a definition in the preamble binds."
+    const config = {
+      tables: [
+        { path: "$[:]", label: "rate_lookup", emit: true, columns: [] },
+        { path: "$[:].d[:]", label: "drivers", emit: true, columns: [] },
+      ],
+    }
+    const { rerender } = render(
+      <ApiInputEditor
+        config={config}
+        onUpdate={successfulOnUpdateSpy()}
+        accentColor="#10b981"
+        labelViolations={new Map([["rate_lookup", message]])}
+      />,
+    )
+
+    expect(screen.getByTestId("api-input-table-0-label-error")).toHaveTextContent(message)
+    expect(screen.getByTestId("api-input-table-0-label")).toHaveAttribute("aria-invalid", "true")
+    expect(screen.queryByTestId("api-input-table-1-label-error")).toBeNull()
+
+    rerender(
+      <ApiInputEditor
+        config={{ tables: [{ ...config.tables[0], label: "rates" }, config.tables[1]] }}
+        onUpdate={successfulOnUpdateSpy()}
+        accentColor="#10b981"
+        labelViolations={new Map([["rate_lookup", message]])}
+      />,
+    )
+    expect(screen.queryByTestId("api-input-table-0-label-error")).toBeNull()
+  })
 })
 
 describe("ApiInputEditor - blank paths are refused, never silently destructive", () => {

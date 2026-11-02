@@ -28,6 +28,9 @@ interface DocumentStatusState {
   completenessOmitted: number
   /** The document's remaining name violations, revalidated after each edit. */
   nameViolations: PipelineNameViolation[]
+  /** The violations a frame or a public input port names (`binding`), for the editor that
+   *  set it: the loaded document's, then the server's answer after each binding edit. */
+  inputBindingViolations: PipelineNameViolation[]
   nameFence: NameFence | null
   sourceRevision: string | null
   executionGeneration: number
@@ -71,6 +74,8 @@ export interface DocumentStatusStore extends DocumentStatusState {
   ) => void
   /** The remaining name violations the server reported for the current graph. */
   setNameViolations: (nameViolations: PipelineNameViolation[]) => void
+  /** Keep, of the violations the server reported for the current graph, those with a binding. */
+  setInputBindingViolations: (nameViolations: PipelineNameViolation[]) => void
   setGraphSynchronized: (graphSynchronized: boolean) => void
   setSystemFailure: (systemFailure: string) => void
   setSourceRevision: (sourceRevision: string | null) => void
@@ -87,6 +92,7 @@ function initialState(): DocumentStatusState {
     completeness: [],
     completenessOmitted: 0,
     nameViolations: [],
+    inputBindingViolations: [],
     nameFence: null,
     sourceRevision: null,
     executionGeneration: 0,
@@ -115,6 +121,10 @@ function nameFence(document: PipelineEditorDocument): NameFence | null {
   }
 }
 
+function withBinding(violations: PipelineNameViolation[]): PipelineNameViolation[] {
+  return violations.filter((violation) => violation.binding !== null)
+}
+
 function documentState(
   document: PipelineEditorDocument,
   graphSynchronized: boolean,
@@ -132,6 +142,7 @@ function documentState(
     completeness: document.completeness.map((entry) => ({ ...entry })),
     completenessOmitted: document.completeness_omitted,
     nameViolations: document.name_violations,
+    inputBindingViolations: withBinding(document.name_violations),
     nameFence: nameFence(document),
     sourceRevision: document.source_revision,
     executionGeneration,
@@ -166,6 +177,7 @@ const useDocumentStatusStore = create<DocumentStatusStore>()((set) => ({
     const capabilities = nameViolations.length === 0 ? state.nameFence.lifted : state.nameFence.fenced
     return { nameViolations, capabilities: { ...capabilities } }
   }),
+  setInputBindingViolations: (nameViolations) => set({ inputBindingViolations: withBinding(nameViolations) }),
   setGraphSynchronized: (graphSynchronized) => set({ graphSynchronized }),
   // No document was accepted, so the next resync must ask for the current one.
   setSystemFailure: (systemFailure) => set({ systemFailure, graphSynchronized: false, documentFingerprint: null }),

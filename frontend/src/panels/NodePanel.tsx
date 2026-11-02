@@ -1212,6 +1212,7 @@ function NodePanelContent({
     () => new Set(reservedApiInputFrameLabels ?? []),
     [reservedApiInputFrameLabels],
   )
+  const inputBindingViolations = useDocumentStatusStore((s) => s.inputBindingViolations)
 
   // Current Explore cache identity hash — the same client identity gate the
   // Explore preview applies, so a Chart Configure subview never treats a
@@ -1423,6 +1424,7 @@ function NodePanelContent({
       loadPivotFilterMembers={loadPivotFilterMembers}
       exploreConfigHash={exploreConfigHash}
       reservedApiInputFrameLabels={reservedApiInputFrameLabelSet}
+      inputBindingViolations={inputBindingViolations}
       accentColor={accentColor}
     />
   )

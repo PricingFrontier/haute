@@ -157,6 +157,13 @@ const NAME_VIOLATION_KINDS = [
   "output_destination",
 ] as const
 
+/** The editor setting that names a `reserved_input` or `support_input` violation's input:
+ *  a request input's frame (the request input, its frame's source handle, and the
+ *  definition it sits in) or a submodel's public input port. */
+export type PipelineNameViolationBinding =
+  | { kind: "frame"; node_id: string; handle: string; submodel: string | null }
+  | { kind: "submodel_input"; submodel: string; port: string }
+
 /** One name violation (codegen's naming rule, or support code's) with the server's message;
  *  one involving no node (two helpers, an unreadable statement) has no parties. */
 export interface PipelineNameViolation {
@@ -165,6 +172,8 @@ export interface PipelineNameViolation {
   name: string
   message: string
   parties: PipelineNameViolationParty[]
+  /** The frame or public input port naming the input, for an input violation that has one. */
+  binding: PipelineNameViolationBinding | null
 }
 
 export interface PipelineDocumentCapabilities {
@@ -643,12 +652,33 @@ export function parseNodeCompleteness(value: unknown, field: string): PipelineNo
   }
 }
 
+function parseNameViolationBinding(value: unknown, field: string): PipelineNameViolationBinding | null {
+  if (value === null) return null
+  const object = expectPlainObject(PARSER, value, field)
+  const kind = expectStringLiteral(PARSER, object.kind, `${field}.kind`, ["frame", "submodel_input"] as const)
+  if (kind === "frame") {
+    exactKeys(object, field, ["kind", "node_id", "handle", "submodel"])
+    return {
+      kind,
+      node_id: expectNonBlankString(PARSER, object.node_id, `${field}.node_id`),
+      handle: expectNonBlankString(PARSER, object.handle, `${field}.handle`),
+      submodel: nullableString(object, "submodel", field),
+    }
+  }
+  exactKeys(object, field, ["kind", "submodel", "port"])
+  return {
+    kind,
+    submodel: expectNonBlankString(PARSER, object.submodel, `${field}.submodel`),
+    port: expectNonBlankString(PARSER, object.port, `${field}.port`),
+  }
+}
+
 /** Parse a list of name violations: a document's, or an identity response's. */
 export function parseNameViolations(value: unknown, field: string): PipelineNameViolation[] {
   return expectArray(PARSER, value, field).map((item, index) => {
     const at = `${field}[${index}]`
     const object = expectPlainObject(PARSER, item, at)
-    exactKeys(object, at, ["kind", "name", "message", "parties"])
+    exactKeys(object, at, ["kind", "name", "message", "parties", "binding"])
     const parties = expectArray(PARSER, object.parties, `${at}.parties`).map((party, partyIndex) => {
       const partyAt = `${at}.parties[${partyIndex}]`
       const partyObject = expectPlainObject(PARSER, party, partyAt)
@@ -664,6 +694,7 @@ export function parseNameViolations(value: unknown, field: string): PipelineName
       name: expectString(PARSER, object.name, `${at}.name`),
       message: expectNonBlankString(PARSER, object.message, `${at}.message`),
       parties,
+      binding: parseNameViolationBinding(object.binding, `${at}.binding`),
     }
   })
 }

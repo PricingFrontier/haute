@@ -655,7 +655,14 @@ candidate, with the error toast.
   identity request and adopts the violations it returns, a newer edit superseding an answer
   in flight; the banner shrinks as renames fix them, and when the list is empty the fence
   lifts to the ready document's own capabilities (preview still needing a trusted source
-  selection). A document loaded without violations is not revalidated this way.
+  selection). A document loaded without violations is not fenced or revalidated this way,
+  except for its input bindings: after an edit changes the frame labels of an API Input or the
+  public input ports of a definition that the graph already held (a new node or definition
+  asks nothing), the browser sends the same request, and while any of the returned
+  violations with a `binding` remain it sends it again after each such change or preamble
+  edit. Those violations are shown where the name is set: under the API Input's frame label
+  field (node editors) and in the drilled Input inspector beside the public input port. Save
+  refuses them as before; they add no fence.
 - **Recovery canvas rendering and minimal repair.** Unavailable and blocked nodes
   remain selectable and expose their diagnostics, source/config location, and
   deterministic blocking path instead of a normal editor. The recovery banner

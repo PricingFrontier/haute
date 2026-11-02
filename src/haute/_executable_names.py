@@ -84,18 +84,44 @@ class NameParty:
 
 
 @dataclass(frozen=True)
+class FrameBinding:
+    """A request input's frame, which names the input its consumers receive.
+
+    *module* is where the request input sits, as a party's is.
+    """
+
+    module: str
+    node_id: str
+    handle: str
+
+
+@dataclass(frozen=True)
+class PortBinding:
+    """A submodel's public input port, which names the input its targets receive."""
+
+    definition_id: str
+    port: str
+
+
+#: The editor setting an input's name comes from, where one sets it directly.
+InputBinding = FrameBinding | PortBinding
+
+
+@dataclass(frozen=True)
 class NameViolation:
     """One collision bucket or reserved hit, with every node it involves.
 
     ``name`` is the executable name in question. For ``reserved_input`` the
-    single party is the node whose body receives the input, and ``origin``
-    says where the input comes from.
+    single party is the node whose body receives the input, ``origin`` says
+    where the input comes from, and ``binding`` is the frame or public input
+    port that names it, when it is one.
     """
 
     kind: ViolationKind
     name: str
     parties: tuple[NameParty, ...]
     origin: str = ""
+    binding: InputBinding | None = None
 
     @property
     def node_ids(self) -> tuple[str, ...]:
@@ -264,20 +290,50 @@ def function_name_violations(graph: PipelineGraph) -> list[NameViolation]:
     return violations
 
 
-def _port_bindings(graph: PipelineGraph) -> dict[tuple[str, str], list[str]]:
-    """The submodel input port names each definition child receives, by module and node."""
-    bindings: dict[tuple[str, str], list[str]] = {}
+@dataclass(frozen=True)
+class ReceivedInput:
+    """One input a node body receives: its name, where it comes from, and its binding."""
+
+    name: str
+    origin: str
+    binding: InputBinding | None = None
+
+
+def received_inputs(graph: PipelineGraph) -> Iterator[tuple[NameParty, list[ReceivedInput]]]:
+    """Every node with the inputs its body receives, as the executor binds them.
+
+    A node's inputs are its incoming edges' input names, the logical names its
+    ``inputMapping`` binds in their place, and, in a submodel definition, the
+    public input ports routed to it.
+    """
+    ports: dict[tuple[str, str], list[str]] = {}
     for definition_id, definition in (graph.submodels or {}).items():
         for port in definition.input_ports:
             for target in port.targets:
-                bindings.setdefault((definition_id, target.node_id), []).append(port.name)
-    return bindings
+                ports.setdefault((definition_id, target.node_id), []).append(port.name)
+    for module, scoped in _named_graphs(graph):
+        edges = _edge_inputs(module, scoped)
+        for node in scoped.nodes:
+            party = NameParty(node_id=node.id, label=node.data.label, module=module)
+            yield (
+                party,
+                [
+                    *edges.get(node.id, []),
+                    *_mapping_inputs(node),
+                    *(
+                        ReceivedInput(
+                            port, f"submodel input port {port!r}", PortBinding(module, port)
+                        )
+                        for port in ports.get((module, node.id), [])
+                    ),
+                ],
+            )
 
 
-def _edge_bindings(scoped: PipelineGraph) -> dict[str, list[tuple[str, str]]]:
-    """The edge-derived input names each node receives, as the executor derives them."""
+def _edge_inputs(module: str, scoped: PipelineGraph) -> dict[str, list[ReceivedInput]]:
+    """The edge-derived inputs each node receives, as the executor derives them."""
     node_map = scoped.node_map
-    bindings: dict[str, list[tuple[str, str]]] = {}
+    inputs: dict[str, list[ReceivedInput]] = {}
     for edge in scoped.edges:
         source = node_map.get(edge.source)
         if source is None:
@@ -287,23 +343,26 @@ def _edge_bindings(scoped: PipelineGraph) -> dict[str, list[tuple[str, str]]]:
         except ValueError:
             # A frame edge without its handle is refused where the edge is checked.
             continue
+        binding: InputBinding | None = None
         if source.data.nodeType in REQUEST_INPUT_NODE_TYPES:
             origin = f"frame {name!r} of {source.data.label!r}"
+            if edge.sourceHandle is not None:
+                binding = FrameBinding(module, source.id, edge.sourceHandle)
         elif source.data.nodeType == NodeType.SUBMODEL:
             origin = f"output port {name!r} of {source.data.label!r}"
         else:
             origin = f"from {source.data.label!r}"
-        bindings.setdefault(edge.target, []).append((name, origin))
-    return bindings
+        inputs.setdefault(edge.target, []).append(ReceivedInput(name, origin, binding))
+    return inputs
 
 
-def _mapping_bindings(node: GraphNode) -> Iterator[tuple[str, str]]:
+def _mapping_inputs(node: GraphNode) -> Iterator[ReceivedInput]:
     """Every logical name ``inputMapping`` binds in place of an edge-derived one."""
     mapping = node.data.config.get("inputMapping")
     if isinstance(mapping, dict):
         for logical, current in mapping.items():
             if isinstance(logical, str):
-                yield logical, f"inputMapping alias for {current!r}"
+                yield ReceivedInput(logical, f"inputMapping alias for {current!r}")
 
 
 def input_binding_violations(graph: PipelineGraph) -> list[NameViolation]:
@@ -313,28 +372,20 @@ def input_binding_violations(graph: PipelineGraph) -> list[NameViolation]:
     reads it (codegen and ``_user_exec``) and an ordinary input elsewhere.
     """
     violations: list[NameViolation] = []
-    ports = _port_bindings(graph)
-    for module, scoped in _named_graphs(graph):
-        edges = _edge_bindings(scoped)
-        for node in scoped.nodes:
-            party = NameParty(node_id=node.id, label=node.data.label, module=module)
-            seen: set[str] = set()
-            bindings = [
-                *edges.get(node.id, []),
-                *_mapping_bindings(node),
-                *(
-                    (port, f"submodel input port {port!r}")
-                    for port in ports.get((module, node.id), [])
-                ),
-            ]
-            for name, origin in bindings:
-                if name in RESERVED_NAMES and name not in seen:
-                    seen.add(name)
-                    violations.append(
-                        NameViolation(
-                            kind="reserved_input", name=name, parties=(party,), origin=origin
-                        )
+    for party, inputs in received_inputs(graph):
+        seen: set[str] = set()
+        for received in inputs:
+            if received.name in RESERVED_NAMES and received.name not in seen:
+                seen.add(received.name)
+                violations.append(
+                    NameViolation(
+                        kind="reserved_input",
+                        name=received.name,
+                        parties=(party,),
+                        origin=received.origin,
+                        binding=received.binding,
                     )
+                )
     return violations
 
 

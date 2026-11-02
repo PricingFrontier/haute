@@ -1,9 +1,13 @@
 import type { SubmodelBoundaryPort } from "../../types/node"
+import type { PipelineNameViolation } from "../../types/pipelineDocument"
+import { portViolationMessages } from "../../utils/inputBindingViolations"
 import { InputSourcesBar, type InputSource, type SimpleNode } from "./_shared"
 
 type SubmodelPortEditorProps = {
   node: SimpleNode
   onDeleteInputPort?: (portName: string) => void
+  /** The document's violations a frame or a public input port names. */
+  inputBindingViolations?: readonly PipelineNameViolation[]
 }
 
 const isNonBlankText = (value: unknown): value is string =>
@@ -20,6 +24,7 @@ function isBoundaryPort(value: unknown): value is SubmodelBoundaryPort {
 export default function SubmodelPortEditor({
   node,
   onDeleteInputPort,
+  inputBindingViolations = [],
 }: SubmodelPortEditorProps) {
   const { definitionId, instanceId, portDirection, ports } = node.data
   const validPorts = Array.isArray(ports) && ports.every(isBoundaryPort)
@@ -46,6 +51,12 @@ export default function SubmodelPortEditor({
     name: port.label,
     edgeId: port.id,
   }))
+  // A port's id is its public name.
+  const violations = portViolationMessages(inputBindingViolations, definitionId)
+  const portViolations = ports.flatMap((port) => {
+    const message = violations.get(port.id)
+    return message === undefined ? [] : [{ port: port.id, message }]
+  })
 
   return (
     <div className="flex-1 flex flex-col min-h-0 px-3 py-2 gap-2">
@@ -68,6 +79,17 @@ export default function SubmodelPortEditor({
           No input frames
         </div>
       )}
+      {portViolations.map(({ port, message }) => (
+        <div
+          key={port}
+          role="alert"
+          data-testid={`submodel-port-${port}-violation`}
+          className="px-1.5 py-0.5 rounded text-[10px] leading-snug"
+          style={{ background: "var(--danger-soft)", color: "var(--danger-text)" }}
+        >
+          {message}
+        </div>
+      ))}
     </div>
   )
 }
