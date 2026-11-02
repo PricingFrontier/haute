@@ -954,8 +954,12 @@ def compute_pdp(
                 )
                 grid_values = val_counts[feat].to_list()[:30]
             else:
-                # Numeric: percentile-spaced grid
-                col_vals = sample_df[feat].drop_nulls().to_numpy().astype(float)
+                # Numeric: percentile-spaced grid over the column's physical values (a
+                # date's days, a datetime's ticks), so a temporal feature's points are
+                # numbers as an ordinary feature's are.
+                dtype = sample_df[feat].dtype
+                physical = sample_df[feat].to_physical()
+                col_vals = physical.drop_nulls().to_numpy().astype(float)
                 # NaN is missing too: one NaN would make every percentile, so the grid, NaN.
                 col_vals = col_vals[~np.isnan(col_vals)]
                 if len(col_vals) == 0:
@@ -965,15 +969,17 @@ def compute_pdp(
                     )
                 percentiles = np.linspace(0, 100, n_grid)
                 # Each point is labelled with the value the model scores there: an
-                # integer feature takes observed values (nearest rank), and every value
-                # is cast to the column's dtype before it is labelled.
-                dtype = sample_df[feat].dtype
+                # integer (or temporal) feature takes observed values (nearest rank),
+                # and every value is cast to the column's physical dtype before it is
+                # labelled.
                 raw_grid = np.percentile(
-                    col_vals, percentiles, method="nearest" if dtype.is_integer() else "linear"
+                    col_vals,
+                    percentiles,
+                    method="nearest" if physical.dtype.is_integer() else "linear",
                 )
                 grid_values = (
                     pl.Series(feat, np.unique(raw_grid))
-                    .cast(dtype)
+                    .cast(physical.dtype)
                     .unique(maintain_order=True)
                     .to_list()
                 )
@@ -986,7 +992,7 @@ def compute_pdp(
                     )
                 else:
                     modified = sample_df.with_columns(
-                        pl.lit(val, dtype=sample_df[feat].dtype).alias(feat)
+                        pl.lit(val, dtype=physical.dtype).cast(dtype).alias(feat)
                     )
                 preds = algo.predict(model, modified, features, offset=offset)
                 avg_pred = float(np.mean(preds))

@@ -263,9 +263,13 @@ class NativeModel(ABC):
             ):
                 raise fail(f"has invalid levels for {feature!r} (categorical_levels)")
         task, link = record["task"], record["link"]
-        if task not in {"regression", "classification"}:
+        if not isinstance(task, str) or task not in {"regression", "classification"}:
             raise fail(f"has an unknown task {task!r} (task)")
-        if link not in _RECORD_LINKS or (link == "logit") != (task == "classification"):
+        if (
+            not isinstance(link, str)
+            or link not in _RECORD_LINKS
+            or (link == "logit") != (task == "classification")
+        ):
             raise fail(f"has link {link!r} for a {task} model (link)")
         offset_column, offset_link = record["offset_column"], record["offset_link"]
         if offset_column is None:
@@ -273,7 +277,7 @@ class NativeModel(ABC):
                 raise fail("has an offset link without an offset column (offset_link)")
         elif not isinstance(offset_column, str) or not offset_column:
             raise fail("has an invalid offset column (offset_column)")
-        elif offset_link not in _RECORD_LINKS:
+        elif not isinstance(offset_link, str) or offset_link not in _RECORD_LINKS:
             raise fail(f"has an invalid offset link {offset_link!r} (offset_link)")
         labels = record["class_labels"]
         class_labels: tuple[Any, Any] | None = None

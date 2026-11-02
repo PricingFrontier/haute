@@ -1435,9 +1435,10 @@ potentially large copy on its threadpool.
   diagnostics rows' canonical order; a categorical PDP grid keeps its 30 most frequent
   levels with equal counts ordered by level, and AvE's category fold its largest levels
   with equal exposure ordered by level. A numeric PDP grid is labelled with the values the
-  model scored: the percentile grid (nearest-rank for an integer feature, so its points are
-  observed values) is cast to the feature's dtype and deduplicated before each point is
-  predicted.
+  model scored: the percentile grid over the feature's physical values (a date's days, a
+  datetime's ticks; nearest-rank for an integer or temporal feature, so its points are
+  observed values) is cast to that physical dtype and deduplicated, and each point is cast
+  back to the feature's dtype to be predicted.
 - The feature contract is hashed over sorted, separator-compact canonical JSON but
   written to disk pretty-printed — human-reviewable on disk, byte-deterministic for
   hashing.

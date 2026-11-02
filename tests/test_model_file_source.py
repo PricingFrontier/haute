@@ -526,6 +526,13 @@ _RECORD_FAULTS = [
     ("no-task", lambda record: record.pop("task"), "task"),
     ("features-not-a-list", lambda record: record.update(features="region"), "features"),
     ("task-not-a-name", lambda record: record.update(task=None), "task"),
+    ("task-a-list", lambda record: record.update(task=[]), "task"),
+    ("link-an-object", lambda record: record.update(link={}), "link"),
+    (
+        "offset-link-a-list",
+        lambda record: record.update(offset_column="exposure", offset_link=[]),
+        "offset_link",
+    ),
 ]
 
 

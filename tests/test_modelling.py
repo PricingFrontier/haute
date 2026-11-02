@@ -771,6 +771,58 @@ class TestCatBoostAlgorithm:
         assert any(key.startswith("eval_") for key in rebuilt[0]) is with_validation
 
 
+@pytest.mark.parametrize("with_validation", [False, True], ids=["no-validation", "validation"])
+def test_a_gpu_fit_reports_the_history_its_model_recorded(
+    monkeypatch: pytest.MonkeyPatch, with_validation: bool
+) -> None:
+    """A GPU fit runs no callback: ``fit`` reads the history from the model's own
+    ``evals_result_``, with or without a validation set."""
+    import catboost
+
+    recorded = {"learn": {"RMSE": [0.9, 0.8, 0.7]}}
+    if with_validation:
+        recorded["validation"] = {"RMSE": [1.0, 0.95, 0.97]}
+
+    class GpuRecordingRegressor:
+        """What a CatBoost GPU fit leaves behind, without a GPU."""
+
+        def __init__(self, **params: object) -> None:
+            assert str(params["task_type"]).upper() == "GPU"
+            self.evals_result_ = recorded
+            self.tree_count_ = 3
+            self.best_iteration_ = 1
+            self._metadata: dict[str, str] = {}
+
+        def fit(self, pool: object, **kwargs: object) -> None:
+            assert "callbacks" not in kwargs
+
+        def get_metadata(self) -> dict[str, str]:
+            return self._metadata
+
+    monkeypatch.setattr(catboost, "CatBoostRegressor", GpuRecordingRegressor)
+    frame = pl.DataFrame({"x": [0.1, 0.5, 0.9, 0.3] * 10, "y": [1.0, 2.0, 3.0, 4.0] * 10})
+    fit_result = CatBoostAlgorithm().fit(
+        frame,
+        ["x"],
+        [],
+        "y",
+        None,
+        {"iterations": 3, "task_type": "GPU"},
+        "regression",
+        eval_df=frame if with_validation else None,
+    )
+
+    expected = [
+        {"iteration": 1.0, "train_RMSE": 0.9},
+        {"iteration": 2.0, "train_RMSE": 0.8},
+        {"iteration": 3.0, "train_RMSE": 0.7},
+    ]
+    if with_validation:
+        for row, value in zip(expected, recorded["validation"]["RMSE"], strict=True):
+            row["eval_RMSE"] = value
+    assert fit_result.loss_history == expected
+
+
 def test_the_loss_importance_is_measured_under_the_weighted_loss(tmp_path: Path) -> None:
     from catboost import CatBoostRegressor
 
