@@ -662,22 +662,31 @@ export default function useEdgeHandlers({
     setLastSelectedId,
   ])
 
-  /** Activates a node as a canvas click does: closes side panes, selects the node, and opens its panel/preview. */
-  const activateNode = useCallback((node: Node) => {
+  /** Closes the side panes and opens the node's panel and preview, as a click does. */
+  const openFromCanvas = useCallback((node: Node) => {
     useUIStore.getState().closeSidePanes()
+    openNode(node)
+  }, [openNode])
+
+  /**
+   * Opens panel on a full click (mousedown+mouseup) — skipped for drags. React Flow
+   * has already applied the click's selection, a Ctrl/Cmd-click's toggle included,
+   * so the click leaves selection alone.
+   */
+  const onNodeClick = useCallback(
+    (_event: React.MouseEvent, node: Node) => openFromCanvas(node),
+    [openFromCanvas],
+  )
+
+  /** Activates a node from outside the canvas as a click does, selecting it as a plain click would. */
+  const activateNode = useCallback((node: Node) => {
     setNodesRaw((nds) => {
       const target = nds.find((n) => n.id === node.id)
       if (!target || target.selected) return nds
       return selectOnlyNode(nds, node.id)
     })
-    openNode(node)
-  }, [openNode, setNodesRaw])
-
-  /** Opens panel on a full click (mousedown+mouseup) — skipped for drags. */
-  const onNodeClick = useCallback(
-    (_event: React.MouseEvent, node: Node) => activateNode(node),
-    [activateNode],
-  )
+    openFromCanvas(node)
+  }, [openFromCanvas, setNodesRaw])
 
   const handleDeleteEdge = useCallback((edgeId: string) => {
     if (deleteBoundaryEdge?.(edgeId)) return

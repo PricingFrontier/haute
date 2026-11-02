@@ -2982,5 +2982,23 @@ describe("useEdgeHandlers connection drop menu", () => {
     expect(params.setSelectedNode).toHaveBeenCalledWith(node)
     expect(params.fetchPreview).toHaveBeenCalledWith(node, {})
   })
+
+  it("leaves a click's selection to React Flow, so a Ctrl/Cmd-click deselection stands", () => {
+    useUIStore.setState({ utilityOpen: true })
+    const params = makeParams()
+    // React Flow applied the modifier click first: A left the selection, B stayed.
+    const a = { id: "a", selected: false, data: { label: "A", nodeType: NODE_TYPES.POLARS } } as unknown as Node
+    const b = { id: "b", selected: true, data: { label: "B", nodeType: NODE_TYPES.POLARS } } as unknown as Node
+    params.graphRef.current = { nodes: [a, b], edges: [] }
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onNodeClick({} as React.MouseEvent, a)
+    })
+
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(useUIStore.getState().utilityOpen).toBe(false)
+    expect(params.setSelectedNode).toHaveBeenCalledWith(a)
+  })
 })
 

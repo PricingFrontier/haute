@@ -573,7 +573,10 @@ candidate, with the error toast.
   immediately before committing the child nodes/edges, source path, parent
   snapshot, and view stack together. If the request has been superseded, it
   returns without mutating the current graph, source path, or navigation stack.
-  Load, projection, and ELK layout must all finish before the view
+  The view keeps the definition's authored child positions; only the two
+  boundary cards are placed, the Input card left of the children and the Output
+  card right of them, so a visit that edits nothing changes nothing in the
+  document. Projection and identity resolution must both finish before the view
   stack, graph, source-file refs, or selection mutate; any failure leaves the
   parent view byte-for-byte unchanged and reports one error toast. A successful
   frame records both `instanceId` and `definitionId`, so two occurrences of one

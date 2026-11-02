@@ -135,7 +135,7 @@ describe("ContextMenu", () => {
     // First item should be focused initially
     expect(items[0]).toHaveFocus()
     // Press ArrowDown
-    fireEvent.keyDown(document, { key: "ArrowDown" })
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" })
     expect(items[1]).toHaveFocus()
   })
 
@@ -143,9 +143,9 @@ describe("ContextMenu", () => {
     render(<ContextMenu {...makeProps()} />)
     const items = screen.getAllByRole("menuitem")
     // Move down first, then up
-    fireEvent.keyDown(document, { key: "ArrowDown" })
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" })
     expect(items[1]).toHaveFocus()
-    fireEvent.keyDown(document, { key: "ArrowUp" })
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" })
     expect(items[0]).toHaveFocus()
   })
 
@@ -153,9 +153,9 @@ describe("ContextMenu", () => {
     render(<ContextMenu {...makeProps()} />)
     const items = screen.getAllByRole("menuitem")
     // Items: Rename, Duplicate, Delete (3 items)
-    fireEvent.keyDown(document, { key: "ArrowDown" }) // -> Duplicate
-    fireEvent.keyDown(document, { key: "ArrowDown" }) // -> Delete
-    fireEvent.keyDown(document, { key: "ArrowDown" }) // -> Rename (wrap)
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" }) // -> Duplicate
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" }) // -> Delete
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" }) // -> Rename (wrap)
     expect(items[0]).toHaveFocus()
   })
 
@@ -163,8 +163,38 @@ describe("ContextMenu", () => {
     render(<ContextMenu {...makeProps()} />)
     const items = screen.getAllByRole("menuitem")
     // From Rename (index 0), ArrowUp should wrap to Delete (last)
-    fireEvent.keyDown(document, { key: "ArrowUp" })
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" })
     expect(items[items.length - 1]).toHaveFocus()
+  })
+
+  it("leaves arrows, Home and End to a control focused outside it, while Escape still closes it", () => {
+    const props = makeProps()
+    render(<><input aria-label="Outside" /><ContextMenu {...props} /></>)
+    const items = screen.getAllByRole("menuitem")
+    const outside = screen.getByRole("textbox", { name: "Outside" })
+    outside.focus()
+
+    for (const key of ["ArrowDown", "Home", "End"]) {
+      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })
+      outside.dispatchEvent(event)
+      expect(event.defaultPrevented).toBe(false)
+    }
+    expect(outside).toHaveFocus()
+    expect(items[0]).not.toHaveFocus()
+
+    fireEvent.keyDown(outside, { key: "Escape" })
+    expect(props.onClose).toHaveBeenCalledOnce()
+  })
+
+  it("stays open for an Escape a field has already consumed", () => {
+    const props = makeProps()
+    render(<><input aria-label="Consumer" /><ContextMenu {...props} /></>)
+    const consumer = screen.getByRole("textbox", { name: "Consumer" })
+    consumer.addEventListener("keydown", (event) => event.preventDefault())
+
+    fireEvent.keyDown(consumer, { key: "Escape" })
+
+    expect(props.onClose).not.toHaveBeenCalled()
   })
 
   it("menu has correct aria-label", () => {

@@ -254,6 +254,8 @@ function PipelineNode(props: NodeProps<PipelineFlowNode>) {
     traceActive,
     dimmed,
     focusShadow,
+    diffShadow,
+    diffOutline,
     traceValue,
     showTraceValue,
     traceMotionDisabled,
@@ -294,7 +296,11 @@ function PipelineNode(props: NodeProps<PipelineFlowNode>) {
           style={{
             background: markerBackground,
             border: markerBorder,
-            ...(focusShadow ? { boxShadow: focusShadow } : {}),
+            // The same focus and comparison marks as every other node, on the marker.
+            ...(focusShadow || diffShadow
+              ? { boxShadow: [focusShadow, diffShadow].filter(Boolean).join(", ") }
+              : {}),
+            ...diffOutline,
           }}
         />
         {visualStatus && (

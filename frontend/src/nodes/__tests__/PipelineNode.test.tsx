@@ -237,6 +237,16 @@ describe("PipelineNode", () => {
     expect(screen.getByTestId("node-Moved").style.outline).toContain("dashed")
   })
 
+  it("marks an Edge Join's marker for a changed or moved comparison, keeping a focus ring with it", () => {
+    renderNode({ label: "Join", nodeType: NODE_TYPES.EDGE_JOIN, _diffStatus: "changed", _changeFocused: true })
+    const changed = screen.getByTestId("edge-join-marker").style
+    expect(changed.boxShadow).toContain("var(--diff-changed)")
+    expect(changed.boxShadow).toContain("0 0 0 3px var(--accent)")
+    cleanup()
+    renderNode({ label: "Join", nodeType: NODE_TYPES.EDGE_JOIN, _diffStatus: "moved" })
+    expect(screen.getByTestId("edge-join-marker").style.outline).toContain("dashed")
+  })
+
   it("rings the card when _changeFocused is set", () => {
     renderNode({ label: "Changed", nodeType: NODE_TYPES.POLARS, _changeFocused: true })
     expect(screen.getByTestId("node-Changed").style.boxShadow).toContain("0 0 0 3px var(--accent)")

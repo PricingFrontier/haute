@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import type { Node, Edge } from "@xyflow/react"
 import type { ViewLevel } from "../components/BreadcrumbBar"
-import { getLayoutedElements } from "../utils/layout"
 import { normalizeEdges } from "../utils/graphHelpers"
 import { serializeSnapshot, toCanonicalGraphPayload } from "../utils/graphSnapshot"
 import { buildSubmodelViewGraph } from "../utils/submodelViewGraph"
@@ -485,16 +484,12 @@ export default function useSubmodelNavigation({
       if (drillRequestIsStale(request)) {
         return
       }
-      const layouted = await getLayoutedElements(resolved.nodes, resolved.edges)
-      if (drillRequestIsStale(request)) {
-        return
-      }
 
-      // Commit navigation only after projection, identity resolution, and layout all succeed.
+      // Commit navigation only after projection and identity resolution succeed.
       // The store swaps the canvas and its history first: it refuses a view
       // that cannot open, before anything else changes.
-      useGraphStore.getState().enterSubmodelView({ nodes: layouted, edges: resolved.edges })
-      graphRef.current = { nodes: layouted, edges: resolved.edges }
+      useGraphStore.getState().enterSubmodelView({ nodes: resolved.nodes, edges: resolved.edges })
+      graphRef.current = { nodes: resolved.nodes, edges: resolved.edges }
       setActiveSubmodelIdentity({
         instanceId: occurrence.instanceId,
         definitionId: occurrence.definitionId,

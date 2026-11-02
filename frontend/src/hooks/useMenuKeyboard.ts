@@ -30,6 +30,8 @@ export function useMenuKeyboard(
   useEffect(() => {
     if (!active) return
     const handleKeyDown = (event: KeyboardEvent) => {
+      // A key something else consumed (a field clearing on Escape) is not the menu's.
+      if (event.defaultPrevented) return
       if (event.key === "Escape") {
         event.preventDefault()
         onClose()
@@ -43,6 +45,9 @@ export function useMenuKeyboard(
       ) {
         return
       }
+      // Escape closes the menu from anywhere; moving through it is for keys pressed in it,
+      // so a control focused outside keeps its own arrows, Home and End.
+      if (!(event.target instanceof Node) || !ref.current?.contains(event.target)) return
       const items = getEnabledMenuItems(ref.current)
       if (items.length === 0) return
       event.preventDefault()

@@ -3,9 +3,11 @@ import { renderHook, cleanup, act } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import type { SubmodelDefinition } from "../../types/node"
 import useSubmodelNavigation from "../useSubmodelNavigation"
+import useSubmodelBoundaryEditing from "../useSubmodelBoundaryEditing"
 import useToastStore from "../../stores/useToastStore"
 import useGraphStore from "../../stores/useGraphStore"
 import { makeNode, makeEdge } from "../../test-utils/factories"
+import { normalizeEdges } from "../../utils/graphHelpers"
 
 vi.mock("../../api/client", () => ({
   createSubmodel: vi.fn(),
@@ -13,9 +15,6 @@ vi.mock("../../api/client", () => ({
   dissolveSubmodel: vi.fn(),
 }))
 
-vi.mock("../../utils/layout", () => ({
-  getLayoutedElements: vi.fn(async (nodes: Node[]) => nodes),
-}))
 
 import { loadSubmodel } from "../../api/client"
 const mockLoad = vi.mocked(loadSubmodel)
@@ -87,6 +86,90 @@ describe("useSubmodelNavigation - canonical port building & branch gaps", () => 
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+  })
+
+  it("leaves the document clean and its history as it was after an untouched visit", async () => {
+    // The real projection, boundary reconciler and store, with authored child positions.
+    const positioned: SubmodelDefinition = {
+      ...definition,
+      graph: {
+        nodes: definition.graph.nodes.map((node, index) => ({
+          ...node,
+          position: { x: 700 + index * 400, y: 300 + index * 120 },
+        })),
+        edges: [],
+      },
+    }
+    // Nodes carry the identities the server's resolver gives them.
+    const handles = { claims: "claims", quote: "quote", claims_result: "claims_result" }
+    const params = makeParams({
+      submodelsRef: { current: { [DEFINITION_ID]: positioned } as Record<string, unknown> },
+      resolveGraphIdentities: vi.fn(async ({ nodes, edges }) => ({
+        nodes: nodes.map((node: Node) => node.type === "submodelPort"
+          ? { ...node, data: { ...node.data, _functionName: node.id, _defaultInputName: null, _sourceHandleInputNames: handles } }
+          : { ...node, data: { ...node.data, _functionName: node.id, _defaultInputName: node.id, _sourceHandleInputNames: { result: `${node.id}_result` } } }),
+        edges: [...edges],
+      })),
+    })
+    params.graphRef.current = {
+      nodes: [makeNode("src1"), makeNode("tgt1"), occurrence()],
+      // Loaded edges are normalized, as both document load paths do.
+      edges: normalizeEdges([
+        { ...makeEdge("src1", INSTANCE_ID), id: "input-claims", sourceHandle: "proposer_claims", targetHandle: "in__claims" } as Edge,
+        { ...makeEdge("src1", INSTANCE_ID), id: "input-quote", sourceHandle: "quote_info", targetHandle: "in__quote" } as Edge,
+        { ...makeEdge(INSTANCE_ID, "tgt1"), id: "output-claims", sourceHandle: "out__claims_result" } as Edge,
+      ]),
+    }
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: params.graphRef.current.nodes,
+      edges: params.graphRef.current.edges,
+      preamble: "",
+      submodels: params.submodelsRef.current,
+    })
+    const saved = useGraphStore.getState().persistedFingerprint
+    // An earlier root edit, undone: the root's redo stack must survive the visit.
+    act(() => useGraphStore.getState().setPreamble("import math"))
+    act(() => useGraphStore.getState().undo())
+
+    const { result } = renderHook(() => {
+      const navigation = useSubmodelNavigation(params)
+      const nodes = useGraphStore((state) => state.nodes)
+      const edges = useGraphStore((state) => state.edges)
+      const submodels = useGraphStore((state) => state.submodels)
+      const view = navigation.viewStack.at(-1)
+      useSubmodelBoundaryEditing({
+        activeSubmodelName: view?.type === "submodel" ? view.name : null,
+        activeSubmodelInstanceId: view?.type === "submodel" ? view.instanceId ?? null : null,
+        activeSubmodelDefinitionId: view?.type === "submodel" ? view.definitionId ?? null : null,
+        nodes,
+        edges,
+        submodels,
+        graphRef: params.graphRef,
+        parentGraphRef: params.parentGraphRef,
+        submodelsRef: params.submodelsRef,
+        setNodesAndEdgesAndSubmodels: useGraphStore.getState().setNodesAndEdgesAndSubmodels,
+        reservedApiInputFrameLabels: new Set<string>(),
+        resolveGraphIdentities: params.resolveGraphIdentities,
+      })
+      return navigation
+    })
+
+    await act(async () => {
+      await result.current.handleDrillIntoSubmodel(INSTANCE_ID)
+    })
+    expect(result.current.viewStack).toHaveLength(2)
+    expect(useGraphStore.getState().dirty).toBe(false)
+    expect(params.parentGraphRef.current).not.toBeNull()
+
+    act(() => result.current.handleBreadcrumbNavigate(0))
+
+    const state = useGraphStore.getState()
+    expect(state.dirty).toBe(false)
+    expect(state.persistedFingerprint).toBe(saved)
+    expect(state.undoStack).toHaveLength(0)
+    expect(state.redoStack).toHaveLength(1)
+    const children = (state.submodels[DEFINITION_ID] as SubmodelDefinition).graph.nodes
+    expect(children.map((node) => node.position)).toEqual([{ x: 700, y: 300 }, { x: 1100, y: 420 }])
   })
 
   it("projects declared parent boundaries into Input and Output cards", async () => {

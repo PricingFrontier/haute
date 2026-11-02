@@ -15,16 +15,11 @@ vi.mock("../../api/client", () => ({
   dissolveSubmodel: vi.fn(),
 }))
 
-vi.mock("../../utils/layout", () => ({
-  getLayoutedElements: vi.fn(async (nodes: Node[]) => nodes),
-}))
 
 import { createSubmodel, createNodeInstance, loadSubmodel, dissolveSubmodel } from "../../api/client"
-import { getLayoutedElements } from "../../utils/layout"
 const mockCreate = vi.mocked(createSubmodel)
 const mockLoad = vi.mocked(loadSubmodel)
 const mockDissolve = vi.mocked(dissolveSubmodel)
-const mockLayout = vi.mocked(getLayoutedElements)
 
 const INSTANCE_ID = "pricing"
 const DEFINITION_ID = "definition_pricing"
@@ -121,8 +116,6 @@ describe("useSubmodelNavigation", () => {
     mockCreate.mockReset()
     mockLoad.mockReset()
     mockDissolve.mockReset()
-    mockLayout.mockReset()
-    mockLayout.mockImplementation(async (nodes: Node[]) => nodes)
   })
 
   afterEach(() => {
@@ -1169,34 +1162,29 @@ describe("useSubmodelNavigation", () => {
     )
   })
 
-  it("leaves navigation state untouched when drilled-view layout fails", async () => {
-    mockLoad.mockResolvedValue({
-      status: "ok",
-      definition_id: DEFINITION_ID,
-      submodel_name: "pricing",
-      submodel_file: "modules/pricing.py",
-      graph: { nodes: [makeNode("child")], edges: [] },
-    })
-    mockLayout.mockRejectedValueOnce(new Error("Layout failed"))
+  it("keeps the children's authored positions and places the boundary cards beside them", async () => {
+    const left = makeNode("child1", "polars", { position: { x: 700, y: 300 } })
+    const right = makeNode("child2", "polars", { position: { x: 1100, y: 500 } })
     const params = makeParams({
-      sourceFileRef: { current: "pipelines/main.py" },
+      submodelsRef: { current: { [DEFINITION_ID]: makeDefinition([left, right]) } },
     })
+    seedCanonicalGraph(params)
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
     await act(async () => {
       await result.current.handleDrillIntoSubmodel(INSTANCE_ID)
     })
 
-    expect(params.parentGraphRef.current).toBeNull()
-    expect(params.sourceFileRef.current).toBe("pipelines/main.py")
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
-    expect(result.current.viewStack).toHaveLength(1)
-    expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
-      type: "error",
-      text: expect.stringContaining("Drill-down failed"),
-    })
+    const byId = new Map(useGraphStore.getState().nodes.map((node) => [node.id, node]))
+    expect(byId.get("child1")?.position).toEqual({ x: 700, y: 300 })
+    expect(byId.get("child2")?.position).toEqual({ x: 1100, y: 500 })
+    const cards = useGraphStore.getState().nodes.filter((node) => node.type === "submodelPort")
+    const input = cards.find((node) => node.data.portDirection === "input")!
+    const output = cards.find((node) => node.data.portDirection === "output")!
+    expect(input.position.x).toBeLessThan(700)
+    expect(output.position.x).toBeGreaterThan(1100)
+    expect(input.position.y).toBe(400)
   })
-
   it("rejects a non-canonical occurrence instead of deriving a dissolve name", async () => {
     const occurrence = makeNode("broken", "submodel", {
       data: {
@@ -1448,11 +1436,10 @@ describe("useSubmodelNavigation", () => {
     },
   )
 
-  it.each(["identity", "layout"] as const)(
+  it.each(["identity"] as const)(
     "discards a pending drill-in when another document loads during %s await",
     async (stage) => {
       let resolveIdentities!: (value: { nodes: Node[]; edges: Edge[] }) => void
-      let resolveLayout!: (nodes: Node[]) => void
       const params = makeParams({
         sourceFileRef: { current: "pipelines/first.py" },
         pipelineNameRef: { current: "first" },
@@ -1471,13 +1458,6 @@ describe("useSubmodelNavigation", () => {
           () =>
             new Promise((resolve) => {
               resolveIdentities = resolve
-            }),
-        )
-      } else {
-        mockLayout.mockImplementationOnce(
-          () =>
-            new Promise((resolve) => {
-              resolveLayout = resolve
             }),
         )
       }
@@ -1508,8 +1488,6 @@ describe("useSubmodelNavigation", () => {
       await act(async () => {
         if (stage === "identity") {
           resolveIdentities({ nodes: [makeNode("child1")], edges: [] })
-        } else {
-          resolveLayout([makeNode("child1")])
         }
         await drillPromise
       })
@@ -1527,16 +1505,15 @@ describe("useSubmodelNavigation", () => {
 
   it.each([
     ["occurrence removed", "identity"],
-    ["occurrence edited", "layout"],
-    ["document reloaded at root", "layout"],
-    ["capability lost", "layout"],
+    ["occurrence edited", "identity"],
+    ["document reloaded at root", "identity"],
+    ["capability lost", "identity"],
   ] as const)(
     "discards a pending drill-in on %s during %s await and preserves subsequent coherent drill and return",
     async (mutation, stage) => {
       const { default: useDocumentStatusStore } = await import("../../stores/useDocumentStatusStore")
       useDocumentStatusStore.getState().reset()
       let resolveIdentities!: (value: { nodes: Node[]; edges: Edge[] }) => void
-      let resolveLayout!: (nodes: Node[]) => void
 
       const params = makeParams({
         sourceFileRef: { current: "pipelines/main.py" },
@@ -1557,13 +1534,6 @@ describe("useSubmodelNavigation", () => {
           () =>
             new Promise<{ nodes: Node[]; edges: Edge[] }>((resolve) => {
               resolveIdentities = resolve
-            }),
-        )
-      } else {
-        mockLayout.mockImplementationOnce(
-          () =>
-            new Promise((resolve) => {
-              resolveLayout = resolve
             }),
         )
       }
@@ -1602,8 +1572,6 @@ describe("useSubmodelNavigation", () => {
       await act(async () => {
         if (stage === "identity") {
           resolveIdentities({ nodes: [makeNode("child1")], edges: [] })
-        } else {
-          resolveLayout([makeNode("child1")])
         }
         await drillPromise
       })
