@@ -233,15 +233,17 @@ platforms, and on Windows with long paths on, nothing is renamed.
    build runs in-process through `build_input_snapshot()` with the context's cancellation,
    deadline, and stages; otherwise the build is spawned through `run_isolated_worker` with
    `capped_worker_config(budget, ...)`, where `budget = isolated_execution_budget(execution_context)`:
-   `worker_config_for_memory_policy(memory_limit_bytes=budget.memory_limit_bytes, ...)` with
-   `require_memory_limit=True` whatever `HAUTE_WORKER_MEMORY_ENFORCEMENT` says. The
+   `worker_config_for_memory_policy(memory_limit_bytes=budget.memory_limit_bytes, ...)`,
+   which enforces the limit as the [worker memory policy](../execution-engine/high-level.md)
+   says: a native cap under `required`, the parent's RSS watchdog (and any cap the host can
+   install) under `best_effort`, the unset default of a host without a cap (macOS). The
    child creates `create_isolated_execution_context(budget)` and runs the same
-   `build_input_snapshot()`. A host that cannot install the native cap reuses a
-   ready-but-stale generation with warning code `cap_unavailable_stale_reused`, and refuses
-   with `cap_unavailable` before any provider access only when no generation exists.
-   `allow_admitted_eager=True` is the hard-capped-worker-only opt-in for the admitted-eager build class — the explicit
-   admitted-eager build sets it inside the child, and the in-thread explicit path keeps
-   refusing that class outside `PREVIEW_EAGER`.
+   `build_input_snapshot()`. Only `required` on a host that cannot install the native cap
+   stops here: it reuses a ready-but-stale generation with warning code
+   `cap_unavailable_stale_reused`, and refuses with `cap_unavailable` before any provider
+   access only when no generation exists; the remediation names the `best_effort` policy.
+   `allow_admitted_eager=True` is the isolated-worker-only opt-in for the admitted-eager
+   build class; the explicit build sets it inside the child too.
 5. A per-process single-flight keyed by identity digest makes a concurrent execution wait
    for the in-flight build and re-read status instead of building again; a waiter inherits
    the owner's typed preparation failure instead of rebuilding. The wait is
@@ -271,8 +273,8 @@ platforms, and on Windows with long paths on, nothing is renamed.
    is the parent's and never reaches a caller's handling of a worker failure. A base
    exception is re-raised after the reconciliation, never turned into success. The caller
    retires a build that published, after deciding about any worker failure:
-   `run_supervised_data_input_build` (preparation's spawned build and the explicit
-   admitted-eager build) is settled by `published_data_input`, which retires, checks the
+   `run_supervised_data_input_build` (preparation's spawned build and every explicit Data
+   Input build) is settled by `published_data_input`, which retires, checks the
    outcome and describes the published generation, so a retirement failure propagates
    rather than being read as a successor; `run_supervised_api_input_build` (an API Input's
    tables, removing the build's scratch directory as it reconciles) raises the worker's
@@ -312,6 +314,46 @@ platforms, and on Windows with long paths on, nothing is renamed.
    generation and staging and removes the build's scratch directory. Remediation text
    names the API Input panel.
 
+### Explicit builds
+
+`POST /api/input-cache/build` ([server API](../server-api/low-level.md)) starts a job
+whose thread (`routes/input_cache.py::_run_build`) never builds a Data Input itself:
+
+1. Admission: `create_admitted_execution_context(operation="input_snapshot_build",
+   profile=..., job_id=..., cancellation_token=...)` under `LAZY_SINK` for the `bounded`
+   class and `PREVIEW_EAGER` for `admitted_eager`. `LAZY_SINK` holds an in-flight
+   reservation, as an API Input's table build does, so a heavy job started while an Import
+   streams is refused `in_flight_memory_budget_exceeded` (and an Import started while one
+   holds the budget). The admission is released when the job ends.
+2. Both classes run through `run_supervised_data_input_build` with
+   `capped_worker_config(isolated_execution_budget(context), timeout_seconds=` the pipeline
+   time limit`, stop_reason=` the job's cancellation`)`, then `published_data_input`. A
+   worker failure maps onto the job lifecycle (`memory_limited`, `cancelled`, `timed_out`,
+   or `error` with `cap_unavailable`/`build_failed`/`path_too_long`), after
+   `reconcile_unpublished` has settled the build's parent-chosen generation and staging.
+   `cap_unavailable` (`isolated_worker_failure_is_cap_unavailable`: under `required`, the
+   spawn refused for a host without the cap, or the child could not install it) is decided
+   before the memory outcomes, which would otherwise claim it; its message says the host
+   could not install the cap and names `HAUTE_WORKER_MEMORY_ENFORCEMENT=best_effort`, which
+   runs the build under supervision instead. An API Input's table build maps its failures
+   the same way.
+3. Progress: `run_supervised_data_input_build(..., progress=)` hands the child a
+   `BuildProgressCounter`, two lock-free signed 64-bit slots in spawn-shared memory (rows,
+   batches). The child is the only writer (`build_input_snapshot(progress=counter.advance)`);
+   a lock would block the parent forever once a capped child was killed holding it. A
+   parent thread reads the slots every quarter second and passes the increase to the
+   caller's `progress(rows, batches)`, and once more after the worker returns, so the job's
+   counts reach the child's final ones. A builder that yields Arrow batches (database,
+   Databricks) advances them once per batch; a LazyFrame build once per part file
+   `write_parts(..., on_part=context.advance)` writes, by that part's footer row count.
+   A sliced write (a Parquet or IPC scan, an in-memory frame) therefore counts each
+   slice, while a native sink (a CSV scan) is one part, counted when it ends.
+4. A host without a native memory cap (macOS) runs every build, of either class, in the
+   same worker, supervised rather than capped: its unset worker memory policy is
+   `best_effort`, so the parent's RSS watchdog stops the child past the admitted limit
+   (`IsolatedWorkerMemoryLimitExceededError` → `memory_limited`). No explicit build runs
+   in the server process on any host.
+
 ### Snapshot publication
 
 1. The per-identity process lock serialises same-process builders.
@@ -326,8 +368,16 @@ platforms, and on Windows with long paths on, nothing is renamed.
    a part with no recorded digest), while an Arrow-batch builder's parts are still hashed
    in a read pass. Publication reads every part's footer and schema but never re-reads a
    part in full to hash it; verification and the verified-generation memo check xxh64.
-   It writes canonical `meta.json` and validates the staged generation.
-5. The staging directory is atomically renamed and `current.json` is atomically replaced.
+   It writes canonical `meta.json` and validates the staged generation with the validator
+   every lease uses (metadata, part sizes, footers, Arrow and Polars schemas), recording it
+   in the verified and described memos, before it takes the store-wide lease lock.
+5. Under the lease lock publication reads no part: it checks cancellation and the deadline
+   once more (a build cancelled while it waited for the lock publishes nothing), re-checks
+   supersession (a build that
+   replaces a named generation publishes only while that generation is current), retires
+   unleased superseded generations, atomically renames the staging directory to its
+   generation and atomically replaces `current.json`. The generation it returns is the
+   staged validation's, under the published directory.
 6. Old generations with live leases survive until the final lease release. Publication
    has no cache byte/count limit and never evicts another identity's current dataset.
 
@@ -416,8 +466,10 @@ captures have one budget, applied after each automatic publication:
   publication runs no enforcement.
 
 `usage()` reports the total, the automatic bytes and the budget for
-[`GET /api/cache/usage`](../server-api/low-level.md#cache-usage), which the preview
-status bar reads. The [cache inventory endpoint](../server-api/low-level.md#cache-usage)
+[`GET /api/cache/usage`](../server-api/low-level.md#cache-usage), which Pipeline settings
+reads beside the cached-data inventory. It walks the store each time it is asked and keeps
+no memo, so a size read after a Clear or a Refresh is the store's size then. The
+[cache inventory endpoint](../server-api/low-level.md#cache-usage)
 lists the data for user-managed cleanup. Physical disk-headroom checks and
 execution-memory limits still apply. Constructing the store can create the inputs root
 and sweep retired directories.
@@ -1050,7 +1102,11 @@ failure sections above are the maintained answers.
   and the next retirement removes it. A retirement whose delete fails logs
   `source_cache_retired_delete_failed` and leaves its renamed directory, which the next
   process's sweep removes while leaving a stray file named like one; a generation another
-  actor removes while it is being retired counts as retired.
+  actor removes while it is being retired counts as retired. While a build's part read is
+  held, another thread leases a different identity, and the published generation's first
+  lease reads no footer or schema. A build cancelled while it waits for the lease lock leaves
+  the previous generation current and publishes nothing. A LazyFrame build written in several
+  slices reports each part's rows as it is written.
 - `tests/test_input_providers.py` covers direct-Parquet and offline snapshot reads,
   provider identities, execution-lifetime leases, SQLite empty/mixed storage classes,
   typed conversion failures, missing database rejection, and the inferred schema tier:
@@ -1091,8 +1147,9 @@ failure sections above are the maintained answers.
   deduplication, unreadable files, retained resolver seams, and cross-platform path spelling.
 - `tests/test_input_cache_route.py` covers HTTP build/status/cancel/clear lifecycle and
   conflict/admission behaviour, a `read` configuration whose arguments are not an object
-  answered 400 `invalid_input_config`, and that an admitted-eager explicit build runs through the
-  worker entry point with its `memory_limited`, `cancelled`, `timed_out`, and
+  answered 400 `invalid_input_config`, and that an explicit build of either class is admitted
+  under its profile and runs through the worker entry point, never on the server thread, with
+  its `memory_limited`, `cancelled`, `timed_out`, and
   `completed` outcomes mapped onto the job lifecycle (a fake spawn receives the budget, the
   generation id, and the staging token; a memory-limited outcome reconciles both through
   `reconcile_unpublished(identity, generation_id, staging_token)`, removing
@@ -1100,7 +1157,13 @@ failure sections above are the maintained answers.
   pipeline in `rating/` and the data at the project root, the identity and freshness
   signature the route derives equal the ones execution derives from the same config after
   `canonical_dataframe_execution_graph()`, so a root-relative locator cannot build one
-  snapshot while the run reads another file.
+  snapshot while the run reads another file. With the process's current directory outside
+  the project, a relative locator is still resolved against the configured project root,
+  and a build publishes into that root's store. On a host without the cap, with the
+  policy unset, a build of either class goes to a worker that does not require the cap;
+  under `required`, the worker's refusal (raised by the spawn or by the child) fails the
+  job `cap_unavailable`. A real spawned database build relays its rows and batches to
+  the parent while it runs.
 - `tests/test_input_preparation.py` covers automatic preparation: (1) parity — for CSV with
   a declared schema, CSV without one, NDJSON, plain JSON, and inline records the prepared
   generation's schema and rows equal a direct whole-file eager read; (2) mixed late types —
@@ -1144,8 +1207,9 @@ failure sections above are the maintained answers.
   and no failure, while a failure of the parent's own (its retirement after a worker that
   published, its reconciliation after one that failed, a worker outcome of the wrong type)
   propagates as itself rather than being read as the worker's; (15) a host without a native cap under
-  `HAUTE_WORKER_MEMORY_ENFORCEMENT=best_effort` yields `cap_unavailable` before any
-  provider access; (16) cache invalidation — a warmed preview (`execute_graph` preview
+  `HAUTE_WORKER_MEMORY_ENFORCEMENT=required` yields `cap_unavailable` before any
+  provider access, while under `best_effort` it builds in a worker the parent supervises
+  without requiring a cap; (16) cache invalidation — a warmed preview (`execute_graph` preview
   cache) returns the new rows and records `refreshed`
   after the source file is rewritten, because the runtime identity includes the source
   signature.
@@ -1264,7 +1328,8 @@ supervised parent retirement after a successful worker build. A held superseded 
 can survive beyond grace or explicit Clear and stays readable until release;
 once unpointed, the last release permits retirement. Input build publication
 takes the shared lease lock before the in-process count lock. Do not
-hold the global lease lock while building or validating a leased input. The
+hold the global lease lock while building or validating a leased input; a build validates
+its staged generation before it takes the lock. The
 existing file-lock implementation and token directory are shared, not duplicated.
 ## Scratch filesystem headroom
 

@@ -29,7 +29,7 @@
 | `src/haute/routes/_preview_progress.py` | The in-flight previews' step progress by client request id: opened when a preview starts, updated from its walk, closed (and remembered for five minutes) when it settles; read by `GET /api/pipeline/preview/progress/{request_id}`. |
 | `src/haute/routes/input_cache.py` | `/api/input-cache/*`, the shared build/status/cancel/clear lifecycle for snapshot-backed inputs. |
 | `src/haute/routes/node_data.py` | `/api/node-data/point`, `/run`, `/status/{job_id}`, `/cancel/{job_id}`, and `/clear` for the data a consumer node reads. |
-| `src/haute/routes/cache.py` | `POST /api/cache/nodes`, the per-node inventory of stored datasets plus owners outside the open graph; `POST /api/cache/clear`, which clears the identities a report's row names; and `GET /api/cache/usage`, the store's size for the preview status bar. The inventory answers explicit requests rather than polling. |
+| `src/haute/routes/cache.py` | `POST /api/cache/nodes`, the per-node inventory of stored datasets plus owners outside the open graph; `POST /api/cache/clear`, which clears the identities a report's row names; and `GET /api/cache/usage`, the store's size shown beside the cached-data inventory in Pipeline settings. The inventory answers explicit requests rather than polling. |
 | `src/haute/routes/banding.py` | FastAPI router (`/api/banding`): whole-dataset statistics for the banding factor being edited, delegating to `_banding_stats.py`. |
 | `src/haute/routes/rating.py` | FastAPI router (`/api/rating`): whole-dataset levels for the raw factor columns a Rating Step rates on, delegating to `_rating_levels.py`. |
 | `src/haute/routes/_rating_levels.py` | Reads those levels over the node's shared data point as a `PointAnalysisService`, keyed by the rating lookup's own key expression. |
@@ -832,7 +832,8 @@ message and error.
   [automatic-capture budget](../io-layer/low-level.md#node-output-snapshots).
 
 It costs one pass over the store with a small metadata read per generation and no
-point resolution, so the preview status bar reads it each time a preview settles.
+point resolution. Pipeline settings reads it with each read of the cached-data inventory
+(opening the section, Refresh, and after a Clear), never on a timer or after a preview.
 `POST /api/cache/nodes` lists data owned by the graph's nodes plus every remaining
 stored dataset; `/api/cache/clear` clears the identities named by the selected row.
 No request is refused for a quota, and eviction sends the browser no diagnostic.

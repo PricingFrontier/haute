@@ -12,11 +12,13 @@ own budget.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import multiprocessing
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -48,11 +50,12 @@ from haute._source_cache import (
 )
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
-    IsolatedWorkerRemoteError,
     WorkerTerminalReason,
+    isolated_worker_failure_is_cap_unavailable,
     isolated_worker_failure_is_memory,
     isolated_worker_failure_is_path_too_long,
     process_memory_caps_supported,
+    resolve_worker_memory_enforcement,
     run_isolated_worker,
     worker_config_for_memory_policy,
 )
@@ -71,9 +74,9 @@ _REMEDIATION = (
 # actions from the operator.
 _REMEDIATION_BY_REASON: Mapping[str, str] = {
     "cap_unavailable": (
-        "This host cannot install the native memory cap an automatic snapshot "
-        "build requires. Build this Data Input's snapshot explicitly from the "
-        "Data Input panel, or run on a host that supports the cap."
+        "HAUTE_WORKER_MEMORY_ENFORCEMENT=required asks for a native memory cap "
+        "this host cannot install. Set it to best_effort, or unset it, to build "
+        "this Data Input's snapshot under memory supervision instead."
     ),
     "memory_limited": (
         "Preparing this Data Input's snapshot ran out of memory. Give the "
@@ -93,9 +96,9 @@ _API_INPUT_REMEDIATION = (
 )
 _API_INPUT_REMEDIATION_BY_REASON: Mapping[str, str] = {
     "cap_unavailable": (
-        "This host cannot install the native memory cap an automatic snapshot "
-        "build requires. Build this input's tables explicitly from its "
-        "panel, or run on a host that supports the cap."
+        "HAUTE_WORKER_MEMORY_ENFORCEMENT=required asks for a native memory cap "
+        "this host cannot install. Set it to best_effort, or unset it, to build "
+        "this input's tables under memory supervision instead."
     ),
     "memory_limited": (
         "Preparing this input's tables ran out of memory. Give the execution "
@@ -179,9 +182,68 @@ class InputPreparationRecord:
         }
 
 
+class BuildProgressCounter:
+    """The rows and batches a spawned build has written, in memory its parent reads.
+
+    Two signed 64-bit slots shared with the child when it is spawned. They have
+    no lock: the child is the only writer, and a lock that a capped child was
+    killed holding would block its parent for good. The parent reads each slot
+    on its own; a read between the child's two writes is off by one batch until
+    the next read.
+    """
+
+    def __init__(self) -> None:
+        self._slots = multiprocessing.get_context("spawn").RawArray("q", 2)
+
+    def advance(self, rows: int) -> None:
+        """Count one written batch of *rows* (the child's build progress callback)."""
+        self._slots[0] += rows
+        self._slots[1] += 1
+
+    def read(self) -> tuple[int, int]:
+        """The rows and batches counted so far."""
+        return self._slots[0], self._slots[1]
+
+
+@contextlib.contextmanager
+def _relayed_progress(
+    counter: BuildProgressCounter,
+    progress: Callable[[int, int], None],
+    *,
+    interval_seconds: float = 0.25,
+) -> Iterator[None]:
+    """Pass the counter's increase to *progress* while the build runs, and once after."""
+    stopped = threading.Event()
+    reported = (0, 0)
+
+    def relay() -> None:
+        nonlocal reported
+        current = counter.read()
+        if current != reported:
+            progress(current[0] - reported[0], current[1] - reported[1])
+            reported = current
+
+    def poll() -> None:
+        while not stopped.wait(interval_seconds):
+            relay()
+
+    poller = threading.Thread(target=poll, daemon=True, name="haute-input-build-progress")
+    poller.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        poller.join()
+        relay()
+
+
 @dataclass(frozen=True, slots=True)
 class InputPreparationRequest:
-    """Picklable request handed to the spawned build worker."""
+    """Picklable request handed to the spawned build worker.
+
+    *progress*, when present, is shared with the child as it is spawned, so the
+    request is only ever pickled by the spawn itself.
+    """
 
     config: dict[str, Any]
     base_dir: str
@@ -191,6 +253,7 @@ class InputPreparationRequest:
     refresh: bool
     generation_id: str
     staging_token: str
+    progress: BuildProgressCounter | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +296,7 @@ def build_input_snapshot_worker(
             execution_context=context,
             generation_id=request.generation_id,
             staging_token=request.staging_token,
+            progress=None if request.progress is None else request.progress.advance,
             allow_admitted_eager=True,
             defer_retirement=True,
         )
@@ -383,6 +447,17 @@ def _built_record(
     )
 
 
+def _cap_required_but_unavailable() -> bool:
+    """Whether the worker policy requires a native cap this host cannot install.
+
+    Only an explicit ``required`` on such a host (macOS) refuses a spawned build;
+    its unset default there supervises the worker instead.
+    """
+    return resolve_worker_memory_enforcement() == "required" and not (
+        process_memory_caps_supported()
+    )
+
+
 def capped_worker_config(
     budget: IsolatedExecutionBudget,
     *,
@@ -390,19 +465,17 @@ def capped_worker_config(
     stop_reason: Callable[[], WorkerTerminalReason | None],
     process_name: str,
 ) -> IsolatedWorkerConfig:
-    """A spawned snapshot build's worker config: the budget's native memory cap, required.
+    """A spawned snapshot build's worker config: the budget's memory limit.
 
-    The cap is mandatory whatever the process-memory enforcement policy says, so
-    a host that cannot install it refuses the build rather than running it uncapped.
+    It is enforced as the worker memory policy says: a native cap the host must
+    install under ``required``, the parent's RSS watchdog (and any cap the host
+    can install) under ``best_effort``, the default of a host without a cap.
     """
-    return dataclasses.replace(
-        worker_config_for_memory_policy(
-            memory_limit_bytes=budget.memory_limit_bytes,
-            timeout_seconds=timeout_seconds,
-            stop_reason=stop_reason,
-            process_name=process_name,
-        ),
-        require_memory_limit=True,
+    return worker_config_for_memory_policy(
+        memory_limit_bytes=budget.memory_limit_bytes,
+        timeout_seconds=timeout_seconds,
+        stop_reason=stop_reason,
+        process_name=process_name,
     )
 
 
@@ -464,14 +537,21 @@ def run_supervised_data_input_build(
     refresh: bool,
     budget: IsolatedExecutionBudget,
     worker_config: IsolatedWorkerConfig,
+    progress: Callable[[int, int], None] | None = None,
 ) -> SupervisedBuild:
     """Build one Data Input's snapshot in a spawned worker under parent-chosen ids.
 
     See :func:`supervise_build`; :func:`published_data_input` settles a build
-    that published.
+    that published. *progress*, when given, receives the rows and batches the
+    child has written since its last call, while the worker runs and once after.
     """
     generation_id = str(uuid.uuid4())
     staging_token = new_staging_token()
+    counter: BuildProgressCounter | None = None
+    relay: contextlib.AbstractContextManager[None] = contextlib.nullcontext()
+    if progress is not None:
+        counter = BuildProgressCounter()
+        relay = _relayed_progress(counter, progress)
     request = InputPreparationRequest(
         config=dict(config),
         base_dir=str(base_dir),
@@ -481,17 +561,19 @@ def run_supervised_data_input_build(
         refresh=refresh,
         generation_id=generation_id,
         staging_token=staging_token,
+        progress=counter,
     )
-    return supervise_build(
-        spawn,
-        build_input_snapshot_worker,
-        request,
-        budget,
-        config=worker_config,
-        reconcile=lambda: (
-            store.reconcile_unpublished(identity, generation_id, staging_token) == "published"
-        ),
-    )
+    with relay:
+        return supervise_build(
+            spawn,
+            build_input_snapshot_worker,
+            request,
+            budget,
+            config=worker_config,
+            reconcile=lambda: (
+                store.reconcile_unpublished(identity, generation_id, staging_token) == "published"
+            ),
+        )
 
 
 def published_data_input(
@@ -855,8 +937,7 @@ def _classify_worker_failure(exc: BaseException) -> str:
     # A worker exception arrives as ``IsolatedWorkerRemoteError`` carrying the
     # child's exception type name, so classify on that name before falling back
     # to the generic memory heuristic.
-    remote_type = exc.remote_type if isinstance(exc, IsolatedWorkerRemoteError) else None
-    if remote_type in ("NativeMemoryLimitUnsupportedError", "NativeMemoryLimitCleanupError"):
+    if isolated_worker_failure_is_cap_unavailable(exc):
         return "cap_unavailable"
     if isolated_worker_failure_is_path_too_long(exc):
         return "path_too_long"
@@ -889,11 +970,11 @@ def _run_build(
         execution_context.memory_limit_bytes if budget is None else budget.memory_limit_bytes
     )
 
-    # Spawned build: the cap is mandatory whatever the process-memory
-    # enforcement policy says. A host that cannot install one still has a
-    # ready-but-stale generation to fall back to; only a missing generation is
-    # refused typed, before any provider access.
-    if not in_process and not process_memory_caps_supported():
+    # Spawned build: only a `required` policy on a host that cannot install the
+    # cap stops here (elsewhere the worker is capped, or supervised by its
+    # parent). A ready-but-stale generation is still served; only a missing one
+    # is refused typed, before any provider access.
+    if not in_process and _cap_required_but_unavailable():
         if refresh and current_generation is not None:
             logger.warning(
                 "input_snapshot_cap_unavailable_stale_reused",
@@ -1197,7 +1278,7 @@ def _run_api_input_build(
         execution_context.memory_limit_bytes if budget is None else budget.memory_limit_bytes
     )
 
-    if not in_process and not process_memory_caps_supported():
+    if not in_process and _cap_required_but_unavailable():
         # Without a cap only already-published tables can serve: stale ones
         # are reused, and a missing one is refused before the source is read.
         if all(

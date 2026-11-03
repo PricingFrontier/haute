@@ -33,8 +33,9 @@ searches the pipeline directory and then the current directory
 (`_project_imports.utility_search_dirs`, which the cache fingerprint and the deploy
 bundle share); the route helper `pipeline_dir` returns the current directory even when
 `haute.toml` is missing, only logging an error, which contradicts this
-component's rule that not being inside a project raises; the input-cache
-routes use the current directory; node data uses the sandbox root; and
+component's rule that not being inside a project raises; the input-cache and
+schema-inference routes and node data use the sandbox root, each through a wrapper
+of its own; and
 builders, hosted storage, MLflow settings and the assistant each have their
 own. `executor._pipeline_dir` and `_cache._pipeline_dir` are identical copies.
 One step is taken: `pipeline_dir` reads `[project].pipeline` through
@@ -85,7 +86,7 @@ optimiser and assistant work also touch (`executor`, `_cache`,
 `src/haute/_sandbox.py::_get_project_root`;
 `src/haute/_path_resolution.py::current_runtime_project_root`;
 `src/haute/routes/_helpers.py::pipeline_dir`;
-`src/haute/routes/input_cache.py::_project_root`;
+`src/haute/routes/input_cache.py::input_project_root`;
 `src/haute/routes/_node_data_service.py::node_data_project_root`;
 `src/haute/_builders.py::_configured_pipeline_dir`;
 `src/haute/_project_storage.py::resolve_project_dir`;

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -36,16 +38,96 @@ def _wait_for_terminal(client: TestClient, job_id: str) -> dict[str, Any]:
     raise AssertionError(f"input-cache job {job_id!r} did not finish")
 
 
+def _threaded_spawn(function: Any, *args: Any, config: Any, **kwargs: Any) -> Any:
+    """Stand in for ``run_isolated_worker``: the worker entry point on a thread.
+
+    As the real spawn does, it stops the build when the job's ``stop_reason``
+    asks (abandoning the thread, as a terminated child is abandoned), stops it
+    at the configured time limit, and reports a failure through the child's
+    error envelope.
+    """
+    from haute._worker_isolation import (
+        IsolatedWorkerRemoteError,
+        IsolatedWorkerStoppedError,
+        IsolatedWorkerTimeoutError,
+        _worker_error_envelope,
+    )
+
+    outcome: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            outcome["result"] = function(*args, **kwargs)
+        except BaseException as exc:
+            outcome["error"] = exc
+
+    child = threading.Thread(target=run, daemon=True, name="test-input-cache-child")
+    child.start()
+    deadline = time.monotonic() + config.timeout_seconds
+    while child.is_alive():
+        child.join(0.01)
+        reason = config.stop_reason()
+        if reason is not None:
+            raise IsolatedWorkerStoppedError(terminal_reason=reason)
+        if time.monotonic() > deadline:
+            raise IsolatedWorkerTimeoutError(timeout_seconds=config.timeout_seconds)
+    if "error" in outcome:
+        _status, (remote_type, message, remote_traceback, is_memory) = _worker_error_envelope(
+            outcome["error"]
+        )
+        raise IsolatedWorkerRemoteError(
+            remote_type=remote_type,
+            remote_message=message,
+            remote_traceback=remote_traceback,
+            is_memory=is_memory,
+        )
+    return outcome["result"]
+
+
+def _child_build(monkeypatch: pytest.MonkeyPatch, build: Any) -> None:
+    """Replace the build the worker entry point runs (it imports it when called)."""
+    import haute._input_providers as input_providers
+
+    monkeypatch.setattr(input_providers, "build_input_snapshot", build)
+
+
+def _unmetered_admission(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admit every build without reserving memory, for tests of the job lifecycle.
+
+    A real ``LAZY_SINK`` admission reserves most of the in-flight budget, so a
+    second concurrent build would be refused for memory.
+    """
+    from haute._execution_admission import IsolatedExecutionBudget
+    from haute._execution_context import ExecutionProfile
+    from haute.routes import input_cache
+
+    class Admitted:
+        def release_admission(self) -> None:
+            pass
+
+    budget = IsolatedExecutionBudget(
+        operation="input_snapshot_build",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_limit_bytes=1024 * 1024 * 1024,
+        config_key="test-config-key",
+        budget_policy="test",
+    )
+    monkeypatch.setattr(input_cache, "create_admitted_execution_context", lambda **_: Admitted())
+    monkeypatch.setattr(input_cache, "isolated_execution_budget", lambda _context: budget)
+
+
 @pytest.fixture()
 def client(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> TestClient:
+    from haute._sandbox import set_project_root
     from haute.routes import input_cache
     from haute.server import app
 
-    monkeypatch.setattr(input_cache, "_project_root", lambda: tmp_path)
-    monkeypatch.setattr(input_cache, "_pipeline_base_dir", lambda: tmp_path)
+    set_project_root(tmp_path)
+    # Every explicit build runs in an isolated worker; here its entry point runs on a thread.
+    monkeypatch.setattr(input_cache, "run_isolated_worker", _threaded_spawn)
     input_cache._reset_for_tests()
     with TestClient(app) as test_client:
         yield test_client
@@ -207,7 +289,6 @@ def test_same_identity_build_requests_join_one_active_job(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from haute.routes import input_cache
 
     entered = threading.Event()
     release = threading.Event()
@@ -220,7 +301,7 @@ def test_same_identity_build_requests_join_one_active_job(
         assert release.wait(timeout=5)
         raise RuntimeError("stop after join assertion")
 
-    monkeypatch.setattr(input_cache, "build_input_snapshot", blocking_build)
+    _child_build(monkeypatch, blocking_build)
     first = client.post(
         "/api/input-cache/build",
         json={"schema_version": 1, "config": _file_config()},
@@ -254,9 +335,8 @@ def test_provider_failure_message_is_logged_but_not_exposed(
 
     monkeypatch.setattr(logger, "error", capture_error)
     monkeypatch.setenv("DATABRICKS_TOKEN", "resolved-secret-token")
-    monkeypatch.setattr(
-        input_cache,
-        "build_input_snapshot",
+    _child_build(
+        monkeypatch,
         lambda *args, **kwargs: (_ for _ in ()).throw(
             RuntimeError(
                 "warehouse unavailable token='inline secret' "
@@ -289,8 +369,7 @@ def test_different_identities_can_build_concurrently(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from haute.routes import input_cache
-
+    _unmetered_admission(monkeypatch)
     both_entered = threading.Event()
     release = threading.Event()
     entered = 0
@@ -305,7 +384,7 @@ def test_different_identities_can_build_concurrently(
         assert release.wait(timeout=5)
         raise RuntimeError("stop after concurrency assertion")
 
-    monkeypatch.setattr(input_cache, "build_input_snapshot", blocking_build)
+    _child_build(monkeypatch, blocking_build)
     first = client.post(
         "/api/input-cache/build",
         json={"schema_version": 1, "config": _file_config("one.csv")},
@@ -322,21 +401,18 @@ def test_different_identities_can_build_concurrently(
     assert _wait_for_terminal(client, second.json()["job_id"])["status"] == "error"
 
 
-def test_cancel_requests_cooperative_stop(
+def test_cancel_stops_the_worker(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from haute._source_cache import SourceCacheBuildError
-    from haute.routes import input_cache
+    entered, released = threading.Event(), threading.Event()
 
-    entered = threading.Event()
-
-    def cancellable_build(*args: Any, cancellation: threading.Event, **kwargs: Any) -> Any:
+    def blocking_build(*args: Any, **kwargs: Any) -> Any:
         entered.set()
-        assert cancellation.wait(timeout=5)
-        raise SourceCacheBuildError("source-cache build was cancelled")
+        assert released.wait(timeout=5)
+        raise RuntimeError("released after the job ended")
 
-    monkeypatch.setattr(input_cache, "build_input_snapshot", cancellable_build)
+    _child_build(monkeypatch, blocking_build)
     started = client.post(
         "/api/input-cache/build",
         json={"schema_version": 1, "config": _file_config()},
@@ -344,12 +420,15 @@ def test_cancel_requests_cooperative_stop(
     assert started.status_code == 202
     assert entered.wait(timeout=5)
 
-    cancelled = client.delete(
-        f"/api/input-cache/jobs/{started.json()['job_id']}",
-    )
-    assert cancelled.status_code == 202
-    assert cancelled.json()["cancellation_requested"] is True
-    terminal = _wait_for_terminal(client, started.json()["job_id"])
+    try:
+        cancelled = client.delete(
+            f"/api/input-cache/jobs/{started.json()['job_id']}",
+        )
+        assert cancelled.status_code == 202
+        assert cancelled.json()["cancellation_requested"] is True
+        terminal = _wait_for_terminal(client, started.json()["job_id"])
+    finally:
+        released.set()
     assert terminal["status"] == "cancelled"
     assert terminal["terminal_reason"] == "cancelled"
 
@@ -359,26 +438,25 @@ def test_build_deadline_owns_timeout_status_and_error_code(
     monkeypatch: pytest.MonkeyPatch,
     pipeline_settings,
 ) -> None:
-    from haute._source_cache import SourceCacheBuildError
-    from haute.routes import input_cache
+    entered, released = threading.Event(), threading.Event()
 
-    entered = threading.Event()
-
-    def timed_build(*args: Any, cancellation: threading.Event, **kwargs: Any) -> Any:
+    def timed_build(*args: Any, **kwargs: Any) -> Any:
         entered.set()
-        assert cancellation.wait(timeout=5)
-        raise SourceCacheBuildError("source-cache build exceeded its deadline")
+        assert released.wait(timeout=5)
+        raise RuntimeError("released after the job ended")
 
     pipeline_settings(pipeline_time_limit_minutes=0.01 / 60)
-    monkeypatch.setattr(input_cache, "build_input_snapshot", timed_build)
+    _child_build(monkeypatch, timed_build)
     started = client.post(
         "/api/input-cache/build",
         json={"schema_version": 1, "config": _file_config()},
     )
     assert started.status_code == 202
-    assert entered.wait(timeout=5)
-
-    terminal = _wait_for_terminal(client, started.json()["job_id"])
+    try:
+        assert entered.wait(timeout=5)
+        terminal = _wait_for_terminal(client, started.json()["job_id"])
+    finally:
+        released.set()
     assert terminal["status"] == "timed_out"
     assert terminal["terminal_reason"] == "timed_out"
     assert terminal["error_code"] == "build_timed_out"
@@ -388,12 +466,11 @@ def test_write_failure_has_a_stable_safe_error_code(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from haute.routes import input_cache
 
     def write_failed(*args: Any, **kwargs: Any) -> Any:
         raise OSError("private cache path must not escape")
 
-    monkeypatch.setattr(input_cache, "build_input_snapshot", write_failed)
+    _child_build(monkeypatch, write_failed)
     started = client.post(
         "/api/input-cache/build",
         json={"schema_version": 1, "config": _file_config()},
@@ -411,12 +488,11 @@ def test_a_write_windows_refused_for_its_length_says_so_without_the_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from haute._file_ops import PathTooLongError
-    from haute.routes import input_cache
 
     def write_refused(*args: Any, **kwargs: Any) -> Any:
         raise PathTooLongError("C:\\private\\" + "d" * 300)
 
-    monkeypatch.setattr(input_cache, "build_input_snapshot", write_refused)
+    _child_build(monkeypatch, write_refused)
     started = client.post(
         "/api/input-cache/build",
         json={"schema_version": 1, "config": _file_config()},
@@ -430,13 +506,13 @@ def test_a_write_windows_refused_for_its_length_says_so_without_the_path(
     assert "private" not in terminal["message"]
 
 
-class _AdmittedEagerHarness:
-    """Force the admitted-eager class and stand in for the spawn worker.
+class _WorkerHarness:
+    """Force a build class and stand in for the spawn worker.
 
-    An admitted-eager explicit build must never materialise on the server
-    thread: it runs through ``build_input_snapshot_worker`` in a hard-capped
-    spawn worker. The fake spawn records what the parent hands the child —
-    budget, generation id, staging token, and worker controls.
+    An explicit build never runs on the server thread: it runs through
+    ``build_input_snapshot_worker`` in a hard-capped spawn worker. The fake
+    spawn records what the parent hands the child — budget, generation id,
+    staging token, progress counter, and worker controls.
     """
 
     def __init__(self) -> None:
@@ -454,15 +530,17 @@ class _AdmittedEagerHarness:
         return FakeExecutionContext
 
 
-def _admitted_eager_harness(
+def _worker_harness(
     monkeypatch: pytest.MonkeyPatch,
     spawn: Any,
-) -> _AdmittedEagerHarness:
+    *,
+    build_class: str = "admitted_eager",
+) -> _WorkerHarness:
     from haute._execution_admission import IsolatedExecutionBudget
     from haute._execution_context import ExecutionProfile
     from haute.routes import input_cache
 
-    harness = _AdmittedEagerHarness()
+    harness = _WorkerHarness()
     context_type = harness.context()
     harness.budget = IsolatedExecutionBudget(
         operation="input_snapshot_build",
@@ -496,22 +574,18 @@ def _admitted_eager_harness(
         harness.events.append("spawned")
         return spawn(request, budget)
 
-    def never_build(*_args: Any, **_kwargs: Any) -> Any:
-        raise AssertionError("an admitted-eager build must not run on the server thread")
-
     monkeypatch.setattr(
         input_cache,
         "input_snapshot_build_class",
-        lambda *args, **kwargs: "admitted_eager",
+        lambda *args, **kwargs: build_class,
     )
     monkeypatch.setattr(input_cache, "create_admitted_execution_context", admit)
     monkeypatch.setattr(input_cache, "isolated_execution_budget", lambda _ctx: harness.budget)
     monkeypatch.setattr(input_cache, "run_isolated_worker", record_spawn)
-    monkeypatch.setattr(input_cache, "build_input_snapshot", never_build)
     return harness
 
 
-def _start_admitted_eager_build(client: TestClient, *, refresh: bool = False) -> str:
+def _start_worker_build(client: TestClient, *, refresh: bool = False) -> str:
     started = client.post(
         "/api/input-cache/build",
         json={
@@ -524,13 +598,24 @@ def _start_admitted_eager_build(client: TestClient, *, refresh: bool = False) ->
     return str(started.json()["job_id"])
 
 
-def test_admitted_eager_build_runs_through_the_hard_capped_worker(
+@pytest.mark.parametrize(
+    ("build_class", "profile"),
+    [("bounded", "lazy_sink"), ("admitted_eager", "preview_eager")],
+)
+def test_every_explicit_build_is_admitted_and_runs_through_the_hard_capped_worker(
     client: TestClient,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    build_class: str,
+    profile: str,
 ) -> None:
+    """IO-R07: a bounded build is admitted and isolated as an admitted-eager one is."""
     from haute._execution_context import ExecutionProfile
-    from haute._input_preparation import InputPreparationOutcome, build_input_snapshot_worker
+    from haute._input_preparation import (
+        BuildProgressCounter,
+        InputPreparationOutcome,
+        build_input_snapshot_worker,
+    )
     from haute._input_providers import build_input_snapshot
     from haute.routes import input_cache
 
@@ -555,11 +640,12 @@ def test_admitted_eager_build_runs_through_the_hard_capped_worker(
             size_bytes=generation.metadata.size_bytes,
         )
 
-    harness = _admitted_eager_harness(monkeypatch, child)
-    job_id = _start_admitted_eager_build(client)
+    harness = _worker_harness(monkeypatch, child, build_class=build_class)
+    job_id = _start_worker_build(client)
     terminal = _wait_for_terminal(client, job_id)
 
     assert terminal["status"] == "completed"
+    assert terminal["build_class"] == build_class
     assert terminal["snapshot"]["state"] == "ready"
     assert terminal["snapshot"]["generation"]["row_count"] == 2
     assert terminal["progress"]["phase"] == "completed"
@@ -571,6 +657,7 @@ def test_admitted_eager_build_runs_through_the_hard_capped_worker(
     assert call["budget"] is harness.budget
     assert terminal["snapshot"]["generation"]["generation_id"] == call["request"].generation_id
     assert len(call["request"].staging_token) == 8
+    assert isinstance(call["request"].progress, BuildProgressCounter)
     worker_config = call["config"]
     assert worker_config.require_memory_limit is True
     assert worker_config.memory_limit_bytes == harness.budget.memory_limit_bytes
@@ -582,7 +669,7 @@ def test_admitted_eager_build_runs_through_the_hard_capped_worker(
     assert admitted[:4] == (
         "admitted",
         "input_snapshot_build",
-        ExecutionProfile.PREVIEW_EAGER,
+        ExecutionProfile(profile),
         job_id,
     )
     assert admitted[4] is not None
@@ -626,8 +713,8 @@ def test_admitted_eager_memory_limit_reconciles_and_keeps_the_previous_generatio
             rss_limit_bytes=1024,
         )
 
-    harness = _admitted_eager_harness(monkeypatch, child)
-    job_id = _start_admitted_eager_build(client, refresh=True)
+    harness = _worker_harness(monkeypatch, child)
+    job_id = _start_worker_build(client, refresh=True)
     terminal = _wait_for_terminal(client, job_id)
 
     assert terminal["status"] == "memory_limited"
@@ -683,8 +770,8 @@ def test_admitted_eager_worker_failures_map_onto_the_job_lifecycle(
             raise IsolatedWorkerTimeoutError(timeout_seconds=1.0)
         raise RuntimeError("forced worker build failure")
 
-    _admitted_eager_harness(monkeypatch, child)
-    terminal = _wait_for_terminal(client, _start_admitted_eager_build(client))
+    _worker_harness(monkeypatch, child)
+    terminal = _wait_for_terminal(client, _start_worker_build(client))
 
     assert terminal["status"] == expected_status
     assert terminal["error_code"] == expected_error_code
@@ -692,31 +779,160 @@ def test_admitted_eager_worker_failures_map_onto_the_job_lifecycle(
     assert "forced worker build failure" not in terminal["message"]
 
 
-def test_bounded_build_still_runs_on_the_server_thread(
+def _sqlite_config(tmp_path: Path, rows: int = 3) -> dict[str, Any]:
+    """A database Data Input whose builder writes one Arrow batch per row."""
+    database = tmp_path / "policies.sqlite"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE policies (id INTEGER, value TEXT)")
+        connection.executemany(
+            "INSERT INTO policies VALUES (?, ?)", [(i, f"v{i}") for i in range(rows)]
+        )
+        connection.commit()
+    return {
+        "inputType": "database",
+        "format": "database",
+        "uri": f"sqlite:///{database.as_posix()}",
+        "query": "SELECT id, value FROM policies ORDER BY id",
+        "arguments": {"batch_size": 1},
+    }
+
+
+def test_a_worker_build_counts_the_batches_its_child_writes(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """The worker's own counts reach the job, so Import can show rows (IO-R07)."""
+    started = client.post(
+        "/api/input-cache/build",
+        json={"schema_version": 1, "config": _sqlite_config(tmp_path)},
+    )
+    terminal = _wait_for_terminal(client, started.json()["job_id"])
+
+    assert terminal["status"] == "completed"
+    assert terminal["build_class"] == "bounded"
+    assert terminal["snapshot"]["generation"]["row_count"] == 3
+    # One batch per row, counted in the child and relayed to this job; the
+    # completed job keeps the batch count it was given.
+    assert terminal["progress"]["batches"] == 3
+
+
+@pytest.mark.parametrize("build_class", ["bounded", "admitted_eager"])
+def test_a_host_without_the_cap_supervises_every_explicit_build_in_a_worker(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    build_class: str,
+) -> None:
+    """macOS: the worker runs under its parent's RSS watchdog instead of being refused."""
+    import haute._worker_isolation as isolation_mod
+    from haute._input_preparation import InputPreparationOutcome
+    from haute._input_providers import build_input_snapshot
+    from haute.routes import input_cache
+
+    (tmp_path / "input.csv").write_text("id,value\n1,a\n2,b\n", encoding="utf-8")
+    monkeypatch.delenv("HAUTE_WORKER_MEMORY_ENFORCEMENT")
+    monkeypatch.setattr(isolation_mod, "process_memory_caps_supported", lambda: False)
+
+    def child(request: Any, _budget: Any) -> InputPreparationOutcome:
+        generation = build_input_snapshot(
+            request.config,
+            store=input_cache._cache_store(),
+            base_dir=request.base_dir,
+            profile=request.profile,
+            generation_id=request.generation_id,
+            staging_token=request.staging_token,
+            allow_admitted_eager=True,
+        )
+        return InputPreparationOutcome.of(generation)
+
+    harness = _worker_harness(monkeypatch, child, build_class=build_class)
+    terminal = _wait_for_terminal(client, _start_worker_build(client))
+
+    assert terminal["status"] == "completed"
+    assert terminal["snapshot"]["generation"]["row_count"] == 2
+    [call] = harness.calls
+    # The parent's watchdog holds the child to the admitted limit; no native cap is required.
+    assert call["config"].require_memory_limit is False
+    assert call["config"].memory_limit_bytes == harness.budget.memory_limit_bytes
+
+
+@pytest.mark.parametrize("refused_by", ["spawn", "child"])
+def test_a_required_cap_the_host_cannot_install_fails_the_import_as_cap_unavailable(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    refused_by: str,
+) -> None:
+    """It fails saying the host has no cap, not that it needed more memory."""
+    from haute._worker_isolation import (
+        IsolatedWorkerMemoryLimitUnsupportedError,
+        IsolatedWorkerRemoteError,
+    )
+
+    (tmp_path / "input.csv").write_text("id,value\n1,a\n", encoding="utf-8")
+
+    def refusing_spawn(_request: Any, _budget: Any) -> Any:
+        if refused_by == "spawn":
+            raise IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=64 * 1024 * 1024)
+        raise IsolatedWorkerRemoteError(
+            remote_type="NativeMemoryLimitUnsupportedError",
+            remote_message="cannot locate unified cgroup v2 membership",
+            remote_traceback="",
+            is_memory=False,
+        )
+
+    # Only an operator's explicit `required` reaches this on a host without the cap.
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "required")
+    harness = _worker_harness(monkeypatch, refusing_spawn)
+    terminal = _wait_for_terminal(client, _start_worker_build(client))
+
+    assert "spawned" in harness.events
+    assert terminal["status"] == "error"
+    assert terminal["error_code"] == "cap_unavailable"
+    assert "native memory cap" in terminal["message"]
+    assert "HAUTE_WORKER_MEMORY_ENFORCEMENT=best_effort" in terminal["message"]
+    assert "more memory" not in terminal["message"]
+    assert terminal["snapshot"] is None
+
+
+def test_routes_anchor_relative_paths_to_the_configured_project_root(
     client: TestClient,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from haute.routes import input_cache
+    """Not the process's current directory, which another project may own (IO-R07)."""
+    from haute._sandbox import set_project_root
 
-    (tmp_path / "input.csv").write_text("id,value\n1,a\n2,b\n", encoding="utf-8")
+    project = tmp_path / "project"
+    elsewhere = tmp_path / "elsewhere"
+    project.mkdir()
+    elsewhere.mkdir()
+    (project / "input.csv").write_text("id,value\n1,a\n2,b\n3,c\n", encoding="utf-8")
+    (project / "quotes.jsonl").write_text('{"quote_id": 1}\n', encoding="utf-8")
+    # The same names in the current directory, which the routes must not read.
+    (elsewhere / "input.csv").write_text("id,value\n9,z\n", encoding="utf-8")
+    (elsewhere / "quotes.jsonl").write_text('{"decoy": 1}\n', encoding="utf-8")
+    set_project_root(project)
+    monkeypatch.chdir(elsewhere)
+    body = {"schema_version": 1, "config": _file_config()}
 
-    def never_spawn(*_args: Any, **_kwargs: Any) -> Any:
-        raise AssertionError("a bounded build must not spawn a worker")
-
-    monkeypatch.setattr(input_cache, "run_isolated_worker", never_spawn)
-
-    terminal = _wait_for_terminal(
-        client,
-        client.post(
-            "/api/input-cache/build",
-            json={"schema_version": 1, "config": _file_config()},
-        ).json()["job_id"],
-    )
+    started = client.post("/api/input-cache/build", json=body)
+    terminal = _wait_for_terminal(client, started.json()["job_id"])
+    status = client.post("/api/input-cache/status", json=body).json()
+    inferred = client.post("/api/json-cache/infer", json={"path": "quotes.jsonl"})
 
     assert terminal["status"] == "completed"
-    assert terminal["build_class"] == "bounded"
-    assert terminal["snapshot"]["generation"]["row_count"] == 2
+    assert terminal["snapshot"]["generation"]["row_count"] == 3
+    assert status["state"] == "ready"
+    assert (
+        status["generation"]["generation_id"]
+        == (terminal["snapshot"]["generation"]["generation_id"])
+    )
+    assert (project / ".haute_cache" / "inputs" / started.json()["identity_digest"]).is_dir()
+    assert not (elsewhere / ".haute_cache").exists()
+    assert inferred.status_code == 200
+    columns = [column["name"] for column in inferred.json()["tables"][0]["columns"]]
+    assert columns == ["quote_id"]
 
 
 def test_admitted_eager_memory_refusal_has_a_stable_safe_status(
@@ -820,7 +1036,7 @@ def test_clear_and_build_admission_are_linearized(
         lambda *args, **kwargs: "bounded",
     )
     monkeypatch.setattr(input_cache._store, "create_job", create_job)
-    monkeypatch.setattr(input_cache, "build_input_snapshot", fail_build)
+    _child_build(monkeypatch, fail_build)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         clearing = pool.submit(
@@ -1041,13 +1257,14 @@ def test_a_base_exception_after_the_child_published_is_never_swallowed(
         terminal_reason = None
 
     with pytest.raises(KeyboardInterrupt):
-        input_cache._supervise_admitted_eager_build(
+        input_cache._supervise_data_input_build(
             config=config,
             identity=identity,
             refresh=False,
             profile=ExecutionProfile.PREVIEW_EAGER,
             execution_context=object(),  # type: ignore[arg-type]
             token=_Token(),
+            progress=lambda _rows, _batches: None,
         )
 
     assert store.open_generation(identity).generation_id == published[0]
@@ -1085,9 +1302,7 @@ def test_build_identity_names_the_file_execution_opens(
     (pipeline_dir / "data").mkdir()
     (pipeline_dir / "data" / "x.csv").write_text("id,value\n9,z\n10,y\n", encoding="utf-8")
     set_project_root(tmp_path)
-
-    monkeypatch.setattr(input_cache, "_project_root", lambda: tmp_path)
-    monkeypatch.setattr(input_cache, "_pipeline_base_dir", lambda: pipeline_dir)
+    assert input_cache.input_pipeline_dir() == pipeline_dir.resolve()
 
     raw_config = _file_config("data/x.csv")
     node = GraphNode(
@@ -1115,7 +1330,7 @@ def test_build_identity_names_the_file_execution_opens(
     assert built_identity.descriptor["path"] == str((tmp_path / "data" / "x.csv").resolve())
     assert source_signature(
         built_config,
-        base_dir=input_cache._pipeline_base_dir(),
+        base_dir=input_cache.input_pipeline_dir(),
     ) == source_signature(executed_config, base_dir=execution_base_dir)
 
 
@@ -1484,7 +1699,10 @@ def test_a_stopped_api_input_build_kills_its_worker_and_discards_its_staging(
     """A real capped worker, stopped by cancellation or its deadline, publishes nothing."""
     from haute._json_shred import _snapshots
     from haute._sandbox import set_project_root
-    from haute._worker_isolation import process_memory_caps_supported
+    from haute._worker_isolation import process_memory_caps_supported, run_isolated_worker
+    from haute.routes import input_cache
+
+    monkeypatch.setattr(input_cache, "run_isolated_worker", run_isolated_worker)
 
     if not process_memory_caps_supported():
         # Without a native cap the required policy refuses the spawn before a
@@ -1564,7 +1782,6 @@ def test_api_input_requests_validate_the_config(
 
 def _hold_builds(monkeypatch: pytest.MonkeyPatch) -> tuple[threading.Event, threading.Event]:
     """Make every snapshot build wait, ignoring cancellation, until released."""
-    from haute.routes import input_cache
 
     entered = threading.Event()
     release = threading.Event()
@@ -1574,7 +1791,7 @@ def _hold_builds(monkeypatch: pytest.MonkeyPatch) -> tuple[threading.Event, thre
         assert release.wait(timeout=5)
         raise RuntimeError("released")
 
-    monkeypatch.setattr(input_cache, "build_input_snapshot", held_build)
+    _child_build(monkeypatch, held_build)
     return entered, release
 
 
@@ -1644,7 +1861,22 @@ def test_a_build_being_cancelled_accepts_no_new_joiners(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    entered, release = _hold_builds(monkeypatch)
+    from haute._worker_isolation import IsolatedWorkerStoppedError
+    from haute.routes import input_cache
+
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_to_stop(function: Any, *args: Any, config: Any, **kwargs: Any) -> Any:
+        # A worker that takes until `release` to die once asked to stop, so the
+        # job stays running between the cancellation's acknowledgement and its end.
+        entered.set()
+        assert release.wait(timeout=5)
+        reason = config.stop_reason()
+        if reason is not None:
+            raise IsolatedWorkerStoppedError(terminal_reason=reason)
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(input_cache, "run_isolated_worker", slow_to_stop)
     body = {"schema_version": 1, "config": _file_config()}
     first = client.post("/api/input-cache/build", json=body)
     assert entered.wait(timeout=5)

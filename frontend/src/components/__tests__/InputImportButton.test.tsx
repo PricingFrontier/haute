@@ -147,8 +147,27 @@ describe("InputImportButton", () => {
     expect(Object.values(useNodeWorkStore.getState().running)).not.toContain("csv")
   })
 
-  it("shows no row count for a build that reports none", async () => {
-    vi.mocked(getInputCacheJob).mockResolvedValue(job("running", 0, "admitted_eager"))
+  it.each(["bounded", "admitted_eager"] as const)(
+    "shows no row count while a %s build has counted none",
+    async (buildClass) => {
+      // A CSV is written in one pass: nothing is counted until it ends.
+      vi.mocked(getInputCacheJob).mockResolvedValue(job("running", 0, buildClass))
+      const csv = node("csv", "dataInput", csvConfig)
+      onCanvas(csv)
+      renderImport(csv)
+
+      await act(async () => {
+        fireEvent.click(await screen.findByTestId("input-import"))
+      })
+
+      await waitFor(() => expect(getInputCacheJob).toHaveBeenCalled())
+      expect(screen.getByTestId("input-import")).toHaveTextContent("Importing…")
+      await act(async () => stopNodeWork("csv"))
+    },
+  )
+
+  it("counts the rows an admitted-eager build has written", async () => {
+    vi.mocked(getInputCacheJob).mockResolvedValue(job("running", 500, "admitted_eager"))
     const csv = node("csv", "dataInput", csvConfig)
     onCanvas(csv)
     renderImport(csv)
@@ -157,8 +176,7 @@ describe("InputImportButton", () => {
       fireEvent.click(await screen.findByTestId("input-import"))
     })
 
-    await waitFor(() => expect(getInputCacheJob).toHaveBeenCalled())
-    expect(screen.getByTestId("input-import")).toHaveTextContent("Importing…")
+    expect(await screen.findByText("Importing · 500 rows")).toBeInTheDocument()
     await act(async () => stopNodeWork("csv"))
   })
 
