@@ -374,10 +374,11 @@ a free-code step keeps its authored layout with only the whitespace ruff removes
 off, the spaces ending a line outside a string literal (a multiline string keeps every
 character it holds). A saved body is compared with the rendering of its steps as a
 program, not as text (the same syntax tree and the same comments, a comment's trailing
-whitespace aside), so a body saved in an earlier layout, quoting or call spelling of the
-same steps (lists where the renderer now passes separate arguments, Polars' sort and
-unique defaults spelled out), or reformatted by `ruff format`, keeps its steps, while
-any other edit discards them.
+whitespace aside), so a body saved in an earlier layout or quoting of the same steps,
+or reformatted by `ruff format`, keeps its steps, while any other edit discards them. A
+body in a call spelling only an earlier renderer wrote (Haute 0.5's lists where the
+renderer now passes separate arguments) is not the steps' program, so it is read as code
+and its steps are discarded.
 Step-id uniqueness checks for valid lists run in linear time in the number of steps.
 The vocabulary covers filters
 (comparison, null, membership, text and regex operators), derived columns (formulas,

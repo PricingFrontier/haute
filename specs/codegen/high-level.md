@@ -397,9 +397,8 @@ names the failing step. A stepped node that also carries `inputMapping` is rejec
 with a `ConfigError`. Generating, parsing, and extracting a stepped transform reproduces
 the rendered code exactly, which is what lets the parser tell a hand-edited body from a
 rendered one; the parser compares the two as programs (the same syntax tree and
-comments, against both the current rendering and the renderer's earlier call spelling
-of the same steps), so a body in an earlier layout, quoting or spelling of the same
-steps is not an edit.
+comments), so a body in an earlier layout or quoting of the same steps is not an
+edit, while a body in a call spelling only an earlier renderer wrote is.
 
 **Stepped frame surfaces.** When a Data Input, External File, Rating Step, Model Score,
 Scenario Expander or Explore config carries `steps`, the node is a hook and its generator

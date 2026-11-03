@@ -3906,8 +3906,8 @@ def test_parse_keeps_steps_whose_body_is_the_same_program_in_an_older_style(
     assert node.data.config["code"] == render_polars_steps(steps, start="input").code
 
 
-#: The golden steps as the renderer wrote them before its current layout and
-#: style: one line per step, ``repr`` quotes, lists for keys and aggregations.
+#: The golden steps as Haute 0.5 wrote them: lists for keys and aggregations,
+#: which is a different program from the renderer's current calls.
 EARLIER_GOLDEN_CODE = "\n".join(
     [
         "df = quotes",
@@ -3924,7 +3924,8 @@ EARLIER_GOLDEN_CODE = "\n".join(
 )
 
 
-def test_parse_keeps_steps_saved_by_an_earlier_renderer(tmp_path: Path) -> None:
+def test_parse_reads_a_body_in_an_earlier_renderer_s_spelling_as_code(tmp_path: Path) -> None:
+    """Canonical only: a body only an earlier renderer wrote is not the steps' body."""
     quotes, rates = _frames(tmp_path)
     graph = PipelineGraph(
         nodes=[quotes, rates, _stepped("t", GOLDEN_STEPS)],
@@ -3938,9 +3939,11 @@ def test_parse_keeps_steps_saved_by_an_earlier_renderer(tmp_path: Path) -> None:
 
     parsed = parse_pipeline_source(earlier, _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "t")
-    assert node.data.config["steps"] == GOLDEN_STEPS
-    assert node.data.editor.steps_discarded is None
-    assert node.data.config["code"] == GOLDEN_CODE
+    assert "steps" not in node.data.config
+    assert node.data.editor.steps_discarded == (
+        "Steps were discarded because the function body no longer matches the rendered steps."
+    )
+    assert node.data.config["code"] == EARLIER_GOLDEN_CODE
 
 
 def test_parse_reads_a_sort_saved_before_sorts_kept_their_ties_order_as_free_code(
@@ -3973,64 +3976,6 @@ def test_parse_reads_a_sort_saved_before_sorts_kept_their_ties_order_as_free_cod
 
 
 @pytest.mark.parametrize(
-    ("kind_step", "earlier"),
-    [
-        (step("x", "select", columns=["a", "b"]), "df = df.select(['a', 'b'])"),
-        (
-            step("x", "select", columns=["region"], dtypes=["Float64"]),
-            "df = df.select(['region', pl.col(pl.Float64).exclude('region')])",
-        ),
-        (step("x", "drop", columns=["a"]), "df = df.drop(['a'])"),
-        (
-            step("x", "drop", columns=["region"], dtypes=["String"]),
-            "df = df.drop(['region'], pl.col(pl.String).exclude('region'))",
-        ),
-        (
-            step("x", "sort", keys=[{"column": "a", "descending": True}], nullsLast=True),
-            "df = df.sort(['a'], descending=[True], nulls_last=True)",
-        ),
-        (
-            step("x", "sort", keys=[{"column": "a", "descending": False}], nullsLast=False),
-            "df = df.sort(['a'], descending=[False], nulls_last=False)",
-        ),
-        (
-            step("x", "unique", columns=[], keep="any"),
-            "df = df.unique(subset=None, keep='any', maintain_order=True)",
-        ),
-        (
-            step("x", "fill_null", columns=["a"], fill={"kind": "value", "value": num(0)}),
-            "df = df.with_columns(pl.col(['a']).fill_null(0))",
-        ),
-        (
-            step(
-                "x",
-                "group_by",
-                keys=["k"],
-                aggregations=[{"column": "a", "agg": "sum", "name": "t"}],
-            ),
-            "df = df.group_by(['k'], maintain_order=True).agg([pl.col('a').sum().alias('t')])",
-        ),
-        (
-            step(
-                "x", "group_by", keys=[], aggregations=[{"column": "", "agg": "len", "name": "n"}]
-            ),
-            "df = df.select([pl.len().alias('n')])",
-        ),
-    ],
-)
-def test_the_earlier_spelling_is_the_renderer_s_previous_output(
-    kind_step: dict[str, Any], earlier: str
-) -> None:
-    """The earlier spelling reproduces what the renderer wrote before, as a program."""
-    rendered = render_polars_steps(
-        [source(), kind_step], ["quotes"], start="input", spelling="earlier"
-    )
-    assert ast.dump(ast.parse(step_text(rendered, 1))) == ast.dump(ast.parse(earlier))
-    current = render_polars_steps([source(), kind_step], ["quotes"], start="input")
-    assert step_text(current, 1) != step_text(rendered, 1)
-
-
-@pytest.mark.parametrize(
     ("steps", "edit"),
     [
         # A list beside another argument is not the same call as the names passed one by one.
@@ -4045,7 +3990,7 @@ def test_the_earlier_spelling_is_the_renderer_s_previous_output(
         ),
     ],
 )
-def test_parse_discards_steps_for_a_body_no_spelling_of_them_renders(
+def test_parse_discards_steps_for_a_body_the_steps_do_not_render(
     tmp_path: Path, steps: list[dict[str, Any]], edit: tuple[str, str]
 ) -> None:
     quotes, _rates = _frames(tmp_path)

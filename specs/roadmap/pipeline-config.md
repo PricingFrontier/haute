@@ -14,12 +14,9 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 | PCFG-R04 | Planned | P2 | One project context, resolved once, replaces a dozen project-root and pipeline-directory resolvers. |
 | PCFG-R07 | Planned | P2 | Every node type has a typed config model that is the single validation boundary. |
 | PCFG-R09 | Planned | P3 | A node type is declared in one place. |
-| PCFG-R16 | Decision | P3 | The `earlier` step spelling is either dropped or named as the one allowed recogniser of old generated code. |
 
 `PCFG-R04`, `PCFG-R07` and `PCFG-R09` come from the
-[23 September 2026 codebase review](codebase-review-2026-09-23.md);
-`PCFG-R16` from the
-[25 October 2026 codebase review](codebase-review-2026-10-25.md).
+[23 September 2026 codebase review](codebase-review-2026-09-23.md).
 
 ## Planned improvements
 
@@ -156,23 +153,3 @@ specific node type for a concern the specification owns.
 `src/haute/_registry.py::NODE_REGISTRY`; `src/haute/_builders.py`;
 `src/haute/_codegen_builders.py`; `src/haute/projection.py`;
 `src/haute/_trace_correlation.py`; `src/haute/assistant/_catalog.py`.
-
-### PCFG-R16 — The `earlier` step spelling
-**Why:** The parser recognises the renderer's earlier call spelling so bodies saved
-by an older Haute keep their steps; the canonical-only policy in `specs/README.md`
-names old generated-code recognition among the mechanisms production code must not
-have, while the pipeline-config specification documents the spelling as the intended
-reconcile. The two documents contradict each other.
-
-**Plan:** Decide: drop the `earlier` spelling (a body in the old spelling then
-discards its steps and the user re-saves), or amend the policy to name this one
-allowed recogniser and its retirement date.
-
-**Acceptance:** The policy and the pipeline-config specification agree, and the code
-matches them.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_config_builder.py::_reconcile_steps`;
-`src/haute/_polars_steps.py::StepSpelling`; `specs/README.md`;
-`specs/pipeline-config/low-level.md`.

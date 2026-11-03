@@ -481,18 +481,7 @@ def _reconcile_steps(
         reason = f"the steps cannot be rendered ({exc})"
     else:
         kind = _EXTRACTION_KIND_BY_CODE_TYPE[node_type]
-        # The renderer's earlier call spelling is accepted too, so a body it
-        # saved before keeps its steps; free code must match either way.
-        earlier = render_polars_steps(
-            steps,
-            step_input_names(node_type, param_names),
-            start=surface.start,
-            spelling="earlier",
-        ).code
-        if any(
-            _same_program(normalise_user_code(code, kind=kind), body_code)
-            for code in (rendered, earlier)
-        ):
+        if _same_program(normalise_user_code(rendered, kind=kind), body_code):
             return config, NodeEditorState()
         reason = "the function body no longer matches the rendered steps"
     logger.warning(
