@@ -60,19 +60,13 @@ Priorities follow the roadmap convention: P1 threatens saved work, calculated
 results or security; P2 materially affects correctness, UX or assurance; P3 covers
 the limited-impact or rare-input items. The review recorded 42 groups: 13 P1, 25 P2 and
 4 P3. Groups whose packages were delivered have since been removed, so the tables hold
-the open ones. The first table keeps what is open of the ten initial finding groups.
-The following table adds the full-source findings, including additions to existing
-owners. A group is not an individual failing assertion or a release-wide blocker count.
+the open ones. The table keeps what is open of the ten initial finding groups; every
+full-source finding has been delivered. A group is not an individual failing assertion
+or a release-wide blocker count.
 
 | Priority | Trigger and observed consequence | Owning package | Evidence strength |
 |---|---|---|---|
 | P1 | An IDE save after assistant plan verification is overwritten by apply; the rename and post-save verification still succeed. | [ASSIST-61](assistant.md#assist-61--keep-the-authenticated-revision-through-commit) | Real temporary pipeline and transactional save; deterministic edit before commit. |
-
-### Additional full-source findings
-
-| Priority | Trigger and observed consequence | Owning package | Evidence and practical limit |
-|---|---|---|---|
-| P2 | Haute classifier pyfunc's label/probability table is flattened to 40 values for 20 input rows. | [MSC-11](model-scoring.md#msc-11--pyfunc-classification-outputs-have-an-explicit-scoring-shape) | Real saved/loaded CatBoost pyfunc, feature contract and scoring adapter. Explicit pyfunc selection is affected; automatic native selection may avoid it. |
 
 The first implementation pass should address the P1 packages before opportunistic
 cleanup. Each package includes the expected behaviour, scope, regression scenarios
@@ -211,7 +205,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | delayed drill-in | **FGC-R06**. |
 | utility async read/save/switch | **FGC-R08**. |
 | blocked recovery inspector | **FGC-R09**. |
-| pyfunc classifier output shape | **MSC-11**. |
 
 The training-import note was attached to a batch including `cli/_app.py`, but its
 actual source is `cli/_train.py::handle_train`. The table-handle note attached to

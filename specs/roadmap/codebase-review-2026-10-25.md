@@ -190,7 +190,6 @@ puts it in front of the owner because of what it can cost in production:
 
 | Area | Findings | Package |
 |---|---|---|
-| Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
 | Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |
 | Assistant | ASA-3, ASA-4, ASA-6, ASA-9 | `ASSIST-55` |
 | Assistant | ASA-5, ASA-8, ASA-10, ASA-11, ASA-12, ASA-14 | `ASSIST-56` |
