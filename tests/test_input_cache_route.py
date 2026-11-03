@@ -126,9 +126,7 @@ def client(
     from haute.server import app
 
     set_project_root(tmp_path)
-    # Every explicit build takes the hard-capped worker on a host with the cap;
-    # here the worker entry point runs on a thread.
-    monkeypatch.setattr(input_cache, "process_memory_caps_supported", lambda: True)
+    # Every explicit build runs in an isolated worker; here its entry point runs on a thread.
     monkeypatch.setattr(input_cache, "run_isolated_worker", _threaded_spawn)
     input_cache._reset_for_tests()
     with TestClient(app) as test_client:
@@ -576,9 +574,6 @@ def _worker_harness(
         harness.events.append("spawned")
         return spawn(request, budget)
 
-    def never_build(*_args: Any, **_kwargs: Any) -> Any:
-        raise AssertionError("an explicit build must not run on the server thread")
-
     monkeypatch.setattr(
         input_cache,
         "input_snapshot_build_class",
@@ -587,7 +582,6 @@ def _worker_harness(
     monkeypatch.setattr(input_cache, "create_admitted_execution_context", admit)
     monkeypatch.setattr(input_cache, "isolated_execution_budget", lambda _ctx: harness.budget)
     monkeypatch.setattr(input_cache, "run_isolated_worker", record_spawn)
-    monkeypatch.setattr(input_cache, "build_input_snapshot", never_build)
     return harness
 
 
@@ -822,51 +816,48 @@ def test_a_worker_build_counts_the_batches_its_child_writes(
     assert terminal["progress"]["batches"] == 3
 
 
-def test_a_host_without_the_cap_builds_a_bounded_snapshot_in_process_under_admission(
+@pytest.mark.parametrize("build_class", ["bounded", "admitted_eager"])
+def test_a_host_without_the_cap_supervises_every_explicit_build_in_a_worker(
     client: TestClient,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    build_class: str,
 ) -> None:
-    """Preparation refuses there and sends the user here, so the build must still run."""
-    from haute._execution_context import ExecutionProfile
+    """macOS: the worker runs under its parent's RSS watchdog instead of being refused."""
+    import haute._worker_isolation as isolation_mod
+    from haute._input_preparation import InputPreparationOutcome
+    from haute._input_providers import build_input_snapshot
     from haute.routes import input_cache
 
-    def never_spawn(*_args: Any, **_kwargs: Any) -> Any:
-        raise AssertionError("a host without the cap cannot spawn a capped worker")
+    (tmp_path / "input.csv").write_text("id,value\n1,a\n2,b\n", encoding="utf-8")
+    monkeypatch.delenv("HAUTE_WORKER_MEMORY_ENFORCEMENT")
+    monkeypatch.setattr(isolation_mod, "process_memory_caps_supported", lambda: False)
 
-    admitted: list[tuple[Any, Any]] = []
-    built_under: list[Any] = []
-    admit, build = input_cache.create_admitted_execution_context, input_cache.build_input_snapshot
+    def child(request: Any, _budget: Any) -> InputPreparationOutcome:
+        generation = build_input_snapshot(
+            request.config,
+            store=input_cache._cache_store(),
+            base_dir=request.base_dir,
+            profile=request.profile,
+            generation_id=request.generation_id,
+            staging_token=request.staging_token,
+            allow_admitted_eager=True,
+        )
+        return InputPreparationOutcome.of(generation)
 
-    def recording_admit(**kwargs: Any) -> Any:
-        context = admit(**kwargs)
-        admitted.append((kwargs["profile"], context))
-        return context
-
-    def recording_build(*args: Any, **kwargs: Any) -> Any:
-        built_under.append(kwargs["execution_context"])
-        return build(*args, **kwargs)
-
-    monkeypatch.setattr(input_cache, "process_memory_caps_supported", lambda: False)
-    monkeypatch.setattr(input_cache, "run_isolated_worker", never_spawn)
-    monkeypatch.setattr(input_cache, "create_admitted_execution_context", recording_admit)
-    monkeypatch.setattr(input_cache, "build_input_snapshot", recording_build)
-
-    started = client.post(
-        "/api/input-cache/build",
-        json={"schema_version": 1, "config": _sqlite_config(tmp_path)},
-    )
-    terminal = _wait_for_terminal(client, started.json()["job_id"])
+    harness = _worker_harness(monkeypatch, child, build_class=build_class)
+    terminal = _wait_for_terminal(client, _start_worker_build(client))
 
     assert terminal["status"] == "completed"
-    assert terminal["snapshot"]["generation"]["row_count"] == 3
-    assert terminal["progress"]["batches"] == 3
-    assert [profile for profile, _context in admitted] == [ExecutionProfile.LAZY_SINK]
-    assert built_under == [admitted[0][1]]
+    assert terminal["snapshot"]["generation"]["row_count"] == 2
+    [call] = harness.calls
+    # The parent's watchdog holds the child to the admitted limit; no native cap is required.
+    assert call["config"].require_memory_limit is False
+    assert call["config"].memory_limit_bytes == harness.budget.memory_limit_bytes
 
 
 @pytest.mark.parametrize("refused_by", ["spawn", "child"])
-def test_a_host_without_the_cap_never_builds_an_admitted_eager_snapshot_in_process(
+def test_a_required_cap_the_host_cannot_install_fails_the_import_as_cap_unavailable(
     client: TestClient,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -877,7 +868,6 @@ def test_a_host_without_the_cap_never_builds_an_admitted_eager_snapshot_in_proce
         IsolatedWorkerMemoryLimitUnsupportedError,
         IsolatedWorkerRemoteError,
     )
-    from haute.routes import input_cache
 
     (tmp_path / "input.csv").write_text("id,value\n1,a\n", encoding="utf-8")
 
@@ -891,8 +881,8 @@ def test_a_host_without_the_cap_never_builds_an_admitted_eager_snapshot_in_proce
             is_memory=False,
         )
 
-    monkeypatch.setattr(input_cache, "process_memory_caps_supported", lambda: False)
-    # The harness fails the job if the build runs on the server thread.
+    # Only an operator's explicit `required` reaches this on a host without the cap.
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "required")
     harness = _worker_harness(monkeypatch, refusing_spawn)
     terminal = _wait_for_terminal(client, _start_worker_build(client))
 
@@ -900,6 +890,7 @@ def test_a_host_without_the_cap_never_builds_an_admitted_eager_snapshot_in_proce
     assert terminal["status"] == "error"
     assert terminal["error_code"] == "cap_unavailable"
     assert "native memory cap" in terminal["message"]
+    assert "HAUTE_WORKER_MEMORY_ENFORCEMENT=best_effort" in terminal["message"]
     assert "more memory" not in terminal["message"]
     assert terminal["snapshot"] is None
 
@@ -1870,7 +1861,22 @@ def test_a_build_being_cancelled_accepts_no_new_joiners(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    entered, release = _hold_builds(monkeypatch)
+    from haute._worker_isolation import IsolatedWorkerStoppedError
+    from haute.routes import input_cache
+
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_to_stop(function: Any, *args: Any, config: Any, **kwargs: Any) -> Any:
+        # A worker that takes until `release` to die once asked to stop, so the
+        # job stays running between the cancellation's acknowledgement and its end.
+        entered.set()
+        assert release.wait(timeout=5)
+        reason = config.stop_reason()
+        if reason is not None:
+            raise IsolatedWorkerStoppedError(terminal_reason=reason)
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(input_cache, "run_isolated_worker", slow_to_stop)
     body = {"schema_version": 1, "config": _file_config()}
     first = client.post("/api/input-cache/build", json=body)
     assert entered.wait(timeout=5)

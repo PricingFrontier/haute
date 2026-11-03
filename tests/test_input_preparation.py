@@ -865,15 +865,17 @@ def test_a_call_without_an_admitted_context_does_nothing(
 # ---------------------------------------------------------------- (10) placement
 
 
-def test_the_worker_path_receives_the_budget_and_a_required_memory_limit(
+@pytest.mark.parametrize("policy", ["required", "best_effort"])
+def test_the_worker_path_receives_the_budget_and_the_policys_memory_limit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    policy: str,
 ) -> None:
     store = _project(tmp_path, monkeypatch)
     path = tmp_path / "rows.csv"
     pl.DataFrame({"id": [1, 2, 3]}).write_csv(path)
     config = _csv_config(path)
-    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", policy)
 
     captured: dict[str, Any] = {}
 
@@ -892,7 +894,8 @@ def test_the_worker_path_receives_the_budget_and_a_required_memory_limit(
 
     assert captured["function"] is build_input_snapshot_worker
     assert captured["budget"].memory_limit_bytes == expected.memory_limit_bytes
-    assert captured["config"].require_memory_limit is True
+    assert captured["config"].memory_limit_bytes == expected.memory_limit_bytes
+    assert captured["config"].require_memory_limit is (policy == "required")
     assert record.execution == "worker"
     assert record.action == "built"
 
@@ -1020,7 +1023,47 @@ def test_terminal_diagnostics_carry_digests_and_counts_only(
 # -------------------------------------------------------------- (15) cap gate
 
 
-def test_a_host_without_a_native_cap_refuses_before_any_provider_access(
+def test_a_host_without_a_native_cap_builds_in_a_supervised_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """macOS's default policy: the build runs, its worker held to the limit by its parent."""
+    import haute._worker_isolation as isolation_mod
+
+    store = _project(tmp_path, monkeypatch)
+    path = tmp_path / "rows.csv"
+    pl.DataFrame({"id": [1, 2, 3]}).write_csv(path)
+    config = _csv_config(path)
+    monkeypatch.delenv("HAUTE_WORKER_MEMORY_ENFORCEMENT")
+    monkeypatch.setattr(isolation_mod, "process_memory_caps_supported", lambda: False)
+    monkeypatch.setattr(
+        "haute._input_preparation.process_memory_caps_supported",
+        lambda: False,
+    )
+    configs: list[IsolatedWorkerConfig] = []
+
+    def supervised_spawn(function: Any, *args: Any, config: IsolatedWorkerConfig) -> Any:
+        configs.append(config)
+        return function(*args)
+
+    context = _context()
+    try:
+        budget = isolated_execution_budget(context)
+        record = _prepare(
+            config, store=store, base_dir=tmp_path, context=context, spawn=supervised_spawn
+        )[0]
+    finally:
+        context.release_admission()
+
+    assert (record.action, record.execution) == ("built", "worker")
+    [worker_config] = configs
+    assert worker_config.require_memory_limit is False
+    assert worker_config.memory_limit_bytes == budget.memory_limit_bytes
+    prepared = resolve_data_input(config, store=store, base_dir=tmp_path).collect()
+    assert prepared["id"].to_list() == [1, 2, 3]
+
+
+def test_a_required_cap_the_host_cannot_install_refuses_before_any_provider_access(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1028,7 +1071,7 @@ def test_a_host_without_a_native_cap_refuses_before_any_provider_access(
     path = tmp_path / "rows.csv"
     pl.DataFrame({"id": [1, 2, 3]}).write_csv(path)
     config = _csv_config(path)
-    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "required")
     monkeypatch.setattr(
         "haute._input_preparation.process_memory_caps_supported",
         lambda: False,

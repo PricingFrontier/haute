@@ -233,15 +233,17 @@ platforms, and on Windows with long paths on, nothing is renamed.
    build runs in-process through `build_input_snapshot()` with the context's cancellation,
    deadline, and stages; otherwise the build is spawned through `run_isolated_worker` with
    `capped_worker_config(budget, ...)`, where `budget = isolated_execution_budget(execution_context)`:
-   `worker_config_for_memory_policy(memory_limit_bytes=budget.memory_limit_bytes, ...)` with
-   `require_memory_limit=True` whatever `HAUTE_WORKER_MEMORY_ENFORCEMENT` says. The
+   `worker_config_for_memory_policy(memory_limit_bytes=budget.memory_limit_bytes, ...)`,
+   which enforces the limit as the [worker memory policy](../execution-engine/high-level.md)
+   says: a native cap under `required`, the parent's RSS watchdog (and any cap the host can
+   install) under `best_effort`, the unset default of a host without a cap (macOS). The
    child creates `create_isolated_execution_context(budget)` and runs the same
-   `build_input_snapshot()`. A host that cannot install the native cap reuses a
-   ready-but-stale generation with warning code `cap_unavailable_stale_reused`, and refuses
-   with `cap_unavailable` before any provider access only when no generation exists.
-   `allow_admitted_eager=True` is the hard-capped-worker-only opt-in for the admitted-eager build class — the explicit
-   build sets it inside the child, and the in-process explicit build of a host without the
-   cap (below) only ever builds the bounded class.
+   `build_input_snapshot()`. Only `required` on a host that cannot install the native cap
+   stops here: it reuses a ready-but-stale generation with warning code
+   `cap_unavailable_stale_reused`, and refuses with `cap_unavailable` before any provider
+   access only when no generation exists; the remediation names the `best_effort` policy.
+   `allow_admitted_eager=True` is the isolated-worker-only opt-in for the admitted-eager
+   build class; the explicit build sets it inside the child too.
 5. A per-process single-flight keyed by identity digest makes a concurrent execution wait
    for the in-flight build and re-read status instead of building again; a waiter inherits
    the owner's typed preparation failure instead of rebuilding. The wait is
@@ -329,10 +331,12 @@ whose thread (`routes/input_cache.py::_run_build`) never builds a Data Input its
    worker failure maps onto the job lifecycle (`memory_limited`, `cancelled`, `timed_out`,
    or `error` with `cap_unavailable`/`build_failed`/`path_too_long`), after
    `reconcile_unpublished` has settled the build's parent-chosen generation and staging.
-   `cap_unavailable` (`isolated_worker_failure_is_cap_unavailable`: the spawn refused for a
-   host without the cap, or the child could not install it) is decided before the memory
-   outcomes, which would otherwise claim it, and says the host cannot install the cap.
-   An API Input's table build maps its failures the same way.
+   `cap_unavailable` (`isolated_worker_failure_is_cap_unavailable`: under `required`, the
+   spawn refused for a host without the cap, or the child could not install it) is decided
+   before the memory outcomes, which would otherwise claim it; its message says the host
+   could not install the cap and names `HAUTE_WORKER_MEMORY_ENFORCEMENT=best_effort`, which
+   runs the build under supervision instead. An API Input's table build maps its failures
+   the same way.
 3. Progress: `run_supervised_data_input_build(..., progress=)` hands the child a
    `BuildProgressCounter`, two lock-free signed 64-bit slots in spawn-shared memory (rows,
    batches). The child is the only writer (`build_input_snapshot(progress=counter.advance)`);
@@ -344,15 +348,11 @@ whose thread (`routes/input_cache.py::_run_build`) never builds a Data Input its
    `write_parts(..., on_part=context.advance)` writes, by that part's footer row count.
    A sliced write (a Parquet or IPC scan, an in-memory frame) therefore counts each
    slice, while a native sink (a CSV scan) is one part, counted when it ends.
-4. A host without a native memory cap (`process_memory_caps_supported()` false: macOS)
-   runs a `bounded` build in this process instead, through `build_input_snapshot(...,
-   execution_context=context, progress=..., cancellation=..., deadline=...)`. The admitted
-   context's stages make it the current context, so `write_parts` and every batch
-   checkpoint compare the process's memory with the admitted limit
-   (`ExecutionMemoryLimitExceededError` → `memory_limited`). The job logs
-   `input_cache_build_uncapped`. An `admitted_eager` build is never run in process: on such
-   a host its worker refuses to start without the cap it requires, and the job fails
-   `cap_unavailable`.
+4. A host without a native memory cap (macOS) runs every build, of either class, in the
+   same worker, supervised rather than capped: its unset worker memory policy is
+   `best_effort`, so the parent's RSS watchdog stops the child past the admitted limit
+   (`IsolatedWorkerMemoryLimitExceededError` → `memory_limited`). No explicit build runs
+   in the server process on any host.
 
 ### Snapshot publication
 
@@ -1159,11 +1159,11 @@ failure sections above are the maintained answers.
   `canonical_dataframe_execution_graph()`, so a root-relative locator cannot build one
   snapshot while the run reads another file. With the process's current directory outside
   the project, a relative locator is still resolved against the configured project root,
-  and a build publishes into that root's store. On a host without the cap a bounded build
-  runs in process under its admitted context, counting rows as it goes, and an
-  admitted-eager build still goes to the worker, whose refusal (raised by the spawn or
-  by the child) fails the job `cap_unavailable`. A real spawned database build relays its
-  rows and batches to the parent while it runs.
+  and a build publishes into that root's store. On a host without the cap, with the
+  policy unset, a build of either class goes to a worker that does not require the cap;
+  under `required`, the worker's refusal (raised by the spawn or by the child) fails the
+  job `cap_unavailable`. A real spawned database build relays its rows and batches to
+  the parent while it runs.
 - `tests/test_input_preparation.py` covers automatic preparation: (1) parity — for CSV with
   a declared schema, CSV without one, NDJSON, plain JSON, and inline records the prepared
   generation's schema and rows equal a direct whole-file eager read; (2) mixed late types —
@@ -1207,8 +1207,9 @@ failure sections above are the maintained answers.
   and no failure, while a failure of the parent's own (its retirement after a worker that
   published, its reconciliation after one that failed, a worker outcome of the wrong type)
   propagates as itself rather than being read as the worker's; (15) a host without a native cap under
-  `HAUTE_WORKER_MEMORY_ENFORCEMENT=best_effort` yields `cap_unavailable` before any
-  provider access; (16) cache invalidation — a warmed preview (`execute_graph` preview
+  `HAUTE_WORKER_MEMORY_ENFORCEMENT=required` yields `cap_unavailable` before any
+  provider access, while under `best_effort` it builds in a worker the parent supervises
+  without requiring a cap; (16) cache invalidation — a warmed preview (`execute_graph` preview
   cache) returns the new rows and records `refreshed`
   after the source file is rewritten, because the runtime identity includes the source
   signature.

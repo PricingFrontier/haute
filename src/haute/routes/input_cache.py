@@ -3,8 +3,8 @@
 A Data Input has one snapshot. A structured API Input (JSON, JSONL, NDJSON,
 XML) has one per emitting table; its requests act on the node's tables
 together, and its build shreds the source once. Every build is admitted and
-runs in a hard-capped worker; only a host without the cap builds a bounded
-Data Input in this process, under its admission.
+runs in an isolated worker, never in this process: hard-capped where the host
+can install a cap, supervised by its parent where it cannot (macOS).
 """
 
 from __future__ import annotations
@@ -42,7 +42,6 @@ from haute._input_preparation import (
     run_supervised_data_input_build,
 )
 from haute._input_providers import (
-    build_input_snapshot,
     input_snapshot_build_class,
     source_cache_identity,
     source_signature,
@@ -70,7 +69,6 @@ from haute._worker_isolation import (
     isolated_worker_failure_is_memory,
     isolated_worker_failure_is_path_too_long,
     isolated_worker_memory_detail,
-    process_memory_caps_supported,
     run_isolated_worker,
 )
 from haute.routes._background_jobs import (
@@ -527,12 +525,13 @@ def _worker_build_failure(
 ) -> _WorkerBuildError:
     """Map one worker failure onto this job's terminal lifecycle state."""
     if isolated_worker_failure_is_cap_unavailable(exc):
-        # Not a memory outcome: nothing ran, because this host has no cap to install.
+        # Not a memory outcome: nothing ran, because the cap could not be installed.
         return _WorkerBuildError(
             terminal="error",
             message=(
-                "This import needs a native memory cap, which this host cannot "
-                "install, so it did not run. Import it on Windows or Linux."
+                "This import needs a native memory cap, which this host could not "
+                "install, so it did not run. Set HAUTE_WORKER_MEMORY_ENFORCEMENT="
+                "best_effort to import under memory supervision instead."
             ),
             error_code="cap_unavailable",
             phase="failed",
@@ -712,7 +711,6 @@ def _run_build(
 
     started_at = time.monotonic()
     execution_context: ExecutionContext | None = None
-    deadline = started_at + timeout
     timeout_timer = threading.Timer(
         timeout,
         lambda: jobs.cancel(job_id, reason="timed_out"),
@@ -790,37 +788,17 @@ def _run_build(
             job_id=job_id,
             cancellation_token=token.execution_token,
         )
-        if build_class == "bounded" and not process_memory_caps_supported():
-            # This host has no native cap, so automatic preparation refuses and
-            # sends the user here: the build runs in this process under its
-            # admission, whose checkpoints compare the process's memory with
-            # the admitted limit at every batch.
-            logger.warning(
-                "input_cache_build_uncapped", job_id=job_id, identity_digest=identity.digest
-            )
-            generation = build_input_snapshot(
-                config,
-                store=_cache_store(),
-                base_dir=input_pipeline_dir(),
-                profile=profile,
-                refresh=refresh,
-                cancellation=token.event,
-                deadline=deadline,
-                progress=progress,
-                execution_context=execution_context,
-            )
-        else:
-            # Never on this server thread: a hard-capped spawn worker, as for
-            # automatic preparation, relaying the rows it writes.
-            generation = _supervise_data_input_build(
-                config=config,
-                identity=identity,
-                refresh=refresh,
-                profile=profile,
-                execution_context=execution_context,
-                token=token,
-                progress=progress,
-            )
+        # Never on this server thread: an isolated worker, as for automatic
+        # preparation, relaying the rows it writes.
+        generation = _supervise_data_input_build(
+            config=config,
+            identity=identity,
+            refresh=refresh,
+            profile=profile,
+            execution_context=execution_context,
+            token=token,
+            progress=progress,
+        )
         timeout_timer.cancel()
         metadata = generation.metadata
         snapshot = InputCacheSnapshotStatusResponse(

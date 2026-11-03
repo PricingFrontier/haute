@@ -55,6 +55,7 @@ from haute._worker_isolation import (
     isolated_worker_failure_is_memory,
     isolated_worker_failure_is_path_too_long,
     process_memory_caps_supported,
+    resolve_worker_memory_enforcement,
     run_isolated_worker,
     worker_config_for_memory_policy,
 )
@@ -73,9 +74,9 @@ _REMEDIATION = (
 # actions from the operator.
 _REMEDIATION_BY_REASON: Mapping[str, str] = {
     "cap_unavailable": (
-        "This host cannot install the native memory cap an automatic snapshot "
-        "build requires. Build this Data Input's snapshot explicitly from the "
-        "Data Input panel, or run on a host that supports the cap."
+        "HAUTE_WORKER_MEMORY_ENFORCEMENT=required asks for a native memory cap "
+        "this host cannot install. Set it to best_effort, or unset it, to build "
+        "this Data Input's snapshot under memory supervision instead."
     ),
     "memory_limited": (
         "Preparing this Data Input's snapshot ran out of memory. Give the "
@@ -95,9 +96,9 @@ _API_INPUT_REMEDIATION = (
 )
 _API_INPUT_REMEDIATION_BY_REASON: Mapping[str, str] = {
     "cap_unavailable": (
-        "This host cannot install the native memory cap an automatic snapshot "
-        "build requires. Build this input's tables explicitly from its "
-        "panel, or run on a host that supports the cap."
+        "HAUTE_WORKER_MEMORY_ENFORCEMENT=required asks for a native memory cap "
+        "this host cannot install. Set it to best_effort, or unset it, to build "
+        "this input's tables under memory supervision instead."
     ),
     "memory_limited": (
         "Preparing this input's tables ran out of memory. Give the execution "
@@ -446,6 +447,17 @@ def _built_record(
     )
 
 
+def _cap_required_but_unavailable() -> bool:
+    """Whether the worker policy requires a native cap this host cannot install.
+
+    Only an explicit ``required`` on such a host (macOS) refuses a spawned build;
+    its unset default there supervises the worker instead.
+    """
+    return resolve_worker_memory_enforcement() == "required" and not (
+        process_memory_caps_supported()
+    )
+
+
 def capped_worker_config(
     budget: IsolatedExecutionBudget,
     *,
@@ -453,19 +465,17 @@ def capped_worker_config(
     stop_reason: Callable[[], WorkerTerminalReason | None],
     process_name: str,
 ) -> IsolatedWorkerConfig:
-    """A spawned snapshot build's worker config: the budget's native memory cap, required.
+    """A spawned snapshot build's worker config: the budget's memory limit.
 
-    The cap is mandatory whatever the process-memory enforcement policy says, so
-    a host that cannot install it refuses the build rather than running it uncapped.
+    It is enforced as the worker memory policy says: a native cap the host must
+    install under ``required``, the parent's RSS watchdog (and any cap the host
+    can install) under ``best_effort``, the default of a host without a cap.
     """
-    return dataclasses.replace(
-        worker_config_for_memory_policy(
-            memory_limit_bytes=budget.memory_limit_bytes,
-            timeout_seconds=timeout_seconds,
-            stop_reason=stop_reason,
-            process_name=process_name,
-        ),
-        require_memory_limit=True,
+    return worker_config_for_memory_policy(
+        memory_limit_bytes=budget.memory_limit_bytes,
+        timeout_seconds=timeout_seconds,
+        stop_reason=stop_reason,
+        process_name=process_name,
     )
 
 
@@ -960,11 +970,11 @@ def _run_build(
         execution_context.memory_limit_bytes if budget is None else budget.memory_limit_bytes
     )
 
-    # Spawned build: the cap is mandatory whatever the process-memory
-    # enforcement policy says. A host that cannot install one still has a
-    # ready-but-stale generation to fall back to; only a missing generation is
-    # refused typed, before any provider access.
-    if not in_process and not process_memory_caps_supported():
+    # Spawned build: only a `required` policy on a host that cannot install the
+    # cap stops here (elsewhere the worker is capped, or supervised by its
+    # parent). A ready-but-stale generation is still served; only a missing one
+    # is refused typed, before any provider access.
+    if not in_process and _cap_required_but_unavailable():
         if refresh and current_generation is not None:
             logger.warning(
                 "input_snapshot_cap_unavailable_stale_reused",
@@ -1268,7 +1278,7 @@ def _run_api_input_build(
         execution_context.memory_limit_bytes if budget is None else budget.memory_limit_bytes
     )
 
-    if not in_process and not process_memory_caps_supported():
+    if not in_process and _cap_required_but_unavailable():
         # Without a cap only already-published tables can serve: stale ones
         # are reused, and a missing one is refused before the source is read.
         if all(

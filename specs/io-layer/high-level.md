@@ -175,10 +175,9 @@ build class. The worker shares the rows it has written with the server, so an Im
 them as it goes wherever the build writes in steps: each batch of a database or Databricks
 read, each slice of a Parquet or IPC file. A CSV is written in one streaming pass, which
 reports nothing until it ends. A host with no native
-process-memory cap (macOS) is where automatic preparation refuses and sends the user to the
-explicit build: there a bounded explicit build runs in the server process under its admitted
-context, which still checks its memory at every batch, and an admitted-eager build, which
-needs the cap, is refused as `cap_unavailable`, saying the host has no cap.
+process-memory cap (macOS) runs the same workers, automatic or explicit, supervised rather
+than capped: the parent stops a worker whose memory passes its limit. Only an operator who
+sets `HAUTE_WORKER_MEMORY_ENFORCEMENT=required` there is refused, as `cap_unavailable`.
 
 Snapshot readers acquire an explicit generation lease. Within an execution request the
 lease lasts until execution cleanup. Outside an execution request the returned scan owns a

@@ -1495,15 +1495,54 @@ def test_native_allocation_refused_by_the_worker_cap_is_a_memory_outcome() -> No
     assert exc_info.value.terminal_reason == "memory_limited"
 
 
-def test_worker_memory_enforcement_defaults_to_required(
+def test_worker_memory_enforcement_defaults_to_required_where_a_cap_exists(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import haute._worker_isolation as isolation_mod
+
     monkeypatch.delenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", raising=False)
+    monkeypatch.setattr(isolation_mod, "process_memory_caps_supported", lambda: True)
 
     assert resolve_worker_memory_enforcement() == "required"
     config = worker_config_for_memory_policy(memory_limit_bytes=123)
     assert config.memory_limit_bytes == 123
     assert config.require_memory_limit is True
+
+
+def test_worker_memory_enforcement_supervises_by_default_where_no_cap_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """macOS: workers run supervised by the parent's RSS watchdog, not refused."""
+    import haute._worker_isolation as isolation_mod
+
+    monkeypatch.delenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", raising=False)
+    monkeypatch.setattr(isolation_mod, "process_memory_caps_supported", lambda: False)
+    monkeypatch.setattr(isolation_mod, "_supervision_noted", threading.Event())
+    events: list[str] = []
+    monkeypatch.setattr(
+        isolation_mod.logger, "warning", lambda event, **_fields: events.append(event)
+    )
+
+    assert resolve_worker_memory_enforcement() == "best_effort"
+    config = worker_config_for_memory_policy(memory_limit_bytes=123)
+    assert config.memory_limit_bytes == 123
+    assert config.require_memory_limit is False
+    # Said once per process, however many workers resolve it.
+    assert events == ["worker_memory_supervised_without_cap"]
+
+
+def test_an_explicit_worker_memory_policy_wins_over_the_host_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._worker_isolation as isolation_mod
+
+    monkeypatch.setattr(isolation_mod, "process_memory_caps_supported", lambda: False)
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "required")
+    assert resolve_worker_memory_enforcement() == "required"
+
+    monkeypatch.setattr(isolation_mod, "process_memory_caps_supported", lambda: True)
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
+    assert resolve_worker_memory_enforcement() == "best_effort"
 
 
 def test_required_worker_memory_enforcement_sets_required_cap(
