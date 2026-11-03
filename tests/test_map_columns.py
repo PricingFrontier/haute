@@ -457,9 +457,12 @@ import polars as pl
 import pyarrow.parquet as pq
 from haute._execution_context import ExecutionProfile
 from haute._input_providers import build_input_snapshot, resolve_data_input
+from haute._project_context import ProjectContext, project_scope
 from haute._source_cache import SourceCacheBuildContext, SourceCacheIdentity, SourceCacheStore
 
 root = Path(sys.argv[1])
+scope = project_scope(ProjectContext.at(root))  # the script runs in its project
+scope.__enter__()
 store = SourceCacheStore(root)
 
 

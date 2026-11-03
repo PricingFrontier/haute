@@ -649,6 +649,18 @@ def training_artifact_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
     return root
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _session_project(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """The project a module- or session-scoped fixture works in: this run's temporary
+    base folder, which holds every folder ``tmp_path_factory`` makes. Each test then
+    installs its own (``_installed_project``)."""
+    token = _CURRENT_PROJECT.set(ProjectContext.at(tmp_path_factory.getbasetemp()))
+    try:
+        yield
+    finally:
+        _CURRENT_PROJECT.reset(token)
+
+
 @pytest.fixture(autouse=True)
 def _installed_project(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[None]:
     """Run every test in its ``tmp_path`` project, as an entry point installs one.

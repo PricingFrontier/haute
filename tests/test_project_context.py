@@ -34,7 +34,7 @@ from haute._types import PipelineGraph
 from haute._worker_isolation import run_isolated_worker
 from haute.errors import ConfigError, PathOutsideProjectError
 from haute.server import create_app
-from tests._project import use_project
+from tests._project import use_project, work_elsewhere
 
 _PIPELINE = textwrap.dedent(
     """\
@@ -107,10 +107,10 @@ def test_a_context_takes_an_absolute_root() -> None:
 
 @pytest.mark.no_project
 def test_with_nothing_installed_a_call_fails_and_never_reads_the_working_directory() -> None:
+    # The working directory is the repository's, itself a Haute project, and is never read.
+    work_elsewhere(Path(__file__).resolve().parents[1])
     with pytest.raises(NoProjectContextError, match="project_scope"):
         current_project()
-    # The repository is a Haute project, and the working directory is inside it.
-    assert (Path.cwd() / "haute.toml").exists() or (Path.cwd().parent / "haute.toml").exists()
 
 
 def test_project_scope_nests_and_restores(tmp_path: Path) -> None:
@@ -178,7 +178,8 @@ def test_a_standalone_call_runs_in_the_project_holding_its_file(tmp_path: Path) 
 def test_a_standalone_run_reads_a_relative_path_from_its_files_project(tmp_path: Path) -> None:
     """``run()`` and a configured node called directly read ``data/rows.parquet`` from the
     project holding the pipeline file, whatever the working directory is."""
-    root = _project(tmp_path / "project")
+    root = tmp_path / "project"
+    _project(root)
     (root / "data").mkdir()
     pl.DataFrame({"x": [1, 2]}).write_parquet(root / "data" / "rows.parquet")
     (root / "config" / "data_input").mkdir(parents=True)
@@ -186,7 +187,7 @@ def test_a_standalone_run_reads_a_relative_path_from_its_files_project(tmp_path:
         '{"inputType": "file", "path": "data/rows.parquet", "format": "parquet", "mode": "scan"}\n',
         encoding="utf-8",
     )
-    script = root / "standalone.py"
+    script = tmp_path / "project" / "standalone.py"
     script.write_text(
         textwrap.dedent(
             """\
@@ -300,9 +301,9 @@ def test_an_isolated_worker_runs_in_the_submitting_project(tmp_path: Path) -> No
 
 def test_one_warm_worker_serves_two_projects_each_its_own(tmp_path: Path) -> None:
     roots = [tmp_path / "a", tmp_path / "b"]
-    for root in roots:
-        root.mkdir()
-        (root / "note.txt").write_text(root.name, encoding="utf-8")
+    for name in ("a", "b"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "note.txt").write_text(name, encoding="utf-8")
     pool = InteractiveWorkerPool(size=1, polars_threads=1, poll_interval_seconds=0.01)
     try:
         seen = []

@@ -11,7 +11,7 @@ import ast
 from collections import Counter
 from pathlib import Path
 
-from tests._source_files import REPO_ROOT
+from tests._source_files import REPO_ROOT, source_files
 
 #: ``chdir`` calls a test may make, by file and enclosing scope: none sets a project.
 ALLOWED_TEST_CHDIRS: dict[tuple[str, str], int] = {
@@ -103,7 +103,7 @@ def _is_cwd_read(func: ast.expr) -> bool:
 
 def test_no_test_changes_directory_to_set_a_project() -> None:
     found: Counter[tuple[str, str]] = Counter()
-    for path in sorted((REPO_ROOT / "tests").rglob("*.py")):
+    for path in source_files(REPO_ROOT / "tests"):
         found += _calls(path, _is_chdir)
     assert dict(found) == ALLOWED_TEST_CHDIRS, (
         "A test installs its project with tests._project.use_project (or the project "
@@ -114,7 +114,7 @@ def test_no_test_changes_directory_to_set_a_project() -> None:
 
 def test_production_code_never_reads_the_working_directory_for_a_project() -> None:
     found: Counter[tuple[str, str]] = Counter()
-    for path in sorted((REPO_ROOT / "src" / "haute").rglob("*.py")):
+    for path in source_files(REPO_ROOT / "src" / "haute"):
         found += _calls(path, _is_cwd_read)
     assert set(found) == set(ALLOWED_SOURCE_CWD_READS), (
         "Read the project from haute._project_context.current_project(), never from the "

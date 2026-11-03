@@ -6078,3 +6078,34 @@ class TestOmittableRequestColumns:
         assert omittable_request_columns(graph, artifacts, carried) == ["exposure"]
         # An exposure the request does not carry is nothing a quote can leave out.
         assert omittable_request_columns(graph, artifacts, {"age": "Int64"}) == []
+
+
+def test_a_data_input_s_deploy_schema_reads_through_the_project_s_snapshot_store(
+    tmp_path: Path,
+) -> None:
+    """A deployment whose request input is a Data Input reads its schema as execution does,
+    through the installed project's snapshot store, its relative path anchored there."""
+    from haute.deploy._schema import infer_input_schema
+    from tests.conftest import make_ready_file_input_config
+
+    (tmp_path / "data").mkdir()
+    pl.DataFrame({"area": ["A"], "exposure": [1.0]}).write_parquet(
+        tmp_path / "data" / "policies.parquet"
+    )
+    graph = _g(
+        {
+            "nodes": [
+                {
+                    "id": "policies",
+                    "data": {
+                        "label": "policies",
+                        "nodeType": "dataInput",
+                        "config": make_ready_file_input_config("data/policies.parquet"),
+                    },
+                }
+            ],
+            "edges": [],
+        }
+    ).model_copy(update={"source_file": str(tmp_path / "main.py")})
+
+    assert infer_input_schema(graph, "policies") == {"area": "String", "exposure": "Float64"}

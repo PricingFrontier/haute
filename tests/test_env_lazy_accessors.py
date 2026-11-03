@@ -350,6 +350,14 @@ other = os.environ.get(key)
 # in haute._env; these exceptions are strings, booleans, credentials, mappings,
 # or custom non-negative/readiness policies with deliberately different semantics.
 _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
+    # The project root `haute serve` resolved, handed to the process uvicorn builds the
+    # app in (its reloader's child): read once, by the app factory (PCFG-R04).
+    (
+        "src/haute/server.py",
+        "<module>.create_app_from_environment",
+        "HAUTE_PROJECT_ROOT",
+        "os.environ.get",
+    ),
     # The CUDA runtime's own device-visibility variable: the VRAM admission
     # check sizes the GPU CUDA will train on (MOD-F06).
     (

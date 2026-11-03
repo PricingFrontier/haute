@@ -604,7 +604,8 @@ def main() -> None:
 
     root = args.root.resolve()
     # The benchmark runs in the project it names, for the rest of the process.
-    project_scope(ProjectContext.at(root)).__enter__()
+    scope = project_scope(ProjectContext.at(root))
+    scope.__enter__()
     pipeline = args.pipeline if args.pipeline.is_absolute() else root / args.pipeline
 
     runs = []
