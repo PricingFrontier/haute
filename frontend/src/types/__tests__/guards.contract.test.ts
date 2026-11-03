@@ -428,6 +428,37 @@ describe("parseExecutionStrategyDiagnostic", () => {
     }))).toThrow()
   })
 
+  it.each([
+    ["an unavailable collection with items", { reasons: { state: "unavailable", total_count: null, items: [{ reason_code: "r" }] } }, "unavailable reasons is inconsistent"],
+    ["an available collection whose count differs", { reasons: { state: "available", total_count: 2, items: [{ reason_code: "r" }] } }, "reasons count is inconsistent"],
+    ["a truncated collection holding its whole count", { reasons: { state: "truncated", total_count: 1, items: [{ reason_code: "r" }] } }, "reasons count is inconsistent"],
+    ["a detail state other than its worst collection's", { detail_state: "truncated" }, "detail_state is inconsistent"],
+    [
+      "provenance out of column order",
+      { provenance: { state: "available", total_count: 2, items: [{ column: "zeta", origin_kind: "seed" }, { column: "alpha", origin_kind: "seed" }] } },
+      "provenance are not in canonical order",
+    ],
+  ])("rejects %s", (_label, overrides, message) => {
+    expect(() => parseExecutionStrategyDiagnostic(executionStrategyFixture(overrides))).toThrow(message)
+  })
+
+  it("keeps provenance in its canonical column order with each source", () => {
+    const diagnostic = parseExecutionStrategyDiagnostic(executionStrategyFixture({
+      provenance: {
+        state: "available",
+        total_count: 2,
+        items: [
+          { column: "premium", origin_kind: "seed", source_node_id: "quotes", source_column: "premium" },
+          { column: "ébénisterie", origin_kind: "expression" },
+        ],
+      },
+    }))
+    expect(diagnostic?.provenance.items).toEqual([
+      { column: "premium", origin_kind: "seed", source_node_id: "quotes", source_column: "premium" },
+      { column: "ébénisterie", origin_kind: "expression" },
+    ])
+  })
+
   it("accepts V1 additive fields and equal-primary duplicates but rejects higher versions", () => {
     const diagnostic = parseExecutionStrategyDiagnostic(executionStrategyFixture({
       unknown_additive_field: true,

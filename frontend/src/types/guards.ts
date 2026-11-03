@@ -123,12 +123,6 @@ export function expectNumber(parser: string, value: unknown, field: string): num
   return value
 }
 
-export function expectSchemaVersionOne(parser: string, value: unknown, field: string): 1 {
-  if (value !== 1) {
-    throw new Error(`${parser}: expected ${field} to be 1, got ${value === undefined ? "missing" : typeName(value)}`)
-  }
-  return 1
-}
 
 export function expectExactKeys(
   parser: string,
@@ -163,35 +157,8 @@ export function expectStringLiteral<T extends string>(
   return parsed as T
 }
 
-export function optionalString(
-  parser: string,
-  obj: Record<string, unknown>,
-  key: string,
-  defaultValue = "",
-): string {
-  const value = obj[key]
-  return value === undefined ? defaultValue : expectString(parser, value, `field \`${key}\``)
-}
 
-export function optionalNumber(
-  parser: string,
-  obj: Record<string, unknown>,
-  key: string,
-  defaultValue = 0,
-): number {
-  const value = obj[key]
-  return value === undefined ? defaultValue : expectNumber(parser, value, `field \`${key}\``)
-}
 
-export function optionalBoolean(
-  parser: string,
-  obj: Record<string, unknown>,
-  key: string,
-  defaultValue = false,
-): boolean {
-  const value = obj[key]
-  return value === undefined ? defaultValue : expectBoolean(parser, value, `field \`${key}\``)
-}
 
 export function optionalNullableString(
   parser: string,
@@ -255,16 +222,6 @@ export function parseArray<T>(
   return expectArray(parser, value, field).map((item, index) => itemParser(item, `${field}[${index}]`))
 }
 
-export function optionalArray<T>(
-  parser: string,
-  obj: Record<string, unknown>,
-  key: string,
-  itemParser: (value: unknown, field: string) => T,
-  defaultValue: T[] = [],
-): T[] {
-  const value = obj[key]
-  return value === undefined ? defaultValue : parseArray(parser, value, `field \`${key}\``, itemParser)
-}
 
 function parseStringArray(parser: string, value: unknown, field: string): string[] {
   return parseArray(parser, value, field, (item, itemField) => expectString(parser, item, itemField))
@@ -344,9 +301,6 @@ function validateCalibratedEstimateEvidence(
   }
   if (factorBasisPoints < 10_000) {
     throw new Error(`${field}: estimate calibration factor cannot reduce an estimate`)
-  }
-  if (factorBasisPoints > 80_000) {
-    throw new Error(`${field}: estimate calibration factor exceeds the supported cap`)
   }
   const expected = (
     BigInt(rawEstimatedBytes) * BigInt(factorBasisPoints) + 9_999n

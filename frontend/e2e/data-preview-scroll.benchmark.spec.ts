@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test"
 
+import { makePreviewResponse } from "../src/test-utils/factories"
 import { resetE2eProject } from "./projectIsolation"
 
 const PREVIEW_ROW_COUNT = 10_000
@@ -74,7 +75,7 @@ const PREVIEW_ROWS = Array.from({ length: PREVIEW_ROW_COUNT }, (_, rowIndex) => 
 })
 
 function buildPreviewResponseBody(nodeId: string): string {
-  return JSON.stringify({
+  return JSON.stringify(makePreviewResponse({
     status: "ok",
     node_id: nodeId,
     row_count: PREVIEW_ROW_COUNT,
@@ -90,7 +91,7 @@ function buildPreviewResponseBody(nodeId: string): string {
     memory: [],
     schema_warnings: [],
     node_statuses: { [nodeId]: "ok" },
-  })
+  }))
 }
 
 async function installSparsePreviewRoute(page: Page): Promise<{ requestCount: () => number }> {

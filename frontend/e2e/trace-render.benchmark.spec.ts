@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test"
 
+import { makePreviewResponse, makeTraceResult, makeTraceStep } from "../src/test-utils/factories"
 import { resetE2eProject } from "./projectIsolation"
 
 const TRACE_COLUMN = "value_doubled"
@@ -10,7 +11,7 @@ const RENDER_P95_BUDGET_MS = 500
 type TraceShape = "linear" | "join-multi-frame"
 
 function previewResponse(nodeId: string): string {
-  return JSON.stringify({
+  return JSON.stringify(makePreviewResponse({
     status: "ok",
     node_id: nodeId,
     row_count: 1,
@@ -32,7 +33,7 @@ function previewResponse(nodeId: string): string {
     memory: [],
     schema_warnings: [],
     node_statuses: { [nodeId]: "ok" },
-  })
+  }))
 }
 
 function pipelineResponse(): string {
@@ -139,7 +140,7 @@ function traceStep(shape: TraceShape, index: number, count: number) {
   const output = traceRow(index)
   if (isTarget) output[TRACE_COLUMN] = TRACE_VALUE
 
-  return {
+  return makeTraceStep({
     node_id: nodeId,
     node_name: isTarget ? "enriched" : `Stage ${index + 1}`,
     node_type: nodeType,
@@ -158,7 +159,7 @@ function traceStep(shape: TraceShape, index: number, count: number) {
     calculation: null,
     node_detail: null,
     row_lineage_type: nodeType === "edgeJoin" ? "joined" : "passthrough",
-  }
+  })
 }
 
 function traceResponse(shape: TraceShape): string {
@@ -169,7 +170,7 @@ function traceResponse(shape: TraceShape): string {
   )
   return JSON.stringify({
     status: "ok",
-    trace: {
+    trace: makeTraceResult({
       target_node_id: "enriched",
       row_index: 0,
       column: TRACE_COLUMN,
@@ -186,7 +187,7 @@ function traceResponse(shape: TraceShape): string {
       generated_at: "2026-07-23T12:00:00+00:00",
       pipeline_source: "rating/main.py",
       execution_origin: "trace_cache",
-    },
+    }),
   })
 }
 
