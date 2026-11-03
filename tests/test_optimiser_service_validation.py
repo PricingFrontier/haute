@@ -698,7 +698,8 @@ def test_grid_reuses_plain_projected_parquet_without_removing_it(tmp_path, monke
     assert path.exists()
 
 
-@pytest.mark.parametrize("allowance, accepted", [(32 * 1024**2, False), (128 * 1024**2, True)])
+# The forecast of even a two-quote solve is its fixed part, about 129 MiB (OPT-W02).
+@pytest.mark.parametrize("allowance, accepted", [(64 * 1024**2, False), (256 * 1024**2, True)])
 def test_grid_admission_precedes_library_and_keeps_borrowed_input(
     tmp_path, monkeypatch, allowance, accepted
 ):
@@ -743,7 +744,7 @@ def test_grid_admission_precedes_library_and_keeps_borrowed_input(
         ).grid.scenario_values == [1.0]
         assert called == [True]
     else:
-        with pytest.raises(ExecutionAdmissionError, match="resident optimiser grid"):
+        with pytest.raises(ExecutionAdmissionError, match="optimiser solve needs an estimated"):
             service._build_grid(
                 pl.scan_parquet(path),
                 [],
@@ -856,3 +857,62 @@ def test_constraint_names_near_the_reserved_ones_are_accepted(allowed: str) -> N
     config = {"objective": "income", "constraints": {allowed: {"min": 1.0}}}
 
     assert OptimiserSolveService._validate_config(config) == "online"
+
+
+def test_the_solve_forecast_reads_the_ratebook_shape_from_the_config() -> None:
+    from haute._ram_estimate import forecast_solve_memory_bytes
+    from haute.routes._optimiser_input import (
+        estimate_solve_memory_forecast,
+        grid_chunk_decision,
+        solve_forecast_shape,
+    )
+
+    config = {
+        "mode": "ratebook",
+        "constraints": {"volume": {"min": 1.0}, "loss": {"max": 2.0}},
+        "factor_columns": [["region"], ["age", "band"], ["tier"]],
+    }
+    assert solve_forecast_shape(config) == ("ratebook", 2, 3)
+    assert solve_forecast_shape({**config, "mode": "online"}) == ("online", 2, 0)
+    assert solve_forecast_shape({"constraints": None}) == ("online", 0, 0)
+    metrics = {
+        "quote_count": 1000,
+        "expanded_row_count": 11_000,
+        "scenarios_per_quote_max": 11,
+        "quote_id_bytes_mean": 12.5,
+    }
+    assert estimate_solve_memory_forecast(config, metrics) == forecast_solve_memory_bytes(
+        mode="ratebook",
+        quote_count=1000,
+        row_count=11_000,
+        constraint_count=2,
+        factor_count=3,
+        quote_id_bytes=12.5,
+        chunk_rows=grid_chunk_decision(11).chunk_size,
+    )
+
+
+def test_the_session_forecasts_its_solve_from_the_solver_input(tmp_path) -> None:
+    from haute._ram_estimate import forecast_solve_memory_bytes
+    from haute.routes._optimiser_input import forecast_solve_memory_from_input
+
+    path = tmp_path / "solver_input.parquet"
+    pl.DataFrame(
+        {
+            "qid": [f"quote-{q:03d}" for q in range(40) for _ in range(5)],
+            "scenario_index": [step for _ in range(40) for step in range(5)],
+        }
+    ).write_parquet(path)
+    config = {"mode": "online", "quote_id": "qid", "constraints": {"volume": {"min": 1.0}}}
+
+    forecast = forecast_solve_memory_from_input(path, config, n_steps=5, chunk_rows=64)
+
+    assert forecast == forecast_solve_memory_bytes(
+        mode="online",
+        quote_count=40,
+        row_count=200,
+        constraint_count=1,
+        factor_count=0,
+        quote_id_bytes=9.0,
+        chunk_rows=64,
+    )

@@ -1,0 +1,1892 @@
+{
+  "measured_on": "2026-11-03",
+  "polars": "2.0.0",
+  "price_contour": "0.7.0",
+  "cpus": 32,
+  "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "fixtures": [
+    {
+      "quotes": 1000000,
+      "rows": 21000000,
+      "steps": 21,
+      "constraints": 2,
+      "qid_bytes": 24,
+      "factors": 4,
+      "volume_range": [
+        999890.9375,
+        1029887.665625
+      ],
+      "unswept_baselines": {
+        "exposure_1": 549817344.0
+      },
+      "solver_input_bytes": 226908743
+    },
+    {
+      "quotes": 4000000,
+      "rows": 84000000,
+      "steps": 21,
+      "constraints": 2,
+      "qid_bytes": 24,
+      "factors": 4,
+      "volume_range": [
+        4000700.75,
+        4120721.7725
+      ],
+      "unswept_baselines": {
+        "exposure_1": 2199630336.0
+      },
+      "solver_input_bytes": 907602750
+    },
+    {
+      "quotes": 1000000,
+      "rows": 11000000,
+      "steps": 11,
+      "constraints": 3,
+      "qid_bytes": 10,
+      "factors": 2,
+      "volume_range": [
+        999891.0,
+        1029887.73
+      ],
+      "unswept_baselines": {
+        "exposure_1": 549817344.0,
+        "exposure_2": 1099634688.0
+      },
+      "solver_input_bytes": 159078824
+    },
+    {
+      "quotes": 4000000,
+      "rows": 44000000,
+      "steps": 11,
+      "constraints": 3,
+      "qid_bytes": 10,
+      "factors": 2,
+      "volume_range": [
+        4000700.0,
+        4120721.0
+      ],
+      "unswept_baselines": {
+        "exposure_1": 2199629824.0,
+        "exposure_2": 4399259648.0
+      },
+      "solver_input_bytes": 636345769
+    },
+    {
+      "quotes": 1000000,
+      "rows": 11000000,
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 6,
+      "volume_range": [
+        999890.875,
+        1029887.6012500001
+      ],
+      "unswept_baselines": {},
+      "solver_input_bytes": 81256500
+    },
+    {
+      "quotes": 4000000,
+      "rows": 44000000,
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 6,
+      "volume_range": [
+        4000699.5,
+        4120720.4850000003
+      ],
+      "unswept_baselines": {},
+      "solver_input_bytes": 325054162
+    },
+    {
+      "quotes": 1000000,
+      "rows": 11000000,
+      "volume_range": [
+        999890.9375,
+        1029887.665625
+      ],
+      "solver_input_bytes": 81256500,
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2
+    },
+    {
+      "quotes": 5000000,
+      "rows": 55000000,
+      "volume_range": [
+        5000254.5,
+        5150262.135
+      ],
+      "solver_input_bytes": 406312057,
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2
+    },
+    {
+      "quotes": 10000000,
+      "rows": 110000000,
+      "volume_range": [
+        10001375.0,
+        10301416.25
+      ],
+      "solver_input_bytes": 812638330,
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2
+    },
+    {
+      "quotes": 1000000,
+      "rows": 11000000,
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 36,
+      "factors": 2,
+      "volume_range": [
+        999891.0625,
+        1029887.794375
+      ],
+      "unswept_baselines": {},
+      "solver_input_bytes": 81400410
+    },
+    {
+      "quotes": 4000000,
+      "rows": 44000000,
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 36,
+      "factors": 2,
+      "volume_range": [
+        4000700.0,
+        4120721.0
+      ],
+      "unswept_baselines": {},
+      "solver_input_bytes": 325605880
+    },
+    {
+      "quotes": 1000000,
+      "rows": 21000000,
+      "steps": 21,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2,
+      "volume_range": [
+        999891.0625,
+        1029887.794375
+      ],
+      "unswept_baselines": {},
+      "solver_input_bytes": 152452057
+    },
+    {
+      "quotes": 4000000,
+      "rows": 84000000,
+      "steps": 21,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2,
+      "volume_range": [
+        4000700.5,
+        4120721.515
+      ],
+      "unswept_baselines": {},
+      "solver_input_bytes": 609772434
+    },
+    {
+      "quotes": 1000000,
+      "rows": 6000000,
+      "steps": 6,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2,
+      "volume_range": [
+        819960.3125,
+        844559.1218750001
+      ],
+      "unswept_baselines": {},
+      "solver_input_bytes": 47298796
+    },
+    {
+      "quotes": 4000000,
+      "rows": 24000000,
+      "steps": 6,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2,
+      "volume_range": [
+        3281085.25,
+        3379517.8075
+      ],
+      "unswept_baselines": {},
+      "solver_input_bytes": 189180601
+    }
+  ],
+  "runs": [
+    {
+      "steps": 21,
+      "constraints": 2,
+      "qid_bytes": 24,
+      "factors": 4,
+      "quotes": 1000000,
+      "mode": "online",
+      "repeat": 0,
+      "seconds": 5.5,
+      "rss_start_bytes": 192958464,
+      "peak_rss_bytes": 855851008,
+      "growth_bytes": 662892544,
+      "vm_start_bytes": 11423084544,
+      "vm_peak_bytes": 15777636352,
+      "vm_growth_bytes": 4354551808,
+      "grid_forecast_bytes": 3139108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 192958464,
+          "peak_rss_bytes": 194805760
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 1.25,
+          "rss_before_bytes": 194805760,
+          "peak_rss_bytes": 740016128
+        },
+        {
+          "stage": "Solving",
+          "seconds": 0.07,
+          "rss_before_bytes": 688975872,
+          "peak_rss_bytes": 746291200
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 4.12,
+          "rss_before_bytes": 746291200,
+          "peak_rss_bytes": 850030592
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.04,
+          "rss_before_bytes": 722038784,
+          "peak_rss_bytes": 855851008
+        }
+      ]
+    },
+    {
+      "steps": 21,
+      "constraints": 2,
+      "qid_bytes": 24,
+      "factors": 4,
+      "quotes": 1000000,
+      "mode": "ratebook",
+      "repeat": 0,
+      "seconds": 9.8,
+      "rss_start_bytes": 193122304,
+      "peak_rss_bytes": 1290956800,
+      "growth_bytes": 1097834496,
+      "vm_start_bytes": 11423072256,
+      "vm_peak_bytes": 16142180352,
+      "vm_growth_bytes": 4719108096,
+      "grid_forecast_bytes": 3139108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 193056768,
+          "peak_rss_bytes": 194973696
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 1.21,
+          "rss_before_bytes": 194973696,
+          "peak_rss_bytes": 734248960
+        },
+        {
+          "stage": "Solving",
+          "seconds": 1.44,
+          "rss_before_bytes": 681828352,
+          "peak_rss_bytes": 1180164096
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 7.13,
+          "rss_before_bytes": 1180164096,
+          "peak_rss_bytes": 1173504000
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.03,
+          "rss_before_bytes": 1156423680,
+          "peak_rss_bytes": 1290956800
+        }
+      ]
+    },
+    {
+      "steps": 21,
+      "constraints": 2,
+      "qid_bytes": 24,
+      "factors": 4,
+      "quotes": 4000000,
+      "mode": "online",
+      "repeat": 0,
+      "seconds": 23.3,
+      "rss_start_bytes": 192667648,
+      "peak_rss_bytes": 2483703808,
+      "growth_bytes": 2291036160,
+      "vm_start_bytes": 11423072256,
+      "vm_peak_bytes": 18175332352,
+      "vm_growth_bytes": 6752260096,
+      "grid_forecast_bytes": 12211108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 192667648,
+          "peak_rss_bytes": 194519040
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 5.19,
+          "rss_before_bytes": 194519040,
+          "peak_rss_bytes": 2034794496
+        },
+        {
+          "stage": "Solving",
+          "seconds": 0.23,
+          "rss_before_bytes": 1765797888,
+          "peak_rss_bytes": 2024341504
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 17.54,
+          "rss_before_bytes": 2024341504,
+          "peak_rss_bytes": 2483703808
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.32,
+          "rss_before_bytes": 2025172992,
+          "peak_rss_bytes": 2370396160
+        }
+      ]
+    },
+    {
+      "steps": 21,
+      "constraints": 2,
+      "qid_bytes": 24,
+      "factors": 4,
+      "quotes": 4000000,
+      "mode": "ratebook",
+      "repeat": 0,
+      "seconds": 46.1,
+      "rss_start_bytes": 193085440,
+      "peak_rss_bytes": 3617599488,
+      "growth_bytes": 3424514048,
+      "vm_start_bytes": 11423068160,
+      "vm_peak_bytes": 18566823936,
+      "vm_growth_bytes": 7143755776,
+      "grid_forecast_bytes": 12211108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 193081344,
+          "peak_rss_bytes": 194949120
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 6.58,
+          "rss_before_bytes": 194949120,
+          "peak_rss_bytes": 2036416512
+        },
+        {
+          "stage": "Solving",
+          "seconds": 7.45,
+          "rss_before_bytes": 1767456768,
+          "peak_rss_bytes": 3351891968
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 31.85,
+          "rss_before_bytes": 3351891968,
+          "peak_rss_bytes": 3344031744
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.23,
+          "rss_before_bytes": 3284135936,
+          "peak_rss_bytes": 3617599488
+        }
+      ]
+    },
+    {
+      "steps": 11,
+      "constraints": 3,
+      "qid_bytes": 10,
+      "factors": 2,
+      "quotes": 1000000,
+      "mode": "online",
+      "repeat": 0,
+      "seconds": 4.7,
+      "rss_start_bytes": 192811008,
+      "peak_rss_bytes": 731701248,
+      "growth_bytes": 538890240,
+      "vm_start_bytes": 11423043584,
+      "vm_peak_bytes": 15574593536,
+      "vm_growth_bytes": 4151549952,
+      "grid_forecast_bytes": 1487108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 192811008,
+          "peak_rss_bytes": 194670592
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 0.9,
+          "rss_before_bytes": 194670592,
+          "peak_rss_bytes": 658251776
+        },
+        {
+          "stage": "Solving",
+          "seconds": 0.06,
+          "rss_before_bytes": 606502912,
+          "peak_rss_bytes": 643252224
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 3.67,
+          "rss_before_bytes": 643252224,
+          "peak_rss_bytes": 731701248
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.04,
+          "rss_before_bytes": 617349120,
+          "peak_rss_bytes": 727121920
+        }
+      ]
+    },
+    {
+      "steps": 11,
+      "constraints": 3,
+      "qid_bytes": 10,
+      "factors": 2,
+      "quotes": 1000000,
+      "mode": "ratebook",
+      "repeat": 0,
+      "seconds": 4.8,
+      "rss_start_bytes": 192974848,
+      "peak_rss_bytes": 1116491776,
+      "growth_bytes": 923516928,
+      "vm_start_bytes": 11423039488,
+      "vm_peak_bytes": 15951798272,
+      "vm_growth_bytes": 4528758784,
+      "grid_forecast_bytes": 1487108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 192970752,
+          "peak_rss_bytes": 194822144
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 0.81,
+          "rss_before_bytes": 194822144,
+          "peak_rss_bytes": 651358208
+        },
+        {
+          "stage": "Solving",
+          "seconds": 1.0,
+          "rss_before_bytes": 599183360,
+          "peak_rss_bytes": 1042059264
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 2.96,
+          "rss_before_bytes": 1042059264,
+          "peak_rss_bytes": 1034854400
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.03,
+          "rss_before_bytes": 1008291840,
+          "peak_rss_bytes": 1116491776
+        }
+      ]
+    },
+    {
+      "steps": 11,
+      "constraints": 3,
+      "qid_bytes": 10,
+      "factors": 2,
+      "quotes": 4000000,
+      "mode": "online",
+      "repeat": 0,
+      "seconds": 19.1,
+      "rss_start_bytes": 192913408,
+      "peak_rss_bytes": 1968267264,
+      "growth_bytes": 1775353856,
+      "vm_start_bytes": 11423039488,
+      "vm_peak_bytes": 17409454080,
+      "vm_growth_bytes": 5986414592,
+      "grid_forecast_bytes": 5579108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 192909312,
+          "peak_rss_bytes": 194752512
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 3.28,
+          "rss_before_bytes": 194752512,
+          "peak_rss_bytes": 1671225344
+        },
+        {
+          "stage": "Solving",
+          "seconds": 0.18,
+          "rss_before_bytes": 1401012224,
+          "peak_rss_bytes": 1591386112
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 15.49,
+          "rss_before_bytes": 1591386112,
+          "peak_rss_bytes": 1968267264
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.12,
+          "rss_before_bytes": 1592156160,
+          "peak_rss_bytes": 1829203968
+        }
+      ]
+    },
+    {
+      "steps": 11,
+      "constraints": 3,
+      "qid_bytes": 10,
+      "factors": 2,
+      "quotes": 4000000,
+      "mode": "ratebook",
+      "repeat": 0,
+      "seconds": 20.1,
+      "rss_start_bytes": 192913408,
+      "peak_rss_bytes": 3057971200,
+      "growth_bytes": 2865057792,
+      "vm_start_bytes": 11423068160,
+      "vm_peak_bytes": 17909334016,
+      "vm_growth_bytes": 6486265856,
+      "grid_forecast_bytes": 5579108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 192909312,
+          "peak_rss_bytes": 194777088
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 3.31,
+          "rss_before_bytes": 194777088,
+          "peak_rss_bytes": 1668956160
+        },
+        {
+          "stage": "Solving",
+          "seconds": 4.58,
+          "rss_before_bytes": 1399230464,
+          "peak_rss_bytes": 2872451072
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 11.82,
+          "rss_before_bytes": 2872451072,
+          "peak_rss_bytes": 2865287168
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.33,
+          "rss_before_bytes": 2810781696,
+          "peak_rss_bytes": 3057971200
+        }
+      ]
+    },
+    {
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 6,
+      "quotes": 1000000,
+      "mode": "online",
+      "repeat": 0,
+      "seconds": 1.2,
+      "rss_start_bytes": 193110016,
+      "peak_rss_bytes": 621916160,
+      "growth_bytes": 428806144,
+      "vm_start_bytes": 11423031296,
+      "vm_peak_bytes": 15429795840,
+      "vm_growth_bytes": 4006764544,
+      "grid_forecast_bytes": 1295108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 193097728,
+          "peak_rss_bytes": 194973696
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 0.94,
+          "rss_before_bytes": 194973696,
+          "peak_rss_bytes": 546639872
+        },
+        {
+          "stage": "Solving",
+          "seconds": 0.05,
+          "rss_before_bytes": 483233792,
+          "peak_rss_bytes": 516337664
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 0.17,
+          "rss_before_bytes": 516337664,
+          "peak_rss_bytes": 528547840
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.03,
+          "rss_before_bytes": 528547840,
+          "peak_rss_bytes": 621916160
+        }
+      ]
+    },
+    {
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 6,
+      "quotes": 1000000,
+      "mode": "ratebook",
+      "repeat": 0,
+      "seconds": 10.3,
+      "rss_start_bytes": 193261568,
+      "peak_rss_bytes": 1166307328,
+      "growth_bytes": 973045760,
+      "vm_start_bytes": 11423039488,
+      "vm_peak_bytes": 15825453056,
+      "vm_growth_bytes": 4402413568,
+      "grid_forecast_bytes": 1295108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 193253376,
+          "peak_rss_bytes": 195125248
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 0.92,
+          "rss_before_bytes": 195125248,
+          "peak_rss_bytes": 547352576
+        },
+        {
+          "stage": "Solving",
+          "seconds": 1.68,
+          "rss_before_bytes": 485695488,
+          "peak_rss_bytes": 1098227712
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 7.69,
+          "rss_before_bytes": 1098227712,
+          "peak_rss_bytes": 1091608576
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.03,
+          "rss_before_bytes": 1069211648,
+          "peak_rss_bytes": 1166307328
+        }
+      ]
+    },
+    {
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 6,
+      "quotes": 4000000,
+      "mode": "online",
+      "repeat": 0,
+      "seconds": 4.1,
+      "rss_start_bytes": 192950272,
+      "peak_rss_bytes": 1442664448,
+      "growth_bytes": 1249714176,
+      "vm_start_bytes": 11412586496,
+      "vm_peak_bytes": 16563953664,
+      "vm_growth_bytes": 5151367168,
+      "grid_forecast_bytes": 4859108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 192946176,
+          "peak_rss_bytes": 194801664
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 3.23,
+          "rss_before_bytes": 194801664,
+          "peak_rss_bytes": 1302614016
+        },
+        {
+          "stage": "Solving",
+          "seconds": 0.14,
+          "rss_before_bytes": 1032466432,
+          "peak_rss_bytes": 1185026048
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 0.61,
+          "rss_before_bytes": 1185026048,
+          "peak_rss_bytes": 1233334272
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.1,
+          "rss_before_bytes": 1233334272,
+          "peak_rss_bytes": 1442664448
+        }
+      ]
+    },
+    {
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 6,
+      "quotes": 4000000,
+      "mode": "ratebook",
+      "repeat": 0,
+      "seconds": 38.3,
+      "rss_start_bytes": 192831488,
+      "peak_rss_bytes": 2957774848,
+      "growth_bytes": 2764943360,
+      "vm_start_bytes": 11423162368,
+      "vm_peak_bytes": 17573847040,
+      "vm_growth_bytes": 6150684672,
+      "grid_forecast_bytes": 4859108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 192831488,
+          "peak_rss_bytes": 194686976
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 3.35,
+          "rss_before_bytes": 194686976,
+          "peak_rss_bytes": 1299505152
+        },
+        {
+          "stage": "Solving",
+          "seconds": 7.16,
+          "rss_before_bytes": 1029275648,
+          "peak_rss_bytes": 2811375616
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 27.71,
+          "rss_before_bytes": 2811375616,
+          "peak_rss_bytes": 2805096448
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.09,
+          "rss_before_bytes": 2738520064,
+          "peak_rss_bytes": 2957774848
+        }
+      ]
+    },
+    {
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2,
+      "quotes": 1000000,
+      "mode": "online",
+      "repeat": 0,
+      "seconds": 1.0,
+      "rss_start_bytes": 193179648,
+      "peak_rss_bytes": 628891648,
+      "growth_bytes": 435712000,
+      "vm_start_bytes": 11422916608,
+      "vm_peak_bytes": 15468470272,
+      "vm_growth_bytes": 4045553664,
+      "grid_forecast_bytes": 1295108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 193171456,
+          "peak_rss_bytes": 195031040
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 0.72,
+          "rss_before_bytes": 195031040,
+          "peak_rss_bytes": 549576704
+        },
+        {
+          "stage": "Solving",
+          "seconds": 0.04,
+          "rss_before_bytes": 496930816,
+          "peak_rss_bytes": 529248256
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 0.15,
+          "rss_before_bytes": 529248256,
+          "peak_rss_bytes": 538488832
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.03,
+          "rss_before_bytes": 538488832,
+          "peak_rss_bytes": 628891648
+        }
+      ]
+    },
+    {
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2,
+      "quotes": 1000000,
+      "mode": "ratebook",
+      "repeat": 0,
+      "seconds": 3.9,
+      "rss_start_bytes": 192679936,
+      "peak_rss_bytes": 997928960,
+      "growth_bytes": 805249024,
+      "vm_start_bytes": 11422920704,
+      "vm_peak_bytes": 15795896320,
+      "vm_growth_bytes": 4372975616,
+      "grid_forecast_bytes": 1295108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 192671744,
+          "peak_rss_bytes": 194527232
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 0.72,
+          "rss_before_bytes": 194527232,
+          "peak_rss_bytes": 544260096
+        },
+        {
+          "stage": "Solving",
+          "seconds": 0.94,
+          "rss_before_bytes": 492204032,
+          "peak_rss_bytes": 920416256
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 2.2,
+          "rss_before_bytes": 920416256,
+          "peak_rss_bytes": 914239488
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.02,
+          "rss_before_bytes": 899440640,
+          "peak_rss_bytes": 997928960
+        }
+      ]
+    },
+    {
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2,
+      "quotes": 1000000,
+      "mode": "online",
+      "repeat": 1,
+      "seconds": 0.9,
+      "rss_start_bytes": 192753664,
+      "peak_rss_bytes": 622788608,
+      "growth_bytes": 430034944,
+      "vm_start_bytes": 11423080448,
+      "vm_peak_bytes": 15368073216,
+      "vm_growth_bytes": 3944992768,
+      "grid_forecast_bytes": 1295108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 192753664,
+          "peak_rss_bytes": 194592768
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 0.71,
+          "rss_before_bytes": 194592768,
+          "peak_rss_bytes": 549011456
+        },
+        {
+          "stage": "Solving",
+          "seconds": 0.04,
+          "rss_before_bytes": 495329280,
+          "peak_rss_bytes": 527564800
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 0.15,
+          "rss_before_bytes": 527564800,
+          "peak_rss_bytes": 533266432
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.03,
+          "rss_before_bytes": 532688896,
+          "peak_rss_bytes": 622788608
+        }
+      ]
+    },
+    {
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2,
+      "quotes": 1000000,
+      "mode": "ratebook",
+      "repeat": 1,
+      "seconds": 4.2,
+      "rss_start_bytes": 192671744,
+      "peak_rss_bytes": 999673856,
+      "growth_bytes": 807002112,
+      "vm_start_bytes": 11422932992,
+      "vm_peak_bytes": 15813705728,
+      "vm_growth_bytes": 4390772736,
+      "grid_forecast_bytes": 1295108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 192663552,
+          "peak_rss_bytes": 194514944
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 0.72,
+          "rss_before_bytes": 194514944,
+          "peak_rss_bytes": 546086912
+        },
+        {
+          "stage": "Solving",
+          "seconds": 1.0,
+          "rss_before_bytes": 493633536,
+          "peak_rss_bytes": 932429824
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 2.39,
+          "rss_before_bytes": 932429824,
+          "peak_rss_bytes": 925048832
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.03,
+          "rss_before_bytes": 900161536,
+          "peak_rss_bytes": 999673856
+        }
+      ]
+    },
+    {
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2,
+      "quotes": 5000000,
+      "mode": "online",
+      "repeat": 0,
+      "seconds": 4.9,
+      "rss_start_bytes": 192712704,
+      "peak_rss_bytes": 1680596992,
+      "growth_bytes": 1487884288,
+      "vm_start_bytes": 11422916608,
+      "vm_peak_bytes": 16657444864,
+      "vm_growth_bytes": 5234528256,
+      "grid_forecast_bytes": 6047108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 192712704,
+          "peak_rss_bytes": 194543616
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 3.7,
+          "rss_before_bytes": 194543616,
+          "peak_rss_bytes": 1523699712
+        },
+        {
+          "stage": "Solving",
+          "seconds": 0.16,
+          "rss_before_bytes": 1221869568,
+          "peak_rss_bytes": 1412349952
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 0.94,
+          "rss_before_bytes": 1412349952,
+          "peak_rss_bytes": 1465888768
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.11,
+          "rss_before_bytes": 1432612864,
+          "peak_rss_bytes": 1680596992
+        }
+      ]
+    },
+    {
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2,
+      "quotes": 5000000,
+      "mode": "ratebook",
+      "repeat": 0,
+      "seconds": 20.0,
+      "rss_start_bytes": 192983040,
+      "peak_rss_bytes": 3348054016,
+      "growth_bytes": 3155070976,
+      "vm_start_bytes": 11422949376,
+      "vm_peak_bytes": 17906180096,
+      "vm_growth_bytes": 6483230720,
+      "grid_forecast_bytes": 6047108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 192913408,
+          "peak_rss_bytes": 194818048
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 3.63,
+          "rss_before_bytes": 194818048,
+          "peak_rss_bytes": 1526337536
+        },
+        {
+          "stage": "Solving",
+          "seconds": 5.54,
+          "rss_before_bytes": 1224306688,
+          "peak_rss_bytes": 3173912576
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 10.7,
+          "rss_before_bytes": 3173912576,
+          "peak_rss_bytes": 3166597120
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.08,
+          "rss_before_bytes": 3093929984,
+          "peak_rss_bytes": 3348054016
+        }
+      ]
+    },
+    {
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2,
+      "quotes": 10000000,
+      "mode": "online",
+      "repeat": 0,
+      "seconds": 10.6,
+      "rss_start_bytes": 192303104,
+      "peak_rss_bytes": 2912206848,
+      "growth_bytes": 2719903744,
+      "vm_start_bytes": 11422932992,
+      "vm_peak_bytes": 18587869184,
+      "vm_growth_bytes": 7164936192,
+      "grid_forecast_bytes": 11987108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 192303104,
+          "peak_rss_bytes": 194146304
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 8.07,
+          "rss_before_bytes": 194146304,
+          "peak_rss_bytes": 2801893376
+        },
+        {
+          "stage": "Solving",
+          "seconds": 0.33,
+          "rss_before_bytes": 2188537856,
+          "peak_rss_bytes": 2559332352
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 1.92,
+          "rss_before_bytes": 2559332352,
+          "peak_rss_bytes": 2673713152
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.23,
+          "rss_before_bytes": 2559815680,
+          "peak_rss_bytes": 2912206848
+        }
+      ]
+    },
+    {
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2,
+      "quotes": 10000000,
+      "mode": "ratebook",
+      "repeat": 0,
+      "seconds": 42.2,
+      "rss_start_bytes": 192856064,
+      "peak_rss_bytes": 5345759232,
+      "growth_bytes": 5152903168,
+      "vm_start_bytes": 11422949376,
+      "vm_peak_bytes": 20110532608,
+      "vm_growth_bytes": 8687583232,
+      "grid_forecast_bytes": 11987108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 192856064,
+          "peak_rss_bytes": 194699264
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 8.61,
+          "rss_before_bytes": 194699264,
+          "peak_rss_bytes": 2801430528
+        },
+        {
+          "stage": "Solving",
+          "seconds": 13.34,
+          "rss_before_bytes": 2189275136,
+          "peak_rss_bytes": 5345759232
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 20.05,
+          "rss_before_bytes": 3632844800,
+          "peak_rss_bytes": 3625598976
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.14,
+          "rss_before_bytes": 3496771584,
+          "peak_rss_bytes": 3823075328
+        }
+      ]
+    },
+    {
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 36,
+      "factors": 2,
+      "quotes": 1000000,
+      "mode": "online",
+      "repeat": 0,
+      "seconds": 1.4,
+      "rss_start_bytes": 193064960,
+      "peak_rss_bytes": 767520768,
+      "growth_bytes": 574455808,
+      "vm_start_bytes": 11423072256,
+      "vm_peak_bytes": 15580745728,
+      "vm_growth_bytes": 4157673472,
+      "grid_forecast_bytes": 1867108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.03,
+          "rss_before_bytes": 193064960,
+          "peak_rss_bytes": 194908160
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 1.03,
+          "rss_before_bytes": 194908160,
+          "peak_rss_bytes": 599339008
+        },
+        {
+          "stage": "Solving",
+          "seconds": 0.06,
+          "rss_before_bytes": 544411648,
+          "peak_rss_bytes": 610295808
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 0.2,
+          "rss_before_bytes": 610295808,
+          "peak_rss_bytes": 622444544
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.05,
+          "rss_before_bytes": 622444544,
+          "peak_rss_bytes": 767520768
+        }
+      ]
+    },
+    {
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 36,
+      "factors": 2,
+      "quotes": 1000000,
+      "mode": "ratebook",
+      "repeat": 0,
+      "seconds": 5.1,
+      "rss_start_bytes": 193540096,
+      "peak_rss_bytes": 1222455296,
+      "growth_bytes": 1028915200,
+      "vm_start_bytes": 11423068160,
+      "vm_peak_bytes": 15977267200,
+      "vm_growth_bytes": 4554199040,
+      "grid_forecast_bytes": 1867108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 193470464,
+          "peak_rss_bytes": 195383296
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 1.05,
+          "rss_before_bytes": 195383296,
+          "peak_rss_bytes": 596828160
+        },
+        {
+          "stage": "Solving",
+          "seconds": 1.2,
+          "rss_before_bytes": 541171712,
+          "peak_rss_bytes": 1087184896
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 2.79,
+          "rss_before_bytes": 1087184896,
+          "peak_rss_bytes": 1080459264
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.03,
+          "rss_before_bytes": 1066782720,
+          "peak_rss_bytes": 1222455296
+        }
+      ]
+    },
+    {
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 36,
+      "factors": 2,
+      "quotes": 4000000,
+      "mode": "online",
+      "repeat": 0,
+      "seconds": 5.2,
+      "rss_start_bytes": 192958464,
+      "peak_rss_bytes": 1989799936,
+      "growth_bytes": 1796841472,
+      "vm_start_bytes": 11423035392,
+      "vm_peak_bytes": 16781107200,
+      "vm_growth_bytes": 5358071808,
+      "grid_forecast_bytes": 7147108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.03,
+          "rss_before_bytes": 192946176,
+          "peak_rss_bytes": 194826240
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 4.17,
+          "rss_before_bytes": 194826240,
+          "peak_rss_bytes": 1494695936
+        },
+        {
+          "stage": "Solving",
+          "seconds": 0.19,
+          "rss_before_bytes": 1224445952,
+          "peak_rss_bytes": 1520603136
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 0.69,
+          "rss_before_bytes": 1520603136,
+          "peak_rss_bytes": 1568989184
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.16,
+          "rss_before_bytes": 1568989184,
+          "peak_rss_bytes": 1989799936
+        }
+      ]
+    },
+    {
+      "steps": 11,
+      "constraints": 1,
+      "qid_bytes": 36,
+      "factors": 2,
+      "quotes": 4000000,
+      "mode": "ratebook",
+      "repeat": 0,
+      "seconds": 20.9,
+      "rss_start_bytes": 192704512,
+      "peak_rss_bytes": 3463749632,
+      "growth_bytes": 3271045120,
+      "vm_start_bytes": 11423166464,
+      "vm_peak_bytes": 18116870144,
+      "vm_growth_bytes": 6693703680,
+      "grid_forecast_bytes": 7147108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 192634880,
+          "peak_rss_bytes": 194560000
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 3.62,
+          "rss_before_bytes": 194560000,
+          "peak_rss_bytes": 1493991424
+        },
+        {
+          "stage": "Solving",
+          "seconds": 5.36,
+          "rss_before_bytes": 1223942144,
+          "peak_rss_bytes": 3129212928
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 11.74,
+          "rss_before_bytes": 3129212928,
+          "peak_rss_bytes": 3123744768
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.13,
+          "rss_before_bytes": 3063889920,
+          "peak_rss_bytes": 3463749632
+        }
+      ]
+    },
+    {
+      "steps": 21,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2,
+      "quotes": 1000000,
+      "mode": "online",
+      "repeat": 0,
+      "seconds": 1.3,
+      "rss_start_bytes": 193118208,
+      "peak_rss_bytes": 706584576,
+      "growth_bytes": 513466368,
+      "vm_start_bytes": 11423043584,
+      "vm_peak_bytes": 15577513984,
+      "vm_growth_bytes": 4154470400,
+      "grid_forecast_bytes": 2375108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 193105920,
+          "peak_rss_bytes": 194965504
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 1.02,
+          "rss_before_bytes": 194969600,
+          "peak_rss_bytes": 627277824
+        },
+        {
+          "stage": "Solving",
+          "seconds": 0.05,
+          "rss_before_bytes": 572899328,
+          "peak_rss_bytes": 605773824
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 0.2,
+          "rss_before_bytes": 605773824,
+          "peak_rss_bytes": 617979904
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.03,
+          "rss_before_bytes": 617979904,
+          "peak_rss_bytes": 706584576
+        }
+      ]
+    },
+    {
+      "steps": 21,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2,
+      "quotes": 1000000,
+      "mode": "ratebook",
+      "repeat": 0,
+      "seconds": 5.1,
+      "rss_start_bytes": 192585728,
+      "peak_rss_bytes": 1079541760,
+      "growth_bytes": 886956032,
+      "vm_start_bytes": 11412586496,
+      "vm_peak_bytes": 15945076736,
+      "vm_growth_bytes": 4532490240,
+      "grid_forecast_bytes": 2375108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 192585728,
+          "peak_rss_bytes": 194408448
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 1.06,
+          "rss_before_bytes": 194408448,
+          "peak_rss_bytes": 629141504
+        },
+        {
+          "stage": "Solving",
+          "seconds": 1.0,
+          "rss_before_bytes": 575262720,
+          "peak_rss_bytes": 1003278336
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 3.04,
+          "rss_before_bytes": 1003278336,
+          "peak_rss_bytes": 996552704
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.03,
+          "rss_before_bytes": 980127744,
+          "peak_rss_bytes": 1079541760
+        }
+      ]
+    },
+    {
+      "steps": 21,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2,
+      "quotes": 4000000,
+      "mode": "online",
+      "repeat": 0,
+      "seconds": 5.9,
+      "rss_start_bytes": 192937984,
+      "peak_rss_bytes": 1779445760,
+      "growth_bytes": 1586507776,
+      "vm_start_bytes": 11423039488,
+      "vm_peak_bytes": 17344589824,
+      "vm_growth_bytes": 5921550336,
+      "grid_forecast_bytes": 9179108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 192929792,
+          "peak_rss_bytes": 194797568
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 4.72,
+          "rss_before_bytes": 194797568,
+          "peak_rss_bytes": 1626193920
+        },
+        {
+          "stage": "Solving",
+          "seconds": 0.18,
+          "rss_before_bytes": 1357008896,
+          "peak_rss_bytes": 1512280064
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 0.84,
+          "rss_before_bytes": 1512280064,
+          "peak_rss_bytes": 1560576000
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.11,
+          "rss_before_bytes": 1560576000,
+          "peak_rss_bytes": 1779445760
+        }
+      ]
+    },
+    {
+      "steps": 21,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2,
+      "quotes": 4000000,
+      "mode": "ratebook",
+      "repeat": 0,
+      "seconds": 19.4,
+      "rss_start_bytes": 193212416,
+      "peak_rss_bytes": 2981466112,
+      "growth_bytes": 2788253696,
+      "vm_start_bytes": 11423031296,
+      "vm_peak_bytes": 17865617408,
+      "vm_growth_bytes": 6442586112,
+      "grid_forecast_bytes": 9179108864,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 193204224,
+          "peak_rss_bytes": 195067904
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 4.55,
+          "rss_before_bytes": 195067904,
+          "peak_rss_bytes": 1622654976
+        },
+        {
+          "stage": "Solving",
+          "seconds": 4.81,
+          "rss_before_bytes": 1353326592,
+          "peak_rss_bytes": 2828075008
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 9.92,
+          "rss_before_bytes": 2828075008,
+          "peak_rss_bytes": 2821619712
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.07,
+          "rss_before_bytes": 2763374592,
+          "peak_rss_bytes": 2981466112
+        }
+      ]
+    },
+    {
+      "steps": 6,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2,
+      "quotes": 1000000,
+      "mode": "online",
+      "repeat": 0,
+      "seconds": 0.9,
+      "rss_start_bytes": 192704512,
+      "peak_rss_bytes": 584781824,
+      "growth_bytes": 392077312,
+      "vm_start_bytes": 11422920704,
+      "vm_peak_bytes": 15287480320,
+      "vm_growth_bytes": 3864559616,
+      "solve_memory_forecast_bytes": 449926589,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.04,
+          "rss_before_bytes": 192692224,
+          "peak_rss_bytes": 200388608
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 0.64,
+          "rss_before_bytes": 200388608,
+          "peak_rss_bytes": 498348032
+        },
+        {
+          "stage": "Solving",
+          "seconds": 0.04,
+          "rss_before_bytes": 444604416,
+          "peak_rss_bytes": 476962816
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 0.13,
+          "rss_before_bytes": 476962816,
+          "peak_rss_bytes": 489123840
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.04,
+          "rss_before_bytes": 489123840,
+          "peak_rss_bytes": 584781824
+        }
+      ]
+    },
+    {
+      "steps": 6,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2,
+      "quotes": 1000000,
+      "mode": "ratebook",
+      "repeat": 0,
+      "seconds": 3.9,
+      "rss_start_bytes": 193249280,
+      "peak_rss_bytes": 966025216,
+      "growth_bytes": 772775936,
+      "vm_start_bytes": 11422916608,
+      "vm_peak_bytes": 15716380672,
+      "vm_growth_bytes": 4293464064,
+      "solve_memory_forecast_bytes": 900411802,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 193241088,
+          "peak_rss_bytes": 195031040
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 0.61,
+          "rss_before_bytes": 195031040,
+          "peak_rss_bytes": 503558144
+        },
+        {
+          "stage": "Solving",
+          "seconds": 0.99,
+          "rss_before_bytes": 449388544,
+          "peak_rss_bytes": 883347456
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 2.24,
+          "rss_before_bytes": 883347456,
+          "peak_rss_bytes": 876228608
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.03,
+          "rss_before_bytes": 871665664,
+          "peak_rss_bytes": 966025216
+        }
+      ]
+    },
+    {
+      "steps": 6,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2,
+      "quotes": 4000000,
+      "mode": "online",
+      "repeat": 0,
+      "seconds": 3.2,
+      "rss_start_bytes": 192761856,
+      "peak_rss_bytes": 1284775936,
+      "growth_bytes": 1092014080,
+      "vm_start_bytes": 11422912512,
+      "vm_peak_bytes": 16119291904,
+      "vm_growth_bytes": 4696379392,
+      "solve_memory_forecast_bytes": 1249636589,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 192749568,
+          "peak_rss_bytes": 194543616
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 2.43,
+          "rss_before_bytes": 194543616,
+          "peak_rss_bytes": 1170006016
+        },
+        {
+          "stage": "Solving",
+          "seconds": 0.12,
+          "rss_before_bytes": 874512384,
+          "peak_rss_bytes": 1026867200
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 0.49,
+          "rss_before_bytes": 1026867200,
+          "peak_rss_bytes": 1075089408
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.1,
+          "rss_before_bytes": 1075089408,
+          "peak_rss_bytes": 1284775936
+        }
+      ]
+    },
+    {
+      "steps": 6,
+      "constraints": 1,
+      "qid_bytes": 10,
+      "factors": 2,
+      "quotes": 4000000,
+      "mode": "ratebook",
+      "repeat": 0,
+      "seconds": 15.0,
+      "rss_start_bytes": 193179648,
+      "peak_rss_bytes": 2502914048,
+      "growth_bytes": 2309734400,
+      "vm_start_bytes": 11422912512,
+      "vm_peak_bytes": 17217605632,
+      "vm_growth_bytes": 5794693120,
+      "solve_memory_forecast_bytes": 2610231802,
+      "converged": true,
+      "frontier_points": 15,
+      "frontier_error": null,
+      "stages": [
+        {
+          "stage": "start",
+          "seconds": 0.02,
+          "rss_before_bytes": 193101824,
+          "peak_rss_bytes": 194957312
+        },
+        {
+          "stage": "Building quote grid",
+          "seconds": 2.49,
+          "rss_before_bytes": 194957312,
+          "peak_rss_bytes": 1174192128
+        },
+        {
+          "stage": "Solving",
+          "seconds": 4.41,
+          "rss_before_bytes": 868900864,
+          "peak_rss_bytes": 2345885696
+        },
+        {
+          "stage": "Computing efficient frontier",
+          "seconds": 8.06,
+          "rss_before_bytes": 2345885696,
+          "peak_rss_bytes": 2339287040
+        },
+        {
+          "stage": "Finishing",
+          "seconds": 0.07,
+          "rss_before_bytes": 2279874560,
+          "peak_rss_bytes": 2502914048
+        }
+      ]
+    }
+  ]
+}

@@ -589,8 +589,8 @@ successful run does no extra work.
   and macOS hosts, which have no dependable per-process cap. A hard cap cannot serve them
   because they do not run in a capped worker, or the host offers no cap. The stack is not
   extended for capped surfaces. The process-mode optimiser runs every native call in a
-  capped solver session (OPT-W01), so its resident-grid estimate is only a recorded
-  forecast there; whether the remaining uncapped surfaces still justify the stack is
+  capped solver session (OPT-W01), so its solve-memory forecast (OPT-W02) is only a
+  recorded figure and a warning there; whether the remaining uncapped surfaces still justify the stack is
   decided again.
 - **Two execution strategies, one shared node-building step.** Eager execution
   (the graph walker's display walk) and lazy execution (its sink walk) both call

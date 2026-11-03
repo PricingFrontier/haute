@@ -688,6 +688,8 @@ def test_the_optimiser_estimate_counts_in_the_spawn_worker(
     import polars as pl
 
     from haute._interactive_workers import shutdown_interactive_worker_pool
+    from haute._ram_estimate import forecast_solve_memory_bytes
+    from haute.routes._optimiser_input import grid_chunk_decision
 
     app = project_app()
     from tests.test_optimiser_routes_real_library import _online_graph
@@ -695,7 +697,7 @@ def test_the_optimiser_estimate_counts_in_the_spawn_worker(
     path = tmp_path / "scored.parquet"
     pl.DataFrame(
         {
-            "quote_id": ["q1", "q1", "q2", "q2", "q2"],
+            "quote_id": ["q1", "q1", "quote22", "quote22", "quote22"],
             "scenario_index": pl.Series([0, 1, 0, 1, 2], dtype=pl.Int32),
             "scenario_value": pl.Series([0.9, 1.1, 0.8, 1.0, 1.2], dtype=pl.Float32),
             "expected_income": pl.Series([100.0, 110.0, 90.0, 95.0, 98.0], dtype=pl.Float32),
@@ -728,6 +730,16 @@ def test_the_optimiser_estimate_counts_in_the_spawn_worker(
     assert body["quote_count"] == 2
     assert body["scenarios_per_quote_max"] == 3
     assert body["expanded_row_count"] == 5
+    # The quote ids' mean width crosses back from the worker to the forecast.
+    assert body["solve_memory_forecast_bytes"] == forecast_solve_memory_bytes(
+        mode="online",
+        quote_count=2,
+        row_count=5,
+        constraint_count=1,
+        factor_count=0,
+        quote_id_bytes=4.5,
+        chunk_rows=grid_chunk_decision(3).chunk_size,
+    )
 
 
 def test_an_unclassified_remote_failure_is_logged_with_what_the_worker_raised() -> None:

@@ -88,7 +88,8 @@ class SessionSolveOutcome:
 
     completion_fields: dict[str, Any] | None = None
     failure: Any | None = None
-    grid_forecast_bytes: int | None = None
+    # The solve's memory forecast from its input, recorded beside the measured charge.
+    solve_memory_forecast_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -127,7 +128,7 @@ def build_and_solve(request: SessionSolveRequest) -> SessionSolveOutcome:
     """Build the grid, solve and finalize; keep the native state here, return the rest."""
     from haute.routes._job_store import get_job_store
     from haute.routes._optimiser_input import (
-        forecast_resident_grid_bytes,
+        forecast_solve_memory_from_input,
         grid_chunk_decision,
         scenario_step_count,
     )
@@ -164,26 +165,17 @@ def build_and_solve(request: SessionSolveRequest) -> SessionSolveOutcome:
     if request.setup_chunking:
         store.update_job(job_id, setup_chunking=dict(request.setup_chunking))
     config = dict(request.config)
-    grid_forecast: int | None = None
+    solve_forecast: int | None = None
     try:
         with solver_worker_context():
             _report_stage("Building quote grid", 0.05)
-            qid_col = str(config.get("quote_id", "quote_id"))
             step_col = str(config.get("scenario_index", "scenario_index"))
-            columns = [
-                qid_col,
-                step_col,
-                str(config.get("scenario_value", "scenario_value")),
-                str(config["objective"]),
-                *request.constraint_cols,
-            ]
             n_steps = scenario_step_count(Path(request.input_path), step_col)
-            grid_forecast = forecast_resident_grid_bytes(
+            solve_forecast = forecast_solve_memory_from_input(
                 Path(request.input_path),
-                columns,
-                qid_col,
-                len(request.constraint_cols),
-                grid_chunk_decision(n_steps).chunk_size,
+                config,
+                n_steps=n_steps,
+                chunk_rows=grid_chunk_decision(n_steps).chunk_size,
             )
             quote_grid = service._build_grid_from_parquet(
                 request.input_path,
@@ -226,7 +218,7 @@ def build_and_solve(request: SessionSolveRequest) -> SessionSolveOutcome:
         if record.get("status") != "completed":
             return SessionSolveOutcome(
                 failure=OptimiserWorkerFailure.from_job_record(record),
-                grid_forecast_bytes=grid_forecast,
+                solve_memory_forecast_bytes=solve_forecast,
             )
         _SESSIONS[request.session_id] = _SessionState(
             mode=request.mode,
@@ -243,7 +235,7 @@ def build_and_solve(request: SessionSolveRequest) -> SessionSolveOutcome:
         # The parent adopts the artifacts; this private record must not clean them.
         store.update_job(job_id, artifact_handles={})
         return SessionSolveOutcome(
-            completion_fields=completion_fields, grid_forecast_bytes=grid_forecast
+            completion_fields=completion_fields, solve_memory_forecast_bytes=solve_forecast
         )
     except Exception as exc:
         memory_error = memory_error_in(exc)
@@ -259,7 +251,7 @@ def build_and_solve(request: SessionSolveRequest) -> SessionSolveOutcome:
                 elapsed_seconds=time.monotonic() - start_time,
             )
             failure = OptimiserWorkerFailure(terminal_reason=reason, message=message, fields=fields)
-        return SessionSolveOutcome(failure=failure, grid_forecast_bytes=grid_forecast)
+        return SessionSolveOutcome(failure=failure, solve_memory_forecast_bytes=solve_forecast)
     finally:
         store.delete_job(job_id)
 

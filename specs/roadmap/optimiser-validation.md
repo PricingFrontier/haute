@@ -18,8 +18,8 @@ This roadmap keeps only the work still open.
 
 ## Scope
 
-In scope: forecasting a solve's memory in the Solve panel from a calibrated forecast (OPT-W02),
-and recording each frontier point's convergence trace in price_contour's sweep (OPT-PC04).
+In scope: recording each frontier point's convergence trace in price_contour's sweep
+(OPT-PC04).
 
 Out of scope, as decisions rather than open work (see "Out of scope and not
 applicable" below):
@@ -33,39 +33,9 @@ applicable" below):
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| OPT-W02 | Planned | P2 | The Solve panel forecasts the solve's memory against what the machine can give, from a forecast calibrated against measured session peaks; it warns and never refuses a solve. |
 | OPT-PC04 | Planned | P2 | price_contour's frontier sweep records each point's convergence trace, so the Convergence tab charts the selected frontier point's own solve, instantly. |
 
 ## Planned improvements
-
-### OPT-W02 — A calibrated solve-memory forecast in the Solve panel
-
-**Why:** A solve is never refused on an estimate (decided 2 November 2026): its solver
-session runs under a native cap and only a solve that exceeds it stops. The user still gets no
-warning before a solve that will not fit, and should see an accurate figure first. The resident-grid estimate the thread mode gates on
-(`estimate_optimiser_grid_peak_bytes`) is conservative — on 26 September 2026 it estimated about
-13 GiB for a 10M-quote × 11-step grid whose build the "Measured setup memory" figures put near
-4–5 GiB — and it covers grid construction only, not the solve or the frontier.
-
-**Plan:** Measure the session's whole-process peak (its backend charge) for grid build, solve and
-inline frontier, online and ratebook, at 1M, 5M and 10M quotes × 11 steps, and record it in the
-optimiser low-level specification. Refit the estimate into a solve forecast within 1.0–1.5× of
-the measured peaks. Widen the input estimate's single scan to sample the solver-input widths in
-the same aggregation (its `expanded_row_count` already includes the scenarios), and add
-`solve_memory_forecast_bytes` and `solve_memory_cap_bytes` to `OptimiserEstimateResponse`. The
-panel shows "Estimated solve memory X of Y", warning when X exceeds Y, with Solve still enabled.
-Only the explicit `thread` compatibility mode, which has no native cap, keeps its admission gate,
-now on the refit.
-
-**Acceptance:** The forecast stays within 1.0–1.5× of the measured peak at 1M and 5M quotes
-(benchmark), the estimate performs no second scan, the generated contract carries the fields,
-and the panel renders the forecast and the warning without disabling Solve.
-
-**Dependencies:** None; the forecast is recorded by the solver session described in the optimiser low-level specification.
-
-**Evidence:** `src/haute/_ram_estimate.py::estimate_optimiser_grid_peak_bytes`;
-`src/haute/routes/_optimiser_input.py::estimate_input_metrics`;
-`scripts/benchmarks/opt-v09a-setup-memory.py`.
 
 ### OPT-PC04 — Per-point convergence traces from the frontier sweep
 

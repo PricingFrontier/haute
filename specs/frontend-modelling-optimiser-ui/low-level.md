@@ -1063,10 +1063,17 @@ The behavioural contract is defined in
   zero-delay timer that calls the latest solve-if-ready, so a field committing on the same
   keystroke is solved with its committed value and re-judged for readiness. `stopOptimiserSolve`
   applies the cancel reply only while the cancelled job is still the node's active job and the
-  document fence is current. The size estimate keys on its input fields and a structure key built
-  from every other node, the edges and submodels, so the node's own edits (which move the global
-  structural version) never re-request it.
-- `OptimiserSolveStatus.tsx` renders the issue alert directly beneath the Optimise button.
+  document fence is current. The size estimate keys on its input fields (with the constraint
+  count, which the memory forecast prices, and the confirmed `chunk_rows` and `kept_free_gb`
+  pipeline settings through `selectConfirmedPipelineSetting`, which the forecast's chunk size and
+  its cap read) and a structure key built from every other node, the
+  edges and submodels, so the node's own edits (which move the global structural version) never
+  re-request it.
+- `OptimiserSolveStatus.tsx` renders the issue alert directly beneath the Optimise button. Its
+  size block ends with `SolveMemoryForecast`, a `role="status"` line "Estimated solve memory X of
+  Y" (`formatBytes` of the estimate's `solve_memory_forecast_bytes` and
+  `solve_memory_cap_bytes`), in the warning colour with an `AlertTriangle` labelled "More than
+  this machine can give" when X > Y. It never feeds `canSolve`.
 - `resolveOptimiserInputs` also resolves `analysis_input` (`analysisInput`,
   `selectedAnalysisInput`, `missingExplicitAnalysisInput`, `malformedAnalysisInput`, and
   `analysisUsesDataInput` when it is unset or names the data input), and

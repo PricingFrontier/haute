@@ -6,7 +6,7 @@ import { useConstraintHandlers } from "../hooks/useConstraintHandlers"
 import { useStaleConfigEstimate } from "../hooks/useStaleConfigEstimate"
 import type { OptimiserSolveResult } from "../api/types"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
-import useSettingsStore from "../stores/useSettingsStore"
+import useSettingsStore, { selectConfirmedPipelineSetting } from "../stores/useSettingsStore"
 import useUIStore, { type OptimiserPane } from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
 import useToastStore from "../stores/useToastStore"
@@ -174,8 +174,12 @@ export default function OptimiserConfig({
     JSON.stringify(submodels ?? null),
   ].join("\u0001"), [allNodes, edges, nodeId, submodels])
   // A solve result depends on everything but the export settings, and the size
-  // estimate only on what shapes the solver's input rows.
+  // estimate only on what shapes the solver's input rows and its memory forecast.
   const solveIdentity = useMemo(() => solveIdentityConfig(config), [config])
+  const constraintCount = Object.keys(constraints).length
+  // The forecast reads the grid build's chunk size, and its cap the memory kept free.
+  const chunkRowsSetting = useSettingsStore(selectConfirmedPipelineSetting("chunk_rows"))
+  const keptFreeSetting = useSettingsStore(selectConfirmedPipelineSetting("kept_free_gb"))
   const estimateInputs = useMemo(() => ({
     data_input: config.data_input,
     mode: config.mode,
@@ -184,6 +188,9 @@ export default function OptimiserConfig({
     scenario_value: config.scenario_value,
     banding_source: config.banding_source,
     factor_columns: config.factor_columns,
+    constraint_count: constraintCount,
+    chunk_rows: chunkRowsSetting,
+    kept_free_gb: keptFreeSetting,
   }), [
     config.data_input,
     config.mode,
@@ -192,6 +199,9 @@ export default function OptimiserConfig({
     config.scenario_value,
     config.banding_source,
     config.factor_columns,
+    constraintCount,
+    chunkRowsSetting,
+    keptFreeSetting,
   ])
 
   // ── Solve-cost estimate, via the shared config-estimate hook ──
