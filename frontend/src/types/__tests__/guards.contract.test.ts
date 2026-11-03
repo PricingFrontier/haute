@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest"
 
+import {
+  validateCreateSubmodelResponse,
+  validateDissolveSubmodelResponse,
+  validateSavePipelineResponse,
+  validateSubmodelGraphResponse,
+} from "../../generated/api-contracts.pipeline.validators.mjs"
 import { makeTraceDiagnostic } from "../../test-utils/factories"
 import { validateTraceResponse } from "../../generated/api-contracts.trace.validators.mjs"
 import {
@@ -16,17 +22,14 @@ import {
   makeRatebookFrontier,
 } from "../../panels/optimiser/__tests__/fixtures"
 import {
-  parseDissolveSubmodelResponse,
   explorePivotMembersFromContract,
   explorePivotRunFromContract,
   explorePivotStatusFromContract,
   frontierAutoRangeStatusFromContract,
   optimiserStatusFromContract,
-  parseSavePipelineResponse,
-  parseSubmodelCreateResponse,
-  parseSubmodelGraphResponse,
   parseExecutionStrategyDiagnostic,
   previewFromContract,
+  withPipelineGraph,
   traceFromContract,
   type ExecutionMetricsValidator,
 } from "../guards"
@@ -238,6 +241,17 @@ const parseJsonCacheSchemaInferenceResponse = (value: unknown) =>
 
 const parseTraceResponse = (value: unknown) =>
   traceFromContract(expectGeneratedContract("TraceResponse", validateTraceResponse, value))
+
+// The save and the submodel actions are checked by their generated validators (API-R03),
+// a graph they answer with read as the editor's.
+const parseSavePipelineResponse = (value: unknown) =>
+  expectGeneratedContract("SavePipelineResponse", validateSavePipelineResponse, value)
+const parseSubmodelCreateResponse = (value: unknown) =>
+  withPipelineGraph(expectGeneratedContract("CreateSubmodelResponse", validateCreateSubmodelResponse, value))
+const parseSubmodelGraphResponse = (value: unknown) =>
+  withPipelineGraph(expectGeneratedContract("SubmodelGraphResponse", validateSubmodelGraphResponse, value))
+const parseDissolveSubmodelResponse = (value: unknown) =>
+  withPipelineGraph(expectGeneratedContract("DissolveSubmodelResponse", validateDissolveSubmodelResponse, value))
 
 // Explore and factor responses are checked by their generated validators
 // (API-R03); the pivot responses then get the UI's member-key and matrix checks.
@@ -591,17 +605,20 @@ describe("API response guards", () => {
     })).toThrow(/source_revision/i)
   })
 
-  it("rejects blank committed revisions and submodel paths", () => {
+  it("rejects a blank committed revision", () => {
     const save = loadUiContractFixture<Record<string, unknown>>("save_pipeline")
     const create = loadUiContractFixture<Record<string, unknown>>("submodel_create_response")
-    const loaded = loadUiContractFixture<Record<string, unknown>>("submodel_graph_response")
     const dissolve = loadUiContractFixture<Record<string, unknown>>("dissolve_submodel_response")
 
-    expect(() => parseSavePipelineResponse({ ...save, source_revision: "   " })).toThrow(/source_revision/i)
-    expect(() => parseSubmodelCreateResponse({ ...create, source_revision: "" })).toThrow(/source_revision/i)
-    expect(() => parseSubmodelCreateResponse({ ...create, parent_file: " " })).toThrow(/parent_file/i)
-    expect(() => parseSubmodelGraphResponse({ ...loaded, submodel_file: "" })).toThrow(/submodel_file/i)
-    expect(() => parseDissolveSubmodelResponse({ ...dissolve, source_revision: "\t" })).toThrow(/source_revision/i)
+    expect(() => parseSavePipelineResponse({ ...save, source_revision: "   " })).toThrow(
+      "SavePipelineResponse: invalid contract at /source_revision: pattern",
+    )
+    expect(() => parseSubmodelCreateResponse({ ...create, source_revision: "" })).toThrow(
+      "CreateSubmodelResponse: invalid contract at /source_revision",
+    )
+    expect(() => parseDissolveSubmodelResponse({ ...dissolve, source_revision: "\t" })).toThrow(
+      "DissolveSubmodelResponse: invalid contract at /source_revision: pattern",
+    )
   })
 
   const previewFixture = () => loadUiContractFixture<Record<string, unknown>>("preview_node")
@@ -2114,18 +2131,15 @@ describe("API response guards", () => {
     expect(() => parseDissolveSubmodelResponse({ ...dissolve, definition_id: undefined })).toThrow(/definition_id/i)
   })
 
-  it("rejects removed dissolve file-lifecycle fields", () => {
-    const dissolve = loadUiContractFixture<Record<string, unknown>>("dissolve_submodel_response")
-
-    expect(() => parseDissolveSubmodelResponse({
-      ...dissolve,
-      submodel_file_deleted: false,
-    })).toThrow(/submodel_file_deleted.*no longer supported/i)
-    expect(() => parseDissolveSubmodelResponse({
-      ...dissolve,
-      retained_submodel_file: "modules/pricing.py",
-    })).toThrow(/retained_submodel_file.*no longer supported/i)
-  })
+  it.each(["submodel_file_deleted", "retained_submodel_file"])(
+    "rejects the removed dissolve field %s",
+    (field) => {
+      const dissolve = loadUiContractFixture<Record<string, unknown>>("dissolve_submodel_response")
+      expect(() => parseDissolveSubmodelResponse({ ...dissolve, [field]: false })).toThrow(
+        "DissolveSubmodelResponse: invalid contract at /: additionalProperties",
+      )
+    },
+  )
 
   it("parses modelling preflight payloads", () => {
     const mlflow = mlflowDestinations(

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { makeSavePipelineResponse } from "../../test-utils/factories"
 import type { PreviewNodeResponse } from "../../api/types"
 import { makePreviewResponse } from "../../test-utils/factories"
 import type { Mock } from "vitest"
@@ -340,7 +341,7 @@ describe("usePipelineAPI", () => {
 
   it("keeps training attached through Save and accepts its pending completion", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ source_file: "test.py", source_revision: "revision-old" }))
-    mockSave.mockResolvedValue({ file: "test.py", pipeline_name: "test", source_revision: "revision-saved", document_fingerprint: "fingerprint-saved" })
+    mockSave.mockResolvedValue(makeSavePipelineResponse({ file: "test.py", pipeline_name: "test", source_revision: "revision-saved", document_fingerprint: "fingerprint-saved" }))
     let finish!: (value: Awaited<ReturnType<typeof getTrainStatus>>) => void
     vi.mocked(getTrainStatus).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
     const params = makeParams()
@@ -593,12 +594,12 @@ describe("usePipelineAPI", () => {
       preserved_blocks: ["KEEP = 1"],
       source_revision: "revision-load",
     }))
-    mockSave.mockResolvedValue({
+    mockSave.mockResolvedValue(makeSavePipelineResponse({
       file: "pricing.py",
       pipeline_name: "pricing",
       source_revision: "revision-save",
       document_fingerprint: "fingerprint-saved",
-    })
+    }))
     const params = makeParams({
       preservedBlocksRef: { current: ["KEEP = 1"] },
     })
@@ -627,10 +628,10 @@ describe("usePipelineAPI", () => {
 
   it("names the tab's live-sync connection, so the server leaves it out of the save's broadcast", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], source_revision: "revision-load" }))
-    mockSave.mockResolvedValue({
+    mockSave.mockResolvedValue(makeSavePipelineResponse({
       file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save",
       document_fingerprint: "fingerprint-saved",
-    })
+    }))
     setSyncConnectionId("tab-1")
     try {
       const params = makeParams()
@@ -648,7 +649,7 @@ describe("usePipelineAPI", () => {
   })
 
   describe("global constants", () => {
-    const saved = { file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" }
+    const saved = makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", document_fingerprint: "fingerprint-saved" })
 
     async function loadAndSave(fixture: Parameters<typeof makeLoadedPipeline>[0]) {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], ...fixture }))
@@ -721,12 +722,12 @@ describe("usePipelineAPI", () => {
       edges: [],
       source_revision: "revision-load",
     }))
-    mockSave.mockResolvedValue({
+    mockSave.mockResolvedValue(makeSavePipelineResponse({
       file: "pricing.py",
       pipeline_name: "pricing",
       source_revision: "revision-save",
       document_fingerprint: "fingerprint-saved",
-    })
+    }))
     const params = makeParams()
     params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
@@ -753,12 +754,12 @@ describe("usePipelineAPI", () => {
       },
       documentFingerprint: "loaded-document-fingerprint",
     })
-    mockSave.mockResolvedValue({
+    mockSave.mockResolvedValue(makeSavePipelineResponse({
       file: "pricing.py",
       pipeline_name: "pricing",
       source_revision: "revision-save",
       document_fingerprint: "fingerprint-saved",
-    })
+    }))
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -876,12 +877,12 @@ describe("usePipelineAPI", () => {
       useUIStore.getState().setSyncBanner(
         "Pipeline changed on disk while you have unsaved changes.",
       )
-      resolveSave({
+      resolveSave(makeSavePipelineResponse({
         file: "pricing.py",
         pipeline_name: "pricing",
         source_revision: "revision-save",
         document_fingerprint: "fingerprint-saved",
-      })
+      }))
     })
 
     await expect(savePromise).resolves.toBe(true)
@@ -920,12 +921,12 @@ describe("usePipelineAPI", () => {
       )
       useDocumentStatusStore.getState().setGraphSynchronized(false)
       useUIStore.getState().setSyncBanner("External change is waiting.")
-      resolveSave({
+      resolveSave(makeSavePipelineResponse({
         file: "pricing.py",
         pipeline_name: "pricing",
         source_revision: "revision-save",
         document_fingerprint: "fingerprint-saved",
-      })
+      }))
     })
 
     await expect(savePromise).resolves.toBe(true)
@@ -962,7 +963,7 @@ describe("usePipelineAPI", () => {
     await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(2))
     const oldSavedSnapshot = structuredClone(useGraphStore.getState().undoStack[0])
     if (!("nodes" in oldSavedSnapshot)) throw new Error("Expected the first save snapshot in graph history")
-    await act(async () => { resolvers[1]({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-new", document_fingerprint: "fingerprint-saved" }); await newer })
+    await act(async () => { resolvers[1](makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-new", document_fingerprint: "fingerprint-saved" })); await newer })
     const newestSavedConfig = { selected_columns: ["country"], column_renames: { country: "Country" } }
     const liveConfig = { ...newestSavedConfig, column_renames: { country: "Nation" } }
     act(() => {
@@ -978,7 +979,7 @@ describe("usePipelineAPI", () => {
       expect(params.sourceRevisionRef.current).toBe("revision-new")
       expect(useDocumentStatusStore.getState().sourceRevision).toBe("revision-new")
     }
-    await act(async () => { resolvers[0]({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-old", document_fingerprint: "fingerprint-saved" }); await older })
+    await act(async () => { resolvers[0](makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-old", document_fingerprint: "fingerprint-saved" })); await older })
     assertNewestSaveState()
 
     // Mutation witness: accepting the old response at the production saved
@@ -1027,13 +1028,13 @@ describe("usePipelineAPI", () => {
       preserved_blocks: [],
       source_revision: "revision-load",
     }))
-    mockSave.mockResolvedValue({
+    mockSave.mockResolvedValue(makeSavePipelineResponse({
       file: "pricing.py",
       pipeline_name: "pricing",
       source_revision: "revision-save",
       document_fingerprint: "fingerprint-saved",
       warnings: ["Transform node 'claims' combines 2 inputs but has no code to combine them."],
-    })
+    }))
     const params = makeParams()
     params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
@@ -1053,7 +1054,7 @@ describe("usePipelineAPI", () => {
 
   it("handleSave includes the current submodel mirror in the payload", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" })
+    mockSave.mockResolvedValue(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" }))
     const params = makeParams()
     const submodels = {
       pricing: {
@@ -1077,7 +1078,7 @@ describe("usePipelineAPI", () => {
 
   it("saves submodel boundary handles as the edge carries them", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" })
+    mockSave.mockResolvedValue(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" }))
     const boundaryEdge: PipelineEdge = {
       id: "e_boundary",
       source: "pricing",
@@ -1114,12 +1115,12 @@ describe("usePipelineAPI", () => {
       preserved_blocks: [],
       source_revision: "revision-load",
     }))
-    mockSave.mockResolvedValue({
+    mockSave.mockResolvedValue(makeSavePipelineResponse({
       file: "pricing.py",
       pipeline_name: "pricing",
       source_revision: "revision-save",
       document_fingerprint: "fingerprint-saved",
-    })
+    }))
     const root = makeNode("root", "polars", {
       data: {
         _functionName: "root_function",
@@ -1205,7 +1206,7 @@ describe("usePipelineAPI", () => {
     expect(useGraphStore.getState().isDirty()).toBe(true)
 
     await act(async () => {
-      resolveSave({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" })
+      resolveSave(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" }))
       await savePromise
     })
 
@@ -1247,7 +1248,7 @@ describe("usePipelineAPI", () => {
     expect(useGraphStore.getState().isDirty()).toBe(true)
 
     await act(async () => {
-      resolveSave({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" })
+      resolveSave(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" }))
       await savePromise
     })
 
@@ -1299,14 +1300,14 @@ describe("usePipelineAPI", () => {
     })
 
     await act(async () => {
-      resolveSecond({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-newer", document_fingerprint: "fingerprint-saved" })
+      resolveSecond(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-newer", document_fingerprint: "fingerprint-saved" }))
       await secondSave
     })
     expect(useGraphStore.getState().isDirty()).toBe(false)
     expect(params.sourceRevisionRef.current).toBe("revision-newer")
 
     await act(async () => {
-      resolveFirst({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-older", document_fingerprint: "fingerprint-saved" })
+      resolveFirst(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-older", document_fingerprint: "fingerprint-saved" }))
       await firstSave
     })
     expect(useGraphStore.getState().isDirty()).toBe(false)
@@ -1320,7 +1321,7 @@ describe("usePipelineAPI", () => {
 
   it("handleSave is blocked while drilled into a submodel", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" })
+    mockSave.mockResolvedValue(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" }))
     const params = makeParams({
       parentGraphRef: {
         current: {
@@ -1403,14 +1404,14 @@ describe("usePipelineAPI", () => {
     ],
   ])("handleSave blocks invalid edgeJoin config before posting for %s", async (_caseName, config, message) => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockSave.mockResolvedValue({
+    mockSave.mockResolvedValue(makeSavePipelineResponse({
       status: "saved",
       file: "test.py",
       pipeline_name: "test",
       source_revision: "revision-save",
       document_fingerprint: "fingerprint-saved",
       warnings: [],
-    })
+    }))
     const graph = edgeJoinSaveGraph(config)
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
@@ -1443,14 +1444,14 @@ describe("usePipelineAPI", () => {
     ["a stash captured from an older graph", -1, false],
   ])("handleSave blocks a missing edgeJoin key only for %s", async (_case, versionOffset, expectBlocked) => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockSave.mockResolvedValue({
+    mockSave.mockResolvedValue(makeSavePipelineResponse({
       status: "saved",
       file: "test.py",
       pipeline_name: "test",
       source_revision: "revision-save",
       document_fingerprint: "fingerprint-saved",
       warnings: [],
-    })
+    }))
     const graph = edgeJoinSaveGraph({ how: "left", on: ["policy_id"], maintainOrder: "left_right" })
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))

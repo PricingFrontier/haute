@@ -6,6 +6,7 @@
  * 3. Preview caching integration (cache hit skips API call)
  * 4. fetchPreview abort — new preview aborts the previous in-flight request
  */
+import { makeSavePipelineResponse } from "../../test-utils/factories"
 import type { PreviewNodeResponse } from "../../api/types"
 import { makePreviewResponse } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
@@ -252,7 +253,7 @@ describe("usePipelineAPI - gap tests", () => {
       let saveCallCount = 0
       mockSave.mockImplementation(() => {
         saveCallCount++
-        return Promise.resolve({ file: `pricing_${saveCallCount}.py`, pipeline_name: "pricing", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" })
+        return Promise.resolve(makeSavePipelineResponse({ file: `pricing_${saveCallCount}.py`, pipeline_name: "pricing", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" }))
       })
 
       const params = makeParams()
@@ -288,7 +289,7 @@ describe("usePipelineAPI - gap tests", () => {
       const held = pendingSavesSettled(sourceFile)
       expect(held).not.toBeNull()
       await act(async () => {
-        answer({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-saved", document_fingerprint: "fingerprint-saved" })
+        answer(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-saved", document_fingerprint: "fingerprint-saved" }))
         await saving
         await held
       })
@@ -390,7 +391,7 @@ describe("usePipelineAPI - gap tests", () => {
       let callIdx = 0
       mockSave.mockImplementation(() => {
         callIdx++
-        if (callIdx === 1) return Promise.resolve({ file: "ok.py", pipeline_name: "p", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" })
+        if (callIdx === 1) return Promise.resolve(makeSavePipelineResponse({ file: "ok.py", pipeline_name: "p", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" }))
         return Promise.reject(new Error("conflict"))
       })
 

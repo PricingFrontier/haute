@@ -135,7 +135,7 @@ describe("client runtime contracts", () => {
         connection_id: null,
         operation: "save-test-operation",
       }),
-    ).rejects.toThrow(/parseSavePipelineResponse/i)
+    ).rejects.toThrow("SavePipelineResponse: invalid contract")
   })
 
   it("previewNode rejects malformed preview payloads", async () => {
@@ -1159,13 +1159,13 @@ describe("next-wave client runtime contracts", () => {
         base_revision: "revision-test",
         preserved_blocks: [],
       }),
-      error: /parseSubmodelCreateResponse/i,
+      error: "CreateSubmodelResponse: invalid contract at /graph/nodes: required",
     },
     {
       name: "loadSubmodel",
       response: { ...loadUiContractFixture<Record<string, unknown>>("submodel_graph_response"), submodel_name: 42 },
       call: () => loadSubmodel("pricing", "main.py"),
-      error: /parseSubmodelGraphResponse/i,
+      error: "SubmodelGraphResponse: invalid contract at /submodel_name: type",
     },
     {
       name: "dissolveSubmodel",
@@ -1179,7 +1179,7 @@ describe("next-wave client runtime contracts", () => {
         base_revision: "revision-test",
         preserved_blocks: [],
       }),
-      error: /parseDissolveSubmodelResponse/i,
+      error: "DissolveSubmodelResponse: invalid contract at /graph",
     },
     {
       name: "getMlflowDestinations",

@@ -19,6 +19,7 @@
  * `usePipelineAPI.noDownstreamPreviews.test.ts`); the refresh's upstream
  * fan-out is now the operation that spans several previews.
  */
+import { makeSavePipelineResponse } from "../../test-utils/factories"
 import { makePreviewResponse } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
@@ -155,7 +156,7 @@ describe("usePipelineAPI - settings captured at fetch start (#33, #34)", () => {
     vi.mocked(await import("../../api/client")).savePipeline.mockImplementation(
       (payload) => {
         savePayloads.push(payload as unknown as Record<string, unknown>)
-        return Promise.resolve({ file: "t.py", pipeline_name: "t", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" })
+        return Promise.resolve(makeSavePipelineResponse({ file: "t.py", pipeline_name: "t", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" }))
       },
     )
 

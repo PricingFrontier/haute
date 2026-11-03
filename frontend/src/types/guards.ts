@@ -28,12 +28,11 @@ import type {
   ExplorePivotStatusResponse as GeneratedExplorePivotStatusResponse,
   NodeDataStatusResponse as GeneratedNodeDataStatusResponse,
   PreviewNodeResponse as GeneratedPreviewNodeResponse,
+  PipelineGraph as GeneratedPipelineGraph,
   TraceResponse as GeneratedTraceResponse,
   WriteOutputResponse as GeneratedWriteOutputResponse,
 } from "../generated/api-contracts.generated"
 import type {
-  NodeInstanceCreateResponse,
-  DissolveSubmodelResponse,
   ExecutionMetrics,
   ExecutionStrategyDiagnostic,
   ExecutionStrategyBoundary,
@@ -52,10 +51,7 @@ import type {
   NodeDataStatusResponse,
   OptimiserStatusResponse,
   PreviewNodeResponse,
-  SavePipelineResponse,
   WriteOutputResponse,
-  SubmodelCreateResponse,
-  SubmodelGraphResponse,
   TraceResponse,
 } from "../api/types"
 import {
@@ -65,6 +61,7 @@ import {
 import {
   PIPELINE_NODE_TYPES,
   type PipelineEdge,
+  type PipelineGraph,
 } from "./node"
 import type {
   TraceCalculation,
@@ -79,20 +76,6 @@ import type {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-export interface PipelineResponse {
-  nodes: Node[]
-  edges: PipelineEdge[]
-  pipeline_name?: string | null
-  pipeline_description?: string | null
-  preamble?: string | null
-  source_file?: string | null
-  submodels?: Record<string, unknown> | null
-  warning?: string | null
-  sources?: string[]
-  active_source?: string
-  preserved_blocks: string[]
-  source_revision: string | null
-}
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
@@ -132,14 +115,6 @@ export function expectNonBlankString(parser: string, value: unknown, field: stri
   return parsed
 }
 
-function expectNullableNonBlankString(
-  parser: string,
-  value: unknown,
-  field: string,
-): string | null {
-  if (value === null) return null
-  return expectNonBlankString(parser, value, field)
-}
 
 export function expectNumber(parser: string, value: unknown, field: string): number {
   if (typeof value !== "number" || Number.isNaN(value)) {
@@ -295,15 +270,6 @@ function parseStringArray(parser: string, value: unknown, field: string): string
   return parseArray(parser, value, field, (item, itemField) => expectString(parser, item, itemField))
 }
 
-function optionalStringArray(
-  parser: string,
-  obj: Record<string, unknown>,
-  key: string,
-  defaultValue: string[] = [],
-): string[] {
-  const value = obj[key]
-  return value === undefined ? defaultValue : parseStringArray(parser, value, `field \`${key}\``)
-}
 
 
 
@@ -577,208 +543,41 @@ export function executionMetricsFromContract(
 
 const PIPELINE_NODE_TYPE_VALUES = Object.values(PIPELINE_NODE_TYPES)
 
-function isKnownPipelineNode(value: unknown): boolean {
-  if (!isPlainObject(value)) return false
-  if (
-    value.type !== undefined &&
-    (
-      typeof value.type !== "string" ||
-      !PIPELINE_NODE_TYPE_VALUES.some((nodeType) => nodeType === value.type)
-    )
-  ) return false
-  if (value.data !== undefined) {
-    const data = value.data
-    if (!isPlainObject(data)) return false
-    if (
-      data.nodeType !== undefined &&
-      (
-        typeof data.nodeType !== "string" ||
-        !PIPELINE_NODE_TYPE_VALUES.some((nodeType) => nodeType === data.nodeType)
-      )
-    ) return false
-  }
-  return true
-}
 
-function parsePipelineNode(value: unknown, index: number): Node {
-  const parser = "parsePipelineResponse"
-  const field = `nodes[${index}]`
-  const node = expectPlainObject(parser, value, `field \`${field}\``)
-  if (node.type !== undefined) {
-    expectStringLiteral(
-      parser,
-      node.type,
-      `field \`${field}.type\``,
-      PIPELINE_NODE_TYPE_VALUES,
-    )
-  }
-  if (node.data !== undefined) {
-    const data = expectPlainObject(parser, node.data, `field \`${field}.data\``)
-    if (data.nodeType !== undefined) {
-      expectStringLiteral(
-        parser,
-        data.nodeType,
-        `field \`${field}.data.nodeType\``,
-        PIPELINE_NODE_TYPE_VALUES,
-      )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**
+ * A canonical graph as the editor's React Flow graph. The generated validators own its
+ * structure; the editor adds that every node's React Flow type is a pipeline node type,
+ * since it renders a node through the component registered for that type.
+ */
+export function pipelineGraphFromContract(graph: GeneratedPipelineGraph, field = "graph"): PipelineGraph {
+  graph.nodes.forEach((node, index) => {
+    if (!PIPELINE_NODE_TYPE_VALUES.some((nodeType) => nodeType === node.type)) {
+      throw new Error(`${field}.nodes[${index}].type: ${JSON.stringify(node.type)} is not a pipeline node type`)
     }
-  }
-  return node as unknown as Node
+  })
+  return { ...graph, nodes: graph.nodes as unknown as Node[], edges: graph.edges as PipelineEdge[] }
 }
 
-export function isPipelineResponse(value: unknown): value is PipelineResponse {
-  if (!isPlainObject(value)) return false
-  if (!Array.isArray(value.nodes)) return false
-  if (!value.nodes.every(isKnownPipelineNode)) return false
-  if (!Array.isArray(value.edges)) return false
-  if (value.pipeline_name !== undefined && value.pipeline_name !== null && typeof value.pipeline_name !== "string") return false
-  if (value.pipeline_description !== undefined && value.pipeline_description !== null && typeof value.pipeline_description !== "string") return false
-  if (value.preamble !== undefined && value.preamble !== null && typeof value.preamble !== "string") return false
-  if (value.source_file !== undefined && value.source_file !== null && typeof value.source_file !== "string") return false
-  if (value.submodels !== undefined && value.submodels !== null && !isPlainObject(value.submodels)) return false
-  if (value.warning !== undefined && value.warning !== null && typeof value.warning !== "string") return false
-  if (value.active_source !== undefined && typeof value.active_source !== "string") return false
-  if (value.sources !== undefined) {
-    if (!Array.isArray(value.sources)) return false
-    for (const item of value.sources) {
-      if (typeof item !== "string") return false
-    }
-  }
-  if (!Array.isArray(value.preserved_blocks) || !value.preserved_blocks.every((item) => typeof item === "string")) return false
-  if (
-    value.source_revision !== null
-    && (typeof value.source_revision !== "string" || value.source_revision.trim() === "")
-  ) return false
-  return true
+/** A response that answers with a canonical graph, its graph read as the editor's. */
+export function withPipelineGraph<T extends { graph: GeneratedPipelineGraph }>(
+  response: T,
+): Omit<T, "graph"> & { graph: PipelineGraph } {
+  return { ...response, graph: pipelineGraphFromContract(response.graph) }
 }
-
-export function parsePipelineResponse(value: unknown): PipelineResponse {
-  // Integrity metadata is required for all graph documents.
-  const obj = expectPlainObject("parsePipelineResponse", value)
-  const nodes = expectArray("parsePipelineResponse", obj.nodes, "field `nodes`")
-    .map(parsePipelineNode)
-  const edges = expectArray("parsePipelineResponse", obj.edges, "field `edges`")
-
-  return {
-    preserved_blocks: parseStringArray("parsePipelineResponse", obj.preserved_blocks, "preserved_blocks"),
-    source_revision: expectNullableNonBlankString("parsePipelineResponse", obj.source_revision, "source_revision"),
-    nodes,
-    edges: edges as PipelineEdge[],
-    pipeline_name: obj.pipeline_name === undefined ? undefined : optionalNullableString("parsePipelineResponse", obj, "pipeline_name"),
-    pipeline_description: obj.pipeline_description === undefined ? undefined : optionalNullableString("parsePipelineResponse", obj, "pipeline_description"),
-    preamble: obj.preamble === undefined ? undefined : optionalNullableString("parsePipelineResponse", obj, "preamble"),
-    source_file: obj.source_file === undefined ? undefined : optionalNullableString("parsePipelineResponse", obj, "source_file"),
-    submodels: obj.submodels === undefined ? undefined : obj.submodels === null ? null : expectPlainObject("parsePipelineResponse", obj.submodels, "field `submodels`"),
-    warning: obj.warning === undefined ? undefined : optionalNullableString("parsePipelineResponse", obj, "warning"),
-    sources: obj.sources === undefined ? undefined : parseStringArray("parsePipelineResponse", obj.sources, "field `sources`"),
-    active_source: obj.active_source === undefined ? undefined : expectString("parsePipelineResponse", obj.active_source, "field `active_source`"),
-  }
-}
-
-function parseNestedPipelineResponse(
-  parser: string,
-  obj: Record<string, unknown>,
-  key: string,
-): PipelineResponse {
-  try {
-    return parsePipelineResponse(obj[key])
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    throw new Error(`${parser}: invalid field \`${key}\`: ${message}`, { cause: error })
-  }
-}
-
-export function parseSavePipelineResponse(value: unknown): SavePipelineResponse {
-  const obj = expectPlainObject("parseSavePipelineResponse", value)
-  return {
-    source_revision: expectNonBlankString("parseSavePipelineResponse", obj.source_revision, "source_revision"),
-    document_fingerprint: expectNonBlankString("parseSavePipelineResponse", obj.document_fingerprint, "document_fingerprint"),
-    status: optionalString("parseSavePipelineResponse", obj, "status", "saved"),
-    file: expectString("parseSavePipelineResponse", obj.file, "field `file`"),
-    pipeline_name: expectString("parseSavePipelineResponse", obj.pipeline_name, "field `pipeline_name`"),
-    warnings: optionalStringArray("parseSavePipelineResponse", obj, "warnings"),
-    git_sha: optionalNullableString("parseSavePipelineResponse", obj, "git_sha"),
-    identity_required: optionalBoolean("parseSavePipelineResponse", obj, "identity_required"),
-    uncaptured: optionalStringArray("parseSavePipelineResponse", obj, "uncaptured"),
-  }
-}
-
-export function parseSubmodelCreateResponse(value: unknown): SubmodelCreateResponse {
-  const obj = expectPlainObject("parseSubmodelCreateResponse", value)
-  return {
-    status: optionalString("parseSubmodelCreateResponse", obj, "status", "ok"),
-    submodel_file: expectNonBlankString("parseSubmodelCreateResponse", obj.submodel_file, "submodel_file"),
-    parent_file: expectNonBlankString("parseSubmodelCreateResponse", obj.parent_file, "parent_file"),
-    graph: parseNestedPipelineResponse("parseSubmodelCreateResponse", obj, "graph"),
-    source_revision: expectNonBlankString("parseSubmodelCreateResponse", obj.source_revision, "source_revision"),
-  }
-}
-
-export function parseNodeInstanceCreateResponse(value: unknown): NodeInstanceCreateResponse {
-  const parser = "parseNodeInstanceCreateResponse"
-  const obj = expectPlainObject(parser, value)
-  return {
-    status: expectNonBlankString(parser, obj.status, "status"),
-    graph: parseNestedPipelineResponse(parser, obj, "graph"),
-    owner_name: expectNonBlankString(parser, obj.owner_name, "owner_name"),
-    instance_name: expectNonBlankString(parser, obj.instance_name, "instance_name"),
-    definition_id: expectNonBlankString(parser, obj.definition_id, "definition_id"),
-    source_revision: expectNonBlankString(parser, obj.source_revision, "source_revision"),
-  }
-}
-
-export function parseSubmodelGraphResponse(value: unknown): SubmodelGraphResponse {
-  const obj = expectPlainObject("parseSubmodelGraphResponse", value)
-  return {
-    status: optionalString("parseSubmodelGraphResponse", obj, "status", "ok"),
-    submodel_name: expectNonBlankString(
-      "parseSubmodelGraphResponse",
-      obj.submodel_name,
-      "submodel_name",
-    ),
-    graph: parseNestedPipelineResponse("parseSubmodelGraphResponse", obj, "graph"),
-    submodel_file: expectNonBlankString("parseSubmodelGraphResponse", obj.submodel_file, "submodel_file"),
-    definition_id: expectNonBlankString(
-      "parseSubmodelGraphResponse",
-      obj.definition_id,
-      "definition_id",
-    ),
-  }
-}
-
-export function parseDissolveSubmodelResponse(value: unknown): DissolveSubmodelResponse {
-  const obj = expectPlainObject("parseDissolveSubmodelResponse", value)
-  for (const removedField of [
-    "submodel_file_deleted",
-    "retained_submodel_file",
-  ] as const) {
-    if (Object.hasOwn(obj, removedField)) {
-      throw new Error(
-        `parseDissolveSubmodelResponse: field \`${removedField}\` is no longer supported`,
-      )
-    }
-  }
-  return {
-    status: optionalString("parseDissolveSubmodelResponse", obj, "status", "ok"),
-    graph: parseNestedPipelineResponse("parseDissolveSubmodelResponse", obj, "graph"),
-    source_revision: expectNonBlankString("parseDissolveSubmodelResponse", obj.source_revision, "source_revision"),
-    instance_id: expectNonBlankString(
-      "parseDissolveSubmodelResponse",
-      obj.instance_id,
-      "instance_id",
-    ),
-    definition_id: expectNonBlankString(
-      "parseDissolveSubmodelResponse",
-      obj.definition_id,
-      "definition_id",
-    ),
-  }
-}
-
-
-
-
-
 
 /** A preview response, its execution metrics checked through the shared module. */
 export function previewFromContract(

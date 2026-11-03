@@ -24,6 +24,7 @@ from pydantic_core import core_schema
 
 from haute._execution_schemas import ExecutionMetricsPayload, ExecutionStrategyDiagnosticPayload
 from haute._explore_chart_contracts import ExploreChartsConfig
+from haute._types import PipelineGraph
 from haute.schemas import (
     BandingStatsResponse,
     BrowseFilesResponse,
@@ -31,8 +32,11 @@ from haute.schemas import (
     CacheNodesResponse,
     CacheUsageResponse,
     CatalogListResponse,
+    CreateNodeInstanceResponse,
+    CreateSubmodelResponse,
     DispersionEstimateResponse,
     DispersionEstimateStatusResponse,
+    DissolveSubmodelResponse,
     EditorIdentitiesResponse,
     ExplorePivotMembersResponse,
     ExplorePivotRunResponse,
@@ -112,9 +116,11 @@ from haute.schemas import (
     RatingLevelsResponse,
     SaveCapture,
     SaveModelResponse,
+    SavePipelineResponse,
     SchemaListResponse,
     SchemaResponse,
     SessionStatusResponse,
+    SubmodelGraphResponse,
     TableListResponse,
     TraceResponse,
     TrainEstimateResponse,
@@ -256,6 +262,8 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         GitMilestoneFork,
         # The capture fields every project write answers, alone: POST /api/git/capture.
         SaveCapture,
+        # A commit's pipeline, as GET /api/git/show/{sha} reads it.
+        PipelineGraph,
     ),
     "training": (
         TrainResponse,
@@ -302,6 +310,14 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         PreviewProgressResponse,
     ),
     "trace": (TraceResponse,),
+    # The pipeline's save and the submodel actions, each answering with a canonical graph.
+    "pipeline": (
+        SavePipelineResponse,
+        CreateSubmodelResponse,
+        CreateNodeInstanceResponse,
+        SubmodelGraphResponse,
+        DissolveSubmodelResponse,
+    ),
     # Carried by the node-data, explore, training, optimiser and output responses: shared.
     "execution-metrics": (ExecutionMetricsPayload,),
     "workbench": (
@@ -537,6 +553,10 @@ def _definitions_for(
         if not isinstance(name, str) or not isinstance(definition, dict):
             raise RuntimeError(f"{model.__name__} generated an invalid definition")
         _merge_definition(definitions, name=name, value=definition)
+    # A recursive model (a pipeline graph holds submodel definitions that hold graphs) is a
+    # reference to its own definition, which the nested section already carries.
+    if schema == {"$ref": f"#/$defs/{model.__name__}"} and model.__name__ in definitions:
+        return definitions
     _merge_definition(definitions, name=model.__name__, value=schema)
     return definitions
 

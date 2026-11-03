@@ -22,7 +22,11 @@ import type {
   MlflowDestinationEntry as GeneratedMlflowDestinationEntry,
   MlflowTestConnectionResponse as GeneratedMlflowTestConnectionResponse,
   NodeDataStatusResponse as GeneratedNodeDataStatusResponse,
+  CreateNodeInstanceResponse as GeneratedCreateNodeInstanceResponse,
+  CreateSubmodelResponse as GeneratedCreateSubmodelResponse,
+  DissolveSubmodelResponse as GeneratedDissolveSubmodelResponse,
   PreviewNodeResponse as GeneratedPreviewNodeResponse,
+  SubmodelGraphResponse as GeneratedSubmodelGraphResponse,
   TraceResponse as GeneratedTraceResponse,
   WriteOutputResponse as GeneratedWriteOutputResponse,
   OptimiserFrontierAutoRangeStatusResponse as GeneratedOptimiserFrontierAutoRangeStatusResponse,
@@ -135,23 +139,6 @@ export type {
   SchemaWarning,
 } from "../generated/api-contracts.generated"
 
-export interface SavePipelineResponse {
-  status?: string
-  file: string
-  pipeline_name: string
-  warnings?: string[]
-  /** SHA of the ledger commit this save produced, or null when no working
-   *  branch is configured. Updates the saved comparison anchor. */
-  git_sha?: string | null
-  source_revision: string
-  /** The saved document's fingerprint, as live sync names it. */
-  document_fingerprint: string
-  /** True when version capture was skipped only because git has no commit
-   *  identity. The app prompts for a name/email, then captures what was skipped. */
-  identity_required?: boolean
-  /** The files, relative to the project, the save's capture skipped or failed on. */
-  uncaptured?: string[]
-}
 
 /** One generation a trace reads: an entry of the preview's `seed_plan`. */
 export interface TraceSeedPlanEntry {
@@ -161,39 +148,14 @@ export interface TraceSeedPlanEntry {
   generation_id: string
 }
 
-export interface SubmodelCreateResponse {
-  status: string
-  submodel_file: string
-  parent_file: string
-  graph: PipelineGraph
-  source_revision: string
-}
-
-export interface NodeInstanceCreateResponse {
-  status: string
-  graph: PipelineGraph
-  owner_name: string
-  instance_name: string
-  definition_id: string
-  source_revision: string
-}
-
-export interface SubmodelGraphResponse {
-  status: string
-  submodel_name: string
-  /** Canonical transport graph; it does not contain editor identity metadata. */
-  graph: PipelineGraph
-  submodel_file: string
-  definition_id: string
-}
-
-export interface DissolveSubmodelResponse {
-  status: string
-  graph: PipelineGraph
-  source_revision: string
-  instance_id: string
-  definition_id: string
-}
+// The save and the submodel actions are generated; a graph they answer with is the
+// editor's React Flow graph (`withPipelineGraph`).
+type WithEditorGraph<T> = Omit<T, "graph"> & { graph: PipelineGraph }
+export type SubmodelCreateResponse = WithEditorGraph<GeneratedCreateSubmodelResponse>
+export type NodeInstanceCreateResponse = WithEditorGraph<GeneratedCreateNodeInstanceResponse>
+export type SubmodelGraphResponse = WithEditorGraph<GeneratedSubmodelGraphResponse>
+export type DissolveSubmodelResponse = WithEditorGraph<GeneratedDissolveSubmodelResponse>
+export type { SavePipelineResponse } from "../generated/api-contracts.generated"
 
 export type TraceResponse = Omit<GeneratedTraceResponse, "trace"> & {
   trace: import("../types/trace").TraceResult

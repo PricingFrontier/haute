@@ -825,3 +825,80 @@ export function makeTraceDiagnostic(
     ...overrides,
   }
 }
+
+// ---------------------------------------------------------------------------
+// makeSavePipelineResponse — POST /api/pipeline/save's answer
+// ---------------------------------------------------------------------------
+
+import type { SavePipelineResponse } from "../api/types"
+
+/** A pipeline save's answer with every field the server sends. */
+export function makeSavePipelineResponse(
+  overrides: Partial<SavePipelineResponse> = {},
+): SavePipelineResponse {
+  return {
+    status: "saved",
+    file: "main.py",
+    pipeline_name: "main",
+    source_revision: "revision-save",
+    document_fingerprint: "fingerprint-save",
+    warnings: [],
+    git_sha: null,
+    identity_required: false,
+    uncaptured: [],
+    ...overrides,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Canonical graphs — a pipeline graph as the server sends one
+// ---------------------------------------------------------------------------
+
+import type {
+  GraphNode as CanonicalGraphNode,
+  NodeType as CanonicalNodeType,
+  PipelineGraph as CanonicalPipelineGraph,
+} from "../generated/api-contracts.generated"
+
+/** A canonical graph node with every field the server sends. */
+export function makeCanonicalNode(
+  id: string,
+  nodeType: CanonicalNodeType = "polars",
+  config: Record<string, unknown> = {},
+): CanonicalGraphNode {
+  return {
+    id,
+    type: nodeType,
+    position: { x: 0, y: 0 },
+    data: {
+      label: id,
+      description: "",
+      nodeType,
+      config,
+      editor: { steps_error: null, steps_discarded: null, discarded_sidecar: null },
+    },
+  }
+}
+
+/** A canonical pipeline graph with every field the server sends. */
+export function makeCanonicalGraph(
+  overrides: Partial<CanonicalPipelineGraph> = {},
+): CanonicalPipelineGraph {
+  return {
+    nodes: [],
+    edges: [],
+    pipeline_name: null,
+    pipeline_description: null,
+    preamble: null,
+    preserved_blocks: [],
+    global_constants: [],
+    global_constants_error: null,
+    source_file: null,
+    source_revision: null,
+    submodels: null,
+    sources: ["live"],
+    active_source: "live",
+    warning: null,
+    ...overrides,
+  }
+}

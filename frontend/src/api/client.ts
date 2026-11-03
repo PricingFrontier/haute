@@ -129,21 +129,17 @@ import type {
   SessionStatusResponse,
 } from "./types"
 import {
-  parseDissolveSubmodelResponse,
   explorePivotMembersFromContract,
   frontierAutoRangeStatusFromContract,
   optimiserStatusFromContract,
   explorePivotRunFromContract,
   explorePivotStatusFromContract,
   nodeDataStatusFromContract,
-  parsePipelineResponse,
-  parseSavePipelineResponse,
   writeOutputFromContract,
-  parseSubmodelCreateResponse,
-  parseNodeInstanceCreateResponse,
-  parseSubmodelGraphResponse,
   isPlainObject,
+  pipelineGraphFromContract,
   previewFromContract,
+  withPipelineGraph,
   traceFromContract,
   type ExecutionMetricsValidator,
 } from "../types/guards"
@@ -164,6 +160,7 @@ const modellingValidators = () => import("../generated/api-contracts.modelling.v
 const nodeDataValidators = () => import("../generated/api-contracts.node-data.validators.mjs")
 const optimiserValidators = () => import("../generated/api-contracts.optimiser.validators.mjs")
 const outputValidators = () => import("../generated/api-contracts.output.validators.mjs")
+const pipelineValidators = () => import("../generated/api-contracts.pipeline.validators.mjs")
 const previewValidators = () => import("../generated/api-contracts.preview.validators.mjs")
 const traceValidators = () => import("../generated/api-contracts.trace.validators.mjs")
 const sessionValidators = () => import("../generated/api-contracts.session.validators.mjs")
@@ -1081,7 +1078,8 @@ export function savePipeline(
   },
   options?: MutationOptions,
 ): Promise<SavePipelineResponse> {
-  return post<unknown>("/api/pipeline/save", payload, options).then(parseSavePipelineResponse)
+  return post<unknown>("/api/pipeline/save", payload, options).then(async (data) =>
+    expectGeneratedContract("SavePipelineResponse", (await pipelineValidators()).validateSavePipelineResponse, data))
 }
 
 export interface OutputAssembleDryRunArgs {
@@ -1238,14 +1236,18 @@ export function createSubmodel(
   },
   options?: { signal?: AbortSignal },
 ): Promise<SubmodelCreateResponse> {
-  return post<unknown>("/api/submodel/create", payload, options).then(parseSubmodelCreateResponse)
+  return post<unknown>("/api/submodel/create", payload, options).then(async (data) => withPipelineGraph(
+    expectGeneratedContract("CreateSubmodelResponse", (await pipelineValidators()).validateCreateSubmodelResponse, data),
+  ))
 }
 
 export function createNodeInstance(
   payload: Omit<Parameters<typeof createSubmodel>[0], "name" | "node_ids"> & { node_id: string },
   options?: { signal?: AbortSignal },
 ): Promise<NodeInstanceCreateResponse> {
-  return post<unknown>("/api/submodel/instance", payload, options).then(parseNodeInstanceCreateResponse)
+  return post<unknown>("/api/submodel/instance", payload, options).then(async (data) => withPipelineGraph(
+    expectGeneratedContract("CreateNodeInstanceResponse", (await pipelineValidators()).validateCreateNodeInstanceResponse, data),
+  ))
 }
 
 /**
@@ -1261,7 +1263,9 @@ export function loadSubmodel(
   return request<unknown>(
     `/api/submodel/${encodeURIComponent(definitionId)}?source_file=${encodeURIComponent(parentSourceFile)}`,
     options,
-  ).then(parseSubmodelGraphResponse)
+  ).then(async (data) => withPipelineGraph(
+    expectGeneratedContract("SubmodelGraphResponse", (await pipelineValidators()).validateSubmodelGraphResponse, data),
+  ))
 }
 
 export function dissolveSubmodel(
@@ -1277,7 +1281,9 @@ export function dissolveSubmodel(
   },
   options?: { signal?: AbortSignal },
 ): Promise<DissolveSubmodelResponse> {
-  return post<unknown>("/api/submodel/dissolve", payload, options).then(parseDissolveSubmodelResponse)
+  return post<unknown>("/api/submodel/dissolve", payload, options).then(async (data) => withPipelineGraph(
+    expectGeneratedContract("DissolveSubmodelResponse", (await pipelineValidators()).validateDissolveSubmodelResponse, data),
+  ))
 }
 
 // ---------------------------------------------------------------------------
@@ -2468,7 +2474,9 @@ export function getCommitPipeline(
   return request<unknown>(
     `/api/git/show/${encodeURIComponent(sha)}?source_file=${encodeURIComponent(sourceFile)}`,
     options,
-  ).then(parsePipelineResponse)
+  ).then(async (data) => pipelineGraphFromContract(
+    expectGeneratedContract("PipelineGraph", (await gitValidators()).validatePipelineGraph, data),
+  ))
 }
 
 /** A commit's breadcrumb context — nearest ancestor milestone + distance (S11).

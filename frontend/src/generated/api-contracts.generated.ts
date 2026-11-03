@@ -4,6 +4,34 @@
  */
 export type ExploreChartsConfig = ExploreChartConfig[];
 /**
+ * Canonical node-type identifiers shared with the React Flow frontend.
+ *
+ * Inherits from ``StrEnum`` so ``NodeType.API_INPUT == "apiInput"`` is ``True``
+ * and JSON serialization produces the plain string value.
+ */
+export type NodeType =
+  | 'apiInput'
+  | 'workbenchInput'
+  | 'workbenchOutput'
+  | 'dataInput'
+  | 'dataOutput'
+  | 'polars'
+  | 'edgeJoin'
+  | 'modelScore'
+  | 'banding'
+  | 'ratingStep'
+  | 'output'
+  | 'explore'
+  | 'externalFile'
+  | 'liveSwitch'
+  | 'modelling'
+  | 'optimiser'
+  | 'scenarioExpander'
+  | 'optimiserApply'
+  | 'constant'
+  | 'submodel'
+  | 'submodelPort';
+/**
  * ``GET /api/mlflow/experiments``.
  */
 export type MlflowExperimentList = MlflowExperimentSummary[];
@@ -1332,6 +1360,127 @@ export interface SaveCapture {
   uncaptured: string[];
   warnings: string[];
 }
+/**
+ * React Flow graph structure used throughout Haute.
+ *
+ * This is the canonical type for the graph dict passed between
+ * parser, executor, codegen, deploy, and the server API layer.
+ */
+export interface PipelineGraph {
+  active_source: string;
+  edges: GraphEdge[];
+  global_constants: GlobalConstant[];
+  global_constants_error: string | null;
+  nodes: GraphNode[];
+  pipeline_description: string | null;
+  pipeline_name: string | null;
+  preamble: string | null;
+  preserved_blocks: string[];
+  source_file: string | null;
+  source_revision: string | null;
+  sources: string[];
+  submodels: {
+    [k: string]: SubmodelDefinition;
+  } | null;
+  warning: string | null;
+}
+/**
+ * A single edge in the React Flow graph.
+ */
+export interface GraphEdge {
+  id: string;
+  source: string;
+  sourceHandle: string | null;
+  target: string;
+  targetHandle: string | null;
+}
+/**
+ * One named, typed value that node code reads as ``global_constants.<name>``.
+ *
+ * A uniform constant holds ``value``, which every source reads. A constant
+ * split by source holds ``by_source``, which may lack a source: reading it
+ * under that source fails, naming both. Values stay JSON scalars, so a date
+ * is its ``YYYY-MM-DD`` text, and a ``float`` is stored as a float however it
+ * was written.
+ */
+export interface GlobalConstant {
+  by_source: {
+    [k: string]: boolean | number | string;
+  } | null;
+  name: string;
+  type: 'integer' | 'float' | 'text' | 'boolean' | 'date';
+  value: boolean | number | string | null;
+}
+/**
+ * A single node in the React Flow graph.
+ */
+export interface GraphNode {
+  data: NodeData;
+  id: string;
+  position: {
+    [k: string]: number;
+  };
+  type: string;
+}
+/**
+ * Data payload for a single pipeline node.
+ */
+export interface NodeData {
+  config: {
+    [k: string]: unknown;
+  };
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: NodeType;
+}
+/**
+ * What the server knows about a node for its editor, carried beside the config.
+ *
+ * None of it is a setting: it is never persisted, hashed or validated as config.
+ * ``steps_error`` is derived from the node's ``steps`` whenever its data is
+ * built; ``steps_discarded`` (why the parse dropped a stepped node's steps) and
+ * ``discarded_sidecar`` (the transform sidecar those steps came from, which the
+ * next save retires) are the parse's findings. A request may carry the field
+ * back, as a transform of the graph echoes it, but a save reads neither
+ * finding from it: it reparses the file on disk.
+ */
+export interface NodeEditorState {
+  discarded_sidecar: string | null;
+  steps_discarded: string | null;
+  steps_error: string | null;
+}
+/**
+ * One shared, file-backed submodel definition and its public interface.
+ */
+export interface SubmodelDefinition {
+  definitionId: string;
+  file: string;
+  graph: PipelineGraph;
+  inputPorts: SubmodelInputPort[];
+  outputPorts: SubmodelOutputPort[];
+}
+/**
+ * A public input with ordered internal targets, or none while unrouted.
+ */
+export interface SubmodelInputPort {
+  name: string;
+  targets: SubmodelEndpoint[];
+}
+/**
+ * One stable public-port binding to an internal definition endpoint.
+ */
+export interface SubmodelEndpoint {
+  handleId: string | null;
+  nodeId: string;
+}
+/**
+ * A public output backed by exactly one internal source.
+ */
+export interface SubmodelOutputPort {
+  name: string;
+  source: SubmodelEndpoint;
+}
 export interface InputCacheBuildResponse {
   build_class: 'bounded' | 'admitted_eager';
   forced: boolean;
@@ -2255,6 +2404,49 @@ export interface OutputAssembleDryRunResponse {
   error: string | null;
   row_count: number;
   status: 'ok' | 'error';
+}
+/**
+ * The saved pipeline, with the save's version capture.
+ */
+export interface SavePipelineResponse {
+  document_fingerprint: string;
+  file: string;
+  git_sha: string | null;
+  identity_required: boolean;
+  pipeline_name: string;
+  source_revision: string;
+  status: string;
+  uncaptured: string[];
+  warnings: string[];
+}
+export interface CreateSubmodelResponse {
+  graph: PipelineGraph;
+  parent_file: string;
+  source_revision: string;
+  status: string;
+  submodel_file: string;
+}
+export interface CreateNodeInstanceResponse {
+  definition_id: string;
+  graph: PipelineGraph;
+  instance_name: string;
+  owner_name: string;
+  source_revision: string;
+  status: string;
+}
+export interface SubmodelGraphResponse {
+  definition_id: string;
+  graph: PipelineGraph;
+  status: string;
+  submodel_file: string;
+  submodel_name: string;
+}
+export interface DissolveSubmodelResponse {
+  definition_id: string;
+  graph: PipelineGraph;
+  instance_id: string;
+  source_revision: string;
+  status: string;
 }
 /**
  * Full preview response — extends ``NodeResult`` with graph-wide metadata.

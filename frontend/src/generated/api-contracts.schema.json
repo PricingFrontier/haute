@@ -1740,6 +1740,86 @@
       "title": "ConditionGroup",
       "type": "object"
     },
+    "CreateNodeInstanceResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "definition_id": {
+          "title": "Definition Id",
+          "type": "string"
+        },
+        "graph": {
+          "$ref": "#/$defs/PipelineGraph"
+        },
+        "instance_name": {
+          "title": "Instance Name",
+          "type": "string"
+        },
+        "owner_name": {
+          "title": "Owner Name",
+          "type": "string"
+        },
+        "source_revision": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "title": "Source Revision",
+          "type": "string"
+        },
+        "status": {
+          "default": "ok",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "graph",
+        "owner_name",
+        "instance_name",
+        "definition_id",
+        "source_revision"
+      ],
+      "title": "CreateNodeInstanceResponse",
+      "type": "object"
+    },
+    "CreateSubmodelResponse": {
+      "properties": {
+        "graph": {
+          "$ref": "#/$defs/PipelineGraph"
+        },
+        "parent_file": {
+          "default": "",
+          "title": "Parent File",
+          "type": "string"
+        },
+        "source_revision": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "title": "Source Revision",
+          "type": "string"
+        },
+        "status": {
+          "default": "ok",
+          "title": "Status",
+          "type": "string"
+        },
+        "submodel_file": {
+          "default": "",
+          "title": "Submodel File",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "submodel_file",
+        "parent_file",
+        "source_revision",
+        "graph"
+      ],
+      "title": "CreateSubmodelResponse",
+      "type": "object"
+    },
     "CsvExport": {
       "additionalProperties": false,
       "description": "A CSV of the one table an Export exports, its fields split by its ``delimiter``.",
@@ -1965,6 +2045,43 @@
         "worker_remote_traceback"
       ],
       "title": "DispersionEstimateStatusResponse",
+      "type": "object"
+    },
+    "DissolveSubmodelResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "definition_id": {
+          "title": "Definition Id",
+          "type": "string"
+        },
+        "graph": {
+          "$ref": "#/$defs/PipelineGraph"
+        },
+        "instance_id": {
+          "title": "Instance Id",
+          "type": "string"
+        },
+        "source_revision": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "title": "Source Revision",
+          "type": "string"
+        },
+        "status": {
+          "default": "ok",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "graph",
+        "source_revision",
+        "instance_id",
+        "definition_id"
+      ],
+      "title": "DissolveSubmodelResponse",
       "type": "object"
     },
     "EditorIdentitiesResponse": {
@@ -8495,6 +8612,84 @@
       "title": "GitWorkingBranchesResponse",
       "type": "object"
     },
+    "GlobalConstant": {
+      "additionalProperties": false,
+      "description": "One named, typed value that node code reads as ``global_constants.<name>``.\n\nA uniform constant holds ``value``, which every source reads. A constant\nsplit by source holds ``by_source``, which may lack a source: reading it\nunder that source fails, naming both. Values stay JSON scalars, so a date\nis its ``YYYY-MM-DD`` text, and a ``float`` is stored as a float however it\nwas written.",
+      "properties": {
+        "by_source": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "By Source"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "integer",
+            "float",
+            "text",
+            "boolean",
+            "date"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "name",
+        "type",
+        "value",
+        "by_source"
+      ],
+      "title": "GlobalConstant",
+      "type": "object"
+    },
     "GpuFamilyStatus": {
       "additionalProperties": false,
       "description": "Whether one family can train on a GPU in this server process.",
@@ -8526,6 +8721,88 @@
         "device"
       ],
       "title": "GpuFamilyStatus",
+      "type": "object"
+    },
+    "GraphEdge": {
+      "description": "A single edge in the React Flow graph.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "sourceHandle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sourcehandle"
+        },
+        "target": {
+          "title": "Target",
+          "type": "string"
+        },
+        "targetHandle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Targethandle"
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "target",
+        "sourceHandle",
+        "targetHandle"
+      ],
+      "title": "GraphEdge",
+      "type": "object"
+    },
+    "GraphNode": {
+      "description": "A single node in the React Flow graph.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/NodeData"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "position": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Position",
+          "type": "object"
+        },
+        "type": {
+          "default": "pipelineNode",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "position",
+        "data"
+      ],
+      "title": "GraphNode",
       "type": "object"
     },
     "HeadingWidget": {
@@ -10314,6 +10591,42 @@
       "title": "ModellingGpuStatusResponse",
       "type": "object"
     },
+    "NodeData": {
+      "description": "Data payload for a single pipeline node.",
+      "properties": {
+        "config": {
+          "additionalProperties": true,
+          "title": "Config",
+          "type": "object"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "$ref": "#/$defs/NodeType",
+          "default": "polars"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "NodeData",
+      "type": "object"
+    },
     "NodeDataClearResponse": {
       "properties": {
         "point": {
@@ -10914,6 +11227,55 @@
       "title": "NodeDataStatusResponse",
       "type": "object"
     },
+    "NodeEditorState": {
+      "additionalProperties": false,
+      "description": "What the server knows about a node for its editor, carried beside the config.\n\nNone of it is a setting: it is never persisted, hashed or validated as config.\n``steps_error`` is derived from the node's ``steps`` whenever its data is\nbuilt; ``steps_discarded`` (why the parse dropped a stepped node's steps) and\n``discarded_sidecar`` (the transform sidecar those steps came from, which the\nnext save retires) are the parse's findings. A request may carry the field\nback, as a transform of the graph echoes it, but a save reads neither\nfinding from it: it reparses the file on disk.",
+      "properties": {
+        "discarded_sidecar": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Discarded Sidecar"
+        },
+        "steps_discarded": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Steps Discarded"
+        },
+        "steps_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Steps Error"
+        }
+      },
+      "required": [
+        "steps_error",
+        "steps_discarded",
+        "discarded_sidecar"
+      ],
+      "title": "NodeEditorState",
+      "type": "object"
+    },
     "NodeMemoryInfo": {
       "properties": {
         "label": {
@@ -10959,6 +11321,34 @@
       ],
       "title": "NodeTimingInfo",
       "type": "object"
+    },
+    "NodeType": {
+      "description": "Canonical node-type identifiers shared with the React Flow frontend.\n\nInherits from ``StrEnum`` so ``NodeType.API_INPUT == \"apiInput\"`` is ``True``\nand JSON serialization produces the plain string value.",
+      "enum": [
+        "apiInput",
+        "workbenchInput",
+        "workbenchOutput",
+        "dataInput",
+        "dataOutput",
+        "polars",
+        "edgeJoin",
+        "modelScore",
+        "banding",
+        "ratingStep",
+        "output",
+        "explore",
+        "externalFile",
+        "liveSwitch",
+        "modelling",
+        "optimiser",
+        "scenarioExpander",
+        "optimiserApply",
+        "constant",
+        "submodel",
+        "submodelPort"
+      ],
+      "title": "NodeType",
+      "type": "string"
     },
     "OptimiserAdjustmentBar": {
       "additionalProperties": false,
@@ -13658,6 +14048,168 @@
       "title": "Page",
       "type": "object"
     },
+    "PipelineGraph": {
+      "description": "React Flow graph structure used throughout Haute.\n\nThis is the canonical type for the graph dict passed between\nparser, executor, codegen, deploy, and the server API layer.",
+      "properties": {
+        "active_source": {
+          "default": "live",
+          "title": "Active Source",
+          "type": "string"
+        },
+        "edges": {
+          "items": {
+            "$ref": "#/$defs/GraphEdge"
+          },
+          "title": "Edges",
+          "type": "array"
+        },
+        "global_constants": {
+          "items": {
+            "$ref": "#/$defs/GlobalConstant"
+          },
+          "title": "Global Constants",
+          "type": "array"
+        },
+        "global_constants_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Global Constants Error"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/GraphNode"
+          },
+          "title": "Nodes",
+          "type": "array"
+        },
+        "pipeline_description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pipeline Description"
+        },
+        "pipeline_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pipeline Name"
+        },
+        "preamble": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preamble"
+        },
+        "preserved_blocks": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Preserved Blocks",
+          "type": "array"
+        },
+        "source_file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source File"
+        },
+        "source_revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Revision"
+        },
+        "sources": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Sources",
+          "type": "array"
+        },
+        "submodels": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/SubmodelDefinition"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submodels"
+        },
+        "warning": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Warning"
+        }
+      },
+      "required": [
+        "nodes",
+        "edges",
+        "pipeline_name",
+        "pipeline_description",
+        "preamble",
+        "preserved_blocks",
+        "global_constants",
+        "global_constants_error",
+        "source_file",
+        "source_revision",
+        "submodels",
+        "warning",
+        "sources",
+        "active_source"
+      ],
+      "title": "PipelineGraph",
+      "type": "object"
+    },
     "PipelineNameViolation": {
       "additionalProperties": false,
       "description": "One name violation (codegen's naming rule, or support code's), with its message.\n\nA support-code violation that involves no node (two helpers binding one\nname, a statement the inventory cannot read) has no parties, and an\nunreadable statement has no name. A ``reserved_input`` or ``support_input``\nviolation whose input a frame or a public input port names carries that\n``binding``, so the editor that set it can show the violation; any other\nviolation's is ``None``.",
@@ -15194,6 +15746,79 @@
       "title": "SaveModelResponse",
       "type": "object"
     },
+    "SavePipelineResponse": {
+      "description": "The saved pipeline, with the save's version capture.",
+      "properties": {
+        "document_fingerprint": {
+          "title": "Document Fingerprint",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "git_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Git Sha"
+        },
+        "identity_required": {
+          "default": false,
+          "title": "Identity Required",
+          "type": "boolean"
+        },
+        "pipeline_name": {
+          "title": "Pipeline Name",
+          "type": "string"
+        },
+        "source_revision": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "title": "Source Revision",
+          "type": "string"
+        },
+        "status": {
+          "default": "saved",
+          "title": "Status",
+          "type": "string"
+        },
+        "uncaptured": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Uncaptured",
+          "type": "array"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "warnings",
+        "git_sha",
+        "identity_required",
+        "uncaptured",
+        "status",
+        "file",
+        "pipeline_name",
+        "source_revision",
+        "document_fingerprint"
+      ],
+      "title": "SavePipelineResponse",
+      "type": "object"
+    },
     "SchemaColumn": {
       "additionalProperties": false,
       "properties": {
@@ -16013,6 +16638,149 @@
         "parameters"
       ],
       "title": "SqlImport",
+      "type": "object"
+    },
+    "SubmodelDefinition": {
+      "additionalProperties": false,
+      "description": "One shared, file-backed submodel definition and its public interface.",
+      "properties": {
+        "definitionId": {
+          "title": "Definitionid",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "graph": {
+          "$ref": "#/$defs/PipelineGraph"
+        },
+        "inputPorts": {
+          "items": {
+            "$ref": "#/$defs/SubmodelInputPort"
+          },
+          "title": "Inputports",
+          "type": "array"
+        },
+        "outputPorts": {
+          "items": {
+            "$ref": "#/$defs/SubmodelOutputPort"
+          },
+          "title": "Outputports",
+          "type": "array"
+        }
+      },
+      "required": [
+        "definitionId",
+        "file",
+        "graph",
+        "inputPorts",
+        "outputPorts"
+      ],
+      "title": "SubmodelDefinition",
+      "type": "object"
+    },
+    "SubmodelEndpoint": {
+      "additionalProperties": false,
+      "description": "One stable public-port binding to an internal definition endpoint.",
+      "properties": {
+        "handleId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Handleid"
+        },
+        "nodeId": {
+          "title": "Nodeid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "nodeId",
+        "handleId"
+      ],
+      "title": "SubmodelEndpoint",
+      "type": "object"
+    },
+    "SubmodelGraphResponse": {
+      "properties": {
+        "definition_id": {
+          "title": "Definition Id",
+          "type": "string"
+        },
+        "graph": {
+          "$ref": "#/$defs/PipelineGraph"
+        },
+        "status": {
+          "default": "ok",
+          "title": "Status",
+          "type": "string"
+        },
+        "submodel_file": {
+          "title": "Submodel File",
+          "type": "string"
+        },
+        "submodel_name": {
+          "title": "Submodel Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "submodel_name",
+        "definition_id",
+        "submodel_file",
+        "graph"
+      ],
+      "title": "SubmodelGraphResponse",
+      "type": "object"
+    },
+    "SubmodelInputPort": {
+      "additionalProperties": false,
+      "description": "A public input with ordered internal targets, or none while unrouted.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "targets": {
+          "items": {
+            "$ref": "#/$defs/SubmodelEndpoint"
+          },
+          "title": "Targets",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "targets"
+      ],
+      "title": "SubmodelInputPort",
+      "type": "object"
+    },
+    "SubmodelOutputPort": {
+      "additionalProperties": false,
+      "description": "A public output backed by exactly one internal source.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/SubmodelEndpoint"
+        }
+      },
+      "required": [
+        "name",
+        "source"
+      ],
+      "title": "SubmodelOutputPort",
       "type": "object"
     },
     "TableInputWidget": {
@@ -21173,11 +21941,20 @@
     "CatalogListResponse": {
       "$ref": "#/$defs/CatalogListResponse"
     },
+    "CreateNodeInstanceResponse": {
+      "$ref": "#/$defs/CreateNodeInstanceResponse"
+    },
+    "CreateSubmodelResponse": {
+      "$ref": "#/$defs/CreateSubmodelResponse"
+    },
     "DispersionEstimateResponse": {
       "$ref": "#/$defs/DispersionEstimateResponse"
     },
     "DispersionEstimateStatusResponse": {
       "$ref": "#/$defs/DispersionEstimateStatusResponse"
+    },
+    "DissolveSubmodelResponse": {
+      "$ref": "#/$defs/DissolveSubmodelResponse"
     },
     "EditorIdentitiesResponse": {
       "$ref": "#/$defs/EditorIdentitiesResponse"
@@ -21383,6 +22160,9 @@
     "OutputDestinationResponse": {
       "$ref": "#/$defs/OutputDestinationResponse"
     },
+    "PipelineGraph": {
+      "$ref": "#/$defs/PipelineGraph"
+    },
     "PipelineSettingsResponse": {
       "$ref": "#/$defs/PipelineSettingsResponse"
     },
@@ -21419,6 +22199,9 @@
     "SaveModelResponse": {
       "$ref": "#/$defs/SaveModelResponse"
     },
+    "SavePipelineResponse": {
+      "$ref": "#/$defs/SavePipelineResponse"
+    },
     "SchemaListResponse": {
       "$ref": "#/$defs/SchemaListResponse"
     },
@@ -21427,6 +22210,9 @@
     },
     "SessionStatusResponse": {
       "$ref": "#/$defs/SessionStatusResponse"
+    },
+    "SubmodelGraphResponse": {
+      "$ref": "#/$defs/SubmodelGraphResponse"
     },
     "TableListResponse": {
       "$ref": "#/$defs/TableListResponse"
@@ -21620,6 +22406,7 @@
     "GitPushRejection",
     "GitMilestoneFork",
     "SaveCapture",
+    "PipelineGraph",
     "TrainResponse",
     "TrainStatusResponse",
     "ExplorePivotRunResponse",
@@ -21650,6 +22437,11 @@
     "PreviewInputsResponse",
     "PreviewProgressResponse",
     "TraceResponse",
+    "SavePipelineResponse",
+    "CreateSubmodelResponse",
+    "CreateNodeInstanceResponse",
+    "SubmodelGraphResponse",
+    "DissolveSubmodelResponse",
     "ExecutionMetricsPayload",
     "WorkbenchStatusResponse",
     "WorkbenchTablesResponse",
@@ -21771,7 +22563,8 @@
       "GitUpstreamStatusResponse",
       "GitPushRejection",
       "GitMilestoneFork",
-      "SaveCapture"
+      "SaveCapture",
+      "PipelineGraph"
     ],
     "input-cache": [
       "InputCacheBuildResponse",
@@ -21825,6 +22618,13 @@
       "WriteOutputResponse",
       "OutputDestinationResponse",
       "OutputAssembleDryRunResponse"
+    ],
+    "pipeline": [
+      "SavePipelineResponse",
+      "CreateSubmodelResponse",
+      "CreateNodeInstanceResponse",
+      "SubmodelGraphResponse",
+      "DissolveSubmodelResponse"
     ],
     "preview": [
       "PreviewNodeResponse",

@@ -9,15 +9,21 @@
         "id": "pricing",
         "type": "submodel",
         "position": {
-          "x": 0,
-          "y": 0
+          "x": 0.0,
+          "y": 0.0
         },
         "data": {
           "label": "pricing",
+          "description": "",
           "nodeType": "submodel",
           "config": {
             "definitionId": "pricing",
             "alias": "pricing"
+          },
+          "editor": {
+            "steps_error": null,
+            "steps_discarded": null,
+            "discarded_sidecar": null
           }
         }
       },
@@ -25,24 +31,38 @@
         "id": "source",
         "type": "polars",
         "position": {
-          "x": -200,
-          "y": 0
+          "x": -200.0,
+          "y": 0.0
         },
         "data": {
           "label": "Source",
-          "nodeType": "polars"
+          "description": "",
+          "nodeType": "polars",
+          "config": {},
+          "editor": {
+            "steps_error": null,
+            "steps_discarded": null,
+            "discarded_sidecar": null
+          }
         }
       },
       {
         "id": "sink",
         "type": "polars",
         "position": {
-          "x": 200,
-          "y": 0
+          "x": 200.0,
+          "y": 0.0
         },
         "data": {
           "label": "Sink",
-          "nodeType": "polars"
+          "description": "",
+          "nodeType": "polars",
+          "config": {},
+          "editor": {
+            "steps_error": null,
+            "steps_discarded": null,
+            "discarded_sidecar": null
+          }
         }
       }
     ],
@@ -51,15 +71,25 @@
         "id": "e_source_pricing",
         "source": "source",
         "target": "pricing",
+        "sourceHandle": null,
         "targetHandle": "in__base"
       },
       {
         "id": "e_pricing_sink",
         "source": "pricing",
         "target": "sink",
-        "sourceHandle": "out__quotes"
+        "sourceHandle": "out__quotes",
+        "targetHandle": null
       }
     ],
+    "pipeline_name": null,
+    "pipeline_description": null,
+    "preamble": null,
+    "preserved_blocks": [],
+    "global_constants": [],
+    "global_constants_error": null,
+    "source_file": null,
+    "source_revision": "revision-create-1",
     "submodels": {
       "pricing": {
         "definitionId": "pricing",
@@ -70,24 +100,45 @@
               "id": "child1",
               "type": "polars",
               "position": {
-                "x": 0,
-                "y": 0
+                "x": 0.0,
+                "y": 0.0
               },
               "data": {
                 "label": "Child",
+                "description": "",
                 "nodeType": "polars",
-                "config": {}
+                "config": {},
+                "editor": {
+                  "steps_error": null,
+                  "steps_discarded": null,
+                  "discarded_sidecar": null
+                }
               }
             }
           ],
-          "edges": []
+          "edges": [],
+          "pipeline_name": null,
+          "pipeline_description": null,
+          "preamble": null,
+          "preserved_blocks": [],
+          "global_constants": [],
+          "global_constants_error": null,
+          "source_file": null,
+          "source_revision": null,
+          "submodels": null,
+          "warning": null,
+          "sources": [
+            "live"
+          ],
+          "active_source": "live"
         },
         "inputPorts": [
           {
             "name": "base",
             "targets": [
               {
-                "nodeId": "child1"
+                "nodeId": "child1",
+                "handleId": null
               }
             ]
           }
@@ -96,13 +147,17 @@
           {
             "name": "quotes",
             "source": {
-              "nodeId": "child1"
+              "nodeId": "child1",
+              "handleId": null
             }
           }
         ]
       }
     },
-    "preserved_blocks": [],
-    "source_revision": "revision-create-1"
+    "warning": null,
+    "sources": [
+      "live"
+    ],
+    "active_source": "live"
   }
 }
