@@ -71,13 +71,6 @@ def normalise_banding_rules(
     if isinstance(rules, dict):
         return _expand_rule_map(str(banding_type or ""), rules)
     if isinstance(rules, list):
-        if (
-            banding_type == "breakpoints"
-            and rules
-            and all(isinstance(rule, dict) and "boundary" not in rule for rule in rules)
-        ):
-            # A sidecar's bands (READ-27), each an upper edge and a label.
-            return bands_from_sidecar(rules)
         return deepcopy(rules)
     raise ConfigSettingError(f"{banding_type} banding rules must be a list", setting="factors")
 
@@ -293,21 +286,30 @@ def bands_from_sidecar(bands: Any) -> list[dict[str, Any]]:
     return rows
 
 
-def refuse_breakpoint_maps(config: dict[str, Any]) -> None:
-    """Refuse a banding sidecar that writes breakpoints as an edge-to-label map, the form
-    before bands were written as a list, naming the conversion."""
-    for factor in config.get("factors") or []:
-        if (
-            isinstance(factor, dict)
-            and _banding_type(factor) == "breakpoints"
-            and isinstance(factor.get("rules"), dict)
-        ):
+def bands_read_from_sidecar(config: dict[str, Any]) -> dict[str, Any]:
+    """A banding sidecar with each breakpoint factor's bands read back into the editor's and
+    the engine's rule rows (READ-27). Read from a file only: a row the editor sends without
+    a ``boundary`` stays a row its validation refuses. A sidecar that writes breakpoints as
+    an edge-to-label map, the form before bands were written as a list, is refused, naming
+    the conversion."""
+    factors = config.get("factors")
+    if not isinstance(factors, list):
+        return config
+    read: list[Any] = []
+    for factor in factors:
+        if not isinstance(factor, dict) or _banding_type(factor) != "breakpoints":
+            read.append(factor)
+            continue
+        rules = factor.get("rules")
+        if isinstance(rules, dict):
             raise ConfigSettingError(
                 "This banding sidecar writes breakpoints as a map from each band's edge to "
                 f"its label, the form before bands were written as a list. Convert the "
                 f"project's banding sidecars with {BANDS_CONVERSION}.",
                 setting="factors",
             )
+        read.append({**factor, "rules": bands_from_sidecar(rules)} if rules is not None else factor)
+    return {**config, "factors": read}
 
 
 def _compact_banding_factor_for_sidecar(factor: dict[str, Any]) -> dict[str, Any]:

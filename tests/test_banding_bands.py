@@ -107,3 +107,11 @@ def test_only_the_last_band_may_be_open_ended(tmp_path: Path) -> None:
     )
     with pytest.raises(ConfigSettingError, match="only the last band"):
         load_node_config("config/banding/bands.json", base_dir=tmp_path)
+
+
+def test_an_editor_row_without_a_boundary_is_still_refused_on_save() -> None:
+    """Bands read as rows from a file only: a row the editor sends without its
+    boundary is not taken for an open-ended band."""
+    factor = _factor([{"boundary": "4", "label": "1-4"}, {"label": "orphan"}])
+    with pytest.raises(ConfigSettingError, match="requires boundary"):
+        node_config_json(NodeType.BANDING, {"factors": [factor]}, node_label="bands")

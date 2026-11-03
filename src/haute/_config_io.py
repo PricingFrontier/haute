@@ -27,9 +27,9 @@ from typing import Any, cast
 from pydantic import ValidationError
 
 from haute._banding_config import (
+    bands_read_from_sidecar,
     compact_banding_config_for_sidecar,
     expand_banding_config_from_sidecar,
-    refuse_breakpoint_maps,
 )
 from haute._constant_config import constants_for_sidecar, constants_from_sidecar
 from haute._graph_utils import _sanitize_func_name
@@ -158,8 +158,7 @@ def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None)
         reject_form_given_keys(node_type, config)
     if node_type == NodeType.BANDING:
         # A sidecar writes breakpoints as a list of bands (READ-27).
-        refuse_breakpoint_maps(config)
-        return expand_banding_config_from_sidecar(config)
+        return expand_banding_config_from_sidecar(bands_read_from_sidecar(config))
     if node_type == NodeType.CONSTANT:
         # A sidecar writes the constants as a map from name to value (READ-28).
         return constants_from_sidecar(config)
