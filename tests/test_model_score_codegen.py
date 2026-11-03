@@ -487,7 +487,7 @@ class TestModelScoreDestinationPersistence:
         """The node destination round-trips through the sidecar only."""
         from haute.parser import parse_pipeline_source
 
-        graph = _model_score_graph({"mlflow_destination": "local"})
+        graph = _model_score_graph({"mlflow_destination": "server"})
         code = graph_to_code(graph)
 
         # Codegen rewrites every config-backed decorator to config=<sidecar>,
@@ -499,12 +499,12 @@ class TestModelScoreDestinationPersistence:
         present_dir.mkdir()
         configs = _write_sidecars(graph, present_dir)
         sidecar = json.loads(configs[SCORER_SIDECAR])
-        assert sidecar["mlflow_destination"] == "local"
+        assert sidecar["mlflow_destination"] == "server"
 
         parsed = parse_pipeline_source(code, _base_dir=present_dir)
         scorer = {n.data.label: n for n in parsed.nodes}["scorer"]
         assert scorer.data.nodeType == "modelScore"
-        assert scorer.data.config.get("mlflow_destination") == "local"
+        assert scorer.data.config.get("mlflow_destination") == "server"
 
     def test_absent_mlflow_destination_appears_on_neither_side(self, tmp_path):
         """An unset destination stays absent in the sidecar and the parsed config."""
@@ -524,10 +524,11 @@ class TestModelScoreDestinationPersistence:
         scorer = {n.data.label: n for n in parsed.nodes}["scorer"]
         assert "mlflow_destination" not in scorer.data.config
 
-    def test_score_from_config_forwards_destination(self, tmp_path):
+    def test_score_from_config_forwards_destination(self, tmp_path, monkeypatch):
         """A sidecar destination reaches the shared loader as destination=."""
         from haute._model_scorer import score_from_config
 
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow.example.test:5000")
         config_path = tmp_path / SCORER_SIDECAR
         config_path.parent.mkdir(parents=True)
         config_path.write_text(
@@ -538,7 +539,7 @@ class TestModelScoreDestinationPersistence:
                     "artifact_path": "model.cbm",
                     "task": "regression",
                     "output_column": "prediction",
-                    "mlflow_destination": "local",
+                    "mlflow_destination": "server",
                 }
             ),
             encoding="utf-8",
@@ -553,7 +554,7 @@ class TestModelScoreDestinationPersistence:
             collected = result.collect()
 
         assert "prediction" in collected.columns
-        assert mock_load.call_args.kwargs["destination"] == "local"
+        assert mock_load.call_args.kwargs["destination"] == "server"
 
     def test_score_from_config_defaults_destination_to_auto(self, tmp_path):
         """An absent sidecar destination forwards the auto sentinel."""

@@ -55,8 +55,8 @@
 - **`TraceResult`** (`trace.py`, dataclass) — the full per-row trace:
   `target_node_id`, `row_index`, `column`, `output_value`, `steps: list[TraceStep]`,
   `omissions: list[TraceOmission]`,
-  `row_id_column`/`row_id_value` (from an `apiInput` node's `row_id_column`
-  config, if set), summary counts (`total_nodes_in_pipeline`, `nodes_in_trace`,
+  `row_id_column`/`row_id_value` (a request input table's `row_id_column`, when the
+  traced row carries it), summary counts (`total_nodes_in_pipeline`, `nodes_in_trace`,
   `execution_ms`), `waterfall` (list of entry dicts, a structured error dict, or
   `None`), and `correlation_diagnostics: list[dict[str, Any]]` (never `None`,
   defaults to an empty list). Provenance fields are UTC `generated_at`,
@@ -300,8 +300,9 @@ continuation is never cached: every click proves again.
     graph/column pruning remains absent. In a column trace an unresolved node is on
     the value path when the lineage reaches it.
 12. Resolve `output_value` from the target row (whole row dict if `column` is
-    `None`, else the single value). Resolve `row_id_column`/`row_id_value` by
-    scanning `nodes` for an `apiInput` node with a `row_id_column` config entry.
+    `None`, else the single value). Resolve `row_id_column`/`row_id_value` with
+    `src/haute/trace.py::request_row_identity`: the first request input table, in
+    graph order, whose `row_id_column` the target row carries, else both `None`.
 13. If `column` is set, compute `integer_output_node_ids` (which steps' output
     column is an integer dtype, via `_is_integer_output_column`; a multi-frame
     `dict` output resolves to `False` rather than raising on the missing

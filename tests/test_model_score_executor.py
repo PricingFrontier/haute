@@ -9,7 +9,7 @@ import polars as pl
 import pytest
 
 from haute._mlflow_io import ScoringModel, _artifact_cache_path
-from haute.errors import ConfigError
+from haute.errors import ConfigError, NodeConfigError
 from haute.executor import _build_node_fn, execute_graph
 from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from tests._project import use_project
@@ -309,8 +309,13 @@ class TestBuildNodeFnModelScore:
             data=NodeData(label="scorer", nodeType="modelScore", config={"sourceType": 1}),
         )
 
-        with pytest.raises(ConfigError, match="non-string sourceType"):
+        with pytest.raises(
+            NodeConfigError,
+            match=r"Node 'scorer' \(modelScore\) setting 'sourceType': Input should be ''",
+        ) as raised:
             _build_node_fn(node, source_names=["upstream"])
+
+        assert raised.value.setting == "sourceType"
 
     def test_build_node_fn_rejects_unknown_source_type(self):
         node = GraphNode(
@@ -322,8 +327,13 @@ class TestBuildNodeFnModelScore:
             ),
         )
 
-        with pytest.raises(ConfigError, match="unsupported sourceType"):
+        with pytest.raises(
+            NodeConfigError,
+            match=r"setting 'sourceType': Input should be '', 'run', 'registered' or 'file'",
+        ) as raised:
             _build_node_fn(node, source_names=["upstream"])
+
+        assert raised.value.setting == "sourceType"
 
     def test_build_node_fn_returns_passthrough_no_config(self):
         """_build_node_fn returns passthrough for empty modelScore config."""

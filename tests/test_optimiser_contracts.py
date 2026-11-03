@@ -13,7 +13,7 @@ import polars as pl
 import pytest
 
 from haute.codegen import graph_to_code
-from haute.errors import ConfigError, RequestRefusedError
+from haute.errors import ConfigError, NodeConfigError, RequestRefusedError
 from haute.executor import _build_node_fn
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import OptimiserSolveService
@@ -201,8 +201,12 @@ def test_optimiser_data_input_rejects_falsey_non_string_selector() -> None:
         }
     )
 
-    with pytest.raises(ConfigError, match="incoming-edge frame name"):
+    with pytest.raises(
+        NodeConfigError, match="setting 'data_input': Input should be a valid string"
+    ) as raised:
         _build_node_fn(node, source_names=["quotes_frame"])
+
+    assert raised.value.setting == "data_input"
 
 
 @pytest.mark.parametrize("removed_key", ["scored_input", "factors_input"])

@@ -228,6 +228,23 @@ def _sidecar(config: Mapping[str, Any], node_type: NodeType, node_name: str) -> 
     return path
 
 
+def _check_sidecar(
+    node_type: NodeType,
+    node_name: str,
+    config: Mapping[str, Any],
+    fn: Callable[..., Any],
+    pipeline_dir: str,
+) -> None:
+    """Load a passthrough node's sidecar, held to its config model, and drop it."""
+    from haute._config_io import load_node_config
+
+    load_node_config(
+        _sidecar(config, node_type, node_name),
+        base_dir=pipeline_directory(fn, node_name, pipeline_dir),
+        node_type=node_type,
+    )
+
+
 def _first(frames: Sequence[Any], node_name: str) -> Any:
     if not frames:
         raise ExecutionError(f"Node '{node_name}' received no input frame.", node=node_name)
@@ -255,8 +272,14 @@ def _run_configured_work(
             raise RuntimeError(
                 f"Unsupported modelling input policy: {MODELLING_NODE_SEMANTICS.input_policy!r}"
             )
+        _check_sidecar(node_type, name, config, fn, pipeline_dir)
         return _first(frames, name)
-    if node_type in (NodeType.DATA_OUTPUT, NodeType.EXPLORE, NodeType.EXTERNAL_FILE):
+    if node_type in (NodeType.DATA_OUTPUT, NodeType.EXTERNAL_FILE):
+        # Their run passes the frame on, but their sidecar is still held to its model,
+        # so a missing or malformed one fails the run as it fails the parse.
+        _check_sidecar(node_type, name, config, fn, pipeline_dir)
+        return _first(frames, name)
+    if node_type == NodeType.EXPLORE:
         return _first(frames, name)
     if node_type == NodeType.EDGE_JOIN:
         from haute._edge_join import execute_edge_join
@@ -326,7 +349,7 @@ def _run_configured_work(
 
     from haute._config_io import load_node_config
 
-    settings = load_node_config(path, base_dir=base_dir)
+    settings = load_node_config(path, base_dir=base_dir, node_type=node_type)
     if node_type == NodeType.CONSTANT:
         from haute._node_apply import constant_frame
 
@@ -370,6 +393,7 @@ def live_switch_routes(
     settings = load_node_config(
         _sidecar(config, NodeType.LIVE_SWITCH, name),
         base_dir=pipeline_directory(fn, name, pipeline_dir),
+        node_type=NodeType.LIVE_SWITCH,
     )
     positional, _keyword_only = _parameters(fn)
     return positional, dict(settings.get("input_scenario_map") or {})

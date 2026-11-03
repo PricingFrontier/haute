@@ -252,7 +252,6 @@ class TestBindNodeInputs:
 
 _RATING_TABLES = [
     {
-        "name": "Region Factor",
         "factors": ["region"],
         "outputColumn": "region_factor",
         "entries": [{"region": "north", "value": 0.9}, {"region": "south", "value": 1.1}],
@@ -276,7 +275,8 @@ _TARGETS: dict[str, tuple[GraphNode, str]] = {
                     {
                         "source_port": "extra",
                         "source_column": "x",
-                        "output_path": "$[:].x",
+                        # Its own array level: an OUTPUT level takes one frame.
+                        "output_path": "$[:].extra[:].x",
                         "enabled": True,
                     },
                 ]

@@ -10,14 +10,16 @@ from __future__ import annotations
 import json
 import types
 from copy import deepcopy
-from typing import Any, Required, Union, get_args, get_origin, get_type_hints, is_typeddict
+from typing import Any, Required, Union, get_args, get_origin, get_type_hints
 
 import pytest
+from typing_extensions import is_typeddict
 
 from haute._config_io import config_path_for_node
-from haute._config_validation import _TYPED_DICT_BY_NODE_TYPE, FORM_GIVEN_KEYS
+from haute._config_validation import FORM_GIVEN_KEYS
 from haute._graph_utils import _sanitize_func_name
-from haute._types import DATA_INPUT_CONFIG_TYPES, DATA_OUTPUT_CONFIG_TYPES, GraphEdge, NodeType
+from haute._node_config_models import NODE_CONFIG_MODELS, shape_variants
+from haute._types import GraphEdge, NodeType
 from haute.codegen import graph_to_code_multi
 from haute.errors import ConfigError
 from haute.parser import parse_pipeline_file
@@ -30,6 +32,32 @@ from tests.test_codegen_roundtrip_property import (
 )
 from tests.test_explore_charts import _chart
 from tests.test_explore_pivots import _formula, _pivot
+
+_EVALUATION = {
+    "schema_version": 1,
+    "strategy": "random",
+    "seed": 42,
+    "validation": {"method": "single", "size": 0.2},
+}
+_TUNING = {
+    "schema_version": 1,
+    "trial_count": 5,
+    "seed": 7,
+    "metric": "gini",
+    "search_space": {"depth": [4, 6]},
+}
+
+
+def _modelling(**fields: Any) -> dict[str, Any]:
+    """A Model Training config the editor writes: the corpus's target and features."""
+    return {
+        "name": "model {variant}",
+        "target": "claim_count",
+        "task": "regression",
+        "feature_columns": ["premium (gross)", "rate_factor"],
+        "evaluation": deepcopy(_EVALUATION),
+        **fields,
+    }
 
 
 def _examples():
@@ -49,20 +77,44 @@ def _examples():
         }
     )
     by_type[NodeType.EXTERNAL_FILE].data.config.update({"fileType": "joblib"})
+    quotes = by_type[NodeType.API_INPUT].data.config["tables"][0]
+    quotes.update({"displayPath": "quotes[]", "row_id_column": "quote_id"})
+    quote_id, premium = quotes["columns"]
+    quote_id.update({"status": "Confirmed", "origin": "manual", "key": True})
+    premium.update({"status": "Inferred", "origin": "inferred", "key": False})
+    quotes["columns"] += [
+        {
+            "name": "region",
+            "path": "$[:].region",
+            "type": "str",
+            "status": "Confirmed",
+            "selected": True,
+            "levels": ["north", None],
+        },
+        {
+            "name": "inception",
+            "path": "$[:].inception",
+            "type": "date",
+            "status": "Confirmed",
+            "selected": True,
+            "format": "%d/%m/%Y",
+        },
+    ]
+    # The corpus trains a GLM; the tree-model, GPU and classifier fields are in
+    # the variants below, since one node cannot hold them all and stay valid.
     by_type[NodeType.MODELLING].data.config.update(
         {
             "mlflow_destination": "server",
             "weight": "_exposure",
-            "params": {"iterations": 17, "depth": 3},
-            "evaluation": {"method": "holdout", "test_size": 0.25},
-            "tuning": {"enabled": True, "n_trials": 3},
+            "evaluation": deepcopy(_EVALUATION),
             "refit_on_development": False,
             "mlflow_experiment": "Pricing",
             "output_dir": "models/output",
-            "model_export_path": "output/frequency.cbm",
+            "model_export_path": "output/frequency.rsglm",
             "row_limit": 1234,
             "terms": {"_age": {"type": "linear"}},
-            "family": "poisson",
+            "family": "negbinomial",
+            "theta": 2.5,
             "link": "log",
             "offset": "_log_exposure",
             "interactions": [{"factors": ["_age", "region"]}],
@@ -74,18 +126,9 @@ def _examples():
             "cv_seed": 7,
             "max_iter": 50,
             "tol": 1e-6,
-            "robust_standard_errors": "HC1",
             "intercept": False,
-            "var_power": 1.5,
-            "theta": 2.5,
-            "loss_function": "Poisson",
-            "variance_power": 1.6,
-            "monotone_constraints": {"_age": 1},
-            "feature_weights": {"_age": 0.8},
             "fold_column": "_fold",
             "id_columns": ["_identifier"],
-            "positive_class": "claim",
-            "device": "gpu",
         }
     )
     optimiser = by_type[NodeType.OPTIMISER]
@@ -347,6 +390,49 @@ def _examples():
                 "steps": [{"id": "l", "kind": "limit", "n": 2}],
             },
         ),
+        # A Tweedie GLM reporting robust standard errors, which a penalty would void.
+        (
+            NodeType.MODELLING,
+            _modelling(
+                algorithm="glm",
+                metrics=["gini", "tweedie_deviance"],
+                terms={"_age": {"type": "linear"}},
+                family="tweedie",
+                var_power=1.5,
+                link="log",
+                robust_standard_errors="HC1",
+            ),
+        ),
+        # A tree model: its own parameters and loss, tuning and feature controls.
+        (
+            NodeType.MODELLING,
+            _modelling(
+                algorithm="catboost",
+                metrics=["gini", "tweedie_deviance"],
+                params={"iterations": 17, "learning_rate": 0.1},
+                tuning=deepcopy(_TUNING),
+                loss_function="Tweedie",
+                variance_power=1.6,
+                monotone_constraints={"_age": 1},
+                feature_weights={"_age": 0.8},
+            ),
+        ),
+        # A GPU device belongs to a family that trains on one.
+        (
+            NodeType.MODELLING,
+            _modelling(algorithm="xgboost", loss_function="RMSE", device="gpu"),
+        ),
+        # A binary classifier names the label it trains as positive.
+        (
+            NodeType.MODELLING,
+            _modelling(
+                algorithm="catboost",
+                task="classification",
+                metrics=["auc", "logloss"],
+                loss_function="Logloss",
+                positive_class="claim",
+            ),
+        ),
         # Explore keeps its steps in the decorator beside its cards, so the
         # round trip has to carry both.
         (
@@ -419,6 +505,26 @@ _STRUCTURAL_POLICY = {
     NodeType.SUBMODEL: {"definitionId", "alias", "instanceOf"},
 }
 
+# Keys every shape inherits from NodeConfigBase. ``selected_columns``,
+# ``column_renames`` and an opaque ``contract`` are exercised on every type above.
+# ``inputMapping`` is a graph relationship (test_rename_stable_binding.py,
+# test_parser_conservation.py), and a declared column contract is checked against,
+# and on a config-driven type replaced by, the contract its builder derives at
+# parse, its parent keys being node ids (test_column_contracts_adoption.py,
+# test_codegen.py).
+_UNIVERSAL_POLICY = {
+    "inputMapping",
+    "contract.inputs",
+    "contract.outputs",
+    "contract.inputs_by_parent",
+}
+
+# Submodel containers are budgeted out of the root-decorator corpus
+# (test_submodel_container_types_are_explicitly_budgeted); their multi-file
+# round trip is test_parser_conservation.py's.
+_CONTAINER_POLICY = {"selected_columns", "column_renames", "contract"}
+_CONTAINER_TYPES = frozenset({NodeType.SUBMODEL, NodeType.SUBMODEL_PORT})
+
 
 def _declared_paths(schema: Any, prefix: str = "") -> set[str]:
     origin = get_origin(schema)
@@ -461,6 +567,10 @@ def _assert_field_inventory(examples, schemas):
         declared = set().union(*(_declared_paths(schema) for schema in node_schemas))
         policy = _STRUCTURAL_POLICY.get(node_type, set())
         assert policy <= declared, f"Stale structural policy for {node_type}: {policy - declared}"
+        assert _UNIVERSAL_POLICY <= declared, f"Stale universal policy for {node_type}"
+        policy = policy | _UNIVERSAL_POLICY
+        if node_type in _CONTAINER_TYPES:
+            policy = policy | _CONTAINER_POLICY
         # A workbench node is given these from the form where it runs; none is persisted.
         given = FORM_GIVEN_KEYS.get(node_type, frozenset())
         gaps = declared - covered.get(node_type, set()) - policy - given
@@ -470,11 +580,7 @@ def _assert_field_inventory(examples, schemas):
 
 
 def _schemas():
-    return {
-        **{nt: (schema,) for nt, schema in _TYPED_DICT_BY_NODE_TYPE.items()},
-        NodeType.DATA_INPUT: DATA_INPUT_CONFIG_TYPES,
-        NodeType.DATA_OUTPUT: DATA_OUTPUT_CONFIG_TYPES,
-    }
+    return {nt: shape_variants(model.shape) for nt, model in NODE_CONFIG_MODELS.items()}
 
 
 def test_every_declared_field_has_a_roundtrip_example_or_structural_policy():
@@ -530,7 +636,6 @@ def test_theta_and_glm_controls_survive_a_sidecar_write():
         "cv_seed": 7,
         "max_iter": 50,
         "tol": 1e-6,
-        "robust_standard_errors": "HC3",
     }
     node.data.config.update(deepcopy(controls))
 

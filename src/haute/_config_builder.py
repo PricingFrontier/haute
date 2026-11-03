@@ -23,15 +23,15 @@ from haute._code_extraction import (
 from haute._config_io import NODE_TYPE_TO_FOLDER, has_config_folder, load_node_config
 from haute._config_validation import (
     reject_removed_config_keys,
-    reject_unrecognized_config_keys,
     validate_node_config,
 )
-from haute._contracts import Contract, get_node_contract
+from haute._contracts import Contract, declared_contract_json, get_node_contract
 from haute._edge_join import normalise_edge_join_decorator_kwargs, require_edge_join_order
 from haute._explore_charts import validate_explore_charts
 from haute._explore_overview import validate_explore_overview
 from haute._explore_pivots import validate_explore_pivot_state
 from haute._logging import get_logger
+from haute._node_config_models import COLUMN_CONFIG_KEYS
 from haute._polars_steps import (
     JOIN_MAINTAIN_ORDER,
     STEPPED_NODE_TYPES,
@@ -44,12 +44,8 @@ from haute._polars_steps import (
 from haute._polars_steps_lift import StepLiftError, lift_steps
 from haute._project_context import current_project
 from haute._standalone_nodes import CODE_NODE_TYPES
-from haute._types import (
-    COLUMN_CONFIG_KEYS,
-    NodeEditorState,
-    NodeType,
-)
-from haute.errors import ConfigError, ContractMismatchError, ParseError
+from haute._types import NodeEditorState, NodeType
+from haute.errors import ConfigError, ContractMismatchError, HauteError, ParseError
 
 __all__ = [
     "_copy_config_keys",
@@ -626,7 +622,11 @@ def _resolve_node_config(
         normalised_ref = config_ref.replace("\\", "/")
         base = base_dir or current_project().root
         try:
-            loaded = load_node_config(normalised_ref, base_dir=base)
+            # The decorator names the node type, so a sidecar outside its type's folder
+            # is decoded from its file format too (bands, grids, constant maps).
+            loaded = load_node_config(
+                normalised_ref, base_dir=base, node_type=node_type, validate=False
+            )
         except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
             # The file is missing, unreadable, or not valid JSON — the headline
             # points at the path/parse problem. (``json.JSONDecodeError`` is a
@@ -679,18 +679,6 @@ def _resolve_node_config(
     if node_type == NodeType.LIVE_SWITCH:
         config["inputs"] = list(edge_param_names if edge_param_names is not None else param_names)
 
-    if node_type in {NodeType.DATA_INPUT, NodeType.DATA_OUTPUT}:
-        try:
-            # Presence of required locators is completeness, reported by the
-            # editor document loader; structural violations still fail here.
-            config = validate_node_config(node_type, config, require_complete=False)
-        except ValueError as exc:
-            raise ConfigError(
-                str(exc),
-                func_name=func_name,
-                node_type=node_type.value,
-            ) from exc
-
     if node_type == NodeType.EDGE_JOIN:
         # The order has no incomplete form (a new join carries its type's), so
         # a file without one predates the rule: the editor opens it for
@@ -718,7 +706,17 @@ def _resolve_node_config(
     # node whose contract the user declares concretely even though the
     # builder defaults to opaque).
     if user_contract is not None:
-        config["contract"] = user_contract
+        config["contract"] = declared_contract_json(user_contract)
 
-    reject_unrecognized_config_keys(node_type, config, node_label=func_name)
+    # The node type's config model, the one validation boundary. Presence of a
+    # required value (a Data Input's locator) is completeness, reported by the
+    # editor document loader; a malformed value fails here.
+    try:
+        config = validate_node_config(
+            node_type, config, require_complete=False, node_label=func_name
+        )
+    except HauteError:
+        raise
+    except ValueError as exc:
+        raise ConfigError(str(exc), func_name=func_name, node_type=node_type.value) from exc
     return node_type, config, editor

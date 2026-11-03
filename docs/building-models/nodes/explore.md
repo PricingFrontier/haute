@@ -120,6 +120,78 @@ Checking claim frequency by area:
     no editor control on an Explore node; when present it is stored as decorator
     arguments too.
 
+    <!-- config-keys:start -->
+
+    Every key the config may hold:
+
+    | Key | Type | Description |
+    |---|---|---|
+    | `code` | text | The Polars code the node's function runs; when `steps` are present, their rendering. |
+    | `steps` | list of map of text to any JSON value | The low-code steps the node's code is rendered from, in order. |
+    | `overview` | object | Which overview cards are shown. |
+    | `overview.dataset_snapshot` | `true` or `false` | Show the dataset snapshot card. |
+    | `overview.data_quality` | `true` or `false` | Show the data quality card. |
+    | `overview.numeric_summary` | `true` or `false` | Show the numeric summary card. |
+    | `overview.categorical_summary` | `true` or `false` | Show the categorical summary card. |
+    | `overview.schema` | `true` or `false` | Show the schema card. |
+    | `pivot_formulas` | list of object | The formulas the node's pivots share. |
+    | `pivot_formulas[].id` | text | The formula's id. |
+    | `pivot_formulas[].reference` | text | The name other formulas refer to it by. |
+    | `pivot_formulas[].display_name` | text | The formula's heading. |
+    | `pivot_formulas[].expression` | text | The formula, over values' references. |
+    | `pivot_formulas[].decimal_places` | whole number or `null` | Decimal places shown; `null` uses the format's default. |
+    | `pivot_formulas[].number_format` | `"general"` or `"number"` or `"percent"` or `"currency_gbp"` or `"currency_usd"` or `"currency_eur"` | How its values are shown. |
+    | `pivot_formulas[].use_grouping` | `true` or `false` | Whether thousands are grouped. |
+    | `pivots` | list of object | The pivot cards. |
+    | `pivots[].version` | `1` | The pivot state's version. |
+    | `pivots[].id` | text | The pivot's id. |
+    | `pivots[].name` | text | The pivot's name. |
+    | `pivots[].enabled` | `true` or `false` | Whether the pivot is shown. |
+    | `pivots[].filters` | list of object | The filters. |
+    | `pivots[].filters[].id` | text | The placement's id. |
+    | `pivots[].filters[].field` | text | The column filtered. |
+    | `pivots[].filters[].members` | list of object | The members kept. |
+    | `pivots[].filters[].members[].kind` | `"null"` or `"string"` or `"boolean"` or `"integer"` or `"float"` or `"nan"` or `"date"` or `"datetime"` or `"time"` or `"decimal"` | The member's type. |
+    | `pivots[].filters[].members[].value` | text or number or `true` or `false` or `null` | The member's value, as JSON holds a value of its type. |
+    | `pivots[].columns` | list of object | The fields laid across the columns. |
+    | `pivots[].columns[].id` | text | The placement's id. |
+    | `pivots[].columns[].field` | text | The column. |
+    | `pivots[].columns[].decimal_places` | whole number or `null` | Decimal places shown; `null` uses the format's default. |
+    | `pivots[].columns[].number_format` | `"general"` or `"number"` or `"percent"` or `"currency_gbp"` or `"currency_usd"` or `"currency_eur"` | How its values are shown. |
+    | `pivots[].columns[].use_grouping` | `true` or `false` | Whether thousands are grouped. |
+    | `pivots[].rows` | list of object | The fields laid down the rows. |
+    | `pivots[].rows[].id` | text | The placement's id. |
+    | `pivots[].rows[].field` | text | The column. |
+    | `pivots[].rows[].decimal_places` | whole number or `null` | Decimal places shown; `null` uses the format's default. |
+    | `pivots[].rows[].number_format` | `"general"` or `"number"` or `"percent"` or `"currency_gbp"` or `"currency_usd"` or `"currency_eur"` | How its values are shown. |
+    | `pivots[].rows[].use_grouping` | `true` or `false` | Whether thousands are grouped. |
+    | `pivots[].rows[].sort` | `"ascending"` or `"descending"` | The order of its members. |
+    | `pivots[].values` | list of object | The aggregated values. |
+    | `pivots[].values[].id` | text | The placement's id. |
+    | `pivots[].values[].field` | text | The column aggregated. |
+    | `pivots[].values[].aggregation` | `"sum"` or `"count"` or `"average"` or `"min"` or `"max"` or `"median"` or `"distinct_count"` | How the column is aggregated. |
+    | `pivots[].values[].reference` | text | The name a formula refers to the value by. |
+    | `pivots[].values[].display_name` | text | The value's heading. |
+    | `pivots[].values[].sort_rows` | `"none"` or `"ascending"` or `"descending"` | Whether rows are sorted by this value. |
+    | `pivots[].values[].color_scale` | `"none"` or `"low_red_high_green"` or `"low_green_high_red"` | The colour scale of its cells. |
+    | `pivots[].values[].color_scale_split_by` | text or `null` | The field the colour scale is computed within; `null` for the whole value. |
+    | `pivots[].values[].decimal_places` | whole number or `null` | Decimal places shown; `null` uses the format's default. |
+    | `pivots[].values[].number_format` | `"general"` or `"number"` or `"percent"` or `"currency_gbp"` or `"currency_usd"` or `"currency_eur"` | How its values are shown. |
+    | `pivots[].values[].use_grouping` | `true` or `false` | Whether thousands are grouped. |
+    | `pivots[].formulas` | list of text | The shared formulas the pivot shows, by id. |
+    | `pivots[].value_order` | list of text | The order its values and formulas are shown in, by id. |
+    | `pivots[].options` | object | Its totals and sorting. |
+    | `pivots[].options.row_grand_totals` | `true` or `false` | Show a grand total row. |
+    | `pivots[].options.column_grand_totals` | `true` or `false` | Show a grand total column. |
+    | `pivots[].options.sort_by` | text or `null` | The value rows are sorted by; `null` for none. |
+    | `charts` | list of object | The chart cards. |
+    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
+    | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
+    | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |
+
+    <!-- config-keys:end -->
+
 **See also:**
 
 - [Transform](transform.md)  - shaping the data you explore

@@ -789,10 +789,9 @@ class SavePipelineService:
         flattened = flatten_graph(graph)
         self._validate_singletons(flattened)
         self._validate_nothing_leaves_a_sink(flattened)
-        self._validate_edge_join_configs(flattened)
-        self._validate_optimiser_input_selectors(flattened)
-        self._validate_declared_config_keys(graph)
-        self._validate_strict_node_configs(graph)
+        self._validate_node_configs(graph)
+        self._validate_edge_join_roles(flattened)
+        self._validate_node_config_inputs(flattened)
         # The sidecar paths a save writes: a reserved device name or two paths one file.
         self._collect_node_configs_recursive(graph)
         self._validate_quote_input_tables_do_not_shadow_nodes(graph)
@@ -940,18 +939,15 @@ class SavePipelineService:
         return frozenset(referenced)
 
     @staticmethod
-    def _validate_edge_join_configs(flattened: PipelineGraph) -> None:
-        """Reject graph-aware Edge Join config before codegen or writes.
+    def _validate_edge_join_roles(flattened: PipelineGraph) -> None:
+        """Refuse an Edge Join whose inputs are not one ``base`` and one ``join``.
 
-        The canonical join validators need both the node config and its
-        connected sources/role handles. Flattening supplies that same view for
-        root and submodel joins, including cross-boundary inputs.
+        Its config is its model's (``_validate_node_configs``); its roles are the
+        graph's. Flattening supplies the connected role handles for root and
+        submodel joins, including cross-boundary inputs.
         """
 
-        from haute._edge_join import (
-            build_edge_join_kwargs,
-            resolve_edge_join_role_indices,
-        )
+        from haute._edge_join import resolve_edge_join_role_indices
 
         incoming_by_target: dict[str, list[GraphEdge]] = defaultdict(list)
         for edge in flattened.edges:
@@ -964,27 +960,26 @@ class SavePipelineService:
             resolve_edge_join_role_indices(
                 [edge.targetHandle for edge in incoming],
             )
-            build_edge_join_kwargs(node.data.config)
 
     @staticmethod
-    def _validate_optimiser_input_selectors(flattened: PipelineGraph) -> None:
-        """Validate optimiser selectors against flattened physical edge names."""
-        from haute._config_validation import validate_optimiser_input_selectors
+    def _validate_node_config_inputs(flattened: PipelineGraph) -> None:
+        """Hold each node's config to the rules that need its connected input names.
+
+        The Optimiser's and Optimiser Apply's exact input selectors, named against the
+        flattened graph's physical edge names.
+        """
         from haute._graph_utils import incoming_edge_bindings
+        from haute._node_config_models import NODE_CONFIG_MODELS
 
         try:
             for node in flattened.nodes:
-                if node.data.nodeType not in {NodeType.OPTIMISER, NodeType.OPTIMISER_APPLY}:
+                check_inputs = NODE_CONFIG_MODELS[node.data.nodeType].check_inputs
+                if check_inputs is None:
                     continue
                 source_names = [
                     input_name for _edge, input_name in incoming_edge_bindings(flattened, node.id)
                 ]
-                validate_optimiser_input_selectors(
-                    node.data.nodeType,
-                    node.data.config,
-                    source_names,
-                    node_label=node.data.label,
-                )
+                check_inputs(node.data.config, source_names)
         except (ConfigError, ValueError) as exc:
             raise InvalidRequestError(str(exc)) from None
 
@@ -1146,52 +1141,39 @@ class SavePipelineService:
             raise InvalidRequestError(str(exc)) from None
 
     @staticmethod
-    def _validate_strict_node_configs(graph: PipelineGraph) -> None:
-        """Reject invalid discriminated configs before generating or writing."""
-        from haute._config_validation import validate_node_config
+    def _validate_node_configs(graph: PipelineGraph) -> None:
+        """Hold every node's config to its node type's config model before anything is written.
+
+        The root graph and each embedded submodel graph: an undeclared key a write would
+        lose, a workbench node's tables or sample (given from the form, never saved), and
+        a value of the wrong type or one its engine refuses. An unfinished config saves.
+        """
+        from haute._config_validation import CONFIG_REFUSALS, validate_node_config
 
         graphs = [graph, *SavePipelineService._iter_embedded_submodel_graphs(graph)]
-        strict_types = {
-            NodeType.DATA_INPUT,
-            NodeType.DATA_OUTPUT,
-            NodeType.BANDING,
-            NodeType.SCENARIO_EXPANDER,
-            NodeType.MODELLING,
-            NodeType.POLARS,
-        }
         for scoped_graph in graphs:
             for node in scoped_graph.nodes:
-                if node.data.nodeType not in strict_types:
-                    continue
                 try:
                     validate_node_config(
-                        node.data.nodeType, node.data.config, require_complete=False
+                        node.data.nodeType,
+                        node.data.config,
+                        require_complete=False,
+                        node_label=node.data.label,
                     )
-                except (ValueError, ConfigError) as exc:
+                except (ConfigError, ParseError) as exc:
+                    if exc.context.get("unrecognized_config_keys") or exc.context.get(
+                        "removed_config_keys"
+                    ):
+                        raise InvalidRequestError(f"{exc.message} Nothing was saved.") from None
                     raise InvalidRequestError(
                         f"Invalid {node.data.nodeType.value} config for "
                         f"node {node.data.label!r}: {exc}"
                     ) from exc
-
-    @staticmethod
-    def _validate_declared_config_keys(graph: PipelineGraph) -> None:
-        """Refuse a config key its node type does not declare, which a write would lose, and
-        a workbench node's tables or sample, which it is given from the form, never saved."""
-        from haute._config_validation import (
-            reject_form_given_keys,
-            reject_unrecognized_config_keys,
-        )
-
-        graphs = [graph, *SavePipelineService._iter_embedded_submodel_graphs(graph)]
-        for scoped_graph in graphs:
-            for node in scoped_graph.nodes:
-                try:
-                    reject_unrecognized_config_keys(
-                        node.data.nodeType, node.data.config, node_label=node.data.label
-                    )
-                    reject_form_given_keys(node.data.nodeType, node.data.config)
-                except (ConfigError, ParseError) as exc:
-                    raise InvalidRequestError(f"{exc.message} Nothing was saved.") from None
+                except CONFIG_REFUSALS as exc:
+                    raise InvalidRequestError(
+                        f"Invalid {node.data.nodeType.value} config for "
+                        f"node {node.data.label!r}: {exc}"
+                    ) from exc
 
     @staticmethod
     def _validate_quote_input_tables_do_not_shadow_nodes(graph: PipelineGraph) -> None:

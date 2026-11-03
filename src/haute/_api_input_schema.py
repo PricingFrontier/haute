@@ -63,7 +63,10 @@ from __future__ import annotations
 import keyword
 import re
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal, TypedDict, get_args
+from typing import Any, Literal, get_args
+
+from pydantic import ConfigDict, with_config
+from typing_extensions import TypedDict
 
 from haute._graph_utils import _sanitize_identifier_characters, is_frame_label
 from haute._jsonpath import (
@@ -144,32 +147,47 @@ class ApiInputSchemaError(HauteError):
     error_code = "api_input_schema_invalid"
 
 
+@with_config(ConfigDict(extra="forbid", strict=True, use_attribute_docstrings=True))
 class ColumnV2(TypedDict, total=False):
     """One column entry inside ``tables[].columns[]``."""
 
     name: str
+    """The column's name in the table."""
     path: str
+    """The JSONPath its values are read from, under the table's path."""
     type: ColumnType
+    """The column's type: `int`, `float`, `str`, `bool` or `date`."""
     status: ColumnStatus
+    """Whether the type was `Confirmed` by hand or `Inferred` from the sample."""
     selected: bool
+    """Whether the column is part of the table the node reads."""
     levels: list[str | None] | None
-    #: A date column's strftime pattern for its source values; ISO ``%Y-%m-%d`` when absent.
+    """The values a categorical column takes, or `null` when it has none listed."""
     format: str
-    #: Editor provenance the run never reads: where the column came from (inference, a
-    #: parent table's key it inherits, or typed by hand) and whether it serves as a key.
+    """A date column's strftime pattern for its source values; ISO `%Y-%m-%d` when absent."""
     origin: ColumnOrigin
+    """Where the column came from: `inferred`, `inherited` from a parent table's key, or `manual`;
+    the run never reads it."""
     key: bool
+    """Whether the column serves as a key of its table; the run never reads it."""
 
 
+@with_config(ConfigDict(extra="forbid", strict=True, use_attribute_docstrings=True))
 class TableV2(TypedDict, total=False):
     """One table entry inside ``tables[]``."""
 
     path: str
+    """The JSONPath of the table's rows in the request document, such as `$[:]`."""
     label: str
+    """The table's name, which a connection's `source_port` names it by."""
     displayPath: str | None
+    """The path the editor shows for the table, or `null` to show `path`."""
     emit: bool
+    """Whether the table is one of the node's outputs."""
     row_id_column: str | None
+    """The column identifying each row, or `null` for none."""
     columns: list[ColumnV2]
+    """The table's columns."""
 
 
 _STRUCTURED_API_INPUT_SUFFIXES = (".json", ".jsonl", ".ndjson", ".xml")

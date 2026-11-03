@@ -1114,7 +1114,7 @@ class TestExecuteSinkDataOutput:
     @pytest.mark.parametrize(
         ("selected_columns", "message"),
         [
-            ("id", "must be a list"),
+            ("id", "setting 'selected_columns': Input should be a valid list"),
             (["id", ""], "must contain non-empty string names"),
         ],
     )
@@ -2237,11 +2237,14 @@ class TestDataInputBuilder:
         assert is_source
         return fn
 
-    def test_unconfigured_node_previews_as_empty_frame(self) -> None:
-        fn = self._build({})
-        out = fn()
-        assert isinstance(out, pl.LazyFrame)
-        assert out.collect().height == 0
+    def test_a_config_without_a_provider_is_refused_when_built(self) -> None:
+        """The palette gives every Data Input its ``inputType``: a config without one is
+        refused when the node is built, naming the setting."""
+        from haute.errors import NodeConfigError
+        from haute.executor import _build_node_fn
+
+        with pytest.raises(NodeConfigError, match="setting 'inputType'"):
+            _build_node_fn(_data_input_node("din", {}), source_names=[])
 
     def test_configured_node_reads_through_registry(self, haute_scratch, struct_frame) -> None:
         path = haute_scratch / "t.parquet"

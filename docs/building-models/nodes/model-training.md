@@ -875,6 +875,60 @@ A Poisson claim-frequency GLM with an exposure offset:
     }
     ```
 
+    <!-- config-keys:start -->
+
+    Every key the config may hold:
+
+    | Key | Type | Description |
+    |---|---|---|
+    | `name` | text | The model's name, used for its run and exported file. |
+    | `target` | text | The column the model predicts. |
+    | `weight` | text | The column weighting each row, such as exposure. |
+    | `feature_columns` | list of text | The columns the model trains on. |
+    | `algorithm` | text | The model family: `catboost`, `glm`, `xgboost`, `lightgbm`, `ebm` or `tboost`; CatBoost when absent. |
+    | `task` | `"regression"` or `"classification"` | Whether the model predicts a value or a class. |
+    | `params` | map of text to any JSON value | The family's own parameters, by name. |
+    | `evaluation` | map of text to any JSON value | How the model is evaluated: the holdout or cross-validation split. |
+    | `tuning` | map of text to any JSON value or `null` | Hyperparameter tuning settings; `null` or absent trains with `params` as set. |
+    | `refit_on_development` | `true` or `false` | Whether the final model is refit on all development rows (`true`, the default) or keeps the holdout fit. |
+    | `metrics` | list of text | The evaluation metrics reported. |
+    | `mlflow_experiment` | text | The MLflow experiment a logged run goes to. |
+    | `output_dir` | text | The folder a trained model is written to. |
+    | `model_export_path` | text | The Export pane's file path; empty or absent uses the default. |
+    | `row_limit` | whole number or `null` | The most rows trained on; `null` trains on every row. |
+    | `terms` | map of text to any JSON value | For a GLM, each feature's term: linear, categorical, a spline or a banded factor. |
+    | `family` | text | For a GLM, the error distribution, such as `poisson` or `gamma`. |
+    | `link` | text | For a GLM, the link function, such as `log`. |
+    | `offset` | text or `null` | For a GLM, the offset column; `null` for none. |
+    | `interactions` | list of map of text to any JSON value | For a GLM, interaction terms between features. |
+    | `regularization` | text or `null` | For a GLM, the penalty: `ridge`, `lasso` or `elastic_net`; empty or `null` for none. |
+    | `alpha` | number or `null` | For a GLM, the penalty strength; `null` chooses it by cross-validation. |
+    | `l1_ratio` | number | For an elastic-net GLM, the share of the L1 penalty, from 0 to 1. |
+    | `cv_folds` | whole number | For a GLM, the cross-validation folds that choose the penalty strength (2 to 20). |
+    | `cv_selection` | `"min"` or `"1se"` | For a GLM, which cross-validated strength is chosen: the minimum or one standard error above it. |
+    | `cv_seed` | whole number | For a GLM, the seed of the cross-validation split. |
+    | `max_iter` | whole number or `null` | For a GLM, the most solver iterations; `null` takes the solver's default. |
+    | `tol` | number or `null` | For a GLM, the solver's convergence tolerance; `null` takes the solver's default. |
+    | `robust_standard_errors` | `"HC0"` or `"HC1"` or `"HC2"` or `"HC3"` or `null` | For a GLM, the robust standard error type; `null` for model-based errors. |
+    | `intercept` | `true` or `false` | For a GLM, whether the model has an intercept. |
+    | `var_power` | number or `null` | For a Tweedie GLM, the variance power (1 to 2); `null` when not set. |
+    | `theta` | number or `null` | For a negative binomial GLM, the dispersion; `null` when not set. |
+    | `loss_function` | text or `null` | The loss trained on, from the family's own losses; `null` takes the task's default. |
+    | `variance_power` | number or `null` | For a Tweedie loss, the variance power; `null` when not set. |
+    | `monotone_constraints` | map of text to whole number or `null` | For each constrained feature, `1` (increasing) or `-1` (decreasing); `null` for none. |
+    | `feature_weights` | map of text to number | For each weighted feature, its weight in feature selection. |
+    | `fold_column` | text | The column assigning rows to cross-validation folds. |
+    | `id_columns` | list of text | Columns identifying rows, kept with the predictions but never trained on. |
+    | `mlflow_destination` | `""` or `"databricks"` or `"server"` | The MLflow server or Databricks workspace a run is logged to; empty or absent is the local folder. |
+    | `positive_class` | text or number or `true` or `false` | For a binary classifier, the label trained as positive; `true` or `1` when absent. |
+    | `device` | `"cpu"` or `"gpu"` | For XGBoost, whether it trains on the CPU or a GPU; the CPU when absent. |
+    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
+    | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
+    | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |
+
+    <!-- config-keys:end -->
+
 **See also:**
 
 - [Model Scoring](model-score.md)  - to score data with your trained model

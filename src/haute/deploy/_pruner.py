@@ -117,7 +117,7 @@ def find_output_node(graph: PipelineGraph) -> str:
     """Find the single output node in a graph.
 
     Looks for a response node (a Quote Response or Workbench Output, see
-    ``RESPONSE_NODE_TYPES``) or a node with ``config.output=True``.
+    ``RESPONSE_NODE_TYPES``).
 
     Raises:
         ValueError: If zero or multiple output nodes are found.
@@ -127,7 +127,7 @@ def find_output_node(graph: PipelineGraph) -> str:
     for n in graph.nodes:
         if n.id in seen:
             continue
-        if n.data.nodeType in RESPONSE_NODE_TYPES or n.data.config.get("output"):
+        if n.data.nodeType in RESPONSE_NODE_TYPES:
             candidates.append(n.id)
             seen.add(n.id)
 
@@ -136,7 +136,7 @@ def find_output_node(graph: PipelineGraph) -> str:
     if len(candidates) > 1:
         raise ValueError(
             f"Multiple output nodes found: {candidates}. "
-            "Only one node should be marked output=True."
+            "Only one response node may answer a request."
         )
     return candidates[0]
 

@@ -181,7 +181,6 @@ def _minimal_config_for(nt: NodeType) -> dict[str, Any]:
         return {
             "tables": [
                 {
-                    "name": "age",
                     "factors": ["age_band"],
                     "outputColumn": "age_factor",
                     "entries": [],

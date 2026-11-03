@@ -1,7 +1,8 @@
 # Recovering a Pipeline
 
 A pipeline file can hold something the editor can't load as written: a setting an older
-version of Haute wrote, a hand edit, or a file changed outside the editor. Haute then opens
+version of Haute wrote, a hand edit (a key the node doesn't have, or a value of the wrong
+kind, such as text where a number belongs), or a file changed outside the editor. Haute then opens
 the pipeline in recovery mode rather than refusing it. A banner across the canvas says how
 many issues there are, and **Review detected issues** lists each one with where it is. The
 pipeline is shown as it is, and you can't edit, save or run it until every issue is resolved.
@@ -14,7 +15,9 @@ unavailable node to see what's wrong with it and what you can do:
 
 - **Recover settings** rebuilds the node from the settings it has. Its code and every valid
   setting stay; a setting it lacks is filled in as a new node's would be, and one that no
-  longer belongs is dropped. A summary lists each change. Try this first.
+  longer belongs is dropped. A value Haute can't use takes a new node's value, or, in a list
+  such as a Banding node's factors, is removed with the entry it sits in while the other
+  entries stay. A summary lists each change. Try this first.
 - **Reset node** replaces the node's settings and code with a new node's. An Edge Join is
   never reset, because a new join has no keys: recover it instead.
 - **Remove unavailable node** deletes the node and its connections. Its config file stays

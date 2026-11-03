@@ -40,11 +40,24 @@ async def _post_many_same_key(
     post: Callable[[], Awaitable[httpx.Response]],
     *,
     first_started: threading.Event,
+    release_first: threading.Event,
     count: int = 5,
 ) -> list[httpx.Response]:
+    """Post *count* same-key requests while the first one runs.
+
+    The first request is held until every later one but the newest has been
+    answered (superseded), so the outcome never depends on how quickly a
+    loaded machine delivers the later requests.
+    """
     first = asyncio.create_task(post())
     await asyncio.to_thread(first_started.wait, 2)
     rest = [asyncio.create_task(post()) for _ in range(count - 1)]
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 5
+    while sum(task.done() for task in rest) < count - 2:
+        assert loop.time() < deadline, "timed out waiting for the superseded requests"
+        await asyncio.sleep(0.005)
+    release_first.set()
     return await asyncio.gather(first, *rest)
 
 
@@ -134,6 +147,7 @@ async def test_preview_supersedes_obsolete_same_key_requests(
     app = project_app()
 
     first_started = threading.Event()
+    release_first = threading.Event()
     state_lock = threading.Lock()
     call_count = 0
     active = 0
@@ -145,9 +159,11 @@ async def test_preview_supersedes_obsolete_same_key_requests(
             call_count += 1
             active += 1
             max_active = max(max_active, active)
+            first = call_count == 1
         first_started.set()
         try:
-            time.sleep(0.2)
+            if first:
+                assert release_first.wait(5), "the first request was never released"
             return {
                 "target": NodeResult(
                     status="ok",
@@ -171,7 +187,9 @@ async def test_preview_supersedes_obsolete_same_key_requests(
                 json={"graph": _single_node_graph(), "node_id": "target", "source": "live"},
             )
 
-        responses = await _post_many_same_key(post, first_started=first_started)
+        responses = await _post_many_same_key(
+            post, first_started=first_started, release_first=release_first
+        )
 
     statuses = [r.status_code for r in responses]
     assert statuses.count(200) == 1
@@ -1183,6 +1201,7 @@ async def test_trace_supersedes_obsolete_same_key_requests(monkeypatch: pytest.M
     app = project_app()
 
     first_started = threading.Event()
+    release_first = threading.Event()
     state_lock = threading.Lock()
     call_count = 0
     active = 0
@@ -1194,9 +1213,11 @@ async def test_trace_supersedes_obsolete_same_key_requests(monkeypatch: pytest.M
             call_count += 1
             active += 1
             max_active = max(max_active, active)
+            first = call_count == 1
         first_started.set()
         try:
-            time.sleep(0.2)
+            if first:
+                assert release_first.wait(5), "the first request was never released"
             return TraceResult(
                 target_node_id="target",
                 row_index=0,
@@ -1227,7 +1248,9 @@ async def test_trace_supersedes_obsolete_same_key_requests(monkeypatch: pytest.M
                 },
             )
 
-        responses = await _post_many_same_key(post, first_started=first_started)
+        responses = await _post_many_same_key(
+            post, first_started=first_started, release_first=release_first
+        )
 
     statuses = [r.status_code for r in responses]
     assert statuses.count(200) == 1

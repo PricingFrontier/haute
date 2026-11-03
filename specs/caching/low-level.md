@@ -72,7 +72,7 @@ missing and unknown names before hashing:
 | `preview_trace` | 5 | `preamble`, `global_constants`, `source_file`, `nodes`, `edges`, `target_node_id`, `source`, `requested_columns`, `initial_column_limit`, `row_limit`, `port_label`, `contract_fingerprint`, `selected_live_switch_path`, `runtime_input_fingerprint`, `execution_semantics_version`, `polars_version` |
 | `runtime_graph_input` | 4 | `source`, `sources`, `preamble_fingerprint`, `extra` |
 | `deploy_schema` | 3 | `graph_fingerprint`, `runtime_input_fingerprint`, `artifact_fingerprint`, `output_node_id`, `input_node_ids`, `source`, `row_limit`, `execution_policy`, `polars_version` |
-| `model_contract` | 1 | `feature_names`, `categorical_features`, `offset_column` |
+| `model_contract` | 2 | `feature_names`, `optional_feature_names`, `categorical_features`, `offset_column` |
 | `input_snapshot` | 1 | `schema_version`, `provider`, `descriptor` |
 | `node_snapshot_signature` | 3 | `lineage_fingerprint`, `runtime_input_fingerprint`, `source`, `semantics_class`, `enforce_contracts`, `preamble_supplied`, `execution_semantics_version`, `polars_version` |
 

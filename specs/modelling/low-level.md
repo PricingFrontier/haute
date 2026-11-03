@@ -368,7 +368,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 2. `TrainService.start`: locate the modelling node in the graph; `_validate_config` (target set,
    algorithm registered, canonical `evaluation` and optional `tuning` parsed,
    the removed `split`/`cross_validation` rejected by the one check
-   `src/haute/modelling/_train_config.py::reject_removed_evaluation_fields`, the configured
+   `src/haute/_config_validation.py::reject_removed_config_keys`, the configured
    values checked by `src/haute/modelling/_train_config.py::validate_modelling_config_values`:
    the algorithm name exactly as a descriptor key (case-sensitive), GLM family/link and
    solver validity (`validate_glm_params`) or, for every other family, loss validity against

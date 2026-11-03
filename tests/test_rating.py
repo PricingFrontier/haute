@@ -359,7 +359,6 @@ class TestRatingFactorInputSchema:
         from haute import _rating
 
         table = {
-            "name": "Named table",
             "factors": factors,
             "outputColumn": "factor",
             "entries": [{**{factor: "x" for factor in factors}, "value": 1.0}],
@@ -381,7 +380,6 @@ class TestRatingFactorInputSchema:
 
     def test_missing_input_factor_is_not_hidden_by_incomplete_entries(self) -> None:
         table = {
-            "name": "Incomplete lookup",
             "factors": ["missing"],
             "outputColumn": "factor",
             "entries": [{"value": 1.0}],
@@ -1851,7 +1849,6 @@ class TestApplyRatingStepCanonicalConfig:
         config: dict[str, Any] = {
             "tables": [
                 {
-                    "name": "vehicle_factor",
                     "factors": ["vehicle_age_band", "cover_type"],
                     "outputColumn": "vehicle_factor",
                     "defaultValue": "1.0",
@@ -1901,7 +1898,6 @@ class TestApplyRatingStepCanonicalConfig:
         config: dict[str, Any] = {
             "tables": [
                 {
-                    "name": "vehicle_factor",
                     "factors": ["vehicle_age_band", "cover_type", "channel"],
                     "outputColumn": "vehicle_factor",
                     "defaultValue": "1.0",

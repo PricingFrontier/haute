@@ -682,37 +682,40 @@ class TestExecuteTrace:
         assert len(result.steps) == 3
         assert all(s.column_relevant for s in result.steps)
 
-    def test_row_id_from_api_input(self, tmp_path):
-        """Trace discovers row_id_column from apiInput source and extracts its value."""
-        # Use a parquet-backed apiInput so the executor reads data directly
-        # without needing the v2 JSON cache infrastructure.
-        p = tmp_path / "data.parquet"
-        pl.DataFrame({"policy_id": [100, 200, 300], "x": [1, 2, 3]}).write_parquet(p)
+    def test_row_id_from_a_request_table(self):
+        """The trace's row identity is a request table's row id column, as the row carries it."""
+        from haute.trace import request_row_identity
 
-        graph = _g(
+        node = _n(
             {
-                "nodes": [
-                    _n(
-                        {
-                            "id": "src",
-                            "data": {
-                                "label": "src",
-                                "nodeType": "apiInput",
-                                "config": {
-                                    "path": str(p),
-                                    "row_id_column": "policy_id",
-                                },
+                "id": "src",
+                "data": {
+                    "label": "src",
+                    "nodeType": "apiInput",
+                    "config": {
+                        "path": "quotes.json",
+                        "tables": [
+                            {"path": "$[:]", "label": "quotes", "columns": []},
+                            {
+                                "path": "$[:].drivers[:]",
+                                "label": "drivers",
+                                "row_id_column": "driver_id",
+                                "columns": [],
                             },
-                        }
-                    ),
-                    _transform_node("t", "df = src"),
-                ],
-                "edges": [_edge("src", "t", source_handle="src")],
+                            {
+                                "path": "$[:].policies[:]",
+                                "label": "policies",
+                                "row_id_column": "policy_id",
+                                "columns": [],
+                            },
+                        ],
+                    },
+                },
             }
         )
-        result = execute_trace(graph, row_index=1)
-        assert result.row_id_column == "policy_id"
-        assert result.row_id_value == 200
+
+        assert request_row_identity([node], {"policy_id": 200, "x": 2}) == ("policy_id", 200)
+        assert request_row_identity([node], {"x": 2}) == (None, None)
 
     def test_row_id_none_without_api_input(self, tmp_path):
         """Without apiInput node, row_id_column and row_id_value are None."""

@@ -143,12 +143,12 @@ def test_a_constant_with_two_entries_of_one_name_is_refused_as_the_executor_refu
         id="rates",
         data=NodeData(label="rates", nodeType=NodeType.CONSTANT, config={"values": values}),
     )
-    _, executor_fn, _ = _build_node_fn(node)
+    message = "Constant name 'rate' is used by more than one value"
     with pytest.raises(ValueError, match="duplicate JSON key 'rate'"):
         namespace["pipeline"].run(source="batch")
-    message = "Constant name 'rate' is used by more than one value"
+    # Building the node checks its whole model, so the executor refuses it at build.
     with pytest.raises(NodeConfigError, match=message):
-        executor_fn()
+        _build_node_fn(node)
 
 
 def test_a_banding_declaration_refuses_two_active_factors_writing_one_column(

@@ -91,13 +91,9 @@ def nested_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 def _api_input_config(path: str) -> dict[str, Any]:
-    """A flat-file apiInput config carrying a (relative) ``path``.
-
-    ``sourceType`` defaults to ``flat_file`` inside ``build_data_source_adapter``;
-    spelling it out matches how the frontend serialises a flat apiInput and keeps
-    this parallel with the DATA_INPUT sibling test.
-    """
-    return {"sourceType": "flat_file", "path": path}
+    """A flat-file apiInput config carrying a (relative) ``path``, as the frontend
+    serialises a flat apiInput (``sourceType`` is not an apiInput config key)."""
+    return {"path": path}
 
 
 def _api_input_graph(path: str) -> PipelineGraph:

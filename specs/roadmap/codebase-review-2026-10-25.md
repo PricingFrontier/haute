@@ -190,7 +190,6 @@ puts it in front of the owner because of what it can cost in production:
 
 | Area | Findings | Package |
 |---|---|---|
-| Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
 | Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |
 | Assistant | ASA-3, ASA-4, ASA-6, ASA-9 | `ASSIST-55` |
 | Assistant | ASA-5, ASA-8, ASA-10, ASA-11, ASA-12, ASA-14 | `ASSIST-56` |
@@ -208,14 +207,13 @@ puts it in front of the owner because of what it can cost in production:
 Already tracked before this review and not repeated: the
 three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
 the per-type
-validators and branches (`PCFG-R07`, `PCFG-R09`); the test-only config helpers and
+branches (`PCFG-R09`); the test-only config helpers and
 event-bus hooks (`ENGQ-R01`); the optimiser's frontier points without convergence traces
 (`OPT-PC04`); the test-only
 `_compute_schema_hash` and the training facade (`ENGQ-R01`); fits that exceed
 their budget
 (`MOD-M01`, `MOD-M02`); the assistant
-catalog's hand tables and
-key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
+catalog's hand tables (`PCFG-R09`), its whole-list rewrites
 (`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
 (`ENGQ-R01`); the dead

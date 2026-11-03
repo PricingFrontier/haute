@@ -215,6 +215,18 @@ test("a shared group's root is compiled once, and every other module checks only
   assert.ok(Object.hasOwn(shared.$defs, "ExecutionStageMetricsPayload"));
   assert.ok(Object.hasOwn(shared.$defs, "ExecutionStrategyDiagnosticPayloadOutput"));
 
+  // The pipeline graph is shared too: the git and pipeline groups check a graph only as an
+  // object, while its own module keeps a submodel definition's graph as a reference to itself.
+  for (const group of ["git", "pipeline"]) {
+    const module = modules.find(({ validatorFilename }) =>
+      validatorFilename === `api-contracts.${group}.validators.mjs`);
+    const definitions = extractModuleContractSchema(schema, module).$defs;
+    assert.equal(Object.hasOwn(definitions, "PipelineGraph"), false, group);
+    assert.equal(Object.hasOwn(definitions, "SubmodelDefinition"), false, group);
+  }
+  const graph = extractContractSchema(schema, "PipelineGraph").schema;
+  assert.deepEqual(graph.$defs.SubmodelDefinition.properties.graph, { $ref: "#" });
+
   const unshared = { ...schema, "x-haute-shared-response-groups": ["utility"] };
   assert.throws(() => validatorModules(unshared), /holds exactly one model: utility/);
 });

@@ -423,6 +423,23 @@ changes the next parse and standalone execution without regenerating Python; a
 missing, malformed, or shape-incomplete sidecar fails before the data/object file is
 read.
 
+**One config model per node type.** Every node type has one config model: the shape its
+config may take, each key with its type, the values an enumerated key accepts, and which keys
+hold `null` (where Haute writes it for a cleared setting; elsewhere an unset setting is an
+absent key). The model is the one validation boundary. Parsing a pipeline, saving it from the
+editor or the assistant, the node-scoped save, recovering a node's settings, writing a sidecar
+and building a node to run it all hold the config to it, so a config any of them accepts the
+others accept too. A key the type does not declare, a value of the wrong type or outside its
+enumeration, and a value its engine rules refuse (a banding boundary, a GLM family and link
+pair, a rating table row) fail at the first of these, with a message naming the node, the
+setting's path in the config and what is wrong. (A Rating Step's rows are checked by its
+builder as the first step of a run, not twice.) A config that is unfinished in a way the editor
+allows (a Data Input with no file chosen yet, a new Modelling node, a Model Score whose source
+mode is picked before its model) is not wrong: it saves, and the node reports what it lacks
+when it runs or when training or a solve starts. The models are part of the generated browser
+contract, so a node's config in every response is typed by its node type, and the node
+reference's tables of config keys are generated from them.
+
 For tabular Data Input values specifically, a relative `path` is interpreted
 from the Haute project root by both canvas execution and standalone runs. The
 standalone runtime discovers the project root from the pipeline file and uses the
@@ -745,10 +762,17 @@ everything else declarative lives in a JSON sidecar. This keeps generated/round-
 Python readable — no large JSON blobs embedded as string literals — while letting the GUI
 edit the declarative parts without ever touching Python source.
 
-A node type's declared keys are its `TypedDict` annotations plus the universal keys. The same
-set is checked at parse, at save validation, and again at the sidecar write boundary. An
-off-spec key from external tooling, a not-yet-hardened code path, or a frontend bug therefore
-fails the operation that carries it, and no code path removes a key and continues.
+A node type's declared keys are its config model's keys plus the universal keys. The same
+model is checked at parse, at save validation, at the sidecar write boundary, in recovery and
+when a node is built to run. An off-spec key or value from external tooling, a
+not-yet-hardened code path, or a frontend bug therefore fails the operation that carries it,
+and no code path removes a key and continues. The model is the node type's existing config
+`TypedDict`, which Pydantic validates closed and strict, rather than a second class beside it:
+the engine code that reads a config, the recovery walk over its fields and the generated
+contract all read one definition, and a key such as `validate` or `model_path` needs no alias.
+Value rules that need more than a type (a banding boundary, a Polars call's arguments, a GLM
+family and link) stay the engine's own functions, which the model calls, so a rule has one
+implementation.
 
 Rating-step sidecars have one canonical persisted entry shape: ordered row arrays. Reads and
 writes validate that shape directly. Object-key maps are not accepted because a JSON object key

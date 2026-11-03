@@ -515,16 +515,16 @@ class TestStartGlmMergeAndKeepColumns:
         # interaction factor, so its sink never projects to the keep columns.
         assert captured["project_to_keep_columns"] is False
 
-    def test_start_stamps_explicit_timeout_before_preparation(self, haute_scratch):
+    def test_start_stamps_the_settings_time_limit_before_preparation(self, haute_scratch):
+        """The job's time limit is the pipeline settings' modelling limit, set at start."""
+        from haute._pipeline_settings import update_pipeline_settings
         from haute.routes._job_store import JobStore
         from haute.schemas import TrainRequest
 
+        update_pipeline_settings(haute_scratch, {"modelling_time_limit_minutes": 0.5})
         store = JobStore()
         service = TrainService(store)
         graph = self._glm_graph(haute_scratch)
-        for node in graph.nodes:
-            if node.id == "train":
-                node.data.config["timeout"] = 17
         body = TrainRequest(graph=graph, node_id="train")
         observed: dict[str, object] = {}
 
@@ -542,7 +542,7 @@ class TestStartGlmMergeAndKeepColumns:
             service._join_preparation(response.job_id)
 
         assert isinstance(observed["start_time"], float)
-        assert observed["timeout"] == 17
+        assert observed["timeout"] == 30
         assert store.require_job(response.job_id)["status"] == "error"
 
     def test_failure_during_execute_marks_background_job_error(self, haute_scratch):

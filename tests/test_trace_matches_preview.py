@@ -1068,6 +1068,7 @@ class TestLimitedPreviewTrace:
     ):
         """A pass-through node with several inputs returns only one of them, so a
         unique row below it proves nothing about the other input."""
+        from haute._config_io import palette_default_config
         from haute._types import GraphNode, NodeData, NodeType
 
         first_path = tmp_path / "first.parquet"
@@ -1081,7 +1082,11 @@ class TestLimitedPreviewTrace:
                     _source_node("second", str(second_path)),
                     GraphNode(
                         id="through",
-                        data=NodeData(label="through", nodeType=NodeType(node_type), config={}),
+                        data=NodeData(
+                            label="through",
+                            nodeType=NodeType(node_type),
+                            config=palette_default_config(NodeType(node_type)),
+                        ),
                     ),
                     _transform_node("kept", "df = through.filter(pl.col('id') == 1)"),
                 ],
@@ -1301,7 +1306,6 @@ class TestLimitedPreviewTrace:
                             config={
                                 "tables": [
                                     {
-                                        "name": "region",
                                         "factors": ["region"],
                                         "outputColumn": "factor",
                                         "entries": [{"region": "north", "value": 2.0}],

@@ -49,6 +49,21 @@ _DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY = "__haute_deploy_model_optional
 #: a client-supplied value cannot make planning open a file.
 _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY = "__haute_deploy_optimiser_input_columns"
 
+#: Private config key the deploy scorer sets on its Quote Response copy: a batch answered as
+#: one frame keeps one top-level answer per row, even where two answers coincide.
+DEPLOY_ANSWER_PER_ROW_CONFIG_KEY = "__haute_deploy_answer_per_row"
+
+#: The private keys the deploy scorer writes on its annotated graph copy, by node type. A
+#: config a run builds may hold them (``validate_node_config(persisted=False)``); a persisted
+#: config never does.
+DEPLOY_PRIVATE_CONFIG_KEYS: Mapping[NodeType, frozenset[str]] = {
+    NodeType.MODEL_SCORE: frozenset(
+        {_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY, _DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY}
+    ),
+    NodeType.OPTIMISER_APPLY: frozenset({_DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY}),
+    NodeType.OUTPUT: frozenset({DEPLOY_ANSWER_PER_ROW_CONFIG_KEY}),
+}
+
 
 @dataclass(frozen=True, slots=True)
 class Contract:
@@ -216,3 +231,47 @@ def get_column_contract(
 ) -> ColumnContract:
     """Return the column contract for a node type as its tuple form."""
     return get_node_contract(node_type, config).to_tuple()
+
+
+def declared_contract_json(value: Any) -> str | dict[str, Any]:
+    """A user-declared contract in the JSON form a config holds.
+
+    ``Contract(...)`` in a decorator, a ``(inputs, outputs)`` pair and a dict of
+    tuples or sets all declare the same contract; a config holds it as
+    ``"opaque"`` or ``{"inputs", "outputs", "inputs_by_parent"?}`` with lists
+    (an authored list or tuple keeps its order, a set is sorted). The value is
+    checked first (``Contract.from_user_declared``), so anything else raises.
+    """
+    contract = Contract.from_user_declared(value)
+    if isinstance(value, str):
+        return OPAQUE_CONTRACT_SENTINEL
+    if contract is None:
+        raise ValueError("A declared contract cannot be None.")
+    if isinstance(value, Contract) or (hasattr(value, "inputs") and hasattr(value, "outputs")):
+        declared: dict[str, Any] = {
+            "inputs": _column_list(value.inputs),
+            "outputs": _column_list(value.outputs),
+        }
+        by_parent = getattr(value, "inputs_by_parent", None)
+    elif isinstance(value, tuple):
+        declared = {"inputs": _column_list(value[0]), "outputs": _column_list(value[1])}
+        by_parent = None
+    else:
+        declared = {
+            "inputs": _column_list(value["inputs"]),
+            "outputs": _column_list(value["outputs"]),
+        }
+        by_parent = value.get("inputs_by_parent")
+    if by_parent is not None:
+        declared["inputs_by_parent"] = {
+            parent: _column_list(columns) for parent, columns in by_parent.items()
+        }
+    return declared
+
+
+def _column_list(columns: Any) -> list[str] | None:
+    if columns is None:
+        return None
+    if isinstance(columns, set | frozenset):
+        return sorted(columns)
+    return list(columns)

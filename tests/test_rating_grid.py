@@ -39,13 +39,11 @@ def _round_trip(tmp_path: Path, config: dict) -> tuple[str, dict]:
     "table",
     [
         {
-            "name": "Region",
             "factors": ["region"],
             "outputColumn": "region_factor",
             "entries": [{"region": "north", "value": 1.1}, {"region": "south", "value": 0}],
         },
         {
-            "name": "Age by region",
             "factors": ["age", "region"],
             "outputColumn": "f",
             "onMissing": "neutral",
@@ -59,14 +57,12 @@ def _round_trip(tmp_path: Path, config: dict) -> tuple[str, dict]:
         },
         {
             # The editor holds a default as typed, text; it reads back as that text.
-            "name": "Typed default",
             "factors": ["region"],
             "outputColumn": "h",
             "defaultValue": "1",
             "entries": [{"region": "north", "value": 1.1}],
         },
         {
-            "name": "Three",
             "factors": ["a", "b", "c"],
             "outputColumn": "g",
             "entries": [
@@ -91,7 +87,6 @@ def test_a_table_round_trips_through_its_grid(tmp_path: Path, table: dict) -> No
 
 def test_the_grid_writes_a_row_a_line_and_a_missing_cell_as_null() -> None:
     table = {
-        "name": "T",
         "factors": ["band", "region"],
         "outputColumn": "f",
         "entries": [
@@ -114,7 +109,7 @@ def test_changing_one_rate_changes_one_line() -> None:
         for band in ("a", "b", "c", "d")
         for region in ("n", "s", "e", "w")
     ]
-    table = {"name": "T", "factors": ["band", "region"], "outputColumn": "f", "entries": entries}
+    table = {"factors": ["band", "region"], "outputColumn": "f", "entries": entries}
     before = node_config_json(NodeType.RATING_STEP, {"tables": [table]}, node_label="r")
     entries[5] = {**entries[5], "value": 0.25}
     after = node_config_json(NodeType.RATING_STEP, {"tables": [table]}, node_label="r")

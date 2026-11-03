@@ -182,6 +182,39 @@ To see the trade-off instead, switch `claims` to **Sweep**, fill in **from** and
     }
     ```
 
+    <!-- config-keys:start -->
+
+    Every key the config may hold:
+
+    | Key | Type | Description |
+    |---|---|---|
+    | `mode` | `"online"` or `"ratebook"` | Whether each quote is optimised (`online`) or a factor table is fitted (`ratebook`). |
+    | `quote_id` | text | The column identifying each quote. |
+    | `scenario_index` | text | The column holding each scenario's grid position. |
+    | `scenario_value` | text | The column holding each scenario's value. |
+    | `objective` | text | The column the optimiser maximises. |
+    | `constraints` | map of text to map of text to number | For each constrained column, its bound: `min`, `max`, `min_pct` or `max_pct`. |
+    | `max_iter` | whole number | The most solver iterations. |
+    | `tolerance` | number | The solver's convergence tolerance. |
+    | `frontier_ranges` | map of text to map of text to number | For each constraint swept by the frontier, its range. |
+    | `frontier_steps` | whole number | The number of points on the frontier. |
+    | `factor_columns` | list of list of text | For a ratebook, the factor groups the table is fitted over. |
+    | `max_cd_iterations` | whole number | For a ratebook, the most coordinate-descent passes. |
+    | `cd_tolerance` | number | For a ratebook, the coordinate-descent tolerance. |
+    | `data_input` | text | The connected input optimised, by its input name; may be absent with one input. |
+    | `banding_source` | text | For a ratebook, the connected input giving the factors' bands. |
+    | `analysis_input` | text | The connected input the analysis columns come from; `data_input` when absent. |
+    | `analysis_columns` | list of text | Up to 12 columns the result is broken down by; never given to the solver. |
+    | `mlflow_experiment` | text | The MLflow experiment a logged result goes to. |
+    | `mlflow_destination` | `""` or `"databricks"` or `"server"` | The MLflow server or Databricks workspace a result is logged to; empty or absent is the local folder. |
+    | `result_export_path` | text | The Export pane's save path, relative to the project root. |
+    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
+    | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
+    | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |
+
+    <!-- config-keys:end -->
+
 **See also:**
 
 - [Expander](scenario-expander.md)  - generate candidate prices for the optimiser

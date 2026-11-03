@@ -183,18 +183,12 @@ def _prepare_config_for_sidecar(
     *,
     node_label: str,
 ) -> dict[str, Any]:
-    from haute._config_validation import (
-        CODE_CONFIG_KEYS,
-        reject_form_given_keys,
-        reject_removed_config_keys,
-        reject_unrecognized_config_keys,
-    )
+    from haute._config_validation import CODE_CONFIG_KEYS, validate_node_config
 
-    reject_removed_config_keys(node_type, config)
-    reject_form_given_keys(node_type, config)
-    # Save validation has already refused an undeclared key; the write
-    # boundary refuses it too, so no path drops a user key and continues.
-    reject_unrecognized_config_keys(node_type, config, node_label=node_label)
+    # Save validation has already refused a config its model refuses; the write
+    # boundary refuses it too, so no path drops a user key or writes a malformed
+    # value and continues.
+    validate_node_config(node_type, config, require_complete=False, node_label=node_label)
 
     # Nested mappings may contain arbitrary column names or user records, and
     # type-specific serializers own their nested records. The contract
@@ -395,10 +389,18 @@ def config_path_for_node(
 def load_node_config(
     config_path: str | Path,
     base_dir: Path | None = None,
+    *,
+    node_type: NodeType | None = None,
+    validate: bool = True,
 ) -> dict[str, Any]:
-    """Load a node's config from its JSON file.
+    """Load a node's config from its JSON file, held to its node type's config model.
 
-    *config_path* can be relative (resolved against *base_dir*) or absolute.
+    *config_path* can be relative (resolved against *base_dir*) or absolute. The
+    node type is *node_type*, else the one the file's folder names; a standalone
+    run's helper names it, since a sidecar may sit in any folder, and the config
+    is held to the model as a run's is (``at_run``). The parser passes
+    ``validate=False``: it holds the config it assembles from the file to the
+    whole model once, after its steps and contract are reconciled.
 
     Raises ``ValueError`` if the resolved path escapes *base_dir*.
     """
@@ -409,7 +411,13 @@ def load_node_config(
     if base_dir and not is_contained(base_dir, resolved):
         raise ValueError(f"Config path {config_path!r} resolves outside project root")
     config = _load_json_object(resolved)
-    return _normalise_loaded_config(config, _config_node_type_from_path(resolved))
+    kind = node_type if node_type is not None else _config_node_type_from_path(resolved)
+    loaded = _normalise_loaded_config(config, kind)
+    if validate and kind is not None:
+        from haute._config_validation import validate_node_config
+
+        validate_node_config(kind, loaded, require_complete=False, at_run=True)
+    return loaded
 
 
 def remove_config_file(

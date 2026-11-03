@@ -433,23 +433,19 @@ def test_the_modelling_time_limit_is_a_training_jobs_default(project: Path) -> N
     assert _default_train_timeout() == 90 * 60
 
 
-def test_the_optimisation_time_limit_is_none_until_set_and_a_config_timeout_wins(
+def test_the_optimisation_time_limit_is_none_until_set_and_rounds_up_to_whole_seconds(
     project: Path,
 ) -> None:
-    from haute.routes._optimiser_service import (
-        _auto_range_timeout_from_config,
-        _solve_timeout_from_config,
-    )
+    """A solve and an auto-range read their time limit from the settings alone."""
+    from haute.routes._optimiser_service import _optimisation_time_limit
 
-    assert _solve_timeout_from_config({}) is None
-    assert _auto_range_timeout_from_config({}) is None
+    assert _optimisation_time_limit() is None
 
     update_pipeline_settings(project, {"optimisation_time_limit_minutes": 0.5})
+    assert _optimisation_time_limit() == 30
 
-    assert _solve_timeout_from_config({}) == 30
-    assert _auto_range_timeout_from_config({}) == 30
-    assert _solve_timeout_from_config({"timeout": 7}) == 7
-    assert _auto_range_timeout_from_config({"auto_range_timeout": 9}) == 9
+    update_pipeline_settings(project, {"optimisation_time_limit_minutes": 0.501})
+    assert _optimisation_time_limit() == 31
 
 
 # ---------------------------------------------------------------------------

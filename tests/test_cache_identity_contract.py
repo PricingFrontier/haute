@@ -614,12 +614,14 @@ def test_model_contract_key_routes_through_the_checked_value_projection(monkeypa
     monkeypatch.setattr(scorer, "checked_cache_input_values", recording)
     model = SimpleNamespace(
         feature_names=["age", "region"],
+        optional_feature_names=frozenset({"exposure"}),
         cat_feature_names=["region"],
         offset_column=None,
     )
 
     assert scorer._model_feature_contract_key(model) == (
         ("age", "region"),
+        frozenset({"exposure"}),
         frozenset({"region"}),
         None,
     )

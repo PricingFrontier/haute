@@ -691,10 +691,10 @@ column_name_strategy = st.one_of(
 
 class TestConfigRoundtrip:
     @given(
-        # Keys must be declared for the node type or in _UNIVERSAL_KEYS:
+        # Keys must be declared for the node type or by NodeConfigBase:
         # `_prepare_config_for_sidecar` refuses any other key (see the
-        # undeclared-key property below). The keys below all appear in
-        # _UNIVERSAL_KEYS, so the property holds across any node_type.
+        # undeclared-key property below). The keys below are all
+        # NodeConfigBase's, so the property holds across any node_type.
         # User dictionary keys are opaque data, including names that look
         # like editor metadata. Generate those names explicitly.
         config=st.fixed_dictionaries(
@@ -708,10 +708,15 @@ class TestConfigRoundtrip:
                     values=column_name_strategy,
                     max_size=5,
                 ),
-                "contract": st.text(
-                    alphabet=string.ascii_letters + string.digits + "-",
-                    min_size=0,
-                    max_size=20,
+                # The decorator's contract annotation, in the JSON form a config holds.
+                "contract": st.one_of(
+                    st.just("opaque"),
+                    st.fixed_dictionaries(
+                        {
+                            "inputs": st.none() | st.lists(column_name_strategy, max_size=3),
+                            "outputs": st.none() | st.lists(column_name_strategy, max_size=3),
+                        }
+                    ),
                 ),
             }
         ),

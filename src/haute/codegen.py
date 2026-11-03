@@ -185,9 +185,14 @@ def _derive_contract_for_codegen(node: GraphNode) -> Contract:
     enforces the contract at runtime from the actual model.  Forcing a
     running MLflow server just to save a pipeline would be a regression.
 
+    A Model Score whose source mode is picked before its model
+    (``IncompleteModelSourceError``) is an unfinished node, which saves: its
+    annotation is the offline one too until the model is chosen, and the
+    builder reports the missing model when the node runs.
+
     Every OTHER exception fails loud at save time.  ``ConfigError``
-    (misconfiguration — e.g. ``sourceType="run"`` with no ``run_id``) and
-    any other ``HauteError`` (including ``ContractMismatchError``) propagate,
+    (misconfiguration — e.g. a registered source naming both a version and an
+    alias) and any other ``HauteError`` (including ``ContractMismatchError``) propagate,
     as do plain ``TypeError`` / ``KeyError`` / ``ValueError`` bugs in the
     contract computation itself — emitting ``contract="opaque"`` for those
     would hide a real bug inside a file that silently runs, then blows up at
@@ -195,8 +200,12 @@ def _derive_contract_for_codegen(node: GraphNode) -> Contract:
     """
     node_type = node.data.nodeType
     config = node.data.config
+    from haute._model_source import IncompleteModelSourceError
+
     try:
         return get_node_contract(node_type, config)
+    except IncompleteModelSourceError:
+        return resolve_parse_time_contract(node_type, config)
     except Exception as exc:
         if not _is_codegen_infra_error(exc):
             raise

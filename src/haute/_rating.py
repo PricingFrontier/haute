@@ -35,7 +35,7 @@ from haute._rating_step_config import (
     normalise_rating_tables,
     validate_unique_rating_table_outputs,
 )
-from haute._types import _Frame
+from haute._types import NodeType, _Frame
 from haute._validation_error import ConfigSettingError, HauteValidationError
 from haute.errors import (
     RatingExtremaUndefinedError,
@@ -710,7 +710,9 @@ def apply_banding_from_config(
 
         config_path = config if isinstance(config, str) else Path(config)
         resolved_config = load_node_config(
-            config_path, base_dir=Path(base_dir) if base_dir else None
+            config_path,
+            base_dir=Path(base_dir) if base_dir else None,
+            node_type=NodeType.BANDING,
         )
 
     return apply_banding_factors(lf, _normalise_banding_factors(resolved_config))
@@ -1849,7 +1851,9 @@ def apply_rating_step_from_config(
 
         config_path = config if isinstance(config, str) else Path(config)
         resolved_config = load_node_config(
-            config_path, base_dir=Path(base_dir) if base_dir else None
+            config_path,
+            base_dir=Path(base_dir) if base_dir else None,
+            node_type=NodeType.RATING_STEP,
         )
 
     return _apply_rating_step_outputs(

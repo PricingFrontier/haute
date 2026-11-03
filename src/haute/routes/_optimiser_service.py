@@ -36,7 +36,6 @@ if TYPE_CHECKING:
     from price_contour import QuoteGrid
 
 
-from haute._config_validation import validate_optimiser_analysis_config
 from haute._env import int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
@@ -61,7 +60,7 @@ from haute._interactive_workers import (
 )
 from haute._logging import get_logger
 from haute._memory_errors import memory_error_in
-from haute._pipeline_settings import PipelineSettingsError, project_pipeline_settings
+from haute._pipeline_settings import project_pipeline_settings
 from haute._polars_utils import (
     bounded_collect_batches,
     current_streaming_chunk_size,
@@ -71,6 +70,7 @@ from haute._seed_plans import SeedPlan, SeedPlanHandoff, SeedPlanRequest, open_s
 from haute._step_progress import StepProgress
 from haute._types import (
     GraphNode,
+    NodeType,
     PipelineGraph,
 )
 from haute._worker_isolation import (
@@ -225,8 +225,8 @@ class SetupGrid:
 def _optimisation_time_limit() -> int | None:
     """The optimisation time limit in whole seconds, ``None`` for no limit.
 
-    Read from the pipeline settings per call; a solve or auto-range whose
-    config sets its own timeout uses that instead.
+    Read from the pipeline settings per call, for a solve and an auto-range
+    alike: a node config holds no time limit.
     """
     seconds = project_pipeline_settings().optimisation_time_limit_seconds
     return None if seconds is None else math.ceil(seconds)
@@ -397,24 +397,6 @@ def solve_failure_transition(
         error_msg,
         {"message": error_msg, "elapsed_seconds": elapsed_seconds},
     )
-
-
-def _optional_positive_int(value: object, *, field: str) -> int | None:
-    if value is None or value == "":
-        return None
-    return _positive_int(value, field=field)
-
-
-def _solve_timeout_from_config(config: Mapping[str, Any]) -> int | None:
-    if "timeout" not in config:
-        return _optimisation_time_limit()
-    return _optional_positive_int(config.get("timeout"), field="timeout")
-
-
-def _auto_range_timeout_from_config(config: dict[str, Any]) -> int | None:
-    if "auto_range_timeout" not in config:
-        return _optimisation_time_limit()
-    return _positive_int(config["auto_range_timeout"], field="auto_range_timeout")
 
 
 _MIB = 1024 * 1024
@@ -1129,12 +1111,6 @@ def _reduce_frontier_range_batches(
     # API-facing summaries/metadata while preserving the 24h status record.
 
 
-# price-contour names each constraint's outputs ``total_<name>``, ``lambda_<name>``
-# and ``optimal_<name>``; these names collide with its own ``total_objective``,
-# ``optimal_step`` and ``optimal_scenario_value`` columns.
-RESERVED_OPTIMISER_CONSTRAINT_NAMES = frozenset({"objective", "step", "scenario_value"})
-
-
 class OptimiserSolveService:
     """Orchestrates the full optimisation solve lifecycle.
 
@@ -1201,7 +1177,7 @@ class OptimiserSolveService:
                     graph_fingerprint=setup_job_key[2],
                 ),
                 "start_time": start_time,
-                "timeout": _solve_timeout_from_config(config),
+                "timeout": _optimisation_time_limit(),
             }
             job_id = self._store.create_job(initial_job)
             execution_token = ExecutionCancellationToken()
@@ -2473,17 +2449,11 @@ class OptimiserSolveService:
         node = _find_optimiser_node(body.graph, body.node_id)
         config = dict(node.data.config)
         mode = self._validate_config(config)
-        try:
-            timeout = _auto_range_timeout_from_config(config)
-        except PipelineSettingsError:
-            # The settings file, not this config, is invalid: the application answers 409.
-            raise
-        except ValueError as exc:
-            raise InvalidRequestError(str(exc)) from exc
         return node, {
             "config": config,
             "mode": mode,
-            "timeout": timeout,
+            # An invalid settings file is the application's 409 (PipelineSettingsError).
+            "timeout": _optimisation_time_limit(),
             "required_columns_by_node": _optimiser_solve_required_columns_by_node(
                 body.graph,
                 body.node_id,
@@ -2945,51 +2915,19 @@ class OptimiserSolveService:
 
     @staticmethod
     def _validate_config(config: dict[str, Any]) -> str:
-        """Validate optimiser config; return the mode ('online' or 'ratebook')."""
-        objective = config.get("objective")
-        if not objective:
-            raise InvalidRequestError(
-                "No objective column configured. Open the config panel and set an objective."
-            )
+        """Validate optimiser config; return the mode ('online' or 'ratebook').
 
-        mode = config.get("mode", "online")
-        if mode not in ("online", "ratebook"):
-            raise InvalidRequestError(
-                f"Unsupported optimiser mode '{mode}'. Currently supported: online, ratebook."
-            )
-
-        constraints = config.get("constraints") or {}
-        reserved = sorted(
-            name for name in constraints if name in RESERVED_OPTIMISER_CONSTRAINT_NAMES
-        )
-        if reserved:
-            raise InvalidRequestError(
-                f"Constraint name(s) {reserved} are reserved: price-contour already names "
-                "its outputs total_objective, optimal_step and optimal_scenario_value, so "
-                "a constraint called objective, step or scenario_value would overwrite "
-                "one of them. Rename the constraint."
-            )
-
-        if mode == "ratebook":
-            factor_columns = config.get("factor_columns")
-            if not factor_columns:
-                raise InvalidRequestError(
-                    "Ratebook mode requires factor_columns. Add at least one factor group."
-                )
+        The node's config model: its value rules (the mode, reserved constraint
+        names, positive solver controls, the analysis columns), then what an
+        unfinished config lacks (an objective, a ratebook's factor groups).
+        """
+        from haute._config_validation import validate_node_config
 
         try:
-            _solve_timeout_from_config(config)
-        except PipelineSettingsError:
-            # The settings file, not this config, is invalid: the application answers 409.
-            raise
-        except ValueError as exc:
-            raise InvalidRequestError(str(exc)) from exc
-        try:
-            validate_optimiser_analysis_config(config)
+            validate_node_config(NodeType.OPTIMISER, config, require_complete=True)
         except ConfigError as exc:
-            raise InvalidRequestError(str(exc)) from exc
-
-        return str(mode)
+            raise InvalidRequestError(exc.message) from exc
+        return str(config.get("mode", "online"))
 
     @staticmethod
     def _is_blocking_solve_job(job: JobSnapshot) -> bool:
@@ -3563,7 +3501,7 @@ class OptimiserSolveService:
             job_id,
             {
                 "start_time": start_time,
-                "timeout": _solve_timeout_from_config(config),
+                "timeout": _optimisation_time_limit(),
             },
         )
 

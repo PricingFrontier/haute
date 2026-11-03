@@ -507,7 +507,6 @@ class TestAllNodeTypesRoundtrip:
                 {
                     "tables": [
                         {
-                            "name": "region_table",
                             "factors": ["region"],
                             "outputColumn": "region_factor",
                             "entries": [
@@ -756,12 +755,12 @@ class TestConfigRoundtrip:
         banding_config = {
             "factors": [
                 {
-                    "banding": "discrete",
+                    "banding": "categorical",
                     "column": "region",
                     "outputColumn": "region_band",
                     "rules": [
-                        {"value": "urban", "label": "city"},
-                        {"value": "rural", "label": "country"},
+                        {"value": "urban", "assignment": "city"},
+                        {"value": "rural", "assignment": "country"},
                     ],
                     "default": "other",
                 }

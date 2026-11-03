@@ -532,7 +532,6 @@ def _signing_corpus(project: Path) -> list[tuple[PipelineGraph, tuple[str, ...]]
                 {
                     "tables": [
                         {
-                            "name": "t",
                             "factors": ["region"],
                             "entries": [{"region": "Nörd", "value": 1.5}],
                         }

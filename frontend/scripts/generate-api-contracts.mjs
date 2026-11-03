@@ -91,7 +91,8 @@ function sharedRoots(schema) {
 }
 
 // Elsewhere a reference to a shared root checks only that the value is an object; the
-// client checks the field through the shared module.
+// client checks the field through the shared module. A module compiling a shared root keeps
+// its references to that root (a graph's submodel definitions hold graphs).
 function withSharedRootsAsObjects(value, roots) {
   if (Array.isArray(value)) return value.map((item) => withSharedRootsAsObjects(item, roots));
   if (!value || typeof value !== "object") return value;
@@ -103,8 +104,9 @@ function withSharedRootsAsObjects(value, roots) {
   return { ...Object.fromEntries(entries.filter(([key]) => key !== "$ref")), type: "object" };
 }
 
-function validatorSchema(schema) {
-  return { ...schema, $defs: withSharedRootsAsObjects(schema.$defs, sharedRoots(schema)) };
+function validatorSchema(schema, compiled = new Set()) {
+  const roots = new Set([...sharedRoots(schema)].filter((root) => !compiled.has(root)));
+  return { ...schema, $defs: withSharedRootsAsObjects(schema.$defs, roots) };
 }
 
 export function validatorModules(schema) {
@@ -319,7 +321,7 @@ function visitLocalDefinitionReferences(value, enqueue) {
 }
 
 export function extractContractSchema(bundle, definitionName) {
-  const schema = validatorSchema(bundle);
+  const schema = validatorSchema(bundle, new Set([definitionName]));
   const reachable = reachableDefinitionNames(schema, definitionName);
   const definitions = Object.fromEntries(
     [...reachable]
@@ -328,14 +330,27 @@ export function extractContractSchema(bundle, definitionName) {
       .map((name) => [name, schema.$defs[name]]),
   );
   return {
-    schema: stripValidationAnnotations(compactNullableSchemas({
+    schema: withRootReferences(stripValidationAnnotations(compactNullableSchemas({
       $schema: schema.$schema,
       $id: contractSchemaId(schema, definitionName),
       $defs: definitions,
       ...schema.$defs[definitionName],
-    })),
+    })), definitionName),
     reachableDefinitionCount: reachable.size,
   };
+}
+
+// The contract is the extracted schema's root, so a recursive reference to it (a graph's
+// submodel definitions hold graphs) names the root.
+function withRootReferences(value, definitionName) {
+  if (Array.isArray(value)) return value.map((item) => withRootReferences(item, definitionName));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, nested]) => [
+    key,
+    key === "$ref" && nested === `#/$defs/${definitionName}`
+      ? "#"
+      : withRootReferences(nested, definitionName),
+  ]));
 }
 
 /**
@@ -343,7 +358,10 @@ export function extractContractSchema(bundle, definitionName) {
  * definition shared by several of them compiles to one validator function.
  */
 export function extractModuleContractSchema(bundle, module) {
-  const schema = validatorSchema(bundle);
+  const schema = validatorSchema(
+    bundle,
+    new Set(module.validators.map(({ definitionName }) => definitionName)),
+  );
   const reachable = new Set();
   for (const { definitionName } of module.validators) {
     for (const name of reachableDefinitionNames(schema, definitionName)) reachable.add(name);

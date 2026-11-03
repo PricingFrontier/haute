@@ -13,7 +13,7 @@ import pytest
 
 from haute._config_validation import validate_node_config
 from haute._types import NodeType
-from haute.errors import ConfigError
+from haute.errors import ConfigError, NodeConfigError
 from tests._project import use_project
 
 
@@ -260,10 +260,17 @@ class TestAliasConfigValidation:
         with pytest.raises(ConfigError, match="both a version and an alias"):
             validate_node_config(node_type, config)
 
-    @pytest.mark.parametrize("alias", [" champion", 7])
-    def test_a_malformed_alias_is_rejected(self, alias: object) -> None:
+    def test_a_malformed_alias_is_rejected(self) -> None:
         with pytest.raises(ConfigError, match="invalid alias"):
-            validate_node_config(NodeType.MODEL_SCORE, {"alias": alias})
+            validate_node_config(NodeType.MODEL_SCORE, {"alias": " champion"})
+
+    def test_an_alias_that_is_not_a_string_is_refused_by_the_config_model(self) -> None:
+        with pytest.raises(
+            NodeConfigError, match="setting 'alias': Input should be a valid string"
+        ) as raised:
+            validate_node_config(NodeType.MODEL_SCORE, {"alias": 7})
+
+        assert raised.value.setting == "alias"
 
 
 class TestAliasDiscovery:

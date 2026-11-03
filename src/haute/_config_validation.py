@@ -1,102 +1,45 @@
-"""Config validation for pipeline node types.
+"""The one validation boundary for node configs.
 
-Each node type declares its config keys through its ``TypedDict``. A key it
-does not declare is refused wherever a config is parsed, saved or written, so
-a typo or stale key fails loudly instead of being silently dropped.
+Each node type's config model (``haute._node_config_models``) declares its keys,
+their types and the engine's value rules. :func:`validate_node_config` holds a
+config to it wherever a config is parsed, saved, recovered, written or built, so
+a typo, a stale key or a malformed value fails loudly instead of being silently
+dropped or reaching the engine.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, overload
 
-from haute._types import (
-    COLUMN_CONFIG_KEYS,
-    DATA_INPUT_CONFIG_TYPES,
-    DATA_OUTPUT_CONFIG_TYPES,
-    ApiInputConfig,
-    BandingConfig,
-    ConstantConfig,
-    EdgeJoinConfig,
-    ExploreConfig,
-    ExternalFileConfig,
-    LiveSwitchConfig,
-    ModellingConfig,
-    ModelScoreConfig,
-    NodeType,
-    OptimiserApplyConfig,
-    OptimiserConfig,
-    OutputConfig,
-    RatingStepConfig,
-    ScenarioExpanderConfig,
-    SubmodelConfig,
-    TransformConfig,
-    WorkbenchInputConfig,
-    WorkbenchOutputConfig,
-)
-from haute.errors import ConfigError, ParseError
+from pydantic import ValidationError
 
-# ---------------------------------------------------------------------------
-# Valid-key registry
-# ---------------------------------------------------------------------------
-# Built from TypedDict annotations.  We use the TypedDicts as the single
-# source of truth (they already list every recognised key for each type).
+from haute._api_input_schema import ApiInputSchemaError
+from haute._contracts import DEPLOY_ANSWER_PER_ROW_CONFIG_KEY, DEPLOY_PRIVATE_CONFIG_KEYS
+from haute._node_config_models import NODE_CONFIG_MODELS
+from haute._output_assembler import OutputMappingSchemaError
+from haute._types import NodeType
+from haute.errors import ConfigError, NodeConfigError, ParseError
 
-_TYPED_DICT_BY_NODE_TYPE: dict[NodeType, type] = {
-    NodeType.API_INPUT: ApiInputConfig,
-    NodeType.WORKBENCH_INPUT: WorkbenchInputConfig,
-    NodeType.POLARS: TransformConfig,
-    NodeType.EDGE_JOIN: EdgeJoinConfig,
-    NodeType.MODEL_SCORE: ModelScoreConfig,
-    NodeType.BANDING: BandingConfig,
-    NodeType.RATING_STEP: RatingStepConfig,
-    NodeType.OUTPUT: OutputConfig,
-    NodeType.WORKBENCH_OUTPUT: WorkbenchOutputConfig,
-    NodeType.EXPLORE: ExploreConfig,
-    NodeType.EXTERNAL_FILE: ExternalFileConfig,
-    NodeType.LIVE_SWITCH: LiveSwitchConfig,
-    NodeType.MODELLING: ModellingConfig,
-    NodeType.OPTIMISER: OptimiserConfig,
-    NodeType.SCENARIO_EXPANDER: ScenarioExpanderConfig,
-    NodeType.OPTIMISER_APPLY: OptimiserApplyConfig,
-    NodeType.CONSTANT: ConstantConfig,
-    NodeType.SUBMODEL: SubmodelConfig,
-}
+if TYPE_CHECKING:
+    from haute._types import PipelineGraph
 
-# Keys that any node type may carry (set by the parser / executor, not by config authors).
-# ``selected_columns`` is applied by the executor for *all* node types (column
-# filtering for downstream propagation), so it must be universally accepted.
-# ``contract`` is the column-contract annotation — may appear on any type.
-_UNIVERSAL_KEYS: frozenset[str] = frozenset(
-    {
-        "inputMapping",
-        "contract",
-    }
-) | frozenset(COLUMN_CONFIG_KEYS)
-
-
-def _valid_keys_for(node_type: NodeType) -> frozenset[str] | None:
-    """Return the set of recognised config keys for *node_type*, or None if unknown."""
-    if node_type == NodeType.DATA_INPUT:
-        return (
-            frozenset().union(*(td.__annotations__ for td in DATA_INPUT_CONFIG_TYPES))
-            | _UNIVERSAL_KEYS
-        )
-    if node_type == NodeType.DATA_OUTPUT:
-        return (
-            frozenset().union(*(td.__annotations__ for td in DATA_OUTPUT_CONFIG_TYPES))
-            | _UNIVERSAL_KEYS
-        )
-    td = _TYPED_DICT_BY_NODE_TYPE.get(node_type)
-    if td is None:
-        return None
-    return frozenset(td.__annotations__) | _UNIVERSAL_KEYS
-
-
-# Pre-compute so the per-call cost is a single dict lookup.
+#: Each node type's declared config keys, from its config model.
 VALID_KEYS: dict[NodeType, frozenset[str]] = {
-    nt: keys for nt in NodeType if (keys := _valid_keys_for(nt)) is not None
+    node_type: model.keys for node_type, model in NODE_CONFIG_MODELS.items()
 }
+
+#: Every error :func:`validate_node_config` raises for a config it refuses, for a boundary
+#: to answer as the request's refusal: its own (``ConfigError`` and ``NodeConfigError``, the
+#: removed reuse forms' ``ParseError``) and an engine rule's, in the engine's own type (most
+#: are ``ValueError``; the Quote Input's and the Quote Response's are not).
+CONFIG_REFUSALS: tuple[type[Exception], ...] = (
+    ConfigError,
+    ParseError,
+    ValueError,
+    ApiInputSchemaError,
+    OutputMappingSchemaError,
+)
 
 
 _REMOVED_INPUT_IDENTITY_KEYS: dict[NodeType, frozenset[str]] = {
@@ -115,6 +58,9 @@ _REMOVED_COLUMN_MAPPING_KEYS: dict[NodeType, frozenset[str]] = {
 }
 _REMOVED_RESPONSE_FORMAT_KEYS: dict[NodeType, frozenset[str]] = {
     NodeType.OUTPUT: frozenset({"outputFormat"}),
+}
+_REMOVED_EVALUATION_KEYS: dict[NodeType, tuple[str, ...]] = {
+    NodeType.MODELLING: ("split", "cross_validation"),
 }
 #: The keys a workbench node is given from the project's form wherever the pipeline runs
 #: (``haute._workbench_nodes``), so a config file or a saved config never holds them: an
@@ -150,7 +96,7 @@ def reject_removed_node_reuse_kwargs(kwargs: Mapping[str, Any]) -> None:
 
 def reject_removed_config_keys(
     node_type: NodeType | str,
-    config: dict[str, Any],
+    config: Mapping[str, Any],
 ) -> None:
     """Reject retired config fields instead of silently migrating or ignoring them."""
     nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
@@ -199,6 +145,15 @@ def reject_removed_config_keys(
             f"{nt.value} config contains the removed outputFormat field. The response "
             "document is always JSON: remove outputFormat.",
             removed_config_keys=removed_format,
+        )
+    removed_evaluation = [key for key in _REMOVED_EVALUATION_KEYS.get(nt, ()) if key in config]
+    if removed_evaluation:
+        names = " and ".join(repr(key) for key in removed_evaluation)
+        plural = len(removed_evaluation) > 1
+        raise ConfigError(
+            f"The modelling config field{'s' if plural else ''} {names} "
+            f"{'were' if plural else 'was'} removed; use the versioned 'evaluation' object.",
+            removed_config_keys=sorted(removed_evaluation),
         )
 
 
@@ -403,15 +358,12 @@ CODE_CONFIG_KEYS: frozenset[str] = frozenset({"code"})
 def unrecognized_config_keys(node_type: NodeType, config: Mapping[str, Any]) -> list[str]:
     """Return, sorted, the top-level config keys *node_type* does not declare.
 
-    The body code is not a config key, and editor state travels beside the
-    config (``NodeData.editor``), never in it, so an underscore-prefixed key is
-    as undeclared as any other. A node type without a ``TypedDict``
-    (``SUBMODEL_PORT``) declares nothing to check.
+    ``code`` is declared by the code-surface types alone, and editor state
+    travels beside the config (``NodeData.editor``), never in it, so an
+    underscore-prefixed key is as undeclared as any other.
     """
-    valid = VALID_KEYS.get(node_type)
-    if valid is None:
-        return []
-    return sorted(key for key in config if key not in CODE_CONFIG_KEYS and key not in valid)
+    valid = VALID_KEYS[node_type]
+    return sorted(key for key in config if key not in valid)
 
 
 def reject_unrecognized_config_keys(
@@ -499,29 +451,6 @@ def validate_optimiser_analysis_config(config: Mapping[str, Any]) -> None:
         )
 
 
-_MLFLOW_DESTINATION_NODE_TYPES = frozenset(
-    {
-        NodeType.MODELLING,
-        NodeType.OPTIMISER,
-        NodeType.MODEL_SCORE,
-        NodeType.OPTIMISER_APPLY,
-    }
-)
-
-
-def validate_mlflow_destination(node_type: NodeType, config: Mapping[str, Any]) -> None:
-    """A node names a remote MLflow destination, or has none and uses the local folder."""
-    value = config.get("mlflow_destination", "")
-    if value in ("", None):
-        return
-    if not isinstance(value, str) or value not in ("databricks", "server"):
-        raise ConfigError(
-            f"{node_type.value} config has an invalid mlflow_destination; expected databricks "
-            "or server. Remove the field to use the local MLflow folder.",
-            mlflow_destination=value if isinstance(value, str) else type(value).__name__,
-        )
-
-
 def validate_registered_model_alias(node_type: NodeType, config: Mapping[str, Any]) -> None:
     """A registered source names a version or an alias, never both."""
     alias = config.get("alias")
@@ -543,54 +472,201 @@ def validate_registered_model_alias(node_type: NodeType, config: Mapping[str, An
 
 
 def validate_node_config(
-    node_type: NodeType | str, config: dict[str, Any], *, require_complete: bool = True
+    node_type: NodeType | str,
+    config: Mapping[str, Any],
+    *,
+    require_complete: bool = False,
+    persisted: bool = True,
+    node_label: str | None = None,
+    input_names: Sequence[str] | None = None,
+    at_run: bool = False,
+    shape_only: bool = False,
 ) -> dict[str, Any]:
-    """Strictly validate configs whose runtime contract is discriminated.
+    """Hold *config* to its node type's config model; the one validation boundary.
 
-    Data Input/Output provider branches control which keys and capabilities
-    are legal. Banding's discriminant controls its rule schema. A Scenario
-    Expander's grid size is required with no incomplete form. A Modelling
-    node's configured values must be trainable, though it may be unfinished.
-    A transform's keyword-only parameters must be ones its signature can carry.
-    Invalid configured branches must not be silently persisted and ignored.
-    ``require_complete=False`` tolerates absent/empty required Data
-    Input/Output locators (declared-incomplete forms); structural rules and
-    every other node type stay strict.
+    In order: the removed keys (whose messages name the replacement), the
+    form-given keys of a *persisted* config, the undeclared keys, the shape,
+    the engine's value rules (``check``), the rules that need the connected
+    *input_names* when they are given (``check_inputs``), and when
+    *require_complete* the first thing an unfinished config lacks
+    (``completeness``). A config that is not *persisted* (one a run builds)
+    may also hold the deploy scorer's private transport keys for its node type.
+    A run (``at_run``) leaves ``check`` to a node type whose builder applies it
+    as its first step (``builder_checks``: a Rating Step's tables are normalised
+    once per build, which a deployed endpoint does per request). ``shape_only``
+    checks the keys and the shape alone, for a route that answers with a graph
+    it transformed rather than saved.
+
+    Returns a copy of *config*: validation never adds, removes, reorders or
+    converts a value.
+
+    Raises:
+        NodeConfigError: a value the shape refuses, its ``setting`` the value's
+            path, or the first completeness gap.
+        ConfigError: an undeclared or removed key, or an engine rule's refusal
+            (the engine's own error type, unchanged).
     """
     nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
+    model = NODE_CONFIG_MODELS[nt]
+    label = node_label or nt.value
     reject_removed_config_keys(nt, config)
-    if nt in _MLFLOW_DESTINATION_NODE_TYPES:
-        validate_mlflow_destination(nt, config)
-    if nt in (NodeType.MODEL_SCORE, NodeType.OPTIMISER_APPLY):
-        validate_registered_model_alias(nt, config)
-    if nt == NodeType.OPTIMISER:
-        validate_optimiser_analysis_config(config)
-    if nt == NodeType.MODELLING:
-        from haute.modelling._train_config import validate_modelling_config_values
-
-        # Malformed values only: an unfinished node (a new node is ``{}``) saves,
-        # and its completeness is checked when training starts.
-        validate_modelling_config_values(config)
-    if nt == NodeType.DATA_INPUT:
-        from haute._polars_io_registry import validate_data_input_config
-
-        return validate_data_input_config(config, require_complete=require_complete)
-    if nt == NodeType.DATA_OUTPUT:
-        from haute._polars_io_registry import validate_data_output_config
-
-        return validate_data_output_config(config, require_complete=require_complete)
-    if nt == NodeType.BANDING:
-        from haute._rating import validate_banding_config
-
-        validate_banding_config(config)
-    if nt == NodeType.SCENARIO_EXPANDER:
-        from haute._node_apply import scenario_step_count
-
-        # The grid size has no incomplete form: a new node carries an
-        # explicit count, so its absence is a defect the builder would reject.
-        scenario_step_count(config)
-    if nt == NodeType.POLARS:
-        from haute._keyword_parameters import validate_keyword_parameters
-
-        validate_keyword_parameters(config)
+    if persisted:
+        reject_form_given_keys(nt, config)
+        shaped: Mapping[str, Any] = config
+    else:
+        shaped = _without_deploy_private_keys(nt, config)
+    reject_unrecognized_config_keys(nt, shaped, node_label=label)
+    try:
+        model.adapter.validate_python(dict(shaped))
+    except ValidationError as exc:
+        raise _shape_error(nt, label, shaped, exc) from None
+    if shape_only:
+        return dict(config)
+    if model.check is not None and not (at_run and model.builder_checks):
+        model.check(config)
+    if input_names is not None and model.check_inputs is not None:
+        model.check_inputs(config, input_names)
+    if require_complete and model.completeness is not None:
+        gaps = model.completeness(config, input_names)
+        if gaps:
+            raise NodeConfigError(gaps[0].message, setting=gaps[0].path)
     return dict(config)
+
+
+def config_gaps(
+    node_type: NodeType | str,
+    config: Mapping[str, Any],
+    *,
+    input_names: Sequence[str] | None = None,
+) -> list[Any]:
+    """What a valid but unfinished *config* lacks before its node can run."""
+    nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
+    completeness = NODE_CONFIG_MODELS[nt].completeness
+    return [] if completeness is None else completeness(config, input_names)
+
+
+def setting_path(location: Sequence[str | int]) -> str:
+    """A Pydantic error location as a config path: ``factors[0].banding``."""
+    path = ""
+    for part in location:
+        if isinstance(part, int):
+            path += f"[{part}]"
+        elif path:
+            path += f".{part}"
+        else:
+            path = str(part)
+    return path
+
+
+def _config_location(config: Any, location: Sequence[str | int]) -> list[str | int]:
+    """The parts of a Pydantic error location that are keys and indices of *config*.
+
+    A union's member labels (a tagged union's tag, ``list[dict[str,any]]``) are
+    not in the config, so walking the value drops them.
+    """
+    parts: list[str | int] = []
+    value = config
+    for part in location:
+        if isinstance(value, Mapping) and isinstance(part, str) and part in value:
+            parts.append(part)
+            value = value[part]
+        elif isinstance(value, list) and isinstance(part, int) and 0 <= part < len(value):
+            parts.append(part)
+            value = value[part]
+        elif not isinstance(value, Mapping | list):
+            break
+        elif isinstance(value, Mapping) and isinstance(part, str) and not _is_union_label(part):
+            # A key the value lacks (a required one) or holds without declaring.
+            parts.append(part)
+            break
+    return parts
+
+
+def _is_union_label(part: str) -> bool:
+    return "[" in part or "-" in part or part[:1].isupper() or part in _UNION_TAGS
+
+
+_UNION_TAGS = frozenset({"file", "database", "lakehouse", "databricks", "inline"})
+
+
+def _shape_error(
+    nt: NodeType, label: str, config: Mapping[str, Any], exc: ValidationError
+) -> NodeConfigError:
+    errors = exc.errors(include_url=False)
+    # A union reports one error per branch: the deepest names the value the author
+    # meant (a contract's column, not its "opaque" spelling; a map's key, not the list
+    # it might have been), and the branches refused at that value, as deep, together
+    # say what it may be.
+    first = max(errors, key=lambda error: len(error["loc"]))
+    model = NODE_CONFIG_MODELS[nt]
+    if first["type"] in {"union_tag_not_found", "union_tag_invalid"} and model.discriminant:
+        setting = model.discriminant
+        reason = first["msg"]
+    else:
+        location = _config_location(config, first["loc"])
+        setting = setting_path(location)
+        reason = _union_reason(
+            [
+                error
+                for error in errors
+                if len(error["loc"]) == len(first["loc"])
+                and _config_location(config, error["loc"]) == location
+            ]
+        )
+    where = f" setting {setting!r}" if setting else ""
+    return NodeConfigError(f"Node {label!r} ({nt.value}){where}: {reason}.", setting=setting)
+
+
+def _union_reason(errors: Sequence[Any]) -> str:
+    """One reason for the errors at one value: a union's branches as alternatives."""
+    messages = list(dict.fromkeys(str(error["msg"]) for error in errors))
+    prefix = "Input should be "
+    if len(messages) > 1 and all(message.startswith(prefix) for message in messages):
+        options = [message.removeprefix(prefix) for message in messages]
+        return prefix + ", ".join(options[:-1]) + " or " + options[-1]
+    return messages[0]
+
+
+def _without_deploy_private_keys(nt: NodeType, config: Mapping[str, Any]) -> Mapping[str, Any]:
+    """*config* without the deploy scorer's private transport keys its node type may carry.
+
+    Each is checked: a list of distinct non-empty column names, or the
+    answer-per-row flag, which is ``True``.
+    """
+    private = DEPLOY_PRIVATE_CONFIG_KEYS.get(nt, frozenset())
+    held = private.intersection(config)
+    if not held:
+        return config
+    for key in held:
+        value = config[key]
+        if key == DEPLOY_ANSWER_PER_ROW_CONFIG_KEY:
+            valid = value is True
+        else:
+            valid = (
+                isinstance(value, list)
+                and all(isinstance(column, str) and column for column in value)
+                and len(set(value)) == len(value)
+            )
+        if not valid:
+            raise ConfigError(
+                f"{nt.value} node has invalid internal deploy config {key!r}.", config_key=key
+            )
+    return {key: value for key, value in config.items() if key not in held}
+
+
+def validate_graph_configs(graph: PipelineGraph) -> None:
+    """Every node config of *graph* and its embedded submodel graphs, held to its model.
+
+    For a route that answers with a graph it transformed rather than saved: a
+    response never carries a config its model's keys and shape refuse.
+    """
+    for node in graph.nodes:
+        validate_node_config(
+            node.data.nodeType,
+            node.data.config,
+            require_complete=False,
+            node_label=node.data.label,
+            shape_only=True,
+        )
+    for definition in (graph.submodels or {}).values():
+        validate_graph_configs(definition.graph)

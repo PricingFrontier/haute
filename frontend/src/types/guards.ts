@@ -512,12 +512,21 @@ const PIPELINE_NODE_TYPE_VALUES = Object.values(PIPELINE_NODE_TYPES)
 
 
 
+/** The shared pipeline-graph module's validator, loaded beside a response group's. */
+export type PipelineGraphValidator = GeneratedContractValidator<GeneratedPipelineGraph>
+
 /**
- * A canonical graph as the editor's React Flow graph. The generated validators own its
- * structure; the editor adds that every node's React Flow type is a pipeline node type,
- * since it renders a node through the component registered for that type.
+ * A canonical graph as the editor's React Flow graph, checked through the shared
+ * pipeline-graph module, which owns its structure and each node's config. The editor adds
+ * that every node's React Flow type is a pipeline node type, since it renders a node through
+ * the component registered for that type.
  */
-export function pipelineGraphFromContract(graph: GeneratedPipelineGraph, field = "graph"): PipelineGraph {
+export function pipelineGraphFromContract(
+  validate: PipelineGraphValidator,
+  value: unknown,
+  field = "graph",
+): PipelineGraph {
+  const graph = expectGeneratedContract("PipelineGraph", validate, value)
   graph.nodes.forEach((node, index) => {
     if (!PIPELINE_NODE_TYPE_VALUES.some((nodeType) => nodeType === node.type)) {
       throw new Error(`${field}.nodes[${index}].type: ${JSON.stringify(node.type)} is not a pipeline node type`)
@@ -529,8 +538,9 @@ export function pipelineGraphFromContract(graph: GeneratedPipelineGraph, field =
 /** A response that answers with a canonical graph, its graph read as the editor's. */
 export function withPipelineGraph<T extends { graph: GeneratedPipelineGraph }>(
   response: T,
+  validateGraph: PipelineGraphValidator,
 ): Omit<T, "graph"> & { graph: PipelineGraph } {
-  return { ...response, graph: pipelineGraphFromContract(response.graph) }
+  return { ...response, graph: pipelineGraphFromContract(validateGraph, response.graph) }
 }
 
 /** A preview response, its execution metrics checked through the shared module. */

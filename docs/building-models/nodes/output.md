@@ -80,6 +80,24 @@ The API response then holds only the quote ID, the final premium, and the area f
     }
     ```
 
+    <!-- config-keys:start -->
+
+    Every key the config may hold:
+
+    | Key | Type | Description |
+    |---|---|---|
+    | `outputMapping` | list of object | The mapping rows, each a column of an incoming frame and the response path it fills. |
+    | `outputMapping[].source_port` | text | The incoming frame the column comes from, by its input name. |
+    | `outputMapping[].source_column` | text | The column whose values fill the path. |
+    | `outputMapping[].output_path` | text | The JSONPath in the response document the column fills, such as `$[:].premium`. |
+    | `outputMapping[].enabled` | `true` or `false` | Whether the row is part of the response. |
+    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
+    | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
+    | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |
+
+    <!-- config-keys:end -->
+
 **See also:**
 
 - [Data Output](data-output.md)  - save results to a file for batch scoring

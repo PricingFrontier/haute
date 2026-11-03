@@ -24,6 +24,7 @@ from haute._config_io import (
 )
 from haute._types import NodeType
 from haute._validation_error import ConfigSettingError
+from haute.errors import NodeConfigError
 from tests.conftest import make_graph, make_output_config
 
 
@@ -113,12 +114,15 @@ class TestSaveAndLoad:
             pytest.param(
                 NodeType.DATA_INPUT,
                 {
+                    "inputType": "file",
+                    "format": "csv",
+                    "path": "data/input.csv",
                     "arguments": {
                         "schema": {
                             "_id": "Int64",
                             "payload": {"type": "Struct", "fields": {"_prevRules": "String"}},
                         }
-                    }
+                    },
                 },
                 id="input-schema-and-struct-fields",
             ),
@@ -190,7 +194,6 @@ class TestSaveAndLoad:
                     "banding": "categorical",
                     "column": "category",
                     "outputColumn": "band",
-                    "_prevRules": {"breakpoints": []},
                     "rules": {"_id": "identifier", "_prevRules": "previous", "ordinary": "normal"},
                 }
             ]
@@ -198,12 +201,28 @@ class TestSaveAndLoad:
         original = deepcopy(config)
         rel = _write_node_config_sidecar(NodeType.BANDING, "categories", config, tmp_path)
         saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
-        assert "_prevRules" not in saved["factors"][0]
         assert saved["factors"][0]["rules"] == config["factors"][0]["rules"]
         loaded = load_node_config(rel, base_dir=tmp_path)
         _write_node_config_sidecar(NodeType.BANDING, "categories", loaded, tmp_path)
         assert json.loads((tmp_path / rel).read_text(encoding="utf-8")) == saved
         assert config == original
+
+    def test_an_underscore_key_on_a_factor_is_undeclared(self, tmp_path):
+        """A factor holds only its declared settings: editor state never rides in it."""
+        config = {
+            "factors": [
+                {
+                    "banding": "categorical",
+                    "column": "category",
+                    "outputColumn": "band",
+                    "_prevRules": {"breakpoints": []},
+                    "rules": {"ordinary": "normal"},
+                }
+            ]
+        }
+        with pytest.raises(NodeConfigError, match=r"'factors\[0\]\._prevRules'") as refused:
+            _write_node_config_sidecar(NodeType.BANDING, "categories", config, tmp_path)
+        assert refused.value.setting == "factors[0]._prevRules"
 
     def test_save_creates_directories_and_file(self, tmp_path):
         config = {
@@ -218,7 +237,7 @@ class TestSaveAndLoad:
         assert (tmp_path / rel).is_file()
 
     def test_saved_content_is_valid_json(self, tmp_path):
-        config = {"path": "data/input.parquet"}
+        config = {"inputType": "file", "format": "parquet", "path": "data/input.parquet"}
         rel = _write_node_config_sidecar(NodeType.DATA_INPUT, "src", config, tmp_path)
         assert json.loads((tmp_path / rel).read_text(encoding="utf-8")) == config
         loaded = load_node_config("config/data_input/src.json", base_dir=tmp_path)
@@ -434,13 +453,16 @@ class TestSaveAndLoad:
             ],
         }
 
-        with pytest.raises(ValueError, match="duplicate breakpoint rule key '25'"):
+        # A JSON object's keys are text, so the model refuses the integer key that would collide.
+        with pytest.raises(
+            ValueError, match=r"'factors\[0\]\.rules': Input should be a valid string"
+        ):
             _write_node_config_sidecar(NodeType.BANDING, "age_band", config, tmp_path)
 
     def test_banding_compact_save_rejects_non_list_factors(self, tmp_path):
         config = {"factors": "not_a_list"}
 
-        with pytest.raises(ValueError, match="banding factors must be a list"):
+        with pytest.raises(ValueError, match="'factors': Input should be a valid list"):
             _write_node_config_sidecar(NodeType.BANDING, "age_band", config, tmp_path)
 
     def test_banding_compact_save_rejects_incomplete_categorical_rows(self, tmp_path):
@@ -482,7 +504,7 @@ class TestSaveAndLoad:
 
 class TestRemoveConfigFile:
     def test_remove_existing_file(self, tmp_path):
-        config = {"path": "data.parquet"}
+        config = {"inputType": "file", "format": "parquet", "path": "data.parquet"}
         _write_node_config_sidecar(NodeType.DATA_INPUT, "src", config, tmp_path)
         assert remove_config_file(NodeType.DATA_INPUT, "src", tmp_path)
         assert not (tmp_path / "config" / "data_input" / "src.json").exists()
@@ -509,7 +531,11 @@ class TestCollectNodeConfigs:
                         "data": {
                             "label": "src",
                             "nodeType": "dataInput",
-                            "config": {"path": "d.parquet"},
+                            "config": {
+                                "inputType": "file",
+                                "format": "parquet",
+                                "path": "d.parquet",
+                            },
                         },
                     },
                     {
@@ -563,7 +589,11 @@ class TestCollectNodeConfigs:
             },
             {
                 "id": "b",
-                "data": {"label": "b", "nodeType": "dataInput", "config": {"path": "d.parquet"}},
+                "data": {
+                    "label": "b",
+                    "nodeType": "dataInput",
+                    "config": {"inputType": "file", "format": "parquet", "path": "d.parquet"},
+                },
             },
             {
                 "id": "c",
@@ -581,7 +611,11 @@ class TestCollectNodeConfigs:
             },
             {
                 "id": "h",
-                "data": {"label": "h", "nodeType": "dataOutput", "config": {"path": "o.parquet"}},
+                "data": {
+                    "label": "h",
+                    "nodeType": "dataOutput",
+                    "config": {"outputType": "file", "format": "parquet", "path": "o.parquet"},
+                },
             },
             {
                 "id": "i",
@@ -593,7 +627,10 @@ class TestCollectNodeConfigs:
                 "data": {"label": "k", "nodeType": "optimiser", "config": {"mode": "online"}},
             },
             {"id": "l", "data": {"label": "l", "nodeType": "optimiserApply", "config": {}}},
-            {"id": "m", "data": {"label": "m", "nodeType": "scenarioExpander", "config": {}}},
+            {
+                "id": "m",
+                "data": {"label": "m", "nodeType": "scenarioExpander", "config": {"stepCount": 3}},
+            },
             {"id": "n", "data": {"label": "n", "nodeType": "constant", "config": {"values": []}}},
         ]
         graph = make_graph({"nodes": nodes, "edges": []})
@@ -972,16 +1009,28 @@ class TestLoadNodeConfigEdgeCases:
 
 class TestSidecarPreparationEdgeCases:
     def test_none_values_saved(self, tmp_path):
-        config = {"inputType": None, "path": None}
-        _write_node_config_sidecar(NodeType.DATA_INPUT, "src", config, tmp_path)
-        loaded = load_node_config("config/data_input/src.json", base_dir=tmp_path)
-        assert loaded["path"] is None
-        assert loaded["inputType"] is None
+        """A key that takes null (a cleared setting) keeps it through the write."""
+        config = {"algorithm": "glm", "tuning": None, "alpha": None}
+        _write_node_config_sidecar(NodeType.MODELLING, "model", config, tmp_path)
+        loaded = load_node_config("config/model_training/model.json", base_dir=tmp_path)
+        assert loaded["tuning"] is None
+        assert loaded["alpha"] is None
+
+    def test_null_where_a_key_does_not_take_it_is_refused(self, tmp_path):
+        config = {"inputType": "file", "format": "parquet", "path": None}
+        with pytest.raises(NodeConfigError, match="'path': Input should be a valid string"):
+            _write_node_config_sidecar(NodeType.DATA_INPUT, "src", config, tmp_path)
 
     def test_underscore_keys_are_refused(self, tmp_path):
         from haute.errors import ConfigError
 
-        config = {"path": "d.parquet", "_internal": "secret", "_cache": 42}
+        config = {
+            "inputType": "file",
+            "format": "parquet",
+            "path": "d.parquet",
+            "_internal": "secret",
+            "_cache": 42,
+        }
         with pytest.raises(ConfigError, match="_cache"):
             _write_node_config_sidecar(NodeType.DATA_INPUT, "src", config, tmp_path)
 
@@ -1055,7 +1104,11 @@ class TestCollectNodeConfigsEdgeCases:
                         "data": {
                             "label": "my_src",
                             "nodeType": "dataInput",
-                            "config": {"path": "d.parquet"},
+                            "config": {
+                                "inputType": "file",
+                                "format": "parquet",
+                                "path": "d.parquet",
+                            },
                         },
                     },
                 ],
@@ -1074,7 +1127,12 @@ class TestCollectNodeConfigsEdgeCases:
 
 class TestRemoveConfigFileEdgeCases:
     def test_remove_existing_returns_true(self, tmp_path):
-        _write_node_config_sidecar(NodeType.DATA_INPUT, "src", {"path": "d"}, tmp_path)
+        _write_node_config_sidecar(
+            NodeType.DATA_INPUT,
+            "src",
+            {"inputType": "file", "format": "parquet", "path": "d"},
+            tmp_path,
+        )
         assert remove_config_file(NodeType.DATA_INPUT, "src", tmp_path) is True
         assert not (tmp_path / "config" / "data_input" / "src.json").exists()
 
@@ -1090,7 +1148,6 @@ class TestRatingStepSidecars:
         config = {
             "tables": [
                 {
-                    "name": "area_factor",
                     "factors": ["area"],
                     "outputColumn": "area_factor",
                     "defaultValue": "1.0",
@@ -1100,7 +1157,6 @@ class TestRatingStepSidecars:
                     ],
                 },
                 {
-                    "name": "vehicle_factor",
                     "factors": ["vehicle_age_band", "cover_type"],
                     "outputColumn": "vehicle_factor",
                     "entries": [
@@ -1143,7 +1199,6 @@ class TestRatingStepSidecars:
         config = {
             "tables": [
                 {
-                    "name": "vehicle_factor",
                     "factors": ["vehicle_age_band", "cover_type", "channel"],
                     "outputColumn": "vehicle_factor",
                     "entries": [
@@ -1191,7 +1246,6 @@ class TestRatingStepSidecars:
         config = {
             "tables": [
                 {
-                    "name": "sparse_factor",
                     "factors": ["vehicle_age_band", "cover_type", "channel"],
                     "outputColumn": "sparse_factor",
                     "entries": [
@@ -1248,7 +1302,6 @@ class TestRatingStepSidecars:
                             "config": {
                                 "tables": [
                                     {
-                                        "name": "vehicle_factor",
                                         "factors": ["vehicle_age_band", "cover_type"],
                                         "outputColumn": "vehicle_factor",
                                         "entries": [
@@ -1287,7 +1340,6 @@ class TestRatingStepSidecars:
                             "config": {
                                 "tables": [
                                     {
-                                        "name": "vehicle_factor",
                                         "factors": [
                                             "vehicle_age_band",
                                             "cover_type",
@@ -1327,7 +1379,6 @@ class TestRatingStepSidecars:
         config = {
             "tables": [
                 {
-                    "name": "area_factor",
                     "factors": ["area"],
                     "outputColumn": "area_factor",
                     "entries": [
@@ -1350,7 +1401,6 @@ class TestRatingStepSidecars:
         config = {
             "tables": [
                 {
-                    "name": "vehicle_factor",
                     "factors": ["vehicle_age_band", "cover_type"],
                     "outputColumn": "vehicle_factor",
                     "entries": [{"vehicle_age_band": "1-3", "value": 0.9}],
@@ -1368,7 +1418,6 @@ class TestRatingStepSidecars:
         config = {
             "tables": [
                 {
-                    "name": "area_factor",
                     "factors": ["area"],
                     "outputColumn": "area_factor",
                     "entries": [{"area": "London", "value": ""}],
@@ -1386,7 +1435,6 @@ class TestRatingStepSidecars:
         config = {
             "tables": [
                 {
-                    "name": "area_factor",
                     "factors": ["area"],
                     "outputColumn": "area_factor",
                     "entries": [{"area": "London", "value": 1.25, "note": "kept"}],
@@ -1415,7 +1463,6 @@ class TestRatingStepSidecars:
                 {
                     "tables": [
                         {
-                            "name": "area_factor",
                             "factors": "area",
                             "outputColumn": "area_factor",
                             "rows": [["London", 1.25]],
@@ -1439,7 +1486,6 @@ class TestRatingStepSidecars:
 {
   "tables": [
     {
-      "name": "area_factor",
       "factors": ["area"],
       "outputColumn": "area_factor",
       "defaultValue": 1.25,

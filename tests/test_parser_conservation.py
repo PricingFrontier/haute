@@ -833,10 +833,8 @@ class TestRecoveryContractValidation:
         assert document.nodes[0].authored_id == "node"
         assert document.nodes[0].availability == "ready"
         assert document.nodes[0].config is not None
-        assert document.nodes[0].config["contract"] == {
-            "inputs": ("a",),
-            "outputs": ("b",),
-        }
+        # Held in the JSON form a config holds, whatever spelling declared it.
+        assert document.nodes[0].config["contract"] == {"inputs": ["a"], "outputs": ["b"]}
 
 
 # ---------------------------------------------------------------------------
@@ -1887,7 +1885,12 @@ class TestKeywordOnlyParametersAtSave:
             pytest.param(
                 [{"name": "factor", "default": 1}], {"steps": []}, "beside steps", id="steps"
             ),
-            pytest.param([{"name": "factor"}], {}, "{name, default} records", id="shape"),
+            pytest.param(
+                [{"name": "factor"}],
+                {},
+                "'keyword_parameters[0].default': Field required",
+                id="shape",
+            ),
             pytest.param([{"name": "df", "default": 1}], {}, "reserved", id="reserved"),
             pytest.param([], {}, "non-empty list", id="empty"),
             pytest.param([{"name": "class", "default": 1}], {}, "not a Python name", id="keyword"),
@@ -1897,7 +1900,12 @@ class TestKeywordOnlyParametersAtSave:
                 "appears twice",
                 id="duplicate",
             ),
-            pytest.param([{"name": "f", "default": [1]}], {}, "must be None", id="list"),
+            pytest.param(
+                [{"name": "f", "default": [1]}],
+                {},
+                "'keyword_parameters[0].default': Input should be a valid string, a valid integer",
+                id="list",
+            ),
         ],
     )
     def test_the_full_save_refuses_a_binding_the_file_cannot_carry(

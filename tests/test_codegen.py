@@ -31,7 +31,7 @@ from haute.codegen import (
     graph_to_code,
     graph_to_code_multi,
 )
-from haute.errors import ConfigError, ParseError
+from haute.errors import ConfigError, NodeConfigError, ParseError
 from tests._project import use_project
 from tests.conftest import (
     compile_node_code as _compile_node_code,
@@ -1603,7 +1603,7 @@ class TestCodegenEdgeCases:
         assert _run_saved_node(node, tmp_path).collect().to_dicts() == [{"constant": 0}]
 
     def test_constant_with_none_values(self, tmp_path: Path):
-        """Constant node with None values list should use default."""
+        """A null values list is not a Constant config: its sidecar write refuses it."""
         node = _n(
             {
                 "id": "c",
@@ -1614,10 +1614,12 @@ class TestCodegenEdgeCases:
                 },
             }
         )
-        code = _node_to_code(node)
-        assert code.endswith("def MyConst(): ...\n")
-        _compile_node_code(code)
-        assert _run_saved_node(node, tmp_path).collect().to_dicts() == [{"constant": 0}]
+        with pytest.raises(
+            NodeConfigError,
+            match=r"Node 'MyConst' \(constant\) setting 'values': Input should be a valid list",
+        ) as raised:
+            _run_saved_node(node, tmp_path)
+        assert raised.value.setting == "values"
 
     def test_description_with_quotes_escaped(self):
         """Node description containing double quotes should not break code generation."""
@@ -3314,10 +3316,14 @@ class TestGenConstantEdgeCases:
         _compile_node_code(code)
         assert _run_saved_node(node, tmp_path).collect().to_dicts() == [{"constant": 0}]
 
-    def test_none_values_coerced(self, tmp_path: Path):
+    def test_none_values_refused(self, tmp_path: Path):
+        """``values`` is a list; an empty one is the default frame, a null is refused."""
         node = _constant("NoneConst", None)
-        _compile_node_code(_node_to_code(node))
-        assert _run_saved_node(node, tmp_path).collect().to_dicts() == [{"constant": 0}]
+        with pytest.raises(
+            NodeConfigError, match=r"setting 'values': Input should be a valid list"
+        ) as raised:
+            _run_saved_node(node, tmp_path)
+        assert raised.value.setting == "values"
 
     def test_nan_handling(self, tmp_path: Path):
         node = _constant("NanConst", [{"name": "x", "value": "nan"}])
@@ -3695,7 +3701,8 @@ class TestGenExternalFileEdgeCases:
         features = pl.LazyFrame({"x": [1]})
         assert _run_saved_node(node, tmp_path, features, source_names=["features"]) is features
 
-    def test_none_code_passthrough(self, tmp_path: Path):
+    def test_none_code_refused(self, tmp_path: Path):
+        """``code`` is a string; an empty one is the passthrough, a null is refused."""
         node = _n(
             {
                 "id": "ext",
@@ -3706,11 +3713,12 @@ class TestGenExternalFileEdgeCases:
                 },
             }
         )
-        code = _node_to_code(node, source_names=["features"])
-        assert code.endswith("def ExtNone(features): ...\n")
-        _compile_node_code(code)
         features = pl.LazyFrame({"x": [1]})
-        assert _run_saved_node(node, tmp_path, features, source_names=["features"]) is features
+        with pytest.raises(
+            NodeConfigError, match=r"setting 'code': Input should be a valid string"
+        ) as raised:
+            _run_saved_node(node, tmp_path, features, source_names=["features"])
+        assert raised.value.setting == "code"
 
 
 # ---------------------------------------------------------------------------

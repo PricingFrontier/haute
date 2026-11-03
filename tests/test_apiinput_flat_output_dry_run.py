@@ -85,7 +85,7 @@ def _flat_api_node(csv_path: Path) -> GraphNode:
         data=NodeData(
             label="src",
             nodeType=NodeType.API_INPUT,
-            config={"sourceType": "flat_file", "path": str(csv_path)},
+            config={"path": str(csv_path)},
         ),
     )
 
@@ -155,7 +155,7 @@ def test_flat_apiinput_to_output_dry_run_route(nested_project: Path) -> None:
                 "data": {
                     "label": "src",
                     "nodeType": NodeType.API_INPUT.value,
-                    "config": {"sourceType": "flat_file", "path": str(csv_path)},
+                    "config": {"path": str(csv_path)},
                 },
             },
             {

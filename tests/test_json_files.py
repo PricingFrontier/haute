@@ -46,7 +46,6 @@ def test_a_rating_step_sidecar_orders_its_tables_and_writes_a_grid_row_a_line() 
                 "outputColumn": "region_factor",
                 "defaultValue": None,
                 "factors": ["region"],
-                "name": "Region",
             }
         ],
         "combinedOutputs": [],
@@ -55,7 +54,6 @@ def test_a_rating_step_sidecar_orders_its_tables_and_writes_a_grid_row_a_line() 
         "{\n"
         '  "tables": [\n'
         "    {\n"
-        '      "name": "Region",\n'
         '      "factors": ["region"],\n'
         '      "outputColumn": "region_factor",\n'
         '      "defaultValue": null,\n'
@@ -112,11 +110,15 @@ def test_global_constants_and_a_test_quote_use_the_printer() -> None:
 
 
 def test_saving_twice_gives_identical_bytes() -> None:
-    config = {"tables": [{"name": "T", "factors": ["k"], "outputColumn": "f", "entries": []}]}
+    config = {"tables": [{"factors": ["k"], "outputColumn": "f", "entries": []}]}
     once = node_config_json(NodeType.RATING_STEP, config, node_label="rate")
     import json
 
-    assert node_config_json(NodeType.RATING_STEP, json.loads(once), node_label="rate") == once
+    from haute._config_io import config_from_sidecar
+
+    # The file read back as a load reads it (its grid as entries), then written again.
+    reread = config_from_sidecar(NodeType.RATING_STEP, json.loads(once))
+    assert node_config_json(NodeType.RATING_STEP, reread, node_label="rate") == once
 
 
 def test_a_workbench_schema_column_and_a_show_when_condition_sit_on_one_line() -> None:

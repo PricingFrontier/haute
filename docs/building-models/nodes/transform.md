@@ -268,6 +268,24 @@ df = df.with_columns(
 
     **Create Instance** wraps the node in a one-node submodel and adds another occurrence of its definition; see [Reusing a node](instances.md).
 
+    <!-- config-keys:start -->
+
+    Every key the config may hold:
+
+    | Key | Type | Description |
+    |---|---|---|
+    | `code` | text | The Polars code the node's function runs; when `steps` are present, their rendering. |
+    | `steps` | list of map of text to any JSON value | The low-code steps the node's code is rendered from, in order. |
+    | `keyword_parameters` | list of object | The keyword-only parameters of a transform written as code, each with its literal default. |
+    | `keyword_parameters[].name` | text | The parameter's name in the function signature. |
+    | `keyword_parameters[].default` | text or number or `true` or `false` or `null` | Its literal default, which a run binds. |
+    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
+    | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
+    | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |
+
+    <!-- config-keys:end -->
+
 **See also:**
 
 - [Polars (Getting Started)](../../getting-started/polars.md)  - deeper dive into the data engine

@@ -150,7 +150,7 @@ class TestSubmodelCreateValueErrorSanitisation:
                     "data": {
                         "label": "a",
                         "nodeType": "dataInput",
-                        "config": {"path": "x.parquet"},
+                        "config": {"inputType": "file", "format": "parquet", "path": "x.parquet"},
                     },
                 },
                 {

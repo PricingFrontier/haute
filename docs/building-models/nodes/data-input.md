@@ -121,7 +121,7 @@ A Databricks table:
     A **CREDENTIAL-FREE URI** must not contain a user name, password or secret query parameter. Put a URI with credentials in an environment variable and give that variable's name as the **CONNECTION ENVIRONMENT REFERENCE**.
 
 ??? note "In the pipeline file"
-    The node's settings are stored in a JSON sidecar, `config/data_input/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.data_input(config="config/data_input/<node name>.json")`. Steps on the **TRANSFORM** tab are stored in the sidecar as `steps`, and the code they generate is the body of the node's function, which takes the loaded data as `df`; after **Switch to code**, the body is your code.
+    The node's settings are stored in a JSON sidecar, `config/data_input/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.data_input(config="config/data_input/<node name>.json")`. Steps on the **TRANSFORM** tab are stored in the sidecar as `steps`, and the code they generate is the body of the node's function, which takes the loaded data as `df`; code the other steps cannot hold goes in a **Free code** step.
 
     | Setting in the editor | Stored as |
     |---|---|
@@ -149,5 +149,31 @@ A Databricks table:
     | `"inline"` | `"records"` |
 
     With no editor control: `mode`, for file, lakehouse and inline sources, is `"scan"` (lazy) or `"read"` (eager). Choosing a format sets it to the format's usual mode, and a format offers only the modes Polars supports for it. A parquet file with `mode` `"read"` is copied into a snapshot like the other sources; a parquet file with a map column needs it. Such a file's snapshot applies only the `columns` and `n_rows` arguments, and refuses any other argument that changes which rows or columns it holds. Database and Databricks inputs have no `mode`.
+
+    <!-- config-keys:start -->
+
+    Every key the config may hold:
+
+    | Key | Type | Description |
+    |---|---|---|
+    | `code` | text | The Polars code the node's function runs; when `steps` are present, their rendering. |
+    | `steps` | list of map of text to any JSON value | The low-code steps the node's code is rendered from, in order. |
+    | `arguments` | map of text to any JSON value | Arguments passed to the Polars read or scan call, by parameter name. |
+    | `mode` | `""` or `"read"` or `"scan"` | Whether the file is read eagerly or scanned lazily; empty or absent takes the format's default. With `inputType` `"file"`, `"lakehouse"`, `"inline"`. |
+    | `inputType` | `"file"` | The provider: a file. |
+    | `format` | text | The file format, such as `parquet`, `csv` or `ndjson`. With `inputType` `"file"`, `"database"`, `"lakehouse"`, `"inline"`. |
+    | `path` | text | The file, relative to the project root or absolute. With `inputType` `"file"`, `"lakehouse"`. |
+    | `connection` | text | The named connection in `connections.toml`; exactly one of `connection` and `uri`. With `inputType` `"database"`. |
+    | `uri` | text | A credential-free database URI; exactly one of `connection` and `uri`. With `inputType` `"database"`. |
+    | `query` | text | The SQL query whose rows the node reads. With `inputType` `"database"`, `"databricks"`. |
+    | `http_path` | text | The SQL warehouse's HTTP path. With `inputType` `"databricks"`. |
+    | `table` | text | The table, as `catalog.schema.table`. With `inputType` `"databricks"`. |
+    | `records` | list of map of text to any JSON value | The rows, each an object from column name to value. With `inputType` `"inline"`. |
+    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
+    | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
+    | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |
+
+    <!-- config-keys:end -->
 
 **See also:** [Transform](transform.md) for steps and code. Sharing pipelines across operating systems, WSL, or network mounts? See [Filesystem Portability](../filesystem-portability.md).

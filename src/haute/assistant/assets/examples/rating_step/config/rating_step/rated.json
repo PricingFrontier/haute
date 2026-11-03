@@ -8,7 +8,6 @@
   ],
   "tables": [
     {
-      "name": "fixture factor",
       "factors": ["driver_age_band"],
       "outputColumn": "fixture_factor",
       "defaultValue": 1.0,

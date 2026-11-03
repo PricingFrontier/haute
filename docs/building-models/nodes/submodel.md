@@ -95,6 +95,22 @@ Grouping the scoring steps:
     `definitionId`, the definition's stable identity, has no editor control: Haute sets it when
     you create the submodel and writes it as `definition_id` in the definition file.
 
+    <!-- config-keys:start -->
+
+    Every key the config may hold:
+
+    | Key | Type | Description |
+    |---|---|---|
+    | `definitionId` | text | The submodel definition this occurrence runs. |
+    | `alias` | text | The occurrence's name in the pipeline. |
+    | `instanceOf` | text | For an instance, the occurrence whose definition it shares. |
+    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
+    | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
+    | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |
+
+    <!-- config-keys:end -->
+
 **See also:**
 
 - [Pipeline structure](../../building-models/index.md)  - how nodes connect in a pipeline

@@ -42,7 +42,6 @@ def _rating_graph(tmp_path: Path) -> PipelineGraph:
     )
 
     table_a = {
-        "name": "Age Factor",
         "factors": ["age_band"],
         "outputColumn": "age_factor",
         "entries": [
@@ -52,7 +51,6 @@ def _rating_graph(tmp_path: Path) -> PipelineGraph:
         ],
     }
     table_b = {
-        "name": "Region Factor",
         "factors": ["region"],
         "outputColumn": "region_factor",
         "entries": [

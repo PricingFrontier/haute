@@ -6,7 +6,7 @@ import pytest
 
 from haute._config_validation import validate_node_config
 from haute._types import NodeType
-from haute.errors import ConfigError
+from haute.errors import ConfigError, NodeConfigError
 
 
 @pytest.mark.parametrize(
@@ -24,8 +24,13 @@ def test_mlflow_destination_unknown_value_is_rejected(
 ) -> None:
     """Local is the absence of a choice, so a stored ``local`` is rejected too."""
     config = {"mlflow_destination": destination}
-    with pytest.raises(ConfigError, match="databricks or server. Remove the field"):
+    with pytest.raises(
+        NodeConfigError,
+        match=r"setting 'mlflow_destination': Input should be '', 'databricks' or 'server'",
+    ) as raised:
         validate_node_config(node_type, config)
+
+    assert raised.value.setting == "mlflow_destination"
 
 
 @pytest.mark.parametrize(
@@ -55,8 +60,13 @@ def test_mlflow_destination_valid_values_pass(node_type: NodeType, destination: 
 )
 def test_mlflow_destination_non_string_rejected(node_type: NodeType) -> None:
     config = {"mlflow_destination": 123}
-    with pytest.raises(ConfigError, match="databricks or server"):
+    with pytest.raises(
+        NodeConfigError,
+        match=r"setting 'mlflow_destination': Input should be '', 'databricks' or 'server'",
+    ) as raised:
         validate_node_config(node_type, config)
+
+    assert raised.value.setting == "mlflow_destination"
 
 
 @pytest.mark.parametrize("node_type", [NodeType.MODELLING, NodeType.OPTIMISER])

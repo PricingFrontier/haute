@@ -407,7 +407,11 @@ def _built_pass_through_returns(graph: PipelineGraph, node_id: str) -> str:
                 [
                     ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
                     ("A", NodeType.POLARS, _code("df = src")),
-                    ("O", NodeType.DATA_OUTPUT, {"format": "parquet", "path": "out.parquet"}),
+                    (
+                        "O",
+                        NodeType.DATA_OUTPUT,
+                        {"outputType": "file", "format": "parquet", "path": "out.parquet"},
+                    ),
                 ],
                 [("src", "A"), ("A", "O")],
             ),

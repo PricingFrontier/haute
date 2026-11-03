@@ -43,7 +43,7 @@ from haute._graph_utils import (
     upstream_node_ids,
 )
 from haute._lru_cache import LRUCache
-from haute._node_config_recovery import _DISCRIMINANTS
+from haute._node_config_models import NODE_CONFIG_MODELS
 from haute._output_assembler import is_active_mapping_entry
 from haute._polars_steps import (
     STEP_KINDS,
@@ -424,8 +424,8 @@ def _palette_config_for(node_type: NodeType, config: Mapping[str, Any]) -> dict[
     """
 
     defaults = palette_default_config(node_type)
-    branch = _DISCRIMINANTS.get(node_type)
-    if branch is not None and branch[0] in config and config[branch[0]] != defaults.get(branch[0]):
+    branch = NODE_CONFIG_MODELS[node_type].discriminant
+    if branch is not None and branch in config and config[branch] != defaults.get(branch):
         return {key: value for key, value in defaults.items() if key == "steps"}
     return defaults
 

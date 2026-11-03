@@ -49,9 +49,8 @@ import { readFileSync } from "node:fs"
 import { resolve, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Node } from "@xyflow/react"
-import { validatePipelineGraph } from "../../generated/api-contracts.git.validators.mjs"
+import { validatePipelineGraph } from "../../generated/api-contracts.pipeline-graph.validators.mjs"
 import { pipelineGraphFromContract } from "../../types/guards"
-import { expectGeneratedContract } from "../../types/generatedContractValidation"
 
 // ---------------------------------------------------------------------------
 // Lazy module loaders.  Using dynamic `import()` lets the test file parse
@@ -104,7 +103,7 @@ describe("#116 - a canonical graph read as the editor's", () => {
       id: "n1",
       type: "dataInput",
       position: { x: 0, y: 0 },
-      data: { label: "n1", description: "", nodeType: "dataInput", config: {}, editor: { steps_error: null, steps_discarded: null } },
+      data: { label: "n1", description: "", nodeType: "dataInput", config: { inputType: "file", format: "parquet", path: "" }, editor: { steps_error: null, steps_discarded: null } },
     }],
     edges: [],
     pipeline_name: "x",
@@ -121,8 +120,7 @@ describe("#116 - a canonical graph read as the editor's", () => {
     warning: null,
     ...overrides,
   })
-  const read = (value: unknown) =>
-    pipelineGraphFromContract(expectGeneratedContract("PipelineGraph", validatePipelineGraph, value))
+  const read = (value: unknown) => pipelineGraphFromContract(validatePipelineGraph, value)
 
   it("reads a canonical graph's nodes, edges and metadata", () => {
     const parsed = read(graph())
@@ -140,12 +138,36 @@ describe("#116 - a canonical graph read as the editor's", () => {
   it("refuses a node whose data names an unknown node type", () => {
     const [node] = graph().nodes
     expect(() => read(graph({ nodes: [{ ...node, data: { ...node.data, nodeType: "mystery" } }] })))
-      .toThrow("PipelineGraph: invalid contract at /nodes/0/data/nodeType")
+      // A node's data is a union tagged by nodeType: a type it does not name matches no branch.
+      .toThrow("PipelineGraph: invalid contract at /nodes/0/data")
   })
 
   it("refuses a graph without its edges", () => {
     const { edges: _omitted, ...withoutEdges } = graph()
     expect(() => read(withoutEdges)).toThrow("PipelineGraph: invalid contract at /edges: required")
+  })
+
+  // A submodel definition holds a graph of its own, checked as the root graph is.
+  const withSubmodel = (inner: Record<string, unknown>) => graph({
+    submodels: {
+      pricing: { definitionId: "pricing", file: "modules/pricing.py", inputPorts: [], outputPorts: [], graph: inner },
+    },
+  })
+
+  it("accepts a graph holding a submodel's graph", () => {
+    expect(validatePipelineGraph(withSubmodel(graph()))).toBe(true)
+  })
+
+  it("refuses a malformed graph inside a submodel definition", () => {
+    expect(() => read(withSubmodel({ ...graph(), nodes: "not an array" })))
+      .toThrow("PipelineGraph: invalid contract at /submodels/pricing/graph/nodes: type")
+  })
+
+  it("refuses a node config inside a submodel's graph that its node type's model refuses", () => {
+    const [node] = graph().nodes
+    const refused = { ...node, data: { ...node.data, config: { inputType: "file", format: "parquet", path: 3 } } }
+    expect(() => read(withSubmodel(graph({ nodes: [refused] }))))
+      .toThrow("PipelineGraph: invalid contract at /submodels/pricing/graph/nodes/0/data")
   })
 
   // The bare casts that triggered #116 must not appear in the source. Ref

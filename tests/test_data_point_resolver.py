@@ -85,7 +85,6 @@ def _graph(project: Path, *, source_code: str = "", join_code: str | None = None
                 {
                     "tables": [
                         {
-                            "name": "Region",
                             "factors": ["region"],
                             "outputColumn": "region_factor",
                             "entries": [{"region": "north", "value": 1.0}],

@@ -208,6 +208,16 @@ class TestResolvedDescriptors:
             ]
         }
 
+        # An Explore chart is a pydantic model: its fields, closed, as a chart card holds them.
+        explore = by_id[NodeType.EXPLORE.value].as_dict()["config_schema"]
+        chart = explore["properties"]["charts"]["items"]
+        assert chart["type"] == "object"
+        assert chart["additionalProperties"] is False
+        assert {"version", "id", "kind", "category", "value_encodings", "axes"} <= set(
+            chart["required"]
+        )
+        assert chart["properties"]["kind"] == {"const": "combo"}
+
     def test_node_descriptors_include_the_complete_closed_contract(self):
         required = {
             "id",

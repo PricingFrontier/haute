@@ -559,6 +559,11 @@ class ScoringModel:
     offset from this carrier, never the raw model, so a contract-bound offset
     applies to a raw model a cache may share.
 
+    ``optional_feature_names`` are inputs the model reads when the input has
+    them and scores without otherwise: a pyfunc signature input marked
+    optional (an exposure Haute's own logged model declares). They are never
+    among ``feature_names``, which are required.
+
     ``run_contract_path`` is the local copy of the contract an MLflow run logged
     beside a native model :func:`load_mlflow_model` loaded, read from that same
     run; ``None`` for a run that logged none and for any other model.
@@ -567,6 +572,7 @@ class ScoringModel:
     __slots__ = (
         "_model",
         "feature_names",
+        "optional_feature_names",
         "cat_feature_names",
         "flavor",
         "offset_column",
@@ -585,9 +591,11 @@ class ScoringModel:
         offset_link: str | None = None,
         offset_declared: bool = True,
         run_contract_path: str | None = None,
+        optional_feature_names: frozenset[str] = frozenset(),
     ) -> None:
         self._model = model
         self.feature_names = feature_names
+        self.optional_feature_names = optional_feature_names
         self.cat_feature_names = cat_feature_names
         self.flavor = flavor
         self.offset_column = offset_column
@@ -600,6 +608,7 @@ class ScoringModel:
         return ScoringModel(
             model=self._model,
             feature_names=self.feature_names,
+            optional_feature_names=self.optional_feature_names,
             cat_feature_names=self.cat_feature_names,
             flavor=self.flavor,
             offset_column=offset_column,
@@ -682,10 +691,7 @@ def catboost_class_labels(model: Any) -> tuple[Any, Any] | None:
 
     from haute.modelling._algorithms import CATBOOST_CLASS_LABELS_METADATA_KEY
 
-    try:
-        recorded = model.get_metadata().get(CATBOOST_CLASS_LABELS_METADATA_KEY)
-    except Exception:
-        recorded = None
+    recorded = model.get_metadata().get(CATBOOST_CLASS_LABELS_METADATA_KEY)
     if isinstance(recorded, str) and recorded:
         labels = json.loads(recorded)
         if not isinstance(labels, list) or len(labels) != 2:
@@ -1278,26 +1284,164 @@ def _load_pyfunc_model(
     return mlflow_module.pyfunc.load_model(local_path)
 
 
-def _wrap_pyfunc(model: Any) -> ScoringModel:
-    """Wrap an MLflow pyfunc model in a ``ScoringModel``."""
-    feature_names = _extract_pyfunc_features(model)
+#: The outputs of Haute's own classifier pyfunc (``modelling/_native_pyfunc.py``):
+#: the original label and the positive-class probability, in this order.
+PYFUNC_CLASSIFIER_OUTPUTS = ("pred_label", "pred_proba")
+
+
+def _wrap_pyfunc(model: Any, *, task: str) -> ScoringModel:
+    """Wrap an MLflow pyfunc model in a ``ScoringModel`` scoring it as *task*.
+
+    The signature's outputs fix the predict surface: Haute's classifier pair
+    (:data:`PYFUNC_CLASSIFIER_OUTPUTS`) scores labels and probabilities from
+    their own columns; anything else must return one prediction per row.
+
+    Raises:
+        ConfigError: the signature declares the classifier pair but the node
+            scores regression, or declares several outputs of another kind.
+    """
+    from haute.errors import ConfigError
+
+    outputs = _pyfunc_output_names(model)
+    predictor: _PyfuncPredictor
+    if outputs == list(PYFUNC_CLASSIFIER_OUTPUTS):
+        if task != "classification":
+            raise ConfigError(
+                "This MLflow model returns a classifier's label and positive-class "
+                f"probability ({', '.join(PYFUNC_CLASSIFIER_OUTPUTS)}) but the node scores it "
+                f"as {task}. Set the node's task to classification.",
+                trained_task="classification",
+                task=task,
+            )
+        predictor = _PyfuncClassifier(model)
+    elif outputs is not None and len(outputs) > 1:
+        raise ConfigError(
+            f"This MLflow model declares {len(outputs)} outputs "
+            f"({', '.join(str(name) for name in outputs)}); Model Scoring reads one "
+            f"prediction per row, or a classifier's {' and '.join(PYFUNC_CLASSIFIER_OUTPUTS)}.",
+            outputs=[str(name) for name in outputs],
+        )
+    else:
+        predictor = _PyfuncPredictor(model)
+    required, optional = _extract_pyfunc_features(model)
     return ScoringModel(
-        model=model,
-        feature_names=feature_names,
+        model=predictor,
+        feature_names=required,
+        optional_feature_names=optional,
         cat_feature_names=frozenset(),
         flavor="pyfunc",
     )
 
 
-def _extract_pyfunc_features(model: Any) -> list[str]:
-    """Extract feature names from a pyfunc model's signature."""
+def _extract_pyfunc_features(model: Any) -> tuple[list[str], frozenset[str]]:
+    """The signature's required input names, and those marked optional."""
     sig = getattr(model.metadata, "signature", None)
-    if sig is None:
-        return []
-    inputs = sig.inputs
+    inputs = None if sig is None else sig.inputs
     if inputs is None:
-        return []
-    return list(inputs.input_names())
+        return [], frozenset()
+    return list(inputs.required_input_names()), frozenset(inputs.optional_input_names())
+
+
+def _pyfunc_output_names(model: Any) -> list[Any] | None:
+    """The output names a pyfunc signature declares, or ``None`` without them."""
+    sig = getattr(model.metadata, "signature", None)
+    outputs = None if sig is None else sig.outputs
+    return None if outputs is None else list(outputs.input_names())
+
+
+class _PyfuncPredictor:
+    """A pyfunc model behind the ``predict`` surface the scorer reads.
+
+    MLflow returns whatever the model's code returns. Model Scoring reads one
+    prediction per row: a vector, or a one-column table. Any other shape is
+    refused by its shape, never flattened into more values than rows.
+    """
+
+    def __init__(self, model: Any) -> None:
+        self._model = model
+
+    def predict(self, x_data: Any) -> np.ndarray:
+        import pandas as pd
+
+        output = self._model.predict(x_data)
+        if isinstance(output, pd.DataFrame):
+            if output.shape[1] != 1:
+                raise ValueError(
+                    f"The MLflow model returned {output.shape[1]} columns "
+                    f"({', '.join(map(str, output.columns))}) for each row; Model Scoring reads "
+                    "one prediction per row, or a classifier's "
+                    f"{' and '.join(PYFUNC_CLASSIFIER_OUTPUTS)} declared by its signature."
+                )
+            values: np.ndarray = output.iloc[:, 0].to_numpy()
+        else:
+            values = np.asarray(output)
+            if values.ndim == 2 and values.shape[1] == 1:
+                values = values[:, 0]
+            elif values.ndim != 1:
+                raise ValueError(
+                    f"The MLflow model returned predictions of shape {values.shape}; Model "
+                    "Scoring reads one prediction per row."
+                )
+        _require_one_per_row(len(values), x_data)
+        return values
+
+
+class _PyfuncClassifier(_PyfuncPredictor):
+    """Haute's classifier pyfunc: labels and probabilities from their own columns.
+
+    Labels take the type the signature declares for ``pred_label``, so an
+    empty input keeps the typed column a scored one has. One model call
+    serves both: ``predict`` keeps the probabilities for the
+    ``predict_proba`` that every classification path makes next on the same
+    input, per thread because a cached model is shared across scoring threads.
+    """
+
+    def __init__(self, model: Any) -> None:
+        super().__init__(model)
+        self._label_dtype = model.metadata.signature.outputs.inputs[0].type.to_numpy()
+        self._pending = threading.local()
+
+    @property
+    def label_dtype(self) -> pl.DataType:
+        """The Polars type of the labels, as the signature declares them."""
+        return pl.Series("label", np.array([], dtype=self._label_dtype)).dtype
+
+    def _pair(self, x_data: Any) -> tuple[np.ndarray, np.ndarray]:
+        import pandas as pd
+
+        output = self._model.predict(x_data)
+        columns = list(output.columns) if isinstance(output, pd.DataFrame) else None
+        if columns != list(PYFUNC_CLASSIFIER_OUTPUTS):
+            shape = f"columns {columns}" if columns is not None else type(output).__name__
+            raise ValueError(
+                f"The MLflow model declares the outputs {list(PYFUNC_CLASSIFIER_OUTPUTS)} but "
+                f"returned {shape}."
+            )
+        _require_one_per_row(len(output), x_data)
+        labels = output["pred_label"].to_numpy().astype(self._label_dtype)
+        return labels, output["pred_proba"].to_numpy(dtype=np.float64)
+
+    def predict(self, x_data: Any) -> np.ndarray:
+        labels, probabilities = self._pair(x_data)
+        self._pending.scored = (x_data, probabilities)
+        return labels
+
+    def predict_proba(self, x_data: Any) -> np.ndarray:
+        pending = getattr(self._pending, "scored", None)
+        self._pending.scored = None
+        if pending is not None and pending[0] is x_data:
+            probabilities: np.ndarray = pending[1]
+            return probabilities
+        return self._pair(x_data)[1]
+
+
+def _require_one_per_row(predictions: int, x_data: Any) -> None:
+    rows = len(x_data)
+    if predictions != rows:
+        raise ValueError(
+            f"The MLflow model returned {predictions} predictions for {rows} rows; Model "
+            "Scoring reads one prediction per row."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1682,8 +1826,7 @@ def _load_with_bounded_retry(
     import random
     import time
 
-    from haute._sandbox import ArtifactVersionMismatchError
-    from haute.errors import ConfigError
+    from haute.errors import HauteError, HauteValidationError
 
     last_err: BaseException | None = None
     for attempt in range(1, _LOAD_MAX_ATTEMPTS + 1):
@@ -1703,17 +1846,13 @@ def _load_with_bounded_retry(
             )
             scoring_model.run_contract_path = contract_path
             return scoring_model
-        except (AttributeError, TypeError, KeyError, ConfigError, ArtifactVersionMismatchError):
-            # Programmer error — a missing attribute, wrong type, or
-            # unknown dict key is a bug in our dispatch code (or a
-            # breaking change in catboost / rustystats), not a corrupt
-            # artifact; a ConfigError (the node scores the model as the
-            # wrong task, or an EBM under a contract that does not describe
-            # it) and an ArtifactVersionMismatchError (a model written by
-            # another engine version) are readable models that
-            # re-downloading cannot fix.  Wrapping these as "persistently corrupt" would send
-            # on-call down the wrong path.  Re-raise so the real error
-            # surfaces.
+        except (AttributeError, TypeError, KeyError, HauteError, HauteValidationError):
+            # A missing attribute, wrong type or unknown key is a bug in the
+            # dispatch code (or a breaking library change), and every Haute
+            # error is a refusal of bytes Haute could read (the wrong task, a
+            # model without Haute's record, a contract that does not describe
+            # it, another engine version). Re-downloading fixes neither, and
+            # reporting them as a corrupt artifact would hide the real reason.
             raise
         except Exception as err:
             last_err = err
@@ -2054,7 +2193,7 @@ def load_mlflow_model(
                 resolved_artifact,
                 backend=backend,
             )
-            scoring_model = _wrap_pyfunc(raw_model)
+            scoring_model = _wrap_pyfunc(raw_model, task=task)
 
         _model_cache.put(cache_key, scoring_model)
 

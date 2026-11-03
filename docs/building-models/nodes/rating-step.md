@@ -108,7 +108,7 @@ With **ON MISS** on **Stop the run**, the run fails with a `RatingTableMissError
     it won't match. Use a [Transform](transform.md) node upstream to normalise casing if needed.
 
 ??? note "In the pipeline file"
-    The node's settings are stored in a JSON sidecar, `config/rating_step/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.rating_step(config="config/rating_step/<node name>.json")`. Steps on the **TRANSFORM** tab are stored in the sidecar as `steps`, and the code they generate is the body of the node's function, which takes the rated data as `df`; after **Switch to code**, the body is your code.
+    The node's settings are stored in a JSON sidecar, `config/rating_step/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.rating_step(config="config/rating_step/<node name>.json")`. Steps on the **TRANSFORM** tab are stored in the sidecar as `steps`, and the code they generate is the body of the node's function, which takes the rated data as `df`; code the other steps cannot hold goes in a **Free code** step.
 
     | Setting in the editor | Stored as |
     |---|---|
@@ -121,7 +121,7 @@ With **ON MISS** on **Stop the run**, the run fails with a `RatingTableMissError
     | The combined outputs | `combinedOutputs`: a list with one object per combined output |
     | **COMBINED OUTPUT COLUMN** | `combinedOutputs[].outputColumn` |
     | **OPERATION** | `combinedOutputs[].operation`: `"multiply"`, `"add"`, `"min"` or `"max"` |
-    | **BASE VALUE** | `combinedOutputs[].baseValue`, a number |
+    | **BASE VALUE** | `combinedOutputs[].baseValue`, as text such as `"1.0"` |
     | **TRANSFORM** tab | `steps`, or the function body when the node's code is not steps |
     | **COLUMNS** tab | `selected_columns` |
 
@@ -138,13 +138,39 @@ With **ON MISS** on **Stop the run**, the run fails with a `RatingTableMissError
       "factors": ["area"],
       "outputColumn": "area_factor",
       "defaultValue": "1.0",
-      "entries": [
-        { "area": "London", "value": 1.25 },
-        { "area": "Manchester", "value": 1.10 },
-        { "area": "Rural", "value": 0.85 }
+      "rows": [
+        ["London", 1.25],
+        ["Manchester", 1.1],
+        ["Rural", 0.85]
       ]
     }
     ```
+
+    <!-- config-keys:start -->
+
+    Every key the config may hold:
+
+    | Key | Type | Description |
+    |---|---|---|
+    | `code` | text | The Polars code the node's function runs; when `steps` are present, their rendering. |
+    | `steps` | list of map of text to any JSON value | The low-code steps the node's code is rendered from, in order. |
+    | `tables` | list of object | The rating tables. |
+    | `tables[].factors` | list of text | The factor columns the table is keyed by, at most three. |
+    | `tables[].factorDtypes` | map of text to map of text to any JSON value | For each factor, the type its levels are read as. |
+    | `tables[].outputColumn` | text | The column the looked-up value is written to. |
+    | `tables[].defaultValue` | text or number or `null` | The value of a factor combination the table does not hold; `null` for none. |
+    | `tables[].onMissing` | `"error"` or `"neutral"` | With no default, whether a missing combination fails the run (`error`) or takes the neutral value (`neutral`). |
+    | `tables[].entries` | list of map of text to any JSON value | The table's rows, each a level of every factor and its `value`; the config file writes them as a grid of `columns` and `rows`. |
+    | `combinedOutputs` | list of object | Columns combined from the tables' values. |
+    | `combinedOutputs[].outputColumn` | text | The combined column. |
+    | `combinedOutputs[].operation` | `"multiply"` or `"add"` or `"min"` or `"max"` | How the tables' values are combined. |
+    | `combinedOutputs[].baseValue` | text or number | The value the combination starts from: a number, or the editor's text of one. |
+    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
+    | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
+    | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |
+
+    <!-- config-keys:end -->
 
 **See also:**
 

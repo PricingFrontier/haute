@@ -347,7 +347,6 @@ def test_canonical_row_sidecars_are_lossless_json_roundtrips(
     config = {
         "tables": [
             {
-                "name": "property_table",
                 "factors": factors,
                 "factorDtypes": {factor: {"kind": "String"} for factor in factors},
                 "outputColumn": "rating",

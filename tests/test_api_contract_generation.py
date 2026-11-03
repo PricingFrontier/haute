@@ -101,8 +101,9 @@ def test_contract_bundle_contains_closed_contract_roots() -> None:
         group: [model.__name__ for model in models]
         for group, models in RESPONSE_CONTRACT_GROUPS.items()
     }
-    assert bundle[SHARED_RESPONSE_GROUPS_KEYWORD] == ["execution-metrics"]
+    assert bundle[SHARED_RESPONSE_GROUPS_KEYWORD] == ["execution-metrics", "pipeline-graph"]
     assert bundle[RESPONSE_GROUPS_KEYWORD]["execution-metrics"] == ["ExecutionMetricsPayload"]
+    assert bundle[RESPONSE_GROUPS_KEYWORD]["pipeline-graph"] == ["PipelineGraph"]
     # One validator module per group, so no name is both a request and a response group.
     assert not set(REQUEST_CONTRACT_GROUPS) & set(RESPONSE_CONTRACT_GROUPS)
 

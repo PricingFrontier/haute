@@ -1433,16 +1433,15 @@ class _Walk:
         if not isinstance(source, SourceWithCode) or self.measuring or self.display:
             return self.boundaries.invoke(boundary, inputs)
         scan, frame = source.opened()
-        if scan is not None:
-            write = _write_recipe(
-                source.apply_code,
-                boundary.node,
-                (scan,),
-                frame_names=["df"],
-                selector_aliases=self.selector_aliases,
-            )
-            if write is not None:
-                self.write_recipes[boundary.node_id] = write
+        write = _write_recipe(
+            source.apply_code,
+            boundary.node,
+            (scan,),
+            frame_names=["df"],
+            selector_aliases=self.selector_aliases,
+        )
+        if write is not None:
+            self.write_recipes[boundary.node_id] = write
         return frame
 
     def _record_recipes(self, boundary: NodeBoundary, inputs: Sequence[_Frame]) -> None:

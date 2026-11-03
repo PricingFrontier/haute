@@ -136,9 +136,7 @@ def test_scoped_save_rejects_unavailable_target_and_shared_config(tmp_path):
         '@pipeline.constant(config="custom.json")\ndef second(): ...\n'
     )
     (shared_root / "x.json").write_text(json.dumps(BROKEN_INPUT))
-    (shared_root / "custom.json").write_text(
-        json.dumps({"values": [{"name": "constant_1", "value": "1.0"}]})
-    )
+    (shared_root / "custom.json").write_text(json.dumps({"values": {"constant_1": 1.0}}))
     document = load_pipeline_editor_document(shared_root / "main.py", project_root=shared_root)
     assert document.load_status == "degraded"
     for node in document.nodes:
@@ -292,7 +290,9 @@ def test_scoped_save_regenerates_the_contract_annotation_from_the_saved_settings
         "rules": [{"boundary": "25", "label": "young"}],
         "default": None,
     }
-    (tmp_path / "band.json").write_text(json.dumps({"factors": [factor]}))
+    # The sidecar writes the factor's bands as a list (READ-27); the editor holds rows.
+    sidecar_factor = {**factor, "rules": [{"upper": 25, "label": "young"}]}
+    (tmp_path / "band.json").write_text(json.dumps({"factors": [sidecar_factor]}))
     document = load_pipeline_editor_document(main, project_root=tmp_path)
     band = next(node for node in document.nodes if node.authored_id == "band")
     assert band.scoped_editable is True
@@ -436,7 +436,9 @@ def test_scoped_save_route_rejects_malformed_discriminant_shapes(client, monkeyp
         )
         assert response.status_code == 409
         assert response.json()["detail"]["code"] == "repair_action_unsupported"
-        assert "Unknown inputType" in response.json()["detail"]["message"]
+        message = response.json()["detail"]["message"]
+        assert "setting 'inputType'" in message
+        assert "does not match any of the expected tags" in message
     assert {p: p.read_bytes() for p in before} == before
 
 
@@ -582,6 +584,22 @@ def test_scoped_save_refuses_an_undeclared_key_without_writing(
             {"analysis_columns": ["__haute_rank"]},
             "reserved '__haute_' prefix",
             id="optimiser-analysis-reserved-prefix",
+        ),
+        # The Quote Response's mapping rules raise their own error type, not a ConfigError.
+        pytest.param(
+            NodeType.OUTPUT,
+            {
+                "outputMapping": [
+                    {
+                        "source_port": "in",
+                        "source_column": "id",
+                        "output_path": "$[0].id",
+                        "enabled": True,
+                    }
+                ]
+            },
+            "output path must start with '$[:]'",
+            id="quote-response-output-path",
         ),
     ],
 )

@@ -9,9 +9,10 @@ import polars as pl
 
 from haute._cardinality import normalise_join_validation
 from haute._config_validation import reject_removed_config_keys
+from haute._node_config_models import COLUMN_CONFIG_KEYS, EDGE_JOIN_CONFIG_KEYS
 from haute._polars_steps import JOIN_MAINTAIN_ORDER
 from haute._polars_utils import execution_collect
-from haute._types import COLUMN_CONFIG_KEYS, EDGE_JOIN_CONFIG_KEYS, NodeType
+from haute._types import NodeType
 from haute.errors import ConfigError
 
 EDGE_JOIN_DEFAULT_HOW = "left"

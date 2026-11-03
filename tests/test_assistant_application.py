@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -778,6 +779,12 @@ _BATCH_VALUES = (
 _SUMMARY = "Band driver age, rate it and price the quote."
 
 
+def _without_digests(text: str) -> str:
+    """*text* without its hex digests (plan, catalogue and commit hashes), whose digits a
+    value such as ``350`` can match by chance."""
+    return re.sub(r"[0-9a-f]{40,64}", "", text)
+
+
 def _provider_payload(name: str, result: Mapping[str, object]) -> str:
     """The tool result exactly as the provider receives it."""
 
@@ -835,7 +842,7 @@ class TestChangeCard:
         assert change.changes.edges_removed == []
         assert (change.git_sha, change.parent_sha) == (commit, parent)
 
-        record = change.model_dump_json()
+        record = _without_digests(change.model_dump_json())
         for value in _BATCH_VALUES:
             assert value not in record, value
         assert '"code"' not in record and '"intent"' not in record
@@ -848,7 +855,7 @@ class TestChangeCard:
             assert "normalized_operations" not in payload
             assert "expected_diff" not in payload and "actual_diff" not in payload
             for value in _BATCH_VALUES:
-                assert value not in payload, value
+                assert value not in _without_digests(payload), value
         assert json.loads(dry_run_payload)["operations"] == len(_FOUR_NODE_BATCH)
         assert AssistantChangeRecord.model_validate(json.loads(apply_payload)["change"]) == change
 

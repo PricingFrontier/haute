@@ -739,11 +739,11 @@ def test_recover_regenerates_a_stale_contract_annotation(tmp_path):
     }
 
 
-def test_recover_reports_what_it_could_not_fix_as_completeness(tmp_path):
+def test_recover_gives_a_refused_step_count_the_palette_default(tmp_path):
     """The worked example: a Scenario Expander sidecar from before the stepCount rename
     (`steps: 11`) whose `stepCount` was then hand-edited to 0. The recover applies: the
-    stale `steps` is removed, and the engine's refusal of the count, a value it will not
-    invent, reaches the plan as completeness instead of being dropped."""
+    stale `steps` is removed, and the count the engine refuses takes the palette's 21,
+    reported as defaulted, so the written config loads."""
     from haute._config_io import collect_node_configs
     from haute._pipeline_repair import build_recover_unavailable_node_plan
     from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
@@ -796,18 +796,24 @@ def test_recover_reports_what_it_could_not_fix_as_completeness(tmp_path):
     request = _request(tmp_path, "grid", "recover")
     plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
 
-    assert [(entry.path, entry.code, entry.message) for entry in plan.response.completeness] == [
-        ("/stepCount", "invalid_value", "Scenario expander requires stepCount >= 1, got 0")
-    ]
-    assert all(entry.element_id == target.recovery_id for entry in plan.response.completeness)
+    assert plan.response.completeness == []
     outcomes = {(change.path, change.outcome) for change in plan.response.field_changes}
     assert ("/steps", "removed") in outcomes
+    # The refusal's outcome replaces the value's: the plan lists it once.
+    assert [
+        change.outcome for change in plan.response.field_changes if change.path == "/stepCount"
+    ] == ["defaulted"]
+    assert {
+        change.reason
+        for change in plan.response.field_changes
+        if (change.path, change.outcome) == ("/stepCount", "defaulted")
+    } == {"The value was refused; replaced with the audited default."}
     result = _apply(tmp_path, request)
-    assert [entry.code for entry in result.completeness] == ["invalid_value"]
+    assert result.completeness == []
     applied = next(node for node in result.document.nodes if node.authored_id == "grid")
     assert applied.availability == "ready"
     written = json.loads(sidecar.read_text())
-    assert written["stepCount"] == 0
+    assert written["stepCount"] == 21
     assert "steps" not in written
 
 
@@ -1006,32 +1012,32 @@ def test_recover_gives_a_join_saved_without_its_order_the_order_for_its_type(tmp
     assert joined.data.config["maintainOrder"] == "right_left"
 
 
-def test_recover_refuses_an_asof_join_with_the_engines_message_at_how(tmp_path):
-    """Edge Join supports no asof join: Recover names the setting and the engine's
-    reason instead of a bare failure to generate the node."""
-    from haute._edge_join import build_edge_join_kwargs
-    from haute._pipeline_repair import PipelineRepairError, build_recover_unavailable_node_plan
-    from haute.errors import ConfigError
+def test_recover_gives_an_asof_join_the_palette_join_type(tmp_path):
+    """Edge Join supports no asof join, a value outside the model's ``how``: Recover
+    replaces the refused scalar with the palette's join type, reported as defaulted,
+    and writes a config that loads."""
+    from haute._pipeline_repair import build_recover_unavailable_node_plan
 
     (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
     (tmp_path / "main.py").write_text(
         'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n\n'
         + _ORDERLESS_JOIN.replace("OWNER", "pipeline").replace("HOW", "asof")
     )
-    before = (tmp_path / "main.py").read_bytes()
-    with pytest.raises(ConfigError) as engine:
-        build_edge_join_kwargs({"how": "asof", "on": ["quote_id"], "maintainOrder": "left"})
+    request = _request(tmp_path, "joined", "recover")
+    plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
+    changes = {change.path: change for change in plan.response.field_changes}
+    assert changes["/how"].outcome == "defaulted"
+    assert changes["/how"].reason == "Invalid value replaced with the audited default."
+    assert changes["/on"].outcome == "retained"
+    assert plan.response.completeness == []
 
-    with pytest.raises(PipelineRepairError) as refused:
-        build_recover_unavailable_node_plan(
-            project_root=tmp_path, request=_request(tmp_path, "joined", "recover")
-        )
-    assert refused.value.code == "repair_action_unsupported"
-    assert f"/how: {engine.value}" in refused.value.message
-    assert refused.value.fields["issues"] == [
-        {"path": "/how", "code": "invalid_value", "message": engine.value.to_payload()["message"]}
-    ]
-    assert (tmp_path / "main.py").read_bytes() == before
+    result = _apply(tmp_path, request)
+    assert result.document.load_status == "ready"
+    joined = next(node for node in result.document.nodes if node.authored_id == "joined")
+    assert joined.availability == "ready"
+    assert joined.config["how"] == "left"
+    assert joined.config["on"] == ["quote_id"]
+    assert 'how="asof"' not in (tmp_path / "main.py").read_text(encoding="utf-8")
 
 
 def test_recover_inside_a_submodel_keeps_a_local_pipeline_name_in_the_code(tmp_path):

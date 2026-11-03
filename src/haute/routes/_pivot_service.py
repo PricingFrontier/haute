@@ -40,17 +40,17 @@ from haute._execution_context import (
 from haute._explore_pivots import validate_explore_pivots
 from haute._hashing import content_hash_bytes
 from haute._lru_cache import LRUCache
-from haute._node_snapshots import NodeSnapshotStore
-from haute._polars_utils import cancellable_streaming_collect
-from haute._project_context import context_thread, current_project
-from haute._sandbox import UnsafeCodeError, safe_globals, validate_user_code
-from haute._types import (
+from haute._node_config_models import (
     ExplorePivotConfig,
     ExplorePivotFormula,
     ExplorePivotMember,
     ExplorePivotRowPlacement,
     ExplorePivotValuePlacement,
 )
+from haute._node_snapshots import NodeSnapshotStore
+from haute._polars_utils import cancellable_streaming_collect
+from haute._project_context import context_thread, current_project
+from haute._sandbox import UnsafeCodeError, safe_globals, validate_user_code
 from haute.errors import ConfigError, InvalidRequestError, NotFoundError
 from haute.routes._background_jobs import (
     CancellableJobRegistry,

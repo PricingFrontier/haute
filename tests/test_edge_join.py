@@ -113,15 +113,17 @@ def test_edge_join_decorator_returns_a_callable_that_runs_the_node() -> None:
     ]
 
 
-def test_edge_join_invalid_config_fails_when_the_node_runs() -> None:
+def test_edge_join_invalid_config_is_refused_at_registration() -> None:
+    # The live decorator's keywords are held to the config model when it
+    # registers the node, before the node can run.
     pipeline = Pipeline("joins")
 
-    @pipeline.edge_join
-    def join_rates(quotes, lookup): ...
-
-    df = pl.DataFrame({"region": ["N"]})
     with pytest.raises(ConfigError, match="join keys"):
-        pipeline.nodes[0](df, df)
+
+        @pipeline.edge_join
+        def join_rates(quotes, lookup): ...
+
+    assert pipeline.nodes == []
 
 
 def test_edge_join_config_keys_are_registered() -> None:
@@ -1501,7 +1503,7 @@ def test_edge_join_runtime_validate_rejects_unknown_mode_loudly() -> None:
         _HOW_BASE,
         _HOW_JOIN,
         ConfigError,
-        "supported Polars uniqueness contracts",
+        r"setting 'validate': Input should be '1:1', '1:m', 'm:1' or 'm:m'",
     )
 
 

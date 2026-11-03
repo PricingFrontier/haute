@@ -20,6 +20,7 @@ from haute._rating import (
     validate_banding_config,
 )
 from haute._validation_error import ConfigSettingError
+from haute.errors import NodeConfigError
 from haute.executor import _build_node_fn
 from haute.graph_utils import GraphNode, NodeData, NodeType, PipelineGraph
 from tests.conftest import write_data_input_config, write_node_config
@@ -226,9 +227,13 @@ class TestBandingTypeIsRequired:
             output_column="age_band",
             rules=[{"op1": "<=", "val1": 25, "assignment": "young"}],
         )
-        _, fn, _ = _build_node_fn(node)
-        with pytest.raises(ValueError, match="unsupported banding type 'continuous'"):
-            fn(pl.DataFrame({"age": [20]}).lazy())
+        # Building the node holds it to its model, whose shape names the types.
+        with pytest.raises(
+            NodeConfigError,
+            match=r"setting 'factors\[0\]\.banding': "
+            r"Input should be 'breakpoints' or 'categorical'",
+        ):
+            _build_node_fn(node)
 
 
 class TestDateBreakpoints:
@@ -1116,11 +1121,10 @@ class TestMultiFactor:
     def test_two_active_factors_writing_one_column_fail_naming_both(self):
         """The later band would silently replace the earlier one."""
         node = _multi_banding_node("dup", _DUPLICATE_OUTPUT_FACTORS)
-        _, fn, _ = _build_node_fn(node)
-        lf = pl.DataFrame({"age": [20, 40], "driver_age": [30, 50]}).lazy()
 
+        # Building the node checks its whole model, so the build refuses it.
         with pytest.raises(ConfigSettingError, match=_DUPLICATE_OUTPUT_MESSAGE):
-            fn(lf)
+            _build_node_fn(node)
 
     def test_validation_refuses_two_active_factors_writing_one_column(self):
         with pytest.raises(ConfigSettingError, match=_DUPLICATE_OUTPUT_MESSAGE):
@@ -1539,8 +1543,8 @@ class TestBreakpointsMode:
 
 
 class TestBandingEditorMetadata:
-    def test_strips_nested_underscore_keys(self):
-        """Only factor and rule records contain nested editor properties."""
+    def test_strips_rule_row_ids(self):
+        """A rule row's editor ``_id`` is not written; a factor has no underscore keys."""
         from haute._config_io import _prepare_config_for_sidecar
 
         config = {
@@ -1548,7 +1552,7 @@ class TestBandingEditorMetadata:
                 {
                     "banding": "breakpoints",
                     "column": "age",
-                    "_prevRules": {"categorical": []},
+                    "outputColumn": "age_band",
                     "rules": [
                         {"boundary": "10", "_id": "rule_1", "label": "a"},
                     ],
@@ -1556,7 +1560,6 @@ class TestBandingEditorMetadata:
             ]
         }
         result = _prepare_config_for_sidecar(NodeType.BANDING, config, node_label="banding")
-        assert "_prevRules" not in result["factors"][0]
         assert result["factors"][0]["banding"] == "breakpoints"
         # The rule row loses its _id and is written as a band, its upper edge and label
         # (READ-27).
@@ -1565,9 +1568,24 @@ class TestBandingEditorMetadata:
     def test_preserves_non_underscore_keys(self):
         from haute._config_io import _prepare_config_for_sidecar
 
-        config = {"factors": [{"column": "x", "rules": []}]}
+        config = {
+            "factors": [
+                {
+                    "banding": "breakpoints",
+                    "column": "x",
+                    "outputColumn": "x_band",
+                    "rules": {"10": "low"},
+                    "default": None,
+                    "rightClosed": True,
+                }
+            ]
+        }
         result = _prepare_config_for_sidecar(NodeType.BANDING, config, node_label="banding")
-        assert result == config
+        # rightClosed is kept; the sidecar writes the bands as a list and leaves the null
+        # default out (READ-27).
+        (factor,) = config["factors"]
+        written = {key: value for key, value in factor.items() if key != "default"}
+        assert result == {"factors": [{**written, "rules": [{"upper": 10, "label": "low"}]}]}
 
 
 @pytest.mark.parametrize(
