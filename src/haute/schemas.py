@@ -3047,8 +3047,9 @@ class DatabricksConnectionResponse(BaseModel):
     """How the server signs in to Databricks, from its environment alone.
 
     Never the host and never a secret: ``profile`` is a name the user chose, and
-    ``sdk_auth_type`` the SDK's name for the sign-in (``databricks-cli``,
-    ``external-browser``). ``detail`` says what is missing when not configured.
+    ``sdk_auth_type`` the SDK's name for the sign-in (``databricks-cli``, or the
+    ``pat`` or ``oauth-m2m`` a profile holds). ``detail`` says what is missing when
+    not configured.
     """
 
     configured: bool

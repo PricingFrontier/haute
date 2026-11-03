@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -13,6 +14,7 @@ from haute._databricks_credentials import (
     DatabricksConfigError,
     DatabricksCredentials,
     DatabricksSignInError,
+    cli_refused_a_refresh,
     credentials_rejected,
     databricks_workspace_client,
     resolve_databricks_credentials,
@@ -38,24 +40,27 @@ router = APIRouter(prefix="/api/databricks", tags=["databricks"])
 _SDK_MISSING = "databricks-sdk is not installed. Install with: pip install haute[databricks]"
 
 
-def _get_databricks_client() -> Any:
+def _resolved_credentials() -> DatabricksCredentials:
+    """The environment's credentials, or the 503 that says what is missing."""
+    try:
+        return resolve_databricks_credentials()
+    except DatabricksConfigError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def _get_databricks_client(credentials: DatabricksCredentials | None = None) -> Any:
     """Return a Databricks WorkspaceClient using credentials from .env.
 
-    Building the client is the sign-in for a user form (the SDK runs the CLI or
-    opens the browser), so a :class:`DatabricksSignInError` leaves here as it is,
-    for the caller to answer as a refused credential.
+    Building the client is the sign-in for a user form (the SDK runs the CLI), so a
+    :class:`DatabricksSignInError` leaves here as it is, for the caller to answer as
+    a refused credential.
     """
     try:
         from databricks.sdk import WorkspaceClient  # noqa: F401
     except ImportError:
         raise HTTPException(status_code=503, detail=_SDK_MISSING)
 
-    try:
-        credentials = resolve_databricks_credentials()
-    except DatabricksConfigError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-    return databricks_workspace_client(credentials)
+    return databricks_workspace_client(credentials or _resolved_credentials())
 
 
 def _is_sdk_error(exc: BaseException) -> bool:
@@ -75,16 +80,21 @@ def _browsing(subject: str, *, within: str | None = None) -> Iterator[Any]:
     SDK's listings are lazy, so the listing is consumed inside the block, and the
     client is built inside it too: a user sign-in that fails as the client is
     built must answer like any other refused credential, not as a server error.
+    The credentials are resolved once and carried to the failure's answer, so a
+    `.env` or profile rewritten while the listing ran cannot change which form the
+    answer names or which values its log scrubs.
     """
+    credentials: DatabricksCredentials | None = None
     try:
-        yield _get_databricks_client()
+        credentials = _resolved_credentials()
+        yield _get_databricks_client(credentials)
     except HTTPException:
         raise
     except Exception as exc:
         # A refused service principal surfaces from the SDK's OAuth token
         # exchange as a plain ValueError, never as a DatabricksError.
-        if _is_sdk_error(exc) or credentials_rejected(exc):
-            raise _browsing_failure(exc, subject, within) from exc
+        if credentials is not None and (_is_sdk_error(exc) or credentials_rejected(exc)):
+            raise _browsing_failure(exc, subject, within, credentials) from exc
         raise
 
 
@@ -93,8 +103,9 @@ def _refused_credentials(credentials: DatabricksCredentials, exc: BaseException)
 
     A user sign-in the SDK could not complete carries its own words. A token or
     service principal the workspace refused names its ``.env`` variables. A user
-    sign-in whose token the workspace refused after the SDK produced it (revoked
-    meanwhile) gets the same remedy as a failed sign-in.
+    sign-in refused later, by the workspace or by the CLI on a refresh, is worded
+    from what refused it: the workspace's refusal earns the login command, while
+    the CLI's own message decides whether a login would cure it.
     """
     if isinstance(exc, DatabricksSignInError):
         return exc.problem, exc.remedy
@@ -105,7 +116,9 @@ def _refused_credentials(credentials: DatabricksCredentials, exc: BaseException)
             "Databricks refused DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET",
             "check the service principal's credentials in .env",
         )
-    return credentials.sign_in_failure()
+    # Only the CLI's own message (a refused refresh) decides the remedy; the
+    # SDK's errors subclass OSError too, and a workspace's refusal earns the login.
+    return credentials.sign_in_failure(str(exc) if cli_refused_a_refresh(exc) else "")
 
 
 def _log_failure(
@@ -115,24 +128,38 @@ def _log_failure(
 
     A sign-in failure's SDK text is its cause, and the SDK appends its own debug
     string to it (``Config: host=..., profile=...``), so the workspace host is
-    scrubbed too: the component keeps host values out of its logs.
+    scrubbed too: the component keeps host values out of its logs. A profile pinned
+    to a token or a service principal holds those values in the CLI's config file,
+    where haute never reads them, so they cannot be scrubbed; for such a profile the
+    SDK's text is withheld and only haute's own words are logged.
     """
     secrets = (
         credentials.token or "",
+        credentials.client_id or "",
         credentials.client_secret or "",
         credentials.workspace_host,
         credentials.server_hostname,
     )
-    text = str(exc) if exc.__cause__ is None else f"{exc} ({exc.__cause__})"
+    file_holds_secrets = credentials.auth_mode == "profile" and credentials.sdk_auth_type in (
+        "pat",
+        "oauth-m2m",
+    )
+    if exc.__cause__ is None or file_holds_secrets:
+        text = str(exc)
+    else:
+        text = f"{exc} ({exc.__cause__})"
     logger.warning(
         event,
         error_type=type(exc).__name__,
         error=redact_sensitive_text(text, known_secrets=secrets),
+        sdk_text_withheld=file_holds_secrets and exc.__cause__ is not None,
         **fields,
     )
 
 
-def _browsing_failure(exc: Exception, subject: str, within: str | None) -> HTTPException:
+def _browsing_failure(
+    exc: Exception, subject: str, within: str | None, credentials: DatabricksCredentials
+) -> HTTPException:
     """The answer to *exc*, raised listing *subject*, with the SDK's text only in the log.
 
     The SDK's text is the workspace's own and can name hosts; it is logged with the
@@ -140,7 +167,6 @@ def _browsing_failure(exc: Exception, subject: str, within: str | None) -> HTTPE
     """
     from databricks.sdk.errors import NotFound, PermissionDenied
 
-    credentials = resolve_databricks_credentials()
     if credentials_rejected(exc):
         problem, remedy = _refused_credentials(credentials, exc)
         failure = HTTPException(
@@ -178,8 +204,8 @@ def _browsing_failure(exc: Exception, subject: str, within: str | None) -> HTTPE
 def databricks_connection() -> DatabricksConnectionResponse:
     """How this server signs in to Databricks, read from its environment alone.
 
-    No network call and no SDK: a browser sign-in must never open on a page load,
-    only on Test, Browse, or a fetch. The host is not answered; the component's
+    No network call and no SDK: a page load must never run the Databricks CLI,
+    only Test, Browse, or a fetch. The host is not answered; the component's
     responses carry no host value.
     """
     try:
@@ -198,6 +224,11 @@ def databricks_connection() -> DatabricksConnectionResponse:
 #: SDK's default is 300 s, after which it raises a plain TimeoutError; an analyst
 #: with the VPN off should learn that in seconds, not minutes.
 _TEST_RETRY_SECONDS = 30
+
+#: The wall-clock bound on the whole test, sign-in included: the SDK runs the
+#: Databricks CLI with no timeout of its own, and a locked keychain or a corporate
+#: helper can hold that call for good, so the test answers without it.
+_TEST_WALL_SECONDS = 45
 
 
 def _workspace_unreachable(exc: BaseException) -> bool:
@@ -230,9 +261,19 @@ def _test_failure(credentials: DatabricksCredentials, exc: BaseException) -> tup
     return "Databricks did not answer the connection test", "check the server logs for details"
 
 
+def _sign_in_and_ask_who(credentials: DatabricksCredentials) -> tuple[Any, Any]:
+    client = databricks_workspace_client(credentials, retry_timeout_seconds=_TEST_RETRY_SECONDS)
+    return client, client.current_user.me()
+
+
 @router.post("/test-connection", response_model=DatabricksTestConnectionResponse)
 def databricks_test_connection() -> DatabricksTestConnectionResponse:
-    """Sign in and ask the workspace who haute is; expected failures never 5xx."""
+    """Sign in and ask the workspace who haute is; expected failures never 5xx.
+
+    The sign-in and the question run on a worker thread bounded by
+    ``_TEST_WALL_SECONDS``; a sign-in the CLI never finishes is left to end on its
+    own, and the analyst is told the test did not answer in time.
+    """
     try:
         import databricks.sdk  # noqa: F401
     except ImportError:
@@ -241,15 +282,33 @@ def databricks_test_connection() -> DatabricksTestConnectionResponse:
         credentials = resolve_databricks_credentials()
     except DatabricksConfigError as exc:
         return DatabricksTestConnectionResponse(ok=False, detail=str(exc))
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="databricks-connection-test"
+    )
     try:
-        client = databricks_workspace_client(credentials, retry_timeout_seconds=_TEST_RETRY_SECONDS)
-        me = client.current_user.me()
-    except Exception as exc:
-        if not (_is_sdk_error(exc) or credentials_rejected(exc) or _workspace_unreachable(exc)):
-            raise
-        problem, remedy = _test_failure(credentials, exc)
-        _log_failure("databricks_connection_test_failed", exc, credentials)
-        return DatabricksTestConnectionResponse(ok=False, detail=f"{problem}: {remedy}.")
+        future = executor.submit(_sign_in_and_ask_who, credentials)
+        try:
+            client, me = future.result(timeout=_TEST_WALL_SECONDS)
+        except Exception as exc:
+            # The worker's own TimeoutError (the SDK's retry deadline) and the
+            # wall bound share one class; the future tells them apart.
+            if isinstance(exc, TimeoutError) and not future.done():
+                logger.warning("databricks_connection_test_timed_out", seconds=_TEST_WALL_SECONDS)
+                return DatabricksTestConnectionResponse(
+                    ok=False,
+                    detail=(
+                        f"Databricks did not answer within {_TEST_WALL_SECONDS} s: check the "
+                        "workspace is reachable (VPN or proxy), and that the Databricks CLI "
+                        "can sign in without prompting."
+                    ),
+                )
+            if not (_is_sdk_error(exc) or credentials_rejected(exc) or _workspace_unreachable(exc)):
+                raise
+            problem, remedy = _test_failure(credentials, exc)
+            _log_failure("databricks_connection_test_failed", exc, credentials)
+            return DatabricksTestConnectionResponse(ok=False, detail=f"{problem}: {remedy}.")
+    finally:
+        executor.shutdown(wait=False)
     auth_type = getattr(getattr(client, "config", None), "auth_type", None)
     return DatabricksTestConnectionResponse(
         ok=True,

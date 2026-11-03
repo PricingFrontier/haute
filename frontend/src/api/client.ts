@@ -1870,7 +1870,7 @@ export function getDatabricksConnection(
     .then(async (data) => expectGeneratedContract("DatabricksConnectionResponse", (await databricksValidators()).validateDatabricksConnectionResponse, data))
 }
 
-/** Sign in and ask the workspace who haute is; a browser sign-in opens the browser here. */
+/** Sign in and ask the workspace who haute is; a CLI sign-in runs the Databricks CLI here. */
 export function testDatabricksConnection(
   options?: { signal?: AbortSignal },
 ): Promise<DatabricksTestConnectionResponse> {

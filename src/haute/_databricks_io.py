@@ -3,8 +3,7 @@
 Connection details live on the Data Input node (``http_path`` in config).
 The sign-in is resolved from the environment by
 :mod:`haute._databricks_credentials`: a personal access token, a service
-principal, or one of the user sign-ins (the Databricks CLI's, the SDK's browser
-flow, or a named CLI profile).
+principal, the Databricks CLI's own sign-in, or a named CLI profile.
 """
 
 from __future__ import annotations
@@ -145,7 +144,7 @@ def _user_sign_in_credentials(credentials: DatabricksCredentials) -> Callable[[]
             except OSError as exc:
                 if not cli_refused_a_refresh(exc):
                     raise
-                problem, remedy = credentials.sign_in_failure()
+                problem, remedy = credentials.sign_in_failure(str(exc))
                 raise DatabricksSignInError(problem, remedy) from exc
 
         return headers

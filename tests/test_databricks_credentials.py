@@ -198,8 +198,10 @@ def test_the_default_section_is_the_profile_named_default(
     ("section", "pinned"),
     [
         ("token = dapi-in-file", "pat"),
+        ("auth_type = pat\ntoken = dapi-in-file", "pat"),
         ("client_id = app-id\nclient_secret = app-secret", "oauth-m2m"),
-        ("auth_type = azure-cli", "azure-cli"),
+        ("auth_type = oauth-m2m\nclient_id = app-id\nclient_secret = app-secret", "oauth-m2m"),
+        ("auth_type = databricks-cli", "databricks-cli"),
     ],
 )
 def test_a_profile_s_sign_in_is_pinned_from_what_it_holds(
@@ -215,6 +217,67 @@ def test_a_profile_s_sign_in_is_pinned_from_what_it_holds(
     # The file's own credentials stay in the file: the SDK reads them, haute never does.
     assert credentials.token is None
     assert credentials.client_secret is None
+
+
+@pytest.mark.parametrize(
+    ("section", "said"),
+    [
+        ("auth_type = azure-cli", "does not use for data access"),
+        ("auth_type = basic", "does not use for data access"),
+        ("auth_type = pat", "holds no token"),
+        ("auth_type = oauth-m2m\nclient_id = app-id", "lacks client_id or client_secret"),
+    ],
+)
+def test_a_profile_pinned_to_a_sign_in_it_does_not_hold_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, section: str, said: str
+) -> None:
+    """Any other type would let the SDK merge ambient credentials (an Azure CLI login,
+    DATABRICKS_USERNAME/DATABRICKS_PASSWORD) under a name the profile gave."""
+    _profiles_file(tmp_path, monkeypatch, f"[work]\nhost = https://workspace.example\n{section}\n")
+    monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "work")
+    monkeypatch.setenv("DATABRICKS_USERNAME", "someone")
+    monkeypatch.setenv("DATABRICKS_PASSWORD", "ambient-secret")
+
+    with pytest.raises(DatabricksConfigError) as exc_info:
+        resolve_databricks_credentials()
+
+    message = str(exc_info.value)
+    assert "Profile 'work'" in message
+    assert said in message
+    assert "ambient-secret" not in message
+
+
+def test_only_a_missing_or_expired_login_earns_the_login_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CLI's own message decides: a locked keychain or a proxy is not cured by
+    `databricks auth login`, so those failures point at the server log instead."""
+    monkeypatch.setenv("DATABRICKS_HOST", "https://workspace.example")
+    monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "databricks-cli")
+    credentials = resolve_databricks_credentials()
+
+    expired = (
+        "The Databricks CLI sign-in failed or has expired",
+        "run `databricks auth login --host <your DATABRICKS_HOST>` and try again",
+    )
+    assert credentials.sign_in_failure() == expired
+    assert (
+        credentials.sign_in_failure(
+            "cannot get access token: Error: A new access token "
+            "could not be retrieved because the refresh token is "
+            "invalid."
+        )
+        == expired
+    )
+    assert credentials.sign_in_failure("Error: not logged in") == expired
+
+    problem, remedy = credentials.sign_in_failure(
+        "cannot get access token: Error: keychain is locked: user interaction required"
+    )
+    assert problem == "The Databricks CLI could not produce a token for DATABRICKS_HOST"
+    assert "server log" in remedy
+    assert "keychain" in remedy
+    assert "expired" not in problem
 
 
 def test_a_profile_naming_only_a_host_is_refused_even_with_ambient_credentials(

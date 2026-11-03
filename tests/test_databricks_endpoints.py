@@ -673,3 +673,77 @@ class TestCliSignInEndToEnd:
         (entry,) = [log for log in logs if log["event"] == "databricks_browsing_failed"]
         assert entry["error_type"] == "OSError"
         assert "refresh token is invalid" in entry["error"]
+
+    def test_a_cli_that_fails_for_another_reason_is_not_told_to_log_in_again(
+        self, cli_env: tuple[TestClient, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A locked keychain, a proxy or a workspace policy is not cured by
+        `databricks auth login`; the answer points at the server log instead."""
+        client, _ = cli_env
+        _fake_cli(
+            tmp_path,
+            monkeypatch,
+            "echo 'Error: keychain is locked: user interaction required' >&2\nexit 1\n",
+        )
+
+        response = client.post("/api/databricks/test-connection")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ok"] is False
+        assert body["detail"].startswith(
+            "The Databricks CLI could not produce a token for DATABRICKS_HOST: its message is "
+            "in the server log"
+        )
+        assert not body["detail"].startswith("The Databricks CLI sign-in failed")
+
+    def test_a_sign_in_the_cli_never_finishes_is_answered_within_the_bound(
+        self, cli_env: tuple[TestClient, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The SDK runs the CLI with no timeout of its own; the test must answer anyway."""
+        client, _ = cli_env
+        _fake_cli(tmp_path, monkeypatch, f"sleep 4\nprintf '%s' '{_token_json(_CLI_TOKEN)}'\n")
+        monkeypatch.setattr("haute.routes.databricks._TEST_WALL_SECONDS", 1)
+
+        started = time.monotonic()
+        response = client.post("/api/databricks/test-connection")
+        elapsed = time.monotonic() - started
+
+        assert response.status_code == 200
+        assert response.json()["ok"] is False
+        assert response.json()["detail"].startswith("Databricks did not answer within 1 s")
+        assert elapsed < 4
+
+
+def test_a_profile_s_own_secrets_never_reach_the_log(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A profile pinned to a token holds that token in the CLI's config file, where
+    haute never reads it, so it cannot be scrubbed from the SDK's text: that text
+    is withheld from the log for such a profile."""
+    profiles = tmp_path / "databrickscfg"
+    profiles.write_text(
+        "[work]\nhost = https://workspace.example\nauth_type = pat\ntoken = dapi-in-file\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(profiles))
+    monkeypatch.delenv("DATABRICKS_HOST")
+    monkeypatch.delenv("DATABRICKS_TOKEN")
+    monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "work")
+    refused = DatabricksSignInError(
+        "Databricks refused the credentials of profile 'work'",
+        "check them in the Databricks CLI config file",
+    )
+    refused.__cause__ = ValueError("default auth: pat: Invalid access token dapi-in-file")
+
+    with (
+        patch("haute.routes.databricks.databricks_workspace_client", side_effect=refused),
+        structlog.testing.capture_logs() as logs,
+    ):
+        response = client.get("/api/databricks/catalogs")
+
+    assert response.status_code == 401
+    (entry,) = [log for log in logs if log["event"] == "databricks_browsing_failed"]
+    assert "dapi-in-file" not in entry["error"]
+    assert entry["sdk_text_withheld"] is True
+    assert "dapi-in-file" not in response.text

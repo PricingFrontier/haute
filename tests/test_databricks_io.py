@@ -284,6 +284,53 @@ def test_the_real_connector_s_auth_chain_sends_the_user_sign_in_s_header(
     assert request_headers["Authorization"] == "Bearer cli-token-123"
 
 
+def _jwt(exp_offset_seconds: int) -> str:
+    """A JWT-shaped token (unsigned) with an `exp` and the workspace as issuer, as the
+    CLI's access tokens are; the connector reads `exp` to decide when to ask again."""
+    import base64
+    import json
+    import time
+
+    def part(payload: dict[str, object]) -> str:
+        return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+
+    header = part({"alg": "none", "typ": "JWT"})
+    body = part({"iss": "https://workspace.example", "exp": int(time.time()) + exp_offset_seconds})
+    return f"{header}.{body}.sig"
+
+
+@pytest.mark.usefixtures("_no_ambient_databricks_env")
+def test_the_real_connector_asks_for_the_header_again_once_the_token_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A long fetch outlives an access token. Observed under databricks-sql-connector
+    4.5: the connector keeps a header until the token's own `exp` (less a minute),
+    then asks the credentials provider again, which is when the SDK refreshes."""
+    from databricks.sql.auth.auth import get_python_sql_connector_auth_provider
+
+    monkeypatch.setenv("DATABRICKS_HOST", "workspace.example")
+    monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "databricks-cli")
+    _, authenticate = _stub_sdk_config(monkeypatch)
+    expired, fresh = _jwt(-10), _jwt(3600)
+    authenticate.side_effect = [
+        {"Authorization": f"Bearer {expired}"},
+        {"Authorization": f"Bearer {fresh}"},
+    ]
+    credentials, _ = _resolve_connection("/sql/warehouse", node_label="Data Input")
+    provider = get_python_sql_connector_auth_provider(
+        credentials.server_hostname, MagicMock(name="http_client"), **_sql_auth_kwargs(credentials)
+    )
+
+    first: dict[str, str] = {}
+    second: dict[str, str] = {}
+    provider.add_headers(first)
+    provider.add_headers(second)
+
+    assert first["Authorization"] == f"Bearer {expired}"
+    assert second["Authorization"] == f"Bearer {fresh}"
+    assert authenticate.call_count == 2
+
+
 @pytest.mark.usefixtures("_no_ambient_databricks_env")
 def test_a_profile_connects_to_the_profile_s_host(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path

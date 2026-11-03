@@ -19,8 +19,8 @@ import { CommittedTextField } from "../../components/form"
 //
 // How this server signs in to Databricks, and a Test that signs in and asks
 // the workspace who Haute is. The connection answer is read from the server's
-// environment alone and never signs in, so showing the editor cannot open a
-// browser; only Test (or Browse, or a fetch) does.
+// environment alone and never signs in, so showing the editor never runs the
+// Databricks CLI; only Test (or Browse, or a fetch) does.
 
 /** The sign-in form in words. Never a host or a secret: the answer carries neither. */
 function describeDatabricksConnection(connection: DatabricksConnectionResponse): string {

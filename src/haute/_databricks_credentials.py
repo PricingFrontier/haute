@@ -50,6 +50,10 @@ _USER_SIGN_IN_MODES = frozenset({"cli_login", "profile"})
 #: The SDK auth type haute refuses wherever it appears (see the module docstring).
 _BROWSER_AUTH_TYPE = "external-browser"
 
+#: The sign-ins a profile may be pinned to: each one's material lives in the profile
+#: (or, for the CLI's, in the keychain the CLI holds), never in the ambient environment.
+_PROFILE_AUTH_TYPES = frozenset({"databricks-cli", "pat", "oauth-m2m"})
+
 _SIGN_IN_ALTERNATIVES = (
     "or a user sign-in: DATABRICKS_AUTH_TYPE=databricks-cli with DATABRICKS_HOST, "
     "or DATABRICKS_CONFIG_PROFILE=<profile>"
@@ -102,28 +106,49 @@ class DatabricksCredentials:
         than haute presenting a token or service principal it holds."""
         return self.auth_mode in _USER_SIGN_IN_MODES
 
-    def sign_in_failure(self) -> tuple[str, str]:
+    def sign_in_failure(self, cli_said: str = "") -> tuple[str, str]:
         """The problem and the remedy when this user sign-in cannot be completed.
 
-        The host never appears: a message reaches API responses, which keep host
-        values out; ``DATABRICKS_HOST`` is named in its place.
+        *cli_said* is the Databricks CLI's own message when there is one. Only a
+        message that reports a missing or expired login earns the login command as
+        the remedy; a locked keychain, a proxy, or a workspace that restricts the
+        CLI's app would not be cured by it, so those are sent to the server log,
+        where the CLI's message is kept (hosts scrubbed). The host never appears
+        here: a message reaches API responses, which keep host values out, so
+        ``DATABRICKS_HOST`` is named in its place.
         """
-        if self.auth_mode == "profile":
-            if self.sdk_auth_type == "databricks-cli":
-                return (
-                    f"Databricks sign-in for profile '{self.profile}' failed or has expired",
-                    f"run `databricks auth login --profile {self.profile}` and try again",
-                )
+        if self.auth_mode == "profile" and self.sdk_auth_type != "databricks-cli":
             return (
                 f"Databricks refused the credentials of profile '{self.profile}'",
                 "check them in the Databricks CLI config file",
             )
-        if self.auth_mode == "cli_login":
+        if self.auth_mode == "profile":
+            where = f"for profile '{self.profile}'"
+            expired = f"Databricks sign-in for profile '{self.profile}' failed or has expired"
+            login = f"databricks auth login --profile {self.profile}"
+        elif self.auth_mode == "cli_login":
+            where = "for DATABRICKS_HOST"
+            expired = "The Databricks CLI sign-in failed or has expired"
+            login = "databricks auth login --host <your DATABRICKS_HOST>"
+        else:
+            raise ValueError(f"{self.auth_mode} is not a user sign-in")
+        if cli_said and not _LOGIN_NEEDED_RE.search(cli_said):
             return (
-                "The Databricks CLI sign-in failed or has expired",
-                "run `databricks auth login --host <your DATABRICKS_HOST>` and try again",
+                f"The Databricks CLI could not produce a token {where}",
+                f"its message is in the server log; run `{login}` if it reports a missing "
+                "or expired sign-in, otherwise check the keychain, the proxy and the "
+                "workspace's policy for the CLI",
             )
-        raise ValueError(f"{self.auth_mode} is not a user sign-in")
+        return expired, f"run `{login}` and try again"
+
+
+#: What the Databricks CLI says when the login itself is missing or expired, the
+#: only failures `databricks auth login` cures (CLI 1.10: "A new access token could
+#: not be retrieved because the refresh token is invalid. To reauthenticate, run ...").
+_LOGIN_NEEDED_RE = re.compile(
+    r"refresh token|reauthenticate|auth login|not logged in|no (?:oauth |access )?token",
+    re.IGNORECASE,
+)
 
 
 def _normalise_server_hostname(workspace_host: str) -> str:
@@ -181,10 +206,14 @@ def _profile_host_and_auth_type(profile: str) -> tuple[str, str]:
     standard library, keeps resolution free of the SDK and of any sign-in side
     effect, so a status check can never run the CLI.
 
-    The sign-in is pinned so the SDK never walks its default chain for a profile:
-    the ``auth_type`` the profile declares; else ``pat`` when it holds a ``token``;
-    else ``oauth-m2m`` when it holds a ``client_id`` and ``client_secret``; else the
-    profile is refused. ``external-browser`` is refused too (module docstring).
+    The sign-in is pinned so the SDK never walks its default chain for a profile,
+    and only to a form whose material the profile itself holds, so the SDK never
+    merges ambient credentials under a name the profile gave: ``databricks-cli``;
+    ``pat`` with a ``token`` in the section; ``oauth-m2m`` with a ``client_id`` and
+    ``client_secret`` in the section. A declared type outside those three
+    (``external-browser``, ``basic``, ``azure-cli``, ...) is refused, as is a
+    declared ``pat`` or ``oauth-m2m`` without its material, and a profile that
+    names only a host.
     """
     path = Path(os.getenv("DATABRICKS_CONFIG_FILE", "").strip() or "~/.databrickscfg").expanduser()
     login = f"run `databricks auth login --host <workspace URL> --profile {profile}`"
@@ -216,17 +245,38 @@ def _profile_host_and_auth_type(profile: str) -> tuple[str, str]:
             f"--profile {profile}`."
         )
     declared = section.get("auth_type", "").strip()
+    has_token = bool(section.get("token", "").strip())
+    has_pair = bool(section.get("client_id", "").strip()) and bool(
+        section.get("client_secret", "").strip()
+    )
     if declared == _BROWSER_AUTH_TYPE:
         raise DatabricksConfigError(
             f"Profile '{profile}' in {path} declares auth_type = external-browser, which "
             f"Haute does not run (the SDK's browser sign-in cannot be timed out or "
             f"cancelled): sign in with {login}, which writes auth_type = databricks-cli."
         )
+    if declared and declared not in _PROFILE_AUTH_TYPES:
+        raise DatabricksConfigError(
+            f"Profile '{profile}' in {path} declares auth_type = {declared}, which Haute does "
+            f"not use for data access: a profile signs in as the Databricks CLI (auth_type = "
+            f"databricks-cli, which {login} writes), with a token, or with a client_id and "
+            f"client_secret."
+        )
+    if declared == "pat" and not has_token:
+        raise DatabricksConfigError(
+            f"Profile '{profile}' in {path} declares auth_type = pat but holds no token: add "
+            f"`token = <personal access token>` to it, or {login}."
+        )
+    if declared == "oauth-m2m" and not has_pair:
+        raise DatabricksConfigError(
+            f"Profile '{profile}' in {path} declares auth_type = oauth-m2m but lacks "
+            f"client_id or client_secret: add both to it, or {login}."
+        )
     if declared:
         return host, declared
-    if section.get("token", "").strip():
+    if has_token:
         return host, "pat"
-    if section.get("client_id", "").strip() and section.get("client_secret", "").strip():
+    if has_pair:
         return host, "oauth-m2m"
     raise DatabricksConfigError(
         f"Profile '{profile}' in {path} names only a host, so it does not say how to sign "
@@ -412,7 +462,7 @@ def databricks_sdk_config(
     except ValueError as exc:
         if credentials.sdk_auth_type == "databricks-cli" and _cli_not_found(exc):
             raise DatabricksSignInError(*_CLI_NOT_FOUND) from exc
-        problem, remedy = credentials.sign_in_failure()
+        problem, remedy = credentials.sign_in_failure(str(exc))
         raise DatabricksSignInError(problem, remedy) from exc
     if retry_timeout_seconds is not None:
         config.retry_timeout_seconds = retry_timeout_seconds

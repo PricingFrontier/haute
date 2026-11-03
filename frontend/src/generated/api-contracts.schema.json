@@ -1817,7 +1817,7 @@
       "type": "object"
     },
     "DatabricksConnectionResponse": {
-      "description": "How the server signs in to Databricks, from its environment alone.\n\nNever the host and never a secret: ``profile`` is a name the user chose, and\n``sdk_auth_type`` the SDK's name for the sign-in (``databricks-cli``,\n``external-browser``). ``detail`` says what is missing when not configured.",
+      "description": "How the server signs in to Databricks, from its environment alone.\n\nNever the host and never a secret: ``profile`` is a name the user chose, and\n``sdk_auth_type`` the SDK's name for the sign-in (``databricks-cli``, or the\n``pat`` or ``oauth-m2m`` a profile holds). ``detail`` says what is missing when\nnot configured.",
       "properties": {
         "auth_mode": {
           "default": "",
