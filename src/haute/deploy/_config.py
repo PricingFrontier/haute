@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import copy
+import functools
 import os
 import re
-from collections.abc import Collection, Sequence
+from collections.abc import Callable, Collection, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from haute._artifact_paths import PATH_PROBLEMS, ordinary_path_problem
 from haute._graph_shape import validate_singleton_groups
@@ -631,6 +632,27 @@ def output_fields_are_valid(fields: Sequence[object], available: Collection[str]
         and len(set(names)) == len(names)
         and all(name in available for name in names)
     )
+
+
+_ResolvedStep = TypeVar("_ResolvedStep", bound=Callable[..., Any])
+
+
+def in_resolved_project(step: _ResolvedStep) -> _ResolvedStep:
+    """Run a step on a resolved deployment in the project it was resolved in.
+
+    Validation, test-quote scoring and dispatch read the project's pipeline settings,
+    snapshots and relative paths, so they run there whoever calls them, with or
+    without a project installed.
+    """
+
+    @functools.wraps(step)
+    def run_in_project(resolved: ResolvedDeploy, *args: Any, **kwargs: Any) -> Any:
+        from haute._project_context import ProjectContext, project_scope
+
+        with project_scope(ProjectContext.at(resolved.project_root)):
+            return step(resolved, *args, **kwargs)
+
+    return cast(_ResolvedStep, run_in_project)
 
 
 @dataclass

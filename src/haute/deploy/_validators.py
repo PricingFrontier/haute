@@ -21,7 +21,12 @@ from haute._types import GLOBAL_CONSTANTS_FILE, NodeType, PipelineGraph
 from haute._workbench_config import read_workbench_config
 from haute._workbench_folder import unresolved_references
 from haute._workbench_form import identity_clashes
-from haute.deploy._config import ResolvedDeploy, output_fields_are_valid, test_quote_files
+from haute.deploy._config import (
+    ResolvedDeploy,
+    in_resolved_project,
+    output_fields_are_valid,
+    test_quote_files,
+)
 from haute.deploy._scorer import (
     DeployInput,
     QuoteRequest,
@@ -513,6 +518,7 @@ def _global_constant_errors(graph: PipelineGraph) -> list[str]:
     return errors
 
 
+@in_resolved_project
 def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> list[TestQuoteResult]:
     """Run all pre-deploy validations.
 
@@ -712,6 +718,7 @@ def _request(inputs: list[dict[str, Any]], as_records: bool) -> DeployInput:
     return QuoteRequest(tuple(inputs)) if as_records else pl.DataFrame(inputs)
 
 
+@in_resolved_project
 def score_test_quotes(
     resolved: ResolvedDeploy, test_quotes_dir: Path | None = None
 ) -> list[TestQuoteResult]:

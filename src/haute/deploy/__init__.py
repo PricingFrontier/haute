@@ -19,6 +19,7 @@ from haute.deploy._config import (
     GcpRunConfig,
     ResolvedDeploy,
     SafetyConfig,
+    in_resolved_project,
     resolve_config,
 )
 from haute.deploy._mlflow import DeployResult, deploy_to_mlflow, get_deploy_status
@@ -80,6 +81,7 @@ def check_credentials(config: DeployConfig) -> None:
         check_databricks_credentials()
 
 
+@in_resolved_project
 def _dispatch_resolved(resolved: ResolvedDeploy, *, keep_build: bool) -> DeployResult:
     """Ship an already validated deployment to its configured backend."""
     target = resolved.config.target

@@ -770,7 +770,10 @@ not exist, listing the catalogs the token can see (many workspaces have no `main
    which `_schema._resolve_pipeline_path` shares for schema inference and the sample row;
    the root is the current project's. `resolve_config` runs everything after validating the
    project root (parsing, project modules, snapshot preparation, schema and policy inference)
-   inside `project_scope(ProjectContext.at(<the validated root>))`, whoever calls it, so they
+   inside `project_scope(ProjectContext.at(<the validated root>))`, whoever calls it; every
+   step on the resolved deployment (`validate_deploy`, `score_test_quotes` and the dispatch
+   behind `deploy` and `deploy_resolved`) runs in that project too
+   (`src/haute/deploy/_config.py::in_resolved_project`), so they
    read exactly the files its path validation admitted. Only a path scoring reads is resolved:
    a request input (its sample is replaced by the live request) and a node served from a
    bundled artifact (`_bundled_input_artifact`, which the Data Input intercept shares) keep

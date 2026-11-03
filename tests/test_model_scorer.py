@@ -50,7 +50,7 @@ from haute._model_scorer import (
 from haute._model_source import RegisteredModelSource, RunModelSource
 from haute._polars_utils import streaming_collect
 from haute._project_context import context_thread
-from tests._project import use_project
+from tests._project import use_project, work_elsewhere
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -889,8 +889,8 @@ class TestScoreFromConfig:
         assert "pred" in collected.columns
 
     @patch("haute._mlflow_io.load_mlflow_model")
-    def test_base_dir_none_falls_back_to_cwd(self, mock_load, tmp_path, monkeypatch):
-        """Without base_dir, config is resolved relative to CWD."""
+    def test_base_dir_none_falls_back_to_the_project_root(self, mock_load, tmp_path, monkeypatch):
+        """Without base_dir, config is resolved relative to the project root."""
         sm = _make_scoring_model(predictions=np.array([0.5]))
         mock_load.return_value = sm
 
@@ -911,6 +911,9 @@ class TestScoreFromConfig:
         )
 
         use_project(tmp_path)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        work_elsewhere(elsewhere)  # the config is the project's, not the working directory's
         lf = pl.DataFrame({"a": [1.0], "b": [2.0]}).lazy()
         result = score_from_config(lf, config=config_rel)
         collected = result.collect()

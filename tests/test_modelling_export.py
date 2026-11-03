@@ -10,7 +10,7 @@ import pytest
 from haute.modelling import TrainingJob
 from haute.modelling._export import generate_training_script
 from haute.modelling._train_config import TrainingConfigError
-from tests._project import use_project
+from tests._project import use_project, work_elsewhere
 
 STRICT_RANDOM_EVALUATION = {
     "schema_version": 1,
@@ -739,18 +739,20 @@ class TestExecutedExportMlflowDestinations:
         df.write_parquet(data_path)
         return data_path
 
+    @pytest.mark.no_project
     def test_executed_export_without_destination_logs_locally_despite_databricks_env(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
         tiny_training_data: Path,
     ) -> None:
-
+        """Run as a script from a shell in its folder: no project is installed, so the
+        job runs in the project holding the working directory."""
         monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb-fake.example.com")
         monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi-fake-token")
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
         monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-        use_project(tmp_path)
+        work_elsewhere(tmp_path)
 
         output_dir = tmp_path / "outputs"
         config = {

@@ -1669,13 +1669,12 @@ def score_from_config(
 
     from haute._io import read_user_text
 
+    base = Path(base_dir) if base_dir else current_project().root
     config_path = Path(config)
-    if base_dir is not None and not config_path.is_absolute():
-        config_path = Path(base_dir) / config_path
+    if not config_path.is_absolute():
+        config_path = base / config_path
     try:
-        resolved = contained_path(
-            Path(base_dir) if base_dir else current_project().root, config_path.resolve()
-        )
+        resolved = contained_path(base, config_path.resolve())
     except PathOutsideProjectError:
         raise ValueError(f"Config path {config!r} resolves outside project root") from None
     cfg = json.loads(read_user_text(resolved))

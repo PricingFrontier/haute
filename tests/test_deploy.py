@@ -1607,6 +1607,38 @@ allow_aggregate_statistics = false
             DeployConfig.from_toml(path)
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_a_resolved_deployment_validates_in_its_own_project_with_none_installed(
+        self, tmp_path: Path
+    ) -> None:
+        """A caller of the deploy API need not install a project: validation and its
+        test quotes run in the project the deployment was resolved in."""
+        import shutil
+
+        from haute._project_context import _CURRENT_PROJECT
+        from haute.deploy._config import DeployConfig, resolve_config
+        from haute.deploy._validators import validate_deploy
+
+        shutil.copytree(
+            FIXTURE_DIR, tmp_path / "fixtures", ignore=shutil.ignore_patterns("__pycache__")
+        )
+        use_project(tmp_path)
+        resolved = resolve_config(
+            DeployConfig(
+                pipeline_file=Path("fixtures/pipeline.py"),
+                model_name="test-model",
+                test_quotes_dir=tmp_path / "fixtures" / "quotes",
+            )
+        )
+        try:
+            _CURRENT_PROJECT.set(None)  # a script calling the API installs nothing
+            results = validate_deploy(resolved)
+        finally:
+            resolved.close()
+
+        # A failed test quote raises: these were scored in the resolved project.
+        assert [result["file"] for result in results] == ["basic.json"]
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_resolve_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Integration test — resolves using fixture pipeline (has output node).
 

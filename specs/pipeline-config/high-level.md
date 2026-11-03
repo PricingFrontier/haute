@@ -236,8 +236,9 @@ git repository, and anywhere else raises. Who installs the project:
   command given a pipeline file (`run`, `lint`) runs in the project holding that file
   instead, and `haute serve` resolves the project holding the directory and refuses to start
   outside one.
-- **A standalone run.** `Pipeline.run()`, `Pipeline.score()` and a configured node called
-  directly run in the project already installed, if any (a deploy's validated root);
+- **A standalone run.** `Pipeline.run()`, `Pipeline.score()`, a configured node called
+  directly and a `TrainingJob` run by an exported training script run in the project already
+  installed, if any (a deploy's validated root);
   otherwise in the project holding the pipeline's file, or the file's own folder in no
   project. A pipeline with no defining file (built in an interactive session) runs in the
   project holding the session's working directory.
@@ -248,7 +249,8 @@ git repository, and anywhere else raises. Who installs the project:
 - **The underwriter app, the hosted editor and deployed models.** Each is built for its own
   folder: a release folder, the project folder the hosted bootstrap restored, or the folder
   a scoring container's `app.py` or an MLflow model's manifest ships in. A deploy resolves
-  its pipeline inside the project it validated.
+  its pipeline inside the project it validated, and validates it, scores its test quotes and
+  ships it there, whoever calls the deploy API.
 
 A call that needs a project and finds none installed fails with
 `NoProjectContextError` naming the fix. A relative path in project configuration names a file
