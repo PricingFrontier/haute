@@ -43,7 +43,6 @@ Each package states its formats in its owning specification before behaviour cha
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | READ-20 | Planned | P2 | Each format change comes with a one-off script that converts commercial-pricing and Haute's fixtures, proven before and after. |
-| READ-28 | Planned | P3 | Constants that only formulas read become global constants. |
 | READ-29 | Planned | P3 | Every key Haute's schemas own is snake_case on disk; keys the analyst names are untouched. |
 | READ-33 | Deferred | P2 | A column or table renamed against the project's default branch keeps its saved values in the quote store. |
 | READ-40 | Planned | P3 | Generated workflows declare each secret, setup and check once. |
@@ -73,41 +72,6 @@ Each package states its formats in its owning specification before behaviour cha
 **Dependencies:** None.
 
 **Evidence:** `specs/README.md`; `src/haute/_workbench_folder.py::form_at_ref`.
-
-### READ-28 — Constants that only formulas read become global constants
-**Why:** A Constant node's sidecar is a map from name to value ([pipeline-config](../pipeline-config/high-level.md)). In the investigated pipeline, constants that only formulas read reach them through a cross join. That costs four nodes, four `connect()` calls, two sidecar entries and two positions.
-
-**Plan:**
-- **Promotion to global constants:** the conversion promotes a constant node, turning its constants into global constants and removing the node and its join, only when its structure allows it. All of these must hold:
-  - the node's one consumer is a single cross join, with no keys, that adds its columns to every row of one stepped Polars node's input. A keyed join can leave a row without the constant or drop it, so it never qualifies;
-  - within that Polars node, every reference to a constant column is a column reference in a formula step outside any group-by or aggregation, where a column and a scalar behave alike;
-  - no step assigns to a constant column, so every reference reads the original value;
-  - no code step comes after the join, since Haute cannot tell what a code step reads;
-  - no constant column reaches the Polars node's output: a later step selects it out or drops it;
-  - each constant's name is free among the global constants, and is a valid name there.
-
-  Otherwise the conversion leaves the node and reports which condition failed. The global constant keeps the value's runtime type: a numeric text becomes a number, as it runs today, and text stays text.
-- After a promotion, the sample must give every node the same output columns, types and values. This verifies a rewrite the structure allowed; it never decides eligibility.
-- Constants that banding or rating steps read stay in their node.
-- Trace already shows a global constant's value in a formula.
-
-**Acceptance:**
-- Conversion tests leave the node, naming the failed condition, for each of these:
-  - a name collision;
-  - a constant column reaching the node's output;
-  - two consumers;
-  - a keyed left or inner join, even when every sampled row matches;
-  - a reference inside an aggregation;
-  - a code step after the join;
-  - a step that overwrites a constant column only on rows the sample doesn't hold, so the sample alone would agree.
-- A text constant is promoted as text.
-- On the reference pipeline, only formula-only nodes are removed, and it prices the same.
-- Trace shows the values.
-
-**Dependencies:** `READ-20`.
-
-**Evidence:** `src/haute/_node_apply.py`; `src/haute/_config_io.py::global_constants_json`;
-`src/haute/_expression_parser.py::_InlineGlobalConstants`.
 
 ### READ-29 — Every key Haute's schemas own is snake_case
 **Why:** Configs mix camelCase keys (`outputColumn`, `defaultValue`, `onMissing`, `inputMapping`, `maintainOrder`) with snake_case keys (`output_column` on Model Score, `selected_columns`), while `main.py` uses snake_case throughout.
