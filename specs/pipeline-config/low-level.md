@@ -382,7 +382,14 @@ decorator so a sidecar copy could only go stale, and refuses any other key outsi
 `reject_unrecognized_config_keys` — a backstop, because save validation has already refused
 such a graph — then per-type canonicalisation for `BANDING`/`RATING_STEP`), and serialises the result
 to `{relative_path: json_string}` through `node_config_json`: the config record's own keys
-sorted, two-space indentation, non-ASCII text unescaped and a closing newline. Recover, Reset
+sorted, a setting at the default its loader reads for an absent key left out
+(`_SIDECAR_DEFAULTS`: a Rating Step's empty `combinedOutputs`, a Data Input's or Data
+Output's empty `arguments`), a rating table's keys in their order (`name`, `factors`,
+`factorDtypes`, `outputColumn`, `onMissing`, `defaultValue`, `entries`, then any other as
+given) and each entry's factors in the table's order then `value`, each entry on one line,
+written by the one printer every committed JSON file goes through
+(`src/haute/_json_files.py::render_json`, high-level **JSON files Haute writes**).
+Recover, Reset
 and the node-scoped save write their sidecar through the same function, so both save paths
 write byte-identical sidecars for one configuration whatever order its keys arrived in; the
 next save of an older sidecar rewrites it in that form once. When one of those three rewrites a

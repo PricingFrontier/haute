@@ -50,6 +50,7 @@ from haute._cache import canonical_json
 from haute._config_io import is_windows_reserved_filename
 from haute._file_lock import FileLock
 from haute._hashing import content_hash_bytes
+from haute._json_files import ANY, JsonPath, OneLine, at, render_json_bytes
 from haute._workbench_config import WorkbenchConfig
 from haute._workbench_folder_files import (
     DETAILS_ANY,
@@ -271,45 +272,25 @@ def folder_name_problems(spec: FormSpec, folder: Path) -> list[str]:
 # -- Writing -----------------------------------------------------------------------------
 
 
-def _dumps(value: Any, indent: int = 0) -> str:
-    """*value* as the folder writes JSON: two-space indent, a list of numbers or a mapping
-    of numbers (a layout entry) on one line, other lists and mappings one item a line."""
-    pad = "  " * (indent + 1)
-    if isinstance(value, dict):
-        if not value:
-            return "{}"
-        if all(_is_number(item) for item in value.values()):
-            inner = ", ".join(
-                f"{json.dumps(key)}: {json.dumps(item)}" for key, item in value.items()
-            )
-            return "{" + inner + "}"
-        items = ",\n".join(
-            f"{pad}{json.dumps(key, ensure_ascii=False)}: {_dumps(item, indent + 1)}"
-            for key, item in value.items()
-        )
-        return "{\n" + items + "\n" + "  " * indent + "}"
-    if isinstance(value, list):
-        if not value:
-            return "[]"
-        if all(_is_number(item) for item in value):
-            return "[" + ", ".join(json.dumps(item) for item in value) + "]"
-        items = ",\n".join(f"{pad}{_dumps(item, indent + 1)}" for item in value)
-        return "[\n" + items + "\n" + "  " * indent + "]"
-    return json.dumps(value, ensure_ascii=False)
+def _a_condition(path: JsonPath) -> bool:
+    """A show-when condition, wherever its rule sits: on a sheet, a component or a field."""
+    return len(path) >= 2 and path[-2] == "conditions" and isinstance(path[-1], int)
 
 
-def _is_number(value: object) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool)
+#: A schema file's columns, one a line.
+_SCHEMA_ONE_LINE = at(("columns", ANY))
 
 
-def render_folder_file(value: BaseModel | list[Any]) -> bytes:
-    """A file's bytes: a model with each setting at its default left out, or a list."""
+def render_folder_file(value: BaseModel | list[Any], *, one_line: OneLine | None = None) -> bytes:
+    """A file's bytes: a model with each setting at its default left out, or a list, written
+    by the one printer (:mod:`haute._json_files`): the records *one_line* names, and a layout
+    box or any other run of numbers alone, on one line each."""
     data = (
         value.model_dump(mode="json", exclude_defaults=True, by_alias=True)
         if isinstance(value, BaseModel)
         else value
     )
-    return (_dumps(data) + "\n").encode("utf-8")
+    return render_json_bytes(data, one_line=one_line or (lambda _path: False))
 
 
 def _show_when_file(show_when: Any, names: _Names) -> dict[str, Any]:
@@ -540,11 +521,11 @@ def folder_files(spec: FormSpec, folder: Path) -> dict[str, bytes]:
             if table.id == QUOTE_DETAILS_ID
             else _table_file_model(table, names.missing)
         )
-        files[_table_file(table.name)] = render_folder_file(model)
+        files[_table_file(table.name)] = render_folder_file(model, one_line=_SCHEMA_ONE_LINE)
     for page in spec.pages:
         sheet, layout = _sheet_and_layout(page, names)
         sheet_path, layout_path = _sheet_files(sheet_name(page.title))
-        files[sheet_path] = render_folder_file(sheet)
+        files[sheet_path] = render_folder_file(sheet, one_line=_a_condition)
         files[layout_path] = render_folder_file(layout)
     inputs = {table.id: table for table in tables if table.role == "input"}
     for table_id, rows in spec.sample.items():

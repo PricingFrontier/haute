@@ -16,7 +16,7 @@ This module provides:
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
@@ -32,6 +32,7 @@ from haute._banding_config import (
 )
 from haute._graph_utils import _sanitize_func_name
 from haute._io import utf8_decode_failure
+from haute._json_files import ANY, at, render_json
 from haute._logging import get_logger
 from haute._rating_step_config import (
     normalise_rating_step_config,
@@ -193,16 +194,70 @@ def _prepare_config_for_sidecar(
     return filtered
 
 
+#: Each node type's settings a sidecar leaves out at their default: the loader reads the
+#: key's absence as that value (READ-10).
+_SIDECAR_DEFAULTS: dict[NodeType, dict[str, Any]] = {
+    NodeType.RATING_STEP: {"combinedOutputs": []},
+    NodeType.DATA_INPUT: {"arguments": {}},
+    NodeType.DATA_OUTPUT: {"arguments": {}},
+}
+
+#: A rating table's keys in the order its sidecar writes them; others follow as given.
+_RATING_TABLE_KEYS = (
+    "name",
+    "factors",
+    "factorDtypes",
+    "outputColumn",
+    "onMissing",
+    "defaultValue",
+    "entries",
+)
+
+#: A sidecar's records written on one line each: a rating table's entries.
+_SIDECAR_ONE_LINE = at(("tables", ANY, "entries", ANY))
+
+
+def _ordered(record: Mapping[str, Any], order: Sequence[str]) -> dict[str, Any]:
+    """*record* with the keys *order* names first, in that order, the rest as given."""
+    first = {key: record[key] for key in order if key in record}
+    return {**first, **{key: value for key, value in record.items() if key not in first}}
+
+
+def _rating_table_record(table: Any) -> Any:
+    """A rating table in its sidecar's key order: each entry its factors, in the table's
+    order, then its value."""
+    if not isinstance(table, dict):
+        return table
+    factors = [factor for factor in table.get("factors") or [] if isinstance(factor, str)]
+    ordered = _ordered(table, _RATING_TABLE_KEYS)
+    entries = ordered.get("entries")
+    if isinstance(entries, list):
+        ordered["entries"] = [
+            _ordered(entry, [*factors, "value"]) if isinstance(entry, dict) else entry
+            for entry in entries
+        ]
+    return ordered
+
+
 def node_config_json(node_type: NodeType, config: dict[str, Any], *, node_label: str) -> str:
     """The canonical sidecar text of one node's config: what every save path writes.
 
     The record's own keys are sorted, so one configuration has one form whatever
-    order its keys arrived in; nested user mappings keep their order, since they
-    are data.
+    order its keys arrived in, and a setting at the default its loader reads for an
+    absent key is left out. A rating table's keys and entries follow their kind's
+    order, each entry on one line; other nested user mappings keep their order,
+    since they are data (:mod:`haute._json_files`).
     """
     prepared = _prepare_config_for_sidecar(node_type, config, node_label=node_label)
-    canonical = {key: prepared[key] for key in sorted(prepared)}
-    return json.dumps(canonical, indent=2, ensure_ascii=False) + "\n"
+    defaults = _SIDECAR_DEFAULTS.get(node_type, {})
+    canonical = {
+        key: prepared[key]
+        for key in sorted(prepared)
+        if not (key in defaults and prepared[key] == defaults[key])
+    }
+    if node_type == NodeType.RATING_STEP and isinstance(canonical.get("tables"), list):
+        canonical["tables"] = [_rating_table_record(table) for table in canonical["tables"]]
+    return render_json(canonical, one_line=_SIDECAR_ONE_LINE)
 
 
 # ---------------------------------------------------------------------------
@@ -487,4 +542,4 @@ def global_constants_json(constants: Sequence[GlobalConstant]) -> str:
     for constant in constants:
         record = constant.model_dump(exclude_none=True)
         entries.append({key: record[key] for key in _GLOBAL_CONSTANT_KEY_ORDER if key in record})
-    return json.dumps({"constants": entries}, indent=2, ensure_ascii=False) + "\n"
+    return render_json({"constants": entries})

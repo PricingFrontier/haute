@@ -15,7 +15,7 @@ The packages come from an investigation of [commercial-pricing pull request #1](
   - The body in `main.py` is what runs, and an expression tree in `config/polars/<node>.json` holds the steps again.
   - The steps are kept only while their rendering is the same syntax tree as the body, with the same comments.
   - Adding one term to a 12-term sum changes 1 line of Python and 39 lines of JSON.
-- **Six JSON writers follow different rules.** A prototype printer rewrote the pull request's 41 JSON files with no change to what they hold: under a 100-column limit they went from 2,990 lines to 1,652. `READ-10` measures again with its own printer.
+- **Six JSON writers follow different rules.** A prototype printer rewrote the pull request's 41 JSON files with no change to what they hold: under a 100-column limit they went from 2,990 lines to 1,652. The one printer Haute now writes them with (see [pipeline-config](../pipeline-config/high-level.md), JSON files Haute writes) took commercial-pricing's node configs from 562 lines to 463.
 - **A rating table takes 5 lines per cell.**
 - **Inserting a node into `main.py` moves unrelated functions.**
 - **Random ids fill the Workbench form folder**, such as `c_818cc52f3c8b78a9`, `t_d7d9abf03a7cf621` and `collection_nj2i`. The built-in `quote_details` columns are the exception: their ids are fixed names such as `qd_insured`.
@@ -35,7 +35,7 @@ The owner decided the following on 3 November 2026:
 **Out of scope:** `haute init` rewrites `haute.toml` from scratch on a re-run, as decided on 1 November 2026, so editing that file in place is not planned.
 
 The packages fall into two groups:
-- **Writing changes:** `READ-10` to `READ-13` change how files are written, but every file loads to the same values. The next save rewrites each file once, and no conversion is needed.
+- **Writing changes:** `READ-11` to `READ-13` change how files are written, but every file loads to the same values. The next save rewrites each file once, and no conversion is needed.
 - **Format changes:** `READ-20` onwards. The loader accepts only the current format ([specification governance](../README.md)), and `READ-20` says how commercial-pricing moves to each new one.
 
 Each package states its formats in its owning specification before behaviour changes, and names the contract it replaces there. Golden tests are written from those specifications, not from the implementation's output.
@@ -44,7 +44,6 @@ Each package states its formats in its owning specification before behaviour cha
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| READ-10 | Planned | P2 | One printer writes every committed JSON file, with a fixed shape per kind of record. |
 | READ-11 | Planned | P2 | Node positions are whole numbers, on one line per node, and only a move changes them. |
 | READ-12 | Planned | P2 | Adding or removing a node leaves every unaffected function in `main.py` where it was. |
 | READ-13 | Planned | P3 | Generated code leaves out a default it repeats and a comment that says nothing, and new nodes get plain names. |
@@ -66,45 +65,6 @@ Each package states its formats in its owning specification before behaviour cha
 
 ## Planned improvements
 
-### READ-10 — One printer writes every committed JSON file
-**Why:** Six writers follow four key-order rules and two rules for defaults:
-- node configs sort only their top-level keys and write empties and nulls;
-- global constants have a writer of their own;
-- the sidecar writes positions as 17-digit floats;
-- the Workbench folder puts only all-number objects on one line;
-- test quotes use plain `json.dumps`.
-
-Two more problems:
-- A rating table cell takes 5 lines.
-- Nested keys drift: the editor writes `defaultValue` after `entries` and moves it back on the next edit, making a diff that changes nothing.
-
-**Plan:**
-- Write every committed JSON file with one printer and one atomic writer: UTF-8 with nothing escaped, LF, two-space indent and a final newline.
-- Shape records by kind, not by width. Under a width limit, a one-character edit can spread a whole record over many lines. One line each for:
-  - a rating entry;
-  - a node position;
-  - a layout box;
-  - a schema column;
-  - a show-when condition.
-- Keep long field lists vertical.
-- The owning specifications list, for each kind of record, its key order (identifying key first) and its one-line or vertical shape. Maps whose order means nothing are sorted, and the analyst's data keeps the order it was written in.
-- Leave out values equal to their defaults, by each schema's own rules (an empty `combinedOutputs` among them), not by a generic "drop empties" pass.
-- Samples keep values as typed, text included, so that a draft that doesn't validate can still be saved.
-- Keep the release form's serialisation (`render_form`) separate: it is what a release ships, not a source file.
-
-**Acceptance:**
-- A golden test for each kind of file, written from its specification.
-- Saving twice gives identical bytes.
-- Rewriting the reference pipeline and the workbench fixture changes only whitespace, key order and values left out at their defaults. Every file loads to the same values.
-- The line count of the investigated pull request's files, measured again with this printer.
-
-**Dependencies:** None. Land it on `main` before other branches move on, since the next save rewrites each file once.
-
-**Evidence:** `src/haute/_config_io.py::node_config_json`;
-`src/haute/_config_io.py::global_constants_json`; `src/haute/routes/_helpers.py::save_sidecar`;
-`src/haute/_workbench_folder.py::_dumps`; `src/haute/_workbench_form.py::render_form`;
-`src/haute/_workbench_test_quotes.py::test_quote_bytes`.
-
 ### READ-11 — Node positions are whole numbers
 **Why:**
 - The sidecar holds positions such as `-355.61225658228415` beside `2332.0`, over 4 lines per node.
@@ -113,14 +73,14 @@ Two more problems:
 **Plan:**
 - Round positions to whole pixels in the canvas when a node is placed or dragged, as well as on save. The editor compares positions exactly, so rounding only on save would mark every node as moved.
 - Find the cause of the 1 to 3 pixel moves, and stop an edit that moves no node from writing positions.
-- One line per node comes from `READ-10`.
+- One line per node comes from the one JSON printer ([pipeline-config](../pipeline-config/high-level.md), JSON files Haute writes).
 
 **Acceptance:**
 - A store test: a drag ending at fractional coordinates stores whole numbers.
 - Editing a Polars step and saving leaves every position unchanged.
 - Loading and saving an unchanged pipeline leaves its sidecar byte for byte the same.
 
-**Dependencies:** `READ-10` for the one-line shape.
+**Dependencies:** None.
 
 **Evidence:** `frontend/src/stores/useGraphStore.ts::positionsEqual`;
 `src/haute/routes/_helpers.py::save_sidecar`.

@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from haute._json_files import render_json_bytes
 from haute._output_assembler import render_output_document
 from haute._workbench_compare import (
     Move,
@@ -251,7 +252,7 @@ def test_quote_bytes(
     if tolerance is not None:
         row["tolerance_pct"] = tolerance
     row.update(metadata or {})
-    return (json.dumps([row], indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    return render_json_bytes([row])
 
 
 # ---------------------------------------------------------------------------

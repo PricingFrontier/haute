@@ -106,6 +106,20 @@ The parser refuses them as a `ParseError`, so the document loads degraded with t
 unavailable; a standalone run refuses them as an `ExecutionError` before any node runs. A
 node that binds receives its frames in the order its parameters read them, in every run.
 
+**JSON files Haute writes.** One printer writes every JSON file Haute commits to a project
+(`haute._json_files.render_json`, READ-10): a node's config sidecar, the pipeline's
+`.haute.json`, the global constants, the Workbench form folder and a test quote. It writes
+UTF-8 with nothing escaped, LF line endings, a two-space indent and a final newline, and
+shapes a record by its kind, never by a width limit, so a one-character edit changes one
+line: a rating entry, a node position, a Workbench layout box, a schema column and a
+show-when condition each sit on one line, as does any list or mapping of numbers alone;
+everything else, a sheet's list of fields among it, is one item a line. Each kind of
+record keeps its key order, its identifying key first; a map whose order means nothing is
+sorted, and the analyst's data keeps the order it was written in. A setting is left out at
+the default its loader reads for an absent key, by each schema's own rules. Saving twice
+gives identical bytes. The release form a release ships is not a source file and keeps
+its own serialisation.
+
 **Strict parsing and editor recovery.** `parse_pipeline_file()` and
 `parse_pipeline_source()` are strict canonical entry points: Python syntax, decorator,
 configuration, contract, topology, and submodel failures raise and no recovered graph

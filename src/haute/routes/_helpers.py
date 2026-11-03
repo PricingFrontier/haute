@@ -23,6 +23,7 @@ from starlette.concurrency import run_in_threadpool
 from haute._file_ops import atomic_write_text
 from haute._git_lock import repository_mutation
 from haute._io import read_user_text
+from haute._json_files import render_json
 from haute._logging import get_logger
 from haute._pipeline_recovery import (
     load_pipeline_editor_document,
@@ -840,10 +841,9 @@ def save_sidecar(
     # declared default, so unset ``sources``/``active_source`` do not
     # serialise.  ``indent`` matches the prior manual ``json.dumps``
     # output so diffs on existing sidecars stay minimal.
-    serialised = sidecar_model.model_dump_json(
-        indent=2,
-        exclude_defaults=True,
-    )
+    # One printer writes every committed JSON file (READ-10): a node position, numbers
+    # alone, sits on one line.
+    serialised = render_json(sidecar_model.model_dump(mode="json", exclude_defaults=True))
     sidecar = py_path.with_suffix(".haute.json")
     # Bundle 5.M2 — atomic write closes the partial-bytes window OPUS
     # race-scenario S2 surfaced: the file-watcher's reparse path and
@@ -860,7 +860,7 @@ def save_sidecar(
     # for the primitive-level contract. Pinning tests:
     # TestSaveSidecar.test_writes_atomically_via_atomic_write_text and
     # tests/test_file_ops.py::TestAtomicWriteWindowsReaderContention.
-    content = serialised + "\n"
+    content = serialised
     # The server's own write: the watcher must not take it for an external edit.
     mark_self_write(sidecar, content=content.encode("utf-8"))
     atomic_write_text(sidecar, content)

@@ -225,7 +225,7 @@ the persisted/submitted registry diff after source-and-sidecar no-clobber. A
 graph request exposes no ownership metadata; only that derived disk state can
 establish ownership. A
 `model_validator(mode="after")` enforces `active_source in sources`. Written via
-`model_dump_json(exclude_defaults=True)` so a pipeline that never touched multi-source state
+`model_dump(mode="json", exclude_defaults=True)` through the one JSON printer (`src/haute/_json_files.py::render_json`, a position a line) so a pipeline that never touched multi-source state
 produces a sidecar with only `positions`.
 
 **`EventBus`** (`_event_bus.py`) keys handlers by event-type string in a
