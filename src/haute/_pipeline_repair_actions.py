@@ -130,19 +130,20 @@ def _unfinished_steps_edit(path: Path, root: Path, node: GraphNode) -> RepairArt
     """The edit to *path*'s canvas sidecar that keeps the transform *node*'s step list while
     one of its steps is unfinished, or drops it once none is (READ-22): its body is then the
     raising placeholder, so the sidecar holds the steps' only copy. None when it holds them
-    as they should be."""
+    as they should be. The sidecar is read as the editor reads it and written as a save
+    writes it, so a sidecar the editor would refuse refuses the save, nothing written."""
     from haute._json_files import render_json
-    from haute._sidecar import _read_sidecar_json
+    from haute._sidecar import SidecarModel, read_sidecar_state
 
     sidecar = path.with_suffix(".haute.json")
-    state, payload, _error = _read_sidecar_json(sidecar)
-    if state in ("corrupt", "unreadable"):
+    read = read_sidecar_state(path)
+    if read.state in ("corrupt", "unreadable"):
         raise _unsupported(
             f"{sidecar.name} cannot be read, so this node's unfinished steps could not be kept; "
             "repair it first."
         )
-    held = dict(payload or {})
-    unfinished = dict(held.get("unfinished_steps") or {})
+    held = read.data if read.data is not None else SidecarModel()
+    unfinished = dict(held.unfinished_steps)
     steps = node.data.config.get("steps")
     if isinstance(steps, list) and node.data.editor.steps_error is not None:
         if unfinished.get(node.id) == steps:
@@ -152,15 +153,12 @@ def _unfinished_steps_edit(path: Path, root: Path, node: GraphNode) -> RepairArt
         del unfinished[node.id]
     else:
         return None
-    held.pop("unfinished_steps", None)
-    if unfinished:
-        held["unfinished_steps"] = dict(sorted(unfinished.items()))
-    before = sidecar.read_bytes() if state == "valid" else None
+    updated = held.model_copy(update={"unfinished_steps": dict(sorted(unfinished.items()))})
     return _edit(
         sidecar,
         root,
-        before,
-        render_json(held).encode("utf-8"),
+        sidecar.read_bytes() if read.state == "valid" else None,
+        render_json(updated.model_dump(mode="json", exclude_defaults=True)).encode("utf-8"),
         f"Keep {node.id!r}'s steps while one is unfinished."
         if node.id in unfinished
         else f"Drop {node.id!r}'s unfinished steps, now in its code.",

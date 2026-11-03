@@ -225,6 +225,39 @@ def test_scoped_save_keeps_an_unfinished_step_list_until_it_is_complete(tmp_path
     assert "unfinished_steps" not in json.loads(sidecar.read_text())
 
 
+def test_scoped_save_of_unfinished_steps_refuses_a_sidecar_the_editor_refuses(tmp_path):
+    """The steps' one copy would go to a sidecar the editor reads as corrupt, so the next
+    load would drop it: the save is refused and neither file changes."""
+    from haute._pipeline_repair_actions import apply_scoped_node_save
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    main = tmp_path / "main.py"
+    main.write_text(
+        "import haute\nimport polars as pl\n"
+        'pipeline = haute.Pipeline("demo")\n'
+        '@pipeline.data_input(config="a.json")\ndef source_a(): ...\n'
+        "@pipeline.polars\ndef transform(source_a: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    df: pl.LazyFrame\n    df = source_a\n    return df\n"
+    )
+    (tmp_path / "a.json").write_text(json.dumps(BROKEN_INPUT))
+    sidecar = main.with_suffix(".haute.json")
+    sidecar.write_text('{"sources": ["live"], "active_source": "batch"}\n')
+    request_config = next(
+        node
+        for node in load_pipeline_editor_document(main, project_root=tmp_path).nodes
+        if node.authored_id == "transform"
+    ).config
+    assert request_config is not None
+    unfinished = [*request_config["steps"], {"id": "filter-2", "kind": "filter", "match": "all"}]
+    request = _save_request(tmp_path, "transform", {**request_config, "steps": unfinished})
+    before = {path: path.read_bytes() for path in (main, sidecar)}
+
+    with pytest.raises(PipelineRepairError, match="cannot be read"):
+        apply_scoped_node_save(project_root=tmp_path, request=request)
+
+    assert {path: path.read_bytes() for path in before} == before
+
+
 def test_scoped_save_regenerates_the_contract_annotation_from_the_saved_settings(tmp_path):
     """Renaming a banding output changes the columns the node creates, so the
     annotation carried back from the last parse is stale; the save regenerates
