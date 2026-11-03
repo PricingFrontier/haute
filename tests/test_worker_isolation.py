@@ -31,6 +31,7 @@ from haute._worker_isolation import (
     _terminate_process,
     create_worker_queue,
     ensure_spawnable_interpreter,
+    isolated_worker_failure_is_cap_unavailable,
     isolated_worker_failure_is_memory,
     process_memory_caps_supported,
     resolve_worker_memory_enforcement,
@@ -681,6 +682,35 @@ def test_isolated_worker_failure_is_memory_classifies_every_worker_outcome(
 ) -> None:
     """Every supervisor maps worker failures to 507 through one shared predicate."""
     assert isolated_worker_failure_is_memory(failure) is expected
+
+
+def _remote(remote_type: str, *, is_memory: bool = False) -> IsolatedWorkerRemoteError:
+    return IsolatedWorkerRemoteError(
+        remote_type=remote_type,
+        remote_message="message",
+        remote_traceback="traceback",
+        is_memory=is_memory,
+    )
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=100), True),
+        (_remote("NativeMemoryLimitUnsupportedError"), True),
+        (_remote("NativeMemoryLimitCleanupError"), True),
+        (_remote("MemoryError", is_memory=True), False),
+        (IsolatedWorkerMemoryLimitExceededError(rss_bytes=200, rss_limit_bytes=100), False),
+        (IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=100), False),
+        (RuntimeError("generic"), False),
+    ],
+)
+def test_isolated_worker_failure_is_cap_unavailable_only_for_a_cap_the_host_cannot_install(
+    failure: BaseException,
+    expected: bool,
+) -> None:
+    """A missing cap is told apart from running out of memory, which also claims it."""
+    assert isolated_worker_failure_is_cap_unavailable(failure) is expected
 
 
 def test_a_child_failure_on_a_path_too_long_for_windows_is_reported_as_such(

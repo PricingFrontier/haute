@@ -50,8 +50,8 @@ from haute._source_cache import (
 )
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
-    IsolatedWorkerRemoteError,
     WorkerTerminalReason,
+    isolated_worker_failure_is_cap_unavailable,
     isolated_worker_failure_is_memory,
     isolated_worker_failure_is_path_too_long,
     process_memory_caps_supported,
@@ -927,8 +927,7 @@ def _classify_worker_failure(exc: BaseException) -> str:
     # A worker exception arrives as ``IsolatedWorkerRemoteError`` carrying the
     # child's exception type name, so classify on that name before falling back
     # to the generic memory heuristic.
-    remote_type = exc.remote_type if isinstance(exc, IsolatedWorkerRemoteError) else None
-    if remote_type in ("NativeMemoryLimitUnsupportedError", "NativeMemoryLimitCleanupError"):
+    if isolated_worker_failure_is_cap_unavailable(exc):
         return "cap_unavailable"
     if isolated_worker_failure_is_path_too_long(exc):
         return "path_too_long"

@@ -320,6 +320,27 @@ def isolated_worker_failure_is_memory(exc: BaseException) -> bool:
     return False
 
 
+# The child's own exceptions when it could not install, or release, its native cap.
+_CAP_UNAVAILABLE_REMOTE_TYPES = frozenset(
+    {"NativeMemoryLimitUnsupportedError", "NativeMemoryLimitCleanupError"}
+)
+
+
+def isolated_worker_failure_is_cap_unavailable(exc: BaseException) -> bool:
+    """Return whether a worker failed because this host cannot install its required cap.
+
+    The spawn refuses a required cap a host cannot install before any child
+    exists, and a child reports one it could not install or release. Decide
+    this before :func:`isolated_worker_failure_is_memory`, which counts both as
+    memory outcomes although nothing ran out of memory.
+    """
+    if isinstance(exc, IsolatedWorkerMemoryLimitUnsupportedError):
+        return True
+    return isinstance(exc, IsolatedWorkerRemoteError) and (
+        exc.remote_type in _CAP_UNAVAILABLE_REMOTE_TYPES
+    )
+
+
 def isolated_worker_failure_is_path_too_long(exc: BaseException) -> bool:
     """Return whether a worker failure is a path Windows refused for its length.
 

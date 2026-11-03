@@ -90,6 +90,10 @@ A map column, such as a Databricks `MAP` column or a map in a parquet or Arrow f
 
 For a snapshot source, **Import** sits beside **Refresh** in the node's data preview. It re-reads the source and caches it as a new snapshot, and its tooltip shows when the source was last imported. Haute cannot detect changes to a database, lakehouse or Databricks table, so for those sources **Import** is the only way to pick up new data. To delete cached snapshots, use **Cached data** in Pipeline settings.
 
+While an import runs, the button counts the rows written so far where the source is written in steps: a database or Databricks table, a parquet or IPC file. A CSV is written in one pass and shows **Importing…** until it finishes.
+
+Imports run in a separate process with a memory cap. macOS cannot apply that cap, so there Haute does not build snapshots on its own: click **Import** to build one. A source Haute has to read whole rather than stream (JSON, Excel, ODS, Avro, an IPC stream, or a CSV or NDJSON file with an argument only the full reader accepts) needs the cap, so it cannot be imported on macOS; the import fails saying the host cannot install the cap. Import it on Windows or Linux.
+
 ## Example
 
 A parquet file in your project:

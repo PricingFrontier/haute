@@ -171,12 +171,14 @@ are invalid.
 
 An explicit build (the preview frame's Import) is admitted like any execution and runs in
 the same hard-capped worker as automatic preparation, never on a server thread, whatever its
-build class. The worker shares the rows it has written with the server, so an Import that
-streams batches (a database or Databricks read) counts them as it goes. A host with no native
+build class. The worker shares the rows it has written with the server, so an Import counts
+them as it goes wherever the build writes in steps: each batch of a database or Databricks
+read, each slice of a Parquet or IPC file. A CSV is written in one streaming pass, which
+reports nothing until it ends. A host with no native
 process-memory cap (macOS) is where automatic preparation refuses and sends the user to the
 explicit build: there a bounded explicit build runs in the server process under its admitted
 context, which still checks its memory at every batch, and an admitted-eager build, which
-needs the cap, is refused.
+needs the cap, is refused as `cap_unavailable`, saying the host has no cap.
 
 Snapshot readers acquire an explicit generation lease. Within an execution request the
 lease lasts until execution cleanup. Outside an execution request the returned scan owns a

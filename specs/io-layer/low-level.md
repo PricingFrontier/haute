@@ -327,16 +327,23 @@ whose thread (`routes/input_cache.py::_run_build`) never builds a Data Input its
    `capped_worker_config(isolated_execution_budget(context), timeout_seconds=` the pipeline
    time limit`, stop_reason=` the job's cancellation`)`, then `published_data_input`. A
    worker failure maps onto the job lifecycle (`memory_limited`, `cancelled`, `timed_out`,
-   or `error` with `build_failed`/`path_too_long`), after `reconcile_unpublished` has
-   settled the build's parent-chosen generation and staging.
+   or `error` with `cap_unavailable`/`build_failed`/`path_too_long`), after
+   `reconcile_unpublished` has settled the build's parent-chosen generation and staging.
+   `cap_unavailable` (`isolated_worker_failure_is_cap_unavailable`: the spawn refused for a
+   host without the cap, or the child could not install it) is decided before the memory
+   outcomes, which would otherwise claim it, and says the host cannot install the cap.
+   An API Input's table build maps its failures the same way.
 3. Progress: `run_supervised_data_input_build(..., progress=)` hands the child a
    `BuildProgressCounter`, two lock-free signed 64-bit slots in spawn-shared memory (rows,
    batches). The child is the only writer (`build_input_snapshot(progress=counter.advance)`);
    a lock would block the parent forever once a capped child was killed holding it. A
    parent thread reads the slots every quarter second and passes the increase to the
    caller's `progress(rows, batches)`, and once more after the worker returns, so the job's
-   counts reach the child's final ones. Only a builder that yields Arrow batches (database,
-   Databricks) advances them.
+   counts reach the child's final ones. A builder that yields Arrow batches (database,
+   Databricks) advances them once per batch; a LazyFrame build once per part file
+   `write_parts(..., on_part=context.advance)` writes, by that part's footer row count.
+   A sliced write (a Parquet or IPC scan, an in-memory frame) therefore counts each
+   slice, while a native sink (a CSV scan) is one part, counted when it ends.
 4. A host without a native memory cap (`process_memory_caps_supported()` false: macOS)
    runs a `bounded` build in this process instead, through `build_input_snapshot(...,
    execution_context=context, progress=..., cancellation=..., deadline=...)`. The admitted
@@ -344,8 +351,8 @@ whose thread (`routes/input_cache.py::_run_build`) never builds a Data Input its
    checkpoint compare the process's memory with the admitted limit
    (`ExecutionMemoryLimitExceededError` → `memory_limited`). The job logs
    `input_cache_build_uncapped`. An `admitted_eager` build is never run in process: on such
-   a host its worker refuses to start without the cap it requires, which the job reports
-   as `memory_limited`.
+   a host its worker refuses to start without the cap it requires, and the job fails
+   `cap_unavailable`.
 
 ### Snapshot publication
 
@@ -1098,7 +1105,8 @@ failure sections above are the maintained answers.
   actor removes while it is being retired counts as retired. While a build's part read is
   held, another thread leases a different identity, and the published generation's first
   lease reads no footer or schema. A build cancelled while it waits for the lease lock leaves
-  the previous generation current and publishes nothing.
+  the previous generation current and publishes nothing. A LazyFrame build written in several
+  slices reports each part's rows as it is written.
 - `tests/test_input_providers.py` covers direct-Parquet and offline snapshot reads,
   provider identities, execution-lifetime leases, SQLite empty/mixed storage classes,
   typed conversion failures, missing database rejection, and the inferred schema tier:
@@ -1153,7 +1161,8 @@ failure sections above are the maintained answers.
   the project, a relative locator is still resolved against the configured project root,
   and a build publishes into that root's store. On a host without the cap a bounded build
   runs in process under its admitted context, counting rows as it goes, and an
-  admitted-eager build still goes to the worker. A real spawned database build relays its
+  admitted-eager build still goes to the worker, whose refusal (raised by the spawn or
+  by the child) fails the job `cap_unavailable`. A real spawned database build relays its
   rows and batches to the parent while it runs.
 - `tests/test_input_preparation.py` covers automatic preparation: (1) parity — for CSV with
   a declared schema, CSV without one, NDJSON, plain JSON, and inline records the prepared

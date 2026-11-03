@@ -66,6 +66,7 @@ from haute._worker_isolation import (
     IsolatedWorkerConfig,
     IsolatedWorkerRemoteError,
     WorkerTerminalReason,
+    isolated_worker_failure_is_cap_unavailable,
     isolated_worker_failure_is_memory,
     isolated_worker_failure_is_path_too_long,
     isolated_worker_memory_detail,
@@ -525,6 +526,17 @@ def _worker_build_failure(
     token: Any,
 ) -> _WorkerBuildError:
     """Map one worker failure onto this job's terminal lifecycle state."""
+    if isolated_worker_failure_is_cap_unavailable(exc):
+        # Not a memory outcome: nothing ran, because this host has no cap to install.
+        return _WorkerBuildError(
+            terminal="error",
+            message=(
+                "This import needs a native memory cap, which this host cannot "
+                "install, so it did not run. Import it on Windows or Linux."
+            ),
+            error_code="cap_unavailable",
+            phase="failed",
+        )
     if isolated_worker_failure_is_memory(exc):
         return _WorkerBuildError(
             terminal="memory_limited",

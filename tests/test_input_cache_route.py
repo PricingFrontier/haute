@@ -865,18 +865,31 @@ def test_a_host_without_the_cap_builds_a_bounded_snapshot_in_process_under_admis
     assert built_under == [admitted[0][1]]
 
 
+@pytest.mark.parametrize("refused_by", ["spawn", "child"])
 def test_a_host_without_the_cap_never_builds_an_admitted_eager_snapshot_in_process(
     client: TestClient,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    refused_by: str,
 ) -> None:
-    from haute._worker_isolation import IsolatedWorkerMemoryLimitUnsupportedError
+    """It fails saying the host has no cap, not that it needed more memory."""
+    from haute._worker_isolation import (
+        IsolatedWorkerMemoryLimitUnsupportedError,
+        IsolatedWorkerRemoteError,
+    )
     from haute.routes import input_cache
 
     (tmp_path / "input.csv").write_text("id,value\n1,a\n", encoding="utf-8")
 
     def refusing_spawn(_request: Any, _budget: Any) -> Any:
-        raise IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=64 * 1024 * 1024)
+        if refused_by == "spawn":
+            raise IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=64 * 1024 * 1024)
+        raise IsolatedWorkerRemoteError(
+            remote_type="NativeMemoryLimitUnsupportedError",
+            remote_message="cannot locate unified cgroup v2 membership",
+            remote_traceback="",
+            is_memory=False,
+        )
 
     monkeypatch.setattr(input_cache, "process_memory_caps_supported", lambda: False)
     # The harness fails the job if the build runs on the server thread.
@@ -884,7 +897,10 @@ def test_a_host_without_the_cap_never_builds_an_admitted_eager_snapshot_in_proce
     terminal = _wait_for_terminal(client, _start_worker_build(client))
 
     assert "spawned" in harness.events
-    assert terminal["status"] == "memory_limited"
+    assert terminal["status"] == "error"
+    assert terminal["error_code"] == "cap_unavailable"
+    assert "native memory cap" in terminal["message"]
+    assert "more memory" not in terminal["message"]
     assert terminal["snapshot"] is None
 
 

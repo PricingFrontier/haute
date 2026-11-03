@@ -1793,6 +1793,38 @@ def test_multi_part_generation_publishes_verifies_and_scans_parts_in_order(
     assert_frame_equal(generation.lazy_frame.collect(), expected)
 
 
+def test_a_sliced_build_reports_each_part_as_it_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An Import counts a Parquet source's rows slice by slice, not only at the end."""
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
+    store = SourceCacheStore(tmp_path)
+    source_parquet = tmp_path / "source.parquet"
+    pl.DataFrame({"id": list(range(10))}).write_parquet(source_parquet)
+    identity = _identity(path="source.parquet", format="parquet")
+    staging = store.identity_path(identity) / ".staging-0123abcd"
+    reported: list[tuple[int, int]] = []
+
+    def progress(rows: int) -> None:
+        reported.append((rows, len(list(staging.glob("part-*.parquet")))))
+
+    set_streaming_chunk_size(3)
+    store.build(
+        identity,
+        _LazyBuilder(pl.scan_parquet(source_parquet)),
+        context=SourceCacheBuildContext(
+            profile=ExecutionProfile.LAZY_SINK,
+            build_class="bounded",
+            progress=progress,
+            generation_id=str(uuid.uuid4()),
+            staging_token="0123abcd",
+        ),
+    )
+
+    # Each part's rows, reported once that part is on disk and before the next.
+    assert reported == [(3, 1), (3, 2), (3, 3), (1, 4)]
+
+
 @pytest.mark.parametrize("corrupt_mode", ["truncate", "flip_byte"])
 def test_corrupting_a_later_part_is_corruption(
     tmp_path: Path, corrupt_mode: str, monkeypatch: pytest.MonkeyPatch

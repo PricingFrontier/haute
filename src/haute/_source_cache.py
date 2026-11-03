@@ -1071,7 +1071,13 @@ class SourceCacheStore:
             # Sliced a chunk at a time where the source can be sliced. A map
             # column becomes a list of key-value structs with the entries Polars
             # read (see haute._map_columns).
-            written = write_parts(directory, map_entries_frame(output), fast_checkpoint=True)
+            # Each part's rows count toward the build's progress as it is written.
+            written = write_parts(
+                directory,
+                map_entries_frame(output),
+                fast_checkpoint=True,
+                on_part=context.advance,
+            )
             return written.digests
         path = directory / part_name(0)
         if isinstance(output, pl.DataFrame) or not isinstance(output, Iterable):
