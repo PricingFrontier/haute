@@ -147,7 +147,7 @@ def _train_status_response(job: Mapping[str, Any]) -> TrainStatusResponse:
 @router.get("/train/status/{job_id}", response_model=TrainStatusResponse)
 async def train_status(job_id: str) -> TrainStatusResponse:
     """Poll training job progress."""
-    job = _store.require_job(job_id)
+    job = _train_service.with_recorded_outcome(job_id, _store.require_job(job_id))
 
     if job.get("status") == "running":
         start = job.get("start_time")

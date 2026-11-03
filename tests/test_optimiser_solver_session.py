@@ -410,6 +410,31 @@ class TestSessionLifecycle:
         (signals / "release").write_text("1")
         _poll(client, again.json()["job_id"])
 
+    def test_a_solve_the_server_shutdown_stops_is_recorded_cancelled(
+        self,
+        client,
+        project: Path,
+        process_mode: None,
+        signals: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Shutdown cancels through the job registry, not the cancel route."""
+        from haute.routes._background_jobs import stop_background_jobs
+
+        monkeypatch.setattr(_optimiser_service, "build_and_solve", block_until_released)
+        job_id = _start(client, _online_graph(_scored_parquet(project)))
+        deadline = time.monotonic() + 60
+        while _job(job_id).get("message") != "entered":
+            assert time.monotonic() < deadline, "the session never entered its command"
+            time.sleep(0.05)
+        pid = _session_of(job_id).pid
+
+        stop_background_jobs(timeout_seconds=10)
+
+        assert _gone(pid, 5.0)
+        job = _job(job_id)
+        assert (job["status"], job["message"]) == ("cancelled", "Cancelled")
+
     def test_dropping_the_runtime_ends_the_process_and_later_points_say_why(
         self, client, project: Path, process_mode: None
     ) -> None:

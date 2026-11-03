@@ -63,6 +63,7 @@ from haute._sandbox import _get_project_root, contained_path
 from haute._workbench_config import WorkbenchConfigError, read_workbench_config
 from haute.errors import ConfigError, PathOutsideProjectError
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
+from haute.routes._background_jobs import stop_background_jobs
 from haute.routes._error_handlers import install_exception_handlers
 from haute.routes._helpers import (
     _INTERNAL_ERROR_DETAIL,
@@ -139,6 +140,10 @@ _artifact_reaper_task: asyncio.Task[None] | None = None
 _WATCHER_RESTART_DELAY_SECONDS = 0.1
 _WATCHER_FLUSH_MAX_RETRIES = 3
 _WATCHER_FLUSH_RETRY_BASE_SECONDS = 0.1
+# How long shutdown waits for cancelled jobs. A supervised worker sees its stop reason
+# within 0.1 s and is terminated and joined within 2 s, or killed and joined within 2 s
+# more; the rest is the job's own cleanup. Inside a host's usual 30 s grace period.
+_JOB_SHUTDOWN_TIMEOUT_SECONDS = 10.0
 WS_FRAME_PARSE_ERROR = "parse_error"
 WS_FRAME_PIPELINE_DOCUMENT_UPDATE = "pipeline_document_update"
 WS_FRAME_SYNC_CONNECTION = "sync_connection"
@@ -512,13 +517,33 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                     await reaper_task
         finally:
             try:
-                shutdown_dedicated_workers()
+                try:
+                    await _stop_background_jobs()
+                finally:
+                    shutdown_dedicated_workers()
             finally:
                 try:
                     shutdown_interactive_worker_pool()
                 finally:
                     stop_following_chunk_rows()
                     _server_loop = None
+
+
+async def _stop_background_jobs() -> None:
+    """Cancel every job and wait for each to stop, so no job's worker outlives the server.
+
+    A one-shot or protocol worker is a non-daemon child that the interpreter's exit
+    would otherwise join for as long as its job runs.
+    """
+    still_running = await asyncio.to_thread(
+        stop_background_jobs, timeout_seconds=_JOB_SHUTDOWN_TIMEOUT_SECONDS
+    )
+    if still_running:
+        logger.warning(
+            "background_jobs_outlived_shutdown",
+            threads=list(still_running),
+            timeout_s=_JOB_SHUTDOWN_TIMEOUT_SECONDS,
+        )
 
 
 app = FastAPI(title="Haute", version=__version__, lifespan=_lifespan)

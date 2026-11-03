@@ -204,9 +204,9 @@ _EXPECTED_DEBT_IDS = {
     "df789ca110c56d8d",
     "e800d20c2fdb0d00",
     "f6ab12590998eb2c",
-    # This test is now specifically address-space-cap gated because RSS watchdog
-    # support exists cross-platform.
-    "bd811d026e977f2c",
+    # This test reads RLIMIT_AS inside a real capped child, which only Linux enforces;
+    # the RSS watchdog that every platform has is covered elsewhere.
+    "010ed52ea296efcc",
     # 4a.4 — the Poisson/Tweedie CatBoost SHAP space-reconciliation tests
     # train a real CatBoost model; catboost is an optional extra, so the
     # shared trainer helper importorskips it (same convention as every other

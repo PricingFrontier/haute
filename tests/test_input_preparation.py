@@ -1193,6 +1193,7 @@ def _remote_error(remote_type: str) -> IsolatedWorkerRemoteError:
         remote_type=remote_type,
         remote_message=f"{remote_type} raised in the child",
         remote_traceback="Traceback (most recent call last):\n",
+        is_memory=remote_type == "MemoryError",
     )
 
 

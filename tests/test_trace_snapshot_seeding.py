@@ -443,6 +443,7 @@ def test_an_expired_seed_plan_from_a_worker_is_a_conflict() -> None:
         remote_message="expired",
         remote_traceback="",
         public_payload=payload,
+        is_memory=False,
     )
 
     with pytest.raises(HTTPException) as raised:

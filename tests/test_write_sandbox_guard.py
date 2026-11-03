@@ -287,12 +287,16 @@ def test_strict_mode_does_not_widen_to_the_runs_base_directory(tmp_path: Path) -
 def test_multiprocessing_shared_memory_is_not_a_test_write() -> None:
     from multiprocessing import heap
 
-    # On Linux each arena is a file under /dev/shm, unlinked at once.
+    # On Linux each arena is a file under /dev/shm, unlinked at once; on macOS it is
+    # one in multiprocessing's own pymp- temporary directory.
     arena = heap.Arena(4096)
     assert arena.size == 4096
     assert ws._is_multiprocessing_arena("/dev/shm/pym-12-abcd1234")
+    assert ws._is_multiprocessing_arena("/private/var/folders/n6/T/pymp-gza3ks7_/pym-12-abcd1234")
     assert not ws._is_multiprocessing_arena("/dev/shm/haute-cache")
     assert not ws._is_multiprocessing_arena("/tmp/pym-12-abcd1234")
+    assert not ws._is_multiprocessing_arena("/tmp/pymp-gza3ks7_/haute-cache")
+    assert not ws._is_multiprocessing_arena("/tmp/not-pymp/pym-12-abcd1234")
 
 
 def test_a_strict_test_creates_the_repository_mlflow_store_in_the_session(

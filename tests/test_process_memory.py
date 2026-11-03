@@ -62,7 +62,6 @@ def test_readings_are_none_when_psutil_fails(
     assert memory_mod.current_process_rss_bytes() is None
     assert memory_mod.current_process_virtual_bytes() is None
     assert memory_mod.current_process_thread_count() is None
-    assert memory_mod.process_rss_sampling_supported() is False
 
 
 def test_process_is_alive_preserves_uncertainty_on_psutil_failure(
@@ -73,10 +72,6 @@ def test_process_is_alive_preserves_uncertainty_on_psutil_failure(
 
     monkeypatch.setattr(memory_mod.psutil, "pid_exists", _raise)
     assert memory_mod.process_is_alive(1) is True
-
-
-def test_process_rss_sampling_supported_on_this_host() -> None:
-    assert memory_mod.process_rss_sampling_supported() is True
 
 
 class _FakeProcess:

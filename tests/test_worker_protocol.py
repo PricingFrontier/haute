@@ -960,8 +960,14 @@ def test_real_spawn_drains_large_result_before_joining_child(tmp_path: Path) -> 
     assert len(result.metadata["payload"]) == 1024 * 1024
 
 
+def _live_workers(process_name: str) -> list[object]:
+    import multiprocessing
+
+    return [child for child in multiprocessing.active_children() if child.name == process_name]
+
+
 def test_cleanup_runs_when_progress_callback_raises(tmp_path: Path) -> None:
-    cleaned: list[str] = []
+    name = "haute-test-progress-callback-worker"
 
     def reject_progress(event: WorkerProgressEvent) -> None:
         del event
@@ -975,10 +981,68 @@ def test_cleanup_runs_when_progress_callback_raises(tmp_path: Path) -> None:
             artifact_kinds=frozenset({"model"}),
             max_artifact_size_bytes=100,
             on_progress=reject_progress,
-            config=IsolatedWorkerConfig(cleanup_callbacks=(lambda: cleaned.append("yes"),)),
+            config=IsolatedWorkerConfig(process_name=name),
         )
 
-    assert cleaned == ["yes"]
+    assert _live_workers(name) == []
+
+
+def test_a_failing_queue_close_is_a_note_on_the_primary_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ROAD-WORKER-07: the protocol parent records a teardown failure, as the one-shot does."""
+    import multiprocessing.queues
+
+    real_close = multiprocessing.queues.Queue.close
+
+    def failing_close(queue: Any) -> None:
+        real_close(queue)
+        raise OSError("queue close failed")
+
+    monkeypatch.setattr(multiprocessing.queues.Queue, "close", failing_close)
+
+    with pytest.raises(IsolatedWorkerRemoteError, match="child failed") as raised:
+        run_worker_protocol(
+            _failing_worker,
+            _request(),
+            artifact_root=tmp_path / "artifacts",
+            artifact_kinds=frozenset({"model"}),
+            max_artifact_size_bytes=100,
+        )
+
+    notes = raised.value.__notes__
+    assert "progress queue close failed: queue close failed" in notes
+    assert "result queue close failed: queue close failed" in notes
+
+
+def test_a_failed_process_cleanup_is_a_note_on_the_primary_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute._worker_protocol as protocol
+
+    real_terminate = protocol._terminate_and_confirm
+
+    def terminate_then_fail(process: Any) -> None:
+        real_terminate(process)
+        raise OSError("termination unconfirmed")
+
+    monkeypatch.setattr(protocol, "_terminate_and_confirm", terminate_then_fail)
+
+    def reject_progress(event: WorkerProgressEvent) -> None:
+        del event
+        raise RuntimeError("callback failed")
+
+    with pytest.raises(RuntimeError, match="callback failed") as raised:
+        run_worker_protocol(
+            _slow_worker,
+            _request(),
+            artifact_root=tmp_path / "artifacts",
+            artifact_kinds=frozenset({"model"}),
+            max_artifact_size_bytes=100,
+            on_progress=reject_progress,
+        )
+
+    assert "process cleanup failed: termination unconfirmed" in raised.value.__notes__
 
 
 def test_child_failure_is_typed(tmp_path: Path) -> None:
@@ -1007,7 +1071,7 @@ def test_transported_failure_preserves_reason_and_fields(tmp_path: Path) -> None
 
 
 def test_timeout_and_cancel_clean_up_process(tmp_path: Path) -> None:
-    cleaned: list[str] = []
+    name = "haute-test-stopped-protocol-worker"
     with pytest.raises(IsolatedWorkerTimeoutError):
         run_worker_protocol(
             _slow_worker,
@@ -1018,9 +1082,10 @@ def test_timeout_and_cancel_clean_up_process(tmp_path: Path) -> None:
             config=IsolatedWorkerConfig(
                 timeout_seconds=0.1,
                 stop_poll_interval_seconds=0.02,
-                cleanup_callbacks=(lambda: cleaned.append("timeout"),),
+                process_name=name,
             ),
         )
+    assert _live_workers(name) == []
     with pytest.raises(IsolatedWorkerStoppedError) as exc_info:
         run_worker_protocol(
             _slow_worker,
@@ -1031,15 +1096,15 @@ def test_timeout_and_cancel_clean_up_process(tmp_path: Path) -> None:
             config=IsolatedWorkerConfig(
                 stop_reason=lambda: "cancelled",
                 stop_poll_interval_seconds=0.02,
-                cleanup_callbacks=(lambda: cleaned.append("cancel"),),
+                process_name=name,
             ),
         )
     assert exc_info.value.terminal_reason == "cancelled"
-    assert cleaned == ["timeout", "cancel"]
+    assert _live_workers(name) == []
 
 
 def test_worker_crash_is_contained_and_runs_parent_cleanup(tmp_path: Path) -> None:
-    cleaned: list[str] = []
+    name = "haute-test-crashed-protocol-worker"
 
     with pytest.raises(IsolatedWorkerCrashedError) as exc_info:
         run_worker_protocol(
@@ -1048,13 +1113,11 @@ def test_worker_crash_is_contained_and_runs_parent_cleanup(tmp_path: Path) -> No
             artifact_root=tmp_path / "crash",
             artifact_kinds=frozenset(),
             max_artifact_size_bytes=0,
-            config=IsolatedWorkerConfig(
-                cleanup_callbacks=(lambda: cleaned.append("crash"),),
-            ),
+            config=IsolatedWorkerConfig(process_name=name),
         )
 
     assert exc_info.value.exitcode == 23
-    assert cleaned == ["crash"]
+    assert _live_workers(name) == []
     assert 1 + 1 == 2
 
 

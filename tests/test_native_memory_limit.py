@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import haute._host_memory as host_memory
 import haute._native_memory_limit as native
 
 
@@ -113,22 +114,46 @@ def test_cgroup_close_restores_exact_parent_before_removal(monkeypatch: pytest.M
     assert lease._cgroup is None
 
 
+def _fake_proc_cgroup(monkeypatch: pytest.MonkeyPatch, *, cgroup: str, mountinfo: str) -> None:
+    """Answer the cgroup resolver's reads of /proc/self from these texts."""
+    files = {"/proc/self/cgroup": cgroup, "/proc/self/mountinfo": mountinfo}
+    monkeypatch.setattr(host_memory, "_read_cgroup_memory_file", files.get)
+
+
+def _mountinfo_path(path: Path) -> str:
+    """*path* as mountinfo spells a mount point: absolute, slash-separated, no drive."""
+    return "/" + path.relative_to(path.anchor).as_posix()
+
+
 def test_current_cgroup_path_stays_beneath_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "safe").mkdir()
-    monkeypatch.setattr(native, "_cgroup_parent", lambda: tmp_path)
-    original = Path.read_text
-    monkeypatch.setattr(
-        Path,
-        "read_text",
-        lambda path, **kwargs: (
-            "0::/safe\n"
-            if str(path).replace("\\", "/") == "/proc/self/cgroup"
-            else original(path, **kwargs)
-        ),
+    _fake_proc_cgroup(
+        monkeypatch,
+        cgroup="0::/safe\n",
+        mountinfo=f"35 24 0:30 / {_mountinfo_path(tmp_path)} rw - cgroup2 cgroup2 rw\n",
     )
     assert native._current_cgroup_path() == (tmp_path / "safe").resolve()
+
+
+def test_the_lease_finds_its_cgroup_where_a_hybrid_host_mounts_cgroup2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ROAD-WORKER-08: cgroup2 below /sys/fs/cgroup is found through mountinfo, like the probe."""
+    unified = tmp_path / "unified"
+    service = unified / "user.slice" / "haute.service"
+    service.mkdir(parents=True)
+    _fake_proc_cgroup(
+        monkeypatch,
+        cgroup="0::/user.slice/haute.service\n4:memory:/user.slice\n",
+        mountinfo=(
+            f"35 24 0:30 / {_mountinfo_path(unified)} rw - cgroup2 cgroup2 rw\n"
+            "36 24 0:31 / /sys/fs/cgroup/memory rw - cgroup cgroup rw,memory\n"
+        ),
+    )
+
+    assert native._current_cgroup_path() == service.resolve()
 
 
 def test_windows_apis_fail_closed_when_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -554,12 +579,22 @@ def test_native_linux_path_and_measurement_failures(
     )
     assert not native._linux_cgroup_v2_available()
     monkeypatch.setattr(native, "_current_cgroup_path", current_cgroup_path)
-    monkeypatch.setattr(native, "_cgroup_parent", lambda: tmp_path)
-    monkeypatch.setattr(native.Path, "read_text", lambda *_args, **_kwargs: "0::/../../bad\n")
-    with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="unsafe"):
-        native._current_cgroup_path()
-    monkeypatch.setattr(native.Path, "read_text", lambda *_args, **_kwargs: "missing")
+    mountinfo = f"35 24 0:30 / {_mountinfo_path(tmp_path)} rw - cgroup2 cgroup2 rw\n"
+    for cgroup in ("0::/../../bad\n", "missing"):
+        _fake_proc_cgroup(monkeypatch, cgroup=cgroup, mountinfo=mountinfo)
+        with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="cannot locate"):
+            native._current_cgroup_path()
+    monkeypatch.setattr(host_memory, "_read_cgroup_memory_file", lambda _path: None)
     with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="cannot locate"):
+        native._current_cgroup_path()
+    (tmp_path / "inside").mkdir()
+    _fake_proc_cgroup(monkeypatch, cgroup="0::/inside\n", mountinfo=mountinfo)
+    monkeypatch.setattr(
+        native.Path,
+        "resolve",
+        lambda path, strict=False: Path("/elsewhere") if path.name == "inside" else path,
+    )
+    with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="outside"):
         native._current_cgroup_path()
     monkeypatch.setattr(native, "current_process_virtual_bytes", lambda: None)
     with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="cannot measure"):
@@ -633,7 +668,6 @@ def test_native_platform_adapter_error_paths(
 ) -> None:
     monkeypatch.setattr(native.importlib, "import_module", lambda _name: SimpleNamespace())
     assert native._resource_api() is None
-    assert native._cgroup_parent() == Path("/sys/fs/cgroup")
     monkeypatch.setattr(native.sys, "platform", "win32")
     monkeypatch.setattr(native, "_windows_private_usage", lambda: 12)
     assert native._native_baseline_bytes() == 12
@@ -642,8 +676,12 @@ def test_native_platform_adapter_error_paths(
     assert native._native_baseline_bytes() == 13
     monkeypatch.setattr(native.sys, "platform", "freebsd")
     assert native._native_baseline_bytes() == 0
-    monkeypatch.setattr(native, "_cgroup_parent", lambda: tmp_path / "missing")
-    monkeypatch.setattr(native.Path, "read_text", lambda *_args, **_kwargs: "0::/x\n")
+    missing = _mountinfo_path(tmp_path / "missing")
+    _fake_proc_cgroup(
+        monkeypatch,
+        cgroup="0::/x\n",
+        mountinfo=f"35 24 0:30 / {missing} rw - cgroup2 cgroup2 rw\n",
+    )
     with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="outside"):
         native._current_cgroup_path()
 

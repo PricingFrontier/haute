@@ -70,7 +70,6 @@ class IsolatedWorkerConfig:
     timeout_seconds: float | None = None
     memory_limit_bytes: int | None = None
     require_memory_limit: bool = False
-    cleanup_callbacks: tuple[Callable[[], None], ...] = field(default_factory=tuple)
     stop_reason: Callable[[], WorkerTerminalReason | None] | None = None
     stop_poll_interval_seconds: float = 0.1
     process_name: str = "haute-isolated-worker"
@@ -117,7 +116,6 @@ def worker_config_for_memory_policy(
     *,
     memory_limit_bytes: int | None,
     timeout_seconds: float | None = None,
-    cleanup_callbacks: tuple[Callable[[], None], ...] = (),
     stop_reason: Callable[[], WorkerTerminalReason | None] | None = None,
     stop_poll_interval_seconds: float = 0.1,
     process_name: str = "haute-isolated-worker",
@@ -135,7 +133,6 @@ def worker_config_for_memory_policy(
         timeout_seconds=timeout_seconds,
         memory_limit_bytes=memory_limit_bytes,
         require_memory_limit=enforcement == "required",
-        cleanup_callbacks=cleanup_callbacks,
         stop_reason=stop_reason,
         stop_poll_interval_seconds=stop_poll_interval_seconds,
         process_name=process_name,
@@ -171,6 +168,18 @@ class IsolatedWorkerHostError(IsolatedWorkerError):
     """
 
 
+def remote_failure_terminal_reason(remote_type: str, *, is_memory: bool) -> WorkerTerminalReason:
+    """The terminal reason for an exception a child reported: one rule for every parent.
+
+    *is_memory* is the child's own ``isinstance(exc, MemoryError)``, so every subclass
+    (an admission refusal, a sampled checkpoint over budget) counts whatever its name.
+    A native cap the child could not install is a contract error.
+    """
+    if remote_type.startswith("NativeMemoryLimit"):
+        return "contract_error"
+    return "memory_limited" if is_memory else "error"
+
+
 class IsolatedWorkerRemoteError(IsolatedWorkerError):
     """Raised when the child process returns a Python exception."""
 
@@ -180,21 +189,16 @@ class IsolatedWorkerRemoteError(IsolatedWorkerError):
         remote_type: str,
         remote_message: str,
         remote_traceback: str,
+        is_memory: bool,
     ) -> None:
-        terminal_reason: WorkerTerminalReason = (
-            "contract_error"
-            if remote_type.startswith("NativeMemoryLimit")
-            else "memory_limited"
-            if remote_type == "MemoryError"
-            else "error"
-        )
         super().__init__(
             f"Isolated worker raised {remote_type}: {remote_message}",
-            terminal_reason=terminal_reason,
+            terminal_reason=remote_failure_terminal_reason(remote_type, is_memory=is_memory),
         )
         self.remote_type = remote_type
         self.remote_message = remote_message
         self.remote_traceback = remote_traceback
+        self.is_memory = is_memory
 
 
 class IsolatedWorkerCrashedError(IsolatedWorkerError):
@@ -286,17 +290,6 @@ class IsolatedWorkerMemoryLimitExceededError(IsolatedWorkerError, MemoryError):
         self.rss_limit_bytes = rss_limit_bytes
 
 
-class IsolatedWorkerCleanupError(IsolatedWorkerError):
-    """Raised when parent-owned cleanup fails after a worker finishes."""
-
-    def __init__(self, errors: list[BaseException]) -> None:
-        super().__init__(
-            f"Isolated worker cleanup failed in {len(errors)} callback(s)",
-            terminal_reason="error",
-        )
-        self.errors = tuple(errors)
-
-
 class IsolatedWorkerTerminationError(IsolatedWorkerError):
     """Raised when a child remains alive after terminate and kill attempts."""
 
@@ -307,22 +300,13 @@ class IsolatedWorkerTerminationError(IsolatedWorkerError):
         )
 
 
-_MEMORY_REMOTE_TYPES = frozenset(
-    {
-        "MemoryError",
-        "ExecutionAdmissionError",
-        "ExecutionMemoryLimitExceededError",
-        "NativeMemoryLimitUnsupportedError",
-    }
-)
-
-
 def isolated_worker_failure_is_memory(exc: BaseException) -> bool:
     """Return whether a worker failure is a memory outcome.
 
     An RSS breach and an unsupported native cap always are; a crashed child
     is memory-bound only when its exit-code heuristic said so; a remote
-    exception is when the child's own exception type names a memory refusal.
+    exception is when the child's exception was a ``MemoryError`` or its native cap
+    could not be installed.
     """
     if isinstance(
         exc,
@@ -332,7 +316,7 @@ def isolated_worker_failure_is_memory(exc: BaseException) -> bool:
     if isinstance(exc, IsolatedWorkerCrashedError):
         return exc.terminal_reason == "memory_limited"
     if isinstance(exc, IsolatedWorkerRemoteError):
-        return exc.remote_type in _MEMORY_REMOTE_TYPES
+        return exc.is_memory or exc.remote_type == "NativeMemoryLimitUnsupportedError"
     return False
 
 
@@ -380,29 +364,6 @@ def isolated_worker_memory_detail(
     elif isinstance(exc, IsolatedWorkerCrashedError):
         payload["reason"] = "worker_may_have_exceeded_memory_limit"
     return payload
-
-
-def address_space_caps_supported() -> bool:
-    """Return whether this platform can enforce child address-space limits.
-
-    macOS exposes ``resource.RLIMIT_AS`` and ``resource.setrlimit`` but
-    the kernel does NOT actually enforce process address-space limits —
-    any call to ``setrlimit(RLIMIT_AS, ...)`` with a finite value raises
-    ``ValueError: current limit exceeds maximum limit`` even when the
-    current limit is ``RLIM_INFINITY``. Treat macOS as unsupported so
-    the dependent code path falls back to soft enforcement (best-effort
-    only, with an explicit ``IsolatedWorkerMemoryLimitUnsupportedError``
-    when the caller requires it).
-    """
-    try:
-        import resource
-    except ImportError:
-        return False
-    if not (hasattr(resource, "RLIMIT_AS") and hasattr(resource, "setrlimit")):
-        return False
-    if sys.platform == "darwin":
-        return False
-    return True
 
 
 def process_memory_caps_supported() -> bool:
@@ -812,10 +773,8 @@ def run_isolated_worker(
 ) -> T:
     """Run ``function`` in a child process and return its pickled result.
 
-    The parent owns cleanup callbacks and always runs them after the child
-    reaches a terminal state. The child process is deliberately started via the
-    ``spawn`` context so the worker does not inherit the host interpreter's
-    large native heaps.
+    The child process is deliberately started via the ``spawn`` context so the
+    worker does not inherit the host interpreter's large native heaps.
     """
     worker_config = config or IsolatedWorkerConfig()
     if (
@@ -909,14 +868,15 @@ def run_isolated_worker(
             result = cast(T, payload)
             has_result = True
         elif status == "error":
-            remote_type, remote_message, remote_traceback = cast(
-                tuple[str, str, str],
+            remote_type, remote_message, remote_traceback, is_memory = cast(
+                tuple[str, str, str, bool],
                 payload,
             )
             raise IsolatedWorkerRemoteError(
                 remote_type=remote_type,
                 remote_message=remote_message,
                 remote_traceback=remote_traceback,
+                is_memory=is_memory,
             )
         else:  # pragma: no cover - guarded by child entrypoint protocol
             raise IsolatedWorkerCrashedError(
@@ -929,10 +889,7 @@ def run_isolated_worker(
 
         def record_finalization_error(exc: BaseException, *, step: str) -> None:
             nonlocal primary_error
-            if primary_error is None:
-                primary_error = exc
-            else:
-                primary_error.add_note(f"{step} failed: {exc}")
+            primary_error = note_teardown_failure(primary_error, exc, step=step)
 
         process_alive = False
         if process_started:
@@ -967,13 +924,8 @@ def run_isolated_worker(
         except BaseException as exc:
             record_finalization_error(exc, step="result queue feeder join")
 
-    cleanup_error = _run_cleanup_callbacks(worker_config.cleanup_callbacks)
     if primary_error is not None:
-        if cleanup_error is not None:
-            primary_error.add_note(str(cleanup_error))
         raise primary_error
-    if cleanup_error is not None:
-        raise cleanup_error
     if has_result:
         return cast(T, result)
     raise IsolatedWorkerCrashedError(
@@ -1030,6 +982,16 @@ def _isolated_worker_entrypoint(
         result_queue.join_thread()
 
 
+def note_teardown_failure(
+    primary: BaseException | None, exc: BaseException, *, step: str
+) -> BaseException:
+    """The error a worker's teardown ends with: the primary one with *exc* noted, or *exc*."""
+    if primary is None:
+        return exc
+    primary.add_note(f"{step} failed: {exc}")
+    return primary
+
+
 def _ready_message() -> tuple[str, int]:
     return ("ready", os.getpid())
 
@@ -1042,7 +1004,7 @@ def _is_ready_payload(process: BaseProcess, raw: Any) -> bool:
         return False
 
 
-def _worker_error_envelope(exc: BaseException) -> tuple[str, tuple[str, str, str]]:
+def _worker_error_envelope(exc: BaseException) -> tuple[str, tuple[str, str, str, bool]]:
     # Windows reports a path too long for it as a missing file; name the cause, so the
     # parent can classify the failure, and keep the original traceback.
     reported: BaseException = path_too_long_error(exc) or exc
@@ -1052,6 +1014,7 @@ def _worker_error_envelope(exc: BaseException) -> tuple[str, tuple[str, str, str
             type(reported).__name__,
             str(reported),
             "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+            isinstance(exc, MemoryError),
         ),
     )
 
@@ -1136,18 +1099,6 @@ def _decode_worker_payload(raw_payload: Any) -> tuple[str, Any]:
     if not isinstance(payload, tuple) or len(payload) != 2 or payload[0] not in {"ok", "error"}:
         raise IsolatedWorkerCrashedError(exitcode=None, memory_limit_bytes=None)
     return cast(tuple[str, Any], payload)
-
-
-def _run_cleanup_callbacks(
-    cleanup_callbacks: tuple[Callable[[], None], ...],
-) -> IsolatedWorkerCleanupError | None:
-    errors: list[BaseException] = []
-    for callback in cleanup_callbacks:
-        try:
-            callback()
-        except BaseException as exc:
-            errors.append(exc)
-    return IsolatedWorkerCleanupError(errors) if errors else None
 
 
 # ``STATUS_STACK_BUFFER_OVERRUN``: the exit status of a Windows fail-fast abort.

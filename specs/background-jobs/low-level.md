@@ -8,17 +8,17 @@
 | `src/haute/_worker_protocol.py` | Owns the bounded version-1 spawn request, progress, result, failure, and artifact-manifest transport plus parent-side validation and cleanup. |
 | `src/haute/routes/_job_store.py` | Thread-safe, TTL-evicting `JobStore`; immutable `JobSnapshot` records; public atomic update, terminal-transition, completion-publication, query, and cleanup operations; per-prefix singleton factory `get_job_store`; artifact-cleanup hook registry. |
 | `src/haute/routes/_job_lifecycle.py` | Typed lifecycle facade over the store-owned terminal-transition and completion-publication operations; `require_job_status`; `bind_running_execution_metrics_publisher`. |
-| `src/haute/routes/_background_jobs.py` | `CancellableJobRegistry` (latest-wins supersession + cooperative cancellation), `SingleFlightCoordinator` (mutual exclusion per key), `IsolatedJobSupervisor` (isolated-worker → lifecycle adapter), `BackgroundJobStoppedError`. |
+| `src/haute/routes/_background_jobs.py` | `CancellableJobRegistry` (latest-wins supersession + cooperative cancellation), `SingleFlightCoordinator` (mutual exclusion per key), `IsolatedJobSupervisor` (isolated-worker → lifecycle adapter), `BackgroundJobStoppedError`, and the shutdown of every job (`start_job_thread`, `stop_background_jobs`). |
 | `src/haute/routes/_timeouts.py` | `run_blocking_with_response_timeout` / `BlockingWorkTimeoutError` — bounds HTTP response latency for thread-backed blocking work without abandoning it. |
 
 ## Key types and data structures
 
 ### `_job_store.py`
 
-- **`JobCommonFields`** — the typed common record envelope: a closed `JobStatus`,
-  numeric `created_at`, optional message, and lifecycle-owned
-  `terminal_reason`/`ended_at`/`completed_at`. Production creators seed only
-  `status="running"`; unknown statuses and pre-terminalised initial records fail at
+- **Common record fields** — every record carries a closed `JobStatus`, numeric
+  `created_at`, an optional message, and the lifecycle-owned
+  `terminal_reason`/`ended_at`/`completed_at`, which the store validates on every
+  write. Production creators seed only `status="running"` (`RunningJobFields`); unknown statuses and pre-terminalised initial records fail at
   the store boundary. Training, dispersion, optimiser solve, optimiser frontier,
   Explore, pivot, and input-cache owners define typed payload records for their own
   non-common fields rather than extending one catch-all store dictionary type.
@@ -100,17 +100,22 @@
   job id) and `_tokens_by_job_id: dict[str, JobCancellation]`, both guarded by one
   `RLock`. Deliberately owns *only* runtime coordination state — job status/result
   metadata stays in `JobStore` so there is one source of truth for what a job's
-  observable state is.
+  observable state is. Every registry adds itself, on construction, to the module's
+  weak `_REGISTRIES` set, which is how a shutdown finds it.
+- **`_JOB_THREADS`** — a weak set of the threads that run jobs, filled by
+  `start_job_thread(thread)`, which every job owner (training preparation and the
+  `IsolatedJobSupervisor` thread, node data and profiles, the optimiser's setup,
+  auto-range and solve, Explore pivots, input-cache builds) uses instead of
+  `thread.start()`. A thread is added before it starts; until then it is not alive.
 - **`SingleFlightHandle`** (frozen slotted dataclass) — `key`, `job_id`, `kind`, the
   value type returned by `SingleFlightCoordinator.acquire`/`.active`.
 - **`SingleFlightConflictError(RuntimeError)`** — carries `key`, `active_job_id`,
   `active_kind` for the caller to build a specific conflict message/response.
 - **`SingleFlightCoordinator`** — `_active_by_key: dict[Hashable, SingleFlightHandle]`
   guarded by one `RLock`.
-- **`IsolatedJobSupervisor`** — wraps one `JobLifecycle`. `launch_protocol()` is the
-  production entry point for the bounded version-1 worker transport; `launch()` keeps
-  the legacy single-result isolation primitive available and tested. Both return a
-  started daemon `IsolatedSupervisorThread`.
+- **`IsolatedJobSupervisor`** — wraps one `JobLifecycle`. `launch_protocol()` runs one
+  bounded version-1 protocol worker under lifecycle supervision and returns a started
+  daemon `IsolatedSupervisorThread`; it is the supervisor's only launch.
 - **`BackgroundJobStoppedError(RuntimeError)`** — carries `job_id` and the canonical
   `terminal_reason`; it does not duplicate that value under a second status attribute.
 
@@ -345,10 +350,27 @@ therefore cannot be bypassed by test or shutdown reset code.
   still the uncancelled latest owner for its key while holding the registry `RLock`
   across the caller's block, serialising the check and publication indivisibly
   relative to concurrent `register_latest` and `cancel`.
+- `cancel_all(reason)` — cancels every active token not already cancelled, keeping an
+  earlier reason such as `superseded`. It never waits for the registry lock, which
+  `latest_publication` holds across a job's publication (a profile written to disk): while
+  that lock is held it returns `False` and cancels nothing.
 - `release(job_id)` — pops the token; if `_latest_by_key[token.key]` still points at
   this `job_id`, removes that mapping too (so a *stale* `job_id` being released after
   a newer one has already superseded it does not accidentally clear the newer job's
   "latest" registration).
+
+### `stop_background_jobs(timeout_seconds)`
+
+The server's lifespan calls it at shutdown (through `asyncio.to_thread`, with a 10-second
+bound) before it ends the dedicated workers and the interactive pool. Until the bound it
+repeats: snapshot `_REGISTRIES` and the live `_JOB_THREADS`; call each registry's
+`cancel_all(reason="cancelled")`, which never waits, so a registry held by a publication is
+tried again on the next pass and every other registry is cancelled at once; return if no
+job thread is alive; otherwise join the job threads for one pass (0.1 s, or what remains of
+the bound). Repeating catches a job registered, or a thread started
+(a training preparation launching its supervisor), while it waits. It returns the names
+of the job threads still alive at the bound, which the lifespan logs as
+`background_jobs_outlived_shutdown`; it never kills a thread or a process itself.
 
 ### `SingleFlightCoordinator`
 
@@ -381,14 +403,13 @@ released/repaired before create/register/acquire, so two builders cannot start f
 one identity. Its `finally` releases registry/coordinator ownership without deleting
 the published generation.
 
-### `IsolatedJobSupervisor.launch(...)` / `launch_protocol(...)`
+### `IsolatedJobSupervisor.launch_protocol(...)`
 
-`launch_protocol()` is the production path: it runs a versioned `WorkerRequest`
-through `run_worker_protocol`, drains bounded progress events, validates the result
-and artifact manifests, and maps the validated result through the caller's
-`completed_fields`. `launch()` retains the smaller `run_isolated_worker` single-result
-primitive for supported direct callers and its focused tests. Both delegate to
-`_launch_callable` and return an `IsolatedSupervisorThread`.
+`launch_protocol()` runs a versioned `WorkerRequest` through `run_worker_protocol`
+(or the `protocol_runner` a test substitutes), drains bounded progress events,
+validates the result and artifact manifests, and maps the validated result through
+the caller's `completed_fields`. It delegates to `_launch_callable` and returns an
+`IsolatedSupervisorThread`.
 
 The thread executes one total outcome pipeline:
 
@@ -415,10 +436,18 @@ The thread executes one total outcome pipeline:
    that a precedence-rejected write still left the job terminal.
 4. A missing/unverifiable job or failed terminal write is recorded on
    `IsolatedSupervisorThread.infrastructure_failure` as
-   `SupervisorInfrastructureError`; `join_and_raise()` is the caller-visible raising
-   join. If persistence succeeds, an unexpected parent exception is re-raised from
-   the thread only after the job is safely terminal, preserving diagnostic visibility
-   without stranding it as running.
+   `SupervisorInfrastructureError` (`join_and_raise()` is the raising join), and the
+   supervisor keeps its text and class for the job (`_UnrecordedOutcome`, never the
+   exception or its traceback), dropping any it kept longer than the store's
+   `ttl_seconds`, by when the job itself is gone. `settle_unrecorded_outcome(job_id)`
+   pops it and records `error` with `_UNRECORDED_OUTCOME_MESSAGE` and only
+   `error`/`supervisor_error_class` fields; a refused write restores it for the next poll, and a precedence-rejected one
+   returns the job as another writer left it. Training's status route and the
+   dispersion status and cancel routes call it, through
+   `TrainService.with_recorded_outcome`, for a job still `running`. If persistence
+   succeeds, an unexpected parent exception is re-raised from the thread only after
+   the job is safely terminal, preserving diagnostic visibility without stranding it
+   as running.
 
 **Version-1 worker protocol.** The child serializes each progress update once and
 attempts a non-blocking write to the capacity-64 queue; a full queue or exhausted
@@ -450,7 +479,10 @@ the root itself are never removed.
 2. `await asyncio.wait_for(asyncio.shield(blocking_task), timeout=timeout)` — the
    `shield` is what lets a timeout (or outer cancellation) *not* cancel the
    underlying task; only the `wait_for` wrapper is abandoned.
-3. **On `TimeoutError`**: attaches `_drain_background_future_result` as a
+3. **On `TimeoutError`**: when the task is already done, the `TimeoutError` was the
+   work's own (one type since Python 3.11) or the work finished as the deadline passed,
+   so `_finished_outcome` returns its value or raises its exception as the `completed`
+   or `failed` outcome. Otherwise it attaches `_drain_background_future_result` as a
    done-callback on the still-running task (a successful value is consumed and discarded;
    an ordinary exception is logged), logs a warning, and raises
    `BlockingWorkTimeoutError(operation, timeout,
@@ -556,7 +588,7 @@ is only warranted for a concrete thread callable that can honour such a signal.
 | `InvalidRequestError` (400) | `JobStore.require_completed_job` | When the job exists but isn't `completed`; message includes the actual status. |
 | `SingleFlightConflictError(RuntimeError)` | `SingleFlightCoordinator.acquire` | Not caught inside this component; optimiser route code (`_optimiser_service.py`) converts the equivalent caller-side conflict into a `ConflictError` (409). |
 | `BackgroundJobStoppedError(RuntimeError)` | Not raised by this component itself — it is the typed exception in-process worker code is expected to raise after observing `CancellableJobRegistry.cancellation_reason(job_id)` is non-`None`. | Caught by remaining in-process consumers such as `_optimiser_service.py`; migrated process workers use the protocol stop callback and typed failure payloads. |
-| `IsolatedWorkerError` and subtypes | Raised inside `run_isolated_worker` or `run_worker_protocol` (owned by worker isolation/transport) | Converted by `IsolatedJobSupervisor` into a typed lifecycle outcome, preferring a child-curated `user_message` payload field over the typed wrapper text for the terminal message. Unexpected parent exceptions become `error`; terminal-persistence failure is exposed through `IsolatedSupervisorThread.join_and_raise()`. |
+| `IsolatedWorkerError` and subtypes | Raised inside `run_isolated_worker` or `run_worker_protocol` (owned by worker isolation/transport) | Converted by `IsolatedJobSupervisor` into a typed lifecycle outcome, preferring a child-curated `user_message` payload field over the typed wrapper text for the terminal message. Unexpected parent exceptions become `error`; a terminal-persistence failure is settled as `error` by the job's status route (`settle_unrecorded_outcome`). |
 | `BlockingWorkTimeoutError(TimeoutError)` | `run_blocking_with_response_timeout` | Raised only by explicitly configured compatibility-thread paths. Production API Input table builds, output-write, OUTPUT dry-run, and Explore paths use killable process isolation and do not fall back to this helper after a process-start or worker failure. |
 | `asyncio.CancelledError` | Re-raised by `run_blocking_with_response_timeout` after draining the background task | Propagates to the ASGI layer as normal task cancellation. |
 
@@ -624,10 +656,18 @@ is only warranted for a concrete thread callable that can honour such a signal.
 - `tests/test_worker_isolation.py` — `IsolatedJobSupervisor` end-to-end: completed
   result recording, typed remote/stopped/crashed outcomes, totalisation of unexpected
   parent errors, cleanup behavior, coherent terminal precedence, and observable
-  terminal-persistence infrastructure failure.
+  terminal-persistence infrastructure failure. The server lifespan's shutdown with a
+  real sleeping protocol worker returns within the bound, leaves no worker process and
+  records the job `cancelled`; `stop_background_jobs` returns at its bound naming a job
+  thread that does not stop. A terminal write the store refuses is settled as `error`
+  by `settle_unrecorded_outcome`, and only once; one kept past the store's TTL is gone. A
+  registry held by a publication delays only its own cancellation: another registry's job
+  stops at once, and the shutdown keeps its bound. The two `MemoryError` subclasses
+  Haute raises (`ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError`) are
+  `memory_limited` from a real one-shot, protocol and pool child alike.
 - `tests/test_worker_protocol.py` — the bounded version-1 transport: spawn-safe
   request/result payloads, progress ordering and drops, validation limits,
-  cancellation/timeout/crash cleanup, and artifact containment/integrity.
+  cancellation/timeout/crash cleanup, and artifact containment/integrity; a failing queue close noted on the primary error.
 - `tests/test_artifact_housekeeping.py` — ownership markers, direct-child and
   symlink/reparse containment, stale-cutoff semantics, malformed markers, and
   isolated cleanup failures.

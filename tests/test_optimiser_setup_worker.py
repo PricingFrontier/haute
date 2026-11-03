@@ -911,6 +911,7 @@ class TestWorkerOutcomes:
                     remote_type=type(exc).__name__,
                     remote_message=str(exc),
                     remote_traceback="",
+                    is_memory=True,
                 ) from None
 
         def refused(*args: Any, **kwargs: Any) -> Any:
@@ -935,6 +936,7 @@ class TestWorkerOutcomes:
                     remote_type=type(exc).__name__,
                     remote_message=str(exc),
                     remote_traceback="",
+                    is_memory=True,
                 ) from None
 
         def refused(*args: Any, **kwargs: Any) -> Any:
@@ -1277,6 +1279,7 @@ def test_a_memory_error_behind_the_estimates_setup_answer_is_the_typed_507(
                     remote_message=str(exc),
                     remote_traceback="",
                     public_payload=None,
+                    is_memory=isinstance(exc, MemoryError),
                 ) from None
 
     assert type(raised.value) is MemoryError

@@ -82,7 +82,11 @@ from haute.errors import (
     RequestRefusedError,
     SchemaMismatchError,
 )
-from haute.routes._background_jobs import CancellableJobRegistry, JobCancellation
+from haute.routes._background_jobs import (
+    CancellableJobRegistry,
+    JobCancellation,
+    start_job_thread,
+)
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_job_fields,
@@ -987,7 +991,7 @@ class NodeDataService:
                 daemon=True,
             )
             self._threads[job_id] = thread
-        thread.start()
+        start_job_thread(thread)
         return job_id
 
     def profile(self, body: NodeDataRequest) -> NodeDataProfileResponse:
@@ -1057,7 +1061,7 @@ class NodeDataService:
             )
             with self._lock:
                 self._threads[job_id] = thread
-            thread.start()
+            start_job_thread(thread)
         return NodeDataProfileResponse(
             status="started", job_id=job_id, message="Profiling started", point=point
         )

@@ -75,15 +75,6 @@ _TERMINAL_REASON_PRECEDENCE: Mapping[TerminalReason, int] = {
 _LIFECYCLE_KEYS = frozenset({"status", "terminal_reason", "created_at", "ended_at", "completed_at"})
 
 
-class JobCommonFields(TypedDict):
-    status: JobStatus
-    created_at: float
-    message: NotRequired[str]
-    terminal_reason: NotRequired[TerminalReason]
-    ended_at: NotRequired[float]
-    completed_at: NotRequired[float]
-
-
 class RunningJobFields(TypedDict):
     status: Literal["running"]
     created_at: NotRequired[float]
@@ -282,6 +273,11 @@ class JobStore:
         # Readers holding an artifact, and the cleanups deferred until they finish.
         self._artifact_leases: dict[tuple[str, str], int] = {}
         self._deferred_artifact_cleanups: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {}
+
+    @property
+    def ttl_seconds(self) -> int:
+        """How long a job's metadata is kept (from its last activity while running)."""
+        return self._ttl_seconds
 
     # ------------------------------------------------------------------
     # Internal helpers

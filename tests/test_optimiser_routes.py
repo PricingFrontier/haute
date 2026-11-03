@@ -2603,6 +2603,49 @@ class TestEstimateRoute:
         )
         assert published is False
 
+    def test_an_auto_range_stopped_without_its_cancel_route_is_recorded(
+        self,
+        scored_data,
+        monkeypatch,
+    ):
+        """A server shutdown cancels the job's token, not its route: the stop is recorded."""
+        from haute import _execution_admission as admission_mod
+        from haute.routes._background_jobs import BackgroundJobStoppedError
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        class InlineThread:
+            def __init__(self, *, target, daemon):
+                self.target = target
+                self.daemon = daemon
+
+            def start(self) -> None:
+                self.target()
+
+            def is_alive(self) -> bool:
+                return False
+
+        def stopped(_body, job_id, **_kwargs):
+            raise BackgroundJobStoppedError(job_id, "cancelled")
+
+        admission_mod._clear_in_flight_reservations_for_tests()
+        monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        body = OptimiserFrontierAutoRangeRequest(
+            graph=_make_optimiser_graph(scored_data), node_id="opt"
+        )
+
+        with (
+            patch.object(service, "_run_frontier_auto_range_job", side_effect=stopped),
+            patch("haute.routes._optimiser_service.threading.Thread", InlineThread),
+        ):
+            started = service.start_frontier_auto_range(body)
+
+        job = store.require_job(started.job_id)
+        assert (job["status"], job["message"]) == ("cancelled", "Cancelled")
+
     def test_frontier_auto_range_estimator_honors_cancellation_between_batches(self):
         """The chunked estimator exposes cooperative cancellation checkpoints."""
         from haute.routes._background_jobs import BackgroundJobStoppedError

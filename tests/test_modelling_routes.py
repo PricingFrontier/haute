@@ -869,6 +869,50 @@ class TestTrainStatusTimeout:
         finally:
             _store.delete_job("train_tout")
 
+    def test_an_outcome_its_supervisor_could_not_record_is_answered_as_failed(
+        self, client, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """ROAD-WORKER-07: the job no longer stays running until its TTL."""
+        from haute._worker_protocol import WorkerRequest, WorkerResultManifest
+        from haute.routes._background_jobs import IsolatedJobSupervisor
+        from haute.routes._job_lifecycle import JobLifecycle
+        from haute.routes.modelling import _store, _train_service
+
+        supervisor = IsolatedJobSupervisor(
+            JobLifecycle(_store),
+            protocol_runner=lambda *_args, **_kwargs: WorkerResultManifest(metadata={}),
+        )
+        monkeypatch.setattr(_train_service, "_supervisor", supervisor)
+        seed_job(
+            _store,
+            "train_unrecorded",
+            {
+                "status": "running",
+                "start_time": time.monotonic(),
+                "timeout": 3600,
+                "created_at": time.time(),
+            },
+        )
+        try:
+            # A lifecycle-owned field makes the store refuse the terminal write.
+            supervisor.launch_protocol(
+                "train_unrecorded",
+                lambda *_args: None,
+                WorkerRequest("train_unrecorded", "test", {}),
+                artifact_root=tmp_path,
+                artifact_kinds=frozenset(),
+                max_artifact_size_bytes=0,
+                completed_fields=lambda _result: {"ended_at": 1.0},
+            ).join(10)
+            assert _store.require_job("train_unrecorded")["status"] == "running"
+
+            data = client.get("/api/modelling/train/status/train_unrecorded").json()
+
+            assert data["status"] == "error"
+            assert "could not record" in data["message"]
+        finally:
+            _store.delete_job("train_unrecorded")
+
     def test_cancel_training_marks_job_cancelled(self, client):
         from haute.routes.modelling import _store
 

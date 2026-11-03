@@ -122,10 +122,11 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the sixty-four packages delivered or settled since (thirteen by 28
-October 2026, twenty-five more on 29 October, two on 1 November, eighteen more by 2 November,
-the deploy roadmap's nine among them, and the frontend-shared roadmap's six on 3 November)
-have been removed from the sections below; the coverage table keeps the original counts.
+The findings of the seventy-six packages delivered or settled since (thirteen by 28
+October 2026, twenty-five more on 29 October, two on 1 November, thirty more by 2 November,
+the deploy roadmap's nine, the CLI roadmap's six and the background-jobs roadmap's three
+among them, and the frontend-shared roadmap's six on 3 November) have been removed from
+the sections below; the coverage table keeps the original counts.
 
 ## Validation — 25 October 2026
 
@@ -161,9 +162,6 @@ package, independently of the original finding count.
 Both Criticals, and the Majors whose packages were delivered, have been removed;
 these are the Majors still open.
 
-- **A graceful server exit joins every in-flight worker** (Major,
-  `ROAD-WORKER-06`): a 6 s child in flight at a 2 s exit ends the process at
-  7.6 s; no job registry is cancelled at shutdown.
 - **The assistant's SDK clients are built without the validated endpoint**
   (Major, `ASSIST-54`): `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` in the
   server's environment redirects the key, the prompt and project material to a
@@ -192,9 +190,6 @@ puts it in front of the owner because of what it can cost in production:
 | Area | Findings | Package |
 |---|---|---|
 | IO layer | CIO-5, CIO-11 | `IO-R06` |
-| Background jobs | WRK-2 | `ROAD-WORKER-06` |
-| Background jobs | WRK-5, WRK-6, WRK-11, WRK-14 | `ROAD-WORKER-07` |
-| Background jobs | WRK-8, WRK-9, WRK-10 | `ROAD-WORKER-08` |
 | Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
 | Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |
@@ -222,15 +217,14 @@ browser contract (`API-R03`); the cwd-dependent resolvers in the routes and the
 parser (`PCFG-R04`), the per-type
 validators and branches (`PCFG-R07`, `PCFG-R09`); the test-only config helpers and
 event-bus hooks (`ENGQ-R01`); the optimiser's unshown solve-memory forecast (`OPT-W02`) and its frontier
-points without convergence traces (`OPT-PC04`); the optimiser's job registries
-not cancelled at shutdown (`ROAD-WORKER-06`); the test-only
+points without convergence traces (`OPT-PC04`); the test-only
 `_compute_schema_hash` and the training facade (`ENGQ-R01`); fits that exceed
 their budget
 (`MOD-M01`, `MOD-M02`); the git routes' and the
 assistant's current-directory project root (`PCFG-R04`); the assistant
 catalog's hand tables and
 key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
-(`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the pivot registry at shutdown (`ROAD-WORKER-06`); the
+(`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the
 browser's hand-written contract mirrors (`API-R03`) and the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
 (`ENGQ-R01`); the dead
@@ -295,8 +289,8 @@ All probes live outside the repository and wrote nothing into it.
 | Tool | Result |
 |---|---|
 | radon | 285 functions with cyclomatic complexity ≥ 20; 27 ≥ 50 (the largest in the optimiser service, the save service, the assistant tools and the RAM estimate). |
-| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `ROAD-WORKER-08` and `ENGQ-R01`; the deploy and CLI ones are removed. |
-| jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `ROAD-WORKER-08`; the deploy ones are removed. |
+| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `ENGQ-R01`; the deploy, CLI and background-jobs ones are removed. |
+| jscpd Python | 0.30 % duplicated, 41 clones; the production ones, in deploy and the background jobs, are removed. |
 | jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `EDA-R03`. |
 | knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted (since declared); every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
 | sweeps | 35 campaign-named test modules (`ENGQ-R05`). |
