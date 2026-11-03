@@ -58,14 +58,12 @@ caller left and is deleted; the optimiser responses (solve, estimate, status,
 apply, save, MLflow log, frontier status, auto-range start and status, frontier
 select).
 
-**Remaining:** the responses that carry node configs or the editor document:
-the editor document (pipeline load, live sync and the scoped node save) and recovery
-and repair
-(`PipelineRepairApplyResponse.document` is a `PipelineEditorDocument`). The preview,
-its inputs and progress, the trace, a file's schema and JSON-cache inference are
-generated (`preview`, `trace`, `io`, `input-cache`), as are the save, the submodel
-actions and a commit's pipeline (`pipeline`, `git`), and the execution metrics are one shared module
-(`execution-metrics`).
+**Remaining:** the assistant's responses, and the request bodies `api/types.ts` still
+mirrors. The editor document and the repair answers (`editor-document`), the preview,
+its inputs and progress, the trace, a file's schema and JSON-cache inference
+(`preview`, `trace`, `io`, `input-cache`), the save, the submodel actions and a
+commit's pipeline (`pipeline`, `git`) are generated, and the execution metrics are one
+shared module (`execution-metrics`).
 
 **Acceptance:** Every response the client parses is validated by generated
 code; `guards.ts`, `trainGuards.ts` and `api/types.ts` contain no structural

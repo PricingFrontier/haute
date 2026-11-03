@@ -638,14 +638,15 @@ export default function usePipelineAPI({
     useDocumentStatusStore.getState().reset()
 
     loadPipeline({ signal: controller.signal, retry: INITIAL_PIPELINE_RETRY_POLICY })
-      .then(({ document: raw, documentFingerprint }) => {
+      .then(async ({ document: raw, documentFingerprint }) => {
         if (disposed) return
         // Narrow the response at the ingestion boundary.  Any drift in
         // the backend contract (missing `nodes`/`edges`, wrong type on an
         // optional field) throws a named Error that flows into the
         // `.catch` handler below — rather than surfacing downstream as a
         // cryptic "undefined is not iterable" three callbacks deep.
-        const data = parsePipelineEditorDocument(raw)
+        const data = await parsePipelineEditorDocument(raw)
+        if (disposed) return
         adoptPipelineDocument(data, documentFingerprint)
         setLoading(false)
       })

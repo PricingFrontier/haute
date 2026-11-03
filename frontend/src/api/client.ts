@@ -695,7 +695,7 @@ async function postNamingDocument<T>(
   url: string,
   body: unknown,
   options: MutationOptions | undefined,
-  parse: (data: unknown) => T,
+  parse: (data: unknown) => Promise<T>,
   caller: string,
 ): Promise<WithDocumentFingerprint<T>> {
   const named = await requestWith(url, {
@@ -704,7 +704,7 @@ async function postNamingDocument<T>(
     body: JSON.stringify(body),
     ...options,
   }, readNamedDocument(caller))
-  return { value: parse(named.body), documentFingerprint: named.documentFingerprint }
+  return { value: await parse(named.body), documentFingerprint: named.documentFingerprint }
 }
 
 const EDITOR_NODE_TYPES_WITHOUT_DEFAULT_INPUT = new Set<string>([

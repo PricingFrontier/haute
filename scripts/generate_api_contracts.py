@@ -104,6 +104,8 @@ from haute.schemas import (
     OptimiserStatusResponse,
     OutputAssembleDryRunResponse,
     OutputDestinationResponse,
+    PipelineEditorDocument,
+    PipelineRepairApplyResponse,
     PipelineSettingsResponse,
     PolarsFreeCodeColumnsResponse,
     PolarsStepsRenderResponse,
@@ -310,6 +312,12 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         PreviewProgressResponse,
     ),
     "trace": (TraceResponse,),
+    # The editor document a load, a live-sync update, a scoped node save and a repair carry.
+    # Loaded eagerly: the live-sync handler reads a document synchronously.
+    "editor-document": (
+        PipelineEditorDocument,
+        PipelineRepairApplyResponse,
+    ),
     # The pipeline's save and the submodel actions, each answering with a canonical graph.
     "pipeline": (
         SavePipelineResponse,

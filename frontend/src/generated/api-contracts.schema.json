@@ -14048,6 +14048,299 @@
       "title": "Page",
       "type": "object"
     },
+    "PipelineDocumentCapabilities": {
+      "additionalProperties": false,
+      "description": "Server-derived admission fence for one loaded editor document.",
+      "properties": {
+        "can_execute": {
+          "title": "Can Execute",
+          "type": "boolean"
+        },
+        "can_manage_submodels": {
+          "title": "Can Manage Submodels",
+          "type": "boolean"
+        },
+        "can_mutate": {
+          "title": "Can Mutate",
+          "type": "boolean"
+        },
+        "can_preview": {
+          "title": "Can Preview",
+          "type": "boolean"
+        },
+        "can_repair": {
+          "default": false,
+          "title": "Can Repair",
+          "type": "boolean"
+        },
+        "can_save": {
+          "title": "Can Save",
+          "type": "boolean"
+        },
+        "reserved_api_input_frame_labels": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reserved Api Input Frame Labels",
+          "type": "array"
+        }
+      },
+      "required": [
+        "can_mutate",
+        "can_save",
+        "can_execute",
+        "can_preview",
+        "can_manage_submodels",
+        "can_repair",
+        "reserved_api_input_frame_labels"
+      ],
+      "title": "PipelineDocumentCapabilities",
+      "type": "object"
+    },
+    "PipelineEditorDocument": {
+      "additionalProperties": false,
+      "description": "Versioned editor load result; never a canonical executable graph.",
+      "properties": {
+        "active_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "live",
+          "title": "Active Source"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/PipelineDocumentCapabilities"
+        },
+        "completeness": {
+          "items": {
+            "$ref": "#/$defs/PipelineNodeCompleteness"
+          },
+          "title": "Completeness",
+          "type": "array"
+        },
+        "completeness_omitted": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Completeness Omitted",
+          "type": "integer"
+        },
+        "diagnostics": {
+          "items": {
+            "$ref": "#/$defs/PipelineRecoveryDiagnostic"
+          },
+          "title": "Diagnostics",
+          "type": "array"
+        },
+        "diagnostics_omitted": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Diagnostics Omitted",
+          "type": "integer"
+        },
+        "document_kind": {
+          "const": "haute.pipeline_editor_document",
+          "default": "haute.pipeline_editor_document",
+          "title": "Document Kind",
+          "type": "string"
+        },
+        "edges": {
+          "items": {
+            "$ref": "#/$defs/RecoveryPipelineEdge"
+          },
+          "title": "Edges",
+          "type": "array"
+        },
+        "global_constants": {
+          "items": {
+            "$ref": "#/$defs/GlobalConstant"
+          },
+          "title": "Global Constants",
+          "type": "array"
+        },
+        "global_constants_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Global Constants Error"
+        },
+        "has_authored_content": {
+          "title": "Has Authored Content",
+          "type": "boolean"
+        },
+        "load_status": {
+          "enum": [
+            "ready",
+            "degraded",
+            "source_only"
+          ],
+          "title": "Load Status",
+          "type": "string"
+        },
+        "name_violations": {
+          "items": {
+            "$ref": "#/$defs/PipelineNameViolation"
+          },
+          "title": "Name Violations",
+          "type": "array"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/RecoveryPipelineNode"
+          },
+          "title": "Nodes",
+          "type": "array"
+        },
+        "pipeline_description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pipeline Description"
+        },
+        "pipeline_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pipeline Name"
+        },
+        "preamble": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preamble"
+        },
+        "preserved_blocks": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Preserved Blocks",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source_file": {
+          "default": "",
+          "title": "Source File",
+          "type": "string"
+        },
+        "source_revision": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "pattern": "^\\S+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Revision"
+        },
+        "source_selection_trusted": {
+          "default": true,
+          "title": "Source Selection Trusted",
+          "type": "boolean"
+        },
+        "source_text": {
+          "default": "",
+          "title": "Source Text",
+          "type": "string"
+        },
+        "sources": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Sources",
+          "type": "array"
+        },
+        "submodels": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/RecoverySubmodelDefinition"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submodels"
+        },
+        "unresolved_connections": {
+          "items": {
+            "$ref": "#/$defs/RecoveryUnresolvedConnection"
+          },
+          "title": "Unresolved Connections",
+          "type": "array"
+        }
+      },
+      "required": [
+        "document_kind",
+        "schema_version",
+        "load_status",
+        "pipeline_name",
+        "pipeline_description",
+        "preamble",
+        "preserved_blocks",
+        "global_constants",
+        "global_constants_error",
+        "source_file",
+        "source_revision",
+        "source_text",
+        "sources",
+        "active_source",
+        "source_selection_trusted",
+        "has_authored_content",
+        "nodes",
+        "edges",
+        "unresolved_connections",
+        "submodels",
+        "diagnostics",
+        "diagnostics_omitted",
+        "completeness",
+        "completeness_omitted",
+        "name_violations",
+        "capabilities"
+      ],
+      "title": "PipelineEditorDocument",
+      "type": "object"
+    },
     "PipelineGraph": {
       "description": "React Flow graph structure used throughout Haute.\n\nThis is the canonical type for the graph dict passed between\nparser, executor, codegen, deploy, and the server API layer.",
       "properties": {
@@ -14375,6 +14668,313 @@
         "port"
       ],
       "title": "PipelineNameViolationPortBinding",
+      "type": "object"
+    },
+    "PipelineNodeCompleteness": {
+      "additionalProperties": false,
+      "description": "A required value missing from an otherwise loadable node's config.\n\nCompleteness is not a load failure: entries never mark a node\nunavailable, never degrade the document, and never appear in\n``diagnostics``.",
+      "properties": {
+        "code": {
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Code",
+          "type": "string"
+        },
+        "element_id": {
+          "minLength": 1,
+          "title": "Element Id",
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "element_id",
+        "path",
+        "code",
+        "message"
+      ],
+      "title": "PipelineNodeCompleteness",
+      "type": "object"
+    },
+    "PipelineRecoveryDiagnostic": {
+      "additionalProperties": false,
+      "description": "Safe, stable diagnostic carried by an editor recovery document.",
+      "properties": {
+        "code": {
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Code",
+          "type": "string"
+        },
+        "diagnostic_id": {
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._:-]*$",
+          "title": "Diagnostic Id",
+          "type": "string"
+        },
+        "element_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Element Id"
+        },
+        "incident_id": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Incident Id"
+        },
+        "message": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "remediation": {
+          "anyOf": [
+            {
+              "maxLength": 1024,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Remediation"
+        },
+        "scope": {
+          "enum": [
+            "pipeline",
+            "node",
+            "edge",
+            "submodel"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "severity": {
+          "default": "error",
+          "enum": [
+            "warning",
+            "error"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "source_file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source File"
+        },
+        "source_span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecoverySourceSpan"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "diagnostic_id",
+        "code",
+        "severity",
+        "scope",
+        "message",
+        "element_id",
+        "source_file",
+        "source_span",
+        "remediation",
+        "incident_id"
+      ],
+      "title": "PipelineRecoveryDiagnostic",
+      "type": "object"
+    },
+    "PipelineRepairApplyResponse": {
+      "additionalProperties": false,
+      "description": "Committed repair plus the newly authoritative editor document.",
+      "properties": {
+        "applied_artifacts": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Applied Artifacts",
+          "type": "array"
+        },
+        "changes": {
+          "items": {
+            "$ref": "#/$defs/PipelineRepairChange"
+          },
+          "minItems": 1,
+          "title": "Changes",
+          "type": "array"
+        },
+        "completeness": {
+          "items": {
+            "$ref": "#/$defs/PipelineNodeCompleteness"
+          },
+          "title": "Completeness",
+          "type": "array"
+        },
+        "document": {
+          "$ref": "#/$defs/PipelineEditorDocument"
+        },
+        "field_changes": {
+          "items": {
+            "$ref": "#/$defs/PipelineRepairFieldChange"
+          },
+          "title": "Field Changes",
+          "type": "array"
+        },
+        "previous_config": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Previous Config"
+        },
+        "repair_kind": {
+          "default": "remove_unavailable_node",
+          "enum": [
+            "remove_unavailable_node",
+            "reset_node",
+            "recover_node",
+            "remove_connection"
+          ],
+          "title": "Repair Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repair_kind",
+        "applied_artifacts",
+        "changes",
+        "document",
+        "field_changes",
+        "completeness",
+        "previous_config"
+      ],
+      "title": "PipelineRepairApplyResponse",
+      "type": "object"
+    },
+    "PipelineRepairChange": {
+      "additionalProperties": false,
+      "description": "Bounded display patch for one server-owned artifact edit.",
+      "properties": {
+        "description": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "diff": {
+          "maxLength": 131072,
+          "title": "Diff",
+          "type": "string"
+        },
+        "diff_truncated": {
+          "title": "Diff Truncated",
+          "type": "boolean"
+        },
+        "operation": {
+          "enum": [
+            "update",
+            "delete"
+          ],
+          "title": "Operation",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "operation",
+        "description",
+        "diff",
+        "diff_truncated"
+      ],
+      "title": "PipelineRepairChange",
+      "type": "object"
+    },
+    "PipelineRepairFieldChange": {
+      "additionalProperties": false,
+      "description": "One engine decision about a recovered field, for optional display.",
+      "properties": {
+        "outcome": {
+          "enum": [
+            "retained",
+            "defaulted",
+            "needs_input",
+            "needs_review",
+            "removed",
+            "blocked"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "path": {
+          "default": "",
+          "title": "Path",
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "outcome",
+        "reason"
+      ],
+      "title": "PipelineRepairFieldChange",
       "type": "object"
     },
     "PipelineSettingsAutomatic": {
@@ -15477,6 +16077,548 @@
         "columns"
       ],
       "title": "RatingLevelsResponse",
+      "type": "object"
+    },
+    "RecoveryGraphSnapshot": {
+      "additionalProperties": false,
+      "description": "Renderable recovery graph used at the root and in submodel definitions.",
+      "properties": {
+        "edges": {
+          "items": {
+            "$ref": "#/$defs/RecoveryPipelineEdge"
+          },
+          "title": "Edges",
+          "type": "array"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/RecoveryPipelineNode"
+          },
+          "title": "Nodes",
+          "type": "array"
+        },
+        "submodels": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/RecoverySubmodelDefinition"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submodels"
+        },
+        "unresolved_connections": {
+          "items": {
+            "$ref": "#/$defs/RecoveryUnresolvedConnection"
+          },
+          "title": "Unresolved Connections",
+          "type": "array"
+        }
+      },
+      "required": [
+        "nodes",
+        "edges",
+        "unresolved_connections",
+        "submodels"
+      ],
+      "title": "RecoveryGraphSnapshot",
+      "type": "object"
+    },
+    "RecoveryPipelineEdge": {
+      "additionalProperties": false,
+      "description": "Editor edge shape intentionally incompatible with canonical GraphEdge.",
+      "properties": {
+        "availability": {
+          "enum": [
+            "ready",
+            "unavailable",
+            "blocked"
+          ],
+          "title": "Availability",
+          "type": "string"
+        },
+        "blocking_path": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Blocking Path",
+          "type": "array"
+        },
+        "diagnostic_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Diagnostic Ids",
+          "type": "array"
+        },
+        "input_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Input Name"
+        },
+        "recovery_id": {
+          "minLength": 1,
+          "title": "Recovery Id",
+          "type": "string"
+        },
+        "source_authored_id": {
+          "minLength": 1,
+          "title": "Source Authored Id",
+          "type": "string"
+        },
+        "source_handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Handle"
+        },
+        "source_recovery_id": {
+          "minLength": 1,
+          "title": "Source Recovery Id",
+          "type": "string"
+        },
+        "source_span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecoverySourceSpan"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "target_authored_id": {
+          "minLength": 1,
+          "title": "Target Authored Id",
+          "type": "string"
+        },
+        "target_handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Handle"
+        },
+        "target_recovery_id": {
+          "minLength": 1,
+          "title": "Target Recovery Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "recovery_id",
+        "source_recovery_id",
+        "target_recovery_id",
+        "source_authored_id",
+        "target_authored_id",
+        "source_handle",
+        "target_handle",
+        "input_name",
+        "availability",
+        "source_span",
+        "diagnostic_ids",
+        "blocking_path"
+      ],
+      "title": "RecoveryPipelineEdge",
+      "type": "object"
+    },
+    "RecoveryPipelineNode": {
+      "additionalProperties": false,
+      "description": "Editor node shape intentionally incompatible with canonical GraphNode.",
+      "properties": {
+        "authored_id": {
+          "minLength": 1,
+          "title": "Authored Id",
+          "type": "string"
+        },
+        "availability": {
+          "enum": [
+            "ready",
+            "unavailable",
+            "blocked"
+          ],
+          "title": "Availability",
+          "type": "string"
+        },
+        "blocking_path": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Blocking Path",
+          "type": "array"
+        },
+        "config": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Config"
+        },
+        "config_reference": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Config Reference"
+        },
+        "decorator_name": {
+          "minLength": 1,
+          "title": "Decorator Name",
+          "type": "string"
+        },
+        "default_input_name": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Default Input Name"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "diagnostic_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Diagnostic Ids",
+          "type": "array"
+        },
+        "display_position": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Display Position",
+          "type": "object"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "function_name": {
+          "minLength": 1,
+          "title": "Function Name",
+          "type": "string"
+        },
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "node_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Node Type"
+        },
+        "recovery_id": {
+          "minLength": 1,
+          "title": "Recovery Id",
+          "type": "string"
+        },
+        "scoped_editable": {
+          "default": false,
+          "title": "Scoped Editable",
+          "type": "boolean"
+        },
+        "source_file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source File"
+        },
+        "source_handle_input_names": {
+          "additionalProperties": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "title": "Source Handle Input Names",
+          "type": "object"
+        },
+        "source_span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecoverySourceSpan"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "recovery_id",
+        "authored_id",
+        "label",
+        "decorator_name",
+        "node_type",
+        "description",
+        "availability",
+        "display_position",
+        "config",
+        "editor",
+        "config_reference",
+        "function_name",
+        "default_input_name",
+        "source_handle_input_names",
+        "source_file",
+        "source_span",
+        "diagnostic_ids",
+        "blocking_path",
+        "scoped_editable"
+      ],
+      "title": "RecoveryPipelineNode",
+      "type": "object"
+    },
+    "RecoverySourceSpan": {
+      "additionalProperties": false,
+      "description": "One bounded, one-based source range attributable during recovery.",
+      "properties": {
+        "end_column": {
+          "minimum": 0,
+          "title": "End Column",
+          "type": "integer"
+        },
+        "end_line": {
+          "minimum": 1,
+          "title": "End Line",
+          "type": "integer"
+        },
+        "start_column": {
+          "minimum": 0,
+          "title": "Start Column",
+          "type": "integer"
+        },
+        "start_line": {
+          "minimum": 1,
+          "title": "Start Line",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start_line",
+        "start_column",
+        "end_line",
+        "end_column"
+      ],
+      "title": "RecoverySourceSpan",
+      "type": "object"
+    },
+    "RecoverySubmodelDefinition": {
+      "additionalProperties": false,
+      "description": "One editor-only recovered submodel definition.",
+      "properties": {
+        "availability": {
+          "enum": [
+            "ready",
+            "unavailable",
+            "blocked"
+          ],
+          "title": "Availability",
+          "type": "string"
+        },
+        "definition_id": {
+          "minLength": 1,
+          "title": "Definition Id",
+          "type": "string"
+        },
+        "diagnostic_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Diagnostic Ids",
+          "type": "array"
+        },
+        "file": {
+          "minLength": 1,
+          "title": "File",
+          "type": "string"
+        },
+        "graph": {
+          "$ref": "#/$defs/RecoveryGraphSnapshot"
+        },
+        "input_ports": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Input Ports",
+          "type": "array"
+        },
+        "output_ports": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Output Ports",
+          "type": "array"
+        }
+      },
+      "required": [
+        "definition_id",
+        "file",
+        "availability",
+        "diagnostic_ids",
+        "graph",
+        "input_ports",
+        "output_ports"
+      ],
+      "title": "RecoverySubmodelDefinition",
+      "type": "object"
+    },
+    "RecoveryUnresolvedConnection": {
+      "additionalProperties": false,
+      "description": "Authored connection retained as a diagnostic structure.",
+      "properties": {
+        "diagnostic_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Diagnostic Ids",
+          "type": "array"
+        },
+        "recovery_id": {
+          "minLength": 1,
+          "title": "Recovery Id",
+          "type": "string"
+        },
+        "source_authored_id": {
+          "minLength": 1,
+          "title": "Source Authored Id",
+          "type": "string"
+        },
+        "source_handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Handle"
+        },
+        "source_recovery_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Recovery Id"
+        },
+        "source_span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecoverySourceSpan"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "target_authored_id": {
+          "minLength": 1,
+          "title": "Target Authored Id",
+          "type": "string"
+        },
+        "target_handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Handle"
+        },
+        "target_recovery_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Recovery Id"
+        }
+      },
+      "required": [
+        "recovery_id",
+        "source_recovery_id",
+        "target_recovery_id",
+        "source_authored_id",
+        "target_authored_id",
+        "source_handle",
+        "target_handle",
+        "source_span",
+        "diagnostic_ids"
+      ],
+      "title": "RecoveryUnresolvedConnection",
       "type": "object"
     },
     "RowCount": {
@@ -22160,8 +23302,14 @@
     "OutputDestinationResponse": {
       "$ref": "#/$defs/OutputDestinationResponse"
     },
+    "PipelineEditorDocument": {
+      "$ref": "#/$defs/PipelineEditorDocument"
+    },
     "PipelineGraph": {
       "$ref": "#/$defs/PipelineGraph"
+    },
+    "PipelineRepairApplyResponse": {
+      "$ref": "#/$defs/PipelineRepairApplyResponse"
     },
     "PipelineSettingsResponse": {
       "$ref": "#/$defs/PipelineSettingsResponse"
@@ -22437,6 +23585,8 @@
     "PreviewInputsResponse",
     "PreviewProgressResponse",
     "TraceResponse",
+    "PipelineEditorDocument",
+    "PipelineRepairApplyResponse",
     "SavePipelineResponse",
     "CreateSubmodelResponse",
     "CreateNodeInstanceResponse",
@@ -22520,6 +23670,10 @@
       "PolarsStepsRenderResponse",
       "PolarsFreeCodeColumnsResponse",
       "PipelineSettingsResponse"
+    ],
+    "editor-document": [
+      "PipelineEditorDocument",
+      "PipelineRepairApplyResponse"
     ],
     "execution-metrics": [
       "ExecutionMetricsPayload"

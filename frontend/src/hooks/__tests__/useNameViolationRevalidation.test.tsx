@@ -4,6 +4,7 @@
  * banner lists them, and each graph edit revalidates through the editor
  * identity request, a newer edit superseding an answer still in flight.
  */
+import { readEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react"
 import type { Edge, Node } from "@xyflow/react"
@@ -11,7 +12,6 @@ import type { Edge, Node } from "@xyflow/react"
 import NameViolationsBanner from "../../components/NameViolationsBanner"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
-import { parsePipelineEditorDocument } from "../../types/pipelineDocument"
 import type { PipelineNameViolation } from "../../types/pipelineDocument"
 import { useNameViolationRevalidation } from "../useNameViolationRevalidation"
 
@@ -73,22 +73,28 @@ afterEach(() => {
 describe("the document's name violations", () => {
   it("are parsed from the wire, and an unknown kind is refused", () => {
     const wire = JSON.parse(JSON.stringify(fencedDocument()))
-    expect(parsePipelineEditorDocument(wire).name_violations).toEqual([RESERVED, DUPLICATE])
+    expect(readEditorDocument(wire).name_violations).toEqual([RESERVED, DUPLICATE])
     wire.name_violations[0].kind = "shadowed"
-    expect(() => parsePipelineEditorDocument(wire)).toThrow(/name_violations\[0\]\.kind/)
+    expect(() => readEditorDocument(wire)).toThrow(
+      "PipelineEditorDocument: invalid contract at /name_violations/0/kind",
+    )
   })
 
   it("carry the frame or public input port that names their input, which loading keeps for its editor", () => {
     const wire = JSON.parse(JSON.stringify(fencedDocument([RESERVED, FRAME_HELPER, PORT_HELPER])))
-    const document = parsePipelineEditorDocument(wire)
+    const document = readEditorDocument(wire)
     expect(document.name_violations).toEqual([RESERVED, FRAME_HELPER, PORT_HELPER])
     useDocumentStatusStore.getState().loadDocumentStatus(document)
     expect(useDocumentStatusStore.getState().inputBindingViolations).toEqual([FRAME_HELPER, PORT_HELPER])
 
     wire.name_violations[1].binding = { kind: "frame", node_id: "quotes", handle: "rate_lookup" }
-    expect(() => parsePipelineEditorDocument(wire)).toThrow(/name_violations\[1\]\.binding/)
+    expect(() => readEditorDocument(wire)).toThrow(
+      "PipelineEditorDocument: invalid contract at /name_violations/1/binding",
+    )
     wire.name_violations[1].binding = { kind: "submodel_input", submodel: "rates", port: "" }
-    expect(() => parsePipelineEditorDocument(wire)).toThrow(/name_violations\[1\]\.binding\.port/)
+    expect(() => readEditorDocument(wire)).toThrow(
+      "PipelineEditorDocument: invalid contract at /name_violations/1/binding",
+    )
   })
 
   it("fence save, run and preview until renames clear them, and again if they return", () => {

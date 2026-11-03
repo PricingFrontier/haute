@@ -456,6 +456,250 @@ export interface PipelineSettingsValues {
   pipeline_time_limit_minutes: number | null;
   preview_memory_gb: number | null;
 }
+/**
+ * Versioned editor load result; never a canonical executable graph.
+ */
+export interface PipelineEditorDocument {
+  active_source: string | null;
+  capabilities: PipelineDocumentCapabilities;
+  completeness: PipelineNodeCompleteness[];
+  completeness_omitted: number;
+  diagnostics: PipelineRecoveryDiagnostic[];
+  diagnostics_omitted: number;
+  document_kind: 'haute.pipeline_editor_document';
+  edges: RecoveryPipelineEdge[];
+  global_constants: GlobalConstant[];
+  global_constants_error: string | null;
+  has_authored_content: boolean;
+  load_status: 'ready' | 'degraded' | 'source_only';
+  name_violations: PipelineNameViolation[];
+  nodes: RecoveryPipelineNode[];
+  pipeline_description: string | null;
+  pipeline_name: string | null;
+  preamble: string | null;
+  preserved_blocks: string[];
+  schema_version: 1;
+  source_file: string;
+  source_revision: string | null;
+  source_selection_trusted: boolean;
+  source_text: string;
+  sources: string[];
+  submodels: {
+    [k: string]: RecoverySubmodelDefinition;
+  } | null;
+  unresolved_connections: RecoveryUnresolvedConnection[];
+}
+/**
+ * Server-derived admission fence for one loaded editor document.
+ */
+export interface PipelineDocumentCapabilities {
+  can_execute: boolean;
+  can_manage_submodels: boolean;
+  can_mutate: boolean;
+  can_preview: boolean;
+  can_repair: boolean;
+  can_save: boolean;
+  reserved_api_input_frame_labels: string[];
+}
+/**
+ * A required value missing from an otherwise loadable node's config.
+ *
+ * Completeness is not a load failure: entries never mark a node
+ * unavailable, never degrade the document, and never appear in
+ * ``diagnostics``.
+ */
+export interface PipelineNodeCompleteness {
+  code: string;
+  element_id: string;
+  message: string;
+  path: string;
+}
+/**
+ * Safe, stable diagnostic carried by an editor recovery document.
+ */
+export interface PipelineRecoveryDiagnostic {
+  code: string;
+  diagnostic_id: string;
+  element_id: string | null;
+  incident_id: string | null;
+  message: string;
+  remediation: string | null;
+  scope: 'pipeline' | 'node' | 'edge' | 'submodel';
+  severity: 'warning' | 'error';
+  source_file: string | null;
+  source_span: RecoverySourceSpan | null;
+}
+/**
+ * One bounded, one-based source range attributable during recovery.
+ */
+export interface RecoverySourceSpan {
+  end_column: number;
+  end_line: number;
+  start_column: number;
+  start_line: number;
+}
+/**
+ * Editor edge shape intentionally incompatible with canonical GraphEdge.
+ */
+export interface RecoveryPipelineEdge {
+  availability: 'ready' | 'unavailable' | 'blocked';
+  blocking_path: string[];
+  diagnostic_ids: string[];
+  input_name: string | null;
+  recovery_id: string;
+  source_authored_id: string;
+  source_handle: string | null;
+  source_recovery_id: string;
+  source_span: RecoverySourceSpan | null;
+  target_authored_id: string;
+  target_handle: string | null;
+  target_recovery_id: string;
+}
+/**
+ * One named, typed value that node code reads as ``global_constants.<name>``.
+ *
+ * A uniform constant holds ``value``, which every source reads. A constant
+ * split by source holds ``by_source``, which may lack a source: reading it
+ * under that source fails, naming both. Values stay JSON scalars, so a date
+ * is its ``YYYY-MM-DD`` text, and a ``float`` is stored as a float however it
+ * was written.
+ */
+export interface GlobalConstant {
+  by_source: {
+    [k: string]: boolean | number | string;
+  } | null;
+  name: string;
+  type: 'integer' | 'float' | 'text' | 'boolean' | 'date';
+  value: boolean | number | string | null;
+}
+/**
+ * Editor node shape intentionally incompatible with canonical GraphNode.
+ */
+export interface RecoveryPipelineNode {
+  authored_id: string;
+  availability: 'ready' | 'unavailable' | 'blocked';
+  blocking_path: string[];
+  config: {
+    [k: string]: unknown;
+  } | null;
+  config_reference: string | null;
+  decorator_name: string;
+  default_input_name: string | null;
+  description: string;
+  diagnostic_ids: string[];
+  display_position: {
+    [k: string]: number;
+  };
+  editor: NodeEditorState;
+  function_name: string;
+  label: string;
+  node_type: string | null;
+  recovery_id: string;
+  scoped_editable: boolean;
+  source_file: string | null;
+  source_handle_input_names: {
+    [k: string]: string;
+  };
+  source_span: RecoverySourceSpan | null;
+}
+/**
+ * What the server knows about a node for its editor, carried beside the config.
+ *
+ * None of it is a setting: it is never persisted, hashed or validated as config.
+ * ``steps_error`` is derived from the node's ``steps`` whenever its data is
+ * built; ``steps_discarded`` (why the parse dropped a stepped node's steps) and
+ * ``discarded_sidecar`` (the transform sidecar those steps came from, which the
+ * next save retires) are the parse's findings. A request may carry the field
+ * back, as a transform of the graph echoes it, but a save reads neither
+ * finding from it: it reparses the file on disk.
+ */
+export interface NodeEditorState {
+  discarded_sidecar: string | null;
+  steps_discarded: string | null;
+  steps_error: string | null;
+}
+/**
+ * One editor-only recovered submodel definition.
+ */
+export interface RecoverySubmodelDefinition {
+  availability: 'ready' | 'unavailable' | 'blocked';
+  definition_id: string;
+  diagnostic_ids: string[];
+  file: string;
+  graph: RecoveryGraphSnapshot;
+  input_ports: {
+    [k: string]: unknown;
+  }[];
+  output_ports: {
+    [k: string]: unknown;
+  }[];
+}
+/**
+ * Renderable recovery graph used at the root and in submodel definitions.
+ */
+export interface RecoveryGraphSnapshot {
+  edges: RecoveryPipelineEdge[];
+  nodes: RecoveryPipelineNode[];
+  submodels: {
+    [k: string]: RecoverySubmodelDefinition;
+  } | null;
+  unresolved_connections: RecoveryUnresolvedConnection[];
+}
+/**
+ * Authored connection retained as a diagnostic structure.
+ */
+export interface RecoveryUnresolvedConnection {
+  /**
+   * @minItems 1
+   */
+  diagnostic_ids: string[];
+  recovery_id: string;
+  source_authored_id: string;
+  source_handle: string | null;
+  source_recovery_id: string | null;
+  source_span: RecoverySourceSpan | null;
+  target_authored_id: string;
+  target_handle: string | null;
+  target_recovery_id: string | null;
+}
+/**
+ * Committed repair plus the newly authoritative editor document.
+ */
+export interface PipelineRepairApplyResponse {
+  /**
+   * @minItems 1
+   */
+  applied_artifacts: string[];
+  /**
+   * @minItems 1
+   */
+  changes: PipelineRepairChange[];
+  completeness: PipelineNodeCompleteness[];
+  document: PipelineEditorDocument;
+  field_changes: PipelineRepairFieldChange[];
+  previous_config: {
+    [k: string]: unknown;
+  } | null;
+  repair_kind: 'remove_unavailable_node' | 'reset_node' | 'recover_node' | 'remove_connection';
+}
+/**
+ * Bounded display patch for one server-owned artifact edit.
+ */
+export interface PipelineRepairChange {
+  description: string;
+  diff: string;
+  diff_truncated: boolean;
+  operation: 'update' | 'delete';
+  path: string;
+}
+/**
+ * One engine decision about a recovered field, for optional display.
+ */
+export interface PipelineRepairFieldChange {
+  outcome: 'retained' | 'defaulted' | 'needs_input' | 'needs_review' | 'removed' | 'blocked';
+  path: string;
+  reason: string;
+}
 export interface ExecutionMetricsPayload {
   admission: ExecutionAdmissionPayload | null;
   bytes_written: number | null;
@@ -1395,23 +1639,6 @@ export interface GraphEdge {
   targetHandle: string | null;
 }
 /**
- * One named, typed value that node code reads as ``global_constants.<name>``.
- *
- * A uniform constant holds ``value``, which every source reads. A constant
- * split by source holds ``by_source``, which may lack a source: reading it
- * under that source fails, naming both. Values stay JSON scalars, so a date
- * is its ``YYYY-MM-DD`` text, and a ``float`` is stored as a float however it
- * was written.
- */
-export interface GlobalConstant {
-  by_source: {
-    [k: string]: boolean | number | string;
-  } | null;
-  name: string;
-  type: 'integer' | 'float' | 'text' | 'boolean' | 'date';
-  value: boolean | number | string | null;
-}
-/**
  * A single node in the React Flow graph.
  */
 export interface GraphNode {
@@ -1433,22 +1660,6 @@ export interface NodeData {
   editor: NodeEditorState;
   label: string;
   nodeType: NodeType;
-}
-/**
- * What the server knows about a node for its editor, carried beside the config.
- *
- * None of it is a setting: it is never persisted, hashed or validated as config.
- * ``steps_error`` is derived from the node's ``steps`` whenever its data is
- * built; ``steps_discarded`` (why the parse dropped a stepped node's steps) and
- * ``discarded_sidecar`` (the transform sidecar those steps came from, which the
- * next save retires) are the parse's findings. A request may carry the field
- * back, as a transform of the graph echoes it, but a save reads neither
- * finding from it: it reparses the file on disk.
- */
-export interface NodeEditorState {
-  discarded_sidecar: string | null;
-  steps_discarded: string | null;
-  steps_error: string | null;
 }
 /**
  * One shared, file-backed submodel definition and its public interface.
