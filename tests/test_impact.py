@@ -7,6 +7,8 @@ import pytest
 
 from haute.deploy._impact import (
     ColumnStats,
+    ImpactAlignmentError,
+    ImpactEndpointError,
     ImpactReport,
     SegmentRow,
     _column_stats,
@@ -148,19 +150,36 @@ class TestColumnStats:
         assert stats.mean_change_pct == pytest.approx(0.0)
         assert stats.total_premium_change_pct == pytest.approx(0.0)
 
-    def test_zero_baseline_with_nonzero_staging_fails_loudly(self) -> None:
-        prd = pl.Series("a", [0.0, 100.0])
-        stg = pl.Series("a", [5.0, 100.0])
+    def test_a_quote_priced_from_zero_is_counted_not_a_percentage(self) -> None:
+        """DEP-R16: a newly priced cover is a release event, counted beside the figures."""
+        prd = pl.Series("a", [0.0, 100.0, 100.0])
+        stg = pl.Series("a", [5.0, 110.0, 100.0])
 
-        with pytest.raises(ValueError, match="zero production baseline.*price.*1 row"):
-            _column_stats(stg, prd, "price")
+        stats = _column_stats(stg, prd, "price")
 
-    def test_zero_production_total_with_nonzero_staging_total_fails_loudly(self) -> None:
+        assert stats.n_rows == 3
+        assert stats.n_from_zero == 1
+        assert stats.n_changed == 2
+        # The percent figures cover the two quotes production prices above zero.
+        assert stats.mean_change_pct == pytest.approx(5.0)
+        assert stats.max_increase_pct == pytest.approx(10.0)
+        assert stats.total_premium_change_pct == pytest.approx(7.5)
+
+    def test_a_zero_production_total_is_priced_from_zero(self) -> None:
         prd = pl.Series("a", [100.0, -100.0])
         stg = pl.Series("a", [100.0, -90.0])
 
-        with pytest.raises(ValueError, match="zero production total.*price"):
-            _column_stats(stg, prd, "price")
+        stats = _column_stats(stg, prd, "price")
+
+        assert stats.total_premium_change_pct is None
+        assert stats.n_from_zero == 0
+
+    def test_every_quote_priced_from_zero(self) -> None:
+        stats = _column_stats(pl.Series("a", [1.0, 2.0]), pl.Series("a", [0.0, 0.0]), "price")
+
+        assert (stats.n_from_zero, stats.n_changed, stats.n_rows) == (2, 2, 2)
+        assert stats.mean_change_pct == 0.0
+        assert stats.total_premium_change_pct is None
 
     @pytest.mark.parametrize(
         ("staging_values", "production_values", "message"),
@@ -232,13 +251,19 @@ class TestSegmentBreakdown:
         assert [row.value for row in kept] == [f"r{index:02d}" for index in range(10)]
         assert kept == reordered
 
-    def test_zero_baseline_segment_change_fails_loudly(self) -> None:
-        stg_df = pl.DataFrame({"price": [1.0] * 20})
-        prd_df = pl.DataFrame({"price": [0.0] * 20})
+    def test_a_segment_s_change_leaves_out_its_quotes_priced_from_zero(self) -> None:
+        """DEP-R16: region A's mean covers its quotes production priced; B has none."""
+        stg_df = pl.DataFrame({"price": [1.0] * 5 + [110.0] * 5 + [1.0] * 10})
+        prd_df = pl.DataFrame({"price": [0.0] * 5 + [100.0] * 5 + [0.0] * 10})
         input_df = pl.DataFrame({"region": ["A"] * 10 + ["B"] * 10})
 
-        with pytest.raises(ValueError, match="zero production baseline.*price.*20 rows"):
-            _segment_breakdown(stg_df, prd_df, input_df, "price")
+        [a, b] = sorted(
+            _segment_breakdown(stg_df, prd_df, input_df, "price")["region"],
+            key=lambda row: row.value,
+        )
+
+        assert (a.value, a.n_rows, a.mean_change_pct) == ("A", 10, pytest.approx(10.0))
+        assert (b.value, b.n_rows, b.mean_change_pct) == ("B", 10, None)
 
 
 class TestBuildReport:
@@ -258,27 +283,33 @@ class TestBuildReport:
             dataset_path="data/policies.parquet",
             total_rows=1000,
         )
-        assert report.scored_rows == 2
+        assert report.sampled_rows == 2
         assert len(report.column_stats) == 1
         assert report.column_stats[0].name == "price"
         assert report.column_stats[0].mean_change_pct == pytest.approx(10.0, abs=0.1)
-        assert report.is_first_deploy is False
+        assert report.first_deploy is None
 
-    def test_mismatched_lengths_truncates(self) -> None:
-        stg = [{"price": 110.0}, {"price": 220.0}, {"price": 330.0}]
-        prd = [{"price": 100.0}, {"price": 200.0}]
+    @pytest.mark.parametrize(
+        ("staging", "production"),
+        [(3, 2), (2, 3), (2, 2)],
+        ids=["production-short", "staging-short", "both-short"],
+    )
+    def test_a_count_other_than_the_quotes_compares_nothing(
+        self, staging: int, production: int
+    ) -> None:
+        # DEP-R11: pairing by position after truncating would compare the wrong quotes.
         inp = pl.DataFrame({"region": ["A", "B", "C"]})
-        report = build_report(
-            stg,
-            prd,
-            inp,
-            pipeline_name="test",
-            staging_endpoint="s",
-            prod_endpoint="p",
-            dataset_path="d",
-            total_rows=3,
-        )
-        assert report.scored_rows == 2
+        with pytest.raises(ImpactAlignmentError, match="compares 3 quotes"):
+            build_report(
+                [{"price": 110.0}] * staging,
+                [{"price": 100.0}] * production,
+                inp,
+                pipeline_name="test",
+                staging_endpoint="s",
+                prod_endpoint="p",
+                dataset_path="d",
+                total_rows=3,
+            )
 
     def test_mixed_changes_captured(self) -> None:
         prd = [{"price": 100.0}, {"price": 100.0}]
@@ -366,8 +397,7 @@ class TestBuildReport:
         )
 
         assert [stat.name for stat in report.column_stats] == ["price"]
-        assert report.scored_rows == 2
-        assert report.failed_rows == 0
+        assert report.sampled_rows == 2
         assert report.column_stats[0].mean_change_pct == pytest.approx(10.0, abs=0.1)
 
 
@@ -398,8 +428,8 @@ class TestScoreEndpointBatched:
         assert preds[1]["price"] == 1.0
         assert preds[4]["price"] == 4.0
 
-    def test_non_list_predictions_appended(self) -> None:
-        """When predictions is not a list, it should be appended as a single item."""
+    def test_a_single_value_answers_only_a_one_quote_batch(self) -> None:
+        """DEP-R11: a scalar is a quote's prediction, never a batch's."""
         from unittest.mock import MagicMock
 
         def _side_effect(*, name, dataframe_records):
@@ -410,11 +440,12 @@ class TestScoreEndpointBatched:
         mock_ws = MagicMock()
         mock_ws.serving_endpoints.query.side_effect = _side_effect
 
-        records = [{"x": i} for i in range(3)]
-        preds = score_endpoint_batched(mock_ws, "ep", records, batch_size=2)
+        assert score_endpoint_batched(mock_ws, "ep", [{"x": 1}], batch_size=2) == [42.0]
+        with pytest.raises(ImpactAlignmentError, match="Batch 1 of 2 sent 2 quotes .* single"):
+            score_endpoint_batched(mock_ws, "ep", [{"x": i} for i in range(3)], batch_size=2)
 
-        assert mock_ws.serving_endpoints.query.call_count == 2
-        assert preds == [42.0, 42.0]
+
+_NO_RELEASE = "no production release is recorded (origin has no deploy/ tag)."
 
 
 def _make_impact_report(**overrides) -> ImpactReport:
@@ -426,13 +457,12 @@ def _make_impact_report(**overrides) -> ImpactReport:
         dataset_path="data/policies.parquet",
         total_rows=100000,
         sampled_rows=10000,
-        scored_rows=10000,
-        failed_rows=0,
         column_stats=[
             ColumnStats(
                 name="price",
                 n_rows=10000,
                 n_changed=8000,
+                n_from_zero=0,
                 mean_change_pct=2.3,
                 median_change_pct=1.8,
                 max_increase_pct=18.7,
@@ -447,7 +477,7 @@ def _make_impact_report(**overrides) -> ImpactReport:
             )
         ],
         segments={},
-        is_first_deploy=False,
+        first_deploy=None,
     )
     defaults.update(overrides)
     return ImpactReport(**defaults)
@@ -474,9 +504,26 @@ class TestFormatTerminal:
         assert "Ile-de-France" in text
 
     def test_first_deploy(self) -> None:
-        report = _make_impact_report(is_first_deploy=True, column_stats=[], segments={})
+        report = _make_impact_report(first_deploy=_NO_RELEASE, column_stats=[], segments={})
         text = format_terminal(report)
         assert "First deployment" in text
+        # The report says why production was not compared.
+        assert _NO_RELEASE in text
+
+    def test_quotes_priced_from_zero_are_reported_beside_the_figures(self) -> None:
+        """DEP-R16: both reports count them, and a total from zero reads as such."""
+        [stats] = _make_impact_report().column_stats
+        stats.n_from_zero = 3
+        stats.total_premium_change_pct = None
+        report = _make_impact_report(column_stats=[stats])
+
+        text = format_terminal(report)
+        md = format_markdown(report)
+
+        assert "From zero:" in text and "3" in text.split("From zero:")[1].splitlines()[0]
+        assert "Premium impact:     from zero" in text
+        assert "| Priced from zero (left out of the % figures) | 3 |" in md
+        assert "| Total premium impact | from zero |" in md
 
 
 class TestFormatMarkdown:
@@ -490,9 +537,10 @@ class TestFormatMarkdown:
         assert "| P5 | P25 | P50 | P75 | P95 |" in md
 
     def test_first_deploy_markdown(self) -> None:
-        report = _make_impact_report(is_first_deploy=True, column_stats=[], segments={})
+        report = _make_impact_report(first_deploy=_NO_RELEASE, column_stats=[], segments={})
         md = format_markdown(report)
         assert "First deployment" in md
+        assert _NO_RELEASE in md
         assert "| Metric" not in md
 
     def test_segment_table(self) -> None:
@@ -580,23 +628,6 @@ class TestSegmentBreakdownExtended:
 
 
 class TestBuildReportExtended:
-    def test_failed_rows_counted(self) -> None:
-        stg = [{"price": 110.0}]
-        prd = [{"price": 100.0}, {"price": 200.0}]
-        inp = pl.DataFrame({"x": ["a", "b"]})
-        report = build_report(
-            stg,
-            prd,
-            inp,
-            pipeline_name="t",
-            staging_endpoint="s",
-            prod_endpoint="p",
-            dataset_path="d",
-            total_rows=2,
-        )
-        assert report.scored_rows == 1
-        assert report.failed_rows == 1
-
     def test_column_stats_for_numeric_columns(self) -> None:
         stg = [{"a": 110.0, "b": 55.0}]
         prd = [{"a": 100.0, "b": 50.0}]
@@ -658,7 +689,7 @@ class TestFormatTerminalExtended:
 
     def test_first_deploy_different_message(self) -> None:
         normal = _make_impact_report()
-        first = _make_impact_report(is_first_deploy=True, column_stats=[], segments={})
+        first = _make_impact_report(first_deploy=_NO_RELEASE, column_stats=[], segments={})
         normal_text = format_terminal(normal)
         first_text = format_terminal(first)
         assert "First deployment" in first_text
@@ -669,7 +700,7 @@ class TestFormatTerminalExtended:
 class TestFormatMarkdownExtended:
     def test_first_deploy_formatted_differently(self) -> None:
         normal = _make_impact_report()
-        first = _make_impact_report(is_first_deploy=True, column_stats=[], segments={})
+        first = _make_impact_report(first_deploy=_NO_RELEASE, column_stats=[], segments={})
         normal_md = format_markdown(normal)
         first_md = format_markdown(first)
         assert "First deployment" in first_md
@@ -714,13 +745,23 @@ class TestRunBatched:
         result = _run_batched(records, score_fn, batch_size=2, progress=None)
         assert result == [0, 1, 2, 3, 4]
 
-    def test_non_list_return_appended(self) -> None:
-        def score_fn(batch: list[dict]) -> object:
-            return sum(r["x"] for r in batch)
+    def test_a_missing_middle_prediction_fails_before_anything_is_paired(self) -> None:
+        """DEP-R11: a batch that drops a quote fails naming it, before positional pairing."""
 
-        records = [{"x": 1}, {"x": 2}, {"x": 3}]
-        result = _run_batched(records, score_fn, batch_size=2, progress=None)
-        assert result == [3, 3]
+        def score_fn(batch: list[dict]) -> list:
+            return [r["x"] for r in batch if r["x"] != 1]
+
+        with pytest.raises(ImpactAlignmentError, match="Batch 1 of 2 sent 2 quotes .* 1 pred"):
+            _run_batched([{"x": i} for i in range(4)], score_fn, batch_size=2, progress=None)
+
+    def test_a_short_and_a_long_batch_fail_even_when_the_totals_match(self) -> None:
+        """DEP-R11: one batch's surplus never makes up another's shortfall."""
+        answers = iter([[1], [2, 3, 4]])
+
+        with pytest.raises(ImpactAlignmentError, match="Batch 1 of 2 sent 2 quotes"):
+            _run_batched(
+                [{"x": i} for i in range(4)], lambda _batch: next(answers), 2, progress=None
+            )
 
 
 class TestScoreHttpEndpointBatched:
@@ -823,5 +864,18 @@ class TestScoreHttpEndpointBatched:
             raise exc
 
         with patch("urllib.request.urlopen", side_effect=mock_urlopen):
-            with pytest.raises(RuntimeError, match="HTTP 500"):
+            with pytest.raises(ImpactEndpointError, match="HTTP 500") as failed:
                 score_http_endpoint_batched("http://example.com", [{"x": 1}], batch_size=10)
+        assert failed.value.status == 500
+        assert failed.value.url == "http://example.com/quote"
+
+    def test_an_endpoint_that_does_not_answer_names_its_address(self) -> None:
+        import urllib.error
+        from unittest.mock import patch
+
+        refused = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+        with patch("urllib.request.urlopen", side_effect=refused):
+            with pytest.raises(ImpactEndpointError, match="no answer") as failed:
+                score_http_endpoint_batched("http://prod.example", [{"x": 1}], batch_size=10)
+        assert failed.value.url == "http://prod.example/quote"
+        assert failed.value.status is None

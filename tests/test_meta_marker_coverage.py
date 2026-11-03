@@ -4,7 +4,7 @@ A test that walks the repository's own files, or runs the full-corpus debt and
 write-sandbox scans, reads files rather than exercising behaviour: its result
 cannot differ by interpreter, and when it fails it fails identically on every
 compatibility shard. The ``meta`` marker keeps such tests out of the
-compatibility lanes (``-m "not perf and not meta"`` in .github/workflows/ci.yml);
+compatibility lanes (``-m "not perf and not meta and not index"`` in .github/workflows/ci.yml);
 this module holds every one to carrying it.
 
 A scan is a call of the shared repository walker ``source_files`` or of a

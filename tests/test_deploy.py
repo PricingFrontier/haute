@@ -11,7 +11,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import ANY, MagicMock, patch
 
 import polars as pl
@@ -381,6 +381,128 @@ class TestPruner:
         ]
         assert kept == ["out", "request", "switch"]
         assert removed == []
+
+    @staticmethod
+    def _switch_graph(*, inner_map: dict[str, str], outer_map: dict[str, str]) -> Any:
+        """``live_src`` and ``inner`` (a switch over ``a``/``b``) feed ``outer``, a switch
+        feeding ``out``; ``stray`` is a switch with no path to ``out``."""
+
+        def node(nid: str, node_type: str, config: dict[str, Any] | None = None) -> dict:
+            return {"id": nid, "data": {"label": nid, "nodeType": node_type, "config": config}}
+
+        def edge(source: str, target: str) -> dict[str, str]:
+            return {"id": f"{source}__{target}", "source": source, "target": target}
+
+        return _g(
+            {
+                "nodes": [
+                    node("live_src", "polars", {}),
+                    node("a", "polars", {}),
+                    node("b", "polars", {}),
+                    node("inner", "liveSwitch", {"input_scenario_map": inner_map}),
+                    node("outer", "liveSwitch", {"input_scenario_map": outer_map}),
+                    node("stray", "liveSwitch", {"input_scenario_map": {"a": "batch"}}),
+                    node("out", "output", make_output_config([])),
+                ],
+                "edges": [
+                    edge("a", "inner"),
+                    edge("b", "inner"),
+                    edge("live_src", "outer"),
+                    edge("inner", "outer"),
+                    edge("outer", "out"),
+                    edge("a", "stray"),
+                ],
+            }
+        )
+
+    def test_prune_ignores_a_switch_the_output_does_not_reach_through_live_branches(
+        self,
+    ) -> None:
+        # DEP-R13: `stray` reaches nothing and `inner` sits on outer's non-live branch, so
+        # neither is inspected: their missing "live" entries are not the deployment's.
+        from haute.deploy._pruner import prune_for_deploy
+
+        graph = self._switch_graph(
+            inner_map={"a": "batch", "b": "batch"},
+            outer_map={"live_src": "live", "inner": "batch"},
+        )
+
+        pruned, kept, removed = prune_for_deploy(graph, "out")
+
+        assert kept == ["live_src", "out", "outer"]
+        assert removed == ["a", "b", "inner", "stray"]
+        assert [edge.id for edge in pruned.edges] == ["live_src__outer", "outer__out"]
+
+    def test_prune_refuses_a_reachable_switch_with_no_live_input(self) -> None:
+        # DEP-R13: a descriptive ValueError, never a bare StopIteration.
+        from haute.deploy._pruner import prune_for_deploy
+
+        graph = self._switch_graph(
+            inner_map={"a": "batch", "b": "batch"},
+            outer_map={"live_src": "batch", "inner": "live"},
+        )
+
+        with pytest.raises(ValueError, match="'inner' maps no input to the 'live' scenario"):
+            prune_for_deploy(graph, "out")
+
+    def test_prune_refuses_a_live_input_that_matches_no_connected_edge(self) -> None:
+        from haute.deploy._pruner import prune_for_deploy
+
+        graph = self._switch_graph(
+            inner_map={"a": "batch", "b": "batch"},
+            outer_map={"renamed_source": "live", "inner": "batch"},
+        )
+
+        with pytest.raises(ValueError, match="'renamed_source' does not match any connected"):
+            prune_for_deploy(graph, "out")
+
+    def test_prune_ignores_an_edge_whose_end_the_graph_does_not_hold(self) -> None:
+        from haute.deploy._pruner import prune_for_deploy
+
+        graph = _g(
+            {
+                "nodes": [
+                    {"id": "out", "data": {"nodeType": "output", "config": make_output_config([])}}
+                ],
+                "edges": [{"id": "dangling", "source": "ghost", "target": "out"}],
+            }
+        )
+
+        pruned, kept, removed = prune_for_deploy(graph, "out")
+
+        assert (kept, removed, pruned.edges) == (["out"], [], [])
+
+    def test_find_output_node_refuses_two_and_counts_a_repeated_id_once(self) -> None:
+        from haute.deploy._pruner import find_output_node
+
+        def output(node_id: str) -> dict:
+            return {"id": node_id, "data": {"nodeType": "output", "config": make_output_config([])}}
+
+        assert find_output_node(_g({"nodes": [output("out"), output("out")], "edges": []})) == (
+            "out"
+        )
+        with pytest.raises(ValueError, match=r"Multiple output nodes found: \['a', 'b'\]"):
+            find_output_node(_g({"nodes": [output("a"), output("b")], "edges": []}))
+
+    def test_find_source_nodes_names_the_inputs_and_constants(self) -> None:
+        from haute.deploy._pruner import find_source_nodes
+
+        graph = _g(
+            {
+                "nodes": [
+                    {"id": node_id, "data": {"nodeType": node_type, "config": {}}}
+                    for node_id, node_type in (
+                        ("quote", "apiInput"),
+                        ("rates", "dataInput"),
+                        ("base", "constant"),
+                        ("calc", "polars"),
+                    )
+                ],
+                "edges": [],
+            }
+        )
+
+        assert find_source_nodes(graph) == ["quote", "rates", "base"]
 
     def test_prune_missing_output_raises(self, full_graph: dict) -> None:
         from haute.deploy._pruner import prune_for_deploy
@@ -1306,14 +1428,14 @@ class TestSchema:
         assert "VehPower" in schema
         assert "Area" in schema
 
-    def test_infer_output_schema(self, full_graph: dict) -> None:
+    def test_infer_output_schema(self, full_graph: dict, tmp_path: Path) -> None:
         from haute.deploy._pruner import find_output_node, prune_for_deploy
         from haute.deploy._schema import infer_output_schema
 
         output_id = find_output_node(full_graph)
         pruned, _kept, _removed = prune_for_deploy(full_graph, output_id)
 
-        schema = infer_output_schema(pruned, output_id, ["quotes"])
+        schema = infer_output_schema(pruned, output_id, ["quotes"], project_root=tmp_path)
 
         assert isinstance(schema, dict)
         assert len(schema) > 0
@@ -1334,7 +1456,7 @@ class TestSchema:
 
 
 class TestValidators:
-    def test_validate_passes_for_good_config(self, full_graph: dict) -> None:
+    def test_validate_passes_for_good_config(self, full_graph: dict, tmp_path: Path) -> None:
         from haute.deploy._bundler import collect_artifacts
         from haute.deploy._config import DeployConfig, ResolvedDeploy
         from haute.deploy._project_modules import ProjectModules
@@ -1342,13 +1464,13 @@ class TestValidators:
         from haute.deploy._request_rows import RequestRows
         from haute.deploy._schema import infer_input_schema, infer_output_schema
         from haute.deploy._validators import validate_deploy
-        from tests._deploy_helpers import artifact_digests
+        from tests._deploy_helpers import artifact_digests, resolved_paths
 
         output_id = find_output_node(full_graph)
         pruned, _kept, removed = prune_for_deploy(full_graph, output_id)
         artifacts = collect_artifacts(pruned, ["quotes"], FIXTURE_DIR)
         input_schema = infer_input_schema(pruned, "quotes")
-        output_schema = infer_output_schema(pruned, output_id, ["quotes"])
+        output_schema = infer_output_schema(pruned, output_id, ["quotes"], project_root=tmp_path)
 
         config = DeployConfig(
             pipeline_file=PIPELINE_FILE,
@@ -1356,6 +1478,7 @@ class TestValidators:
         )
         resolved = ResolvedDeploy(
             config=config,
+            **resolved_paths(config),
             full_graph=full_graph,
             pruned_graph=pruned,
             input_node_ids=["quotes"],
@@ -1371,7 +1494,7 @@ class TestValidators:
 
         validate_deploy(resolved)
 
-    def test_score_test_quotes(self, full_graph: dict) -> None:
+    def test_score_test_quotes(self, full_graph: dict, tmp_path: Path) -> None:
         from haute.deploy._bundler import collect_artifacts
         from haute.deploy._config import DeployConfig, ResolvedDeploy
         from haute.deploy._project_modules import ProjectModules
@@ -1379,13 +1502,13 @@ class TestValidators:
         from haute.deploy._request_rows import RequestRows
         from haute.deploy._schema import infer_input_schema, infer_output_schema
         from haute.deploy._validators import score_test_quotes
-        from tests._deploy_helpers import artifact_digests
+        from tests._deploy_helpers import artifact_digests, resolved_paths
 
         output_id = find_output_node(full_graph)
         pruned, _kept, removed = prune_for_deploy(full_graph, output_id)
         artifacts = collect_artifacts(pruned, ["quotes"], FIXTURE_DIR)
         input_schema = infer_input_schema(pruned, "quotes")
-        output_schema = infer_output_schema(pruned, output_id, ["quotes"])
+        output_schema = infer_output_schema(pruned, output_id, ["quotes"], project_root=tmp_path)
 
         config = DeployConfig(
             pipeline_file=PIPELINE_FILE,
@@ -1394,6 +1517,7 @@ class TestValidators:
         )
         resolved = ResolvedDeploy(
             config=config,
+            **resolved_paths(config),
             full_graph=full_graph,
             pruned_graph=pruned,
             input_node_ids=["quotes"],
@@ -1473,12 +1597,22 @@ allow_aggregate_statistics = false
         with pytest.raises(ValueError, match=r"\[assistant\.egress\] unknown key 'allow_rows'"):
             DeployConfig.from_toml(path)
 
-    def test_resolve_config(self) -> None:
-        """Integration test — resolves using fixture pipeline (has output node)."""
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_resolve_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Integration test — resolves using fixture pipeline (has output node).
+
+        A copy of the fixtures: resolution writes its schema cache under the project.
+        """
+        import shutil
+
         from haute.deploy._config import DeployConfig, resolve_config
 
+        shutil.copytree(
+            FIXTURE_DIR, tmp_path / "fixtures", ignore=shutil.ignore_patterns("__pycache__")
+        )
+        monkeypatch.chdir(tmp_path)
         config = DeployConfig(
-            pipeline_file=PIPELINE_FILE,
+            pipeline_file=PIPELINE_FILE.relative_to(PIPELINE_FILE.parts[0]),
             model_name="test-model",
         )
         resolved = resolve_config(config)
@@ -1623,7 +1757,7 @@ class TestDatabricksTracking:
             second.join(30)
 
         assert not errors
-        assert results == {"first": 1, "second": 2}
+        assert results == {"first": "1", "second": "2"}
         assert events == ["first:register", "second:register"]
 
     def test_deploy_sets_tracking_uri(self, deploy_pipeline_file: Path) -> None:
@@ -1645,9 +1779,8 @@ class TestDatabricksTracking:
             # Behavioral: result is a well-formed DeployResult
             assert isinstance(result, DeployResult)
             assert result.model_name == "test-model"
-            assert result.model_version >= 1
-            assert result.manifest_path.name == "deploy_manifest.json"
-            assert result.manifest_path.parent == deploy_pipeline_file.parent / ".haute_build"
+            assert result.model_version == "1"
+            assert result.build_dir is None
 
     def test_deploy_uses_uc_model_name(self, deploy_pipeline_file: Path) -> None:
         """Model must be registered with catalog.schema.model_name format."""

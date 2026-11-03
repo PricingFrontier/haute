@@ -50,7 +50,11 @@ def _project() -> tuple[Path, DeployConfig]:
     toml_path = project_dir / "haute.toml"
     if not toml_path.is_file():
         raise click.ClickException("No haute.toml found: run this in a Haute project.")
-    return project_dir, DeployConfig.from_toml(toml_path)
+    try:
+        return project_dir, DeployConfig.from_toml(toml_path)
+    except ValueError as exc:
+        # A value haute.toml cannot hold (a key of the wrong type) names its key.
+        raise click.ClickException(str(exc)) from exc
 
 
 def handle_ci_secrets(config: CiSecretsConfig) -> None:

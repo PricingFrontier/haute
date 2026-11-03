@@ -159,6 +159,7 @@ def test_the_lock_is_resolved_for_the_app_hashed_and_free_of_credentials(
         "--python-version 3.11",
         "--python-platform x86_64-manylinux_2_28",
         "--generate-hashes",
+        "--only-binary :all:",
     ):
         assert option in compiled
     lines = (repo / "databricks_app" / "requirements.txt").read_text(encoding="utf-8").splitlines()

@@ -135,6 +135,31 @@ def _isolate_repository_source_cache(
 
 
 @pytest.fixture(autouse=True, scope="session")
+def _isolate_repository_source_proofs(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[Path]:
+    """Keep durable source-proof records out of the working tree between tests too.
+
+    ``source_proof_records`` gives each test its own record directory, but only
+    while that test runs. A background thread an earlier test left running (an
+    optimiser setup, a training preparation) can still sign a source after its
+    test ends, when the module's own root, ``<repo>/.haute_cache/source_proofs``,
+    is back in force; whether it does depends on timing, so the write-sandbox
+    census would see the repository written by some runs and not others.
+    Records made outside any test go to a per-session directory instead.
+    """
+    from haute._json_shred import _source_proof
+
+    root = tmp_path_factory.mktemp("source-proofs-between-tests")
+    patch = pytest.MonkeyPatch()
+    patch.setattr(_source_proof, "_proof_record_root", lambda: root)
+    try:
+        yield root
+    finally:
+        patch.undo()
+
+
+@pytest.fixture(autouse=True, scope="session")
 def _isolate_repository_mlflow_store(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[Path]:
@@ -243,6 +268,25 @@ def _watcher_unpaused(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_helpers, "_watcher_pause_depth", 0)
     monkeypatch.setattr(_helpers, "_watcher_pause_deadline", 0.0)
     monkeypatch.setattr(_helpers, "_watcher_pause_released_at", 0.0)
+
+
+@pytest.fixture(autouse=True)
+def _offline_dependency_resolver(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lock deployments with ``tests/_fake_uv.py``, which never reaches a package index.
+
+    Every deploy and app build locks its runtime through ``uv pip compile``
+    (``haute.deploy._lock``). The fake runs through the same subprocess path, pinning each
+    root as given, so the suite stays offline and quick; a test marked ``index`` resolves
+    against the real index with the real uv and is run by the dependencies workflow.
+    """
+    if request.node.get_closest_marker("index") is not None:
+        return
+    from haute.deploy import _lock
+
+    fake = [sys.executable, str(Path(__file__).with_name("_fake_uv.py"))]
+    monkeypatch.setattr(_lock, "uv_command", lambda: fake)
 
 
 @pytest.fixture(autouse=True)
@@ -539,6 +583,7 @@ def source_proof_records(
     request: pytest.FixtureRequest,
     tmp_path_factory: pytest.TempPathFactory,
     monkeypatch: pytest.MonkeyPatch,
+    _isolate_repository_source_proofs: Path,
 ) -> Path:
     """Keep durable source-proof records in this test's own directory.
 

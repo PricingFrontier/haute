@@ -327,7 +327,7 @@ Check the deploy step logs in the Actions run. For Azure Container Apps, AWS ECS
 
 ### Impact analysis shows unexpected results
 
-The impact analysis compares staging vs production. On a first deploy, a missing production endpoint is recorded as a first-deployment report; a missing or unready **staging** endpoint is still a real failure. Make sure staging is ready before the impact job runs.
+The impact analysis compares staging vs production. Before production's first release it reports a first deployment instead: on Databricks when the production endpoint does not exist, on the container target when the repository has no `deploy/...` release tag, which the production workflow pushes. After that, a production endpoint that cannot be reached fails the job, as does a missing or unready **staging** endpoint. Make sure staging is ready before the impact job runs.
 
 ### "HEAD (...) does not match staged SHA (...)"
 

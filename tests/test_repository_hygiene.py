@@ -461,6 +461,9 @@ _SUBPROCESS_IMPORT_ALLOWLIST = {
     "src/haute/cli/_serve.py",  # npm chokepoint (caller, via _helpers._npm)
     "src/haute/deploy/_container.py",  # docker chokepoint (caller)
     "src/haute/cli/_gpu_setup.py",  # uv/pip installer + fresh-interpreter chokepoint (caller)
+    # uv pip compile: the deploy targets' dependency-lock resolver (caller). A resolve, not an
+    # install, so it does not belong in the GPU installer's chokepoint.
+    "src/haute/deploy/_lock.py",
     "src/haute/_ci_secrets.py",  # GitHub CLI (gh) chokepoint for the deploy's CI secrets (caller)
 }
 
@@ -471,6 +474,7 @@ _CALLER_CHOKEPOINTS = (
     "src/haute/cli/_serve.py",
     "src/haute/deploy/_container.py",
     "src/haute/cli/_gpu_setup.py",
+    "src/haute/deploy/_lock.py",
     "src/haute/_ci_secrets.py",
 )
 

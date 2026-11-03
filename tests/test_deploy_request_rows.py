@@ -20,6 +20,7 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
+from haute._topo import CycleError
 from haute._types import PipelineGraph
 from haute.deploy._batch_scoring import (
     BatchScoreRequest,
@@ -1417,7 +1418,8 @@ def test_a_graph_with_a_cycle_is_refused():
         }
     )
 
-    with pytest.raises(DeployError, match="cycle"):
+    # The graph's one topological sort refuses it, naming the nodes in the cycle.
+    with pytest.raises(CycleError, match="involving nodes: a, b"):
         prove_request_rows(graph, ["quotes"], "out", {})
 
 

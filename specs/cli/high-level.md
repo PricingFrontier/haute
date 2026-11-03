@@ -141,8 +141,10 @@ Out of scope, owned elsewhere:
   frontend has priority. Wheel installs and source checkouts without frontend dependencies use
   production mode with the pre-built static bundle. It binds to `localhost` by default so the
   browser session works with a bare `haute serve`.
-- `haute deploy [pipeline_file] [--model-name] [--dry-run] [--endpoint-suffix]` validates a pipeline,
-  scores its test quotes, and deploys it to the configured target. Non-dry-run deploys are blocked
+- `haute deploy [pipeline_file] [--model-name] [--dry-run] [--keep-build] [--endpoint-suffix]`
+  validates a pipeline, scores its test quotes, and deploys it to the configured target. Each
+  deploy stages its build in a directory of its own under the project's `.haute_build`, removed
+  once it has shipped or failed; `--keep-build` keeps it and names it. Non-dry-run deploys are blocked
   outside a recognised CI environment, and one whose target's credentials are not all set stops
   before any other work, naming every missing one. A Databricks deploy returns once its endpoint
   serves the new version, or fails with Databricks' reason when it cannot. A workbench project
@@ -301,11 +303,18 @@ Invariants that hold across every command:
   `.env` never replaces the value CI already uses; the command remains the deliberate way to
   change one. The push never fails because the secrets could not be set: publishing the work
   is what the analyst asked for, and the secrets' problem is reported beside it.
-- **`impact`'s first-deploy handling is narrowly scoped.** Only an explicit "endpoint not found"
-  signal (Databricks `NotFound`/`ResourceDoesNotExist`, or HTTP 404) is treated as "no production
-  deployment yet" and produces a first-deploy-shaped report; every other exception (timeouts, 5xx,
-  connection errors) propagates as a real failure. A broader catch would risk silently misreporting
-  transient outages as "nothing to compare against yet".
+- **`impact` skips production only on an authoritative record that it has never been
+  released.** On Databricks that is the workspace's own answer that the production endpoint does
+  not exist (`NotFound`/`ResourceDoesNotExist`); for an HTTP target, whose production is only an
+  address, it is origin holding no `deploy/` release tag, the tag the generated production job
+  pushes for every release it ships, so the first release needs no flag or manual step. The report
+  then says production was not compared and why. Once production has been released it must answer:
+  an unset `[ci.production] endpoint_url`, an HTTP error status (a 404 included, so a mistyped
+  address is never a first deploy), an authentication failure, a timeout or no answer fails the step
+  naming the address, as does release tags that cannot be read. A broader catch would misreport an
+  outage as "nothing to compare against yet". Each batch's answer must hold one prediction per quote
+  sent (a single value only for a one-quote batch): any other count fails naming the batch and both
+  counts, because the comparison pairs rows by position.
 
 ## Interactions
 

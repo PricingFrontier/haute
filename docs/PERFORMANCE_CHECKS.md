@@ -3,10 +3,11 @@
 Use these checks when a change touches execution speed, memory use, bundle
 size, graph responsiveness, preview/trace caching, or frontend rendering.
 The default backend test run excludes benchmark-style tests with the
-`pytest.mark.perf` marker through this `pyproject.toml` setting:
+`pytest.mark.perf` marker (and the package-index resolves marked `index`, which the
+dependencies workflow runs) through this `pyproject.toml` setting:
 
 ```toml
-addopts = "-m 'not perf' --strict-markers --strict-config"
+addopts = "-m 'not perf and not index' --strict-markers --strict-config"
 ```
 
 Run the opt-in Python performance lane explicitly:

@@ -89,7 +89,7 @@ reported. The CLI does not print schema warnings.
 | `haute lint [PIPELINE_FILE]` | Optional path resolved exactly as `run`. | Missing/ambiguous file, a `haute.toml` that is malformed or whose `[project].pipeline` leaves the project (`ConfigError`), parse failure, or empty graph exits 1; so does any collected problem: an error diagnostic of the editor document, a save-time validation refusal, or a structural issue. Save warnings are printed. A clean graph exits 0. |
 | `haute train TRAINING_SCRIPT` | Required positional path. | Omission is a Click exit-2 usage error. Missing/unsafe/unloadable script, missing `job`, script exception, or `job.run` failure exits 1; successful training exits 0. |
 | `haute serve` | `--host TEXT` (CLI → `[server].host` → `localhost`); `--port INTEGER` (effective default `8000`, not shown by current help); `--no-browser`. Port range is not Click-validated: negative/out-of-range integers reach socket setup and may raise rawly. | Port conflict or missing production static build exits 1; malformed `haute.toml` propagates `ConfigError`. A browser-launch failure prints the manual URL but leaves the running server path intact. |
-| `haute deploy [PIPELINE_FILE]` | Optional path; `--model-name TEXT`; `--dry-run`; `--endpoint-suffix TEXT`. | In a project whose `haute.toml` enables its workbench it exits 1 before anything else, a dry run included, naming `haute app build`; an unreadable `[workbench]` table exits 1 naming what is wrong. Non-dry-run outside recognised CI exits 1. A non-dry-run deploy whose target's credentials are not all set (`haute.deploy.check_credentials`) exits 1 before parsing, naming each. Resolution, validation, either validation's quote pass or the separately printed quote pass, missing backend dependency, unimplemented target, and backend failure all exit 1. Dry-run success exits 0 before backend dispatch. |
+| `haute deploy [PIPELINE_FILE]` | Optional path; `--model-name TEXT`; `--dry-run`; `--keep-build` (passed to `deploy_resolved(keep_build=True)`, the kept directory printed); `--endpoint-suffix TEXT`. | In a project whose `haute.toml` enables its workbench it exits 1 before anything else, a dry run included, naming `haute app build`; an unreadable `[workbench]` table exits 1 naming what is wrong. Non-dry-run outside recognised CI exits 1. A non-dry-run deploy whose target's credentials are not all set (`haute.deploy.check_credentials`) exits 1 before parsing, naming each. Resolution, validation, either validation's quote pass or the separately printed quote pass, missing backend dependency, unimplemented target, and backend failure all exit 1. Dry-run success exits 0 before backend dispatch. |
 | `haute ci secrets` | `--check` (report, set nothing); `--no-verify` (skip the Databricks check). | GitHub only, through `gh`: another provider exits 1 naming the secrets to add and its guide; no `gh` on `PATH` exits 1 saying where to get it. A secret unset in `.env` and the environment, or still `.env.example`'s placeholder, exits 1 before anything is set, as does a Databricks pair the workspace refuses (its token redacted from the message). A `gh` failure, or a `gh` call still running after `GH_TIMEOUT_SECONDS`, exits 1 with its message. `--check` exits 1 naming each missing secret, 0 when all are set. Values are never printed. |
 | `haute ci update` | None. | Exits 1 without `haute.toml`, for an unreadable Python declaration or `[workbench]` table, a workbench project whose `[workbench.app]` names no `host`, an unknown `[ci] provider`, a `[ci.staging] endpoint_suffix` that cannot name a staging endpoint (empty, not a string, or holding anything but ASCII letters, digits, `-` and `_`), or a `[ci.production] environment` that cannot name an environment, writing nothing. Otherwise rewrites the generated CI files, whose staging deploy steps pass that suffix, as a Databricks project's smoke and impact steps do (a container-based target's smoke and impact steps pass none and call the `[ci.staging]` and `[ci.production]` `endpoint_url` addresses), and whose production job runs under that environment when one is named, and `.env.example`, reports each updated or unchanged, records those Git does not track yet as a save on the working branch's ledger (`capture_new_files`) or names them as not yet in version history, and exits 0: a capture it cannot make is never a failure. A workbench project's are the workbench's set, which reads neither the suffix nor the environment, so neither is checked. |
 | `haute smoke` | `--endpoint-suffix TEXT`. | Missing config/quotes/endpoint, a missing serving pair (named before any request), an endpoint update Databricks reports failed or cancelled (with its state message and build and server log tails), an endpoint that does not exist (at once), missing Databricks SDK, an installed SDK too old to expose the required `NotFound` error type, unsupported target, readiness timeout, health-request failure, any scoring request failure, an unreadable test-quote file, or an expected output the answer does not match exits 1. Missing and outdated SDKs produce distinct install/upgrade guidance. A quote without an `expected` output passes on any answer. |
@@ -398,12 +398,18 @@ one quote per request as smoke sends them (an endpoint a Workbench Input answers
 one), every top-level scalar field (text, number or boolean) a column of the frame the report
 segments by its text columns, and says so (BUG-23: the scaffold's default
 sample sat in the gitignored `data/`); dispatches to
-`_impact_databricks`/`_impact_http` based on `resolve_transport(...).kind`; Databricks probes
-the production endpoint first, while HTTP treats a missing production URL as first deploy and
-otherwise discovers absence only when scoring yields HTTP 404. Both score staging and, when
-present, production, then build an `ImpactReport` — a first-deploy
-variant with empty comparison data when there is no production endpoint yet, otherwise a full
-`build_report` diff; prints the terminal report, always writes `impact_report.md`, and additionally
+`_impact_databricks`/`_impact_http` based on `resolve_transport(...).kind`, each returning the
+staging and production predictions and, when production was not compared, why. Databricks probes
+the production endpoint first and skips it only on the SDK's `NotFound`/`ResourceDoesNotExist`.
+HTTP first reads whether production has been released (`_production_released`:
+`git ls-remote --tags origin 'refs/tags/deploy/*'` through `_git_core._run_git_ok` in the project
+root, `RELEASE_TAG_PREFIX` from `haute._scaffold`; a failure to read exits 1); with no release it
+scores staging alone and records the skip, and with one it requires
+`[ci.production] endpoint_url` (exit 1 naming the key) and scores production, any
+`ImpactEndpointError` propagating. Both then build an `ImpactReport` — a first-deploy
+variant (`first_deploy`, the reason) with empty comparison data, otherwise a full
+`build_report` diff; an `ImpactEndpointError` or `ImpactAlignmentError` from scoring or the report
+exits 1 printing it, and writes no report; prints the terminal report, always writes `impact_report.md`, and additionally
 appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
 
 ## Edge cases and invariants
@@ -466,10 +472,9 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
   override so fall back to default") from `tomllib.TOMLDecodeError` (raised as `haute.errors.ConfigError`
   — a malformed `haute.toml` must not silently resolve to the loopback default, since that could mask
   a typo like a botched `0.0.0.0`).
-- `_impact._is_databricks_not_found` / `_is_http_not_found` are the only points where an exception
-  is reclassified as "expected" (first-deploy) rather than propagated; both inspect the exception
-  shape narrowly (MRO class-name match; `RuntimeError` message containing `"HTTP 404"`) rather than
-  catching broadly.
+- `_impact._is_databricks_not_found` is the only point where an exception is reclassified as
+  "expected" (first deploy) rather than propagated, matching the SDK's class names across the MRO;
+  an HTTP target's first deploy is read from origin's release tags, never from an error.
 - `_deploy.handle_deploy`'s target-dispatch step distinguishes `ImportError` (missing optional
   extra — tells the user which `uv add haute[...]` to run), `NotImplementedError` (target not yet
   supported), and `DeployError` (expected target/configuration or operational failure). It has no
@@ -560,8 +565,10 @@ Key files and what they cover:
   single-source-of-truth staging suffix resolution for `impact`.
 - `test_cli_fail_loudly.py` — TOML-aware `pyproject.toml` parsing edge cases, structural (not
   substring) `haute` dependency detection, the exact wording of the missing-static-build install
-  instruction, CI-provider detection, `serve` port-conflict detection, `impact`'s prod-exists
-  failing loudly on non-404 errors.
+  instruction, CI-provider detection, `serve` port-conflict detection, `impact` skipping
+  production only on the workspace's NotFound or, over HTTP, against a real local origin with no
+  `deploy/` tag (production then never contacted), and after a tagged release failing on a 404, an
+  authentication failure, a timeout, no answer, an unset address or tags it cannot read.
 - `test_workbench_rollout.py` — `haute app rollout` end to end through the CLI against a fake
   host and transport (specs/workbench, Testing).
 - `test_workbench_impact.py` — `haute app impact` end to end through the CLI against fake

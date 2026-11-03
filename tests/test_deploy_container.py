@@ -61,7 +61,7 @@ class TestDockerBuild:
 
         assert result is None  # returns nothing on success
         mock_run.assert_called_once_with(
-            ["docker", "build", "-t", "test-image:latest", "."],
+            ["docker", "build", "--platform", "linux/amd64", "-t", "test-image:latest", "."],
             cwd=tmp_path,
             capture_output=True,
             text=True,

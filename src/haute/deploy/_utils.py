@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import getpass
 import re
+import shutil
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from haute._hashing import content_hash_bytes
@@ -101,7 +106,7 @@ def build_manifest(resolved: ResolvedDeploy) -> dict[str, Any]:
         # A served model runs only under the Polars it was deployed with.
         "polars_version": polars.__version__,
         "pipeline_name": resolved.pruned_graph.pipeline_name or config.model_name,
-        "pipeline_file": config.pipeline_file.as_posix(),
+        "pipeline_file": resolved.pipeline_file.as_posix(),
         "target": config.target,
         "created_at": datetime.now(UTC).isoformat(),
         "created_by": get_user(),
@@ -122,3 +127,30 @@ def build_manifest(resolved: ResolvedDeploy) -> dict[str, Any]:
         "request_rows": resolved.request_rows.to_manifest(),
         "artifact_digests": dict(resolved.artifact_digests),
     }
+
+
+#: The folder under the project that holds each build's own directory.
+BUILD_DIR_NAME = ".haute_build"
+
+
+@contextmanager
+def owned_build_dir(resolved: ResolvedDeploy, *, keep: bool) -> Iterator[Path]:
+    """A fresh, empty directory this build owns, under the project's ``.haute_build``.
+
+    Each build stages its bundle in its own directory, so a build never ships another's
+    files and concurrent builds from one checkout never write over each other. The
+    directory is removed when the build ends, shipped or failed, unless *keep* asks for
+    it; nothing else under ``.haute_build`` (another build's directory, a file the
+    user keeps there) is touched.
+    """
+    parent = resolved.project_root / BUILD_DIR_NAME
+    parent.mkdir(exist_ok=True)
+    build_dir = Path(tempfile.mkdtemp(prefix=f"{resolved.config.model_name}-", dir=parent))
+    try:
+        yield build_dir
+    except BaseException:
+        if not keep:
+            shutil.rmtree(build_dir, ignore_errors=True)
+        raise
+    if not keep:
+        shutil.rmtree(build_dir)
