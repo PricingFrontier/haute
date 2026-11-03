@@ -25,7 +25,7 @@
 | `frontend/src/panels/previewPanelLayout.ts` | Shared preview-panel dimensions and header/action layout constants. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-diagnostic banner owned by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md) and consumed by Explore progress and cache reports. |
 | `frontend/src/components/ExecutionDiagnosticsIndicator.tsx` | Compact preview-header execution diagnostic indicator. |
-| `frontend/src/panels/ExplorePreview.tsx` | Explore's shared-data-cache and profile composition: the data-cache action, the profiling progress, and the Preview/Overview/Pivots/Charts tabs. It owns no cache of its own. |
+| `frontend/src/panels/ExplorePreview.tsx` | Explore's shared-data-cache and profile composition: the data-cache action, the profiling progress, and the Preview/Overview/Pivots/Charts tabs. It owns no cache of its own. Its Preview pane passes the app shell's `errorAction` ("Ask the assistant to fix") to `DataPreview`, so an Explore node's execution error offers it as any node's does. |
 | `frontend/src/hooks/useNodeDataCache.ts`, `frontend/src/hooks/useNodeDataProfile.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned shared data-cache state and the shared `profile` analysis of the data a consumer reads. |
 | `frontend/src/panels/explore/exploreDataView.ts` | Adapts a point's profile into what the Explore panes render, and returns nothing when the profile does not describe the data version the point currently holds. |
 | `frontend/src/stores/useNodeDataStore.ts` (`slotForConsumer`, `profileForConsumer`) | [frontend-shared](../frontend-shared/low-level.md)-owned reads of what a consumer node was last told it reads, answered only for the identity the answer was recorded under. |
@@ -200,6 +200,10 @@
 5. `PivotTableGrid` receives an already guarded version-1 matrix and current placement presentation
    settings. It renders one semantic table, a header row for every configured Column level plus the
    Value level, sticky Row headers, explicit `Grand total` path labels, and null as an em dash.
+   Each header level takes the number format of the draft placement whose `field` matches
+   `result.column_fields[level]` / `result.row_fields[level]`, never the placement at the same
+   position: a retained result keeps its own field order while the draft is reordered, and a field
+   the draft dropped is labelled unformatted.
    `general` with Automatic precision retains the existing raw typed display. `number` exposes an
    ordinary decimal representation; `percent` multiplies the source value by 100 and appends `%`;
    the three currency formats prefix `£`, `US$`, or `€`. Percentage Automatic uses up to two

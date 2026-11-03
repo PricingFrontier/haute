@@ -76,6 +76,18 @@ function memberLabel(
   return String(member.value)
 }
 
+/**
+ * The draft placement for a field the result grouped by. A retained result
+ * keeps its own field order while the draft is reordered, so the format is
+ * found by field, never by position; a field the draft dropped has none.
+ */
+function placementFor<T extends { field: string }>(
+  placements: readonly T[],
+  field: string,
+): T | undefined {
+  return placements.find((placement) => placement.field === field)
+}
+
 function pathLabel(
   path: ExplorePivotResult["row_paths"][number],
   level: number,
@@ -245,7 +257,7 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
                   className="px-2 py-1.5 font-medium"
                   style={{ borderBottom: "1px solid var(--border)" }}
                 >
-                  {pathLabel(path, level, pivot.columns[level])}
+                  {pathLabel(path, level, placementFor(pivot.columns, field))}
                 </th>
               ))}
             </tr>
@@ -294,7 +306,7 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
                   const label = pathLabel(
                     rowPath,
                     level,
-                    pivot.rows[level],
+                    placementFor(pivot.rows, field),
                   )
                   return (
                     <th

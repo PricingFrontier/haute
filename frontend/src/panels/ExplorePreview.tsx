@@ -1,5 +1,5 @@
 import { RefreshCw } from "lucide-react"
-import { Suspense, lazy, useCallback, useMemo } from "react"
+import { Suspense, lazy, useCallback, useMemo, type ReactNode } from "react"
 
 import ExecutionDiagnosticsSummary from "../components/ExecutionDiagnosticsSummary"
 import useNodeDataCache from "../hooks/useNodeDataCache"
@@ -30,6 +30,8 @@ type ExplorePreviewProps = {
   onRefresh?: () => void
   onCellClick?: (rowIndex: number, column: string, rowValues?: Record<string, unknown>) => void
   tracedCell?: { rowIndex: number; column: string } | null
+  /** Offered beside an execution error in the Preview pane, as any node's preview offers it. */
+  errorAction?: ReactNode
 }
 
 const EXPLORE_PREVIEW_PANES = [
@@ -59,6 +61,7 @@ export default function ExplorePreview({
   onRefresh,
   onCellClick,
   tracedCell,
+  errorAction,
 }: ExplorePreviewProps) {
   const nodeId = node.id
   const nodeLabel = String(node.data.label || node.id)
@@ -227,6 +230,7 @@ export default function ExplorePreview({
                 onCellClick={onCellClick}
                 tracedCell={tracedCell}
                 embedded
+                errorAction={errorAction}
               />
             ) : (
               <Suspense

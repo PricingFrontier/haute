@@ -2,6 +2,7 @@ import { useState, type ComponentProps } from "react"
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useUIStore from "../../stores/useUIStore"
 import ExplorePivotsConfig from "../../panels/editors/ExplorePivotsConfig"
 import { answerQuestion, asked } from "../../test-utils/question"
@@ -135,12 +136,15 @@ function PivotConfigHarness({
   onCommittedUpdate,
   loadFilterMembers,
   currentConfigHash = "hash",
+  externalEdit,
 }: {
   initialConfig?: Record<string, unknown>
   columns?: typeof upstreamColumns
   onCommittedUpdate?: () => void
   loadFilterMembers?: ComponentProps<typeof ExplorePivotsConfig>["loadFilterMembers"]
   currentConfigHash?: string | null
+  /** An edit landing from elsewhere, applied by the "Apply edit from elsewhere" button. */
+  externalEdit?: (config: Record<string, unknown>) => Record<string, unknown>
 }) {
   const [config, setConfig] = useState(initialConfig)
   const onUpdate: OnUpdateConfig = (keyOrUpdates, value) => {
@@ -163,6 +167,11 @@ function PivotConfigHarness({
         loadFilterMembers={loadFilterMembers}
         currentConfigHash={currentConfigHash}
       />
+      {externalEdit && (
+        <button type="button" onClick={() => setConfig((current) => externalEdit(current))}>
+          Apply edit from elsewhere
+        </button>
+      )}
       <output data-testid="persisted-config">{JSON.stringify(config)}</output>
     </>
   )
@@ -1678,6 +1687,99 @@ describe("ExplorePivotsConfig", () => {
     )
     expect(persisted.pivots.map((item: ExplorePivotConfig) => item.id)).toEqual([
       "pivot_1",
+    ])
+  })
+
+  it("deletes a pivot from the config as it stands once the confirmation is answered", async () => {
+    const first = fullPivot()
+    const second = fullPivot({ id: "pivot_2", name: "Pivot 2" })
+    const renameFirst = (config: Record<string, unknown>) => ({
+      ...config,
+      pivots: (config.pivots as ExplorePivotConfig[]).map((item) =>
+        item.id === "pivot_1" ? { ...item, name: "Renamed meanwhile" } : item,
+      ),
+    })
+    render(
+      <PivotConfigHarness
+        initialConfig={{ pivots: [first, second] }}
+        externalEdit={renameFirst}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete Pivot 2" }))
+    fireEvent.click(screen.getByRole("button", { name: "Apply edit from elsewhere" }))
+    await answerQuestion("confirm")
+
+    const persisted = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(persisted.pivots.map((item: ExplorePivotConfig) => [item.id, item.name])).toEqual([
+      ["pivot_1", "Renamed meanwhile"],
+    ])
+  })
+
+  it("writes nothing when another document loads while a delete confirmation is open", async () => {
+    const first = fullPivot()
+    const second = fullPivot({ id: "pivot_2", name: "Pivot 2" })
+    render(<PivotConfigHarness initialConfig={{ pivots: [first, second] }} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete Pivot 2" }))
+    await act(async () => {
+      useDocumentStatusStore.setState((state) => ({
+        executionGeneration: state.executionGeneration + 1,
+      }))
+    })
+
+    expect(asked()).toBeNull()
+    const persisted = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(persisted.pivots.map((item: ExplorePivotConfig) => item.id)).toEqual([
+      "pivot_1",
+      "pivot_2",
+    ])
+  })
+
+  it("deletes a shared formula from the config as it stands once the confirmation is answered", async () => {
+    const formula: PivotFormulaPlacement = {
+      id: "formula_1",
+      reference: "double_claims",
+      display_name: "Double claims",
+      expression: 'pl.col("claims").sum() * 2',
+      number_format: "general",
+      decimal_places: null,
+      use_grouping: true,
+    }
+    const first = fullPivot({ formulas: [formula], value_order: ["formula_1"] })
+    const second = fullPivot({ id: "pivot_2", name: "Pivot 2" })
+    const renameSecond = (config: Record<string, unknown>) => ({
+      ...config,
+      pivots: (config.pivots as ExplorePivotConfig[]).map((item) =>
+        item.id === "pivot_2" ? { ...item, name: "Renamed meanwhile" } : item,
+      ),
+    })
+    render(
+      <PivotConfigHarness
+        initialConfig={{
+          pivot_formulas: [formula],
+          pivots: [{ ...first, formulas: [formula.id] }, second],
+        }}
+        externalEdit={renameSecond}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Configure Pivot 1" }))
+    fireEvent.click(screen.getByRole("button", { name: "Edit formula Double claims" }))
+    fireEvent.click(screen.getByRole("button", { name: "Delete formula Double claims" }))
+    fireEvent.click(screen.getByRole("button", { name: "Apply edit from elsewhere" }))
+    await answerQuestion("confirm")
+
+    const persisted = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(persisted.pivot_formulas).toEqual([])
+    expect(persisted.pivots.map((item: ExplorePivotConfig) => [item.name, item.formulas])).toEqual([
+      ["Pivot 1", []],
+      ["Renamed meanwhile", []],
     ])
   })
 
