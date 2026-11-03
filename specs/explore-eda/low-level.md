@@ -258,7 +258,11 @@
   checks source/result identities, explicit Value encodings (rejecting an unreconciled chart),
   row-only grand-total inclusion (`include_grand_total` admits row grand-total paths only;
   column grand-total paths are excluded unconditionally), numeric cells,
-  hierarchy/label/cardinality limits, and applies matching exact overrides. After series
+  hierarchy/label/cardinality limits, and applies matching exact overrides. A result with no
+  row or column paths and no cells (filters that match no rows) adapts to an empty dataset, which
+  the chart card shows as `PIVOT_NO_ROWS_MESSAGE` ("No rows match this pivot configuration.", the
+  Pivots pane's wording) rather than as an error; a result with cells but no paths still fails
+  `chart_result_axis_empty`. After series
   assembly it normalises every stack group whose styles set `stack_normalize`: per category,
   each non-null cell becomes cell ÷ Σ|cells| over the group's non-null cells; if that direct
   sum overflows, it uses the equivalent max-magnitude-scaled denominator (range [-1, 1];
@@ -284,14 +288,18 @@
   plot grid reserves space for every legend position and the title, and the secondary axis is
   hidden until at least one series uses it. It accepts no opaque persisted renderer objects or
   callbacks.
-- `ComboChart.tsx` owns runtime initialisation, theme redraw (its tokens read by `chartTheme.ts`),
+- `ComboChart.tsx` owns runtime initialisation, theme redraw (its tokens read by `chartTheme.ts`,
+  and its redraws driven by `useChartEnvironmentRevision`, the one theme and reduced-motion
+  observer, which the workbench's Chart shares),
   ResizeObserver sizing, deterministic
   disposal, a renderer-independent labelled summary region, and a toggleable semantic source-data
   table. The stable Haute summary remains available even when ECharts annotates its own nested SVG
   host. Explore imports the ECharts runtime only beneath the already-lazy Charts pane, as the
   workbench imports it only beneath its lazy view.
 - `useExplorePivotActions.ts` owns the one Pivot run/status/cancel write lifecycle shared by the
-  Pivots and Charts result panes; a chart never creates a parallel execution path.
+  Pivots and Charts result panes; a chart never creates a parallel execution path. A run the
+  server refuses or answers `cache_required` before any job exists is recorded through the
+  store's `failExplorePivotStart` with `jobId: null`; no job id is invented for it.
 
 ## Control flow
 

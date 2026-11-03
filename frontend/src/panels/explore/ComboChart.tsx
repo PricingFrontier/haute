@@ -3,7 +3,7 @@ import { useEffect, useId, useRef, useState } from "react"
 import type { ExploreChartConfig } from "./chartConfig"
 import { chartExportFileName, type PivotChartData } from "./chartData"
 import { buildComboChartOptions } from "./chartOptions"
-import { chartThemeTokens } from "./chartTheme"
+import { chartThemeTokens, prefersReducedMotion, useChartEnvironmentRevision } from "./chartTheme"
 
 type ComboChartProps = { chart: ExploreChartConfig; data: PivotChartData }
 type ComboChartRuntime = {
@@ -20,31 +20,9 @@ export default function ComboChart({ chart, data }: ComboChartProps) {
   const [exportError, setExportError] = useState<string | null>(null)
   const [rendered, setRendered] = useState(false)
   const [showTable, setShowTable] = useState(false)
-  const [environmentRevision, setEnvironmentRevision] = useState(0)
+  const environmentRevision = useChartEnvironmentRevision()
   const summaryId = useId()
   const tableId = useId()
-
-  useEffect(() => {
-    const refresh = () => setEnvironmentRevision((revision) => revision + 1)
-    const media =
-      typeof window.matchMedia === "function"
-        ? window.matchMedia("(prefers-reduced-motion: reduce)")
-        : null
-    media?.addEventListener?.("change", refresh)
-
-    const themeObserver =
-      typeof MutationObserver === "undefined"
-        ? null
-        : new MutationObserver(refresh)
-    themeObserver?.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class", "data-theme", "style"],
-    })
-    return () => {
-      media?.removeEventListener?.("change", refresh)
-      themeObserver?.disconnect()
-    }
-  }, [])
 
   useEffect(() => {
     const element = hostRef.current
@@ -55,14 +33,11 @@ export default function ComboChart({ chart, data }: ComboChartProps) {
 
     const start = async () => {
       try {
-        const reducedMotion =
-          typeof window.matchMedia === "function" &&
-          window.matchMedia("(prefers-reduced-motion: reduce)").matches
         const options = buildComboChartOptions({
           chart,
           data,
           tokens: chartThemeTokens(element),
-          reducedMotion,
+          reducedMotion: prefersReducedMotion(),
         })
         const { createComboChart } = await import("./chartRuntime")
         if (disposed) return

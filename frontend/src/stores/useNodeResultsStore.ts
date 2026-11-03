@@ -242,7 +242,8 @@ interface CachedExplorePivotResult {
   result: ExplorePivotResult | null
   error?: string
   terminalStatus?: ExplorePivotProgress | null
-  jobId: string
+  /** Null when the calculation was refused before the server started a job. */
+  jobId: string | null
   nodeId: string
   pivotId: string
   nodeLabel: string
@@ -281,6 +282,19 @@ interface ActiveExplorePivotJob {
   progress: ExplorePivotProgress | null
   error: string | null
 }
+
+/** What a pivot calculation was asked to do, whether or not a job started for it. */
+type ExplorePivotAttempt = Pick<
+  ActiveExplorePivotJob,
+  | "nodeId"
+  | "pivotId"
+  | "nodeLabel"
+  | "pivotName"
+  | "calculationIdentity"
+  | "requestedDataVersion"
+  | "source"
+  | "structuralVersion"
+>
 
 function omitRecordKey<T>(record: Record<string, T>, key: string): Record<string, T> {
   const next = { ...record }
@@ -450,6 +464,45 @@ function trimExplorePivotCache(
   return { records: nextRecords, evicted }
 }
 
+function recordExplorePivotFailure(
+  s: Pick<NodeResultsState, "pivotJobs" | "pivotResults" | "pinnedPreviewNodeId">,
+  key: string,
+  attempt: ExplorePivotAttempt,
+  jobId: string | null,
+  error: string,
+  terminalStatus: ExplorePivotProgress | undefined,
+): Pick<NodeResultsState, "pivotJobs" | "pivotResults"> {
+  touchCachedResult(explorePivotResultRecency, key)
+  const previous = s.pivotResults[key]
+  const retainedResult = previous?.result ?? null
+  const pivotResults = trimExplorePivotCache({
+    ...s.pivotResults,
+    [key]: {
+      result: retainedResult,
+      error,
+      terminalStatus: terminalStatus ?? null,
+      jobId,
+      nodeId: attempt.nodeId,
+      pivotId: attempt.pivotId,
+      nodeLabel: attempt.nodeLabel,
+      pivotName: attempt.pivotName,
+      // A failed refresh may retain the last usable table, but it must
+      // retain that table's identity too. Otherwise an old result could
+      // be presented as current for the newly failed configuration.
+      calculationIdentity: retainedResult
+        ? previous.calculationIdentity
+        : attempt.calculationIdentity,
+      lastAttemptedCalculationIdentity: attempt.calculationIdentity,
+      lastAttemptedDataframeCacheKey: attempt.requestedDataVersion,
+      source: retainedResult ? previous.source : attempt.source,
+      structuralVersion: retainedResult
+        ? previous.structuralVersion
+        : attempt.structuralVersion,
+    },
+  }, s.pinnedPreviewNodeId).records
+  return { pivotJobs: omitRecordKey(s.pivotJobs, key), pivotResults }
+}
+
 // ─── Store ───────────────────────────────────────────────────────
 
 interface NodeResultsState {
@@ -562,6 +615,8 @@ interface NodeResultsState {
   updateExplorePivotProgress: (key: string, jobId: string, progress: ExplorePivotProgress) => void
   completeExplorePivotJob: (key: string, jobId: string, result: ExplorePivotResult, terminalStatus?: ExplorePivotProgress) => void
   failExplorePivotJob: (key: string, jobId: string, error: string, terminalStatus?: ExplorePivotProgress) => void
+  /** Records a calculation the server refused before starting a job; it replaces any job for the key. */
+  failExplorePivotStart: (key: string, attempt: ExplorePivotAttempt, error: string, terminalStatus?: ExplorePivotProgress) => void
   /**
    * Takes the auto-update claim for a pivot before submitting. Returns the
    * claim token, or null when an identical target is already claimed (the
@@ -1167,37 +1222,11 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       if (!jobFenceIsCurrent(job)) {
         return { pivotJobs: omitRecordKey(s.pivotJobs, key) }
       }
-      const { [key]: _removedJob, ...pivotJobs } = s.pivotJobs; void _removedJob
-      touchCachedResult(explorePivotResultRecency, key)
-      const previous = s.pivotResults[key]
-      const retainedResult = previous?.result ?? null
-      const pivotResults = trimExplorePivotCache({
-        ...s.pivotResults,
-        [key]: {
-          result: retainedResult,
-          error,
-          terminalStatus: terminalStatus ?? null,
-          jobId: job.jobId,
-          nodeId: job.nodeId,
-          pivotId: job.pivotId,
-          nodeLabel: job.nodeLabel,
-          pivotName: job.pivotName,
-          // A failed refresh may retain the last usable table, but it must
-          // retain that table's identity too. Otherwise an old result could
-          // be presented as current for the newly failed configuration.
-          calculationIdentity: retainedResult
-            ? previous.calculationIdentity
-            : job.calculationIdentity,
-          lastAttemptedCalculationIdentity: job.calculationIdentity,
-          lastAttemptedDataframeCacheKey: job.requestedDataVersion,
-          source: retainedResult ? previous.source : job.source,
-          structuralVersion: retainedResult
-            ? previous.structuralVersion
-            : job.structuralVersion,
-        },
-      }, s.pinnedPreviewNodeId).records
-      return { pivotJobs, pivotResults }
+      return recordExplorePivotFailure(s, key, job, job.jobId, error, terminalStatus)
     }),
+
+  failExplorePivotStart: (key, attempt, error, terminalStatus) =>
+    set((s) => recordExplorePivotFailure(s, key, attempt, null, error, terminalStatus)),
 
   claimExplorePivotAuto: (key, nodeId, dataVersion, calculationIdentity) => {
     const current = get().pivotStartClaims[key]

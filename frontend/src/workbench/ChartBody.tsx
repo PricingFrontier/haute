@@ -10,7 +10,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react"
 import type { ChartWidget } from "../api/types"
 import type { ComboChartInstance, createComboChart } from "../panels/explore/chartRuntime"
-import { chartThemeTokens } from "../panels/explore/chartTheme"
+import { chartThemeTokens, prefersReducedMotion, useChartEnvironmentRevision } from "../panels/explore/chartTheme"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import { chartMessage, sheetChartData, sheetChartOptions } from "../utils/sheetChart"
 import { useSheetValues } from "./useSheetValues"
@@ -42,9 +42,6 @@ const loadChartMaker = (): Promise<typeof createComboChart> =>
     },
   ))
 
-const reducedMotion = (): boolean =>
-  typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
-
 export default function ChartBody({ widget }: { widget: ChartWidget }) {
   // The schema alone, so a change elsewhere in the form, as a drag makes, draws nothing again.
   const schema = useWorkbenchFormStore((s) => s.form?.schema ?? null)
@@ -55,22 +52,10 @@ export default function ChartBody({ widget }: { widget: ChartWidget }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<ComboChartInstance | null>(null)
   const observerRef = useRef<ResizeObserver | null>(null)
-  const [environment, setEnvironment] = useState(0)
+  // The theme and reduced motion, watched as Explore's charts watch them: a change draws a new chart.
+  const environment = useChartEnvironmentRevision()
   const [error, setError] = useState<string | null>(null)
   const summaryId = useId()
-
-  // The theme and reduced motion, watched as Explore's charts watch them: a change draws a new chart.
-  useEffect(() => {
-    const refresh = () => setEnvironment((revision) => revision + 1)
-    const media = typeof window.matchMedia === "function" ? window.matchMedia("(prefers-reduced-motion: reduce)") : null
-    media?.addEventListener?.("change", refresh)
-    const themeObserver = typeof MutationObserver === "undefined" ? null : new MutationObserver(refresh)
-    themeObserver?.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme", "style"] })
-    return () => {
-      media?.removeEventListener?.("change", refresh)
-      themeObserver?.disconnect()
-    }
-  }, [])
 
   // The chart lasts while there is something to draw, until the theme or reduced motion changes.
   useEffect(
@@ -102,7 +87,7 @@ export default function ChartBody({ widget }: { widget: ChartWidget }) {
             observerRef.current.observe(host)
           }
         }
-        chart.setOption(sheetChartOptions(widget, data, chartThemeTokens(host), reducedMotion()), { replaceMerge: REPLACED })
+        chart.setOption(sheetChartOptions(widget, data, chartThemeTokens(host), prefersReducedMotion()), { replaceMerge: REPLACED })
         setError(null)
       } catch (cause) {
         if (!cancelled) setError(cause instanceof Error ? cause.message : "The chart could not be drawn.")

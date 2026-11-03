@@ -99,7 +99,8 @@ describe("PivotTableGrid", () => {
     ).toBeInTheDocument()
     expect(screen.getAllByText("Paid claims").length).toBeGreaterThan(0)
     expect(screen.getAllByText("Grand total").length).toBeGreaterThan(0)
-    expect(screen.getAllByText("-").length).toBeGreaterThan(0)
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0)
+    expect(screen.queryByText("-")).toBeNull()
   })
 
   it("renders post-aggregation formulas after ordinary Values", () => {

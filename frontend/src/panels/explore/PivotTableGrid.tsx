@@ -2,7 +2,7 @@ import { useMemo, useState } from "react"
 
 import type { ExplorePivotMemberKey, ExplorePivotResult } from "../../api/types"
 import { PIVOT_CONDITIONAL_FORMAT_COLORS } from "../../theme/colors"
-import { isPivotFormulaPlacement, pivotOutputs } from "./pivotConfig"
+import { isPivotFormulaPlacement, PIVOT_NO_ROWS_MESSAGE, pivotOutputs } from "./pivotConfig"
 import type { ExplorePivotConfig } from "./pivotConfig"
 import { formatPivotNumber } from "./pivotNumberFormat"
 import type { PivotNumberFormatting } from "./pivotNumberFormat"
@@ -274,7 +274,7 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
                 className="px-3 py-5 text-center"
                 style={{ color: "var(--text-muted)" }}
               >
-                No rows match this pivot configuration.
+                {PIVOT_NO_ROWS_MESSAGE}
               </td>
             </tr>
           )}
@@ -352,7 +352,7 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
                         }}
                       >
                         {cell === null || cell === undefined
-                          ? "-"
+                          ? "—"
                           : formatPivotNumber(
                               cell,
                               configuredValue ?? {},

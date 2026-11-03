@@ -4,6 +4,8 @@ import { isObjectLiteral } from "../../utils/objectLiteral"
 import { isDateTime, isDay, isTime } from "../../utils/isoDate"
 
 export const PIVOT_CONFIG_VERSION = 1 as const
+/** What a pivot's table and its charts say when its filters leave no rows. */
+export const PIVOT_NO_ROWS_MESSAGE = "No rows match this pivot configuration."
 export const PIVOT_DECIMAL_PLACES_MAX = 10
 export const PIVOT_NUMBER_FORMATS = [
   "general",
@@ -114,7 +116,7 @@ export type ExplorePivotConfig = {
   [key: string]: unknown
 }
 
-export type ExplorePivotsParseResult =
+type ExplorePivotsParseResult =
   | {
       ok: true
       /** Runtime pivots with selected shared formulas resolved to full definitions. */
@@ -218,7 +220,7 @@ function isCanonicalValueReference(
   return reference === stem || new RegExp(`^${stem}_(?:[2-9]|[1-9][0-9]+)$`).test(reference)
 }
 
-export function pivotFormulaReference(displayName: string): string {
+function pivotFormulaReference(displayName: string): string {
   return referenceStem(displayName, "formula")
 }
 
@@ -764,14 +766,14 @@ export function parseExplorePivots(config: Record<string, unknown>): ExplorePivo
   return { ok: true, pivots, formulas: sharedFormulas.formulas }
 }
 
-export function nextExplorePivotId(pivots: readonly ExplorePivotConfig[]): string {
+function nextExplorePivotId(pivots: readonly ExplorePivotConfig[]): string {
   const ids = new Set(pivots.map((pivot) => pivot.id))
   let suffix = 1
   while (ids.has(`pivot_${suffix}`)) suffix += 1
   return `pivot_${suffix}`
 }
 
-export function nextExplorePivotName(pivots: readonly ExplorePivotConfig[]): string {
+function nextExplorePivotName(pivots: readonly ExplorePivotConfig[]): string {
   const names = new Set(pivots.map((pivot) => pivot.name.trim().toLowerCase()))
   let suffix = 1
   while (names.has(`pivot ${suffix}`)) suffix += 1
@@ -811,10 +813,6 @@ export function nextPivotPlacementId(pivot: ExplorePivotConfig, prefix: string):
   let suffix = 1
   while (ids.has(`${prefix}_${suffix}`)) suffix += 1
   return `${prefix}_${suffix}`
-}
-
-export function explorePivotLabel(pivotOrIndex: ExplorePivotConfig | number): string {
-  return typeof pivotOrIndex === "number" ? `Pivot ${pivotOrIndex + 1}` : pivotOrIndex.name
 }
 
 export function pivotFormulas(pivot: ExplorePivotConfig): PivotFormulaPlacement[] {
@@ -874,7 +872,7 @@ export function nextPivotValueReference(
   )
 }
 
-export function nextPivotFormulaId(
+function nextPivotFormulaId(
   formulasOrPivot: readonly PivotFormulaPlacement[] | ExplorePivotConfig,
 ): string {
   const formulas = Array.isArray(formulasOrPivot)
@@ -909,7 +907,7 @@ export function createPivotFormula(
   }
 }
 
-export type PersistedExplorePivotConfig = Omit<ExplorePivotConfig, "formulas"> & {
+type PersistedExplorePivotConfig = Omit<ExplorePivotConfig, "formulas"> & {
   formulas: string[]
 }
 

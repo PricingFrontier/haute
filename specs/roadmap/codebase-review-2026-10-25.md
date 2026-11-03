@@ -197,7 +197,6 @@ puts it in front of the owner because of what it can cost in production:
 | Assistant | ASB-1, ASB-2, ASB-10, ASB-12 | `ASSIST-57` |
 | Assistant | ASB-4, ASB-5, ASB-6, ASB-8, ASB-9 | `ASSIST-58` |
 | Assistant | ASB-3, ASB-7, ASB-11 | `ASSIST-59` |
-| Frontend Explore | FOX-7, FOX-9, FOX-10 (Explore part), FOX-11, FOX-12 | `EDA-R03` |
 | Assistant UI | FTG-5, FTG-18, FTG-20 | `ASSIST-60` |
 | Workbench | PM-45 | `WB-43` (selected server engine's atomic form insertion) |
 | Engineering quality | PM-50 | `ENGQ-R01` (evidence added) |
@@ -226,8 +225,7 @@ key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
 (`ENGQ-R01`); the dead
 `submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
 utilities (`ENGQ-R01`); in the workbench UI and
-the app shell, the
-chart theme observer written twice (`EDA-R03`) and knip's export-only symbols (`ENGQ-R01`); in the tests, scripts
+the app shell, knip's export-only symbols (`ENGQ-R01`); in the tests, scripts
 and CI, the campaign-named test modules (`ENGQ-R05`), the test-only reset hooks in
 production code (`ENGQ-R01`), and the
 189 test modules that change directory because production resolves the project
@@ -287,6 +285,6 @@ All probes live outside the repository and wrote nothing into it.
 | radon | 285 functions with cyclomatic complexity ≥ 20; 27 ≥ 50 (the largest in the optimiser service, the save service, the assistant tools and the RAM estimate). |
 | vulture (60 %) | 61 candidates; those confirmed unreferenced are in `ENGQ-R01`; the deploy, CLI and background-jobs ones are removed. |
 | jscpd Python | 0.30 % duplicated, 41 clones; the production ones, in deploy and the background jobs, are removed. |
-| jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `EDA-R03`. |
+| jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are removed. |
 | knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted (since declared); every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
 | sweeps | 35 campaign-named test modules (`ENGQ-R05`). |
