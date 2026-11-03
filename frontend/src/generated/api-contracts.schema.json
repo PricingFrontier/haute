@@ -1,5 +1,1058 @@
 {
   "$defs": {
+    "AssistantBuildPlan": {
+      "additionalProperties": false,
+      "description": "The stages a multi-stage request is built in, in order, as the chat's checklist.",
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/AssistantBuildPlanItem"
+          },
+          "maxItems": 12,
+          "minItems": 1,
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "title": "AssistantBuildPlan",
+      "type": "object"
+    },
+    "AssistantBuildPlanChange": {
+      "additionalProperties": false,
+      "description": "One saved change recorded against a build-plan item, by its change card's id.",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "undone": {
+          "title": "Undone",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "undone"
+      ],
+      "title": "AssistantBuildPlanChange",
+      "type": "object"
+    },
+    "AssistantBuildPlanItem": {
+      "additionalProperties": false,
+      "description": "One stage of a build plan: the changes saved against it and whether it is complete.\n\nThe changes are Haute's record of the applies the model attributed to the\nitem; completion is the model's claim, which Haute accepts only while the\nitem has a change that is not undone.",
+      "properties": {
+        "changes": {
+          "items": {
+            "$ref": "#/$defs/AssistantBuildPlanChange"
+          },
+          "title": "Changes",
+          "type": "array"
+        },
+        "complete": {
+          "title": "Complete",
+          "type": "boolean"
+        },
+        "id": {
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "complete",
+        "changes"
+      ],
+      "title": "AssistantBuildPlanItem",
+      "type": "object"
+    },
+    "AssistantBuildPlanUpdatedEvent": {
+      "description": "A tool call changed the session's build plan: the whole plan as it now stands.",
+      "properties": {
+        "build_plan": {
+          "$ref": "#/$defs/AssistantBuildPlan"
+        },
+        "type": {
+          "const": "build_plan_updated",
+          "default": "build_plan_updated",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "build_plan"
+      ],
+      "title": "AssistantBuildPlanUpdatedEvent",
+      "type": "object"
+    },
+    "AssistantCancelledEvent": {
+      "properties": {
+        "type": {
+          "const": "cancelled",
+          "default": "cancelled",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "AssistantCancelledEvent",
+      "type": "object"
+    },
+    "AssistantChangeAppliedEvent": {
+      "description": "A plan was saved: the change card built from what was saved.",
+      "properties": {
+        "change": {
+          "$ref": "#/$defs/AssistantChangeRecord"
+        },
+        "type": {
+          "const": "change_applied",
+          "default": "change_applied",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "change"
+      ],
+      "title": "AssistantChangeAppliedEvent",
+      "type": "object"
+    },
+    "AssistantChangeDataCheck": {
+      "additionalProperties": false,
+      "description": "The data check of the dry-run whose plan a change saved, as its card shows it.\n\n``visibility`` compares the check's binding with the graph the apply\nsaved: ``current``; ``earlier_inputs`` when an input or a cached model it\nread has changed since; ``other_scenario`` when the graph runs another\nscenario, which keeps no findings, only the ``scenario`` they described.\nA check bound to another graph is not carried at all. ``not_checked`` is\none line saying why the check, or some of the changed nodes, did not run.",
+      "properties": {
+        "findings": {
+          "items": {
+            "$ref": "#/$defs/AssistantDataFinding"
+          },
+          "maxItems": 20,
+          "title": "Findings",
+          "type": "array"
+        },
+        "findings_omitted": {
+          "minimum": 0,
+          "title": "Findings Omitted",
+          "type": "integer"
+        },
+        "not_checked": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Not Checked"
+        },
+        "outcome": {
+          "enum": [
+            "checked",
+            "not_run"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "scenario": {
+          "minLength": 1,
+          "title": "Scenario",
+          "type": "string"
+        },
+        "visibility": {
+          "enum": [
+            "current",
+            "earlier_inputs",
+            "other_scenario"
+          ],
+          "title": "Visibility",
+          "type": "string"
+        }
+      },
+      "required": [
+        "visibility",
+        "outcome",
+        "scenario",
+        "findings",
+        "findings_omitted",
+        "not_checked"
+      ],
+      "title": "AssistantChangeDataCheck",
+      "type": "object"
+    },
+    "AssistantChangeEdge": {
+      "additionalProperties": false,
+      "description": "One edge a saved plan added or removed, by its endpoint node ids.",
+      "properties": {
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "target": {
+          "title": "Target",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "target"
+      ],
+      "title": "AssistantChangeEdge",
+      "type": "object"
+    },
+    "AssistantChangeNode": {
+      "additionalProperties": false,
+      "description": "One node chip on a change card: which node, its palette type and what happened.\n\n``fields`` names the configuration fields the plan changed in plain words,\nnever their values; ``steps`` lists a stepped node's step kinds after the\nchange (``None`` for a node without a step list) and ``steps_changed`` how\nmany steps the plan inserted, replaced, removed or rewired.",
+      "properties": {
+        "change": {
+          "enum": [
+            "added",
+            "changed",
+            "removed",
+            "renamed"
+          ],
+          "title": "Change",
+          "type": "string"
+        },
+        "fields": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Fields",
+          "type": "array"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "renamed_from": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Renamed From"
+        },
+        "steps": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Steps"
+        },
+        "steps_changed": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Steps Changed",
+          "type": "integer"
+        },
+        "type": {
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "change",
+        "renamed_from",
+        "fields",
+        "steps",
+        "steps_changed"
+      ],
+      "title": "AssistantChangeNode",
+      "type": "object"
+    },
+    "AssistantChangeRecord": {
+      "additionalProperties": false,
+      "description": "The value-free change card of one saved plan.\n\n``id`` is the hash of the plan it saved; a plan applies once, so it names\nthis change. ``summary`` and ``assumptions`` are the model's own words from\nthe plan's dry-run; everything else is built from what was saved.\n``data_check`` is the plan's data check, or ``None`` when no check was\nattempted or its findings describe another graph.",
+      "properties": {
+        "assumptions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 5,
+          "title": "Assumptions",
+          "type": "array"
+        },
+        "changes": {
+          "$ref": "#/$defs/AssistantGraphChanges"
+        },
+        "data_check": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssistantChangeDataCheck"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "git_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Git Sha"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "parent_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Parent Sha"
+        },
+        "revision": {
+          "minLength": 1,
+          "title": "Revision",
+          "type": "string"
+        },
+        "summary": {
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "warnings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "summary",
+        "assumptions",
+        "changes",
+        "warnings",
+        "git_sha",
+        "parent_sha",
+        "revision",
+        "data_check"
+      ],
+      "title": "AssistantChangeRecord",
+      "type": "object"
+    },
+    "AssistantCompletedEvent": {
+      "properties": {
+        "outcome": {
+          "$ref": "#/$defs/AssistantTurnOutcome"
+        },
+        "type": {
+          "const": "completed",
+          "default": "completed",
+          "title": "Type",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/AssistantUsage"
+        }
+      },
+      "required": [
+        "type",
+        "usage",
+        "outcome"
+      ],
+      "title": "AssistantCompletedEvent",
+      "type": "object"
+    },
+    "AssistantDataFinding": {
+      "additionalProperties": false,
+      "description": "One data-check finding on a change card, worded from its counts and names.\n\n``text`` says what was measured in plain words (\"All 1,204 rows fell into\nthe default band of age_band.\"): counts, shares, node, column and port\nnames, never a row value, a configuration value or an error's own text.",
+      "properties": {
+        "node": {
+          "minLength": 1,
+          "title": "Node",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "advisory",
+            "informational"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "severity",
+        "node",
+        "text"
+      ],
+      "title": "AssistantDataFinding",
+      "type": "object"
+    },
+    "AssistantFailedEvent": {
+      "properties": {
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "type": {
+          "const": "failed",
+          "default": "failed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ],
+      "title": "AssistantFailedEvent",
+      "type": "object"
+    },
+    "AssistantGraphChanges": {
+      "additionalProperties": false,
+      "description": "A plan's node chips and edges, each list bounded; ``truncated`` when cut.\n\nAn empty list and a false flag are the defaults, which the compact tool\nresults the model reads leave out.",
+      "properties": {
+        "edges_added": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AssistantChangeEdge"
+          },
+          "title": "Edges Added",
+          "type": "array"
+        },
+        "edges_removed": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AssistantChangeEdge"
+          },
+          "title": "Edges Removed",
+          "type": "array"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/AssistantChangeNode"
+          },
+          "title": "Nodes",
+          "type": "array"
+        },
+        "preamble_changed": {
+          "default": false,
+          "title": "Preamble Changed",
+          "type": "boolean"
+        },
+        "truncated": {
+          "default": false,
+          "title": "Truncated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "nodes",
+        "edges_added",
+        "edges_removed",
+        "preamble_changed",
+        "truncated"
+      ],
+      "title": "AssistantGraphChanges",
+      "type": "object"
+    },
+    "AssistantSessionListResponse": {
+      "properties": {
+        "sessions": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AssistantSessionSummary"
+          },
+          "title": "Sessions",
+          "type": "array"
+        },
+        "source_file": {
+          "title": "Source File",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_file",
+        "sessions"
+      ],
+      "title": "AssistantSessionListResponse",
+      "type": "object"
+    },
+    "AssistantSessionResponse": {
+      "properties": {
+        "build_plan": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssistantBuildPlan"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "history": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AssistantTranscriptEntry"
+          },
+          "title": "History",
+          "type": "array"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "source_file": {
+          "title": "Source File",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "source_file",
+        "history",
+        "build_plan"
+      ],
+      "title": "AssistantSessionResponse",
+      "type": "object"
+    },
+    "AssistantSessionSummary": {
+      "description": "One conversation as the chat list renders it, without its transcript.",
+      "properties": {
+        "created_at": {
+          "title": "Created At",
+          "type": "number"
+        },
+        "last_used": {
+          "title": "Last Used",
+          "type": "number"
+        },
+        "message_count": {
+          "title": "Message Count",
+          "type": "integer"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "title",
+        "created_at",
+        "last_used",
+        "message_count"
+      ],
+      "title": "AssistantSessionSummary",
+      "type": "object"
+    },
+    "AssistantStatusResponse": {
+      "properties": {
+        "configured": {
+          "title": "Configured",
+          "type": "boolean"
+        },
+        "endpoint_host": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Endpoint Host"
+        },
+        "max_sensitivity": {
+          "anyOf": [
+            {
+              "enum": [
+                "public",
+                "internal",
+                "restricted"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Max Sensitivity"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Model"
+        },
+        "mutations_enabled": {
+          "title": "Mutations Enabled",
+          "type": "boolean"
+        },
+        "mutations_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Mutations Reason"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Provider"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reason"
+        },
+        "trust": {
+          "anyOf": [
+            {
+              "enum": [
+                "local",
+                "organization",
+                "external"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Trust"
+        }
+      },
+      "required": [
+        "configured",
+        "reason",
+        "provider",
+        "model",
+        "endpoint_host",
+        "trust",
+        "max_sensitivity",
+        "mutations_enabled",
+        "mutations_reason"
+      ],
+      "title": "AssistantStatusResponse",
+      "type": "object"
+    },
+    "AssistantStreamEventPayload": {
+      "description": "One ``data:`` frame of the assistant's message stream, as the browser reads it.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/AssistantTextDeltaEvent"
+        },
+        {
+          "$ref": "#/$defs/AssistantThinkingEvent"
+        },
+        {
+          "$ref": "#/$defs/AssistantToolStartedEvent"
+        },
+        {
+          "$ref": "#/$defs/AssistantToolProgressEvent"
+        },
+        {
+          "$ref": "#/$defs/AssistantToolFinishedEvent"
+        },
+        {
+          "$ref": "#/$defs/AssistantChangeAppliedEvent"
+        },
+        {
+          "$ref": "#/$defs/AssistantBuildPlanUpdatedEvent"
+        },
+        {
+          "$ref": "#/$defs/AssistantCompletedEvent"
+        },
+        {
+          "$ref": "#/$defs/AssistantFailedEvent"
+        },
+        {
+          "$ref": "#/$defs/AssistantCancelledEvent"
+        }
+      ],
+      "title": "AssistantStreamEventPayload"
+    },
+    "AssistantTextDeltaEvent": {
+      "properties": {
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "type": {
+          "const": "text_delta",
+          "default": "text_delta",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ],
+      "title": "AssistantTextDeltaEvent",
+      "type": "object"
+    },
+    "AssistantThinkingEvent": {
+      "description": "The model is thinking: a status for the panel, carrying none of the thinking.",
+      "properties": {
+        "type": {
+          "const": "thinking",
+          "default": "thinking",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "AssistantThinkingEvent",
+      "type": "object"
+    },
+    "AssistantToolFinishedEvent": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "is_error": {
+          "title": "Is Error",
+          "type": "boolean"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool_finished",
+          "default": "tool_finished",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "name",
+        "title",
+        "is_error",
+        "summary"
+      ],
+      "title": "AssistantToolFinishedEvent",
+      "type": "object"
+    },
+    "AssistantToolProgressEvent": {
+      "description": "A running tool moved to a new stage: its activity row's title until it finishes.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool_progress",
+          "default": "tool_progress",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "title"
+      ],
+      "title": "AssistantToolProgressEvent",
+      "type": "object"
+    },
+    "AssistantToolStartedEvent": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool_started",
+          "default": "tool_started",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "name",
+        "title",
+        "summary"
+      ],
+      "title": "AssistantToolStartedEvent",
+      "type": "object"
+    },
+    "AssistantTranscriptEntry": {
+      "description": "One rehydratable transcript item from a resumed session's history.\n\nAn ``outcome`` entry closes a completed turn with its stored outcome, a\n``change`` entry carries an apply's change record and an ``undo`` entry the\nrecord of a change the analyst undid; only those kinds carry those fields.",
+      "properties": {
+        "change": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssistantChangeRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "is_error": {
+          "default": false,
+          "title": "Is Error",
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "user",
+            "assistant",
+            "tool",
+            "outcome",
+            "change",
+            "undo"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "default": "",
+          "title": "Name",
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssistantTurnOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "text": {
+          "default": "",
+          "title": "Text",
+          "type": "string"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text",
+        "name",
+        "title",
+        "summary",
+        "is_error",
+        "outcome",
+        "change"
+      ],
+      "title": "AssistantTranscriptEntry",
+      "type": "object"
+    },
+    "AssistantTurnOutcome": {
+      "additionalProperties": false,
+      "description": "How a completed assistant turn ended, and what it saved.\n\n``detail`` is the model's question (``needs_input``), the sanitized blocker\n(``blocked``), the verification error of a save that committed\n(``committed_unverified``) or the controller's reason the model stopped\nwith a dry-run unfinished (``incomplete``); ``applied`` and ``answered``\ncarry none. ``changes`` are the ids of the change records the turn saved,\nin order, whatever the kind says about finishing the request: ``applied``\nsaved at least one and ``answered`` none, while any other kind may follow\nsaved changes.",
+      "properties": {
+        "changes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Changes",
+          "type": "array"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Detail"
+        },
+        "kind": {
+          "enum": [
+            "applied",
+            "answered",
+            "needs_input",
+            "blocked",
+            "committed_unverified",
+            "incomplete"
+          ],
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "detail",
+        "changes"
+      ],
+      "title": "AssistantTurnOutcome",
+      "type": "object"
+    },
+    "AssistantUndoResponse": {
+      "properties": {
+        "build_plan": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssistantBuildPlan"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "change_id": {
+          "title": "Change Id",
+          "type": "string"
+        },
+        "git_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Git Sha"
+        }
+      },
+      "required": [
+        "change_id",
+        "git_sha",
+        "build_plan"
+      ],
+      "title": "AssistantUndoResponse",
+      "type": "object"
+    },
+    "AssistantUsage": {
+      "properties": {
+        "input_tokens": {
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "title": "Output Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens"
+      ],
+      "title": "AssistantUsage",
+      "type": "object"
+    },
     "BandingHistogramBin": {
       "description": "One `[lower, upper)` interval of a numeric distribution, the last closed.",
       "properties": {
@@ -23065,6 +24118,21 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "AssistantSessionListResponse": {
+      "$ref": "#/$defs/AssistantSessionListResponse"
+    },
+    "AssistantSessionResponse": {
+      "$ref": "#/$defs/AssistantSessionResponse"
+    },
+    "AssistantStatusResponse": {
+      "$ref": "#/$defs/AssistantStatusResponse"
+    },
+    "AssistantStreamEventPayload": {
+      "$ref": "#/$defs/AssistantStreamEventPayload"
+    },
+    "AssistantUndoResponse": {
+      "$ref": "#/$defs/AssistantUndoResponse"
+    },
     "BandingStatsResponse": {
       "$ref": "#/$defs/BandingStatsResponse"
     },
@@ -23585,6 +24653,11 @@
     "PreviewInputsResponse",
     "PreviewProgressResponse",
     "TraceResponse",
+    "AssistantStatusResponse",
+    "AssistantSessionResponse",
+    "AssistantSessionListResponse",
+    "AssistantUndoResponse",
+    "AssistantStreamEventPayload",
     "PipelineEditorDocument",
     "PipelineRepairApplyResponse",
     "SavePipelineResponse",
@@ -23654,6 +24727,13 @@
     ]
   },
   "x-haute-response-groups": {
+    "assistant": [
+      "AssistantStatusResponse",
+      "AssistantSessionResponse",
+      "AssistantSessionListResponse",
+      "AssistantUndoResponse",
+      "AssistantStreamEventPayload"
+    ],
     "cache": [
       "CacheNodesResponse",
       "CacheClearResponse",

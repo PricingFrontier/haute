@@ -26,6 +26,11 @@ from haute._execution_schemas import ExecutionMetricsPayload, ExecutionStrategyD
 from haute._explore_chart_contracts import ExploreChartsConfig
 from haute._types import PipelineGraph
 from haute.schemas import (
+    AssistantSessionListResponse,
+    AssistantSessionResponse,
+    AssistantStatusResponse,
+    AssistantStreamEventPayload,
+    AssistantUndoResponse,
     BandingStatsResponse,
     BrowseFilesResponse,
     CacheClearResponse,
@@ -202,7 +207,7 @@ REQUEST_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
 # Response models the browser parses with generated validators, by the module
 # group whose hand-written guards they replace. The frontend generator emits one
 # validator module per group with one export per model.
-RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
+RESPONSE_CONTRACT_GROUPS: dict[str, tuple[_ContractModel, ...]] = {
     "utility": (
         UtilityListResponse,
         UtilityReadResponse,
@@ -312,6 +317,14 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         PreviewProgressResponse,
     ),
     "trace": (TraceResponse,),
+    # The assistant panel's status, sessions, undo and message-stream events.
+    "assistant": (
+        AssistantStatusResponse,
+        AssistantSessionResponse,
+        AssistantSessionListResponse,
+        AssistantUndoResponse,
+        AssistantStreamEventPayload,
+    ),
     # The editor document a load, a live-sync update, a scoped node save and a repair carry.
     # Loaded eagerly: the live-sync handler reads a document synchronously.
     "editor-document": (

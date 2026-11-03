@@ -58,8 +58,8 @@ caller left and is deleted; the optimiser responses (solve, estimate, status,
 apply, save, MLflow log, frontier status, auto-range start and status, frontier
 select).
 
-**Remaining:** the assistant's responses, and the request bodies `api/types.ts` still
-mirrors. The editor document and the repair answers (`editor-document`), the preview,
+**Remaining:** the request bodies `api/types.ts` still mirrors. The assistant's
+responses and stream events (`assistant`), the editor document and the repair answers (`editor-document`), the preview,
 its inputs and progress, the trace, a file's schema and JSON-cache inference
 (`preview`, `trace`, `io`, `input-cache`), the save, the submodel actions and a
 commit's pipeline (`pipeline`, `git`) are generated, and the execution metrics are one

@@ -4,6 +4,20 @@
  */
 export type ExploreChartsConfig = ExploreChartConfig[];
 /**
+ * One ``data:`` frame of the assistant's message stream, as the browser reads it.
+ */
+export type AssistantStreamEventPayload =
+  | AssistantTextDeltaEvent
+  | AssistantThinkingEvent
+  | AssistantToolStartedEvent
+  | AssistantToolProgressEvent
+  | AssistantToolFinishedEvent
+  | AssistantChangeAppliedEvent
+  | AssistantBuildPlanUpdatedEvent
+  | AssistantCompletedEvent
+  | AssistantFailedEvent
+  | AssistantCancelledEvent;
+/**
  * Canonical node-type identifiers shared with the React Flow frontend.
  *
  * Inherits from ``StrEnum`` so ``NodeType.API_INPUT == "apiInput"`` is ``True``
@@ -208,6 +222,262 @@ export interface ChartValueEncoding {
   stack_group: string | null;
   stack_normalize: boolean;
   value_id: string;
+}
+export interface AssistantStatusResponse {
+  configured: boolean;
+  endpoint_host: string | null;
+  max_sensitivity: 'public' | 'internal' | 'restricted' | null;
+  model: string | null;
+  mutations_enabled: boolean;
+  mutations_reason: string | null;
+  provider: string | null;
+  reason: string | null;
+  trust: 'local' | 'organization' | 'external' | null;
+}
+export interface AssistantSessionResponse {
+  build_plan: AssistantBuildPlan | null;
+  history: AssistantTranscriptEntry[];
+  session_id: string;
+  source_file: string;
+}
+/**
+ * The stages a multi-stage request is built in, in order, as the chat's checklist.
+ */
+export interface AssistantBuildPlan {
+  /**
+   * @minItems 1
+   * @maxItems 12
+   */
+  items: AssistantBuildPlanItem[];
+}
+/**
+ * One stage of a build plan: the changes saved against it and whether it is complete.
+ *
+ * The changes are Haute's record of the applies the model attributed to the
+ * item; completion is the model's claim, which Haute accepts only while the
+ * item has a change that is not undone.
+ */
+export interface AssistantBuildPlanItem {
+  changes: AssistantBuildPlanChange[];
+  complete: boolean;
+  id: string;
+  title: string;
+}
+/**
+ * One saved change recorded against a build-plan item, by its change card's id.
+ */
+export interface AssistantBuildPlanChange {
+  id: string;
+  undone: boolean;
+}
+/**
+ * One rehydratable transcript item from a resumed session's history.
+ *
+ * An ``outcome`` entry closes a completed turn with its stored outcome, a
+ * ``change`` entry carries an apply's change record and an ``undo`` entry the
+ * record of a change the analyst undid; only those kinds carry those fields.
+ */
+export interface AssistantTranscriptEntry {
+  change: AssistantChangeRecord | null;
+  is_error: boolean;
+  kind: 'user' | 'assistant' | 'tool' | 'outcome' | 'change' | 'undo';
+  name: string;
+  outcome: AssistantTurnOutcome | null;
+  summary: string;
+  text: string;
+  title: string;
+}
+/**
+ * The value-free change card of one saved plan.
+ *
+ * ``id`` is the hash of the plan it saved; a plan applies once, so it names
+ * this change. ``summary`` and ``assumptions`` are the model's own words from
+ * the plan's dry-run; everything else is built from what was saved.
+ * ``data_check`` is the plan's data check, or ``None`` when no check was
+ * attempted or its findings describe another graph.
+ */
+export interface AssistantChangeRecord {
+  /**
+   * @maxItems 5
+   */
+  assumptions: string[];
+  changes: AssistantGraphChanges;
+  data_check: AssistantChangeDataCheck | null;
+  git_sha: string | null;
+  id: string;
+  parent_sha: string | null;
+  revision: string;
+  summary: string;
+  warnings: string[];
+}
+/**
+ * A plan's node chips and edges, each list bounded; ``truncated`` when cut.
+ *
+ * An empty list and a false flag are the defaults, which the compact tool
+ * results the model reads leave out.
+ */
+export interface AssistantGraphChanges {
+  edges_added: AssistantChangeEdge[];
+  edges_removed: AssistantChangeEdge[];
+  nodes: AssistantChangeNode[];
+  preamble_changed: boolean;
+  truncated: boolean;
+}
+/**
+ * One edge a saved plan added or removed, by its endpoint node ids.
+ */
+export interface AssistantChangeEdge {
+  source: string;
+  target: string;
+}
+/**
+ * One node chip on a change card: which node, its palette type and what happened.
+ *
+ * ``fields`` names the configuration fields the plan changed in plain words,
+ * never their values; ``steps`` lists a stepped node's step kinds after the
+ * change (``None`` for a node without a step list) and ``steps_changed`` how
+ * many steps the plan inserted, replaced, removed or rewired.
+ */
+export interface AssistantChangeNode {
+  change: 'added' | 'changed' | 'removed' | 'renamed';
+  fields: string[];
+  id: string;
+  renamed_from: string | null;
+  steps: string[] | null;
+  steps_changed: number;
+  type: string;
+}
+/**
+ * The data check of the dry-run whose plan a change saved, as its card shows it.
+ *
+ * ``visibility`` compares the check's binding with the graph the apply
+ * saved: ``current``; ``earlier_inputs`` when an input or a cached model it
+ * read has changed since; ``other_scenario`` when the graph runs another
+ * scenario, which keeps no findings, only the ``scenario`` they described.
+ * A check bound to another graph is not carried at all. ``not_checked`` is
+ * one line saying why the check, or some of the changed nodes, did not run.
+ */
+export interface AssistantChangeDataCheck {
+  /**
+   * @maxItems 20
+   */
+  findings: AssistantDataFinding[];
+  findings_omitted: number;
+  not_checked: string | null;
+  outcome: 'checked' | 'not_run';
+  scenario: string;
+  visibility: 'current' | 'earlier_inputs' | 'other_scenario';
+}
+/**
+ * One data-check finding on a change card, worded from its counts and names.
+ *
+ * ``text`` says what was measured in plain words ("All 1,204 rows fell into
+ * the default band of age_band."): counts, shares, node, column and port
+ * names, never a row value, a configuration value or an error's own text.
+ */
+export interface AssistantDataFinding {
+  node: string;
+  severity: 'advisory' | 'informational';
+  text: string;
+}
+/**
+ * How a completed assistant turn ended, and what it saved.
+ *
+ * ``detail`` is the model's question (``needs_input``), the sanitized blocker
+ * (``blocked``), the verification error of a save that committed
+ * (``committed_unverified``) or the controller's reason the model stopped
+ * with a dry-run unfinished (``incomplete``); ``applied`` and ``answered``
+ * carry none. ``changes`` are the ids of the change records the turn saved,
+ * in order, whatever the kind says about finishing the request: ``applied``
+ * saved at least one and ``answered`` none, while any other kind may follow
+ * saved changes.
+ */
+export interface AssistantTurnOutcome {
+  changes: string[];
+  detail: string | null;
+  kind: 'applied' | 'answered' | 'needs_input' | 'blocked' | 'committed_unverified' | 'incomplete';
+}
+export interface AssistantSessionListResponse {
+  sessions: AssistantSessionSummary[];
+  source_file: string;
+}
+/**
+ * One conversation as the chat list renders it, without its transcript.
+ */
+export interface AssistantSessionSummary {
+  created_at: number;
+  last_used: number;
+  message_count: number;
+  session_id: string;
+  title: string;
+}
+export interface AssistantUndoResponse {
+  build_plan: AssistantBuildPlan | null;
+  change_id: string;
+  git_sha: string | null;
+}
+export interface AssistantTextDeltaEvent {
+  text: string;
+  type: 'text_delta';
+}
+/**
+ * The model is thinking: a status for the panel, carrying none of the thinking.
+ */
+export interface AssistantThinkingEvent {
+  type: 'thinking';
+}
+export interface AssistantToolStartedEvent {
+  id: string;
+  name: string;
+  summary: string;
+  title: string;
+  type: 'tool_started';
+}
+/**
+ * A running tool moved to a new stage: its activity row's title until it finishes.
+ */
+export interface AssistantToolProgressEvent {
+  id: string;
+  title: string;
+  type: 'tool_progress';
+}
+export interface AssistantToolFinishedEvent {
+  id: string;
+  is_error: boolean;
+  name: string;
+  summary: string;
+  title: string;
+  type: 'tool_finished';
+}
+/**
+ * A plan was saved: the change card built from what was saved.
+ */
+export interface AssistantChangeAppliedEvent {
+  change: AssistantChangeRecord;
+  type: 'change_applied';
+}
+/**
+ * A tool call changed the session's build plan: the whole plan as it now stands.
+ */
+export interface AssistantBuildPlanUpdatedEvent {
+  build_plan: AssistantBuildPlan;
+  type: 'build_plan_updated';
+}
+export interface AssistantCompletedEvent {
+  outcome: AssistantTurnOutcome;
+  type: 'completed';
+  usage: AssistantUsage;
+}
+export interface AssistantUsage {
+  input_tokens: number;
+  output_tokens: number;
+}
+export interface AssistantFailedEvent {
+  message: string;
+  type: 'failed';
+}
+export interface AssistantCancelledEvent {
+  type: 'cancelled';
 }
 /**
  * Every node of the graph, and everything else the store holds.
