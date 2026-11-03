@@ -818,8 +818,11 @@ it on the reading node instead of aborting the walk, and every other run propaga
   occurrence its output's name (its sanitised public output port name from an owner; from an
   instance, the instance's name, or `<instance>_<port>` when the definition has several
   outputs);
-  a declared `inputMapping={logical: connected}` lets the code keep another name. The
-  parser infers nothing else: a parameter that matches no connected input or a duplicate, a
+  a declared `inputMapping={logical: connected}` lets the code keep another name. A Polars
+  node's or External File's parameter is a variable its code reads, so it names its input
+  exactly; any other node's parameter only names the input, so a parameter spelled with
+  non-ASCII letters (`données`) also names the input of its sanitised name (`donn_xe9_es`).
+  The parser infers nothing else: a parameter that matches no connected input or a duplicate, a
   connected input with no parameter that the decorator does not take, a parameter naming an
   input no `connect()` states while a stated input goes unnamed, or stated inputs connected
   in another order than the parameters read them raises `ParseError` (`node_id`,

@@ -176,6 +176,28 @@ class TestBindNodeInputs:
         )
         assert order == [1, 0]
 
+    def test_a_declaration_names_a_non_ascii_input_as_python_spells_it(self) -> None:
+        """The input's executable name spells ``é`` as ``_xe9_``; a parameter only naming
+        it may keep Python's spelling."""
+        order = bind_node_inputs(
+            node_id="sortie",
+            node_type=NodeType.DATA_OUTPUT,
+            positional=["données"],
+            inputs=[NodeInput("donn_xe9_es")],
+        )
+        assert order == [0]
+
+    def test_a_polars_parameter_names_its_input_exactly(self) -> None:
+        """Polars code reads the input under its executable name, so a parameter spelled
+        otherwise would fail when the code runs: it is refused when the file is read."""
+        with pytest.raises(ParseError, match="parameter 'données' names no input"):
+            bind_node_inputs(
+                node_id="target",
+                node_type=NodeType.POLARS,
+                positional=["données"],
+                inputs=[NodeInput("donn_xe9_es")],
+            )
+
     def test_a_frame_hook_takes_its_first_input_as_df(self) -> None:
         order = bind_node_inputs(
             node_id="target",

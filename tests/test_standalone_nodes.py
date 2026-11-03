@@ -45,13 +45,8 @@ def _collect(frame: pl.LazyFrame | pl.DataFrame) -> pl.DataFrame:
 
 
 def _constant(directory: Path, name: str, **values: object) -> str:
-    """Write a Constant sidecar holding *values*; return its ``config=`` path."""
-    return write_node_config(
-        directory,
-        NodeType.CONSTANT,
-        name,
-        {"values": [{"name": key, "value": value} for key, value in values.items()]},
-    )
+    """Write a Constant sidecar holding *values*, as a map; return its ``config=`` path."""
+    return write_node_config(directory, NodeType.CONSTANT, name, {"values": values})
 
 
 @pytest.fixture()
@@ -131,9 +126,12 @@ def test_a_constant_declaration_reads_its_sidecar_on_every_run(tmp_path: Path) -
 def test_a_constant_with_two_entries_of_one_name_is_refused_as_the_executor_refuses_it(
     tmp_path: Path,
 ) -> None:
-    """Two ``rate`` entries would otherwise yield one column holding the second value."""
+    """Two ``rate`` entries would otherwise yield one column holding the second value. The
+    sidecar's map can hold them only by repeating its key, which the run refuses as it
+    reads the file; the executor's rows refuse the second name."""
     values = [{"name": "rate", "value": "1"}, {"name": "rate", "value": "2"}]
-    config = write_node_config(tmp_path, NodeType.CONSTANT, "rates", {"values": values})
+    config = write_node_config(tmp_path, NodeType.CONSTANT, "rates", {"values": {}})
+    (tmp_path / config).write_bytes(b'{"values": {"rate": "1", "rate": "2"}}\n')
     namespace = _run_file(
         tmp_path,
         "import haute\n\n"
@@ -146,10 +144,9 @@ def test_a_constant_with_two_entries_of_one_name_is_refused_as_the_executor_refu
         data=NodeData(label="rates", nodeType=NodeType.CONSTANT, config={"values": values}),
     )
     _, executor_fn, _ = _build_node_fn(node)
-    message = "Constant name 'rate' is used by more than one value"
-
-    with pytest.raises(NodeConfigError, match=message):
+    with pytest.raises(ValueError, match="duplicate JSON key 'rate'"):
         namespace["pipeline"].run(source="batch")
+    message = "Constant name 'rate' is used by more than one value"
     with pytest.raises(NodeConfigError, match=message):
         executor_fn()
 

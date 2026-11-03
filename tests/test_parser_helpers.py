@@ -780,6 +780,7 @@ class TestResolveNodeConfig:
         from haute._config_io import (
             NODE_TYPE_TO_FOLDER,
             _normalise_loaded_config,
+            node_config_json,
             palette_default_config,
         )
 
@@ -787,7 +788,10 @@ class TestResolveNodeConfig:
         settings = palette_default_config(node_type)
         sidecar = tmp_path / "config" / folder / "node.json"
         sidecar.parent.mkdir(parents=True)
-        sidecar.write_text(json.dumps(settings), encoding="utf-8")
+        # The sidecar as a save writes it: rating tables as grids, constants as a map.
+        sidecar.write_bytes(
+            node_config_json(node_type, settings, node_label="node").encode("utf-8")
+        )
 
         resolved_type, config, _editor = _resolve_node_config(
             {"config": f"config/{folder}/node.json"},
@@ -799,7 +803,7 @@ class TestResolveNodeConfig:
         )
 
         assert resolved_type == node_type
-        expected = _normalise_loaded_config(dict(settings), node_type)
+        expected = _normalise_loaded_config(json.loads(sidecar.read_bytes()), node_type)
         assert {key: value for key, value in config.items() if key not in {"code", "inputs"}} == {
             key: value for key, value in expected.items() if key not in {"code", "inputs"}
         }
@@ -843,7 +847,7 @@ class TestResolveNodeConfig:
 
         cfg_dir = tmp_path / "config" / "constant"
         cfg_dir.mkdir(parents=True)
-        (cfg_dir / "rates.json").write_text('{"values": [{"name": "base", "value": "1"}]}')
+        (cfg_dir / "rates.json").write_text('{"values": {"base": "1"}}')
 
         with pytest.raises(ConfigError) as excinfo:
             _resolve_node_config(
@@ -868,7 +872,7 @@ class TestResolveNodeConfig:
     def test_a_sidecar_backed_node_keeps_its_contract_keyword(self, tmp_path):
         cfg_dir = tmp_path / "config" / "constant"
         cfg_dir.mkdir(parents=True)
-        (cfg_dir / "rates.json").write_text('{"values": [{"name": "base", "value": "1"}]}')
+        (cfg_dir / "rates.json").write_text('{"values": {"base": "1"}}')
 
         node_type, config, _editor = _resolve_node_config(
             {"config": "config/constant/rates.json", "contract": "opaque"},
@@ -1058,8 +1062,15 @@ class TestResolveNodeConfig:
         """_resolve_node_config must not modify the caller's dict (B21)."""
         kwargs: dict[str, Any] = {"config": "config/data_input/x.json", "contract": "opaque"}
         original = dict(kwargs)
-        with patch("haute._config_builder.load_node_config", return_value={}):
-            _resolve_node_config(kwargs, "", [], None)
+        settings = {
+            "inputType": "file",
+            "format": "parquet",
+            "mode": "scan",
+            "path": "data.parquet",
+            "arguments": {},
+        }
+        with patch("haute._config_builder.load_node_config", return_value=settings):
+            _resolve_node_config(kwargs, "", [], None, explicit_node_type=NodeType.DATA_INPUT)
         # The original dict must be untouched — "config" and "contract" keys stay.
         assert kwargs == original
 
@@ -1091,7 +1102,7 @@ class TestResolveNodeConfig:
             patch("haute._config_builder.load_node_config", return_value={}),
             pytest.raises(ConfigError, match="'format', 'sink' would be ignored"),
         ):
-            _resolve_node_config(kwargs, "", [], None)
+            _resolve_node_config(kwargs, "", [], None, explicit_node_type=NodeType.BANDING)
         assert kwargs == original
 
     def test_mangled_config_path_raises_config_error(self, tmp_path):

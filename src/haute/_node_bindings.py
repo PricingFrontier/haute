@@ -23,6 +23,11 @@ input no ``connect()`` states while a stated input goes unnamed, and stated
 inputs whose ``connect()`` calls come in another order than the parameters
 read them. An input with a target port (an Edge Join's ``base`` and ``join``,
 a Workbench Output's table) binds by its port, so its call's order is free.
+
+An input's name is its executable name, which spells a non-ASCII letter as
+``_x<hex>_``. A Polars node's or External File's parameter is a variable its
+code reads, so it names its input exactly; any other node's parameter only
+names the input, so ``données`` names the input ``donn_xe9_es`` too.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from haute._graph_utils import _sanitize_func_name
 from haute._types import NodeType
 from haute.errors import HauteError, ParseError
 
@@ -39,6 +45,9 @@ __all__ = ["NodeInput", "bind_node_inputs", "input_parameters"]
 _FRAME_HOOK_TYPES: frozenset[NodeType] = frozenset(
     {NodeType.RATING_STEP, NodeType.MODEL_SCORE, NodeType.SCENARIO_EXPANDER, NodeType.EXPLORE}
 )
+
+#: Node types whose code reads each input under its parameter's name.
+_CODE_READS_PARAMETERS: frozenset[NodeType] = frozenset({NodeType.POLARS, NodeType.EXTERNAL_FILE})
 
 _REMEDIATION = (
     "Name each parameter after the node or table connected to it, in the order of the "
@@ -111,13 +120,15 @@ def bind_node_inputs(
     claimed: dict[int, str] = {}
     read: list[int] = []
     unbound: list[str] = []
+    exact = node_type in _CODE_READS_PARAMETERS
     for param in naming:
         name = _resolve(param, input_mapping)
+        names = {name} if exact else {name, _sanitize_func_name(name)}
         index = next(
             (
                 position
                 for position, candidate in enumerate(inputs)
-                if candidate.name == name and position not in claimed
+                if candidate.name in names and position not in claimed
             ),
             None,
         )

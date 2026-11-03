@@ -490,7 +490,9 @@ class TestParseSubmodelSource:
         """The file's own parse checks its bindings, so the failure names the file."""
         source = _VALID_SUBMODEL.replace("def base_rate(records:", "def base_rate(df:")
 
-        with pytest.raises(ParseError, match="parameters do not match") as exc_info:
+        with pytest.raises(
+            ParseError, match="parameters of node 'base_rate' do not match its inputs"
+        ) as exc_info:
             parse_submodel_source(source, "modules/pricing.py")
 
         assert exc_info.value.context["node_id"] == "base_rate"
