@@ -1058,6 +1058,7 @@ class TestValidateFeatures:
 
         class ScoringModelLike:
             feature_names = ["a"]
+            optional_feature_names: frozenset[str] = frozenset()
             cat_feature_names = ["a"]
 
         schema = pl.Schema({"a": pl.String})
@@ -1577,6 +1578,9 @@ class TestBatchScoreToParquetEmptyDtype:
     ) -> None:
         class NullRejectingModel:
             classes_ = np.array([0, 1])
+
+            def get_metadata(self):
+                return {}  # as CatBoost reports for a model without Haute's labels
 
             def predict(self, _frame):
                 raise AssertionError("empty input must not score a synthetic null row")
