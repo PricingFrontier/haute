@@ -206,10 +206,10 @@ _BROWSER_MIXED_BANDING_CONFIG = """{
       "banding": "breakpoints",
       "column": "proposer_age",
       "outputColumn": "proposer_age_band",
-      "rules": {
-        "40": "Age 40 or below",
-        "": "Age over 40"
-      },
+      "rules": [
+        {"upper": 40, "label": "Age 40 or below"},
+        {"label": "Age over 40"}
+      ],
       "rightClosed": true,
       "default": "Age other"
     },
@@ -227,10 +227,10 @@ _BROWSER_MIXED_BANDING_CONFIG = """{
       "banding": "breakpoints",
       "column": "vehicle_age",
       "outputColumn": "vehicle_age_band",
-      "rules": {
-        "5": "Vehicle 0-5",
-        "": "Vehicle 6+"
-      },
+      "rules": [
+        {"upper": 5, "label": "Vehicle 0-5"},
+        {"label": "Vehicle 6+"}
+      ],
       "rightClosed": true,
       "default": "Vehicle other"
     }
@@ -248,7 +248,8 @@ _BROWSER_RATING_CONFIG = """{
       ],
       "outputColumn": "browser_relativity",
       "defaultValue": 1.0,
-      "entries": []
+      "columns": [],
+      "rows": []
     }
   ],
   "combinedOutputs": [],

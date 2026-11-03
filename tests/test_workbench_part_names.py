@@ -17,7 +17,7 @@ import pytest
 from haute._workbench_config import WorkbenchError
 from haute._workbench_folder import FormFolderNameError, read_form_document
 from haute._workbench_form import FormSpec, render_form
-from tests._workbench_helpers import enable, form_folder
+from tests._workbench_helpers import enable, form_folder, write_files
 from tests.test_workbench_folder import FORM, config, files_of, put, spec_of
 
 SHEET = "sheets/br_coverages.json"
@@ -77,21 +77,19 @@ def test_two_sections_titled_alike_are_refused_on_save_and_on_load(project: Path
         files_of(spec_of(form), project)
 
     _read(project, FORM)
-    sheet_file = form_folder(project) / SHEET
-    sheet = json.loads(sheet_file.read_bytes())
+    sheet = json.loads((form_folder(project) / SHEET).read_bytes())
     sheet["sections"].append(copy.deepcopy(sheet["sections"][0]))
-    sheet_file.write_bytes(json.dumps(sheet).encode())
+    write_files(form_folder(project), {SHEET: json.dumps(sheet).encode()})
     with pytest.raises(WorkbenchError, match="two sections titled"):
         read_form_document(config(project))
 
 
 def test_two_components_numbered_alike_in_a_section_are_refused_on_load(project: Path) -> None:
     _read(project, FORM)
-    sheet_file = form_folder(project) / SHEET
-    sheet = json.loads(sheet_file.read_bytes())
+    sheet = json.loads((form_folder(project) / SHEET).read_bytes())
     components = sheet["sections"][0]["components"]
     components[1]["number"] = components[0]["number"]
-    sheet_file.write_bytes(json.dumps(sheet).encode())
+    write_files(form_folder(project), {SHEET: json.dumps(sheet).encode()})
     with pytest.raises(WorkbenchError, match="two components numbered 1"):
         read_form_document(config(project))
 
@@ -131,8 +129,7 @@ def test_a_component_moved_between_sections_keeps_its_box_and_takes_the_next_num
     spec, _ = _read(project, FORM)
     data = spec.model_dump(mode="json")
     page = data["pages"][0]
-    if len(page["sections"]) < 2:
-        pytest.skip("the test project's first sheet has one section")
+    assert len(page["sections"]) >= 2, "the test form's first sheet needs two sections"
     source, target = page["sections"][0], page["sections"][1]
     moved = source["widgets"].pop(0)
     box = {key: moved[key] for key in ("x", "y", "w", "h")}

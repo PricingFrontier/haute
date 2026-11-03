@@ -369,7 +369,6 @@ class TestParsePipelineFlattenRegression:
             )
 
             pipeline.connect("Source", "scoring", target_port="source")
-            pipeline.connect("scoring", "Source", source_port="result")
             """,
         )
 

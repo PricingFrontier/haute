@@ -668,10 +668,11 @@ def _match_ratebook_entry(
     ``_ratebook_lookup_table``.  Null input keys never match (the engine
     join is ``join_nulls=False``).
 
-    ``_apply_rating_table`` deduplicates with ``unique(subset=factors,
-    keep="last")`` before joining, so a duplicate level resolves to the LAST
-    entry at runtime; walking ``entries`` in reverse mirrors that — see
-    ``test_ratebook_match_entry_uses_last_duplicate_to_match_runtime``.
+    ``_apply_rating_table`` refuses two entries for one level
+    (``RatingDuplicateEntriesError``), so an applied row was rated by its
+    level's only entry. Walking ``entries`` in reverse keeps the last of an
+    artifact built by hand, as
+    ``test_ratebook_match_entry_keeps_the_last_of_a_hand_built_duplicate`` pins.
     """
     if len(input_dtypes) != len(join_columns):
         raise OptimiserApplyTraceError(

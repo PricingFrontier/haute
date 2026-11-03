@@ -89,8 +89,8 @@ def _convert(pipeline: Path) -> list[str]:
         steps = settings.get("steps")
         if name in unfinished or not isinstance(steps, list):
             continue
-        node = nodes.get(name)
-        rebuilt = None if node is None else node.data.config.get("steps")
+        parsed = nodes.get(name)
+        rebuilt = None if parsed is None else parsed.data.config.get("steps")
         if rebuilt != canonical_steps(NodeType.POLARS, steps):
             report.append(f"{pipeline}: {name}'s steps rebuild otherwise; its code is kept")
     if unfinished:

@@ -9,9 +9,9 @@ Tie rules proved:
     saved __factor_group__ key, distinct typed values never share a key, and two
     emitted levels collapsing to one key fail loudly with InvalidRequestError raised by
     _serialise_ratebook_factor_table_rows (never last-writer-wins at save).
-(b) Apply time: a duplicate saved key resolves to the LAST entry in both the
-    Polars engine (_apply_ratebook, unique keep="last") and the explainability
-    mirror (_match_ratebook_entry walks reversed).
+(b) Apply time: a duplicate saved key is refused by the Polars engine
+    (_apply_ratebook, through the shared rating lookup's
+    RatingDuplicateEntriesError), never resolved to one of its entries.
 """
 
 from __future__ import annotations
@@ -26,8 +26,7 @@ from hypothesis import assume, example, find, given
 from hypothesis import strategies as st
 
 from haute._builders import _apply_ratebook
-from haute._optimiser_apply_explainability import _match_ratebook_entry
-from haute._rating import normalise_rating_key
+from haute._rating import RatingDuplicateEntriesError
 from haute.errors import InvalidRequestError
 from haute.routes._optimiser_solver import (
     _ratebook_factor_dtypes,
@@ -384,7 +383,7 @@ def test_saved_artifact_rates_every_typed_row_with_its_own_level(
 
 
 # ---------------------------------------------------------------------------
-# Property 5: Duplicate saved key resolves to last entry in engine and mirror
+# Property 5: A duplicate saved key is refused at apply
 # ---------------------------------------------------------------------------
 
 
@@ -397,12 +396,10 @@ def test_saved_artifact_rates_every_typed_row_with_its_own_level(
         unique=True,
     )
 )
-def test_duplicate_saved_key_resolves_to_the_last_entry_in_engine_and_mirror(
-    rates: list[float],
-) -> None:
-    """Rule (b): duplicate saved key resolves to the LAST entry in both the
-    Polars engine (_apply_ratebook, unique keep="last") and the explainability
-    mirror (_match_ratebook_entry walks reversed)."""
+def test_a_duplicate_saved_key_is_refused_at_apply(rates: list[float]) -> None:
+    """Rule (b): an artifact holding one key twice is refused by the Polars engine
+    (_apply_ratebook, through the shared rating lookup), whatever the rates: no
+    entry is kept in place of the other."""
     table_name = "channel:age_band"
     entries = [
         {"__factor_group__": f"online{SEP}18-25", "optimal_scenario_value": r, "quote_count": 1}
@@ -418,21 +415,8 @@ def test_duplicate_saved_key_resolves_to_the_last_entry_in_engine_and_mirror(
         },
     )
     frame = pl.DataFrame({"channel": ["online"], "age_band": ["18-25"]})
-    out = _apply_ratebook(frame.lazy(), artifact, "v1", "__ver__").collect()
-    engine_value = out[f"{table_name}_optimised_factor"][0]
-
-    matched = _match_ratebook_entry(
-        entries,
-        ["channel", "age_band"],
-        ["online", "18-25"],
-        table_name,
-        input_dtypes=[pl.String, pl.String],
-    )
-
-    expected_last = rates[-1]
-    assert matched is not None
-    assert engine_value == pytest.approx(expected_last)
-    assert matched["optimal_scenario_value"] == pytest.approx(expected_last)
+    with pytest.raises(RatingDuplicateEntriesError, match="channel:age_band"):
+        _apply_ratebook(frame.lazy(), artifact, "v1", "__ver__").collect()
 
 
 # ---------------------------------------------------------------------------
@@ -455,10 +439,9 @@ st_float_case = st.one_of(
 )
 
 
-def _verbatim_table_drops_a_rate_silently(case: tuple[pl.DataType, Any]) -> bool:
+def _verbatim_table_holds_one_level_twice(case: tuple[pl.DataType, Any]) -> bool:
     """The 3b.10 fault: two spellings of one value saved verbatim reach the apply
-    path as two entries, and its unique(keep="last") dedup keeps the last rate
-    without any error (a solved rate silently disappears)."""
+    path as two entries, which its factor dtype makes one level held twice."""
     dtype, val = case
     spellings = _string_spellings(val, dtype)
     if len(spellings) < 2:
@@ -470,21 +453,25 @@ def _verbatim_table_drops_a_rate_silently(case: tuple[pl.DataType, Any]) -> bool
     ]
     artifact = _artifact({"age": entries}, {"age": [{"column": "age", "dtype": {"kind": kind}}]})
     frame = pl.DataFrame({"age": [val]}, schema={"age": dtype})
-    out = _apply_ratebook(frame.lazy(), artifact, "v1", "__ver__").collect()
-    return out["age_optimised_factor"][0] == pytest.approx(1.9)
+    try:
+        _apply_ratebook(frame.lazy(), artifact, "v1", "__ver__").collect()
+    except RatingDuplicateEntriesError:
+        return True
+    return False
 
 
-def test_verbatim_labels_would_silently_drop_a_solved_rate() -> None:
+def test_verbatim_labels_are_refused_at_save_and_at_apply() -> None:
     """Negative control: what the loud save-time collision check detects.
 
     Without canonicalisation at save (the historical 3b.10 fault) two emitted
     spellings of one typed value are stored verbatim as two entries; the apply
-    path coerces both through the factor dtype, deduplicates keep="last" and
-    silently rates the row with the second entry. The canonicalising save path
-    refuses the very same emitted table with the InvalidRequestError property 3 proves.
+    path coerces both through the factor dtype and refuses the one level held
+    twice rather than rating the row with either rate. The canonicalising save
+    path refuses the very same emitted table first, with the InvalidRequestError
+    property 3 proves.
     """
-    found = find(st_float_case, _verbatim_table_drops_a_rate_silently, settings=pr_budget(60))
-    assert _verbatim_table_drops_a_rate_silently(found), found
+    found = find(st_float_case, _verbatim_table_holds_one_level_twice, settings=pr_budget(60))
+    assert _verbatim_table_holds_one_level_twice(found), found
 
     dtype, val = found
     spellings = _string_spellings(val, dtype)
@@ -495,41 +482,3 @@ def test_verbatim_labels_would_silently_drop_a_solved_rate() -> None:
         _serialise_ratebook_factor_tables(
             {"age": {spellings[0]: 1.1, spellings[1]: 1.9}}, counts, {}, dtypes
         )
-
-
-def test_first_entry_wins_mirror_would_disagree_with_engine() -> None:
-    """Negative control: a test-local mirror that walks entries forward (first wins)
-    is compared with the engine on duplicate-key entries; find an example where
-    they disagree and assert the disagreement."""
-    strat = st.tuples(
-        st.floats(min_value=1.0, max_value=2.0, allow_nan=False, allow_infinity=False),
-        st.floats(min_value=2.1, max_value=3.0, allow_nan=False, allow_infinity=False),
-    )
-
-    def forward_mirror_disagrees(rates: tuple[float, float]) -> bool:
-        r1, r2 = rates
-        table_name = "age"
-        entries = [
-            {"__factor_group__": "25", "optimal_scenario_value": r1, "quote_count": 1},
-            {"__factor_group__": "25", "optimal_scenario_value": r2, "quote_count": 1},
-        ]
-        artifact = _artifact(
-            {table_name: entries},
-            {table_name: [{"column": "age", "dtype": {"kind": "Float64"}}]},
-        )
-        apply_frame = pl.DataFrame({"age": [25.0]}, schema={"age": pl.Float64})
-        out = _apply_ratebook(apply_frame.lazy(), artifact, "v1", "__ver__").collect()
-        engine_factor = out[f"{table_name}_optimised_factor"][0]
-
-        # Test-local forward-walking mirror: first entry wins
-        forward_val: float | None = None
-        for entry in entries:
-            lvl = normalise_rating_key(entry["__factor_group__"], pl.Float64)
-            if lvl == normalise_rating_key(25.0, pl.Float64):
-                forward_val = entry["optimal_scenario_value"]
-                break
-
-        return forward_val is not None and abs(engine_factor - forward_val) > 1e-4
-
-    found = find(strat, forward_mirror_disagrees, settings=pr_budget(60))
-    assert forward_mirror_disagrees(found), f"Forward mirror agreed with engine on {found}"

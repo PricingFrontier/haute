@@ -303,18 +303,11 @@ def test_codegen_emits_edge_join_with_base_first_params_and_connects(
     constant_dir = tmp_path / "config" / "constant"
     constant_dir.mkdir(parents=True)
     (constant_dir / "quotes.json").write_text(
-        json.dumps({"values": [{"name": "region", "value": "N"}]}),
+        json.dumps({"values": {"region": "N"}}),
         encoding="utf-8",
     )
     (constant_dir / "lookup.json").write_text(
-        json.dumps(
-            {
-                "values": [
-                    {"name": "region", "value": "N"},
-                    {"name": "factor", "value": "1.1"},
-                ]
-            }
-        ),
+        json.dumps({"values": {"region": "N", "factor": 1.1}}),
         encoding="utf-8",
     )
     parsed = parse_pipeline_file(_write_pipeline(tmp_path, code))
@@ -394,11 +387,11 @@ def test_edge_join_round_trip_resolves_roles_when_node_ids_differ_from_labels(
     constant_dir = tmp_path / "config" / "constant"
     constant_dir.mkdir(parents=True)
     (constant_dir / "Data_Source_5.json").write_text(
-        json.dumps({"values": ds_values}),
+        json.dumps({"values": {"region": "N"}}),
         encoding="utf-8",
     )
     (constant_dir / "Enrich_Step.json").write_text(
-        json.dumps({"values": enrich_values}),
+        json.dumps({"values": {"region": "N", "factor": 1.1}}),
         encoding="utf-8",
     )
     path = _write_pipeline(tmp_path, code)
@@ -770,7 +763,7 @@ def test_edge_join_pipeline_run_honours_configured_roles_for_reversed_connects()
         return pl.DataFrame({"region": ["N", "S"], "factor": [1.1, 0.9]})
 
     @pipeline.edge_join(how="left", maintain_order="left_right", on=["region"])
-    def join_rates(base, join): ...
+    def join_rates(quotes, lookup): ...
 
     pipeline.connect("lookup", "join_rates", target_port="join")
     pipeline.connect("quotes", "join_rates", target_port="base")
@@ -804,7 +797,7 @@ def test_edge_join_declaration_joins_in_pipeline_run() -> None:
         return pl.DataFrame({"region": ["N", "S"], "factor": [1.1, 0.9]})
 
     @pipeline.edge_join(how="left", maintain_order="left_right", on=["region"])
-    def join_rates(base, join): ...
+    def join_rates(quotes, lookup): ...
 
     pipeline.connect("quotes", "join_rates", target_port="base")
     pipeline.connect("lookup", "join_rates", target_port="join")
@@ -827,7 +820,7 @@ def test_edge_join_declaration_joins_in_pipeline_score() -> None:
         return pl.DataFrame({"region": ["N", "S"], "factor": [1.1, 0.9]})
 
     @pipeline.edge_join(how="left", maintain_order="left_right", on=["region"])
-    def join_rates(base, join): ...
+    def join_rates(quotes, lookup): ...
 
     pipeline.connect("quotes", "join_rates", target_port="base")
     pipeline.connect("lookup", "join_rates", target_port="join")

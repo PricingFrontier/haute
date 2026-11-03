@@ -1237,16 +1237,15 @@ def test_ratebook_input_match_falls_back_to_python_on_polars_type_mismatch(
     assert detail["error_type"] != "SchemaError"
 
 
-def test_ratebook_match_entry_uses_last_duplicate_to_match_runtime(tmp_path):
-    """``_apply_rating_table`` deduplicates with ``keep="last"``, so when the
-    artifact carries two entries for the same level, the trace explanation must
-    pick the same (last) entry — otherwise the reconciliation check disagrees
-    with the actual selected factor.
+def test_ratebook_match_entry_keeps_the_last_of_a_hand_built_duplicate(tmp_path):
+    """The apply refuses an artifact with two entries for one level
+    (``RatingDuplicateEntriesError``), so no applied row has one; explaining a
+    row built by hand against such an artifact keeps the last entry.
     """
     from haute._trace_enrichment import enrich_optimiser_apply
 
     artifact = _ratebook_artifact()
-    # London appears twice — the second (last) entry wins at runtime.
+    # London appears twice; the explanation keeps the second (last) entry.
     artifact["factor_tables"]["region"] = [
         {"__factor_group__": "London", "optimal_scenario_value": 1.05},
         {"__factor_group__": "Manchester", "optimal_scenario_value": 0.98},

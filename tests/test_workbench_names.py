@@ -37,7 +37,7 @@ from haute._workbench_form import (
     with_quote_details,
 )
 from tests._store_servers import Target, backends, database
-from tests._workbench_helpers import enable, form_folder, write_form
+from tests._workbench_helpers import enable, form_folder, write_files, write_form
 
 ANA = "ana@example.com"
 RELEASE = "release-1"
@@ -149,10 +149,9 @@ def test_building_one_form_twice_gives_one_release_id(project: Path) -> None:
 
 def test_a_schema_file_holding_an_id_is_refused(project: Path) -> None:
     write_form(project, _form())
-    path = form_folder(project) / "schema" / "policy.json"
-    data = json.loads(path.read_bytes())
+    data = json.loads((form_folder(project) / "schema" / "policy.json").read_bytes())
     data["id"] = "t_policy"
-    path.write_bytes(json.dumps(data).encode("utf-8"))
+    write_files(form_folder(project), {"schema/policy.json": json.dumps(data).encode("utf-8")})
 
     with pytest.raises(Exception, match="id"):
         _read(project)
@@ -175,10 +174,9 @@ def test_a_revision_saved_before_the_change_is_refused_naming_its_conversion(
         )
 
     write_form(project, _form())
-    path = form_folder(project) / "schema" / "policy.json"
-    data = json.loads(path.read_bytes())
+    data = json.loads((form_folder(project) / "schema" / "policy.json").read_bytes())
     data["id"] = "t_policy"
-    path.write_bytes(json.dumps(data).encode("utf-8"))
+    write_files(form_folder(project), {"schema/policy.json": json.dumps(data).encode("utf-8")})
     git("init", "-q")
     git("add", "-A")
     git("commit", "-q", "-m", "form saved with ids")

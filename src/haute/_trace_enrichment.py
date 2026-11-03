@@ -121,8 +121,9 @@ def _enrich_single_table(
             for factor in factors
         }
         if all(key is not None for key in input_keys.values()):
-            # Runtime rating lookup deduplicates with keep="last" before joining.
-            # Walk in reverse so the trace shows the same row that supplied the value.
+            # The runtime lookup refuses two entries for one level, so a run's table
+            # holds at most one match; walking in reverse keeps the last of a table
+            # built by hand.
             for entry in reversed(entries):
                 entry_keys = {
                     factor: normalise_rating_key(
