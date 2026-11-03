@@ -481,12 +481,12 @@ _SAMPLE = [
 #: the pipeline file runs on, on its own, what deploy reads and what the routes give a
 #: browser's graph (specs/workbench). Each leads with the quote's identity.
 FORM_TABLES = [
-    form_table("t_policy", "policy", "input", ("state", "str"), ("limit", "int")),
-    form_table("t_items", "items", "input", ("item_id", "str"), ("value", "float"), many=True),
+    form_table("policy", "input", ("state", "str"), ("limit", "int")),
+    form_table("items", "input", ("item_id", "str"), ("value", "float"), many=True),
 ]
 FORM_SAMPLE = {
-    "t_policy": [{"c_state": "NY", "c_limit": "1000"}],
-    "t_items": [{"c_item_id": "A", "c_value": "10"}, {"c_item_id": "B", "c_value": "30"}],
+    "policy": [{"state": "NY", "limit": "1000"}],
+    "items": [{"item_id": "A", "value": "10"}, {"item_id": "B", "value": "30"}],
 }
 # Every input in one column, stacked: no join, so no materialisation to admit.
 # `score` hands seeded inputs over as data frames and the Constant's as lazy.
@@ -810,9 +810,7 @@ def test_deploy_resolves_a_workbench_input_without_a_sample_file(project: Path) 
     )
 
     main = _write(graph, project, "main")
-    workbench_project(
-        project, [form_table("t_quote", "quote", "input", ("state", "str"), ("limit", "int"))]
-    )
+    workbench_project(project, [form_table("quote", "input", ("state", "str"), ("limit", "int"))])
     resolved = resolve_config(DeployConfig(pipeline_file=main, model_name="m"))
 
     # The form's tables: Haute's quote_details first, which a request names the quote in.
@@ -1100,7 +1098,7 @@ def test_a_misfit_sample_fails_what_reads_its_rows(
 def test_a_misfit_sample_in_the_form_fails_the_pipeline_file_on_its_own(project: Path) -> None:
     """Text typed into a whole-number column is kept as typed, so the sample the form gives
     does not fit, and the pipeline file running on its own says what to correct."""
-    workbench_project(project, FORM_TABLES, {"t_policy": [{"c_state": "NY", "c_limit": "lots"}]})
+    workbench_project(project, FORM_TABLES, {"policy": [{"state": "NY", "limit": "lots"}]})
     message = (
         "The workbench's sample does not fit this Workbench Input's tables: policy.limit is "
         "'lots', not 'int'. Correct it in the workbench and save it."
@@ -1125,7 +1123,7 @@ def test_a_misfit_sample_answers_the_preview_route_with_422(
     monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
     shutdown_interactive_worker_pool()
     # The route gives the browser's graph the form's sample, misfit as typed.
-    workbench_project(project, FORM_TABLES, {"t_policy": [{"c_state": "NY", "c_limit": "lots"}]})
+    workbench_project(project, FORM_TABLES, {"policy": [{"state": "NY", "limit": "lots"}]})
     graph = without_form_tables(_pricing(project, NodeType.WORKBENCH_INPUT))
 
     try:
@@ -1149,7 +1147,7 @@ def test_a_misfit_sample_answers_the_preview_route_with_422(
 def test_a_request_never_reads_the_sample(project: Path, sample: dict[str, Any]) -> None:
     graph = _sampled(project, copy.deepcopy(sample))
     # Scored on its own, a Workbench Input reads its project's form, never its sample.
-    workbench_project(project, FORM_TABLES, {"t_policy": [{"c_state": "NY", "c_limit": "lots"}]})
+    workbench_project(project, FORM_TABLES, {"policy": [{"state": "NY", "limit": "lots"}]})
     request = {
         "policy": pl.DataFrame({"state": ["TX"], "limit": [5]}),
         "items": pl.DataFrame({"item_id": ["Z"], "value": [7.0]}),
