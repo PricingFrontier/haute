@@ -21,7 +21,8 @@ The packages come from an investigation of [commercial-pricing pull request #1](
 - **Random ids fill the Workbench form folder**, such as `c_818cc52f3c8b78a9`, `t_d7d9abf03a7cf621` and `collection_nj2i`. The built-in `quote_details` columns are the exception: their ids are fixed names such as `qd_insured`.
 
 The owner decided the following on 3 November 2026:
-- **Polars code lives only in `main.py`.** Haute rebuilds as many steps as it can from the code. A statement it cannot recognise becomes a code step on its own, and the rest of the node stays as steps.
+- **Polars code lives only in `main.py`.** Haute rebuilds as many steps as it can from the code. Statements it cannot recognise become a code step, and the rest of the node stays as steps.
+- **Only commercial-pricing is converted to each new format.** No other project needs converting (`READ-20`).
 - **Workbench columns and tables have no ids.** Their names identify them. Following a rename in the quote store's SQL is left to a later package (`READ-33`).
 - **Sheets, sections and components have no random ids.** A sheet is identified by its file name, a section by its title, and a component by a number (`READ-24`).
 - **`main.py` keeps its function order.** A new node's function goes just above the first function that uses it.
@@ -36,7 +37,7 @@ The owner decided the following on 3 November 2026:
 The packages fall into three groups:
 - **Defect fixes:** `READ-01` to `READ-06`.
 - **Writing changes:** `READ-10` to `READ-13` change how files are written, but every file loads to the same values. The next save rewrites each file once, and no conversion is needed.
-- **Format changes:** `READ-20` onwards. The loader accepts only the current format ([specification governance](../README.md)). `READ-20` decides how a project moves to each new format.
+- **Format changes:** `READ-20` onwards. The loader accepts only the current format ([specification governance](../README.md)), and `READ-20` says how commercial-pricing moves to each new one.
 
 Each package states its formats in its owning specification before behaviour changes, and names the contract it replaces there. Golden tests are written from those specifications, not from the implementation's output.
 
@@ -54,7 +55,7 @@ Each package states its formats in its owning specification before behaviour cha
 | READ-11 | Planned | P2 | Node positions are whole numbers, on one line per node, and only a move changes them. |
 | READ-12 | Planned | P2 | Adding or removing a node leaves every unaffected function in `main.py` where it was. |
 | READ-13 | Planned | P3 | Generated code leaves out a default it repeats and a comment that says nothing, and new nodes get plain names. |
-| READ-20 | Decision | P2 | Each format change moves existing projects to the new format in one proven step. |
+| READ-20 | Planned | P2 | Each format change comes with a one-off script that converts commercial-pricing and Haute's fixtures, proven before and after. |
 | READ-21 | Planned | P2 | A prototype proves that Haute can rebuild every kind of Polars step from the code it renders. |
 | READ-22 | Planned | P2 | A Polars node is stored only as code in `main.py`, and a hand edit or comment keeps the rest of its steps. |
 | READ-23 | Planned | P2 | Workbench columns and tables are identified by their names, with no ids in the form folder or a release. |
@@ -81,19 +82,20 @@ Each package states its formats in its owning specification before behaviour cha
 The parser infers edges from parameter names, but the runtime `Pipeline` takes edges only from `connect()` and passes inputs in the order of the connections. So `haute run` and a plain `import main; pipeline.run()` can wire the same node differently. Even with the same edges, a different order changes what each parameter receives.
 
 **Plan:**
-- Write one binding function, used by the parser and the runtime `Pipeline` alike. It turns a node's signature and its `connect()` calls into the node's inputs, in parameter order:
+- Write one binding function, used by the parser and the runtime `Pipeline` alike. It turns a node's signature and its `connect()` calls into the node's inputs. It tells the inputs the decorator consumes from the parameters the function receives:
   - a parameter names the upstream node it reads, or the name `inputMapping` gives it;
-  - a hook's first parameter, `df`, is the frame its decorator produces and names no input (Data Input, External File, Rating Step, Model Score, Scenario Expander and Explore);
+  - a frame hook (Data Input, Rating Step, Model Score, Scenario Expander and Explore) receives as `df` the frame its decorator makes from its first input. The first input is therefore named by no parameter, and its edge is stated by `connect()`. The remaining parameters name the other inputs;
+  - External File's parameters name all of its inputs, and its keyword-only `obj` is the loaded object;
   - a ported input (`base`, `join`, a Workbench table) binds by its port.
 - Refuse four mismatches, naming the node and the parameter:
   - a parameter that names no input;
-  - an input that no parameter names;
+  - an input that is neither named by a parameter nor consumed by the decorator;
   - a parameter that disagrees with its `connect()` call;
-  - `connect()` calls in an order that differs from the parameters.
+  - `connect()` calls in an order that differs from the inputs' order.
 - Land this in a commit of its own, before `READ-30`.
 
 **Acceptance:**
-- A parser test for each of the four mismatches, on a non-Polars node type and on a hook, each refused with the node and the parameter named.
+- A parser test for each of the four mismatches, each refused with the node and the parameter named. They run on a non-Polars declaration, on a frame hook with two inputs and on External File.
 - Tests for reversed connections, ported inputs and a submodel.
 - The reference pipeline gives every node the same output from `haute run`, from a standalone `import main` and from a dry-run deploy.
 
@@ -152,27 +154,35 @@ The parser infers edges from parameter names, but the runtime `Pipeline` takes e
 **Why:** When a column leaves the form, the SQL Haute writes for the store keeps the column: its `DROP` is left commented out. But saving a quote deletes each of its rows outside `quote_details` and writes them back with only the form's columns. So each quote loses its value in the kept column the next time it is saved. This happens today when a column is removed. After `READ-23`, every renamed column reads as removed and added, so it would happen on every rename.
 
 **Plan:**
-- When a quote is saved, carry each row's values in store columns the form doesn't hold from the old row to the new row with the same row number. A one-row table has one row.
-- A row the underwriter deletes loses its values.
-- `quote_details` is updated in place and keeps them already.
+- A row's number is its place in the table, and inserting or deleting a row renumbers the rows after it. So a row's new number cannot find its old values.
+- The editor and the app send, with each row of a many-row table, the number it had when the quote was opened. A row added since has none.
+- When the quote is saved, each row takes, from the old row with that number, its values in store columns the form doesn't hold.
+- A row the underwriter deletes loses its values. A one-row table has one row, and `quote_details` is updated in place and keeps them already.
 
-**Acceptance:** On SQLite and on a hosted engine:
-- Remove a column from the form, open a quote saved before the change, save it and open it again: the kept SQL column still holds its value.
-- A row deleted from the quote takes its values with it.
+**Acceptance:** On SQLite and on a hosted engine, remove a column from the form and open a quote saved before the change. Then:
+- save and reopen it: the kept SQL column still holds every row's value;
+- delete the first row, or a middle row, and save: each remaining row keeps its own value;
+- insert a row before a remaining row and save: the new row holds none, and the others keep their own.
 
 **Dependencies:** None. `READ-23` depends on it.
 
-**Evidence:** `src/haute/_quote_store/_book.py::_replace_rows`; `src/haute/_quote_store/_rows.py`.
+**Evidence:** `src/haute/_quote_store/_book.py::_replace_rows`; `src/haute/_quote_store/_rows.py`;
+`frontend/src/workbench/sheet/FieldGrid.tsx`.
 
 ### READ-06 — A rating table with two entries for the same levels is refused
-**Why:** A rating table can hold two entries whose levels are equal once converted to the factor's type: by a hand edit, or levels such as `"25.0"` and `"25.00"`. The engine keeps the last entry silently (`keep="last"`), so a rate can change with no message.
+**Why:** A rating table can hold two entries whose levels are equal once converted to the factor column's type: by a hand edit, or levels such as `"25.0"` and `"25.00"` for a numeric column. The engine keeps the last entry silently (`keep="last"`), so a rate can change with no message.
 
 **Plan:**
-- Refuse such a table on load and on save, naming the table and the levels.
-- Compare levels after conversion to each factor's type.
+- **At run time:** the shared lookup, which every run path uses, converts the levels to the factor column's type in the incoming frame, as it does today. It refuses a table in which two entries then match, naming the node, the table and the levels.
+  - This replaces `keep="last"`. No path keeps the last entry, a config built in code included.
+  - Since the column's type comes from the frame, a duplicate that appears only after an upstream type change is refused at that run.
+- **On save:** the editor and the save refuse entries whose levels are identical as written, and, where the table records `factorDtypes`, entries equal under those types. Without `factorDtypes` the run-time check is the one that applies.
 - Replace the "deduplicate before joining" contract in the [rating specification](../rating/high-level.md).
 
-**Acceptance:** Tests refuse an exact duplicate and a duplicate that appears only after conversion, each naming the levels. A table without duplicates prices as before.
+**Acceptance:**
+- A save refuses an exact duplicate.
+- A run refuses a duplicate that appears only after conversion. Tests cover a config built in code and an upstream column whose type changed after a valid save.
+- A table without duplicates prices as before.
 
 **Dependencies:** None.
 
@@ -283,30 +293,27 @@ Two more problems:
 **Evidence:** `src/haute/_source_layout.py::WIRE_COMMENT`;
 `frontend/src/utils/flowElements.ts::nodeLabel`.
 
-### READ-20 — How a project moves to each new format
-**Why:** The loader accepts only the current format. The canonical-only rule in the [specification governance](../README.md) forbids any production code that converts an old format: "Nothing migrates it". Each format change from `READ-22` onwards still has to bring the owner's existing projects across.
+### READ-20 — Each format change converts commercial-pricing with a one-off script
+**Why:** The loader accepts only the current format. The canonical-only rule in the [specification governance](../README.md) forbids any production code that converts an old format: "Nothing migrates it". Each format change from `READ-22` onwards must still bring commercial-pricing across. The owner decided on 3 November 2026 that no other project needs converting, so the rule stays and Haute gets no `haute migrate` command.
 
-**Plan:** This is the owner's choice.
-- **Recommended: keep the rule.**
-  - Each format change's pull request carries a one-off conversion script. The owner runs it once on each project, and it converts Haute's own fixtures.
-  - The script is not kept in Haute's code or tests once the pull request merges.
-  - It is idempotent: it leaves a converted file alone, and refuses a malformed or mixed-format project without changing it.
-  - A branch cut before a conversion merges `main` and runs the script again.
-- **Alternative: change the rule** to allow a `haute migrate` command, run by the editor when it opens an older project. That needs:
-  - format detection and an order of conversions;
-  - refusal of malformed or mixed formats and of uncommitted changes;
-  - atomic writes, with rollback when a Windows file replacement fails;
-  - tests for interrupted and repeated conversions.
-- **Either way:**
-  - A comparison against a revision older than a conversion, such as the schema pane's comparison with the default branch, is refused with a message naming the conversion. Today it would hand old bytes to the current parser.
-  - Any new file a conversion creates is in the deploy bundle.
+**Plan:**
+- Each format change's pull request carries a one-off conversion script. The script:
+  - converts Haute's own fixtures in that pull request;
+  - is run by the owner once on commercial-pricing, in a commit of its own;
+  - is not kept in Haute's code or tests once the pull request merges.
+- **File by file:** it converts each file still in the old format and leaves alone each file already in the new one. So it can run on a project in which some files are already converted. It refuses a file in neither format, naming it, and changes nothing.
+- **A commercial-pricing branch cut before a conversion** runs the script on itself, commits, then merges `main`. If the merge comes first, running the script afterwards converts the files the branch added in the old format.
+- A comparison against a revision older than a conversion, such as the schema pane's comparison with the default branch, is refused with a message naming the conversion. Today it would hand old bytes to the current parser.
+- Any new file a conversion creates is in the deploy bundle.
 
-**Acceptance:** Each conversion is proven on the reference pipeline, the workbench fixture and the owner's projects:
-- the converted files load to the same values;
-- saving twice gives identical bytes;
-- the sample prices the same, and every node's output columns and types match, against results recorded before the conversion.
+**Acceptance:**
+- Each conversion is proven on the reference pipeline, the workbench fixture and commercial-pricing:
+  - the converted files load to the same values;
+  - saving twice gives identical bytes;
+  - against results recorded before the conversion, the sample prices the same, and every node's output columns and types match.
+- A branch that added and edited old-format files keeps both edits after it is converted and merged, in either order.
 
-**Dependencies:** The owner's choice between the two options.
+**Dependencies:** None.
 
 **Evidence:** `specs/README.md`; `src/haute/_workbench_folder.py::form_at_ref`.
 
@@ -323,7 +330,8 @@ The [syntax-boundary specification](../codegen/structured-syntax-boundary.md) do
 **Plan:**
 - Before anything changes on disk, build the step rebuilder as a prototype.
 - Define the canonical form of a step list:
-  - adjacent code steps are merged;
+  - code steps next to each other are merged into one, since the rendered code holds no boundary between them;
+  - so a run of statements Haute cannot recognise is one code step, however many statements it holds;
   - each ambiguous form becomes one documented step;
   - ids and display-only text are left out.
 - Prove two properties over every step kind in the catalogue, alone and in chains:
@@ -352,9 +360,15 @@ The [syntax-boundary specification](../codegen/structured-syntax-boundary.md) do
 - Drop `config/polars/*.json` and the `config=` argument on `@pipeline.polars`.
 - **Rebuilding steps on load:**
   - Haute rebuilds the steps from the node's code (`READ-21`).
-  - A statement it cannot recognise becomes a code step on its own, and the statements around it stay steps.
+  - A run of statements it cannot recognise becomes one code step, and the statements around it stay steps.
 - **Column settings** such as `selected_columns` and `column_renames` go into the decorator's keywords, as a code-only Polars node writes them today.
-- **Unfinished steps:** a step that cannot render yet is held in the `.haute.json` sidecar under its node until it is complete. It doesn't run, and the save warns as it does today. The code holds the steps before it.
+- **Unfinished steps:**
+  - While any step of a node is unfinished, the node is saved as an incomplete transform is today:
+    - its whole step list goes in the `.haute.json` sidecar under the node, the steps before and after the unfinished one included;
+    - its code is today's placeholder, which raises;
+    - the save warns.
+  - So the node fails in the editor, `haute run`, a standalone run and a deploy alike, and never returns the steps before the unfinished one.
+  - Once every step is complete, the steps move into code and leave the sidecar.
 - **Comments:**
   - a comment belongs to the statement below it, and moves or goes with that step;
   - a comment at the end of the body stays at the end;
@@ -367,14 +381,16 @@ The [syntax-boundary specification](../codegen/structured-syntax-boundary.md) do
 - **Converting a project:**
   - the JSON is deleted once the code rebuilds to the same steps;
   - a node that doesn't is reported, its code stays, and its unrecognised statements become code steps;
-  - unfinished steps move to the sidecar.
+  - a node with an unfinished step moves its step list into the sidecar.
 - Replace the stepped-transform section of the [pipeline-config specification](../pipeline-config/high-level.md).
 
 **Acceptance:**
 - Loading and saving a node's code is byte-stable.
 - A hand edit to one statement keeps the other steps, and a comment keeps the steps.
 - A 20-term sum is one step.
-- An unfinished step and the column settings round-trip.
+- An unfinished middle step, with complete steps before and after it, round-trips. The node fails in the editor, `haute run`, a standalone run and a dry-run deploy.
+- The column settings round-trip.
+- Two unrecognised statements next to each other load as one code step.
 - Tests for grouped arithmetic and for arithmetic with missing values give the same results as today.
 - The formula box round-trips each formula.
 - The reference pipeline gives every node the same output columns, types and sample values before and after its conversion.
@@ -542,23 +558,29 @@ The owner judged that the complexity isn't worth it.
 
 **Plan:**
 - Write a constant node as a map from name to value, one per line. A number is a JSON number and text stays text, as each runs today.
-- **Promotion to global constants:** where every consumer of a constant node is a formula, the conversion turns its constants into global constants and removes the node and its join. It promotes a node only if both hold:
-  - each constant's name is free among the global constants, and is a valid name there;
-  - the converted pipeline gives every node the same output columns, types and sample values, apart from the constant columns themselves.
+- **Promotion to global constants:** the conversion promotes a constant node, turning its constants into global constants and removing the node and its join, only when its structure allows it. All of these must hold:
+  - the node's one consumer is a single join that adds its columns to one stepped Polars node's input;
+  - within that Polars node, every reference to a constant column is a column reference in a formula step outside any group-by or aggregation, where a column and a scalar behave alike;
+  - no step assigns to a constant column, so every reference reads the original value;
+  - no code step comes after the join, since Haute cannot tell what a code step reads;
+  - no constant column reaches the Polars node's output: a later step selects it out or drops it;
+  - each constant's name is free among the global constants, and is a valid name there.
 
-  Otherwise it leaves the node and reports why.
+  Otherwise the conversion leaves the node and reports which condition failed. The global constant keeps the value's runtime type: a numeric text becomes a number, as it runs today, and text stays text.
+- After a promotion, the sample must give every node the same output columns, types and values. This verifies a rewrite the structure allowed; it never decides eligibility.
 - Constants that banding or rating steps read stay in their node.
 - Trace already shows a global constant's value in a formula.
 
 **Acceptance:**
 - The constant node round-trips as a map, with numbers and text.
-- Conversion tests cover:
+- Conversion tests leave the node, naming the failed condition, for each of these:
   - a name collision;
-  - a constant column read downstream of the formula;
+  - a constant column reaching the node's output;
   - two consumers;
-  - a text constant.
-
-  Each test leaves the node when promoting it would change anything.
+  - a reference inside an aggregation;
+  - a code step after the join;
+  - a step that overwrites a constant column only on rows the sample doesn't hold, so the sample alone would agree.
+- A text constant is promoted as text.
 - On the reference pipeline, only formula-only nodes are removed, and it prices the same.
 - Trace shows the values.
 
@@ -597,11 +619,13 @@ The owner judged that the complexity isn't worth it.
 - 5 name a Workbench table that the parameter already names.
 
 **Plan:**
-- Once `READ-01` binds signatures and edges by one rule, write `connect()` only for an edge with a port the signature cannot express.
+- Once `READ-01` binds signatures and edges by one rule, write `connect()` only for an edge that the signature cannot name exactly:
+  - an edge with a port the parameter's place doesn't give;
+  - the input a frame hook's decorator consumes, which no parameter names (for example `connect("source", "rate")` for `def rate(df)`).
 - The runtime `Pipeline` takes the other edges from the signatures through that rule.
 
 **Acceptance:**
-- The reference pipeline regenerates with only the needed calls.
+- The reference pipeline regenerates with only the needed calls, its frame hooks' calls kept.
 - `haute run`, a standalone `import main` and a dry-run deploy give every node the same output.
 
 **Dependencies:** `READ-01`.
