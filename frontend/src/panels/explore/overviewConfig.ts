@@ -4,8 +4,6 @@ import {
   type OverviewConfigKey,
 } from "./overviewCardDefinitions"
 
-export type { OverviewConfig } from "./overviewCardDefinitions"
-
 function readBool(raw: Record<string, unknown>, key: OverviewConfigKey): boolean | undefined {
   const value = raw[key]
   return typeof value === "boolean" ? value : undefined

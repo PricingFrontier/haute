@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { EditorLabel } from "../../../components/form"
-import { confirmed } from "../../../stores/useQuestionStore"
 import {
   createPivotFormula,
   pivotFormulas,
@@ -18,7 +17,8 @@ type PivotFormulaSectionProps = {
   formulas: PivotFormulaPlacement[]
   persistPivot: (pivot: ExplorePivotConfig) => void
   persistFormula: (formula: PivotFormulaPlacement) => void
-  deleteFormula: (formula: PivotFormulaPlacement) => void
+  /** Asks first; true once the formula is deleted. */
+  deleteFormula: (formula: PivotFormulaPlacement) => Promise<boolean>
   onFormulaEditorChange: (inserter: ((field: string) => void) | null) => void
 }
 
@@ -276,9 +276,7 @@ export default function PivotFormulaSection({
                 aria-label={`Delete formula ${editingFormula.display_name}`}
                 onClick={() =>
                   void (async () => {
-                    if (!(await confirmed({ title: `Delete ${editingFormula.display_name} from every pivot?`, confirm: "Delete", danger: true }))) return
-                    deleteFormula(editingFormula)
-                    closeEditor()
+                    if (await deleteFormula(editingFormula)) closeEditor()
                   })()
                 }
                 className="mr-auto rounded px-1.5 py-1 text-[10px]"

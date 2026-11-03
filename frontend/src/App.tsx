@@ -344,6 +344,7 @@ function ActiveNodePreviewBody({
         onRefresh={refreshAction}
         onCellClick={onCellClick}
         tracedCell={tracedCell}
+        errorAction={errorAction}
       />
     )
   }

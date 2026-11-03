@@ -70,7 +70,6 @@ and [28 October functional review](codebase-review-2026-10-28.md)
 packages, have not been assigned a round; that does not defer their stated
 priority. Decision packages need the choice in their entry before scheduling.
 
-Deferred packages start only when their trigger is met. For example, `EDA-E18`, `EDA-E23` and
-`EDA-E24` ([Explore and EDA](explore-eda.md)) and `MSC-07`
-([model scoring](model-scoring.md)) wait for the evidence or demand their
-entries name.
+Deferred packages start only when their trigger is met. For example, `MSC-07`
+([model scoring](model-scoring.md)) waits for the evidence or demand its entry
+names.

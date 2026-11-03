@@ -613,6 +613,28 @@ describe("pivot chart data adapter", () => {
     ])
   })
 
+  it("charts a result with no matching rows as empty, but rejects cells without coordinates", () => {
+    const sourcePivot = pivot()
+    const configured = chart(sourcePivot)
+    const empty = result(sourcePivot, { row_paths: [], cells: [] })
+
+    expect(adaptPivotChartData(configured, sourcePivot, empty)).toEqual({
+      categories: [],
+      series: [],
+      dormantOverrideIds: [],
+      dormantEncodingIds: [],
+      warnings: [],
+    })
+    expectReason(
+      () =>
+        adaptPivotChartData(configured, sourcePivot, {
+          ...result(sourcePivot),
+          row_paths: [],
+        }),
+      "chart_result_axis_empty",
+    )
+  })
+
   it("rejects stale field/value identities, missing cells, and invalid numeric cells", () => {
     const sourcePivot = pivot()
     const configured = chart(sourcePivot)

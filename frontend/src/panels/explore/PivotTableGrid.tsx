@@ -2,7 +2,7 @@ import { useMemo, useState } from "react"
 
 import type { ExplorePivotMemberKey, ExplorePivotResult } from "../../api/types"
 import { PIVOT_CONDITIONAL_FORMAT_COLORS } from "../../theme/colors"
-import { isPivotFormulaPlacement, pivotOutputs } from "./pivotConfig"
+import { isPivotFormulaPlacement, PIVOT_NO_ROWS_MESSAGE, pivotOutputs } from "./pivotConfig"
 import type { ExplorePivotConfig } from "./pivotConfig"
 import { formatPivotNumber } from "./pivotNumberFormat"
 import type { PivotNumberFormatting } from "./pivotNumberFormat"
@@ -74,6 +74,18 @@ function memberLabel(
     return formatPivotNumber(member.value, formatting ?? {}) ?? String(member.value)
   }
   return String(member.value)
+}
+
+/**
+ * The draft placement for a field the result grouped by. A retained result
+ * keeps its own field order while the draft is reordered, so the format is
+ * found by field, never by position; a field the draft dropped has none.
+ */
+function placementFor<T extends { field: string }>(
+  placements: readonly T[],
+  field: string,
+): T | undefined {
+  return placements.find((placement) => placement.field === field)
 }
 
 function pathLabel(
@@ -245,7 +257,7 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
                   className="px-2 py-1.5 font-medium"
                   style={{ borderBottom: "1px solid var(--border)" }}
                 >
-                  {pathLabel(path, level, pivot.columns[level])}
+                  {pathLabel(path, level, placementFor(pivot.columns, field))}
                 </th>
               ))}
             </tr>
@@ -274,7 +286,7 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
                 className="px-3 py-5 text-center"
                 style={{ color: "var(--text-muted)" }}
               >
-                No rows match this pivot configuration.
+                {PIVOT_NO_ROWS_MESSAGE}
               </td>
             </tr>
           )}
@@ -294,7 +306,7 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
                   const label = pathLabel(
                     rowPath,
                     level,
-                    pivot.rows[level],
+                    placementFor(pivot.rows, field),
                   )
                   return (
                     <th
@@ -352,7 +364,7 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
                         }}
                       >
                         {cell === null || cell === undefined
-                          ? "-"
+                          ? "—"
                           : formatPivotNumber(
                               cell,
                               configuredValue ?? {},

@@ -1,6 +1,5 @@
 import type { ExplorePivotMemberKey } from "../../api/types"
 import {
-  EXPLORE_CHART_CONFIG_VERSION,
   EXPLORE_CHART_AXIS_VALUES,
   EXPLORE_CHART_LEGEND_POSITION_VALUES,
   EXPLORE_CHART_MARK_VALUES,
@@ -9,8 +8,6 @@ import {
 } from "../../generated/api-contracts.constants.generated"
 import type {
   ChartAxisConfig as GeneratedChartAxisConfig,
-  ChartCategory as GeneratedChartCategory,
-  ChartSecondaryAxisConfig as GeneratedChartSecondaryAxisConfig,
   ChartSeriesOverride as GeneratedChartSeriesOverride,
   ChartValueEncoding as GeneratedChartValueEncoding,
   ExploreChartConfig as GeneratedExploreChartConfig,
@@ -25,8 +22,6 @@ import {
 import { pivotOutputs } from "./pivotConfig"
 import type { ExplorePivotConfig } from "./pivotConfig"
 import { isObjectLiteral } from "../../utils/objectLiteral"
-
-export const CHART_CONFIG_VERSION = EXPLORE_CHART_CONFIG_VERSION
 
 // Combo leads as the general category and default (as in Excel), followed
 // by the three column layouts. Applying Combo seeds columns with the last
@@ -48,15 +43,12 @@ export const CHART_LEGEND_POSITIONS = EXPLORE_CHART_LEGEND_POSITION_VALUES
 export type ChartValueEncoding = GeneratedChartValueEncoding
 export type ChartSeriesOverride = GeneratedChartSeriesOverride
 export type ChartAxisConfig = GeneratedChartAxisConfig
-export type ChartSecondaryAxisConfig = GeneratedChartSecondaryAxisConfig
-export type ChartCategory = GeneratedChartCategory
 export type ExploreChartConfig = GeneratedExploreChartConfig
 
 export type ChartMark = ChartValueEncoding["mark"]
 export type ChartAxis = ChartValueEncoding["axis"]
 export type ChartOrientation = ExploreChartConfig["orientation"]
 export type ChartNumberFormat = (typeof CHART_NUMBER_FORMATS)[number]
-export type ChartLegendPosition = ExploreChartConfig["legend"]["position"]
 export type ChartPreset = (typeof CHART_PRESETS)[number]
 
 export type ChartStyle = Pick<
@@ -70,7 +62,7 @@ export type ChartStyle = Pick<
   | "markers"
 >
 
-export type ExploreChartsParseResult =
+type ExploreChartsParseResult =
   | { ok: true; charts: ExploreChartConfig[] }
   | { ok: false; error: string }
 
@@ -441,15 +433,7 @@ export function createExploreChart(
   )
 }
 
-export function exploreChartLabel(
-  chartOrIndex: ExploreChartConfig | number,
-): string {
-  return typeof chartOrIndex === "number"
-    ? `Chart ${chartOrIndex + 1}`
-    : chartOrIndex.name
-}
-
-export type ExploreChartSourceResolution =
+type ExploreChartSourceResolution =
   | { status: "draft" }
   | { status: "missing"; pivotId: string }
   | { status: "resolved"; pivot: ExplorePivotConfig }

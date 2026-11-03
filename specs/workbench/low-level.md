@@ -1266,8 +1266,9 @@ no longer has; and `InputSource` in
     it sharing the one import in flight, its chart maker kept for every later draw so each
     new option is set as the values change rather than after another import (an import
     that fails is forgotten, so the next draw tries again), creates one chart
-    in its host per mount and per change of theme or reduced motion (watched as `ComboChart`
-    watches them, the tokens read through `chartTheme.ts`) and sets `sheetChartOptions` on
+    in its host per mount and per change of theme or reduced motion (watched by
+    `useChartEnvironmentRevision`, the observer `ComboChart` uses, and the tokens read
+    through `chartTheme.ts`) and sets `sheetChartOptions` on
     it, each new option merged with `series`, `xAxis`, `yAxis`, `grid` and `legend`
     replaced, so a series identified by its field moves to its new values, while one drawn
     otherwise (stacked or not, another type) or a legend moved is drawn anew. A

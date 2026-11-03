@@ -73,8 +73,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | Priority | Trigger and observed consequence | Owning package | Evidence and practical limit |
 |---|---|---|---|
 | P2 | Haute classifier pyfunc's label/probability table is flattened to 40 values for 20 input rows. | [MSC-11](model-scoring.md#msc-11--pyfunc-classification-outputs-have-an-explicit-scoring-shape) | Real saved/loaded CatBoost pyfunc, feature contract and scoring adapter. Explicit pyfunc selection is affected; automatic native selection may avoid it. |
-| P3 | Relationships target `__w=[10,20]` is overwritten by internal weight alias: means become `[1,1]`, strength 0. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual Parquet, data-point resolver and relationship service; ordinary-name equivalent requires means `[10,20]`, strength 1. |
-| P3 | Copied Explore node B receives cached result.node_id A for the same producer/card. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual pivot service/cache. Numbers are correct; browser stores them under B, so no numerical cross-node corruption claim. |
 
 The first implementation pass should address the P1 packages before opportunistic
 cleanup. Each package includes the expected behaviour, scope, regression scenarios
@@ -213,7 +211,6 @@ scratch notes. Package splits use the new owners without adding finding groups.
 | delayed drill-in | **FGC-R06**. |
 | utility async read/save/switch | **FGC-R08**. |
 | blocked recovery inspector | **FGC-R09**. |
-| cached pivot response consumer node identity | **EDA-R01**; numbers remain correct as recorded in the accepted report. |
 | pyfunc classifier output shape | **MSC-11**. |
 
 The training-import note was attached to a batch including `cli/_app.py`, but its
