@@ -154,7 +154,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "engineering-quality",
     "modelling",
     "optimiser-validation",
-    "pipeline-config",
     "polars-2",
     "polars-node-clarity",
     "t-boost",
