@@ -70,9 +70,10 @@ def make_resolved_deploy(
         config = DeployConfig(**config_kwargs)
 
     paths: dict[str, Path] = resolved_paths(config)
-    if config.project_dir is None:
-        # The deployment is resolved in the test's project, which holds the files it
-        # writes; its steps run there (``in_resolved_project``).
+    if config.project_dir is None and config.pipeline_file == DEFAULT_PIPELINE_FILE:
+        # The default pipeline is the repository's fixture: the deployment is resolved in
+        # the test's project instead, which holds the files the test writes; its steps run
+        # there (``in_resolved_project``). A pipeline the test names keeps its own folder.
         paths["project_root"] = current_project().root
     defaults: dict[str, object] = {
         "config": config,
