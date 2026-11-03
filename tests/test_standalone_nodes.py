@@ -445,6 +445,59 @@ def test_an_external_file_hook_receives_its_inputs_and_the_loaded_object(project
     assert _collect(namespace["pipeline"].run(source="batch"))["scaled"].to_list() == [6]
 
 
+def test_an_external_file_binds_through_the_input_mapping_its_sidecar_holds(
+    project: Path,
+) -> None:
+    """The run binds the hook's parameter through its sidecar's ``inputMapping``, as the
+    parser does, rather than refusing the parameter as naming no input."""
+    (project / "factor.json").write_text('{"factor": 3}', encoding="utf-8")
+    config = write_node_config(
+        project,
+        NodeType.EXTERNAL_FILE,
+        "lookup",
+        {"path": "factor.json", "fileType": "json", "inputMapping": {"original": "rows"}},
+    )
+    namespace = _run_file(
+        project,
+        "import haute\n"
+        "import polars as pl\n\n"
+        'pipeline = haute.Pipeline("p")\n\n\n'
+        "@pipeline.polars\n"
+        "def rows() -> pl.LazyFrame:\n"
+        '    return pl.LazyFrame({"value": [2]})\n\n\n'
+        f'@pipeline.external_file(config="{config}")\n'
+        "def lookup(original: pl.LazyFrame, *, obj) -> pl.LazyFrame:\n"
+        "    df = original\n"
+        '    df = df.with_columns(scaled=pl.col("value") * obj["factor"])\n'
+        "    return df\n\n\n"
+        'pipeline.connect("rows", "lookup")\n',
+    )
+
+    assert _collect(namespace["pipeline"].run(source="batch"))["scaled"].to_list() == [6]
+
+
+def test_a_run_names_a_non_ascii_source_by_its_executable_name_as_the_parser_does(
+    project: Path,
+) -> None:
+    """A Polars node reads its input under the source's executable name, which spells
+    ``é`` as ``_xe9_``: the run binds that parameter as a parse of the file does."""
+    namespace = _run_file(
+        project,
+        "import haute\n"
+        "import polars as pl\n\n"
+        'pipeline = haute.Pipeline("p")\n\n\n'
+        "@pipeline.polars\n"
+        "def données() -> pl.LazyFrame:\n"
+        '    return pl.LazyFrame({"value": [2]})\n\n\n'
+        "@pipeline.polars\n"
+        "def doubled(donn_xe9_es: pl.LazyFrame) -> pl.LazyFrame:\n"
+        '    return donn_xe9_es.with_columns(pl.col("value") * 2)\n\n\n'
+        'pipeline.connect("données", "doubled")\n',
+    )
+
+    assert _collect(namespace["pipeline"].run(source="batch"))["value"].to_list() == [4]
+
+
 def test_a_hook_that_returns_nothing_fails_loudly(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         standalone_nodes, "_run_configured_work", lambda node_type, **kwargs: pl.LazyFrame()

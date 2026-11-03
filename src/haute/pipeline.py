@@ -343,7 +343,10 @@ class NodeRegistry:
                 )
                 for edge in self._edges
             ),
-            *(_WiredEdge(edge, edge.source, False) for edge in implied),
+            *(
+                _WiredEdge(edge, _input_name(self._node_map.get(edge.source), edge), False)
+                for edge in implied
+            ),
         ]
 
     @property
@@ -1364,10 +1367,25 @@ def _raw_node(node: Node) -> dict[str, Any]:
 
 def _input_name(source: Node | None, edge: RegisteredEdge) -> str:
     """The name a parameter gives *edge*'s frame: a Quote or Workbench Input's table, or
-    the source node's name."""
+    the source node's executable name, as the parser names it (``données`` is
+    ``donn_xe9_es``)."""
     if source is not None and source.node_type in REQUEST_INPUT_NODE_TYPES:
         return edge.source_port or edge.source
-    return edge.source
+    return _sanitize_func_name(edge.source)
+
+
+def _input_mapping(node: Node) -> Mapping[str, str] | None:
+    """*node*'s declared ``inputMapping``: on its decorator, or, for an External File, in
+    its ``config=`` sidecar, read as its run reads it."""
+    mapping = node.config.get("inputMapping")
+    path = node.config.get("config")
+    if mapping is None and node.node_type == NodeType.EXTERNAL_FILE and isinstance(path, str):
+        from haute._config_io import load_node_config
+        from haute._standalone_nodes import pipeline_directory
+
+        base_dir = pipeline_directory(node.fn, node.name, node.pipeline_dir)
+        mapping = load_node_config(path, base_dir=base_dir).get("inputMapping")
+    return mapping if isinstance(mapping, Mapping) else None
 
 
 def _bind_edges(wired: Sequence[_WiredEdge], nodes: Sequence[Node]) -> list[RegisteredEdge]:
@@ -1391,7 +1409,6 @@ def _bind_edges(wired: Sequence[_WiredEdge], nodes: Sequence[Node]) -> list[Regi
         ordered = [place for place in targeted if wired[place].stated] + [
             place for place in targeted if not wired[place].stated
         ]
-        mapping = node.config.get("inputMapping")
         order = bind_node_inputs(
             node_id=node.name,
             node_type=node.node_type,
@@ -1400,7 +1417,7 @@ def _bind_edges(wired: Sequence[_WiredEdge], nodes: Sequence[Node]) -> list[Regi
                 NodeInput(wired[place].name, wired[place].edge.target_port, wired[place].stated)
                 for place in ordered
             ],
-            input_mapping=mapping if isinstance(mapping, Mapping) else None,
+            input_mapping=_input_mapping(node),
             error=ExecutionError,
         )
         for place, index in zip(targeted, order, strict=True):
