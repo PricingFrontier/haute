@@ -203,7 +203,7 @@ adds a finding group or changes the 42-group count.
 | non-SQLite form insertion | Duplicate **WB-43** for non-SQLite form insertion (the scratch spelling WB-R10 is not another package). The note gives no additional concrete database defect. |
 | sandbox project globals | Duplicate **PCFG-R04**. |
 | Assistant bounds, blocking tools, factual context, tool hygiene and provider handling | Duplicates **ASSIST-55**, **ASSIST-57**, **ASSIST-58**, **ASSIST-59**, **ASSIST-54** respectively. The recipe-consolidation note names no additional behavior. |
-| CLI/init/deploy existing gaps | Impact alignment, build ownership and dependency closure are delivered (the retired deploy roadmap's DEP-R11, DEP-R12A and DEP-R09); otherwise duplicates **CLI-R01**, **CLI-R04**, **CLI-R06** for init overwrite, TOML mutation and hook behavior. Generic CLI errors/eager reads name no additional concrete case. |
+| CLI/init/deploy existing gaps | Delivered: impact alignment, build ownership and dependency closure (the retired deploy roadmap's DEP-R11, DEP-R12A and DEP-R09), and init overwrite, TOML mutation and hook behavior (the retired CLI roadmap's CLI-R01, CLI-R04 and CLI-R06). Generic CLI errors/eager reads name no additional concrete case. |
 | Hosted sign-in headers | Duplicate **WB-25**. |
 | Asynchronous assistant tool blocking | Duplicate **ASSIST-57**. |
 

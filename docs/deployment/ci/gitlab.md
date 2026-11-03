@@ -69,7 +69,7 @@ The `validate` stage runs immediately on your merge request, as one `lint` job t
 - **Lint** - checks your code with `ruff check`
 - **Type check** - runs `mypy` to catch type errors
 - **Tests** - runs `pytest`
-- **Pipeline validation** - runs `haute lint` and `haute deploy --dry-run` to check your pipeline parses correctly and test quotes pass
+- **Pipeline validation** - runs `haute lint`, which refuses what the editor would refuse to save, and `haute deploy --dry-run`, which checks the test quotes pass
 
 If any of these fail, the MR gets a red ❌ and you can see what went wrong in the pipeline logs.
 

@@ -13,10 +13,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
 from haute._project import resolve_pipeline_file
+from haute.cli._helpers import EXPECTED_FAILURES
+from haute.errors import ConfigError
+
+if TYPE_CHECKING:
+    from haute._types import PipelineGraph
 
 
 @dataclass
@@ -26,76 +32,120 @@ class LintConfig:
     pipeline_file: Path
 
 
+def _lint_root(filepath: Path) -> Path:
+    """The root the editor saves *filepath* under: the working directory ``haute serve``
+    runs in when the file is inside it, else the file's own folder."""
+    cwd = Path.cwd().resolve()
+    # not contained_path: chooses the root; a file outside the working directory is its own
+    return cwd if filepath.is_relative_to(cwd) else filepath.parent
+
+
+def _document_problems(filepath: Path, root: Path) -> tuple[list[str], list[str]]:
+    """The editor document's diagnostics for *filepath*, ``file:line: message``: its
+    errors, which leave the document unready so the editor refuses to save it (a statement
+    or comment a save would drop among them), and its warnings."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    document = load_pipeline_editor_document(filepath, project_root=root)
+    errors: list[str] = []
+    warnings: list[str] = []
+    for diagnostic in document.diagnostics:
+        where = diagnostic.source_file or filepath.relative_to(root).as_posix()
+        if diagnostic.source_span is not None:
+            where = f"{where}:{diagnostic.source_span.start_line}"
+        line = f"{where}: {diagnostic.message}"
+        if diagnostic.remediation:
+            line = f"{line} {diagnostic.remediation}"
+        (errors if diagnostic.severity == "error" else warnings).append(line)
+    if document.load_status != "ready" and not errors:
+        errors.append(f"{filepath.name}: the editor cannot load this pipeline ready to save.")
+    return errors, warnings
+
+
+def _structural_problems(flattened: PipelineGraph) -> list[str]:
+    """Edges naming a node the graph lacks, and, in a graph of several nodes, nodes no edge
+    touches."""
+    node_ids = {node.id for node in flattened.nodes}
+    problems: list[str] = []
+    for edge in flattened.edges:
+        if edge.source not in node_ids:
+            problems.append(f"Edge references missing source node: {edge.source}")
+        if edge.target not in node_ids:
+            problems.append(f"Edge references missing target node: {edge.target}")
+    if len(flattened.nodes) > 1:
+        connected = {end for edge in flattened.edges for end in (edge.source, edge.target)}
+        problems.extend(
+            f"Node '{orphan}' is disconnected (no edges)" for orphan in sorted(node_ids - connected)
+        )
+    return problems
+
+
 def handle_lint(config: LintConfig) -> None:
-    """Parse the pipeline and report structural issues.
+    """Check the pipeline as the editor's save does, without executing it.
 
-    Exits with ``SystemExit(1)`` on parse errors, disconnected nodes, or
-    any other structural problem — the whole point of the command is to
-    surface those issues loudly.
+    The file is parsed strictly, its editor document's diagnostics are read (with file
+    and line), the editor's save-time validation runs over the parsed graph
+    (``SavePipelineService.validate_graph``: node configs, names, global constants, joins
+    and the rest, each refused with the editor's message), and the flattened graph is
+    checked for dangling edges and disconnected nodes. Every problem found is reported,
+    and any exits with ``SystemExit(1)``.
     """
-    from haute.parser import parse_pipeline_file
+    from haute.graph_utils import flatten_graph
+    from haute.routes._helpers import parse_pipeline_to_graph
+    from haute.routes._save_pipeline import SavePipelineService
 
-    filepath = config.pipeline_file
-
-    click.echo(f"Linting pipeline: {filepath}")
+    filepath = config.pipeline_file.resolve()
+    root = _lint_root(filepath)
+    click.echo(f"Linting pipeline: {config.pipeline_file}")
 
     try:
-        graph = parse_pipeline_file(filepath)
-    except Exception as e:
-        click.echo(f"  \u2717 Parse error: {e}", err=True)
+        graph = parse_pipeline_to_graph(filepath, project_root=root)
+    except EXPECTED_FAILURES as e:
+        click.echo(f"  ✗ Parse error: {e}", err=True)
         raise SystemExit(1)
 
-    nodes = graph.nodes
-    edges = graph.edges
-    node_ids = {n.id for n in nodes}
-
-    if not nodes:
-        click.echo("  \u2717 No nodes found in pipeline.", err=True)
+    if not graph.nodes:
+        click.echo("  ✗ No nodes found in pipeline.", err=True)
         raise SystemExit(1)
 
-    errors: list[str] = []
+    errors, warnings = _document_problems(filepath, root)
+    service = SavePipelineService(root, pipeline_root=filepath.parent)
+    try:
+        warnings.extend(
+            service.validate_graph(graph, source_file=filepath.relative_to(root).as_posix())
+        )
+    except EXPECTED_FAILURES as e:
+        errors.append(str(e))
+    flattened = flatten_graph(graph)
+    errors.extend(_structural_problems(flattened))
 
-    # Check for edges referencing non-existent nodes
-    for edge in edges:
-        if edge.source not in node_ids:
-            errors.append(f"Edge references missing source node: {edge.source}")
-        if edge.target not in node_ids:
-            errors.append(f"Edge references missing target node: {edge.target}")
-
-    # Check for orphan nodes (no edges at all, in a multi-node graph)
-    if len(nodes) > 1:
-        connected = set()
-        for edge in edges:
-            connected.add(edge.source)
-            connected.add(edge.target)
-        orphans = node_ids - connected
-        for orphan in orphans:
-            errors.append(f"Node '{orphan}' is disconnected (no edges)")
-
+    for warning in warnings:
+        click.echo(f"  ! {warning}")
     if errors:
         click.echo(f"\n  Found {len(errors)} issue(s):", err=True)
         for err in errors:
-            click.echo(f"  \u2717 {err}", err=True)
+            click.echo(f"  ✗ {err}", err=True)
         raise SystemExit(1)
 
     name = graph.pipeline_name or filepath.stem
-    click.echo(f"  \u2713 Pipeline '{name}': {len(nodes)} nodes, {len(edges)} edges")
-    click.echo("  \u2713 No structural issues found.")
+    click.echo(f"  ✓ Pipeline '{name}': {len(flattened.nodes)} nodes, {len(flattened.edges)} edges")
+    click.echo("  ✓ No issues found.")
 
 
 @click.command()
 @click.argument("pipeline_file", required=False)
 def lint(pipeline_file: str | None) -> None:
-    """Validate pipeline structure without deploying.
+    """Check a pipeline as the editor's save does, without running it.
 
-    Parses the pipeline, checks for structural issues (orphan nodes,
-    missing edges, syntax errors), and reports any problems found.
+    Parses the pipeline, applies the editor's save-time validation and
+    checks for structural issues (missing edge ends, disconnected nodes),
+    reporting every problem found.
     """
     try:
         resolved = resolve_pipeline_file(
             Path(pipeline_file) if pipeline_file else None,
         )
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ConfigError) as exc:
         click.echo(f"Error: {exc}", err=True)
         raise SystemExit(1) from exc
     config = LintConfig(pipeline_file=resolved)

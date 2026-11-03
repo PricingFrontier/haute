@@ -465,13 +465,9 @@ _SUBPROCESS_IMPORT_ALLOWLIST = {
     # install, so it does not belong in the GPU installer's chokepoint.
     "src/haute/deploy/_lock.py",
     "src/haute/_ci_secrets.py",  # GitHub CLI (gh) chokepoint for the deploy's CI secrets (caller)
-    # import-only: deliberate F401-suppressed patch-target — tests patch the
-    # module attribute and assert this module never shells out.
-    "src/haute/cli/_helpers.py",
 }
 
-# The chokepoints that actually launch subprocesses (the import-only entry
-# above never makes calls, so it carries no text-mode call sites).
+# The chokepoints that actually launch subprocesses.
 _CALLER_CHOKEPOINTS = (
     "src/haute/_git_core.py",
     "src/haute/_host_memory.py",

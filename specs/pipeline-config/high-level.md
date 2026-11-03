@@ -588,7 +588,7 @@ Source Switches route on:
   (its Source Switches' one non-live source, or `"batch"`), as they do today;
 - deployed scoring uses `live`;
 - `pipeline.run(source=...)` uses the source it is given, which it requires, and
-  `pipeline.score()` and `haute run` use `live`.
+  `pipeline.score()` uses `live`, and `haute run` `live` unless `--source` names another.
 
 A run binds concrete values, never a lookup that depends on the calling thread, so a lazy
 Polars callback that reads a constant during collection reads the run's value on whichever

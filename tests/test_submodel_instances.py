@@ -360,23 +360,12 @@ def test_instance_missing_columns_compiles_preamble_once_when_needed(mode: str) 
     assert compile_preamble.call_count == (0 if mode == "recorded" else 1)
 
 
-@pytest.mark.parametrize("warnings_last", [False, True])
-def test_haute_run_reports_executable_nodes_with_instance_warnings(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, warnings_last: bool
-) -> None:
+def test_haute_run_reports_executable_nodes_with_instance_warnings(tmp_path: Path) -> None:
+    """Run to each occurrence's scoring node, ``haute run`` reports the executable nodes it
+    walks by id, never the occurrences' warning-only entries."""
     from click.testing import CliRunner
 
     from haute.cli import cli
-    from haute.executor import execute_graph
-
-    if warnings_last:
-        # Metadata order has no meaning; exercise the real results in either order.
-        def execute_with_warnings_last(graph: PipelineGraph, **kwargs: Any) -> dict[str, Any]:
-            results = execute_graph(graph, **kwargs)
-            results["copy"] = results.pop("copy")
-            return results
-
-        monkeypatch.setattr("haute.executor.execute_graph", execute_with_warnings_last)
 
     files = graph_to_code_multi(
         _missing_columns_graph(), pipeline_name="warnings", source_file="main.py"
@@ -385,22 +374,26 @@ def test_haute_run_reports_executable_nodes_with_instance_warnings(
         destination = tmp_path / relative_path
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(source, encoding="utf-8", newline="\n")
-    run = CliRunner().invoke(cli, ["run", str(tmp_path / "main.py")], catch_exceptions=False)
-    assert run.exit_code == 0, run.output
-    expected_columns = {
-        "original_data": 2,
-        "owner_branch": 3,
-        "other_data": 2,
-        "original_rates": 2,
-        "other_rates": 3,
-        qualified_runtime_node_id("owner", "score"): 1,
-        qualified_runtime_node_id("copy", "score"): 1,
+    reported: set[str] = set()
+    for occurrence in ("owner", "copy"):
+        target = qualified_runtime_node_id(occurrence, "score")
+        run = CliRunner().invoke(
+            cli, ["run", str(tmp_path / "main.py"), "--node", target], catch_exceptions=False
+        )
+        assert run.exit_code == 0, run.output
+        assert f"Output - {target} (1 rows):" in run.output
+        reported |= {line for line in run.output.splitlines() if line.startswith("  \u2713 ")}
+    # Each target's ancestors carry only the columns it needs (owner_branch has three).
+    expected = {
+        "original_data": "2 cols carried",
+        "owner_branch": "2 cols carried",
+        "other_data": "2 cols carried",
+        "original_rates": "2 cols carried",
+        "other_rates": "3 cols carried",
+        qualified_runtime_node_id("owner", "score"): "1 cols",
+        qualified_runtime_node_id("copy", "score"): "1 cols",
     }
-    assert {line for line in run.output.splitlines() if line.startswith("  \u2713 ")} == {
-        f"  \u2713 {node_id}: 1 rows \u00d7 {columns} cols"
-        for node_id, columns in expected_columns.items()
-    }
-    assert f"Output - {qualified_runtime_node_id('owner', 'score')} (1 rows):" in run.output
+    assert reported == {f"  \u2713 {node_id}: {width}" for node_id, width in expected.items()}
 
 
 def test_instance_missing_columns_preview_response_and_refresh() -> None:
@@ -736,7 +729,7 @@ def test_owner_and_two_instances_deliver_distinct_rows_through_round_trip(
         == "rating_ie__finish"
     )
     assert execute_graph(flatten_graph(dissolved_graph))["consumer"].preview == expected
-    run = CliRunner().invoke(cli, ["run", "main.py"], catch_exceptions=False)
+    run = CliRunner().invoke(cli, ["run", "main.py", "--node", "consumer"], catch_exceptions=False)
     assert run.exit_code == 0, run.output
     for value in (11, 21, 31):
         assert str(value) in run.output

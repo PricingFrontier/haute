@@ -57,7 +57,10 @@ Out of scope, owned elsewhere:
   and sign-in, which have none, are refused naming their flags; a flag of the other kind of
   project (`--target` with `--workbench`, or `--host`, `--store` or `--sign-in` without it)
   is refused. Every new project gets a blank `rating/` pipeline package, `.env.example`,
-  test-quote fixtures, CI/CD workflow files for the chosen provider, a git pre-commit hook,
+  test-quote fixtures, CI/CD workflow files for the chosen provider (each GitHub action
+  pinned to a commit), a git pre-commit hook that fixes and formats only what is staged and
+  stops a commit (a milestone, or a person's own `git commit`; never a save) on a problem
+  ruff cannot fix safely,
   and `.gitignore` guard entries; a starter file of `rating/` or `tests/` is written only
   where the folder has none, so a `rating/main.py` already there is kept and the summary
   names what was kept, and no workflow already in the folder is pruned. The hook is installed in `.git/hooks/` too inside a git repository,
@@ -104,20 +107,31 @@ Out of scope, owned elsewhere:
   otherwise it is kept and the sign-in is not asked, a `--sign-in` given then answering
   nothing. A path of
   the form folder reached through a link or junction refuses the init before anything is
-  written. A root `main.py` is
-  always deleted: `uv init` recreates that placeholder every time it runs, and a Haute project's
-  real entry point is `rating/main.py`, so the root file is a tooling artifact — never user
-  content — and removing it keeps the entry point unambiguous. No `prompts/` directory or
+  written. A root `main.py` that is
+  exactly the placeholder `uv init` writes, its project name aside, is deleted: a Haute
+  project's entry point is `rating/main.py`, and removing the placeholder keeps it
+  unambiguous. Any other root `main.py` is the team's, in a repository Haute is set up in,
+  so it is kept and the summary says so. No `prompts/` directory or
   starter nodes/sidecars are generated.
-- `haute run [pipeline_file]` executes a pipeline end-to-end through the same
-  parse → flatten → `execute_graph` path the GUI uses (each submodel occurrence runs as its
-  definition's nodes, and a Workbench node takes its tables from the project's form folder,
-  [workbench](../workbench/high-level.md)), printing a per-node row/column summary and a
-  preview of the final node's output.
-- `haute lint [pipeline_file]` strictly parses a pipeline and exits non-zero on syntax,
-  configuration, topology, or other parse failures. For a valid canonical graph it reports
-  structural problems (edges pointing at missing nodes and orphan nodes) without executing
-  anything.
+- `haute run [pipeline_file] [--node NODE] [--source SOURCE] [--rows N]` runs a pipeline
+  to its output node (a Quote Response, a Workbench Output or a node marked as the output),
+  or to `--node`, as a batch run does: parsed and flattened as the editor's runs are (each
+  submodel occurrence runs as its definition's nodes, and a Workbench node takes its tables
+  from the project's form folder, [workbench](../workbench/high-level.md)), then walked once
+  as lazy plans under the `LAZY_SINK` profile and the named source (`live` by default), so
+  no node is materialised but the target, whose output alone is collected, all of it or its
+  first N rows. It prints each node walked with the columns its plan carries and the
+  target's output. A pipeline with no output node and no `--node` is refused, naming both
+  remedies.
+- `haute lint [pipeline_file]` checks a pipeline as the editor's save does, without
+  executing anything, so the generated CI's lint step refuses what the editor would refuse
+  to save. It strictly parses the pipeline and exits non-zero on syntax, configuration,
+  topology, or other parse failures; then reports, all in one run, the editor document's
+  diagnostics with file and line (a statement or comment a save would drop among them),
+  what the editor's save-time validation refuses (names, global constants, joins, selectors
+  and the rest, each with the save's own message), and structural problems of the flattened
+  graph (edges pointing at missing nodes and orphan nodes). The save's warnings are printed
+  without failing.
 - `haute train <training_script>` runs a training script that must define a module-level `job`
   object with a callable `run(progress=...)` method (normally a `TrainingJob`), streaming a
   live progress bar and printing the returned result's model path, feature counts, and metrics.
@@ -306,7 +320,8 @@ Invariants that hold across every command:
 
 - Depends on [pipeline-config](../pipeline-config/high-level.md) and
   [execution-engine](../execution-engine/high-level.md) for `run`/`lint` (`parse_pipeline_file`,
-  `execute_graph`).
+  `execute_lazy_graph`), and on [server-api](../server-api/high-level.md)'s save validation
+  (`SavePipelineService.validate_graph`) for `lint`.
 - Depends on [deploy](../deploy/high-level.md) for `deploy`/`smoke`/`impact`/`status`
   (`DeployConfig`, `resolve_config`, `validate_deploy`, `score_test_quotes`, `deploy_resolved`,
   `score_endpoint_batched`, `score_http_endpoint_batched`, `get_deploy_status`).
@@ -340,16 +355,20 @@ paths described above, not deploy or scoring successes.
 Exceptions are handled with narrow, explicit catches rather than blanket `except Exception` used as
 a fallback mechanism: transport-classification helpers (`_is_databricks_not_found`,
 `_is_http_not_found` in `src/haute/cli/_impact.py`) exist specifically so that only the exact "not found" shape is
-swallowed and reclassified — everything else re-raises. Where `except Exception` does appear (e.g.
-around `resolve_config` or script execution in `train`), it is used to convert an
-internal exception into a formatted CLI error message and `SystemExit(1)`, not to continue past the
-failure.
+swallowed and reclassified — everything else re-raises. Where a command turns a failure into
+one line and `SystemExit(1)` (around `resolve_config` in `deploy`, parsing and execution in
+`run` and `lint`, the script and `job.run` in `train`), it catches only the expected ones,
+`EXPECTED_FAILURES` in `src/haute/cli/_helpers.py`: Haute's own errors (`HauteError`:
+`DeployError`, `ConfigError`, `ParseError` and the rest), `ValueError` and `OSError`
+(`FileNotFoundError` among them). Anything else, a `TypeError` say, is a defect and reaches
+the terminal with its traceback. Helpers raise rather than exit: `resolve_transport` raises a
+`ClickException` for a container target without a staging endpoint URL.
 
 The Databricks smoke readiness loop retries only the SDK's explicit not-found response while an
 endpoint is being created. Authentication, permission, transport, and other SDK failures stop
 immediately with the original exception chained. Training execution and result rendering are
 separate failure boundaries: once `job.run()` has returned successfully, a formatting problem is
-reported as a result-reporting failure and never as “Training failed”.
+reported as a result-reporting failure, with its traceback, and never as “Training failed”.
 
 `handle_deploy` renders `DeployError` as an expected target/configuration failure and keeps
 the explicit missing-dependency and not-implemented messages. It does not catch the

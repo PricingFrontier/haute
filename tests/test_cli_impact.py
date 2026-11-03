@@ -361,10 +361,11 @@ class TestImpactWithoutAPortfolioSample:
         assert "Dataset: test quotes (tests/quotes) (2 rows)" in result.output
         assert "test quotes (tests/quotes)" in (tmp_path / "impact_report.md").read_text()
 
-    def test_a_comparison_segments_by_the_quotes_text_fields(
+    def test_a_comparison_is_given_every_scalar_field_of_the_quotes(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._project(tmp_path, monkeypatch, [{"input": {"Area": "A", "n": 1}}] * 3)
+        quote = {"Area": "A", "n": 1, "excess": 250.5, "renewal": True, "drivers": [{"age": 30}]}
+        self._project(tmp_path, monkeypatch, [{"input": quote}] * 3)
 
         with (
             patch("haute.cli._impact._impact_databricks") as mock_db,
@@ -377,7 +378,7 @@ class TestImpactWithoutAPortfolioSample:
 
         assert result.exit_code == 0, result.output
         input_df = report.call_args.kwargs["input_df"]
-        assert input_df.to_dicts() == [{"Area": "A"}] * 3
+        assert input_df.to_dicts() == [{"Area": "A", "n": 1, "excess": 250.5, "renewal": True}] * 3
 
     def test_no_test_quotes_to_compare_fails(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -472,3 +473,33 @@ def test_a_field_first_answered_late_is_never_silently_dropped() -> None:
             dataset_path="test quotes (tests/quotes)",
             total_rows=101,
         )
+
+
+class TestImpactDatasetStaysInTheProject:
+    """``[safety] impact_dataset`` is read only from inside the project root."""
+
+    @pytest.mark.parametrize("outside", ["relative", "absolute"])
+    def test_a_dataset_outside_the_project_is_refused_before_reading(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        outside: str,
+    ) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        elsewhere = tmp_path / "elsewhere.parquet"
+        pl.DataFrame({"Area": ["A"]}).write_parquet(elsewhere)
+        named = "../elsewhere.parquet" if outside == "relative" else elsewhere.as_posix()
+        _setup_impact_project(project, monkeypatch, impact_dataset=named)
+
+        with (
+            patch("polars.read_parquet") as read_parquet,
+            patch("haute.cli._impact._impact_databricks") as mock_db,
+        ):
+            result = runner.invoke(cli, ["impact"])
+
+        assert result.exit_code == 1, result.output
+        assert f"[safety] impact_dataset {named!r} is not a file in the project" in result.output
+        read_parquet.assert_not_called()
+        mock_db.assert_not_called()

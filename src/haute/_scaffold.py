@@ -803,6 +803,12 @@ def _github_login_step(target: str, secrets_env: str) -> str:
 # The step that ends each validate job: an automated project's dry-run deploy, which scores
 # the test quotes, or a workbench project's release build, which scores them as a deploy does
 # and holds the form to the pipeline. Each is a display name and the command it runs.
+#: The actions the generated GitHub workflows run, each pinned to a commit with its tag in a
+#: comment, so a tag moved to other code never runs in a job holding the deploy's secrets.
+#: They are the commits Haute's own CI runs (.github/workflows).
+_CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1"
+_SETUP_UV = "astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2"
+_UPLOAD_ARTIFACT = "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2"
 _DRY_RUN_CHECK = ("Dry-run deploy (score test quotes)", "uv run haute deploy --dry-run")
 _APP_BUILD_CHECK = ("Build the app's release (score test quotes)", "uv run haute app build")
 #: The report a workbench project's ``haute app build`` writes of its test quotes
@@ -811,7 +817,7 @@ _TEST_QUOTES_REPORT = "test_quotes_report.md"
 _GITHUB_TEST_QUOTES_UPLOAD = f"""\
       - name: Upload test quotes report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: {_UPLOAD_ARTIFACT}
         with:
           name: test-quotes-report
           path: {_TEST_QUOTES_REPORT}
@@ -868,8 +874,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: {_CHECKOUT}
+      - uses: {_SETUP_UV}
         with:
           enable-cache: true
           python-version: "3.11"
@@ -882,8 +888,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: {_CHECKOUT}
+      - uses: {_SETUP_UV}
         with:
           enable-cache: true
           python-version: "3.11"
@@ -895,8 +901,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: {_CHECKOUT}
+      - uses: {_SETUP_UV}
         with:
           enable-cache: true
           python-version: "3.11"
@@ -908,8 +914,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: {_CHECKOUT}
+      - uses: {_SETUP_UV}
         with:
           enable-cache: true
           python-version: "3.11"
@@ -956,8 +962,8 @@ def _github_deploy_yml(target: str) -> str:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: {_CHECKOUT}
+      - uses: {_SETUP_UV}
         with:
           enable-cache: true
           python-version: "3.11"
@@ -973,8 +979,8 @@ def _github_deploy_yml(target: str) -> str:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: {_CHECKOUT}
+      - uses: {_SETUP_UV}
         with:
           enable-cache: true
           python-version: "3.11"
@@ -985,7 +991,7 @@ def _github_deploy_yml(target: str) -> str:
         run: uv run haute impact{verify_suffix}
       - name: Upload impact report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: {_UPLOAD_ARTIFACT}
         with:
           name: impact-report
           path: impact_report.md
@@ -1017,8 +1023,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: {_CHECKOUT}
+      - uses: {_SETUP_UV}
         with:
           enable-cache: true
           python-version: "3.11"
@@ -1040,8 +1046,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: {_deploy_timeout_minutes(target)}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: {_CHECKOUT}
+      - uses: {_SETUP_UV}
         with:
           enable-cache: true
           python-version: "3.11"
@@ -1114,7 +1120,7 @@ jobs:
     runs-on: ubuntu-latest
 {environment_line}    timeout-minutes: {_deploy_timeout_minutes(target)}
     steps:
-      - uses: actions/checkout@v4
+      - uses: {_CHECKOUT}
       - name: Verify commit matches staged SHA
         if: inputs.sha != ''
         run: |
@@ -1123,7 +1129,7 @@ jobs:
               "staged SHA (${{{{ inputs.sha }}}}). Merge may have occurred since staging."
             exit 1
           fi
-      - uses: astral-sh/setup-uv@v4
+      - uses: {_SETUP_UV}
         with:
           enable-cache: true
           python-version: "3.11"
@@ -1753,8 +1759,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: {_CHECKOUT}
+      - uses: {_SETUP_UV}
         with:
           enable-cache: true
           python-version: "3.11"
@@ -1782,8 +1788,8 @@ jobs:
       group: {_STAGING_GROUP}
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: {_CHECKOUT}
+      - uses: {_SETUP_UV}
         with:
           enable-cache: true
           python-version: "3.11"
@@ -1799,7 +1805,7 @@ jobs:
         run: {_APP_IMPACT}
       - name: Upload impact report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: {_UPLOAD_ARTIFACT}
         with:
           name: impact-report
           path: impact_report.md
@@ -1843,10 +1849,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: {_PRODUCTION_TIMEOUT_MINUTES}
     steps:
-      - uses: actions/checkout@v4
+      - uses: {_CHECKOUT}
         with:
           ref: ${{{{ inputs.commit || github.sha }}}}
-      - uses: astral-sh/setup-uv@v4
+      - uses: {_SETUP_UV}
         with:
           enable-cache: true
           python-version: "3.11"
@@ -2047,18 +2053,64 @@ PRE_COMMIT_HOOK_MARK = "# Haute pre-commit hook"
 
 
 def pre_commit_hook() -> str:
-    """Generate a Git pre-commit hook that auto-formats with ruff."""
+    """Generate a Git pre-commit hook that fixes, formats and checks the staged Python.
+
+    Each staged file's staged content goes through ruff's standard input: the fixes ruff
+    makes safely, then its formatting, are written back to the index, so an unstaged hunk
+    of a partially staged file stays out of the commit, and a file with nothing unstaged
+    takes the result in the working tree too. The result is then checked, and each problem
+    left, printed as ``<file>:<line>:<column>: <code> <message>`` of the content written, stops
+    the commit, as does ruff failing to run.
+    """
     return f"""\
 #!/bin/sh
-{PRE_COMMIT_HOOK_MARK} - auto-format staged Python files with ruff.
+{PRE_COMMIT_HOOK_MARK} - fix, format and check the staged Python with ruff.
 # Installed by `haute init`. To reinstall: cp .githooks/pre-commit .git/hooks/
+#
+# Only what is staged is changed: a file's unstaged changes stay out of the commit. A
+# problem ruff cannot fix safely stops the commit; fix it, or end its line with
+# `# noqa: <code>` to keep it as it is.
 
-FILES=$(git diff --cached --name-only --diff-filter=ACM -- '*.py')
-[ -z "$FILES" ] && exit 0
+# core.quotePath=false lists a non-ASCII name as it is; git still quotes a name holding a
+# quote, a backslash or a control character, which this hook refuses rather than misread.
+files=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACMR -- '*.py')
+[ -z "$files" ] && exit 0
 
-uv run ruff format $FILES
-uv run ruff check --fix $FILES 2>/dev/null || true
-git add $FILES
+work=$(mktemp -d) || exit 1
+trap 'rm -rf "$work"' EXIT
+status=0
+while IFS= read -r file; do
+    case $file in
+        '"'*)
+            echo "pre-commit: rename $file: its name holds a character git quotes" >&2
+            status=1
+            continue
+            ;;
+    esac
+    git show ":$file" > "$work/staged" || {{ status=1; continue; }}
+    if ! uv run ruff check --fix --exit-zero --quiet --stdin-filename "$file" \\
+            < "$work/staged" > "$work/checked" ||
+        ! uv run ruff format --stdin-filename "$file" < "$work/checked" > "$work/fixed"
+    then
+        echo "pre-commit: ruff could not fix and format $file" >&2
+        status=1
+        continue
+    fi
+    if ! cmp -s "$work/staged" "$work/fixed"; then
+        # Nothing unstaged: the working tree takes the result as the index does.
+        git diff --quiet -- "$file" && whole=yes || whole=no
+        mode=$(git ls-files --stage -- "$file" | cut -d ' ' -f 1)
+        blob=$(git hash-object -w --stdin < "$work/fixed") &&
+            git update-index --cacheinfo "$mode,$blob,$file" || {{ status=1; continue; }}
+        [ "$whole" = yes ] && git checkout-index --force -- "$file"
+    fi
+    # What is left, at the lines of the content just written.
+    uv run ruff check --quiet --output-format=concise --stdin-filename "$file" \\
+        < "$work/fixed" >&2 || status=1
+done <<EOF
+$files
+EOF
+exit $status
 """
 
 

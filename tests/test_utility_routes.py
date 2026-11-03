@@ -627,23 +627,19 @@ class TestLedgerCapture:
         tracked = git_run(repository, "ls-tree", "-r", "--name-only", f"{_WORKING}-save")
         assert "utility/helpers.py" not in tracked.splitlines()
 
-    def test_a_save_a_project_hook_rewrites_answers_with_the_file_it_left(
-        self, client: TestClient, repository: Path
-    ) -> None:
-        """The capture runs the project's pre-commit hook. The editor is handed the content and
-        the revision the hook left, so its next save is not refused as a change made outside."""
-        install_hook(repository, "pre-commit", REWRITING_PRE_COMMIT_HOOK)
+    def test_a_save_runs_no_project_hook(self, client: TestClient, repository: Path) -> None:
+        """The capture records the module as it was written: the project's hooks run when a
+        milestone is made (specs/git-integration)."""
+        install_hook(repository, "pre-commit", REWRITING_PRE_COMMIT_HOOK + "exit 1\n")
         created = client.post("/api/utility", json={"name": "helpers", "content": "X = 1\n"})
         assert created.status_code == 200, created.text
 
-        first = _put(client, "helpers", "X = 2\n", revision=created.json()["revision"])
+        saved = _put(client, "helpers", "X = 2\n", revision=created.json()["revision"])
 
-        assert first.status_code == 200, first.text
-        on_disk = (repository / "utility" / "helpers.py").read_text(encoding="utf-8")
-        assert on_disk == "X = 2\n# formatted\n"
-        assert first.json()["content"] == on_disk
-        second = _put(client, "helpers", on_disk + "Y = 3\n", revision=first.json()["revision"])
-        assert second.status_code == 200, second.text
+        assert saved.status_code == 200, saved.text
+        assert (repository / "utility" / "helpers.py").read_text(encoding="utf-8") == "X = 2\n"
+        assert saved.json()["content"] == "X = 2\n"
+        assert self._ledger(repository) == (saved.json()["git_sha"], ["utility/helpers.py"])
 
 
 class TestBoundedNames:

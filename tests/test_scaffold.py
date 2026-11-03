@@ -337,7 +337,7 @@ class TestGithubCiYml:
 
     def test_uses_uv(self) -> None:
         result = github_ci_yml()
-        assert "astral-sh/setup-uv@v4" in result
+        assert "astral-sh/setup-uv@" in result
         assert "uv sync --frozen" in result
 
 
@@ -431,7 +431,7 @@ class TestGithubDeployYmlImprovements:
 
     def test_impact_report_uploaded_as_artifact(self) -> None:
         result = github_deploy_yml("databricks")
-        assert "upload-artifact@v4" in result
+        assert "actions/upload-artifact@" in result
         assert "impact-report" in result
 
     def test_deployed_sha_recorded(self) -> None:
@@ -1108,17 +1108,17 @@ class TestPreCommitHook:
         result = pre_commit_hook()
         assert "ruff format" in result
 
-    def test_contains_git_add(self) -> None:
+    def test_writes_the_fixed_staged_content_back_to_the_index(self) -> None:
         result = pre_commit_hook()
-        assert "git add" in result
+        assert "git update-index --cacheinfo" in result
+        assert "git add" not in result
+        assert "|| true" not in result
 
-    def test_valid_shell_syntax(self) -> None:
-        result = pre_commit_hook()
-        assert "#!/bin/sh" in result
-        assert "exit 0" in result
-        lines = result.strip().splitlines()
-        for line in lines:
-            assert line.count("$(") == line.count(")") or "#" in line or "2>/dev/null" in line
+    def test_is_valid_shell(self) -> None:
+        checked = subprocess.run(
+            [posix_shell(), "-n"], input=pre_commit_hook(), capture_output=True, text=True
+        )
+        assert checked.returncode == 0, checked.stderr
 
 
 class TestStarterTest:
@@ -1759,7 +1759,7 @@ class TestWorkbenchCiFiles:
         assert steps[-1] == {
             "name": "Upload test quotes report",
             "if": "always()",
-            "uses": "actions/upload-artifact@v4",
+            "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
             "with": {"name": "test-quotes-report", "path": "test_quotes_report.md"},
         }
 
@@ -1767,7 +1767,7 @@ class TestWorkbenchCiFiles:
         assert release["jobs"]["validate"]["steps"][-1] == {
             "name": "Upload test quotes report",
             "if": "always()",
-            "uses": "actions/upload-artifact@v4",
+            "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
             "with": {"name": "test-quotes-report", "path": "test_quotes_report.md"},
         }
         # PyYAML reads the bare key "on" as True.
@@ -1794,7 +1794,7 @@ class TestWorkbenchCiFiles:
         assert measured["run"] == "uv run haute app impact"
         assert set(measured["env"]) == self._SECRETS
         assert kept["if"] == "always()"
-        assert kept["uses"] == "actions/upload-artifact@v4"
+        assert kept["uses"] == "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
         assert kept["with"] == {"name": "impact-report", "path": "impact_report.md"}
 
         production = files[".github/workflows/release-production.yml"]

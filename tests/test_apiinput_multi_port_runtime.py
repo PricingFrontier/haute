@@ -1464,11 +1464,19 @@ def test_haute_run_executes_a_node_instance_after_a_multi_frame_source(
     )
     pipeline_path = isolated_root / "main.py"
 
-    handle_run(RunConfig(pipeline_file=pipeline_path))
+    original = "submodel_runtime/original/original_node"
+    handle_run(RunConfig(pipeline_file=pipeline_path, node=original))
 
     out = capsys.readouterr().out
-    assert "submodel_runtime/original/original_node: 2 rows × 1 cols" in out
-    assert "submodel_runtime/copy/original_node: 3 rows × 2 cols" in out
+    assert f"{original}: 1 cols" in out
+    assert f"Output - {original} (2 rows):" in out
+
+    copy = "submodel_runtime/copy/original_node"
+    handle_run(RunConfig(pipeline_file=pipeline_path, node=copy))
+
+    out = capsys.readouterr().out
+    assert f"{copy}: 2 cols" in out
+    assert f"Output - {copy} (3 rows):" in out
 
 
 @pytest.mark.parametrize("source_handle", [None, "nonexistent"])

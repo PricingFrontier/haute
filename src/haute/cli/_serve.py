@@ -332,17 +332,6 @@ def _detect_dev_frontend_dir() -> Path | None:
     return source_frontend
 
 
-def _schedule_browser_open(url: str, delay: float) -> None:
-    """Open *url* in the default browser after *delay* seconds.
-
-    Deferred so the server has time to start accepting connections
-    before the browser races to fetch the page.
-    """
-    import threading
-
-    threading.Timer(delay, _open_browser, args=(url,)).start()
-
-
 def _wait_for_backend_then_open_browser(
     browser_url: str,
     backend_host: str,
@@ -564,7 +553,7 @@ def _run_prod_mode(config: ServeConfig) -> None:
         raise SystemExit(1)
 
     if not config.no_browser:
-        _schedule_browser_open(_http_url(config), delay=1.5)
+        _open_browser_after_backend_ready(_http_url(config), config.host, config.port)
     uvicorn.run(
         "haute.server:app",
         host=config.host,

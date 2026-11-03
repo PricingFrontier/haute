@@ -637,6 +637,11 @@ def _init_git_repo() -> None:
     _run_git("branch", "-M", "main")
     _run_git("config", "user.name", "Haute E2E")
     _run_git("config", "user.email", "haute-e2e@example.com")
+    # The project's pre-commit hook runs `uv run ruff`, which would build this throwaway
+    # project an environment from PyPI on a milestone's commit; the browser flows test
+    # version history, not formatting. A hooks path holding no hook also keeps the first-run
+    # setup from installing the project's.
+    _run_git("config", "core.hooksPath", ".git/e2e-no-hooks")
     _run_git("add", "-A")
     _run_git(
         "add",

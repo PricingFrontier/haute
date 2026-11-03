@@ -473,39 +473,21 @@ def test_a_failed_repair_rolls_back_before_the_waiting_milestone_records_anythin
     assert _blob(project, milestone.sha, "notes.md") == "Reviewed."
 
 
-def test_a_save_a_hook_rewrites_hands_back_the_document_on_disk(project: Path) -> None:
-    """The ledger capture runs the project's hooks; the editor is given the revision and the
-    document the hook left, so its next save is not refused as stale."""
-    install_hook(project, "pre-commit", REWRITING_PRE_COMMIT_HOOK)
-    service = SavePipelineService(project_root=project)
-
-    response = service.save(_save_request(project, banding=True))
-
-    assert (project / "main.py").read_text(encoding="utf-8").endswith("# formatted\n")
-    assert _blob(project, response.git_sha, "main.py").endswith("# formatted")
-    on_disk = load_pipeline_editor_document(project / "main.py", project_root=project)
-    assert response.source_revision == on_disk.source_revision
-    assert service.committed is not None
-    assert service.committed.payload == on_disk.model_dump(mode="json", by_alias=True)
-
-
-def test_a_hook_that_rewrites_and_then_refuses_still_hands_back_the_document_on_disk(
-    project: Path,
-) -> None:
-    """A formatter hook that fixes the files and fails the commit (as the pre-commit
-    framework does) leaves the save uncaptured, and the editor still gets the file on disk."""
-    install_hook(
-        project,
-        "pre-commit",
-        REWRITING_PRE_COMMIT_HOOK.replace(
-            "done\n", "done\necho 'files were modified' >&2\nexit 1\n"
-        ),
-    )
+@pytest.mark.parametrize("refuses", [False, True], ids=["rewrites", "rewrites-and-refuses"])
+def test_a_save_runs_none_of_the_projects_hooks(project: Path, refuses: bool) -> None:
+    """A save is recorded as it was written, whatever the project's pre-commit hook would
+    do: the hooks run when a milestone is made (specs/git-integration)."""
+    hook = REWRITING_PRE_COMMIT_HOOK + ("exit 1\n" if refuses else "")
+    install_hook(project, "pre-commit", hook)
+    # Hooks --no-verify would still run: one refusing the message, one leaving a mark.
+    install_hook(project, "prepare-commit-msg", "#!/bin/sh\nexit 1\n")
+    install_hook(project, "post-commit", "#!/bin/sh\ntouch post-commit-ran\n")
 
     response = SavePipelineService(project_root=project).save(_save_request(project, banding=True))
 
-    assert response.git_sha is None
-    assert response.warnings
-    on_disk = load_pipeline_editor_document(project / "main.py", project_root=project)
-    assert (project / "main.py").read_text(encoding="utf-8").endswith("# formatted\n")
-    assert response.source_revision == on_disk.source_revision
+    written = (project / "main.py").read_text(encoding="utf-8")
+    assert not written.endswith("# formatted\n")
+    assert not (project / "post-commit-ran").exists()
+    assert response.git_sha is not None
+    assert _blob(project, response.git_sha, "main.py") == written.rstrip("\n")
+    assert not [warning for warning in response.warnings if "capture" in warning]

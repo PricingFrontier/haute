@@ -164,11 +164,6 @@ package, independently of the original finding count.
 Both Criticals, and the Majors whose packages were delivered, have been removed;
 these are the Majors still open.
 
-- **`haute init --force` overwrites the analyst's pipeline, utility code, tests
-  and form** (Major, `CLI-R01`), and a first `init` deletes a root `main.py` it
-  did not write.
-- **`haute run` is a full eager preview** (Major, `CLI-R02`): every node is
-  collected into memory at once under the preview profile.
 - **A graceful server exit joins every in-flight worker** (Major,
   `ROAD-WORKER-06`): a 6 s child in flight at a 2 s exit ends the process at
   7.6 s; no job registry is cancelled at shutdown.
@@ -192,9 +187,8 @@ these are the Majors still open.
 
 ## Design choices the review asks the owner to confirm
 
-Three behaviours are specified and implemented as specified, and the review
-still puts them in front of the owner because of what they can cost in
-production:
+One behaviour is specified and implemented as specified, and the review still
+puts it in front of the owner because of what it can cost in production:
 
 - The assistant's dry run executes model-produced Python in the server process
   (the planned preamble, free-code steps and node bodies are compiled and run
@@ -203,18 +197,11 @@ production:
   egress ceiling, so a prompt-injected project document or a misbehaving model
   can run code on the server without saving. No package is filed; the choice
   is the owner's.
-- `haute run` executes the whole pipeline eagerly in memory (`CLI-R02`).
 
 ## Findings mapped to packages
 
 | Area | Findings | Package |
 |---|---|---|
-| CLI | PM-34 | `CLI-R01` |
-| CLI | EXE-1 | `CLI-R02` |
-| CLI | PM-36 | `CLI-R03` |
-| CLI | PM-35 | `CLI-R04` |
-| CLI | PM-27, PM-31, PM-32, PM-33 | `CLI-R05` |
-| CLI | PM-29 (templates), PM-30 | `CLI-R06` |
 | IO layer | CIO-5, CIO-11 | `IO-R06` |
 | Background jobs | WRK-2 | `ROAD-WORKER-06` |
 | Background jobs | WRK-5, WRK-6, WRK-11, WRK-14 | `ROAD-WORKER-07` |
@@ -269,9 +256,9 @@ panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and
 `applyFrontierPointSummary`'s null handling (`FSH-R03`); in the workbench UI and
 the app shell, the
 chart theme observer written twice (`EDA-R03`), knip's export-only symbols (`ENGQ-R01`), browser-locale dates (`FSH-R08`), the bootstrap without
-a deadline (`FSH-R05`) and Ctrl+S inside a code box (`FSH-R07`); in the tests, scripts and CI, the floating
-action tags in the generated workflows (`CLI-R06`), the campaign-named test modules
-(`ENGQ-R05`), the test-only reset hooks in production code (`ENGQ-R01`), and the
+a deadline (`FSH-R05`) and Ctrl+S inside a code box (`FSH-R07`); in the tests, scripts
+and CI, the campaign-named test modules (`ENGQ-R05`), the test-only reset hooks in
+production code (`ENGQ-R01`), and the
 189 test modules that change directory because production resolves the project
 root from it (`PCFG-R04`).
 
@@ -327,7 +314,7 @@ All probes live outside the repository and wrote nothing into it.
 | Tool | Result |
 |---|---|
 | radon | 285 functions with cyclomatic complexity ≥ 20; 27 ≥ 50 (the largest in the optimiser service, the save service, the assistant tools and the RAM estimate). |
-| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `ROAD-WORKER-08`, `CLI-R05` and `ENGQ-R01`; the deploy ones are removed. |
+| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `ROAD-WORKER-08` and `ENGQ-R01`; the deploy and CLI ones are removed. |
 | jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `ROAD-WORKER-08`; the deploy ones are removed. |
 | jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `EDA-R03`. |
 | knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted (since declared); every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |

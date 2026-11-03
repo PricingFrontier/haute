@@ -15,6 +15,8 @@ from pathlib import Path
 
 import click
 
+from haute.cli._helpers import EXPECTED_FAILURES
+
 
 @dataclass
 class TrainConfig:
@@ -75,7 +77,7 @@ def handle_train(config: TrainConfig) -> None:
     mod = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(mod)
-    except Exception as e:
+    except EXPECTED_FAILURES as e:
         click.echo(f"Error executing script: {e}", err=True)
         raise SystemExit(1)
 
@@ -88,7 +90,7 @@ def handle_train(config: TrainConfig) -> None:
 
     try:
         result = job.run(progress=_progress)
-    except Exception as e:
+    except EXPECTED_FAILURES as e:
         click.echo(f"\n  Training failed: {e}", err=True)
         raise SystemExit(1) from e
 
@@ -105,12 +107,13 @@ def handle_train(config: TrainConfig) -> None:
         click.echo("\n  Metrics:")
         for name, value in result.metrics.items():
             click.echo(f"    {name}: {value:.4f}")
-    except Exception as e:
+    except Exception:
+        # Training is done: say so, so the traceback below is not read as training's.
         click.echo(
-            f"\n  Training succeeded and the model may be saved, but result reporting failed: {e}",
+            "\n  Training succeeded and the model may be saved, but result reporting failed:",
             err=True,
         )
-        raise SystemExit(1) from e
+        raise
 
 
 @click.command()

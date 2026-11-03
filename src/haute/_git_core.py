@@ -434,6 +434,20 @@ if sys.platform == "win32":
         return int(job)
 
 
+#: Leading ``git`` arguments that run a command with none of the project's hooks: every
+#: hook git looks for, ``prepare-commit-msg`` and ``post-commit`` included, which
+#: ``--no-verify`` would still run. Haute's own commits (a save, the root commit) take it.
+NO_HOOKS: tuple[str, ...] = ("-c", "core.hooksPath=/dev/null")
+
+
+def _subcommand(args: tuple[str, ...]) -> str:
+    """The git subcommand *args* run, past any leading ``-c <name>=<value>`` settings."""
+    index = 0
+    while index < len(args) - 1 and args[index] == "-c":
+        index += 2
+    return args[index] if index < len(args) else ""
+
+
 def _run_git(
     *args: str,
     check: bool = True,
@@ -482,7 +496,7 @@ def _run_git(
     if check and returncode != 0:
         stderr = stderr.strip()
         logger.warning("git_command_failed", cmd=cmd, stderr=stderr)
-        raise GitError(stderr or f"git {args[0]} failed")
+        raise GitError(stderr or f"git {_subcommand(args)} failed")
     return stdout.strip()
 
 
@@ -1384,7 +1398,7 @@ def _rewrite_tree(*args: str, cwd: Path | None = None) -> None:
     if not out_of_step:
         if code != 0:
             logger.warning("git_command_failed", cmd=["git", *args], stderr=stderr)
-            raise GitError(stderr or f"git {args[0]} failed")
+            raise GitError(stderr or f"git {_subcommand(args)} failed")
         return
     logger.warning("git_tree_out_of_step", cmd=["git", *args], files=out_of_step, stderr=stderr)
     held = reported or out_of_step

@@ -184,14 +184,25 @@ def _impact_records(
     ``[safety] impact_dataset`` names a Parquet portfolio sample, sampled to *sample*
     rows. Without one the test quotes are compared, the requests smoke sends, so a new
     project's impact step runs before anyone has committed a portfolio sample; the
-    report names which it compared. Exits 1 when the named sample is missing, or, with
-    none named, when there are no test quotes to compare.
+    report names which it compared. Exits 1 when the named sample is outside the project
+    or missing, or, with none named, when there are no test quotes to compare.
     """
     import polars as pl
 
+    from haute._sandbox import contained_path
+    from haute.errors import InvalidPathError, PathOutsideProjectError
+
     impact_path = deploy_config.safety.impact_dataset
     if impact_path:
-        dataset_file = (project_root / impact_path).resolve()
+        try:
+            dataset_file = contained_path(project_root, impact_path)
+        except (PathOutsideProjectError, InvalidPathError) as exc:
+            click.echo(
+                f"Error: [safety] impact_dataset {impact_path!r} is not a file in the project "
+                f"({project_root}); name one inside it.",
+                err=True,
+            )
+            raise SystemExit(1) from exc
         if not dataset_file.exists():
             click.echo(f"Error: Impact dataset not found: {dataset_file}", err=True)
             raise SystemExit(1)
@@ -231,10 +242,14 @@ def _impact_records(
         label = tq_dir.resolve().relative_to(project_root.resolve()).as_posix()
     except ValueError:
         label = str(tq_dir)
-    # Segments are read from a quote's text fields; its tables are not segmented.
+    # A quote's scalar fields are its columns, as an impact dataset's are; its tables are not.
     input_df = pl.DataFrame(
         [
-            {key: value for key, value in record.items() if isinstance(value, str)}
+            {
+                key: value
+                for key, value in record.items()
+                if isinstance(value, str | int | float | bool)
+            }
             for record in records
         ],
         infer_schema_length=None,

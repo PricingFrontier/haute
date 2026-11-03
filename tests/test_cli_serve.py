@@ -482,8 +482,6 @@ class TestServe:
         monkeypatch.chdir(tmp_path)
         static = _built_static_dir(tmp_path)
 
-        mock_timer = MagicMock()
-
         with (
             patch(
                 "haute.cli._serve._find_frontend_dir",
@@ -492,18 +490,16 @@ class TestServe:
             patch("haute.cli._serve._source_checkout_root", return_value=None),
             patch("haute.server.STATIC_DIR", static),
             patch("uvicorn.run") as mock_run,
-            patch("threading.Timer", return_value=mock_timer) as timer_cls,
+            patch("threading.Timer") as timer_cls,
+            patch("haute.cli._serve._open_browser_after_backend_ready") as ready_open,
         ):
             result = runner.invoke(cli, ["serve"])
 
         assert result.exit_code == 0, result.output
         assert mock_run.call_args.kwargs["host"] == "localhost"
-        timer_cls.assert_called_once_with(
-            1.5,
-            serve_mod._open_browser,
-            args=("http://localhost:8000",),
-        )
-        mock_timer.start.assert_called_once()
+        # Opened once the backend accepts connections, never after a fixed delay.
+        ready_open.assert_called_once_with("http://localhost:8000", "localhost", 8000)
+        timer_cls.assert_not_called()
 
     def test_prod_mode_custom_host_port_browser_url(
         self,
@@ -515,8 +511,6 @@ class TestServe:
         monkeypatch.chdir(tmp_path)
         static = _built_static_dir(tmp_path)
 
-        mock_timer = MagicMock()
-
         with (
             patch(
                 "haute.cli._serve._find_frontend_dir",
@@ -525,13 +519,12 @@ class TestServe:
             patch("haute.cli._serve._source_checkout_root", return_value=None),
             patch("haute.server.STATIC_DIR", static),
             patch("uvicorn.run"),
-            patch("threading.Timer", return_value=mock_timer) as timer_cls,
+            patch("haute.cli._serve._open_browser_after_backend_ready") as ready_open,
         ):
             result = runner.invoke(cli, ["serve", "--host", "127.0.0.42", "--port", "9999"])
 
         assert result.exit_code == 0, result.output
-        call_kwargs = timer_cls.call_args
-        assert "127.0.0.42" in str(call_kwargs) and "9999" in str(call_kwargs)
+        ready_open.assert_called_once_with("http://127.0.0.42:9999", "127.0.0.42", 9999)
 
     def test_dev_mode_cleanup_terminates_vite(
         self,
