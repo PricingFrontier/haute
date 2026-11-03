@@ -179,11 +179,12 @@ def main(argv: list[str] | None = None) -> int:
     """Check the installed runtime against the lock record named on the command line."""
     [path] = argv if argv is not None else sys.argv[1:]
     problems = runtime_problems(json.loads(Path(path).read_text(encoding="utf-8")))
+    # The image build's own output: it runs as ``python -m`` before anything is served.
     for problem in problems:
-        print(f"runtime check: {problem}", file=sys.stderr)
+        sys.stderr.write(f"runtime check: {problem}\n")
     if problems:
         return 1
-    print("runtime check: the installed runtime matches the lock.")
+    sys.stdout.write("runtime check: the installed runtime matches the lock.\n")
     return 0
 
 

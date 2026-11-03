@@ -842,8 +842,16 @@ class TestInferOutputSchema:
 
         assert result == {"result": "Float64"}
 
-    def test_corrupt_cache_logs_warning(self, tmp_path, monkeypatch):
-        """Corrupt cache JSON logs a warning with path and error details."""
+    @pytest.mark.parametrize(
+        ("cache_text", "error"),
+        [
+            ("NOT VALID JSON {{{{", "Expecting value"),
+            ('{"entries": []}', "entries is a list"),
+        ],
+        ids=["unparseable", "entries-not-a-mapping"],
+    )
+    def test_corrupt_cache_logs_warning(self, tmp_path, monkeypatch, cache_text, error):
+        """A cache that is not one logs a warning with path and error details."""
         from haute.deploy._schema import infer_output_schema
 
         monkeypatch.chdir(tmp_path)
@@ -887,7 +895,7 @@ class TestInferOutputSchema:
         cache_dir = tmp_path / ".haute_cache"
         cache_dir.mkdir()
         cache_file = cache_dir / "output_schema.json"
-        cache_file.write_text("NOT VALID JSON {{{{")
+        cache_file.write_text(cache_text)
 
         mock_result = pl.DataFrame({"result": [42.0]})
 
@@ -905,8 +913,8 @@ class TestInferOutputSchema:
             f"Expected 1 corrupt_schema_cache warning, got {len(warning_calls)}"
         )
         kwargs = warning_calls[0][1]
-        assert "path" in kwargs
-        assert "error" in kwargs
+        assert kwargs["path"] == str(cache_file)
+        assert error in kwargs["error"]
 
     def test_cache_miss_writes_cache(self, tmp_path, monkeypatch):
         """Cache miss computes schema and writes cache file."""
@@ -2320,6 +2328,63 @@ class TestScoreGraphExternalFileRemap:
         assert "ext_val" in result.columns
         assert result["ext_val"].to_list() == [99]
 
+    def test_an_unbundled_external_file_is_the_builders_reading_its_configured_path(
+        self, tmp_path, _widen_sandbox_root
+    ):
+        """With no bundled copy, the Load File builder runs: it reads the configured file."""
+        from haute.deploy._scorer import score_graph
+
+        lookup = tmp_path / "lookup.json"
+        lookup.write_text(json.dumps({"base": 10.0}))
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
+                        },
+                    },
+                    {
+                        "id": "ext",
+                        "data": {
+                            "label": "ext",
+                            "nodeType": "externalFile",
+                            "config": {
+                                "path": str(lookup),
+                                "fileType": "json",
+                                "code": "df = df.with_columns(base=pl.lit(obj['base']))",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config(["x", "base"]),
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "ext", "sourceHandle": "src"},
+                    {"id": "e2", "source": "ext", "target": "out"},
+                ],
+            }
+        )
+
+        result = score_graph(
+            graph=graph,
+            input_df=pl.DataFrame({"x": [1.0]}),
+            input_node_ids=["src"],
+            output_node_id="out",
+            artifact_paths={"other__model.cbm": str(tmp_path / "model.cbm")},
+        )
+
+        assert result["base"].to_list() == [10.0]
+
     def test_external_file_code_sees_the_preamble_as_in_the_editor(
         self, tmp_path, _widen_sandbox_root
     ):
@@ -2621,8 +2686,9 @@ class TestScoreGraphOptimiserApplyRemap:
             [1.1, 1.1]
         )
 
-    def _ratebook_apply_remap_score(self, tmp_path):
-        """Score a deployed ratebook-apply graph and return the result frame."""
+    def _ratebook_apply_remap_score(self, tmp_path, *, bundled: bool = True):
+        """Score a deployed ratebook-apply graph and return the result frame: its artifact
+        bundled, or, with *bundled* False, read from its configured path."""
         from haute.deploy._scorer import score_graph
 
         artifact_path = tmp_path / "ratebook.json"
@@ -2694,7 +2760,9 @@ class TestScoreGraphOptimiserApplyRemap:
                             "nodeType": "optimiserApply",
                             "config": {
                                 "sourceType": "file",
-                                "artifact_path": "artifacts/ratebook.json",
+                                "artifact_path": (
+                                    "artifacts/ratebook.json" if bundled else str(artifact_path)
+                                ),
                                 "version_column": "__opt_v__",
                                 "optimised_value_column": "selected_factor",
                                 "ratebook_input": "band",
@@ -2741,8 +2809,20 @@ class TestScoreGraphOptimiserApplyRemap:
             ),
             input_node_ids=["src"],
             output_node_id="out",
-            artifact_paths={"opt__ratebook.json": str(artifact_path)},
+            artifact_paths=(
+                {"opt__ratebook.json": str(artifact_path)}
+                if bundled
+                else {"other__model.cbm": str(tmp_path / "model.cbm")}
+            ),
         )
+
+    def test_an_unbundled_file_apply_is_the_builders_reading_its_configured_path(
+        self, tmp_path, _widen_sandbox_root
+    ):
+        """With no bundled copy, the Optimiser Apply builder runs: it reads the configured
+        artifact and applies it, never passing the quotes through unpriced."""
+        result = self._ratebook_apply_remap_score(tmp_path, bundled=False)
+        assert result["selected_factor"].to_list() == [0.95, 1.05]
 
     def test_ratebook_apply_file_remap_routes_through_configured_input(self, tmp_path):
         """The configured ``ratebook_input`` is used for the factor-table lookup."""
