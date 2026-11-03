@@ -428,53 +428,6 @@ export interface PipelineSettingsValues {
   pipeline_time_limit_minutes: number | null;
   preview_memory_gb: number | null;
 }
-export interface ExplorePivotRunResponse {
-  cached: boolean;
-  failure: ExplorePivotFailure | null;
-  job_id: string | null;
-  message: string;
-  result: ExplorePivotResult | null;
-  status: 'started' | 'completed' | 'cache_required';
-}
-export interface ExplorePivotFailure {
-  dimensions: {
-    [k: string]: string | number;
-  };
-  message: string;
-  reason_code: string;
-  remediation: string;
-}
-export interface ExplorePivotResult {
-  calculation_key: string;
-  cells: ExplorePivotCell[];
-  column_fields: string[];
-  column_paths: ExplorePivotPath[];
-  data_version: string;
-  execution_metrics: ExecutionMetricsPayload | null;
-  generated_at: number;
-  node_id: string;
-  pivot_id: string;
-  row_fields: string[];
-  row_paths: ExplorePivotPath[];
-  source: string;
-  values: ExplorePivotValueIdentity[];
-  version: 1;
-  warnings: string[];
-}
-export interface ExplorePivotCell {
-  column_index: number;
-  row_index: number;
-  value: string | number | boolean | null;
-  value_id: string;
-}
-export interface ExplorePivotPath {
-  is_grand_total: boolean;
-  members: ExplorePivotMemberKey[];
-}
-export interface ExplorePivotMemberKey {
-  kind: 'null' | 'string' | 'boolean' | 'integer' | 'float' | 'nan' | 'date' | 'datetime' | 'time' | 'decimal';
-  value: string | number | boolean | null;
-}
 export interface ExecutionMetricsPayload {
   admission: ExecutionAdmissionPayload | null;
   bytes_written: number | null;
@@ -763,6 +716,53 @@ export interface ExecutionWarningPayload {
   code: string;
   node_id: string | null;
   reason: string | null;
+}
+export interface ExplorePivotRunResponse {
+  cached: boolean;
+  failure: ExplorePivotFailure | null;
+  job_id: string | null;
+  message: string;
+  result: ExplorePivotResult | null;
+  status: 'started' | 'completed' | 'cache_required';
+}
+export interface ExplorePivotFailure {
+  dimensions: {
+    [k: string]: string | number;
+  };
+  message: string;
+  reason_code: string;
+  remediation: string;
+}
+export interface ExplorePivotResult {
+  calculation_key: string;
+  cells: ExplorePivotCell[];
+  column_fields: string[];
+  column_paths: ExplorePivotPath[];
+  data_version: string;
+  execution_metrics: ExecutionMetricsPayload | null;
+  generated_at: number;
+  node_id: string;
+  pivot_id: string;
+  row_fields: string[];
+  row_paths: ExplorePivotPath[];
+  source: string;
+  values: ExplorePivotValueIdentity[];
+  version: 1;
+  warnings: string[];
+}
+export interface ExplorePivotCell {
+  column_index: number;
+  row_index: number;
+  value: string | number | boolean | null;
+  value_id: string;
+}
+export interface ExplorePivotPath {
+  is_grand_total: boolean;
+  members: ExplorePivotMemberKey[];
+}
+export interface ExplorePivotMemberKey {
+  kind: 'null' | 'string' | 'boolean' | 'integer' | 'float' | 'nan' | 'date' | 'datetime' | 'time' | 'decimal';
+  value: string | number | boolean | null;
 }
 export interface ExplorePivotValueIdentity {
   aggregation: 'sum' | 'count' | 'average' | 'min' | 'max' | 'median' | 'distinct_count' | 'formula';

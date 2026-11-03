@@ -173,6 +173,35 @@ test(
   },
 );
 
+test("a shared group's root is compiled once, and every other module checks only an object", async () => {
+  const schema = JSON.parse(
+    await readFile(path.join(sourceDirectory, "api-contracts.schema.json"), "utf8"),
+  );
+  const modules = validatorModules(schema);
+  const carriers = ["node-data", "explore", "training", "optimiser", "output"];
+  for (const group of carriers) {
+    const module = modules.find(({ validatorFilename }) =>
+      validatorFilename === `api-contracts.${group}.validators.mjs`);
+    const definitions = extractModuleContractSchema(schema, module).$defs;
+    assert.equal(Object.hasOwn(definitions, "ExecutionMetricsPayload"), false, group);
+    assert.equal(Object.hasOwn(definitions, "ExecutionStageMetricsPayload"), false, group);
+  }
+  const nodeData = modules.find(({ validatorFilename }) =>
+    validatorFilename === "api-contracts.node-data.validators.mjs");
+  assert.deepEqual(
+    extractModuleContractSchema(schema, nodeData).$defs.NodeDataStatusResponse.properties
+      .execution_metrics,
+    { type: ["object", "null"] },
+  );
+
+  const shared = extractContractSchema(schema, "ExecutionMetricsPayload").schema;
+  assert.ok(Object.hasOwn(shared.$defs, "ExecutionStageMetricsPayload"));
+  assert.ok(Object.hasOwn(shared.$defs, "ExecutionStrategyDiagnosticPayloadOutput"));
+
+  const unshared = { ...schema, "x-haute-shared-response-groups": ["utility"] };
+  assert.throws(() => validatorModules(unshared), /holds exactly one model: utility/);
+});
+
 test("a schema that says nothing of its type is declared unknown, never an object", () => {
   const change = {
     type: "object",

@@ -148,6 +148,7 @@ import {
   parseSubmodelGraphResponse,
   parseTraceResponse,
   isPlainObject,
+  type ExecutionMetricsValidator,
 } from "../types/guards"
 import { expectGeneratedContract } from "../types/generatedContractValidation"
 
@@ -168,6 +169,13 @@ const optimiserValidators = () => import("../generated/api-contracts.optimiser.v
 const outputValidators = () => import("../generated/api-contracts.output.validators.mjs")
 const sessionValidators = () => import("../generated/api-contracts.session.validators.mjs")
 const utilityValidators = () => import("../generated/api-contracts.utility.validators.mjs")
+const executionMetricsValidators = () =>
+  import("../generated/api-contracts.execution-metrics.validators.mjs")
+
+/** The shared execution-metrics validator, for a response that carries execution metrics. */
+async function metricsValidator(): Promise<ExecutionMetricsValidator> {
+  return (await executionMetricsValidators()).validateExecutionMetricsPayload
+}
 import {
   parseRemoveBrokenConnectionApplyResponse,
   parseRemoveUnavailableNodeApplyResponse,
@@ -884,7 +892,7 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
       ...(requestId !== undefined ? { request_id: requestId } : {}),
     },
     { signal, timeout },
-  ).then((data) => parsePreviewNodeResponse(data) as PreviewNodeResponse)
+  ).then(async (data) => parsePreviewNodeResponse(data, await metricsValidator()))
 }
 
 /**
@@ -1041,7 +1049,7 @@ export function previewRecoveryNode(
       ...(requestId !== undefined ? { request_id: requestId } : {}),
     },
     { signal, timeout },
-  ).then((data) => parsePreviewNodeResponse(data) as PreviewNodeResponse)
+  ).then(async (data) => parsePreviewNodeResponse(data, await metricsValidator()))
 }
 
 export function savePipeline(
@@ -1197,7 +1205,7 @@ export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse>
     "WriteOutputResponse",
     (await outputValidators()).validateWriteOutputResponse,
     data,
-  )))
+  ), await metricsValidator()))
 }
 
 // ---------------------------------------------------------------------------
@@ -1430,8 +1438,10 @@ export function getNodeDataStatus(
   return request<unknown>(`/api/node-data/status/${encodeURIComponent(jobId)}`, options).then(
     async (data) => {
       const { validateNodeDataStatusResponse } = await nodeDataValidators()
+      const validateMetrics = await metricsValidator()
       return validateApiResponse("Could not read node data status", () => nodeDataStatusFromContract(
         expectGeneratedContract("NodeDataStatusResponse", validateNodeDataStatusResponse, data),
+        validateMetrics,
       ))
     },
   )
@@ -1447,6 +1457,7 @@ export function cancelNodeData(
     options,
   ).then(async (data) => nodeDataStatusFromContract(
     expectGeneratedContract("NodeDataStatusResponse", (await nodeDataValidators()).validateNodeDataStatusResponse, data),
+    await metricsValidator(),
   ))
 }
 
@@ -1548,6 +1559,7 @@ export function runExplorePivot(args: RunExplorePivotArgs): Promise<ExplorePivot
     source: payload.source ?? "live",
   }, { signal, timeout }).then(async (data) => explorePivotRunFromContract(
     expectGeneratedContract("ExplorePivotRunResponse", (await exploreValidators()).validateExplorePivotRunResponse, data),
+    await metricsValidator(),
   ))
 }
 
@@ -1558,8 +1570,10 @@ export function getExplorePivotStatus(
   return request<unknown>(`/api/explore/pivots/status/${encodeURIComponent(jobId)}`, options)
     .then(async (data) => {
       const { validateExplorePivotStatusResponse } = await exploreValidators()
+      const validateMetrics = await metricsValidator()
       return validateApiResponse("Could not read pivot status", () => explorePivotStatusFromContract(
         expectGeneratedContract("ExplorePivotStatusResponse", validateExplorePivotStatusResponse, data),
+        validateMetrics,
       ))
     })
 }
@@ -1571,6 +1585,7 @@ export function cancelExplorePivot(
   return post<unknown>(`/api/explore/pivots/cancel/${encodeURIComponent(jobId)}`, {}, options)
     .then(async (data) => explorePivotStatusFromContract(
       expectGeneratedContract("ExplorePivotStatusResponse", (await exploreValidators()).validateExplorePivotStatusResponse, data),
+      await metricsValidator(),
     ))
 }
 
@@ -1615,7 +1630,11 @@ export function getTrainStatus(
   return request<unknown>(`/api/modelling/train/status/${encodeURIComponent(jobId)}`, options)
     .then(async (data) => {
       const { parseTrainStatusResponse } = await import("../types/trainGuards")
-      return validateApiResponse("Could not read training status", () => parseTrainStatusResponse(data))
+      const validateMetrics = await metricsValidator()
+      return validateApiResponse(
+        "Could not read training status",
+        () => parseTrainStatusResponse(data, validateMetrics),
+      )
     })
 }
 
@@ -1627,7 +1646,8 @@ export function cancelTrain(
     `/api/modelling/train/cancel/${encodeURIComponent(jobId)}`,
     undefined,
     options,
-  ).then(async (data) => (await import("../types/trainGuards")).parseTrainStatusResponse(data))
+  ).then(async (data) =>
+    (await import("../types/trainGuards")).parseTrainStatusResponse(data, await metricsValidator()))
 }
 
 export interface TrainModelArgs {
@@ -1738,8 +1758,10 @@ export function getOptimiserStatus(
   return request<unknown>(`/api/optimiser/solve/status/${encodeURIComponent(jobId)}`, options)
     .then(async (data) => {
       const { validateOptimiserStatusResponse } = await optimiserValidators()
+      const validateMetrics = await metricsValidator()
       return validateApiResponse("Could not read optimiser status", () => optimiserStatusFromContract(
         expectGeneratedContract("OptimiserStatusResponse", validateOptimiserStatusResponse, data),
+        validateMetrics,
       ))
     })
 }
@@ -1752,8 +1774,10 @@ export function cancelOptimiserSolve(
   return post<unknown>(`/api/optimiser/solve/cancel/${encodeURIComponent(jobId)}`, undefined, options)
     .then(async (data) => {
       const { validateOptimiserStatusResponse } = await optimiserValidators()
+      const validateMetrics = await metricsValidator()
       return validateApiResponse("Could not read optimiser status", () => optimiserStatusFromContract(
         expectGeneratedContract("OptimiserStatusResponse", validateOptimiserStatusResponse, data),
+        validateMetrics,
       ))
     })
 }
@@ -1804,6 +1828,7 @@ export function getOptimiserFrontierAutoRangeStatus(
     options,
   ).then(async (data) => frontierAutoRangeStatusFromContract(
     expectGeneratedContract("OptimiserFrontierAutoRangeStatusResponse", (await optimiserValidators()).validateOptimiserFrontierAutoRangeStatusResponse, data),
+    await metricsValidator(),
   ))
 }
 
@@ -1817,6 +1842,7 @@ export function cancelOptimiserFrontierAutoRange(
     options,
   ).then(async (data) => frontierAutoRangeStatusFromContract(
     expectGeneratedContract("OptimiserFrontierAutoRangeStatusResponse", (await optimiserValidators()).validateOptimiserFrontierAutoRangeStatusResponse, data),
+    await metricsValidator(),
   ))
 }
 

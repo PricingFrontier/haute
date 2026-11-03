@@ -58,20 +58,12 @@ caller left and is deleted; the optimiser responses (solve, estimate, status,
 apply, save, MLflow log, frontier status, auto-range start and status, frontier
 select).
 
-**Remaining:** two sets. Responses that carry node configs or the editor
-document come after `PCFG-R07`: pipeline load and save, preview, trace,
-submodel, recovery and repair (`PipelineRepairApplyResponse.document` is a
-`PipelineEditorDocument`), and JSON-cache inference (its tables merge into the
-API Input config). The rest carry none and can go first: the shared
-execution-metrics parser, which the converted status responses still apply
-after their generated check (each group's validator carries its own copy of
-the metrics contract, about 13 KiB gzip; one shared execution-metrics
-validator module would remove both). That needs the Node stage to compile a
-definition once, in its own module, and leave it an object in every group
-that carries it, with the client checking the field through that module;
-the hand parser stays for the preview response until the second set, and the
-metrics type the eager diagnostics read carries the execution-strategy
-diagnostic's normalised shape, which the move must keep.
+**Remaining:** the responses that carry node configs or the editor document:
+pipeline load and save, preview, trace, submodel, recovery and repair
+(`PipelineRepairApplyResponse.document` is a `PipelineEditorDocument`), and
+JSON-cache inference (its tables merge into the API Input config). The execution
+metrics are one shared module (`execution-metrics`), which the preview response
+checks through `executionMetricsFromContract` as the converted groups do.
 
 **Acceptance:** Every response the client parses is validated by generated
 code; `guards.ts`, `trainGuards.ts` and `api/types.ts` contain no structural

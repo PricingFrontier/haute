@@ -19857,6 +19857,9 @@
     "EditorIdentitiesResponse": {
       "$ref": "#/$defs/EditorIdentitiesResponse"
     },
+    "ExecutionMetricsPayload": {
+      "$ref": "#/$defs/ExecutionMetricsPayload"
+    },
     "ExplorePivotMembersResponse": {
       "$ref": "#/$defs/ExplorePivotMembersResponse"
     },
@@ -20298,6 +20301,7 @@
     "OutputDestinationResponse",
     "OutputAssembleDryRunResponse",
     "IoCapabilitiesResponse",
+    "ExecutionMetricsPayload",
     "WorkbenchStatusResponse",
     "WorkbenchTablesResponse",
     "WorkbenchFormResponse",
@@ -20375,6 +20379,9 @@
       "PolarsStepsRenderResponse",
       "PolarsFreeCodeColumnsResponse",
       "PipelineSettingsResponse"
+    ],
+    "execution-metrics": [
+      "ExecutionMetricsPayload"
     ],
     "explore": [
       "ExplorePivotRunResponse",
@@ -20511,5 +20518,8 @@
       "WorkbenchAppQuoteActivityResponse",
       "WorkbenchAppPeopleResponse"
     ]
-  }
+  },
+  "x-haute-shared-response-groups": [
+    "execution-metrics"
+  ]
 }

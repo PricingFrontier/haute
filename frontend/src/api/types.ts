@@ -35,6 +35,8 @@ import type {
   TrainStatusResponse as GeneratedTrainStatusResponse,
 } from "../generated/api-contracts.generated"
 import type {
+  ExecutionMemoryPressureEventPayload,
+  ExecutionMetricsPayload,
   ExecutionStrategyBoundaryCollectionPayload as GeneratedExecutionStrategyCollection,
   ExecutionStrategyBoundaryPayload as GeneratedExecutionStrategyBoundary,
   ExecutionStrategyDiagnosticPayload as GeneratedExecutionStrategyDiagnostic,
@@ -86,63 +88,7 @@ export type SchemaWarning = {
   detail: string
 }
 
-export interface ExecutionStageMetrics {
-  schema_version: number
-  name: string
-  operation: string
-  profile: string
-  elapsed_ms: number
-  node_id: string | null
-  job_id: string | null
-  rss_start_bytes: number | null
-  rss_end_bytes: number | null
-  rss_delta_bytes: number | null
-  rss_peak_bytes: number | null
-  n_collects: number
-  n_checkpoints: number
-}
-
-export interface ExecutionAdmission {
-  admitted: boolean
-  operation: string
-  profile: string
-  memory_limit_bytes: number
-  rss_at_admission_bytes: number | null
-  rss_limit_bytes: number | null
-  process_rss_limit_bytes: number | null
-  headroom_bytes: number | null
-  config_key: string
-  budget_policy: string
-  available_ram_bytes: number | null
-  os_reserve_bytes: number | null
-  reason: string
-}
-
-export interface ExecutionMemoryPressureEvent {
-  schema_version: number
-  event: "memory_pressure"
-  operation: string
-  profile: string
-  job_id: string | null
-  node_id: string | null
-  stage: string | null
-  label: string | null
-  threshold_ratio: number
-  threshold_percent: number
-  rss_bytes: number
-  rss_limit_bytes: number
-  headroom_bytes: number
-  headroom_used_bytes: number
-  rss_peak_bytes: number
-  memory_limit_bytes: number | null
-  memory_baseline_bytes: number | null
-  baseline_rss_bytes: number | null
-  budget_policy: string | null
-  config_key: string | null
-  available_ram_bytes: number | null
-  os_reserve_bytes: number | null
-  pressure_ratio: number
-}
+export type ExecutionMemoryPressureEvent = ExecutionMemoryPressureEventPayload
 
 export type ExecutionStrategyStatus = GeneratedExecutionStrategyDiagnostic["status"]
 export type ExecutionStrategy = GeneratedExecutionStrategyDiagnostic["strategy"]
@@ -175,141 +121,12 @@ export type ExecutionStrategyDiagnostic = GeneratedExecutionStrategyDiagnostic &
   provenance: ExecutionStrategyBoundedCollection<ExecutionStrategyProvenance>
 }
 
-export interface ExecutionStreamabilityEvidence {
-  state: "available" | "unavailable" | "truncated"
-  total_count: number | null
-  items: string[]
-}
-
-export interface ExecutionColumnWidth {
-  node_id: string
-  input_width: number | null
-  output_width: number | null
-  requested_width: number | null
-  physically_scanned_width: number | null
-}
-
-export interface ExecutionColumnWidths {
-  state: "available" | "truncated"
-  total_count: number
-  items: ExecutionColumnWidth[]
-}
-
-export interface InputPreparationRecord {
-  node_id: string
-  identity_digest: string
-  action: "reused" | "built" | "refreshed"
-  build_class: string
-  execution: "in_process" | "worker"
-  memory_limit_bytes: number | null
-  elapsed_seconds: number
-  row_count: number | null
-  size_bytes: number | null
-  generation_id: string | null
-  warning_code: string | null
-}
-
-/** A node output an execution read from a shared snapshot generation. */
-export interface SharedSnapshotSeed {
-  node_id: string
-  identity_digest: string
-  generation_id: string
-  columns: "all" | string[]
-}
-
 /**
- * A full-data materialisation an execution wrote to shared snapshots. Only a
- * `published` capture names the generation it continued from; otherwise the
- * execution continued from its own staged data.
+ * The execution metrics a response carries, checked through the shared execution-metrics
+ * validator, with the strategy diagnostic in the shape `parseExecutionStrategyDiagnostic` gives it.
  */
-export interface SharedSnapshotCapture {
-  node_id: string
-  identity_digest: string
-  kind: "structural" | "materialising" | "model_score" | "consumed"
-  outcome: "published" | "superseded"
-  generation_id: string | null
-  columns: "all" | string[]
-  write_strategy?: "chunked_join" | "sliced" | "input_sliced" | "native" | "prewritten" | null
-  write_parts?: number | null
-  write_chunk_rows?: number | null
-  write_staged_inputs?: number | null
-  write_input_slices?: number | null
-  write_native_reason?: string | null
-  write_blocking_operator?: string | null
-}
-
-/** A candidate capture point skipped under cost gating. */
-export interface SharedSnapshotCaptureSkip {
-  node_id: string
-  reason: "cheap_segment" | "slice_transparent_feeder"
-}
-
-/** A non-fatal condition an execution continued past. */
-export interface ExecutionWarning {
-  code: string
-  node_id: string | null
-  reason: string | null
-}
-
-export interface ExecutionMetrics {
-  schema_version: number
-  operation: string
-  profile: string
-  job_id: string | null
-  status: string | null
-  terminal_reason: string | null
-  stage_count: number
-  retained_stage_count: number
-  truncated_stage_count: number
-  stages_truncated: boolean
-  total_elapsed_ms: number
-  node_elapsed_ms: Record<string, number>
-  stage_elapsed_ms: Record<string, number>
-  rss_start_bytes: number | null
-  rss_end_bytes: number | null
-  rss_delta_bytes: number | null
-  rss_peak_bytes: number | null
-  max_rss_bytes: number | null
-  n_collects: number
-  n_checkpoints: number
-  memory_pressure_event_count: number
-  retained_memory_pressure_event_count: number
-  truncated_memory_pressure_event_count: number
-  memory_pressure_events_truncated: boolean
-  memory_limit_bytes: number | null
-  memory_baseline_bytes: number | null
-  rss_limit_bytes: number | null
-  streamability: "streaming" | "materialising" | null
-  streamability_evidence: ExecutionStreamabilityEvidence
-  column_widths: ExecutionColumnWidths
-  requested_column_width_total: number | null
-  physically_scanned_column_width_total: number | null
-  cache_direct_fallbacks: number
-  bytes_written: number | null
-  estimated_bytes: number | null
-  raw_estimated_bytes: number | null
-  estimate_calibration_factor_basis_points: number | null
-  estimate_admission_basis: "provided" | "projected_columns" | "complete_width_fallback" | null
-  observed_peak_rss_bytes: number | null
-  observed_peak_rss_growth_bytes: number | null
-  checkpoint_count: number
-  chunk_count: number
-  admission: ExecutionAdmission | null
+export type ExecutionMetrics = Omit<ExecutionMetricsPayload, "execution_strategy"> & {
   execution_strategy: ExecutionStrategyDiagnostic | null
-  stages: ExecutionStageMetrics[]
-  memory_pressure_events: ExecutionMemoryPressureEvent[]
-  input_preparation: InputPreparationRecord[]
-  shared_snapshot_seeds: SharedSnapshotSeed[]
-  shared_snapshot_captures: SharedSnapshotCapture[]
-  shared_snapshot_capture_skips: SharedSnapshotCaptureSkip[]
-  warnings: ExecutionWarning[]
-  training_write_strategy?: string | null
-  training_write_input_slices?: number | null
-  training_write_native_reason?: string | null
-  training_write_blocking_operator?: string | null
-  data_output_write_strategy?: string | null
-  data_output_write_input_slices?: number | null
-  data_output_write_native_reason?: string | null
 }
 
 /**

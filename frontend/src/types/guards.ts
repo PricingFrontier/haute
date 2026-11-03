@@ -15,6 +15,7 @@ import {
   validateExecutionStrategyDiagnostic,
 } from "../generated/api-contracts.execution-strategy-diagnostic.validators.mjs"
 import type {
+  ExecutionMetricsPayload,
   OptimiserFrontierAutoRangeStatusResponse as GeneratedOptimiserFrontierAutoRangeStatusResponse,
   OptimiserFrontierResponse as GeneratedOptimiserFrontierResponse,
   OptimiserStatusResponse as GeneratedOptimiserStatusResponse,
@@ -31,24 +32,13 @@ import type {
 import type {
   NodeInstanceCreateResponse,
   DissolveSubmodelResponse,
-  ExecutionAdmission,
-  ExecutionMemoryPressureEvent,
-  InputPreparationRecord,
-  ExecutionWarning,
-  SharedSnapshotCapture,
-  SharedSnapshotCaptureSkip,
-  SharedSnapshotSeed,
   ExecutionMetrics,
-  ExecutionColumnWidth,
-  ExecutionColumnWidths,
-  ExecutionStreamabilityEvidence,
   ExecutionStrategyDiagnostic,
   ExecutionStrategyBoundary,
   ExecutionStrategyBoundedCollection,
   ExecutionStrategyProjectionCause,
   ExecutionStrategyProvenance,
   ExecutionStrategyReason,
-  ExecutionStageMetrics,
   ExplorePivotMemberKey,
   ExplorePivotMembersResponse,
   ExplorePivotPath,
@@ -72,6 +62,10 @@ import type {
   SubmodelGraphResponse,
   TraceResponse,
 } from "../api/types"
+import {
+  expectGeneratedContract,
+  type GeneratedContractValidator,
+} from "./generatedContractValidation"
 import {
   PIPELINE_NODE_TYPES,
   type BackendNodeStatus,
@@ -340,28 +334,7 @@ function optionalPlainObjectArray(
   return value === undefined ? defaultValue : parsePlainObjectArray(parser, value, `field \`${key}\``)
 }
 
-function parseNumberRecord(
-  parser: string,
-  value: unknown,
-  field: string,
-): Record<string, number> {
-  const obj = expectPlainObject(parser, value, field)
-  const result: Record<string, number> = {}
-  for (const [key, item] of Object.entries(obj)) {
-    result[key] = expectNumber(parser, item, `${field}.${key}`)
-  }
-  return result
-}
 
-export function optionalNumberRecord(
-  parser: string,
-  obj: Record<string, unknown>,
-  key: string,
-  defaultValue: Record<string, number> = {},
-): Record<string, number> {
-  const value = obj[key]
-  return value === undefined ? defaultValue : parseNumberRecord(parser, value, `field \`${key}\``)
-}
 
 const NODE_STATUS_VALUES = ["ok", "error"] as const
 
@@ -487,451 +460,23 @@ function parseSchemaWarning(value: unknown, field: string): SchemaWarning {
   }
 }
 
-function parseExecutionStageMetrics(
-  parser: string,
-  value: unknown,
-  field: string,
-): ExecutionStageMetrics {
-  const obj = expectPlainObject(parser, value, field)
-  return {
-    schema_version: optionalNumber(parser, obj, "schema_version", 1),
-    name: optionalString(parser, obj, "name"),
-    operation: optionalString(parser, obj, "operation"),
-    profile: optionalString(parser, obj, "profile"),
-    elapsed_ms: optionalNumber(parser, obj, "elapsed_ms"),
-    node_id: optionalNullableString(parser, obj, "node_id"),
-    job_id: optionalNullableString(parser, obj, "job_id"),
-    rss_start_bytes: optionalNullableNumber(parser, obj, "rss_start_bytes"),
-    rss_end_bytes: optionalNullableNumber(parser, obj, "rss_end_bytes"),
-    rss_delta_bytes: optionalNullableNumber(parser, obj, "rss_delta_bytes"),
-    rss_peak_bytes: optionalNullableNumber(parser, obj, "rss_peak_bytes"),
-    n_collects: optionalNumber(parser, obj, "n_collects"),
-    n_checkpoints: optionalNumber(parser, obj, "n_checkpoints"),
-  }
-}
 
-function parseExecutionAdmission(
-  parser: string,
-  value: unknown,
-  field: string,
-): ExecutionAdmission {
-  const obj = expectPlainObject(parser, value, field)
-  return {
-    admitted: optionalBoolean(parser, obj, "admitted", true),
-    operation: optionalString(parser, obj, "operation"),
-    profile: optionalString(parser, obj, "profile"),
-    memory_limit_bytes: optionalNumber(parser, obj, "memory_limit_bytes"),
-    rss_at_admission_bytes: optionalNullableNumber(parser, obj, "rss_at_admission_bytes"),
-    rss_limit_bytes: optionalNullableNumber(parser, obj, "rss_limit_bytes"),
-    process_rss_limit_bytes: optionalNullableNumber(parser, obj, "process_rss_limit_bytes"),
-    headroom_bytes: optionalNullableNumber(parser, obj, "headroom_bytes"),
-    config_key: optionalString(parser, obj, "config_key"),
-    budget_policy: optionalString(parser, obj, "budget_policy", "fixed_default"),
-    available_ram_bytes: optionalNullableNumber(parser, obj, "available_ram_bytes"),
-    os_reserve_bytes: optionalNullableNumber(parser, obj, "os_reserve_bytes"),
-    reason: optionalString(parser, obj, "reason"),
-  }
-}
 
-function parseExecutionMemoryPressureEvent(
-  parser: string,
-  value: unknown,
-  field: string,
-): ExecutionMemoryPressureEvent {
-  const obj = expectPlainObject(parser, value, field)
-  return {
-    schema_version: optionalNumber(parser, obj, "schema_version", 1),
-    event: obj.event === undefined
-      ? "memory_pressure"
-      : expectStringLiteral(parser, obj.event, `${field}.event`, ["memory_pressure"]),
-    operation: optionalString(parser, obj, "operation"),
-    profile: optionalString(parser, obj, "profile"),
-    job_id: optionalNullableString(parser, obj, "job_id"),
-    node_id: optionalNullableString(parser, obj, "node_id"),
-    stage: optionalNullableString(parser, obj, "stage"),
-    label: optionalNullableString(parser, obj, "label"),
-    threshold_ratio: optionalNumber(parser, obj, "threshold_ratio"),
-    threshold_percent: optionalNumber(parser, obj, "threshold_percent"),
-    rss_bytes: optionalNumber(parser, obj, "rss_bytes"),
-    rss_limit_bytes: optionalNumber(parser, obj, "rss_limit_bytes"),
-    headroom_bytes: optionalNumber(parser, obj, "headroom_bytes"),
-    headroom_used_bytes: optionalNumber(parser, obj, "headroom_used_bytes"),
-    rss_peak_bytes: optionalNumber(parser, obj, "rss_peak_bytes"),
-    memory_limit_bytes: optionalNullableNumber(parser, obj, "memory_limit_bytes"),
-    memory_baseline_bytes: optionalNullableNumber(parser, obj, "memory_baseline_bytes"),
-    baseline_rss_bytes: optionalNullableNumber(parser, obj, "baseline_rss_bytes"),
-    budget_policy: optionalNullableString(parser, obj, "budget_policy"),
-    config_key: optionalNullableString(parser, obj, "config_key"),
-    available_ram_bytes: optionalNullableNumber(parser, obj, "available_ram_bytes"),
-    os_reserve_bytes: optionalNullableNumber(parser, obj, "os_reserve_bytes"),
-    pressure_ratio: optionalNumber(parser, obj, "pressure_ratio"),
-  }
-}
 
-function parseInputPreparationRecord(
-  parser: string,
-  value: unknown,
-  field: string,
-): InputPreparationRecord {
-  const obj = expectPlainObject(parser, value, field)
-  return {
-    node_id: optionalString(parser, obj, "node_id"),
-    identity_digest: optionalString(parser, obj, "identity_digest"),
-    action: expectStringLiteral(parser, obj.action, `${field}.action`, ["reused", "built", "refreshed"]),
-    build_class: optionalString(parser, obj, "build_class"),
-    execution: expectStringLiteral(parser, obj.execution, `${field}.execution`, ["in_process", "worker"]),
-    memory_limit_bytes: optionalNullableNumber(parser, obj, "memory_limit_bytes"),
-    elapsed_seconds: optionalNumber(parser, obj, "elapsed_seconds"),
-    row_count: optionalNullableNumber(parser, obj, "row_count"),
-    size_bytes: optionalNullableNumber(parser, obj, "size_bytes"),
-    generation_id: optionalNullableString(parser, obj, "generation_id"),
-    warning_code: optionalNullableString(parser, obj, "warning_code"),
-  }
-}
 
-function parseSnapshotColumns(parser: string, value: unknown, field: string): "all" | string[] {
-  return value === "all" ? "all" : parseStringArray(parser, value, field)
-}
 
-function parseSharedSnapshotSeed(
-  parser: string,
-  value: unknown,
-  field: string,
-): SharedSnapshotSeed {
-  const obj = expectPlainObject(parser, value, field)
-  return {
-    node_id: expectString(parser, obj.node_id, `${field}.node_id`),
-    identity_digest: expectString(parser, obj.identity_digest, `${field}.identity_digest`),
-    generation_id: expectString(parser, obj.generation_id, `${field}.generation_id`),
-    columns: parseSnapshotColumns(parser, obj.columns, `${field}.columns`),
-  }
-}
 
-function parseSharedSnapshotCapture(
-  parser: string,
-  value: unknown,
-  field: string,
-): SharedSnapshotCapture {
-  const obj = expectPlainObject(parser, value, field)
-  return {
-    node_id: expectString(parser, obj.node_id, `${field}.node_id`),
-    identity_digest: expectString(parser, obj.identity_digest, `${field}.identity_digest`),
-    kind: expectStringLiteral(parser, obj.kind, `${field}.kind`, [
-      "structural",
-      "materialising",
-      "model_score",
-      "consumed",
-    ]),
-    outcome: expectStringLiteral(parser, obj.outcome, `${field}.outcome`, [
-      "published",
-      "superseded",
-    ]),
-    generation_id: optionalNullableString(parser, obj, "generation_id"),
-    columns: parseSnapshotColumns(parser, obj.columns, `${field}.columns`),
-    ...(obj.write_strategy === undefined
-      ? {}
-      : {
-          write_strategy: expectNullableStringLiteral(
-            parser,
-            obj.write_strategy,
-            `${field}.write_strategy`,
-            ["chunked_join", "sliced", "input_sliced", "native", "prewritten"] as const,
-          ),
-        }),
-    ...optionalNullablePositiveCount(parser, obj, "write_parts", field),
-    ...optionalNullablePositiveCount(parser, obj, "write_chunk_rows", field),
-    ...optionalNullableCount(parser, obj, "write_staged_inputs", field),
-    ...optionalNullablePositiveCount(parser, obj, "write_input_slices", field),
-    ...(obj.write_native_reason === undefined
-      ? {}
-      : {
-          write_native_reason: expectNullableString(
-            parser,
-            obj.write_native_reason,
-            `${field}.write_native_reason`,
-          ),
-        }),
-    ...(obj.write_blocking_operator === undefined
-      ? {}
-      : {
-          write_blocking_operator: expectNullableString(
-            parser,
-            obj.write_blocking_operator,
-            `${field}.write_blocking_operator`,
-          ),
-        }),
-  }
-}
 
-function parseSharedSnapshotCaptureSkip(
-  parser: string,
-  value: unknown,
-  field: string,
-): SharedSnapshotCaptureSkip {
-  const obj = expectPlainObject(parser, value, field)
-  return {
-    node_id: expectString(parser, obj.node_id, `${field}.node_id`),
-    reason: expectStringLiteral(parser, obj.reason, `${field}.reason`, [
-      "cheap_segment",
-      "slice_transparent_feeder",
-    ]),
-  }
-}
 
-function optionalNullableCount<K extends string>(
-  parser: string,
-  obj: Record<string, unknown>,
-  key: K,
-  field: string,
-  { positive = false }: { positive?: boolean } = {},
-): Partial<Record<K, number | null>> {
-  const value = obj[key]
-  if (value === undefined) return {}
-  if (value === null) return { [key]: null } as Partial<Record<K, number | null>>
-  const expectCount = positive ? expectPositiveInteger : expectNonNegativeInteger
-  return {
-    [key]: expectCount(parser, value, `${field}.${key}`),
-  } as Partial<Record<K, number | null>>
-}
 
-function optionalNullablePositiveCount<K extends string>(
-  parser: string,
-  obj: Record<string, unknown>,
-  key: K,
-  field: string,
-): Partial<Record<K, number | null>> {
-  return optionalNullableCount(parser, obj, key, field, { positive: true })
-}
 
-function parseExecutionWarning(parser: string, value: unknown, field: string): ExecutionWarning {
-  const obj = expectPlainObject(parser, value, field)
-  return {
-    code: expectString(parser, obj.code, `${field}.code`),
-    node_id: optionalNullableString(parser, obj, "node_id"),
-    reason: optionalNullableString(parser, obj, "reason"),
-  }
-}
 
-function parseExecutionMetrics(
-  parser: string,
-  value: unknown,
-  field: string,
-): ExecutionMetrics {
-  const obj = expectPlainObject(parser, value, field)
-  const admission = optionalNullableObject(parser, obj, "admission")
-  const estimatedBytes = parseOptionalNullableNonNegativeNumber(obj, "estimated_bytes", field)
-  const rawEstimatedBytes = parseOptionalNullableNonNegativeNumber(obj, "raw_estimated_bytes", field)
-  const calibrationFactor = parseOptionalNullableNonNegativeNumber(obj, "estimate_calibration_factor_basis_points", field)
-  const admissionBasis = obj.estimate_admission_basis === undefined || obj.estimate_admission_basis === null
-    ? null
-    : expectStringLiteral(parser, obj.estimate_admission_basis, `${field}.estimate_admission_basis`, ESTIMATE_ADMISSION_BASES)
-  validateCalibratedEstimateEvidence(field, estimatedBytes, rawEstimatedBytes, calibrationFactor, admissionBasis)
-  return {
-    schema_version: optionalNumber(parser, obj, "schema_version", 1),
-    operation: optionalString(parser, obj, "operation"),
-    profile: optionalString(parser, obj, "profile"),
-    job_id: optionalNullableString(parser, obj, "job_id"),
-    status: optionalNullableString(parser, obj, "status"),
-    terminal_reason: optionalNullableString(parser, obj, "terminal_reason"),
-    stage_count: optionalNumber(parser, obj, "stage_count"),
-    retained_stage_count: optionalNumber(parser, obj, "retained_stage_count"),
-    truncated_stage_count: optionalNumber(parser, obj, "truncated_stage_count"),
-    stages_truncated: optionalBoolean(parser, obj, "stages_truncated"),
-    total_elapsed_ms: optionalNumber(parser, obj, "total_elapsed_ms"),
-    node_elapsed_ms: optionalNumberRecord(parser, obj, "node_elapsed_ms"),
-    stage_elapsed_ms: optionalNumberRecord(parser, obj, "stage_elapsed_ms"),
-    rss_start_bytes: optionalNullableNumber(parser, obj, "rss_start_bytes"),
-    rss_end_bytes: optionalNullableNumber(parser, obj, "rss_end_bytes"),
-    rss_delta_bytes: optionalNullableNumber(parser, obj, "rss_delta_bytes"),
-    rss_peak_bytes: optionalNullableNumber(parser, obj, "rss_peak_bytes"),
-    max_rss_bytes: optionalNullableNumber(parser, obj, "max_rss_bytes"),
-    n_collects: optionalNumber(parser, obj, "n_collects"),
-    n_checkpoints: optionalNumber(parser, obj, "n_checkpoints"),
-    memory_pressure_event_count: optionalNumber(parser, obj, "memory_pressure_event_count"),
-    retained_memory_pressure_event_count: optionalNumber(parser, obj, "retained_memory_pressure_event_count"),
-    truncated_memory_pressure_event_count: optionalNumber(parser, obj, "truncated_memory_pressure_event_count"),
-    memory_pressure_events_truncated: optionalBoolean(parser, obj, "memory_pressure_events_truncated"),
-    memory_limit_bytes: optionalNullableNumber(parser, obj, "memory_limit_bytes"),
-    memory_baseline_bytes: optionalNullableNumber(parser, obj, "memory_baseline_bytes"),
-    rss_limit_bytes: optionalNullableNumber(parser, obj, "rss_limit_bytes"),
-    streamability: obj.streamability === undefined
-      ? null
-      : expectNullableStringLiteral(parser, obj.streamability, `${field}.streamability`, ["streaming", "materialising"]),
-    streamability_evidence: obj.streamability_evidence === undefined
-      ? { state: "unavailable", total_count: null, items: [] }
-      : parseStreamabilityEvidence(obj.streamability_evidence, `${field}.streamability_evidence`),
-    column_widths: obj.column_widths === undefined
-      ? { state: "available", total_count: 0, items: [] }
-      : parseColumnWidths(obj.column_widths, `${field}.column_widths`),
-    requested_column_width_total: parseOptionalNullableNonNegativeNumber(obj, "requested_column_width_total", field),
-    physically_scanned_column_width_total: parseOptionalNullableNonNegativeNumber(obj, "physically_scanned_column_width_total", field),
-    cache_direct_fallbacks: expectNonNegativeMetricNumber(obj.cache_direct_fallbacks, `${field}.cache_direct_fallbacks`),
-    bytes_written: parseOptionalNullableNonNegativeNumber(obj, "bytes_written", field),
-    estimated_bytes: estimatedBytes,
-    raw_estimated_bytes: rawEstimatedBytes,
-    estimate_calibration_factor_basis_points: calibrationFactor,
-    estimate_admission_basis: admissionBasis,
-    observed_peak_rss_bytes: parseOptionalNullableNonNegativeNumber(obj, "observed_peak_rss_bytes", field),
-    observed_peak_rss_growth_bytes: parseOptionalNullableNonNegativeNumber(obj, "observed_peak_rss_growth_bytes", field),
-    checkpoint_count: parseOptionalNonNegativeNumber(obj, "checkpoint_count", field),
-    chunk_count: parseOptionalNonNegativeNumber(obj, "chunk_count", field),
-    admission: admission === null
-      ? null
-      : parseExecutionAdmission(parser, admission, `${field}.admission`),
-    execution_strategy: parseExecutionStrategyDiagnostic(obj.execution_strategy),
-    stages: optionalArray(parser, obj, "stages", (item, itemField) =>
-      parseExecutionStageMetrics(parser, item, itemField),
-    ),
-    memory_pressure_events: optionalArray(parser, obj, "memory_pressure_events", (item, itemField) =>
-      parseExecutionMemoryPressureEvent(parser, item, itemField),
-    ),
-    input_preparation: optionalArray(parser, obj, "input_preparation", (item, itemField) =>
-      parseInputPreparationRecord(parser, item, itemField),
-    ),
-    shared_snapshot_seeds: optionalArray(parser, obj, "shared_snapshot_seeds", (item, itemField) =>
-      parseSharedSnapshotSeed(parser, item, itemField),
-    ),
-    shared_snapshot_captures: optionalArray(parser, obj, "shared_snapshot_captures", (item, itemField) =>
-      parseSharedSnapshotCapture(parser, item, itemField),
-    ),
-    shared_snapshot_capture_skips: optionalArray(
-      parser,
-      obj,
-      "shared_snapshot_capture_skips",
-      (item, itemField) => parseSharedSnapshotCaptureSkip(parser, item, itemField),
-    ),
-    warnings: optionalArray(parser, obj, "warnings", (item, itemField) =>
-      parseExecutionWarning(parser, item, itemField),
-    ),
-    ...(obj.training_write_strategy === undefined
-      ? {}
-      : {
-          training_write_strategy: expectNullableString(
-            parser,
-            obj.training_write_strategy,
-            `${field}.training_write_strategy`,
-          ),
-        }),
-    ...optionalNullablePositiveCount(parser, obj, "training_write_input_slices", field),
-    ...(obj.training_write_native_reason === undefined
-      ? {}
-      : {
-          training_write_native_reason: expectNullableString(
-            parser,
-            obj.training_write_native_reason,
-            `${field}.training_write_native_reason`,
-          ),
-        }),
-    ...(obj.training_write_blocking_operator === undefined
-      ? {}
-      : {
-          training_write_blocking_operator: expectNullableString(
-            parser,
-            obj.training_write_blocking_operator,
-            `${field}.training_write_blocking_operator`,
-          ),
-        }),
-    ...(obj.data_output_write_strategy === undefined
-      ? {}
-      : {
-          data_output_write_strategy: expectNullableString(
-            parser,
-            obj.data_output_write_strategy,
-            `${field}.data_output_write_strategy`,
-          ),
-        }),
-    ...optionalNullablePositiveCount(parser, obj, "data_output_write_input_slices", field),
-    ...(obj.data_output_write_native_reason === undefined
-      ? {}
-      : {
-          data_output_write_native_reason: expectNullableString(
-            parser,
-            obj.data_output_write_native_reason,
-            `${field}.data_output_write_native_reason`,
-          ),
-        }),
-  }
-}
 
-function expectNullableStringLiteral<T extends string>(
-  parser: string,
-  value: unknown,
-  field: string,
-  allowed: readonly T[],
-): T | null {
-  if (value === null) return null
-  return expectStringLiteral(parser, value, field, allowed)
-}
 
-function expectNonNegativeMetricNumber(value: unknown, field: string): number {
-  return expectInteger(value, field, true)
-}
 
-function parseOptionalNullableNonNegativeNumber(
-  obj: Record<string, unknown>,
-  key: string,
-  field: string,
-): number | null {
-  const value = obj[key]
-  if (value === undefined || value === null) return null
-  return expectNonNegativeMetricNumber(value, `${field}.${key}`)
-}
 
-function parseOptionalNonNegativeNumber(
-  obj: Record<string, unknown>,
-  key: string,
-  field: string,
-): number {
-  const value = obj[key]
-  return value === undefined ? 0 : expectNonNegativeMetricNumber(value, `${field}.${key}`)
-}
 
-function parseStreamabilityEvidence(value: unknown, field: string): ExecutionStreamabilityEvidence {
-  const obj = expectPlainObject("execution metrics", value, field)
-  const state = expectStringLiteral("execution metrics", obj.state, `${field}.state`, ["available", "unavailable", "truncated"])
-  const items = expectArray("execution metrics", obj.items, `${field}.items`).map((item, index) =>
-    expectString("execution metrics", item, `${field}.items[${index}]`),
-  )
-  if (items.length > 32) throw new Error(`execution metrics: ${field} exceeds its 32-item cap`)
-  const totalCount = obj.total_count === null ? null : expectInteger(obj.total_count, `${field}.total_count`, true)
-  if (state === "unavailable") {
-    if (totalCount !== null || items.length !== 0) throw new Error(`execution metrics: unavailable ${field} is inconsistent`)
-  } else if (totalCount === null || (state === "available" && totalCount !== items.length) || (state === "truncated" && totalCount <= items.length)) {
-    throw new Error(`execution metrics: ${field} count is inconsistent`)
-  }
-  for (let index = 1; index < items.length; index += 1) {
-    if (compareUnicode(items[index - 1], items[index]) >= 0) throw new Error(`execution metrics: ${field} must be sorted and unique`)
-  }
-  return { state, total_count: totalCount, items }
-}
 
-function parseColumnWidths(value: unknown, field: string): ExecutionColumnWidths {
-  const obj = expectPlainObject("execution metrics", value, field)
-  const state = expectStringLiteral("execution metrics", obj.state, `${field}.state`, ["available", "truncated"])
-  const items = expectArray("execution metrics", obj.items, `${field}.items`).map((item, index): ExecutionColumnWidth => {
-    const itemObj = expectPlainObject("execution metrics", item, `${field}.items[${index}]`)
-    const nullableWidth = (key: string): number | null => {
-      const itemValue = itemObj[key]
-      return itemValue === null ? null : expectNonNegativeMetricNumber(itemValue, `${field}.items[${index}].${key}`)
-    }
-    return {
-      node_id: expectString("execution metrics", itemObj.node_id, `${field}.items[${index}].node_id`),
-      input_width: nullableWidth("input_width"),
-      output_width: nullableWidth("output_width"),
-      requested_width: nullableWidth("requested_width"),
-      physically_scanned_width: nullableWidth("physically_scanned_width"),
-    }
-  })
-  if (items.length > 128) throw new Error(`execution metrics: ${field} exceeds its 128-item cap`)
-  const totalCount = expectInteger(obj.total_count, `${field}.total_count`, true)
-  if ((state === "available" && totalCount !== items.length) || (state === "truncated" && totalCount <= items.length)) {
-    throw new Error(`execution metrics: ${field} count is inconsistent`)
-  }
-  for (let index = 1; index < items.length; index += 1) {
-    if (compareUnicode(items[index - 1].node_id, items[index].node_id) >= 0) throw new Error(`execution metrics: ${field} must be sorted and unique`)
-  }
-  return { state, total_count: totalCount, items }
-}
 
 const STRATEGY_STATUS = {
   projected: "projected",
@@ -945,7 +490,6 @@ const STRATEGY_STATUS = {
 } as const
 
 const DETAIL_STATES = ["available", "unavailable", "truncated"] as const
-const ESTIMATE_ADMISSION_BASES = ["provided", "projected_columns", "complete_width_fallback"] as const
 
 function validateCalibratedEstimateEvidence(
   field: string,
@@ -1143,14 +687,20 @@ export function parseExecutionStrategyDiagnostic(value: unknown): ExecutionStrat
   }
 }
 
-export function optionalExecutionMetrics(
-  parser: string,
-  obj: Record<string, unknown>,
-  key = "execution_metrics",
+/** The shared execution-metrics module's validator, loaded beside a response group's. */
+export type ExecutionMetricsValidator = GeneratedContractValidator<ExecutionMetricsPayload>
+
+/**
+ * A response's execution metrics, checked through the shared execution-metrics module, with
+ * the strategy diagnostic normalised as `parseExecutionStrategyDiagnostic` gives it.
+ */
+export function executionMetricsFromContract(
+  validate: ExecutionMetricsValidator,
+  value: unknown,
 ): ExecutionMetrics | null {
-  const value = obj[key]
-  if (value === undefined || value === null) return null
-  return parseExecutionMetrics(parser, value, `field \`${key}\``)
+  if (value === null || value === undefined) return null
+  const metrics = expectGeneratedContract("ExecutionMetricsPayload", validate, value)
+  return { ...metrics, execution_strategy: parseExecutionStrategyDiagnostic(metrics.execution_strategy) }
 }
 
 // ---------------------------------------------------------------------------
@@ -1378,7 +928,10 @@ function optionalPortPreviews(parser: string, obj: Record<string, unknown>, key:
   )
 }
 
-export function parsePreviewNodeResponse(value: unknown): PreviewNodeResponse {
+export function parsePreviewNodeResponse(
+  value: unknown,
+  validateMetrics: ExecutionMetricsValidator,
+): PreviewNodeResponse {
   const obj = expectPlainObject("parsePreviewNodeResponse", value)
   return {
     status: expectStringLiteral(
@@ -1436,7 +989,7 @@ export function parsePreviewNodeResponse(value: unknown): PreviewNodeResponse {
       "node_frame_columns",
       parseColumnInfo,
     ),
-    execution_metrics: optionalExecutionMetrics("parsePreviewNodeResponse", obj, "execution_metrics"),
+    execution_metrics: executionMetricsFromContract(validateMetrics, obj.execution_metrics),
     seed_plan: optionalArray("parsePreviewNodeResponse", obj, "seed_plan", parsePreviewSeedPlanEntry),
     notes: optionalStringArray("parsePreviewNodeResponse", obj, "notes"),
   }
@@ -1842,29 +1395,8 @@ function expectFiniteNumber(parser: string, value: unknown, field: string): numb
   return parsed
 }
 
-function expectSafeInteger(parser: string, value: unknown, field: string): number {
-  const parsed = expectFiniteNumber(parser, value, field)
-  if (!Number.isSafeInteger(parsed)) {
-    throw new Error(`${parser}: expected ${field} to be a safe integer`)
-  }
-  return parsed
-}
 
-function expectNonNegativeInteger(parser: string, value: unknown, field: string): number {
-  const parsed = expectSafeInteger(parser, value, field)
-  if (parsed < 0) {
-    throw new Error(`${parser}: expected ${field} to be a non-negative integer`)
-  }
-  return parsed
-}
 
-function expectPositiveInteger(parser: string, value: unknown, field: string): number {
-  const parsed = expectSafeInteger(parser, value, field)
-  if (parsed < 1) {
-    throw new Error(`${parser}: expected ${field} to be a positive integer`)
-  }
-  return parsed
-}
 
 function expectPivotStringFormat(
   parser: string,
@@ -1976,6 +1508,7 @@ function explorePivotPathFromContract(
 
 function explorePivotResultFromContract(
   result: GeneratedExplorePivotResult,
+  validateMetrics: ExecutionMetricsValidator,
 ): ExplorePivotResult {
   const parser = "parseExplorePivotResult"
   const rowPaths = result.row_paths.map((path, index) =>
@@ -1997,53 +1530,48 @@ function explorePivotResultFromContract(
     ...result,
     row_paths: rowPaths,
     column_paths: columnPaths,
-    execution_metrics: optionalExecutionMetrics(parser, { execution_metrics: result.execution_metrics }),
+    execution_metrics: executionMetricsFromContract(validateMetrics, result.execution_metrics),
   }
 }
 
 export function explorePivotRunFromContract(
   response: GeneratedExplorePivotRunResponse,
+  validateMetrics: ExecutionMetricsValidator,
 ): ExplorePivotRunResponse {
   return {
     ...response,
-    result: response.result === null ? null : explorePivotResultFromContract(response.result),
+    result: response.result === null ? null : explorePivotResultFromContract(response.result, validateMetrics),
   }
 }
 
 export function explorePivotStatusFromContract(
   response: GeneratedExplorePivotStatusResponse,
+  validateMetrics: ExecutionMetricsValidator,
 ): ExplorePivotStatusResponse {
   return {
     ...response,
-    result: response.result === null ? null : explorePivotResultFromContract(response.result),
-    execution_metrics: optionalExecutionMetrics(
-      "parseExplorePivotStatusResponse",
-      { execution_metrics: response.execution_metrics },
-    ),
+    result: response.result === null ? null : explorePivotResultFromContract(response.result, validateMetrics),
+    execution_metrics: executionMetricsFromContract(validateMetrics, response.execution_metrics),
   }
 }
 
 export function writeOutputFromContract(
   response: GeneratedWriteOutputResponse,
+  validateMetrics: ExecutionMetricsValidator,
 ): WriteOutputResponse {
   return {
     ...response,
-    execution_metrics: optionalExecutionMetrics(
-      "parseWriteOutputResponse",
-      { execution_metrics: response.execution_metrics },
-    ),
+    execution_metrics: executionMetricsFromContract(validateMetrics, response.execution_metrics),
   }
 }
 
 export function nodeDataStatusFromContract(
   response: GeneratedNodeDataStatusResponse,
+  validateMetrics: ExecutionMetricsValidator,
 ): NodeDataStatusResponse {
   return {
     ...response,
-    execution_metrics: optionalExecutionMetrics(
-      "parseNodeDataStatusResponse",
-      { execution_metrics: response.execution_metrics },
-    ),
+    execution_metrics: executionMetricsFromContract(validateMetrics, response.execution_metrics),
   }
 }
 
@@ -2115,6 +1643,7 @@ function frontierFromContract(
 
 export function optimiserStatusFromContract(
   response: GeneratedOptimiserStatusResponse,
+  validateMetrics: ExecutionMetricsValidator,
 ): OptimiserStatusResponse {
   const result = response.result
   return {
@@ -2126,22 +1655,17 @@ export function optimiserStatusFromContract(
           frontier: result.frontier === null ? null : frontierFromContract(result.frontier, "result.frontier"),
         },
     frontier: response.frontier === null ? null : frontierFromContract(response.frontier, "frontier"),
-    execution_metrics: optionalExecutionMetrics(
-      "parseOptimiserStatusResponse",
-      { execution_metrics: response.execution_metrics },
-    ),
+    execution_metrics: executionMetricsFromContract(validateMetrics, response.execution_metrics),
   }
 }
 
 export function frontierAutoRangeStatusFromContract(
   response: GeneratedOptimiserFrontierAutoRangeStatusResponse,
+  validateMetrics: ExecutionMetricsValidator,
 ): FrontierAutoRangeStatusResponse {
   return {
     ...response,
-    execution_metrics: optionalExecutionMetrics(
-      "parseFrontierAutoRangeStatusResponse",
-      { execution_metrics: response.execution_metrics },
-    ),
+    execution_metrics: executionMetricsFromContract(validateMetrics, response.execution_metrics),
   }
 }
 

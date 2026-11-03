@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest"
+import { validateExecutionMetricsPayload } from "../../../generated/api-contracts.execution-metrics.validators.mjs"
 import { render, screen, cleanup } from "@testing-library/react"
 import { TrainingProgress } from "../TrainingProgress"
 import type { TrainProgress } from "../../../stores/useNodeResultsStore"
@@ -142,7 +143,7 @@ describe("TrainingProgress", () => {
       completed_fits: 31,
       total_fits: 101,
       best_objective: 0.4172,
-    }))
+    }), validateExecutionMetricsPayload)
     render(<TrainingProgress trainProgress={polled} />)
 
     expect(screen.getByText(

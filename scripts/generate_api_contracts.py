@@ -22,7 +22,7 @@ from pydantic import BaseModel, RootModel
 from pydantic.json_schema import GenerateJsonSchema, JsonSchemaMode, JsonSchemaValue
 from pydantic_core import core_schema
 
-from haute._execution_schemas import ExecutionStrategyDiagnosticPayload
+from haute._execution_schemas import ExecutionMetricsPayload, ExecutionStrategyDiagnosticPayload
 from haute._explore_chart_contracts import ExploreChartsConfig
 from haute.schemas import (
     BandingStatsResponse,
@@ -161,6 +161,7 @@ _ContractModel = type[BaseModel] | type[RootModel[Any]]
 
 RESPONSE_GROUPS_KEYWORD = "x-haute-response-groups"
 REQUEST_GROUPS_KEYWORD = "x-haute-request-groups"
+SHARED_RESPONSE_GROUPS_KEYWORD = "x-haute-shared-response-groups"
 
 # Request bodies the browser sends, by module group, described as their routes read them
 # (validation mode: a defaulted field may be left out), so what the browser builds is typed
@@ -288,6 +289,8 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         OutputAssembleDryRunResponse,
     ),
     "io": (IoCapabilitiesResponse,),
+    # Carried by the node-data, explore, training, optimiser and output responses: shared.
+    "execution-metrics": (ExecutionMetricsPayload,),
     "workbench": (
         WorkbenchStatusResponse,
         WorkbenchTablesResponse,
@@ -343,6 +346,12 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         OptimiserSegmentIndexResponse,
     ),
 }
+
+
+# Response groups of one model that other groups' responses carry. The frontend generator
+# compiles each once, in its own module; every other module checks only that such a field is an
+# object, and the client checks it through the shared module.
+SHARED_RESPONSE_GROUPS: tuple[str, ...] = ("execution-metrics",)
 
 
 class _BundleJsonSchema(GenerateJsonSchema):
@@ -534,6 +543,9 @@ def build_contract_bundle() -> dict[str, Any]:
         "execution_strategy_diagnostic": {"$ref": "#/$defs/ExecutionStrategyDiagnosticPayload"},
         "explore_charts": {"$ref": "#/$defs/ExploreChartsConfig"},
     }
+    for group in SHARED_RESPONSE_GROUPS:
+        if len(RESPONSE_CONTRACT_GROUPS.get(group, ())) != 1:
+            raise RuntimeError(f"a shared response group holds exactly one model: {group!r}")
     if set(REQUEST_CONTRACT_GROUPS) & set(RESPONSE_CONTRACT_GROUPS):
         raise RuntimeError("a contract group is both a request and a response group")
     # Requests before responses: they are validation-mode definitions, as the pilots are, so
@@ -587,6 +599,7 @@ def build_contract_bundle() -> dict[str, Any]:
             group: [model.__name__ for model in models]
             for group, models in RESPONSE_CONTRACT_GROUPS.items()
         },
+        SHARED_RESPONSE_GROUPS_KEYWORD: list(SHARED_RESPONSE_GROUPS),
         "$defs": definitions,
     }
 
