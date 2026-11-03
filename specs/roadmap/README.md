@@ -35,6 +35,7 @@ records corrections to that audit's claims and proposed remedies.
 | [Optimiser validation](optimiser-validation.md) | A calibrated solve-memory forecast in the Solve panel that warns and never refuses; per-point convergence traces from price_contour's frontier sweep; the optimiser result workspace's open robustness and CSV questions | `OPT-W02` |
 | [Pipeline config](pipeline-config.md) | Project context, typed configs, node specification | `PCFG-R04` |
 | [Polars 2](polars-2.md) | Remaining RAM-estimate calibration, large-scale operator measurements and worker baselines; Map columns and quantile/rank binning (deferred) | `PL2-17` |
+| [Readable output](readable-output.md) | What Haute writes into a project, read as a diff: parameters checked on every node type, LF scaffold files, one JSON printer with a shape per kind, whole-number positions, a stable function order; a converter for format changes; Polars nodes stored only as code in `main.py`; Workbench columns, tables, sheets and their parts without random ids; allowed values by reference, rating grids, band lists, constants as maps, snake_case keys, fewer `connect()` calls, plain workflows and scaffold; the quote store following renames (deferred) | `READ-01` |
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
 | [Server API](server-api.md) | Generated browser contract; process-mode 422 domain error mapping in `output_assemble_dry_run` and format-keyed Parquet metadata reads in `get_schema` | `API-R03` |
 | [t-boost](t-boost.md) | What rating-table models make possible: cell-level holdout A/E, unfolding into rating steps, model comparison with premium attribution, measured analyst adjustments (all awaiting a decision); `_report_table` relativity overflow guard | `TBOOST-11` |
@@ -47,8 +48,8 @@ delivered one PR at a time from a single checkout, with each round's
 dependencies, its size and the user-visible changes it makes. It owns only
 the order; the packages above own the work. The packages the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md) added, and the
-documentation packages from that day's check of the deployment guides, are not
-yet placed in its rounds.
+documentation packages from that day's check of the deployment guides, and the
+[readable output](readable-output.md) packages are not yet placed in its rounds.
 
 ## Codebase review — 23 September 2026
 
