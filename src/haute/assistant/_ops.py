@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 from haute._code_extraction import normalise_user_code
 from haute._config_builder import _EXTRACTION_KIND_BY_CODE_TYPE
-from haute._config_io import NODE_TYPE_TO_FOLDER, palette_default_config
+from haute._config_io import palette_default_config
 from haute._config_validation import VALID_KEYS
 from haute._executable_names import function_name_problem
 from haute._graph_utils import (
@@ -44,11 +44,15 @@ from haute._graph_utils import (
 )
 from haute._lru_cache import LRUCache
 from haute._node_config_models import NODE_CONFIG_MODELS
+from haute._node_specs import (
+    NODE_TYPE_TO_FOLDER,
+    REQUEST_INPUT_NODE_TYPES,
+    STEPPED_NODE_TYPES,
+    node_spec,
+)
 from haute._output_assembler import is_active_mapping_entry
 from haute._polars_steps import (
     STEP_KINDS,
-    STEPPED_NODE_TYPES,
-    STEPPED_SURFACE_LABELS,
     PolarsStepError,
     is_stepped_config,
     rename_step_inputs,
@@ -62,7 +66,6 @@ from haute._polars_steps import (
 )
 from haute._sandbox import _bound_names
 from haute._types import (
-    REQUEST_INPUT_NODE_TYPES,
     GraphEdge,
     GraphNode,
     NodeData,
@@ -283,7 +286,7 @@ def _check_stepped_write(
 
     if node_type not in STEPPED_NODE_TYPES:
         return
-    label = STEPPED_SURFACE_LABELS[node_type]
+    label = node_spec(node_type).display_name
     fix = f"Write new logic as steps with a free-code card: {_free_code_form(node_type)}."
     if before is None or is_stepped_config(node_type, before):
         if "code" in written:
@@ -401,7 +404,7 @@ def _unrendered_steps(
         form = _free_code_form(node_type)
         return (
             f"its steps cannot be rendered ({exc}). New logic on a "
-            f"{STEPPED_SURFACE_LABELS[node_type]} is written as {form}.",
+            f"{node_spec(node_type).display_name} is written as {form}.",
             f"Write the steps as {form}.",
         )
     step_id = _step_id_at(steps, index)
@@ -800,7 +803,7 @@ def _apply_edit_steps(
             where={"node": node_id},
             fix=f"Change {node_id!r} with update_node.",
         )
-    label = STEPPED_SURFACE_LABELS[node_type]
+    label = node_spec(node_type).display_name
     config = node.data.config
     steps = config.get("steps")
     if not isinstance(steps, list):
@@ -3034,7 +3037,7 @@ def _validate_assistant_authored_steps(
     input_names = _incoming_input_names(result, node.id, nodes_by_id)
     steps = node.data.config["steps"]
     form = _free_code_form(node_type)
-    label = STEPPED_SURFACE_LABELS[node_type]
+    label = node_spec(node_type).display_name
     try:
         rendered = render_polars_steps(
             steps, step_input_names(node_type, input_names), start=surface.start

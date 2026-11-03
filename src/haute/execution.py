@@ -36,6 +36,7 @@ from haute._graph_utils import upstream_node_ids
 from haute._hashing import HASH_ALGO, content_hash_bytes
 from haute._json_shred._source_proof import file_signature
 from haute._native_memory_limit import current_native_memory_backend
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES
 from haute._path_resolution import resolve_node_input_path
 from haute._polars_selectors import preamble_selector_aliases
 from haute._project_context import current_project, graph_pipeline_dir
@@ -46,14 +47,7 @@ from haute._ram_estimate import (
     RuntimeSourceFrames,
     estimate_materialisation_boundaries,
 )
-from haute._types import (
-    REQUEST_INPUT_NODE_TYPES,
-    GraphEdge,
-    GraphNode,
-    NodeType,
-    PipelineGraph,
-    _Frame,
-)
+from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph, _Frame
 from haute.errors import GroupByExecutionUnsupportedError
 from haute.projection import (
     AllExceptColumns,

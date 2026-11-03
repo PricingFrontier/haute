@@ -28,13 +28,8 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from haute._graph_utils import _sanitize_func_name, edge_input_name
-from haute._types import (
-    GLOBAL_CONSTANTS_NAME,
-    REQUEST_INPUT_NODE_TYPES,
-    GraphNode,
-    NodeType,
-    PipelineGraph,
-)
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES
+from haute._types import GLOBAL_CONSTANTS_NAME, GraphNode, NodeType, PipelineGraph
 
 #: The names a generated module binds itself, with what it binds them to.
 #: Comparison with them is exact, as Python's is.

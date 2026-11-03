@@ -30,9 +30,9 @@ from haute._global_constants import (
 )
 from haute._graph_utils import _edge_id, _sanitize_func_name, executable_input_name
 from haute._logging import get_logger
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES, RESPONSE_NODE_TYPES, SOURCE_NODE_TYPES
 from haute._project_context import standalone_project_scope
 from haute._standalone_nodes import (
-    SOURCE_NODE_TYPES,
     FunctionKind,
     function_kind,
     is_configured,
@@ -43,8 +43,6 @@ from haute._standalone_nodes import (
 from haute._submodel_paths import is_pipeline_dir
 from haute._types import (
     GLOBAL_CONSTANTS_FILE,
-    REQUEST_INPUT_NODE_TYPES,
-    RESPONSE_NODE_TYPES,
     GraphEdge,
     NodeEditorState,
     NodeType,

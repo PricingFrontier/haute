@@ -11,13 +11,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
+from haute._node_specs import REQUEST_INPUT_KINDS
+
 if TYPE_CHECKING:
     from haute._types import GraphEdge, GraphNode, PipelineGraph
-
-#: The request inputs' node types as plain values: ``haute._types`` imports this
-#: module, so its ``REQUEST_INPUT_NODE_TYPES`` cannot be imported here. Held
-#: equal to it by ``tests/test_request_inputs.py``.
-REQUEST_INPUT_KINDS: frozenset[str] = frozenset({"apiInput", "workbenchInput"})
 
 
 def build_parents_of(

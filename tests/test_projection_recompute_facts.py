@@ -529,25 +529,6 @@ def test_code_bearing_nodes_combine_declaration_with_code_facts() -> None:
     assert facts["di_with_code"].reason == "costly:unique"
 
 
-def test_recompute_facts_by_node_raises_when_node_declares_no_recompute_cost(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from haute._registry import NODE_REGISTRY
-
-    entry = NODE_REGISTRY[NodeType.OUTPUT]
-    monkeypatch.setattr(entry, "recompute_cost", None)
-    nodes = {
-        "out": GraphNode(
-            id="out",
-            type="custom",
-            position={"x": 0, "y": 0},
-            data=NodeData(label="out", nodeType=NodeType.OUTPUT, config={}),
-        ),
-    }
-    with pytest.raises(RuntimeError, match="NodeType 'output' declares no recompute cost"):
-        recompute_facts_by_node(["out"], nodes, relevant_edges=())
-
-
 @pytest.mark.parametrize(
     (
         "code",
@@ -718,10 +699,24 @@ def test_costly_builder_keeps_code_full_input_work() -> None:
 def test_recompute_facts_skips_unknown_nodes_and_combines_cheap_registry_and_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from haute._registry import NODE_REGISTRY
+    import dataclasses
 
-    entry = NODE_REGISTRY[NodeType.POLARS]
-    monkeypatch.setattr(entry, "recompute_cost", "cheap")
+    import haute.projection as projection
+    from haute._node_specs import node_spec
+
+    # A Transform declared cheap, so its code's facts combine with a cheap builder's.
+    def declare(*, slice_transparent: bool) -> None:
+        spec = dataclasses.replace(
+            node_spec(NodeType.POLARS),
+            recompute_cost="cheap",
+            slice_transparent=slice_transparent,
+        )
+        monkeypatch.setattr(
+            projection,
+            "node_spec",
+            lambda node_type: spec if node_type == NodeType.POLARS else node_spec(node_type),
+        )
+
     nodes = {
         "barrier": GraphNode(
             id="barrier",
@@ -765,13 +760,13 @@ def test_recompute_facts_skips_unknown_nodes_and_combines_cheap_registry_and_cod
         ),
     }
 
-    monkeypatch.setattr(entry, "slice_transparent", False)
+    declare(slice_transparent=False)
     barrier = recompute_facts_by_node(["unknown", "barrier"], nodes, relevant_edges=())
     assert set(barrier) == {"barrier"}
     assert barrier["barrier"].cost == "cheap"
     assert barrier["barrier"].slice_transparent is False
 
-    monkeypatch.setattr(entry, "slice_transparent", True)
+    declare(slice_transparent=True)
     facts = recompute_facts_by_node(["filter", "select", "sort"], nodes, relevant_edges=())
     assert facts["filter"].reason == "opaque:filter"
     assert facts["filter"].slice_transparent is False

@@ -19,13 +19,10 @@ from polars.testing import assert_frame_equal
 
 import haute.executor as executor_module
 from haute._builders import NodeBuildContext
-from haute._config_io import (
-    NODE_TYPE_TO_FOLDER,
-    config_path_for_node,
-    load_node_config,
-)
+from haute._config_io import config_path_for_node, load_node_config
 from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
 from haute._native_memory_limit import native_memory_backend_scope
+from haute._node_specs import NODE_TYPE_TO_FOLDER
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._registry import NODE_REGISTRY, ensure_registry_ready
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph

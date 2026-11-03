@@ -50,16 +50,11 @@ from haute._graph_utils import (
 )
 from haute._host_memory import available_ram_bytes, require_positive_available_ram
 from haute._logging import get_logger
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES
 from haute._polars_operations import materialisation_factor_basis_points
 from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_utils import read_parquet_metadata, streaming_collect
-from haute._types import (
-    REQUEST_INPUT_NODE_TYPES,
-    GraphEdge,
-    GraphNode,
-    NodeType,
-    PipelineGraph,
-)
+from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.errors import ConfigError
 from haute.projection import ProjectionEdgeKey
 

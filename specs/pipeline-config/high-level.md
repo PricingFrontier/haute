@@ -403,6 +403,22 @@ when it runs or when training or a solve starts. The models are part of the gene
 contract, so a node's config in every response is typed by its node type, and the node
 reference's tables of config keys are generated from them.
 
+**One specification per node type.** Every node type has one specification entry
+(`NodeSpec` in `src/haute/_node_specs.py`) holding what the rest of Haute needs to know about the
+type: its name in the editor, its decorator and sidecar folder, its role in the graph (request
+input, response, source, sink, structural), how many inputs it takes and how its inputs are named,
+where its code lives, whether it is authored with steps, and how a run treats it (whether it
+transforms or passes an input through, and what recomputing it costs). The sets of node types that
+code tests membership of (the request inputs, the responses, the sinks, the stepped types and so
+on) are derived from the entries, so each is declared once. What a node type does in one concern
+(how projection routes its demand, how the RAM estimate bounds its rows, how a trace aligns and
+enriches it, how a deployed request's rows flow through it, how the assistant describes it) is one
+row of that concern's table, and every table must list every node type, so adding a type fails at
+import until each concern has its row. Outside the specification, those tables, the registrations
+and the few endpoints that serve one node type, no code names a node type, which a test enforces.
+A saved file's standalone run and the canvas share the function that interprets a behavioural
+node's config.
+
 For tabular Data Input values specifically, a relative `path` is interpreted
 from the Haute project root by both canvas execution and standalone runs. The
 standalone runtime discovers the project root from the pipeline file and uses the
@@ -697,6 +713,15 @@ Config that is genuinely code (pricing logic, transforms) lives in the `.py` fun
 everything else declarative lives in a JSON sidecar. This keeps generated/round-tripped
 Python readable — no large JSON blobs embedded as string literals — while letting the GUI
 edit the declarative parts without ever touching Python source.
+
+A node type's facts are declared once, in its specification entry, and what it does in each concern
+is that concern's row, rather than one module per node type holding all of its behaviour. A
+module per type would put projection rules, trace hooks, RAM bounds and deploy row logic for one
+type side by side and scatter each concern over twenty-one files, so no one could read how
+projection or a trace works. Flags alone would leave each concern's per-type if-chains in place,
+falling through to a default for a type nobody listed. The specification is the index; each
+concern stays readable as one table, and the table's exhaustiveness is what a new node type cannot
+escape.
 
 A node type's declared keys are its config model's keys plus the universal keys. The same
 model is checked at parse, at save validation, at the sidecar write boundary, in recovery and

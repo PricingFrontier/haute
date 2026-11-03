@@ -50,10 +50,11 @@ from haute._graph_builders import (
     _resolve_node_skeleton,
 )
 from haute._graph_shape import definition_boundary_topology
-from haute._graph_utils import REQUEST_INPUT_KINDS, edge_input_name, executable_input_name
+from haute._graph_utils import edge_input_name, executable_input_name
 from haute._hashing import content_hash_bytes
 from haute._io import decode_user_source, read_user_source
 from haute._logging import get_logger
+from haute._node_specs import NODE_TYPE_TO_DECORATOR, REQUEST_INPUT_KINDS, REQUEST_INPUT_NODE_TYPES
 from haute._parser_submodels import (
     SubmodelRegistration,
     _extract_definition_contract,
@@ -73,8 +74,6 @@ from haute._submodel_paths import resolve_submodel_reference, submodel_source_ke
 from haute._submodel_recovery import submodel_registration_evidence
 from haute._types import (
     GLOBAL_CONSTANTS_FILE,
-    NODE_TYPE_TO_DECORATOR,
-    REQUEST_INPUT_NODE_TYPES,
     GlobalConstant,
     GraphNode,
     NodeEditorState,

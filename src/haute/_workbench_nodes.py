@@ -19,17 +19,13 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from haute._node_specs import WORKBENCH_NODE_TYPES
 from haute._types import GraphNode, NodeType, PipelineGraph
 from haute._workbench_config import WorkbenchConfigError, read_workbench_config
 from haute._workbench_tables import WorkbenchTables, workbench_tables
 
 if TYPE_CHECKING:
     from haute._workbench_form import FormDocument, FormSpec
-
-#: The node types given their tables from the form.
-WORKBENCH_NODE_TYPES: frozenset[NodeType] = frozenset(
-    {NodeType.WORKBENCH_INPUT, NodeType.WORKBENCH_OUTPUT}
-)
 
 
 def read_project_form(project_root: Path, *, owner: str) -> FormDocument:

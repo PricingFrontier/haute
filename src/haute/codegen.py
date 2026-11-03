@@ -38,6 +38,7 @@ from haute._graph_utils import (
     edge_input_name,
 )
 from haute._logging import get_logger
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES
 from haute._registry import NODE_REGISTRY
 from haute._source_layout import (
     INDENT,
@@ -61,7 +62,6 @@ from haute._topo import topo_sort_ids
 from haute._types import (
     GLOBAL_CONSTANTS_FILE,
     GLOBAL_CONSTANTS_NAME,
-    REQUEST_INPUT_NODE_TYPES,
     GraphEdge,
     GraphNode,
     NodeType,

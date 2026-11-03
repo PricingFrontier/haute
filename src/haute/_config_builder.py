@@ -20,7 +20,7 @@ from haute._code_extraction import (
     is_declaration_body,
     normalise_user_code,
 )
-from haute._config_io import NODE_TYPE_TO_FOLDER, has_config_folder, load_node_config
+from haute._config_io import has_config_folder, load_node_config
 from haute._config_validation import (
     reject_removed_config_keys,
     validate_node_config,
@@ -32,9 +32,9 @@ from haute._explore_overview import validate_explore_overview
 from haute._explore_pivots import validate_explore_pivot_state
 from haute._logging import get_logger
 from haute._node_config_models import COLUMN_CONFIG_KEYS
+from haute._node_specs import CODE_NODE_TYPES, NODE_TYPE_TO_FOLDER, STEPPED_NODE_TYPES
 from haute._polars_steps import (
     JOIN_MAINTAIN_ORDER,
-    STEPPED_NODE_TYPES,
     STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
     PolarsStepError,
     render_polars_steps,
@@ -42,7 +42,6 @@ from haute._polars_steps import (
     stepped_surface_for,
 )
 from haute._project_context import current_project
-from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import NodeEditorState, NodeType
 from haute.errors import ConfigError, ContractMismatchError, HauteError, ParseError
 

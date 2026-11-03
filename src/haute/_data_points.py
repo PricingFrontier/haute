@@ -39,19 +39,14 @@ from haute._node_snapshots import (
     node_snapshot_signature,
     pipeline_source_file_key,
 )
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES
 from haute._project_context import current_project
 from haute._source_cache import (
     SourceCacheGenerationMissingError,
     SourceCacheIdentity,
     SourceCacheStatus,
 )
-from haute._types import (
-    REQUEST_INPUT_NODE_TYPES,
-    GraphEdge,
-    GraphNode,
-    NodeType,
-    PipelineGraph,
-)
+from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 
 PointKind = Literal["data_input", "api_input_table", "node_output"]
 PointState = Literal["current", "stale", "partial", "missing", "building", "corrupt"]

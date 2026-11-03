@@ -34,14 +34,9 @@ from haute._logging import get_logger
 from haute._mlflow_io import clear_local_model_cache, load_local_model_cached
 from haute._model_source import model_score_output_column, model_score_task
 from haute._node_builder import NodeBuildHooks, NodeFnResult, node_fn_name, wrap_builder
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES
 from haute._polars_utils import streaming_collect
-from haute._types import (
-    REQUEST_INPUT_NODE_TYPES,
-    GraphNode,
-    NodeType,
-    PipelineGraph,
-    _Frame,
-)
+from haute._types import GraphNode, NodeType, PipelineGraph, _Frame
 from haute._workbench_input import workbench_request_frames
 from haute._workbench_output import as_response, quote_identity
 from haute.execution import (

@@ -33,6 +33,7 @@ from haute._banding_config import (
 from haute._graph_utils import _sanitize_func_name
 from haute._io import utf8_decode_failure
 from haute._logging import get_logger
+from haute._node_specs import FOLDER_TO_NODE_TYPE, NODE_TYPE_TO_FOLDER, node_spec
 from haute._rating_step_config import (
     normalise_rating_step_config,
 )
@@ -52,32 +53,7 @@ logger = get_logger(component="config_io")
 # Folder ↔ NodeType mappings
 # ---------------------------------------------------------------------------
 
-NODE_TYPE_TO_FOLDER: dict[NodeType, str] = {
-    NodeType.API_INPUT: "quote_input",
-    NodeType.WORKBENCH_INPUT: "workbench_input",
-    NodeType.WORKBENCH_OUTPUT: "workbench_output",
-    NodeType.DATA_INPUT: "data_input",
-    NodeType.DATA_OUTPUT: "data_output",
-    NodeType.LIVE_SWITCH: "source_switch",
-    NodeType.MODEL_SCORE: "model_scoring",
-    NodeType.BANDING: "banding",
-    NodeType.RATING_STEP: "rating_step",
-    NodeType.OUTPUT: "quote_response",
-    NodeType.EXTERNAL_FILE: "load_file",
-    NodeType.MODELLING: "model_training",
-    NodeType.OPTIMISER: "optimisation",
-    NodeType.OPTIMISER_APPLY: "apply_optimisation",
-    NodeType.SCENARIO_EXPANDER: "expander",
-    NodeType.CONSTANT: "constant",
-    NodeType.POLARS: "polars",
-}
-
-# Node types whose sidecar is optional: a ``polars`` transform stores its
-# low-code ``steps`` in ``config/polars/<name>.json`` only while it is
-# authored in step mode; a code-only transform has no sidecar at all.
-_OPTIONAL_SIDECAR_TYPES: frozenset[NodeType] = frozenset({NodeType.POLARS})
-
-FOLDER_TO_NODE_TYPE: dict[str, NodeType] = {v: k for k, v in NODE_TYPE_TO_FOLDER.items()}
+# The folders are each node type's ``NodeSpec.config_folder`` (``haute._node_specs``).
 
 # Keys that live in the .py function body, NOT in the JSON config file.
 
@@ -253,12 +229,12 @@ def palette_default_config(node_type: NodeType) -> dict[str, Any]:
 
 def has_config_folder(node_type: NodeType) -> bool:
     """Whether this node type requires an external JSON config file."""
-    return node_type in NODE_TYPE_TO_FOLDER and node_type not in _OPTIONAL_SIDECAR_TYPES
+    return node_spec(node_type).sidecar == "required"
 
 
 def has_optional_config_folder(node_type: NodeType) -> bool:
     """Whether this node type may, but need not, carry a JSON sidecar."""
-    return node_type in _OPTIONAL_SIDECAR_TYPES
+    return node_spec(node_type).sidecar == "optional"
 
 
 def node_emits_sidecar(node: GraphNode) -> bool:

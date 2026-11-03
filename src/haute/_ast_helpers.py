@@ -17,14 +17,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from haute._global_constants import module_binding_lines
+from haute._node_specs import DECORATOR_TO_NODE_TYPE
 from haute._source_layout import WIRE_COMMENT, lines_inside_literals, python_lines
 from haute._submodel_paths import SUBMODEL_PACKAGE
-from haute._types import (
-    DECORATOR_TO_NODE_TYPE,
-    GLOBAL_CONSTANTS_FILE,
-    GLOBAL_CONSTANTS_NAME,
-    NodeType,
-)
+from haute._types import GLOBAL_CONSTANTS_FILE, GLOBAL_CONSTANTS_NAME, NodeType
 from haute.errors import ParseError
 
 __all__ = [

@@ -22,12 +22,8 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Literal
 
-from haute._polars_steps import (
-    STEP_KINDS,
-    STEPPED_NODE_TYPES,
-    PolarsStepError,
-    render_node_steps,
-)
+from haute._node_specs import STEPPED_NODE_TYPES
+from haute._polars_steps import STEP_KINDS, PolarsStepError, render_node_steps
 from haute._types import GraphNode, NodeEditorState, NodeType, PipelineGraph
 from haute.assistant._catalog import capability_manifest
 from haute.assistant._config import EgressPolicy

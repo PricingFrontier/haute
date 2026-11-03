@@ -335,7 +335,7 @@ def snapshot_backed_inputs(
     runtime path resolved through the node builder's project-root guard.
     """
     from haute._builders import _config_with_resolved_data_path
-    from haute._types import REQUEST_INPUT_NODE_TYPES
+    from haute._node_specs import REQUEST_INPUT_NODE_TYPES
     from haute.schemas import NodeType
 
     found: list[tuple[str, InputKind, Mapping[str, Any]]] = []

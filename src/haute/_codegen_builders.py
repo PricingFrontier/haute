@@ -60,6 +60,7 @@ from haute._keyword_parameters import (
     validate_keyword_parameters,
 )
 from haute._node_config_models import COLUMN_CONFIG_KEYS
+from haute._node_specs import CODE_NODE_TYPES, NODE_TYPE_TO_DECORATOR
 from haute._polars_steps import (
     STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
     PolarsStepError,
@@ -84,8 +85,7 @@ from haute._source_layout import (
     print_doc,
     python_lines,
 )
-from haute._standalone_nodes import CODE_NODE_TYPES
-from haute._types import NODE_TYPE_TO_DECORATOR, GraphNode, NodeType
+from haute._types import GraphNode, NodeType
 from haute.errors import ConfigError, HauteError, ParseError
 
 #: The annotation every frame parameter and code-carrying function returns.

@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from haute._env import int_env
 from haute._logging import get_logger
-from haute._polars_steps import STEPPED_NODE_TYPES
+from haute._node_specs import STEPPED_NODE_TYPES
 from haute._types import NodeType
 from haute.assistant._assets import example_index
 from haute.assistant._catalog import (

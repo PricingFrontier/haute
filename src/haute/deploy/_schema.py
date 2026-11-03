@@ -19,7 +19,7 @@ from haute._cache import (
 from haute._file_ops import atomic_write_text
 from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
-from haute._types import REQUEST_INPUT_NODE_TYPES
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES
 from haute._workbench_input import null_quote, workbench_input_tables
 from haute._workbench_tables import WorkbenchTable, WorkbenchTablesError, request_schema
 from haute._worker_isolation import IsolatedWorkerError, run_isolated_worker

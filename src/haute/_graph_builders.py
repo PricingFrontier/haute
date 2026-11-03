@@ -22,9 +22,9 @@ from haute._ast_helpers import (
 from haute._config_builder import _resolve_node_config
 from haute._graph_utils import _edge_id, resolve_input_mapping_names
 from haute._keyword_parameters import KEYWORD_PARAMETERS_KEY, keyword_parameters_from_signature
+from haute._node_specs import CODE_NODE_TYPES
 from haute._polars_steps import stepped_surface_allows_input_references
 from haute._source_layout import python_lines
-from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType
 from haute.errors import ConfigError, ParseError
 

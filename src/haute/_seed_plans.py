@@ -39,10 +39,7 @@ import polars as pl
 
 import haute.projection as projection_planner
 from haute._api_input_schema import is_json_api_input_path
-from haute._builders import (
-    PASS_THROUGH_NODE_TYPES,
-    pass_through_selected_edge,
-)
+from haute._builders import pass_through_selected_edge
 from haute._cache import GraphFingerprintMemo, canonical_json, graph_fingerprint
 from haute._data_points import DataPoint, DataPointResolver, point_kind
 from haute._execution_context import ExecutionContext, ExecutionProfile
@@ -57,9 +54,9 @@ from haute._node_snapshots import (
     snapshot_read_classes,
     snapshot_write_class,
 )
+from haute._node_specs import PASS_THROUGH_NODE_TYPES, REQUEST_INPUT_NODE_TYPES, node_spec
 from haute._pipeline_settings import read_pipeline_settings
 from haute._project_context import current_project
-from haute._registry import NODE_REGISTRY
 from haute._source_cache import (
     SourceCacheCorruptError,
     SourceCacheGeneration,
@@ -67,13 +64,7 @@ from haute._source_cache import (
     SourceCacheIdentity,
     new_staging_token,
 )
-from haute._types import (
-    REQUEST_INPUT_NODE_TYPES,
-    GraphEdge,
-    GraphNode,
-    NodeType,
-    PipelineGraph,
-)
+from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 
 if TYPE_CHECKING:
     from haute._execute_lazy import PreparedExecution
@@ -695,8 +686,7 @@ class _Resolver:
 
             node_type = self.node_map[node_id].data.nodeType
             recompute_fact = self.recompute.get(node_id)
-            reg_entry = NODE_REGISTRY.get(node_type)
-            reg_cost = reg_entry.recompute_cost if reg_entry is not None else None
+            reg_cost = node_spec(node_type).recompute_cost
 
             if self.batch_model_score(node_id):
                 captures[node_id] = CaptureKind.MODEL_SCORE

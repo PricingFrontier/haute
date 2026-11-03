@@ -36,15 +36,15 @@ from haute._editor_identities import (
     recoverable_request_input_source_handles,
 )
 from haute._execution_admission import create_admitted_execution_context
-from haute._graph_utils import REQUEST_INPUT_KINDS, is_frame_label
+from haute._graph_utils import is_frame_label
 from haute._input_preparation import snapshot_backed_inputs
 from haute._node_config_recovery import reconcile_config
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+from haute._node_specs import REQUEST_INPUT_KINDS, REQUEST_INPUT_NODE_TYPES
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._project_context import current_project
 from haute._trace_enrichment import detect_row_lineage_type
 from haute._types import (
-    REQUEST_INPUT_NODE_TYPES,
     GraphEdge,
     GraphNode,
     NodeData,
@@ -142,19 +142,13 @@ def _everything(node: ast.AST | None) -> set[int]:
 def _allowed(tree: ast.Module, path: str) -> set[int]:
     """The references *path* may hold, each matched by its syntax (specs/workbench)."""
     allowed: set[int] = set()
-    if path == "_types.py":
+    if path == "_node_type.py":
         node_type = _named(tree.body, ast.ClassDef, "NodeType")
         allowed |= {id(_assigned(node_type.body, "API_INPUT"))} if node_type else set()
-        decorators = _assigned(tree.body, "DECORATOR_TO_NODE_TYPE")
-        if isinstance(decorators, ast.Dict):
-            allowed |= {
-                id(value)
-                for key, value in zip(decorators.keys, decorators.values, strict=True)
-                if isinstance(key, ast.Constant) and key.value == "api_input"
-            }
-        allowed |= _everything(_assigned(tree.body, "REQUEST_INPUT_NODE_TYPES"))
-    if path == "_graph_utils.py":
-        allowed |= _everything(_assigned(tree.body, "REQUEST_INPUT_KINDS"))
+    if path == "_node_specs.py":
+        # The specification table names each type in its own entry; the request
+        # inputs are derived from its ``request_input`` flags.
+        allowed |= _everything(_assigned(tree.body, "NODE_SPECS"))
     if path == "execution.py":
         # The file each node type reads: a Workbench Input reads none.
         for name in (
@@ -261,13 +255,11 @@ _ACCEPTED = [
         "@_register(NodeType.API_INPUT, cost='source')\n"
         "def build(ctx): ...\n",
     ),
+    ("_node_type.py", "class NodeType(StrEnum):\n    API_INPUT = 'apiInput'\n"),
     (
-        "_types.py",
-        "class NodeType(StrEnum):\n    API_INPUT = 'apiInput'\n\n"
-        "DECORATOR_TO_NODE_TYPE = {'api_input': NodeType.API_INPUT}\n"
-        "REQUEST_INPUT_NODE_TYPES = frozenset({NodeType.API_INPUT, NodeType.WORKBENCH_INPUT})\n",
+        "_node_specs.py",
+        "NODE_SPECS = MappingProxyType({NodeType.API_INPUT: NodeSpec(NodeType.API_INPUT)})\n",
     ),
-    ("_graph_utils.py", "REQUEST_INPUT_KINDS = frozenset({'apiInput', 'workbenchInput'})\n"),
     (
         "pipeline.py",
         "class NodeRegistry:\n"

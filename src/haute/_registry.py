@@ -29,10 +29,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
-from haute._node_config_models import MODELLING_CONFIG_KEYS
 from haute._types import NodeType
 
 if TYPE_CHECKING:
@@ -45,31 +43,6 @@ ExecFn = Callable[..., tuple[str, Callable[..., Any], bool]]
 
 #: Codegen-side builder signature: ``(node, source_names) -> NodeSource``.
 CodegenFn = Callable[["GraphNode", list[str]], "NodeSource"]
-
-#: Declared recompute cost for a NodeType.
-RecomputeCost = Literal["cheap", "costly", "code", "source"]
-
-
-class NodeInputPolicy(Enum):
-    """Closed set of input-selection policies shared by paired node builders."""
-
-    FIRST_CONNECTED = "first_connected"
-
-
-@dataclass(frozen=True, slots=True)
-class SharedNodeSemantics:
-    """Declarative semantics which execution and codegen must share."""
-
-    node_type: NodeType
-    input_policy: NodeInputPolicy
-    decorator_config_keys: tuple[str, ...]
-
-
-MODELLING_NODE_SEMANTICS = SharedNodeSemantics(
-    node_type=NodeType.MODELLING,
-    input_policy=NodeInputPolicy.FIRST_CONNECTED,
-    decorator_config_keys=MODELLING_CONFIG_KEYS,
-)
 
 
 @dataclass(slots=True)
@@ -87,30 +60,9 @@ class NodeRegistryEntry:
 
     exec: ExecFn | None = None
     codegen: CodegenFn | None = None
-    #: Optional column-contract function.  Only meaningful on the exec side;
-    #: stored here so the unified registry is the single source of truth for
-    #: per-type metadata.
+    #: The column-contract callback, given a node's config. Only meaningful on
+    #: the exec side; stored here so the unified registry holds every callable.
     column_contract: Callable[[dict[str, Any]], Any] | None = field(default=None, repr=False)
-    #: Whether this NodeType applies a genuine, stateful transform (banding,
-    #: rating, modelScore, liveSwitch, scenarioExpander, optimiserApply,
-    #: output) as opposed to a pure passthrough (modelling, optimiser
-    #: preview, dataOutput, submodel). Set on the EXEC side at registration.
-    #:
-    #: The invariant :func:`validate_registry_complete` enforces at import:
-    #: a behavioural type is never one of the standalone runtime's passthrough
-    #: types. This makes a saved ``.py`` whose standalone run silently no-ops
-    #: for a stateful node UNREPRESENTABLE — its decorator must route through
-    #: the shared ``apply_*_from_config`` helper the executor calls, so canvas
-    #: and file cannot diverge.
-    is_behavioural: bool = False
-    #: Declared recompute cost for this NodeType ("cheap", "costly", "code",
-    #: or "source"). Set on the EXEC side at registration; enforced by
-    #: :func:`validate_registry_complete`.
-    recompute_cost: RecomputeCost | None = None
-    #: Whether Polars pushes a slice through this builder step unchanged.
-    #: Transparent for row-preserving transforms and pass-throughs; False for
-    #: row-multiplying transforms like scenarioExpander.
-    slice_transparent: bool = True
 
 
 #: The canonical registry: one entry per :class:`NodeType`.
@@ -131,25 +83,15 @@ def register_exec(
     node_type: NodeType,
     *,
     column_contract: Callable[[dict[str, Any]], Any] | None = None,
-    is_behavioural: bool = False,
-    recompute_cost: RecomputeCost | None = None,
-    slice_transparent: bool = True,
 ) -> Callable[[ExecFn], ExecFn]:
     """Decorator to register the exec builder for *node_type*.
 
     The optional *column_contract* declares the node's column contract —
     which columns it creates and which input columns it reads — given its
     config dict.  Used by the checkpoint projection pass to avoid writing
-    unneeded columns to intermediate parquet files.
-
-    *is_behavioural* marks a stateful-apply node whose standalone run must not
-    be a bare passthrough — enforced by :func:`validate_registry_complete`.
-
-    *recompute_cost* declares whether recomputing this builder is cheap,
-    costly, delegated to code, or a source base case.
-
-    *slice_transparent* declares whether Polars pushes a slice through this
-    builder step unchanged.
+    unneeded columns to intermediate parquet files. The type's other facts
+    (behavioural, recompute cost, slice transparency) are its
+    :class:`~haute._node_specs.NodeSpec`'s.
     """
 
     def decorator(fn: ExecFn) -> ExecFn:
@@ -161,11 +103,6 @@ def register_exec(
         entry.exec = fn
         if column_contract is not None:
             entry.column_contract = column_contract
-        if is_behavioural:
-            entry.is_behavioural = True
-        if recompute_cost is not None:
-            entry.recompute_cost = recompute_cost
-        entry.slice_transparent = slice_transparent
         return fn
 
     return decorator
@@ -229,26 +166,20 @@ def get_codegen(node_type: NodeType) -> CodegenFn:
 
 
 def validate_registry_complete() -> None:
-    """Assert every :class:`NodeType` is fully and consistently registered.
+    """Assert every :class:`NodeType` registers its callables.
 
     Called once after both ``_builders`` and ``_codegen_builders`` finish
-    registering.  Enforces three import-time invariants:
-
-    1. Every NodeType has an exec builder AND a codegen builder.
-    2. Every NodeType has a column contract (previously optional yet
-       dereferenced as mandatory at runtime — a missing one used to pass
-       import validation and blow up later).
-    3. No *behavioural* NodeType is a standalone passthrough — so a saved
-       ``.py`` run on its own cannot silently no-op for a stateful node.  This
-       is what forces its decorator through a shared ``apply_*_from_config``
-       helper.
+    registering: every NodeType has an exec builder, a codegen builder and a
+    column contract (previously optional yet dereferenced as mandatory at
+    runtime — a missing one used to pass import validation and blow up later).
+    The type's facts, and their invariants (a behavioural type is never a
+    standalone passthrough), are checked by :mod:`haute._node_specs` at import.
 
     Raises ``RuntimeError`` naming the offending NodeType(s).
     """
     missing_exec: list[NodeType] = []
     missing_codegen: list[NodeType] = []
     missing_contract: list[NodeType] = []
-    missing_cost: list[NodeType] = []
     for nt in NodeType:
         entry = NODE_REGISTRY.get(nt)
         if entry is None or entry.exec is None:
@@ -257,42 +188,13 @@ def validate_registry_complete() -> None:
             missing_codegen.append(nt)
         if entry is None or entry.column_contract is None:
             missing_contract.append(nt)
-        if entry is None or entry.recompute_cost is None:
-            missing_cost.append(nt)
-    if missing_exec or missing_codegen or missing_contract or missing_cost:
+    if missing_exec or missing_codegen or missing_contract:
         raise RuntimeError(
             "NODE_REGISTRY is incomplete — every NodeType must register an "
-            "exec builder, a codegen builder, a column contract, AND declare recompute cost.\n"
+            "exec builder, a codegen builder and a column contract.\n"
             f"  Missing exec:    {[n.value for n in missing_exec]}\n"
             f"  Missing codegen: {[n.value for n in missing_codegen]}\n"
-            f"  Missing contract: {[n.value for n in missing_contract]}\n"
-            f"  Missing cost:    {[n.value for n in missing_cost]}"
-        )
-
-    _validate_behavioural_types_not_standalone_passthrough()
-
-
-def _validate_behavioural_types_not_standalone_passthrough() -> None:
-    """Assert no behavioural NodeType is passed through by a standalone run.
-
-    A behavioural (stateful-apply) node that a standalone ``pipeline.run()``
-    passed straight through would silently no-op while the canvas executor
-    applies the real transform. The standalone runtime lists the types it
-    passes through; none of them may be behavioural.
-    """
-    from haute._standalone_nodes import STANDALONE_PASSTHROUGH_TYPES
-
-    offenders = sorted(
-        nt.value
-        for nt in STANDALONE_PASSTHROUGH_TYPES
-        if (entry := NODE_REGISTRY.get(nt)) is not None and entry.is_behavioural
-    )
-    if offenders:
-        raise RuntimeError(
-            "Behavioural NodeType(s) are passed straight through by a standalone "
-            "pipeline.run(), which would silently no-op while the executor applies "
-            "the real transform. Route them through the shared apply_*_from_config "
-            f"helper (the executor's twin): {offenders}"
+            f"  Missing contract: {[n.value for n in missing_contract]}"
         )
 
 

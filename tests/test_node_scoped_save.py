@@ -531,7 +531,7 @@ def test_scoped_save_refuses_a_config_error_as_not_loadable(
     """A setting the validator refuses with a ``ConfigError`` (not a ``ValueError``)
     gets the same structured not-loadable refusal, never an unhandled 500."""
     from haute._config_io import config_path_for_node, node_config_json, palette_default_config
-    from haute._types import NODE_TYPE_TO_DECORATOR
+    from haute._node_specs import NODE_TYPE_TO_DECORATOR
 
     config = palette_default_config(node_type)
     if node_type is NodeType.MODEL_SCORE:

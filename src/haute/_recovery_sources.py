@@ -20,10 +20,9 @@ from haute._config_io import (
     reject_duplicate_keys_hook,
 )
 from haute._keyword_parameters import KEYWORD_PARAMETERS_KEY, keyword_parameters_from_signature
-from haute._polars_steps import STEPPED_NODE_TYPES
+from haute._node_specs import CODE_NODE_TYPES, STEPPED_NODE_TYPES
 from haute._recovery_schemas import RecoveryFieldChange
 from haute._source_layout import python_lines
-from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import NodeType
 from haute.errors import ConfigError, ParseError
 from haute.schemas import PipelineEditorDocument, RecoveryPipelineNode

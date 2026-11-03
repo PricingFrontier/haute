@@ -80,10 +80,10 @@ orphaned halves).
   accepts any installed format), and `required_fields` are the keys every
   branch requires. `defaults` is the palette's config for the type
   (`haute._config_io.palette_default_config`, read from `node_defaults.json`).
-  Source-ness comes from `haute._standalone_nodes.SOURCE_NODE_TYPES`, types
-  with no output from `haute._types.SINK_ONLY_NODE_TYPES` (held
+  Source-ness comes from `haute._node_specs.SOURCE_NODE_TYPES`, types
+  with no output from `haute._node_specs.SINK_ONLY_NODE_TYPES` (held
   equal to the editor's `SINK_ONLY_TYPES` by test), first-input pass-through from
-  `haute._standalone_nodes.STANDALONE_PASSTHROUGH_TYPES`, and the single-input types
+  `haute._node_specs.STANDALONE_PASSTHROUGH_TYPES`, and the single-input types
   are held equal to the palette's `maxInputs: 1` entries by test; every
   `NodeType` has an explicit input cardinality, and one without it fails at
   import. So Load File takes its first input as `df` plus further inputs by
@@ -1920,7 +1920,7 @@ the turn that follows.
     lose and accepts a step list;
   - in `add_node` of a stepped type: a `code` key or a `steps` value that is not a list;
   Code-mode nodes keep `code` editing. Each refusal names the node, its surface
-  (`STEPPED_SURFACE_LABELS`) and the free-code form to write instead: on a surface
+  (its specification's display name) and the free-code form to write instead: on a surface
   whose steps choose their input (`start == "input"`, the Transform)
   `[{"id": "start", "kind": "source", "input": "<edge name>"}, {"id": "logic", "kind":
   "free_code", "code": "..."}]`, and on every other stepped surface

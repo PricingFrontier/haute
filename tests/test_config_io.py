@@ -11,8 +11,6 @@ from typing import Any
 import pytest
 
 from haute._config_io import (
-    FOLDER_TO_NODE_TYPE,
-    NODE_TYPE_TO_FOLDER,
     _prepare_config_for_sidecar,
     collect_node_configs,
     config_path_for_node,
@@ -23,6 +21,7 @@ from haute._config_io import (
     load_node_config,
     remove_config_file,
 )
+from haute._node_specs import FOLDER_TO_NODE_TYPE, NODE_TYPE_TO_FOLDER
 from haute._types import NodeType
 from haute.errors import NodeConfigError
 from tests.conftest import make_graph, make_output_config

@@ -7,7 +7,7 @@ from typing import Any
 
 from haute._graph_utils import edge_input_name
 from haute._logging import get_logger
-from haute._types import REQUEST_INPUT_NODE_TYPES, RESPONSE_NODE_TYPES
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES, RESPONSE_NODE_TYPES
 from haute.graph_utils import GraphEdge, GraphNode, NodeType, PipelineGraph
 
 logger = get_logger(component="deploy.pruner")

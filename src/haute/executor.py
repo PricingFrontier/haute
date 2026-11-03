@@ -43,12 +43,12 @@ from haute._execute_lazy import (
 )
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
-from haute._graph_utils import REQUEST_INPUT_KINDS
 from haute._graph_walker import CollectPolicy, walk_graph
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._input_providers import recording_schema_tiers
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
+from haute._node_specs import REQUEST_INPUT_KINDS
 from haute._output_assembler import render_output_document
 from haute._path_resolution import (
     RuntimePathOutsideProjectError,

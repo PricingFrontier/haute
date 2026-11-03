@@ -35,6 +35,7 @@ from haute._estimate_calibration import (
 from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name, build_parents_of, edge_input_name
 from haute._model_source import model_score_output_column
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES, node_spec
 from haute._polars_call_shapes import (
     replace_call_has_literal_mapping,
     replace_strict_call_has_literal_mapping,
@@ -51,15 +52,9 @@ from haute._polars_operations import (
     registered_names,
 )
 from haute._polars_selectors import preamble_selector_aliases
-from haute._registry import NODE_REGISTRY, ensure_registry_ready
+from haute._registry import ensure_registry_ready
 from haute._topo import CycleError, ancestors, canonical_topological_order, topo_sort_ids
-from haute._types import (
-    REQUEST_INPUT_NODE_TYPES,
-    GraphEdge,
-    GraphNode,
-    NodeType,
-    PipelineGraph,
-)
+from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.errors import (
     ConfigError,
     ContractMismatchError,
@@ -3093,9 +3088,9 @@ def recompute_facts_by_node(
         if node is None:
             continue
         node_type = node.data.nodeType
-        reg_entry = NODE_REGISTRY.get(node_type)
-        reg_cost = reg_entry.recompute_cost if reg_entry is not None else None
-        reg_slice_transparent = reg_entry.slice_transparent if reg_entry is not None else True
+        spec = node_spec(node_type)
+        reg_cost = spec.recompute_cost
+        reg_slice_transparent = spec.slice_transparent
 
         raw_code = node.data.config.get("code")
         has_code = isinstance(raw_code, str) and bool(raw_code.strip())
@@ -3141,7 +3136,7 @@ def recompute_facts_by_node(
                 limit_blocker=code_blocker,
                 joins_frames=code_joins,
             )
-        elif reg_cost == "cheap":
+        else:  # a cheap builder
             if has_code:
                 code_facts = code_recompute_facts(
                     code_str,
@@ -3177,8 +3172,6 @@ def recompute_facts_by_node(
                     limit_blocker=None,
                     joins_frames=False,
                 )
-        else:
-            raise RuntimeError(f"NodeType {node_type.value!r} declares no recompute cost")
 
     return MappingProxyType(found)
 

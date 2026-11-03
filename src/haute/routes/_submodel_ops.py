@@ -9,12 +9,11 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from haute._editor_identities import NamingCandidate, name_candidates
-from haute._graph_shape import SINGLETON_NODE_GROUPS
 from haute._graph_utils import _edge_id, edge_input_name
+from haute._node_specs import SINGLETON_NODE_GROUPS, SINK_ONLY_NODE_TYPES
 from haute._submodel_instances import rewrite_boundary_input_names
 from haute._support_code_names import UtilityReader
 from haute._types import (
-    SINK_ONLY_NODE_TYPES,
     GraphEdge,
     GraphNode,
     NodeData,

@@ -83,6 +83,7 @@ from haute._json_shred._snapshots import (
 from haute._json_shred._source_proof import freshness_record
 from haute._logging import get_logger
 from haute._mlflow_io import DiskCachedRunModel, disk_cached_run_model
+from haute._node_specs import SINK_ONLY_NODE_TYPES
 from haute._project_context import current_project, graph_pipeline_dir
 from haute._rating import (
     RatingTableMissError,
@@ -98,7 +99,7 @@ from haute._rating_step_config import normalise_rating_tables
 from haute._source_cache import SourceCacheStore
 from haute._submodel_instances import runtime_instance_id
 from haute._topo import canonical_topological_order
-from haute._types import SINK_ONLY_NODE_TYPES, GraphEdge, GraphNode, NodeType, PipelineGraph
+from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute._worker_isolation import WorkerTerminalReason, resolve_worker_memory_enforcement
 from haute.assistant._application import diff_seed_nodes
 from haute.assistant._config import EgressPolicy

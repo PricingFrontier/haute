@@ -47,6 +47,7 @@ from haute._expression_parser import (
 )
 from haute._graph_utils import edge_input_name, select_edge_source_output
 from haute._logging import get_logger
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES
 from haute._rating import (
     SUPPORTED_BANDING_OPERATORS,
     _banding_rule_comparators,
@@ -55,7 +56,6 @@ from haute._rating import (
     normalise_rating_key,
 )
 from haute._rating_step_config import normalise_rating_tables
-from haute._types import REQUEST_INPUT_NODE_TYPES
 
 if TYPE_CHECKING:
     from haute._types import GraphEdge, GraphNode

@@ -16,18 +16,12 @@ from fastapi.testclient import TestClient
 
 from haute._config_io import collect_node_configs
 from haute._flatten import flatten_executable_graph
+from haute._node_specs import SINK_ONLY_NODE_TYPES
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._project import get_project_root
 from haute._project_context import ProjectContext, project_scope
 from haute._submodel_instances import qualified_runtime_node_id
-from haute._types import (
-    SINK_ONLY_NODE_TYPES,
-    GraphEdge,
-    GraphNode,
-    NodeData,
-    NodeType,
-    PipelineGraph,
-)
+from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.cli import cli
 from haute.codegen import graph_to_code_multi
 from haute.deploy import DeployConfig, resolve_config

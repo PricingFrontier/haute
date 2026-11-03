@@ -10,8 +10,9 @@ from typing import Any
 from haute._config_io import config_path_for_node, has_config_folder
 from haute._executable_names import ROOT_MODULE
 from haute._graph_utils import _sanitize_func_name, executable_input_name, is_frame_label
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES
 from haute._support_code_names import UtilityReader, name_violations
-from haute._types import REQUEST_INPUT_NODE_TYPES, GraphNode, NodeData, NodeType, PipelineGraph
+from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 
 
 @dataclass(frozen=True)

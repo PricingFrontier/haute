@@ -21,10 +21,19 @@ from typing import Annotated, Literal, Required, Union, cast, get_args, get_orig
 from pydantic import BaseModel
 
 from haute._cache import canonical_json
-from haute._config_io import NODE_TYPE_TO_FOLDER, palette_default_config
+from haute._config_io import palette_default_config
 from haute._config_validation import VALID_KEYS
-from haute._graph_shape import SINGLETON_NODE_GROUPS
 from haute._node_config_models import NODE_CONFIG_MODELS
+from haute._node_specs import (
+    NODE_TYPE_TO_DECORATOR,
+    NODE_TYPE_TO_FOLDER,
+    REQUEST_INPUT_NODE_TYPES,
+    SINGLETON_NODE_GROUPS,
+    SINK_ONLY_NODE_TYPES,
+    SOURCE_NODE_TYPES,
+    STANDALONE_PASSTHROUGH_TYPES,
+    STEPPED_NODE_TYPES,
+)
 from haute._polars_steps import (
     AGGREGATIONS,
     BINARY_OPERATORS,
@@ -36,18 +45,11 @@ from haute._polars_steps import (
     LITERAL_TYPES,
     OPERATORS,
     PIVOT_AGGREGATIONS,
-    STEPPED_NODE_TYPES,
     WINDOW_AGGREGATIONS,
     step_fields,
     stepped_surface_for,
 )
-from haute._standalone_nodes import SOURCE_NODE_TYPES, STANDALONE_PASSTHROUGH_TYPES
-from haute._types import (
-    NODE_TYPE_TO_DECORATOR,
-    REQUEST_INPUT_NODE_TYPES,
-    SINK_ONLY_NODE_TYPES,
-    NodeType,
-)
+from haute._types import NodeType
 from haute.assistant._node_cards import node_card
 from haute.assistant._recipes import recipe_manifest
 from haute.assistant._wire_ops import MAX_DECLARED_POSTCONDITIONS, graph_edit_operations_schema

@@ -45,6 +45,7 @@ from haute._graph_utils import (
     upstream_node_ids,
 )
 from haute._logging import get_logger
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES
 from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_utils import (
     current_streaming_chunk_size,
@@ -52,14 +53,7 @@ from haute._polars_utils import (
 )
 from haute._source_cache import SourceCacheCorruptError
 from haute._topo import ancestors
-from haute._types import (
-    REQUEST_INPUT_NODE_TYPES,
-    GraphEdge,
-    GraphNode,
-    NodeType,
-    PipelineGraph,
-    _Frame,
-)
+from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph, _Frame
 from haute._user_exec import user_code_line
 from haute.chunking import classify_chunk_local_polars_code
 from haute.errors import (

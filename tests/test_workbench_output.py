@@ -26,18 +26,12 @@ import pytest
 from haute._builders import _build_node_fn
 from haute._execution_admission import create_admitted_execution_context
 from haute._node_apply import assemble_workbench_output_from_config
+from haute._node_specs import RESPONSE_NODE_TYPES
 from haute._output_assembler import render_output_document
 from haute._polars_utils import CollectEngine, execution_collect
 from haute._project_context import current_project
 from haute._source_cache import new_staging_token
-from haute._types import (
-    RESPONSE_NODE_TYPES,
-    GraphEdge,
-    GraphNode,
-    NodeData,
-    NodeType,
-    PipelineGraph,
-)
+from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute._workbench_nodes import with_tables
 from haute._workbench_output import (
     WorkbenchOutputError,

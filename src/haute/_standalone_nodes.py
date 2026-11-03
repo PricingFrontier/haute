@@ -28,14 +28,14 @@ from typing import Any, Literal
 
 import polars as pl
 
-from haute._registry import MODELLING_NODE_SEMANTICS, NodeInputPolicy
-from haute._types import REQUEST_INPUT_NODE_TYPES, NodeType
+from haute._node_specs import (
+    CODE_NODE_TYPES,
+    REQUEST_INPUT_NODE_TYPES,
+)
+from haute._types import NodeType
 from haute.errors import ConfigError, ExecutionError
 
 __all__ = [
-    "CODE_NODE_TYPES",
-    "SOURCE_NODE_TYPES",
-    "STANDALONE_PASSTHROUGH_TYPES",
     "FunctionKind",
     "function_kind",
     "has_empty_body",
@@ -45,36 +45,6 @@ __all__ = [
 ]
 
 FunctionKind = Literal["transform", "declaration", "hook"]
-
-#: Configured node types whose function may carry the user's code.
-CODE_NODE_TYPES: frozenset[NodeType] = frozenset(
-    {
-        NodeType.DATA_INPUT,
-        NodeType.EXTERNAL_FILE,
-        NodeType.RATING_STEP,
-        NodeType.MODEL_SCORE,
-        NodeType.SCENARIO_EXPANDER,
-        NodeType.EXPLORE,
-    }
-)
-
-#: Configured node types that are sources whatever their function's signature.
-SOURCE_NODE_TYPES: frozenset[NodeType] = REQUEST_INPUT_NODE_TYPES | frozenset(
-    {NodeType.DATA_INPUT, NodeType.CONSTANT}
-)
-
-#: Configured node types whose standalone work returns one of their inputs.
-#: A behavioural node type (one the executor transforms with) must never be
-#: listed here: ``validate_registry_complete`` checks it at import.
-STANDALONE_PASSTHROUGH_TYPES: frozenset[NodeType] = frozenset(
-    {
-        NodeType.DATA_OUTPUT,
-        NodeType.EXPLORE,
-        NodeType.EXTERNAL_FILE,
-        MODELLING_NODE_SEMANTICS.node_type,
-        NodeType.OPTIMISER,
-    }
-)
 
 _BOOKKEEPING_OPNAMES = frozenset({"RESUME", "NOP", "CACHE"})
 _POSITIONAL = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
@@ -267,11 +237,7 @@ def _run_configured_work(
     *target_ports* are the ports *frames* arrive on, aligned with them, when the run
     knows them; a Workbench Output needs them to know which table each frame fills.
     """
-    if node_type == MODELLING_NODE_SEMANTICS.node_type:
-        if MODELLING_NODE_SEMANTICS.input_policy is not NodeInputPolicy.FIRST_CONNECTED:
-            raise RuntimeError(
-                f"Unsupported modelling input policy: {MODELLING_NODE_SEMANTICS.input_policy!r}"
-            )
+    if node_type == NodeType.MODELLING:
         _check_sidecar(node_type, name, config, fn, pipeline_dir)
         return _first(frames, name)
     if node_type in (NodeType.DATA_OUTPUT, NodeType.EXTERNAL_FILE):

@@ -56,6 +56,7 @@ from haute._interactive_workers import (
     run_in_interactive_worker,
 )
 from haute._logging import get_logger
+from haute._node_specs import WORKBENCH_NODE_TYPES
 from haute._pipeline_settings import project_pipeline_settings
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._project_context import current_project, graph_pipeline_dir
@@ -72,7 +73,6 @@ from haute._types import GraphNode, NodeType, PipelineGraph
 from haute._user_exec import user_code_line
 from haute._validation_error import HauteValidationError
 from haute._workbench_config import WorkbenchError
-from haute._workbench_nodes import WORKBENCH_NODE_TYPES
 from haute._workbench_tables import WorkbenchTablesError
 from haute._worker_isolation import resolve_worker_memory_enforcement
 from haute.assistant._application import (

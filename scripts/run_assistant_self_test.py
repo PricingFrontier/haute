@@ -44,9 +44,10 @@ from haute._interactive_workers import (
 )
 from haute._mlflow_utils import allow_file_store_if_local
 from haute._native_memory_limit import native_memory_backend_scope
-from haute._polars_steps import STEPPED_NODE_TYPES, is_stepped_config
+from haute._node_specs import SINK_ONLY_NODE_TYPES, STEPPED_NODE_TYPES
+from haute._polars_steps import is_stepped_config
 from haute._project_context import ProjectContext, project_scope
-from haute._types import SINK_ONLY_NODE_TYPES, NodeEditorState, NodeType
+from haute._types import NodeEditorState, NodeType
 from haute.assistant._config import (
     AssistantConfig,
     EgressPolicy,

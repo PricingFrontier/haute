@@ -63,6 +63,7 @@ from haute._input_preparation import preparation_base_dir, prepare_input_snapsho
 from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES
 from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_steps import stepped_surface_allows_input_references
 from haute._project_context import graph_pipeline_dir
@@ -103,7 +104,6 @@ from haute._trace_enrichment import enrich_steps as _enrich_steps
 from haute._trace_enrichment import input_source_entry as _input_source_entry
 from haute._trace_lineage import ColumnRead, JoinInputs, ValueLineage, trace_value_lineage
 from haute._trace_waterfall import build_waterfall_from_steps
-from haute._types import REQUEST_INPUT_NODE_TYPES
 from haute._workbench_output import column_fits, frame_columns, workbench_output_tables
 from haute.errors import (
     BoundedMemoryUnsupportedError,

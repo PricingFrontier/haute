@@ -45,7 +45,8 @@ from haute._code_extraction import (
 )
 from haute._codegen_builders import _func_name, _gen_transform, render_node_source
 from haute._config_builder import _resolve_node_config
-from haute._types import NODE_TYPE_TO_DECORATOR, GraphNode, NodeType, PipelineGraph
+from haute._node_specs import NODE_TYPE_TO_DECORATOR
+from haute._types import GraphNode, NodeType, PipelineGraph
 from haute.codegen import graph_to_code, graph_to_code_multi
 from haute.errors import ConfigError, HauteError, ParseError
 from haute.executor import execute_graph

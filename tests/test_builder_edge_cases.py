@@ -7,15 +7,10 @@ and the _build_node_fn dispatcher.
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 import polars as pl
 import pytest
 
-import haute._builders as builders
 from haute._builders import _build_node_fn
-from haute._registry import MODELLING_NODE_SEMANTICS
-from haute._types import GraphEdge
 from haute.errors import ExecutionError, LiveSwitchScenarioError, NodeConfigError
 from haute.graph_utils import GraphNode, NodeData
 from tests.conftest import make_node as _n
@@ -42,35 +37,6 @@ def _build(
         source=source,
         node_map=node_map,
     )
-
-
-def test_modelling_passthrough_rejects_an_unrecognised_input_policy(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    node = _n(
-        {
-            "id": "model",
-            "data": {"label": "Model", "nodeType": "modelling", "config": {}},
-        }
-    )
-    upstream = _n(
-        {
-            "id": "input",
-            "data": {"label": "Input", "nodeType": "dataInput", "config": {}},
-        }
-    )
-    monkeypatch.setattr(
-        builders,
-        "MODELLING_NODE_SEMANTICS",
-        replace(MODELLING_NODE_SEMANTICS, input_policy=object()),  # type: ignore[arg-type]
-    )
-
-    with pytest.raises(RuntimeError, match="Unsupported modelling input policy"):
-        builders.pass_through_selected_edge(
-            node,
-            [GraphEdge(id="edge", source=upstream.id, target=node.id)],
-            {upstream.id: upstream, node.id: node},
-        )
 
 
 class TestBuildConstantEdgeCases:

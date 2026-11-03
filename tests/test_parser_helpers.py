@@ -777,11 +777,8 @@ class TestResolveNodeConfig:
         writes it, and the inline builder refuses it: no decorator form stands in for
         the file."""
         from haute._config_builder import _build_node_config
-        from haute._config_io import (
-            NODE_TYPE_TO_FOLDER,
-            _normalise_loaded_config,
-            palette_default_config,
-        )
+        from haute._config_io import _normalise_loaded_config, palette_default_config
+        from haute._node_specs import NODE_TYPE_TO_FOLDER
 
         folder = NODE_TYPE_TO_FOLDER[node_type]
         settings = palette_default_config(node_type)

@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from haute._api_input_schema import ApiInputSchemaError
 from haute._contracts import DEPLOY_ANSWER_PER_ROW_CONFIG_KEY, DEPLOY_PRIVATE_CONFIG_KEYS
 from haute._node_config_models import NODE_CONFIG_MODELS
+from haute._node_specs import node_spec
 from haute._output_assembler import OutputMappingSchemaError
 from haute._types import NodeType
 from haute.errors import ConfigError, NodeConfigError, ParseError
@@ -278,25 +279,58 @@ def resolve_optimiser_data_input(
     source_names: Sequence[str],
     *,
     node_label: str,
+    field_name: str = "data_input",
 ) -> str | None:
     """Return the optimiser's selected ``data_input`` name when configured.
 
     A multi-input optimiser must name its data edge; a single-input optimiser
-    may leave the selector empty and pass that input through.
+    may leave the selector empty and pass that input through. *field_name* is
+    the selector field (:attr:`haute._node_specs.NodeSpec.pass_through_selector`).
     """
     data_input = validate_exact_input_selector(
-        config.get("data_input"),
+        config.get(field_name),
         source_names,
         required=False,
         node_label=node_label,
-        field_name="data_input",
+        field_name=field_name,
     )
     if data_input is None and len(source_names) > 1:
         raise ConfigError(
-            f"Node {node_label!r} data_input is required when multiple "
+            f"Node {node_label!r} {field_name} is required when multiple "
             "incoming edges are connected."
         )
     return data_input
+
+
+def selected_input_index(
+    node_type: NodeType | str,
+    config: Mapping[str, Any],
+    input_names: Sequence[str],
+    *,
+    node_label: str,
+) -> int | None:
+    """The index of the input a pass-through node type returns; ``None`` with none connected.
+
+    A ``first`` pass-through returns its first input. A ``selected`` one returns the
+    input its :attr:`~haute._node_specs.NodeSpec.pass_through_selector` names, or its
+    only input when the selector is empty (:func:`resolve_optimiser_data_input`'s
+    rules). The canvas builder, the standalone runtime and the planners'
+    ``pass_through_selected_edge`` all ask here.
+    """
+    spec = node_spec(node_type)
+    if spec.pass_through == "none":
+        raise ValueError(f"{spec.display_name} is not a pass-through node type")
+    if spec.pass_through == "selected":
+        assert spec.pass_through_selector is not None  # a NODE_SPECS invariant
+        selected = resolve_optimiser_data_input(
+            config,
+            input_names,
+            node_label=node_label,
+            field_name=spec.pass_through_selector,
+        )
+        if selected is not None:
+            return list(input_names).index(selected)
+    return 0 if input_names else None
 
 
 def validate_optimiser_input_selectors(

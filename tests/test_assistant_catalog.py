@@ -16,10 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from haute._config_io import NODE_TYPE_TO_FOLDER
 from haute._config_validation import VALID_KEYS
-from haute._graph_shape import SINGLETON_NODE_GROUPS
-from haute._types import NODE_TYPE_TO_DECORATOR, NodeType
+from haute._node_specs import NODE_TYPE_TO_DECORATOR, NODE_TYPE_TO_FOLDER, SINGLETON_NODE_GROUPS
+from haute._types import NodeType
 from haute.assistant import _catalog
 from haute.assistant._catalog import (
     NodeCapabilityDescriptor,
@@ -550,7 +549,8 @@ class TestStepAuthoring:
     logic is written, read from the step builder's surface table."""
 
     def test_it_follows_the_stepped_surface_table(self) -> None:
-        from haute._polars_steps import STEP_KINDS, STEPPED_NODE_TYPES
+        from haute._node_specs import STEPPED_NODE_TYPES
+        from haute._polars_steps import STEP_KINDS
 
         for node_type in NodeType:
             authoring = _descriptors()[node_type.value].as_dict()["step_authoring"]
@@ -637,7 +637,7 @@ class TestRegistryFacts:
     """Source, sink, pass-through and cardinality come from the product's registries."""
 
     def test_sources_are_the_standalone_source_types_and_the_editor_agrees(self) -> None:
-        from haute._standalone_nodes import SOURCE_NODE_TYPES
+        from haute._node_specs import SOURCE_NODE_TYPES
 
         zero_input = {
             node_id
@@ -648,7 +648,7 @@ class TestRegistryFacts:
         assert _editor_set("SOURCE_ONLY_TYPES") == zero_input
 
     def test_sinks_are_the_sink_only_types_and_the_editor_agrees(self) -> None:
-        from haute._types import SINK_ONLY_NODE_TYPES
+        from haute._node_specs import SINK_ONLY_NODE_TYPES
 
         no_output = {
             node_id
@@ -679,7 +679,7 @@ class TestRegistryFacts:
         assert "ratingStep" in single
 
     def test_a_load_file_with_an_incoming_edge_validates_against_its_descriptor(self) -> None:
-        from haute._standalone_nodes import STANDALONE_PASSTHROUGH_TYPES
+        from haute._node_specs import STANDALONE_PASSTHROUGH_TYPES
 
         load_file = _descriptors()["externalFile"].as_dict()
 
