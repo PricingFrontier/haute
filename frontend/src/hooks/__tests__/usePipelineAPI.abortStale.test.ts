@@ -10,6 +10,7 @@
  * completes, previewData is never cleared, so node B's panel still shows
  * node A's rows.
  */
+import { makePreviewResponse } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
@@ -123,14 +124,14 @@ describe("usePipelineAPI - aborted preview clears stale data (#31)", () => {
     // Node B aborts in-flight — pre-fix, previewData stays stuck on A.
     mockPreview.mockImplementation(async ({ nodeId, signal }) => {
       if (nodeId === "A") {
-        return {
+        return makePreviewResponse({
           node_id: "A",
           status: "ok",
           row_count: 3,
           column_count: 1,
           columns: [{ name: "col_a", dtype: "f64" }],
           preview: [{ col_a: 1 }, { col_a: 2 }, { col_a: 3 }],
-        }
+        })
       }
       // B: never resolves; will be aborted by the next fetch
       return new Promise((_res, rej) => {
@@ -184,14 +185,14 @@ describe("usePipelineAPI - aborted preview clears stale data (#31)", () => {
         return new Promise((resolve) => {
           // Resolve A only after the user has already moved on.
           setTimeout(() => {
-            resolve({
+            resolve(makePreviewResponse({
               node_id: "A",
               status: "ok",
               row_count: 99,
               column_count: 1,
               columns: [{ name: "stale", dtype: "f64" }],
               preview: Array.from({ length: 99 }, (_, i) => ({ stale: i })),
-            })
+            }))
           }, 10_000)
         })
       }

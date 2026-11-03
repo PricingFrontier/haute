@@ -6,6 +6,7 @@
  * suppresses it for the rest of the session, and a submitted identity posts to
  * the identity endpoint and captures the files the save left uncaptured.
  */
+import { makeSavePipelineResponse } from "../../test-utils/factories"
 import { cleanup, fireEvent, render, screen, waitFor, renderHook, act } from "@testing-library/react"
 import type { Edge, Node } from "@xyflow/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -68,7 +69,7 @@ const IDENTITY_WARNING =
   "Set your name and email to keep version history."
 
 async function saveOnce(identityRequired: boolean) {
-  mockSave.mockResolvedValue({
+  mockSave.mockResolvedValue(makeSavePipelineResponse({
     file: "test.py",
     pipeline_name: "test",
     warnings: identityRequired ? [IDENTITY_WARNING] : [],
@@ -77,7 +78,7 @@ async function saveOnce(identityRequired: boolean) {
     document_fingerprint: "fingerprint-saved",
     identity_required: identityRequired,
     uncaptured: identityRequired ? ["test.py"] : [],
-  })
+  }))
   const { result } = renderHook(() => usePipelineAPI(makeParams()))
   await waitFor(() => expect(result.current.loading).toBe(false))
   await act(async () => {

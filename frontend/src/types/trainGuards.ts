@@ -32,7 +32,8 @@ import {
   expectPlainObject,
   expectString,
   expectStringLiteral,
-  optionalExecutionMetrics,
+  executionMetricsFromContract,
+  type ExecutionMetricsValidator,
   parseArray,
   typeName,
 } from "./guards"
@@ -474,7 +475,10 @@ export function parseTrainResponse(value: unknown): TrainResponse {
   return trainResponseFromContract(expectGeneratedContract("TrainResponse", validateTrainResponse, value))
 }
 
-export function parseTrainStatusResponse(value: unknown): TrainStatusResponse {
+export function parseTrainStatusResponse(
+  value: unknown,
+  validateMetrics: ExecutionMetricsValidator,
+): TrainStatusResponse {
   const status = expectGeneratedContract("TrainStatusResponse", validateTrainStatusResponse, value)
   return {
     ...status,
@@ -485,11 +489,7 @@ export function parseTrainStatusResponse(value: unknown): TrainStatusResponse {
       parseLossHistoryEntry,
     ),
     result: status.result === null ? null : trainResponseFromContract(status.result),
-    execution_metrics: optionalExecutionMetrics(
-      "parseTrainStatusResponse",
-      { execution_metrics: status.execution_metrics },
-      "execution_metrics",
-    ),
+    execution_metrics: executionMetricsFromContract(validateMetrics, status.execution_metrics),
     feature_selection: status.feature_selection === null
       ? null
       : parseTrainFeatureSelection(status.feature_selection),

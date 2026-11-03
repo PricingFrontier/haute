@@ -1,5 +1,8 @@
 import type { Edge, Node } from "@xyflow/react"
 
+import { validatePipelineEditorDocument } from "../generated/api-contracts.editor-document.validators.mjs"
+import { expectGeneratedContract } from "../types/generatedContractValidation"
+import { editorDocumentFromContract } from "../types/pipelineDocument"
 import type { LoadedPipeline } from "../api/client"
 import type { GlobalConstant } from "../utils/globalConstants"
 import { isRequestInputType } from "../utils/nodeTypes"
@@ -239,7 +242,12 @@ export function makePipelineEditorDocument(
     pipeline_description: fixture.pipeline_description ?? null,
     preamble: fixture.preamble ?? "",
     preserved_blocks: fixture.preserved_blocks ?? [],
-    global_constants: fixture.global_constants ?? [],
+    // As the server sends them: a constant names both its value and its split, one null.
+    global_constants: (fixture.global_constants ?? []).map((constant) => ({
+      ...constant,
+      value: constant.value ?? null,
+      by_source: constant.by_source ?? null,
+    })),
     global_constants_error: fixture.global_constants_error ?? null,
     source_file: fixture.source_file ?? "",
     source_revision: fixture.source_revision ?? "revision-test",
@@ -260,4 +268,11 @@ export function makePipelineEditorDocument(
     name_violations: fixture.name_violations ?? [],
     capabilities: capabilitiesFor(status, trusted, fixture.capabilities),
   }
+}
+
+/** A wire document read as the client reads one, synchronously: its generated check, then the editor's shape. */
+export function readEditorDocument(value: unknown): PipelineEditorDocument {
+  return editorDocumentFromContract(
+    expectGeneratedContract("PipelineEditorDocument", validatePipelineEditorDocument, value),
+  )
 }

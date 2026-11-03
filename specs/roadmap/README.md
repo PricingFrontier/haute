@@ -33,7 +33,6 @@ records corrections to that audit's claims and proposed remedies.
 | [Pipeline config](pipeline-config.md) | Project context, typed configs, node specification | `PCFG-R04` |
 | [Polars 2](polars-2.md) | Remaining RAM-estimate calibration, large-scale operator measurements and worker baselines; Map columns and quantile/rank binning (deferred) | `PL2-17` |
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
-| [Server API](server-api.md) | Generated browser contract; process-mode 422 domain error mapping in `output_assemble_dry_run` and format-keyed Parquet metadata reads in `get_schema` | `API-R03` |
 | [t-boost](t-boost.md) | What rating-table models make possible: cell-level holdout A/E, unfolding into rating steps, model comparison with premium attribution, measured analyst adjustments (all awaiting a decision); `_report_table` relativity overflow guard | `TBOOST-11` |
 | [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; managing quotes in the app past the Quotes page: outcomes, many quotes at once; exports from the app (awaiting a decision on formats); test quotes analysts keep and price again, built again after the first version was taken out (awaiting decisions); actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources); the app's sign-in (a decision); typed-in allowed values (a decision); `useQuoteListStore` pagination fencing and submodel `WORKBENCH_OUTPUT` resolution in `priceSample` | `WB-08` |
 
@@ -106,7 +105,7 @@ inventory ledger with `0` unread files remaining). It maps the verified findings
 new component packages (`ASSIST-62`,
 `EDA-R04`, `FGC-R10` to `FGC-R12`, `FMOU-R07`, `FNED-R07`,
 `GIT-R19`,
-`API-R04`, `TBOOST-11`, `WB-41`) and extensions of `DEP-R12B` and
+`TBOOST-11`, `WB-41`) and extensions of `DEP-R12B` and
 `DEP-R13` (delivered, with the deploy roadmap retired); findings whose packages were
 delivered have been removed.
 It is a supporting report and owns no work; the packages in the component roadmaps

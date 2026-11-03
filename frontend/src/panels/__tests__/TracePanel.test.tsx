@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
+import { makeTraceDiagnostic } from "../../test-utils/factories"
+import { makeTraceResult } from "../../test-utils/factories"
+import { makeTraceStep } from "../../test-utils/factories"
 import { render, screen, fireEvent, cleanup, within, waitFor } from "@testing-library/react"
 import TracePanel from "../TracePanel"
 import type { TraceResult, TraceStep } from "../../types/trace"
@@ -14,7 +17,7 @@ vi.mock("../editors/shared/tableClipboard", () => ({
 }))
 
 function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
-  return {
+  return makeTraceStep({
     node_id: "n1",
     node_name: "Transform 1",
     node_type: "polars",
@@ -30,11 +33,11 @@ function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
     column_relevant: true,
     contributed_columns: [], derivations: [],
     ...overrides,
-  }
+  })
 }
 
 function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
-  return {
+  return makeTraceResult({
     target_node_id: "n2",
     row_index: 0,
     column: "premium",
@@ -59,7 +62,7 @@ function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
     generated_at: overrides.generated_at ?? "2026-07-23T12:00:00+00:00",
     pipeline_source: overrides.pipeline_source ?? null,
     execution_origin: overrides.execution_origin ?? "fresh_execution",
-  }
+  })
 }
 
 describe("TracePanel", () => {
@@ -133,7 +136,7 @@ describe("TracePanel", () => {
             reason: "ambiguous_source_frame",
             diagnostic_index: 0,
           }],
-          correlation_diagnostics: [{
+          correlation_diagnostics: [makeTraceDiagnostic({
             code: "ambiguous_source_frame",
             severity: "warning",
             reason: "ambiguous_source_frame",
@@ -144,7 +147,7 @@ describe("TracePanel", () => {
             ignored_columns: [],
             matched_row_indices: [],
             seed_node_ids: [],
-          }],
+          })],
         })}
         onClose={vi.fn()}
       />,
@@ -263,7 +266,7 @@ describe("TracePanel", () => {
             makeStep({ node_id: "source", node_name: "Source", topological_rank: 0, identical_row_count: 2 }),
             makeStep({ node_id: "target", node_name: "Target", topological_rank: 1 }),
           ],
-          correlation_diagnostics: [{
+          correlation_diagnostics: [makeTraceDiagnostic({
             code: "identical_row_match",
             severity: "info",
             reason: "identical_rows",
@@ -274,7 +277,7 @@ describe("TracePanel", () => {
             ignored_columns: [],
             matched_row_indices: [],
             seed_node_ids: [],
-          }],
+          })],
           nodes_in_trace: 2,
         })}
         onClose={vi.fn()}
@@ -303,7 +306,7 @@ describe("TracePanel", () => {
             reason: "duplicate_exact_match",
             diagnostic_index: 0,
           }],
-          correlation_diagnostics: [{
+          correlation_diagnostics: [makeTraceDiagnostic({
             code: "ambiguous_row_match",
             severity: "warning",
             reason: "duplicate_exact_match",
@@ -314,7 +317,7 @@ describe("TracePanel", () => {
             ignored_columns: [],
             matched_row_indices: [0, 1],
             seed_node_ids: [],
-          }],
+          })],
           nodes_in_trace: 3,
         })}
         onClose={vi.fn()}
@@ -372,7 +375,7 @@ describe("TracePanel", () => {
             reason,
             diagnostic_index: 0,
           }],
-          correlation_diagnostics: [{
+          correlation_diagnostics: [makeTraceDiagnostic({
             code: reason,
             severity: "info",
             reason,
@@ -384,7 +387,7 @@ describe("TracePanel", () => {
             matched_row_count: matchedRowCount,
             matched_row_indices: [],
             seed_node_ids: [],
-          }],
+          })],
           nodes_in_trace: 1,
         })}
         onClose={vi.fn()}
@@ -1597,7 +1600,7 @@ describe("TracePanel", () => {
             }),
           ],
           // A policy join off the value's lineage found no row: a fact, not a warning.
-          correlation_diagnostics: [{
+          correlation_diagnostics: [makeTraceDiagnostic({
             code: "join_no_match",
             severity: "info",
             reason: "join_no_match",
@@ -1608,7 +1611,7 @@ describe("TracePanel", () => {
             ignored_columns: [],
             matched_row_indices: [],
             seed_node_ids: [],
-          }],
+          })],
         })}
         onClose={vi.fn()}
       />,

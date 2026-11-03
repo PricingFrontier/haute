@@ -195,7 +195,11 @@ def _read_schema_blocking(
     else:
         lf = graph_utils.read_source(str(target))
 
-    if target.suffix.lower() == ".parquet":
+    # The reader's format, when given, says how the file is read, whatever its name.
+    is_parquet = (
+        reader["format"] == "parquet" if reader is not None else target.suffix.lower() == ".parquet"
+    )
+    if is_parquet:
         from haute._polars_utils import read_parquet_metadata
 
         schema = lf.collect_schema()

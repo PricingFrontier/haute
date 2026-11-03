@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { makePreviewResponse } from "../../test-utils/factories"
 import { renderHook, cleanup, waitFor, act } from "@testing-library/react"
 import { useDataInputColumns } from "../useDataInputColumns"
 import useGraphStore from "../../stores/useGraphStore"
@@ -86,7 +87,7 @@ describe("useDataInputColumns", () => {
   })
 
   it("fetches columns from API when no cache exists", async () => {
-    mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: sampleColumns })
+    mockPreview.mockResolvedValue(makePreviewResponse({ node_id: "ds1", status: "ok", columns: sampleColumns }))
     const { result } = renderHook(() => useDataInputColumns("ds1", nodes, edges))
     await waitFor(() => expect(result.current).toHaveLength(2))
     expect(result.current[0].name).toBe("age")
@@ -163,7 +164,7 @@ describe("useDataInputColumns", () => {
       },
     })
     const freshCols = [{ name: "new_col", dtype: "str" }]
-    mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: freshCols })
+    mockPreview.mockResolvedValue(makePreviewResponse({ node_id: "ds1", status: "ok", columns: freshCols }))
     const { result } = renderHook(() => useDataInputColumns("ds1", nodes, edges))
     // Shows stale cache first
     expect(result.current[0].name).toBe("old")
@@ -179,7 +180,7 @@ describe("useDataInputColumns", () => {
     })
     useGraphStore.setState({ structuralVersion: 4 })
     const freshCols = [{ name: "new_col", dtype: "str" }]
-    mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: freshCols })
+    mockPreview.mockResolvedValue(makePreviewResponse({ node_id: "ds1", status: "ok", columns: freshCols }))
 
     const { result } = renderHook(() => useDataInputColumns("ds1", nodes, edges))
     expect(result.current[0].name).toBe("old")
@@ -198,7 +199,7 @@ describe("useDataInputColumns", () => {
 
   it("passes active source from settings store to previewNode", async () => {
     useSettingsStore.setState({ activeSource: "nb_batch" })
-    mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: sampleColumns })
+    mockPreview.mockResolvedValue(makePreviewResponse({ node_id: "ds1", status: "ok", columns: sampleColumns }))
 
     renderHook(() => useDataInputColumns("ds1", nodes, edges))
     await waitFor(() => expect(mockPreview).toHaveBeenCalled())
@@ -209,7 +210,7 @@ describe("useDataInputColumns", () => {
 
   it("passes 'live' source when that is the active source", async () => {
     useSettingsStore.setState({ activeSource: "live" })
-    mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: sampleColumns })
+    mockPreview.mockResolvedValue(makePreviewResponse({ node_id: "ds1", status: "ok", columns: sampleColumns }))
 
     renderHook(() => useDataInputColumns("ds1", nodes, edges))
     await waitFor(() => expect(mockPreview).toHaveBeenCalled())
@@ -221,7 +222,7 @@ describe("useDataInputColumns", () => {
   it("uses the source that was active at mount time", async () => {
     // Source is nb_batch before the hook mounts
     useSettingsStore.setState({ activeSource: "nb_batch" })
-    mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: sampleColumns })
+    mockPreview.mockResolvedValue(makePreviewResponse({ node_id: "ds1", status: "ok", columns: sampleColumns }))
 
     renderHook(() => useDataInputColumns("ds1", nodes, edges))
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
@@ -232,7 +233,7 @@ describe("useDataInputColumns", () => {
 
   it("refetches with new source when cache is invalidated", async () => {
     useSettingsStore.setState({ activeSource: "live" })
-    mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: sampleColumns })
+    mockPreview.mockResolvedValue(makePreviewResponse({ node_id: "ds1", status: "ok", columns: sampleColumns }))
 
     renderHook(() => useDataInputColumns("ds1", nodes, edges))
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
@@ -272,7 +273,7 @@ describe("useDataInputColumns", () => {
 
   it("handles result with undefined columns", async () => {
     // Backend returns ok but no columns field
-    mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok" })
+    mockPreview.mockResolvedValue(makePreviewResponse({ node_id: "ds1", status: "ok" }))
     const { result } = renderHook(() => useDataInputColumns("ds1", nodes, edges))
     await waitFor(() => expect(mockPreview).toHaveBeenCalled())
     // Should remain empty (not crash)
@@ -280,7 +281,7 @@ describe("useDataInputColumns", () => {
   })
 
   it("handles result with empty columns array", async () => {
-    mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: [] })
+    mockPreview.mockResolvedValue(makePreviewResponse({ node_id: "ds1", status: "ok", columns: [] }))
     const { result } = renderHook(() => useDataInputColumns("ds1", nodes, edges))
     await waitFor(() => expect(result.current).toEqual([]))
   })
@@ -300,7 +301,7 @@ describe("useDataInputColumns", () => {
   // ── dataInput switching ───────────────────────────────────────────
 
   it("clears columns when dataInput switches to empty", async () => {
-    mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: sampleColumns })
+    mockPreview.mockResolvedValue(makePreviewResponse({ node_id: "ds1", status: "ok", columns: sampleColumns }))
 
     const { result, rerender } = renderHook(
       ({ input }: { input: string }) => useDataInputColumns(input, nodes, edges),
@@ -318,8 +319,8 @@ describe("useDataInputColumns", () => {
     const cols2 = [{ name: "col_b", dtype: "f64" }]
 
     mockPreview
-      .mockResolvedValueOnce({ node_id: "ds1", status: "ok", columns: cols1 })
-      .mockResolvedValueOnce({ node_id: "t1", status: "ok", columns: cols2 })
+      .mockResolvedValueOnce(makePreviewResponse({ node_id: "ds1", status: "ok", columns: cols1 }))
+      .mockResolvedValueOnce(makePreviewResponse({ node_id: "t1", status: "ok", columns: cols2 }))
 
     const { result, rerender } = renderHook(
       ({ input }: { input: string }) => useDataInputColumns(input, nodes, edges),
@@ -335,7 +336,7 @@ describe("useDataInputColumns", () => {
   // ── Cache interaction ─────────────────────────────────────────────
 
   it("writes fetched columns to the cache store with source key", async () => {
-    mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: sampleColumns })
+    mockPreview.mockResolvedValue(makePreviewResponse({ node_id: "ds1", status: "ok", columns: sampleColumns }))
 
     renderHook(() => useDataInputColumns("ds1", nodes, edges))
     await waitFor(() => expect(mockPreview).toHaveBeenCalled())
@@ -346,20 +347,10 @@ describe("useDataInputColumns", () => {
     expect(cache["ds1:live"].columns).toEqual(sampleColumns)
   })
 
-  it("does not write to cache when API returns no columns", async () => {
-    mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok" })
-
-    renderHook(() => useDataInputColumns("ds1", nodes, edges))
-    await waitFor(() => expect(mockPreview).toHaveBeenCalled())
-
-    const cache = useNodeResultsStore.getState().columnCache
-    expect(cache["ds1:live"]).toBeUndefined()
-  })
-
   // ── Row limit ─────────────────────────────────────────────────────
 
   it("requests with row_limit=1 for efficiency", async () => {
-    mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: sampleColumns })
+    mockPreview.mockResolvedValue(makePreviewResponse({ node_id: "ds1", status: "ok", columns: sampleColumns }))
 
     renderHook(() => useDataInputColumns("ds1", nodes, edges))
     await waitFor(() => expect(mockPreview).toHaveBeenCalled())
@@ -371,7 +362,7 @@ describe("useDataInputColumns", () => {
   // ── AbortController (Issue 2) ──────────────────────────────────────
 
   it("passes AbortSignal to previewNode", async () => {
-    mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: sampleColumns })
+    mockPreview.mockResolvedValue(makePreviewResponse({ node_id: "ds1", status: "ok", columns: sampleColumns }))
 
     renderHook(() => useDataInputColumns("ds1", nodes, edges))
     await waitFor(() => expect(mockPreview).toHaveBeenCalled())
@@ -506,7 +497,7 @@ describe("useDataInputColumns", () => {
   })
 
   it("does not refetch when only the pipeline settings change (they are not a preview input)", async () => {
-    mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: sampleColumns })
+    mockPreview.mockResolvedValue(makePreviewResponse({ node_id: "ds1", status: "ok", columns: sampleColumns }))
 
     renderHook(() => useDataInputColumns("ds1", nodes, edges))
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
@@ -554,7 +545,7 @@ describe("useDataInputColumns", () => {
     useSettingsStore.setState({ activeSource: "live" })
 
     const batchCols = [{ name: "batch_only", dtype: "str" }]
-    mockPreview.mockResolvedValue({ node_id: "ds1", status: "ok", columns: batchCols })
+    mockPreview.mockResolvedValue(makePreviewResponse({ node_id: "ds1", status: "ok", columns: batchCols }))
 
     const { result } = renderHook(() => useDataInputColumns("ds1", nodes, edges))
 

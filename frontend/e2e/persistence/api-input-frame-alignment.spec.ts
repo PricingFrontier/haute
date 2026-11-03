@@ -6,6 +6,7 @@
  * live boxes and separately pin the persisted edge identity and downstream
  * frame names that make the geometry meaningful to a user.
  */
+import { makePreviewResponse, makeTraceResult, makeTraceStep } from "../../src/test-utils/factories"
 import { readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
@@ -153,7 +154,7 @@ async function expectFrameRowsAligned(
 }
 
 function previewResponse(nodeId: string, withWarning = false): string {
-  return JSON.stringify({
+  return JSON.stringify(makePreviewResponse({
     status: "ok",
     node_id: nodeId,
     row_count: 1,
@@ -168,10 +169,10 @@ function previewResponse(nodeId: string, withWarning = false): string {
     timings: [],
     memory: [],
     schema_warnings: withWarning
-      ? [{ column: "quote_id", status: "missing downstream" }]
+      ? [{ column: "quote_id", status: "missing downstream", input: null, detail: null }]
       : [],
     node_statuses: { [nodeId]: "ok" },
-  })
+  }))
 }
 
 async function installPreviewRoute(page: Page, withWarning = false): Promise<void> {
@@ -195,7 +196,7 @@ async function installTraceRoute(page: Page): Promise<void> {
       contentType: "application/json",
       body: JSON.stringify({
         status: "ok",
-        trace: {
+        trace: makeTraceResult({
           target_node_id: API_NODE_ID,
           row_index: 0,
           column: "quote_id",
@@ -212,7 +213,7 @@ async function installTraceRoute(page: Page): Promise<void> {
           pipeline_source: null,
           execution_origin: "fresh_execution",
           steps: [
-            {
+            makeTraceStep({
               node_id: API_NODE_ID,
               node_name: API_NODE_LABEL,
               node_type: "apiInput",
@@ -227,9 +228,9 @@ async function installTraceRoute(page: Page): Promise<void> {
               topological_rank: 0,
               column_relevant: true,
               contributed_columns: [], derivations: [],
-            },
+            }),
           ],
-        },
+        }),
       }),
     })
   })

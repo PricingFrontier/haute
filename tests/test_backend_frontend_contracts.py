@@ -141,7 +141,8 @@ def test_generated_response_fixture_is_exactly_what_the_server_sends(
     field, so its fixture must match the server's serialization byte for byte."""
     fixture = _load_fixture(fixture_name)
 
-    assert model.model_validate(fixture).model_dump(mode="json") == fixture
+    # FastAPI answers by alias (a submodel definition's ``definitionId``).
+    assert model.model_validate(fixture).model_dump(mode="json", by_alias=True) == fixture
 
 
 def test_graph_edge_schema_is_endpoints_and_handles() -> None:

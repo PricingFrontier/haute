@@ -301,14 +301,23 @@ class TestGetSchemaParquet:
         assert body["column_count"] == 50
         assert len(body["columns"]) == 50
 
+    @pytest.mark.parametrize(
+        ("name", "reader"),
+        [
+            ("metadata_count.parquet", None),
+            ("metadata_count.bin", {"format": "parquet", "arguments": {}}),
+        ],
+    )
     def test_parquet_row_count_uses_metadata_without_len_collect(
         self,
         work_dir: Path,
         monkeypatch: pytest.MonkeyPatch,
+        name: str,
+        reader: dict[str, object] | None,
     ):
         from haute.routes.files import _read_schema_blocking
 
-        path = work_dir / "metadata_count.parquet"
+        path = work_dir / name
         pl.DataFrame(
             {
                 "id": list(range(12)),
@@ -330,7 +339,7 @@ class TestGetSchemaParquet:
 
         monkeypatch.setattr(pl.LazyFrame, "collect", guarded_collect)
 
-        response = _read_schema_blocking("metadata_count.parquet", path)
+        response = _read_schema_blocking(name, path, reader)
 
         assert response.row_count == 12
         assert response.row_count_estimated is False
@@ -369,6 +378,17 @@ class TestGetSchemaCsv:
             ("amount", "Float64"),
         ]
         assert body["row_count"] == 2
+
+    def test_a_csv_named_parquet_is_read_as_the_format_says(
+        self, client: TestClient, work_dir: Path
+    ):
+        (work_dir / "export.parquet").write_text("claim_id,amount\n1,10.5\n2,20.0\n")
+        resp = client.get(
+            "/api/schema",
+            params={"path": "export.parquet", "format": "csv", "arguments": "{}"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["row_count"] == 2
 
     @pytest.mark.parametrize(
         ("params", "detail"),

@@ -583,6 +583,7 @@ def test_worker_contract_and_memory_failures_use_the_job_failure_envelope(
     from haute._execution_admission import ExecutionAdmissionError
     from haute._execution_context import ExecutionProfile
     from haute.errors import ContractMismatchError
+    from haute.routes._memory_messages import memory_limit_user_message
 
     def contract_failure(*_args, **_kwargs):
         raise ContractMismatchError("declared column premium is missing")
@@ -593,18 +594,24 @@ def test_worker_contract_and_memory_failures_use_the_job_failure_envelope(
     failed = _poll(client, run["job_id"])
     assert (failed["status"], failed["terminal_reason"]) == ("contract_error", "contract_error")
 
+    refusal = ExecutionAdmissionError(
+        "node_snapshot",
+        profile=ExecutionProfile.NODE_SNAPSHOT,
+        memory_limit_bytes=1,
+        rss_at_admission_bytes=10,
+        reason="memory_headroom",
+    )
+
     def admission_failure(**_kwargs):
-        raise ExecutionAdmissionError(
-            "node_snapshot",
-            profile=ExecutionProfile.NODE_SNAPSHOT,
-            memory_limit_bytes=1,
-            rss_at_admission_bytes=10,
-            reason="memory_headroom",
-        )
+        raise refusal
 
     monkeypatch.setattr(service_mod, "create_admitted_execution_context", admission_failure)
     run = client.post("/api/node-data/run", json=_body(graph, "banding")).json()
-    assert _poll(client, run["job_id"])["status"] == "memory_limited"
+    limited = _poll(client, run["job_id"])
+    expected = memory_limit_user_message(refusal, operation_noun="Cache build")
+    assert limited["status"] == "memory_limited"
+    assert (limited["message"], limited["error"]) == (expected, expected)
+    assert limited["error_detail"]["reason"] == "memory_headroom"
 
 
 def test_an_invalid_settings_file_fails_the_job_with_its_message(

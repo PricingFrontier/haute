@@ -151,7 +151,7 @@ supervision, timeout, memory-limit and crash-classification tests pass
 against it.
 
 **Dependencies:** None. The optimiser's input estimate already runs on the
-warm interactive worker pool. `PCFG-R04` and `API-R03` wait on it in the
+warm interactive worker pool. `PCFG-R04` waits on it in the
 [delivery plan](delivery-plan.md), so the worker request format changes once.
 
 **Evidence:** `src/haute/_worker_isolation.py::run_isolated_worker`;

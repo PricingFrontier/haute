@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
+import { makeTraceResult, makeTraceStep } from "../../test-utils/factories"
 import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
 import TracePanel from "../TracePanel"
 import type { TraceResult, TraceStep } from "../../types/trace"
@@ -13,25 +14,14 @@ interface EnhancedExpression {
   referenced_columns: string[]
 }
 
-interface EnhancedCalculation {
-  substituted_text: string
-  result_value: unknown
-  input_values: Record<string, unknown>
-}
 
-interface EnhancedTraceStep extends TraceStep {
-  expression?: EnhancedExpression | null
-  calculation?: EnhancedCalculation | null
-  node_detail?: Record<string, unknown> | null
-  row_lineage_type?: string | null
-}
 
 // ---------------------------------------------------------------------------
 // Factories
 // ---------------------------------------------------------------------------
 
-function makeStep(overrides: Partial<EnhancedTraceStep> = {}): EnhancedTraceStep {
-  return {
+function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
+  return makeTraceStep({
     node_id: "n1",
     node_name: "Transform 1",
     node_type: "polars",
@@ -47,11 +37,11 @@ function makeStep(overrides: Partial<EnhancedTraceStep> = {}): EnhancedTraceStep
     column_relevant: true,
     contributed_columns: [], derivations: [],
     ...overrides,
-  }
+  })
 }
 
 function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
-  return {
+  return makeTraceResult({
     target_node_id: "n2",
     row_index: 0,
     column: "premium",
@@ -81,7 +71,7 @@ function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
     generated_at: overrides.generated_at ?? "2026-07-23T12:00:00+00:00",
     pipeline_source: overrides.pipeline_source ?? null,
     execution_origin: overrides.execution_origin ?? "fresh_execution",
-  }
+  })
 }
 
 // ---------------------------------------------------------------------------

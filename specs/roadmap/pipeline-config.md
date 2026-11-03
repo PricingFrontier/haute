@@ -108,12 +108,13 @@ size; every other type is validated
 piecemeal by the save service, the optimiser and training services, the
 recovery validators and the runtime builders, and the `TypedDict`s only drive
 a key allowlist. Config shape is therefore defined in several places, and the
-browser's copy is written by hand.
+browser types the config as an open object.
 
 **Plan:** Define one Pydantic model per node type, discriminated by
 `nodeType`, and make it the validation boundary for parse, save, recovery and
-execution. Derive the sidecar allowlist from the models, and generate the
-browser types from them through `API-R03`. Generate the key column of the
+execution. Derive the sidecar allowlist from the models, and add them to the
+generated browser contract (`scripts/generate_api_contracts.py`), so a
+node's `config` in every generated response is the model's type. Generate the key column of the
 node-reference "In the pipeline file" tables (`docs/building-models/nodes/`)
 from the models, so `tests/test_node_reference_docs.py` checks generated keys
 instead of hand-written ones.
@@ -123,7 +124,7 @@ validators are either deleted or called only from the model's validators; an
 invalid config for any node type fails at save with the model's message; the
 frontend node-config types and the node-reference config tables are generated.
 
-**Dependencies:** `API-R03` (server API) for generated browser types.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_types.py::NodeData`;
 `src/haute/_config_validation.py::validate_node_config`;

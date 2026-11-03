@@ -22,6 +22,7 @@
  *   - node deleted mid-flight → handleDeleteNode already cleared the panel;
  *     the late response must not resurrect it or re-create cache entries.
  */
+import { makePreviewResponse } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
@@ -107,7 +108,7 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
   }
 }
 
-const okEnvelope: PreviewEnvelope = {
+const okEnvelope: PreviewEnvelope = makePreviewResponse({
   node_id: "browser_apply",
   status: "ok",
   columns: [
@@ -121,7 +122,7 @@ const okEnvelope: PreviewEnvelope = {
   row_count: 2,
   column_count: 2,
   node_statuses: { browser_apply: "ok" },
-}
+})
 
 describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
   beforeEach(() => {
