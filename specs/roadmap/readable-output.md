@@ -35,7 +35,7 @@ The owner decided the following on 3 November 2026:
 **Out of scope:** `haute init` rewrites `haute.toml` from scratch on a re-run, as decided on 1 November 2026, so editing that file in place is not planned.
 
 The packages fall into two groups:
-- **Writing changes:** `READ-12` and `READ-13` change how files are written, but every file loads to the same values. The next save rewrites each file once, and no conversion is needed.
+- **Writing change:** `READ-13` changes how files are written, but every file loads to the same values. The next save rewrites each file once, and no conversion is needed.
 - **Format changes:** `READ-20` onwards. The loader accepts only the current format ([specification governance](../README.md)), and `READ-20` says how commercial-pricing moves to each new one.
 
 Each package states its formats in its owning specification before behaviour changes, and names the contract it replaces there. Golden tests are written from those specifications, not from the implementation's output.
@@ -44,7 +44,6 @@ Each package states its formats in its owning specification before behaviour cha
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| READ-12 | Planned | P2 | Adding or removing a node leaves every unaffected function in `main.py` where it was. |
 | READ-13 | Planned | P3 | Generated code leaves out a default it repeats and a comment that says nothing, and new nodes get plain names. |
 | READ-20 | Planned | P2 | Each format change comes with a one-off script that converts commercial-pricing and Haute's fixtures, proven before and after. |
 | READ-21 | Planned | P2 | A prototype proves that Haute can rebuild every kind of Polars step from the code it renders. |
@@ -63,26 +62,6 @@ Each package states its formats in its owning specification before behaviour cha
 | READ-41 | Planned | P3 | A new project holds no `uv init` placeholders and no settings at their default values. |
 
 ## Planned improvements
-
-### READ-12 — Adding or removing a node leaves unaffected functions where they were
-**Why:** Functions are written in a topological order with each data source placed just before its first consumer. Inserting a node can push everything below it further down and reshuffle functions that did not change. One commit in the investigated pull request moved two unchanged functions. The `br_` and `ce_` chains are also interleaved.
-
-**Plan:**
-- Keep the function order the file has.
-- A new node's function goes just above the first function that uses its output, or at the end when nothing does yet. Several new nodes go in the order they were created, each by the same rule.
-- A removed node's function goes, and nothing else moves.
-- Submodel files follow the same rule.
-- A function that consumes a new or renamed node changes its signature, but stays where it is.
-- Replace the topological-order contract in the [codegen specification](../codegen/high-level.md).
-- A one-off regrouping of existing files is not planned.
-
-**Acceptance:** Codegen tests on the reference pipeline and a submodel:
-- inserting several nodes, removing a node and renaming a node leave every unaffected function byte for byte the same and in the same relative order;
-- an unchanged pipeline regenerates byte for byte.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/codegen.py::_emission_order`; `src/haute/_topo.py::_topo_sort_known_ids`.
 
 ### READ-13 — Generated code leaves out what it repeats
 **Why:**

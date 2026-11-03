@@ -88,11 +88,17 @@ Out of scope (owned by neighbouring components):
 
 ## Behaviour
 
-- **Deterministic given the same graph.** Node order follows a topological
-  sort (`haute._topo.topo_sort_ids`) in which every node without inputs that feeds another
-  node is placed immediately before its first consumer, so a data source is read where it
-  is used rather than at the top of the file; a node without inputs or consumers keeps
-  its topological position. Contract dicts and column sets are sorted, while connect
+- **A file keeps its function order.** Saving over a file keeps the order its functions
+  have (READ-12): each node the file defines stays where it is (a node's id is the function
+  name it was loaded under, so a renamed node keeps its place, and a function whose
+  signature changes because an input was added or renamed stays where it is), a removed
+  node's function goes and nothing else moves, and each new node, in the order the graph
+  lists them (their creation), goes just above the first function that uses its output,
+  or at the end when nothing does yet. Submodel files follow the same rule, each by its
+  own file. A file not yet written follows a topological sort
+  (`haute._topo.topo_sort_ids`) in which every node without inputs that feeds another
+  node is placed immediately before its first consumer; a node without inputs or
+  consumers keeps its topological position. No existing file is regrouped. Contract dicts and column sets are sorted, while connect
   calls preserve the graph's edge order (apart from edge-join role ordering and root-boundary
   deduplication). The same ordered graph therefore produces byte-identical output; codegen does
   not canonicalise arbitrary input edge ordering.

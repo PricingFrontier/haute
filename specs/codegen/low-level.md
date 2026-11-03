@@ -163,6 +163,12 @@ string (`_source_layout.lines_inside_literals`) keeps its text, blank or not, so
 function and the code extracted from it hold the same strings, and a string continued at
 column 0 in a hand-written file keeps its value.
 
+A save passes `read_existing` (each generated path's current text) to
+`graph_to_code_multi`, or `existing_source` to `graph_to_code`; `function_order` reads a
+file's decorated functions in order, and `_kept_order` keeps each node the file defines
+(by node id) where it stands and inserts each new node just above its first consumer, or
+at the end (READ-12). Only a path with no file yet takes `_emission_order`.
+
 `_emission_order(sorted_nodes, edges)` keeps the topological order of every node
 that has inputs and moves each input-less node that feeds another to just before
 its first consumer, emitting the sources of one consumer in that consumer's edge

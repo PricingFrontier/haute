@@ -61,6 +61,7 @@ from haute.errors import (
     ConfigError,
     ConflictError,
     ForbiddenError,
+    HauteError,
     InvalidRequestError,
     ParseError,
     PathOutsideProjectError,
@@ -1547,12 +1548,22 @@ class SavePipelineService:
         internal list (used by unit tests that drive ``_write_code``
         directly without the broader save pipeline).
         """
+        from haute._io import read_user_source
         from haute.codegen import graph_to_code, graph_to_code_multi
 
         if touched is None:
             touched = []
 
         self._validate_source_file_matches_pipeline_root(py_path.resolve())
+
+        def read_existing(rel_path: str) -> str | None:
+            # The file a generated path overwrites, so its functions keep their order
+            # (READ-12); a path refused here is refused again when it is written.
+            try:
+                out_path = self._validate_output_rel_path(rel_path, body.source_file)
+            except (HauteError, ValueError):
+                return None
+            return read_user_source(out_path)[1] if out_path.is_file() else None
 
         if graph.submodels:
             files = graph_to_code_multi(
@@ -1562,6 +1573,7 @@ class SavePipelineService:
                 preamble=body.preamble or "",
                 source_file=body.source_file,
                 preserved_blocks=body.preserved_blocks or None,
+                read_existing=read_existing,
             )
         else:
             files = {
@@ -1571,6 +1583,7 @@ class SavePipelineService:
                     description=body.description,
                     preamble=body.preamble or "",
                     preserved_blocks=body.preserved_blocks or None,
+                    existing_source=read_existing(body.source_file),
                 )
             }
         self._write_generated_code_files(files, body.source_file, touched)

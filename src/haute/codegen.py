@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import ast
 import functools
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -519,6 +519,57 @@ def _emission_order(nodes: list[GraphNode], edges: list[GraphEdge]) -> list[Grap
     return order
 
 
+#: Reads the text a generated file's path holds now, or None for a file not yet written.
+ReadExisting = Callable[[str], str | None]
+
+
+def function_order(source: str) -> list[str]:
+    """The decorated functions *source* defines, by name, in the file's order; none when it
+    does not parse."""
+    try:
+        body = ast.parse(source).body
+    except SyntaxError:
+        return []
+    return [
+        statement.name
+        for statement in body
+        if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+        and statement.decorator_list
+    ]
+
+
+def _existing_order(read_existing: ReadExisting | None, rel_path: str) -> list[str] | None:
+    """The function order the file at *rel_path* holds, None when there is no such file."""
+    if read_existing is None:
+        return None
+    source = read_existing(rel_path)
+    return None if source is None else function_order(source)
+
+
+def _kept_order(
+    nodes: list[GraphNode], edges: list[GraphEdge], existing: Sequence[str]
+) -> list[GraphNode]:
+    """*nodes* in the order their file has them (READ-12): each node the file defines (a node's
+    id is the function name it was loaded under, so a rename keeps its place) where it stands, a
+    removed one gone and nothing else moved; each new node, in the order the graph lists them
+    (their creation), just above the first function that uses its output, or at the end when
+    nothing does yet."""
+    by_id = {node.id: node for node in nodes}
+    order = [node_id for node_id in dict.fromkeys(existing) if node_id in by_id]
+    kept = set(order)
+    consumers: dict[str, set[str]] = {}
+    for edge in edges:
+        consumers.setdefault(edge.source, set()).add(edge.target)
+    for node in nodes:
+        if node.id in kept:
+            continue
+        uses = consumers.get(node.id, set())
+        place = next((index for index, node_id in enumerate(order) if node_id in uses), len(order))
+        order.insert(place, node.id)
+        kept.add(node.id)
+    return [by_id[node_id] for node_id in order]
+
+
 def _call(head: str, entries: Sequence[Doc]) -> str:
     """One call statement, laid out as ruff lays it out."""
     return print_doc([head, arguments("(", list(entries), ")")])
@@ -586,8 +637,10 @@ def _node_functions(
     node_sources: dict[str, list[str]],
     node_source_ids: dict[str, list[str]] | None,
     receiver: str,
+    existing: Sequence[str] | None = None,
 ) -> list[str]:
-    """Every node's function in emission order."""
+    """Every node's function: in the order its file has them (:func:`_kept_order`), or, for a
+    file not yet written, in emission order."""
     source_ids = node_source_ids or {}
     functions = [
         _node_to_code(
@@ -596,7 +649,11 @@ def _node_functions(
             source_ids.get(node.id, []),
             receiver=receiver,
         )
-        for node in _emission_order(nodes, edges)
+        for node in (
+            _emission_order(nodes, edges)
+            if existing is None
+            else _kept_order(nodes, edges, existing)
+        )
     ]
     return functions
 
@@ -816,11 +873,13 @@ def graph_to_code(
     description: str = "",
     preamble: str = "",
     preserved_blocks: list[str] | None = None,
+    existing_source: str | None = None,
 ) -> str:
     """Convert a React Flow graph to a valid haute pipeline .py file.
 
     Delegates to :func:`graph_to_code_multi` and returns the single generated
-    file's code.
+    file's code. Given the file's *existing_source*, its functions keep the
+    order that file has (READ-12).
     """
     files = graph_to_code_multi(
         graph,
@@ -828,6 +887,7 @@ def graph_to_code(
         description=description,
         preamble=preamble,
         preserved_blocks=preserved_blocks,
+        read_existing=None if existing_source is None else (lambda _path: existing_source),
     )
     # graph_to_code_multi returns {filename: code}; this single-file API is
     # only valid when there are no submodels.  A submodel graph produces
@@ -943,6 +1003,7 @@ def _graph_to_code_multi_instances(
     preamble: str,
     source_file: str,
     preserved_blocks: list[str] | None,
+    read_existing: ReadExisting | None = None,
 ) -> dict[str, str]:
     """Emit one canonical definition file and one registration per occurrence."""
     definitions = graph.submodels or {}
@@ -1066,6 +1127,7 @@ def _graph_to_code_multi_instances(
                 node_sources=child_node_sources,
                 node_source_ids=child_node_source_ids,
                 receiver="submodel",
+                existing=_existing_order(read_existing, definition.file.replace("\\", "/")),
             ),
             connect_pairs=child_connect_pairs,
             preserved_blocks=child_graph.preserved_blocks or None,
@@ -1214,6 +1276,7 @@ def _graph_to_code_multi_instances(
             node_sources=root_node_sources,
             node_source_ids=root_node_source_ids,
             receiver="pipeline",
+            existing=_existing_order(read_existing, source_file),
         ),
         connect_pairs=connect_pairs,
         preserved_blocks=(
@@ -1241,8 +1304,13 @@ def graph_to_code_multi(
     preamble: str = "",
     source_file: str = "",
     preserved_blocks: list[str] | None = None,
+    read_existing: ReadExisting | None = None,
 ) -> dict[str, str]:
-    """Generate canonical Python source for a pipeline and its definitions."""
+    """Generate canonical Python source for a pipeline and its definitions.
+
+    *read_existing* gives the text each generated path holds now: a file that exists keeps
+    its functions in the order it has them (READ-12); a new one is written in emission
+    order."""
     if not description and graph.pipeline_description:
         description = graph.pipeline_description
     if not preamble and graph.preamble:
@@ -1257,6 +1325,7 @@ def graph_to_code_multi(
             preamble=preamble,
             source_file=source_file,
             preserved_blocks=preserved_blocks,
+            read_existing=read_existing,
         )
 
     validate_pipeline_graph_shape_contracts(graph, graph_label=pipeline_name)
@@ -1290,6 +1359,7 @@ def graph_to_code_multi(
             node_sources=node_sources,
             node_source_ids=node_source_ids,
             receiver="pipeline",
+            existing=_existing_order(read_existing, main_key),
         ),
         connect_pairs=connect_pairs,
         preserved_blocks=all_preserved or None,
