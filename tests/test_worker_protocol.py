@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from haute._project_context import current_project
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
     IsolatedWorkerCrashedError,
@@ -176,6 +177,8 @@ def test_protocol_entrypoint_installs_the_shared_native_lease(
         memory_limit,
         required,
         allowance,
+        (),
+        current_project(),
     )
 
     status, result = _past_ready(results)  # type: ignore[misc]
@@ -219,7 +222,17 @@ def test_protocol_worker_starts_its_queue_feeders_before_the_cap(
     )
 
     _protocol_entrypoint(
-        results, progress, _go(), _worker_with_progress, _request(), str(tmp_path), 128, True, 0
+        results,
+        progress,
+        _go(),
+        _worker_with_progress,
+        _request(),
+        str(tmp_path),
+        128,
+        True,
+        0,
+        (),
+        current_project(),
     )
 
     assert events == ["result feeder", "progress feeder", "cap"]
@@ -256,6 +269,7 @@ def test_protocol_worker_imports_its_preload_modules_before_the_cap(
             True,
             0,
             ("haute_preload_probe",),
+            current_project(),
         )
     finally:
         sys.modules.pop("haute_preload_probe", None)
@@ -297,6 +311,7 @@ def test_a_preload_that_fails_is_a_curated_failure_before_any_cap(
             True,
             0,
             ("haute_failing_preload",),
+            current_project(),
         )
     finally:
         sys.modules.pop("haute_failing_preload", None)
@@ -341,6 +356,8 @@ def test_a_required_cap_the_host_cannot_install_is_a_contract_error(
         128,
         True,
         0,
+        (),
+        current_project(),
     )
 
     status, failure = _past_ready(results)  # type: ignore[misc]
@@ -369,6 +386,8 @@ def test_a_thread_that_cannot_start_under_the_cap_is_a_memory_limit_failure(
         128,
         True,
         0,
+        (),
+        current_project(),
     )
 
     status, failure = _past_ready(results)  # type: ignore[misc]

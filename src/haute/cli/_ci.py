@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING
 
 import click
 
+from haute._project_context import current_project
+
 if TYPE_CHECKING:
     from haute.deploy._config import DeployConfig
 
@@ -46,7 +48,7 @@ def _project() -> tuple[Path, DeployConfig]:
     """The project in the working directory and its ``haute.toml``."""
     from haute.deploy._config import DeployConfig
 
-    project_dir = Path.cwd()
+    project_dir = current_project().root
     toml_path = project_dir / "haute.toml"
     if not toml_path.is_file():
         raise click.ClickException("No haute.toml found: run this in a Haute project.")

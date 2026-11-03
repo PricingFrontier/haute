@@ -16,8 +16,8 @@ from fastapi.testclient import TestClient
 
 import haute._workbench_app as workbench_app
 from haute._execution_admission import ExecutionAdmissionError
+from haute._project_context import ProjectContext, ProjectContextMiddleware, current_project
 from haute._quote_store import StoreLocation, store_url
-from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute._workbench_app import (
     APP_ENTRY,
@@ -39,6 +39,7 @@ from haute._workbench_form import (
 from haute.deploy._utils import shipped_graph
 from haute.execution import ExecutionProfile
 from tests._git_helpers import git_run, init_repo
+from tests._project import use_project
 from tests._store_servers import Target
 from tests._workbench_helpers import form_files, write_files
 from tests.test_workbench_routes import POLICY, PRICING, form
@@ -101,8 +102,8 @@ def _graph() -> PipelineGraph:
 def release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     """A release directory holding a bundle as a deploy writes it; call it with a host. The
     app sets the project root to the release; the root is put back after."""
-    original = _get_project_root()
-    monkeypatch.chdir(tmp_path)
+    original = current_project().root
+    use_project(tmp_path)
 
     def build(host: str | None = "azure-container-apps", spec: dict[str, Any] = FORM) -> Path:
         directory = tmp_path / "release"
@@ -123,7 +124,7 @@ def release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         return directory
 
     yield build
-    set_project_root(original)
+    use_project(original)
 
 
 def _made(path: Path, directory: Path) -> str:
@@ -282,11 +283,15 @@ def test_a_release_that_is_not_one_says_which_file_and_why(
 
 
 def test_the_app_reads_what_the_pipeline_ships_from_the_release(release: Any) -> None:
+    """Every request runs in the release's project, whatever the caller's: the outermost
+    middleware installs it."""
     directory = release()
 
-    create_app(directory)
+    app = create_app(directory)
 
-    assert _get_project_root() == directory.resolve()
+    outermost = app.user_middleware[0]
+    assert outermost.cls is ProjectContextMiddleware
+    assert outermost.kwargs["context"] == ProjectContext.at(directory)
 
 
 def test_the_app_offers_underwriters_no_project_files(release: Any) -> None:
@@ -663,9 +668,8 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     directory; the project root is put back after."""
     from tests.test_workbench_output import _priced, _write
 
-    original = _get_project_root()
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    original = current_project().root
+    use_project(tmp_path)
     (tmp_path / "haute.toml").write_text(
         '[project]\nname = "motor"\npipeline = "main.py"\n\n[workbench]\nenabled = true\n\n'
         '[workbench.app]\nhost = "azure-container-apps"\n',
@@ -675,7 +679,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     _write(_priced(), tmp_path, "main")
     write_sheets(tmp_path, PROJECT_TABLES)
     yield tmp_path
-    set_project_root(original)
+    use_project(original)
 
 
 def write_sheets(project: Path, tables: list[dict[str, Any]]) -> None:

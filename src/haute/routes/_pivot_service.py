@@ -42,6 +42,7 @@ from haute._hashing import content_hash_bytes
 from haute._lru_cache import LRUCache
 from haute._node_snapshots import NodeSnapshotStore
 from haute._polars_utils import cancellable_streaming_collect
+from haute._project_context import context_thread, current_project
 from haute._sandbox import UnsafeCodeError, safe_globals, validate_user_code
 from haute._types import (
     ExplorePivotConfig,
@@ -58,7 +59,6 @@ from haute.routes._background_jobs import (
 )
 from haute.routes._job_lifecycle import JobLifecycle, bind_running_execution_metrics_publisher
 from haute.routes._job_store import JobStore, RunningJobFields
-from haute.routes._node_data_service import node_data_project_root
 from haute.routes._synchronous_analysis import run_synchronous_analysis
 from haute.schemas import (
     ExecutionMetricsPayload,
@@ -630,7 +630,7 @@ class PivotService:
         resolver = DataPointResolver(
             body.graph,
             source=body.source,
-            store=NodeSnapshotStore(node_data_project_root()),
+            store=NodeSnapshotStore(current_project().root),
         )
         return consumer, resolver
 
@@ -797,8 +797,8 @@ class PivotService:
                 expected_status="running",
             )
         start_job_thread(
-            threading.Thread(
-                target=self._run,
+            context_thread(
+                self._run,
                 args=(job_id, spec, token, predecessor_finished, completion_event),
                 daemon=True,
             )

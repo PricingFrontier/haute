@@ -41,6 +41,7 @@ import pytest
 from haute.cli import cli
 from haute.cli._init_cmd import _ensure_haute_dependency
 from haute.deploy._impact import ImpactEndpointError
+from tests._project import make_haute_project, use_project
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -182,7 +183,7 @@ class TestPyprojectParseIsTomlAware:
         must still be valid TOML and every pre-existing dependency must
         survive.
         """
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         original = (
             "[project]\n"
             'name = "my_project"\n'
@@ -295,7 +296,7 @@ class TestStatusInstallInstructionIsCorrect:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "haute.toml").write_text(
             '[project]\nname = "t"\npipeline = "main.py"\n[deploy]\nmodel_name = "motor-pricing"\n'
         )
@@ -343,7 +344,7 @@ class TestDeployCiDetection:
     @staticmethod
     def _setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Set up a minimal deployable project, with a mocked deploy backend."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "haute.toml").write_text(
             '[project]\nname = "t"\npipeline = "main.py"\n'
             '[deploy]\nmodel_name = "test-model"\nendpoint_name = "test-ep"\n'
@@ -461,7 +462,7 @@ class TestServePortConflictDetection:
         bound_socket: int,
     ) -> None:
         """Serve must exit non-zero with a port-named error, not crash uvicorn."""
-        monkeypatch.chdir(tmp_path)
+        use_project(make_haute_project(tmp_path))
         static = tmp_path / "static"
         static.mkdir()
         (static / "index.html").write_text("<html></html>")
@@ -509,7 +510,7 @@ class TestServePortConflictDetection:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Sanity check: when the port is free, serve proceeds to uvicorn."""
-        monkeypatch.chdir(tmp_path)
+        use_project(make_haute_project(tmp_path))
         static = tmp_path / "static"
         static.mkdir()
         (static / "index.html").write_text("<html></html>")

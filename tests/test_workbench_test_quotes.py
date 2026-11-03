@@ -16,7 +16,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from haute import _workbench_test_quotes as test_quotes
-from haute._sandbox import _get_project_root, set_project_root
+from haute._project_context import current_project
 from haute._workbench_app import TestQuotesFailedError, build_release, resolve_release
 from haute._workbench_form import FormSpec
 from haute._workbench_test_quotes import (
@@ -29,6 +29,7 @@ from haute._workbench_test_quotes import (
 from haute.deploy._validators import score_test_quote_file
 from haute.routes._error_handlers import install_exception_handlers
 from haute.routes.workbench import router
+from tests._project import use_project
 from tests._workbench_helpers import form_files, write_files
 from tests.test_workbench_output import (
     FORM_SAMPLE,
@@ -73,9 +74,8 @@ def _pipeline(project: Path, priced: str | None = None) -> None:
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """A workbench project in a repository with a working branch and its ledger, whose
     sample prices through a generated pipeline; the working directory."""
-    original = _get_project_root()
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    original = current_project().root
+    use_project(tmp_path)
     (tmp_path / "haute.toml").write_text(
         '[project]\nname = "motor"\npipeline = "main.py"\n\n[workbench]\nenabled = true\n\n'
         '[workbench.app]\nhost = "azure-container-apps"\n',
@@ -85,7 +85,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     _sheets(tmp_path)
     init_repo(tmp_path)
     yield tmp_path
-    set_project_root(original)
+    use_project(original)
 
 
 def client() -> TestClient:

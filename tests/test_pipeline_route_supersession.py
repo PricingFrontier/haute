@@ -15,6 +15,7 @@ import pytest
 from haute.routes._supersession import SupersessionCoordinator, SupersessionStateSnapshot
 from haute.schemas import NodeResult
 from haute.trace import TraceResult
+from tests._project import project_app
 from tests.conftest import make_graph, make_transform_node
 
 _Snapshot: TypeAlias = dict[Hashable, SupersessionStateSnapshot]
@@ -129,7 +130,8 @@ async def test_preview_supersedes_obsolete_same_key_requests(
 ) -> None:
     """Only the first running and latest pending preview should execute."""
     import haute.routes.pipeline as route_mod
-    from haute.server import app
+
+    app = project_app()
 
     first_started = threading.Event()
     state_lock = threading.Lock()
@@ -189,7 +191,8 @@ async def test_preview_supersession_cancels_active_execution_context(
 ) -> None:
     """A newer same-key preview should request cooperative cancellation."""
     import haute.routes.pipeline as route_mod
-    from haute.server import app
+
+    app = project_app()
 
     first_started = threading.Event()
     cancel_seen = threading.Event()
@@ -250,7 +253,8 @@ async def test_preview_returns_404_when_executor_omits_target_node(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import haute.routes.pipeline as route_mod
-    from haute.server import app
+
+    app = project_app()
 
     monkeypatch.setattr(route_mod, "execute_graph", lambda *args, **kwargs: {})
 
@@ -272,7 +276,8 @@ async def test_preview_admission_failure_still_cancels_active_same_key_worker(
 ) -> None:
     """A newer request must cancel active work before its own admission check fails."""
     import haute.routes.pipeline as route_mod
-    from haute.server import app
+
+    app = project_app()
 
     pipeline_settings(preview_memory_gb=64 / 1024)
     monkeypatch.setenv("HAUTE_PREVIEW_PROCESS_RSS_LIMIT_MB", "64")
@@ -346,7 +351,8 @@ async def test_preview_limits_blocking_workers_across_distinct_keys(
 ) -> None:
     """Different preview keys should queue behind the configured worker limit."""
     import haute.routes.pipeline as route_mod
-    from haute.server import app
+
+    app = project_app()
 
     monkeypatch.setattr(route_mod, "_preview_work_slots", asyncio.Semaphore(2))
 
@@ -417,7 +423,8 @@ async def test_preview_targets_use_distinct_supersession_keys(
 ) -> None:
     """Different preview targets on the same graph/source should not 409 each other."""
     import haute.routes.pipeline as route_mod
-    from haute.server import app
+
+    app = project_app()
 
     monkeypatch.setattr(route_mod, "_preview_work_slots", asyncio.Semaphore(1))
 
@@ -482,7 +489,8 @@ async def test_preview_requested_columns_use_distinct_supersession_keys(
 ) -> None:
     """Different same-node preview projections should both be allowed to complete."""
     import haute.routes.pipeline as route_mod
-    from haute.server import app
+
+    app = project_app()
 
     monkeypatch.setattr(route_mod, "_preview_work_slots", asyncio.Semaphore(1))
 
@@ -547,7 +555,8 @@ async def test_preview_supersession_wins_over_obsolete_worker_error(
 ) -> None:
     """An old preview failure should not surface after a newer preview exists."""
     import haute.routes.pipeline as route_mod
-    from haute.server import app
+
+    app = project_app()
 
     first_started = threading.Event()
     state_lock = threading.Lock()
@@ -601,7 +610,8 @@ async def test_preview_worker_limit_serializes_different_keys(
 ) -> None:
     """The preview worker cap applies even when requests have different keys."""
     import haute.routes.pipeline as route_mod
-    from haute.server import app
+
+    app = project_app()
 
     state_lock = threading.Lock()
     call_count = 0
@@ -654,7 +664,8 @@ async def test_preview_supersedes_request_waiting_for_worker_slot(
 ) -> None:
     """A preview superseded before getting a worker slot must not execute."""
     import haute.routes.pipeline as route_mod
-    from haute.server import app
+
+    app = project_app()
 
     monkeypatch.setattr(route_mod, "_preview_work_slots", asyncio.Semaphore(1))
     coordinator = SupersessionCoordinator()
@@ -727,7 +738,8 @@ async def test_repeated_aborted_preview_requests_do_not_start_worker_storm(
 ) -> None:
     """Cancelled preview requests must not release the cap before workers finish."""
     import haute.routes.pipeline as route_mod
-    from haute.server import app
+
+    app = project_app()
 
     limiter = asyncio.Semaphore(1)
     coordinator = SupersessionCoordinator()
@@ -840,7 +852,8 @@ async def test_timed_out_preview_requests_hold_slot_until_worker_finishes(
 ) -> None:
     """A 504 response must not free the preview slot while its thread still runs."""
     import haute.routes.pipeline as route_mod
-    from haute.server import app
+
+    app = project_app()
 
     limiter = asyncio.Semaphore(1)
     coordinator = SupersessionCoordinator()
@@ -947,7 +960,8 @@ async def test_timed_out_same_key_preview_stays_active_until_worker_finishes(
 ) -> None:
     """Same-key previews must not overlap after a response timeout."""
     import haute.routes.pipeline as route_mod
-    from haute.server import app
+
+    app = project_app()
 
     coordinator = SupersessionCoordinator()
     pipeline_settings(pipeline_time_limit_minutes=0.05 / 60)
@@ -1038,7 +1052,8 @@ async def test_superseded_timed_out_preview_holds_slot_until_worker_finishes(
 ) -> None:
     """Supersession must preserve timeout ownership until the old worker exits."""
     import haute.routes.pipeline as route_mod
-    from haute.server import app
+
+    app = project_app()
 
     limiter = asyncio.Semaphore(1)
     coordinator = SupersessionCoordinator()
@@ -1164,7 +1179,8 @@ async def test_superseded_timed_out_preview_holds_slot_until_worker_finishes(
 async def test_trace_supersedes_obsolete_same_key_requests(monkeypatch: pytest.MonkeyPatch) -> None:
     """Only the first running and latest pending trace should execute."""
     import haute.routes.pipeline as route_mod
-    from haute.server import app
+
+    app = project_app()
 
     first_started = threading.Event()
     state_lock = threading.Lock()
@@ -1231,7 +1247,8 @@ async def test_trace_targets_use_distinct_supersession_keys(
 ) -> None:
     """Different trace targets on the same graph/source should not 409 each other."""
     import haute.routes.pipeline as route_mod
-    from haute.server import app
+
+    app = project_app()
 
     monkeypatch.setattr(route_mod, "_trace_work_slots", asyncio.Semaphore(1))
 
@@ -1297,7 +1314,8 @@ async def test_trace_limits_blocking_workers_across_distinct_keys(
 ) -> None:
     """Different trace keys should queue behind the configured worker limit."""
     import haute.routes.pipeline as route_mod
-    from haute.server import app
+
+    app = project_app()
 
     monkeypatch.setattr(route_mod, "_trace_work_slots", asyncio.Semaphore(2))
 
@@ -1375,7 +1393,8 @@ async def test_aborted_trace_request_holds_limiter_until_worker_finishes(
 ) -> None:
     """Trace cancellation uses the same bounded-worker lifecycle as preview."""
     import haute.routes.pipeline as route_mod
-    from haute.server import app
+
+    app = project_app()
 
     limiter = asyncio.Semaphore(1)
     coordinator = SupersessionCoordinator()
@@ -1524,7 +1543,8 @@ async def test_trace_worker_limit_serializes_different_keys(
 ) -> None:
     """The trace worker cap applies even when requests have different keys."""
     import haute.routes.pipeline as route_mod
-    from haute.server import app
+
+    app = project_app()
 
     state_lock = threading.Lock()
     call_count = 0

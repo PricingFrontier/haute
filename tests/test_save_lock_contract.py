@@ -24,6 +24,7 @@ from typing import Any
 import pytest
 
 from haute.routes._helpers import save_lock
+from tests._project import project_app
 
 
 def test_save_lock_is_an_asyncio_lock() -> None:
@@ -104,7 +105,8 @@ async def test_save_lock_holds_during_svc_save(monkeypatch: pytest.MonkeyPatch) 
 
     from haute.routes._save_pipeline import CommittedDocument, SavePipelineService
     from haute.schemas import SavePipelineRequest, SavePipelineResponse
-    from haute.server import app
+
+    app = project_app()
 
     locked_observations: list[bool] = []
     save_thread_ids: list[int] = []

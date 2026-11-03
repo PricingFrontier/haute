@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from haute.schemas import ColumnInfo, NodeResult
-from haute.server import app
+from tests._project import project_app, use_project
 from tests.conftest import make_edge as _edge
 from tests.conftest import make_graph as _g
 from tests.conftest import make_source_node as _source_node
@@ -25,13 +25,13 @@ NEG_INF_SENTINEL = {"__haute_type__": "non_finite_float", "value": "-inf"}
 
 @pytest.fixture()
 def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     return tmp_path
 
 
 @pytest.fixture()
 def client(project_root: Path) -> TestClient:
-    return TestClient(app, raise_server_exceptions=False)
+    return TestClient(project_app(), raise_server_exceptions=False)
 
 
 def _preview_graph(data_path: Path) -> dict:

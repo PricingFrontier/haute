@@ -18,6 +18,7 @@ from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._graph_utils import edge_input_name
 from haute._parser_submodels import extract_submodel_registrations, parse_submodel_source
 from haute._polars_io_registry import validate_data_input_config
+from haute._project_context import ProjectContext, project_scope
 from haute._submodel_instances import (
     qualified_runtime_node_id,
     rewrite_boundary_input_names,
@@ -39,6 +40,7 @@ from haute.codegen import graph_to_code_multi
 from haute.errors import ParseError
 from haute.parser import parse_pipeline_source
 from haute.routes._submodel_ops import create_submodel_graph
+from tests._project import project_app, use_project
 from tests.conftest import make_file_input_config
 
 
@@ -399,7 +401,7 @@ def test_haute_run_reports_executable_nodes_with_instance_warnings(tmp_path: Pat
 def test_instance_missing_columns_preview_response_and_refresh() -> None:
     from fastapi.testclient import TestClient
 
-    from haute.server import app
+    app = project_app()
 
     graph = _missing_columns_graph()
     client = TestClient(app)
@@ -469,13 +471,11 @@ def test_instance_missing_columns_expand_source_occurrences_without_persisting_b
 def test_instance_missing_columns_select_request_input_frame(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
-    from haute._sandbox import set_project_root
     from haute.executor import execute_graph
     from tests.conftest import build_test_api_input_snapshots
     from tests.test_apiinput_multi_port_runtime import _multi_port_config, _rating_records
 
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     path = tmp_path / "request.json"
     path.write_text(json.dumps(_rating_records()), encoding="utf-8")
     config = _multi_port_config(path)
@@ -604,7 +604,7 @@ def test_instance_output_names_include_unconnected_declarations() -> None:
 def test_preview_qualified_instance_output_uses_its_bound_inputs(frame: str | None) -> None:
     from fastapi.testclient import TestClient
 
-    from haute.server import app
+    app = project_app()
 
     graph = _reuse_graph()
     if frame is not None:
@@ -668,7 +668,8 @@ def test_owner_and_two_instances_deliver_distinct_rows_through_round_trip(
     from haute._pipeline_recovery import load_pipeline_editor_document
     from haute.cli import cli
     from haute.executor import execute_graph
-    from haute.server import app
+
+    app = project_app()
 
     graph = _reuse_graph()
     if multiple_outputs:
@@ -712,7 +713,7 @@ def test_owner_and_two_instances_deliver_distinct_rows_through_round_trip(
             ).input_name
             == expected_name
         )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     dissolved = TestClient(app).post(
         "/api/submodel/dissolve",
         json={
@@ -2609,12 +2610,11 @@ def test_one_node_owner_preserves_rows_names_and_config_through_save_and_dissolv
     self_named_input: bool,
 ) -> None:
     from haute._pipeline_recovery import load_pipeline_editor_document
-    from haute._sandbox import bound_project_root
     from haute.executor import execute_graph
     from haute.routes._helpers import parse_pipeline_to_graph
     from haute.routes._save_pipeline import SavePipelineService
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     input_name = "calc" if self_named_input else "policies"
     source_definition = SubmodelDefinition(
         definitionId="source_definition",
@@ -2650,7 +2650,7 @@ def test_one_node_owner_preserves_rows_names_and_config_through_save_and_dissolv
         submodels={"source_definition": source_definition},
         pipeline_name="test",
     )
-    with bound_project_root(tmp_path):
+    with project_scope(ProjectContext.at(tmp_path)):
         service = SavePipelineService(tmp_path)
         initial = service.save_graph_transactionally(
             graph=plain,
@@ -2726,13 +2726,12 @@ def test_one_node_owner_preserves_rows_names_and_config_through_save_and_dissolv
 def test_node_instance_saved_config_follows_inside_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from haute._sandbox import bound_project_root
     from haute.routes._save_pipeline import SavePipelineService
     from haute.routes._submodel_ops import create_node_instance_graph
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     plain = PipelineGraph(nodes=[_node("band", NodeType.BANDING, config={"factors": []})])
-    with bound_project_root(tmp_path):
+    with project_scope(ProjectContext.at(tmp_path)):
         service = SavePipelineService(tmp_path)
         saved = service.save_graph_transactionally(
             graph=plain,

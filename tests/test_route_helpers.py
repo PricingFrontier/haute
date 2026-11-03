@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from haute._project_context import current_project
 from haute._sandbox import contained_path
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import PathOutsideProjectError, RequestRefusedError
@@ -970,133 +971,6 @@ class TestInvalidatePipelineIndex:
 # ===========================================================================
 
 
-class TestPipelineDir:
-    """Tests for pipeline_dir() — haute.toml presence/absence/malformed."""
-
-    def test_returns_cwd_when_no_toml(self, tmp_path, monkeypatch):
-        """When haute.toml is absent, falls back to cwd."""
-        from haute.routes._helpers import pipeline_dir
-
-        pipeline_dir.cache_clear()
-        monkeypatch.chdir(tmp_path)
-        result = pipeline_dir()
-        assert result == tmp_path.resolve()
-        pipeline_dir.cache_clear()
-
-    def test_returns_parent_of_configured_pipeline(self, tmp_path, monkeypatch):
-        """When haute.toml has [project].pipeline, return its parent."""
-        from haute.routes._helpers import pipeline_dir
-
-        pipeline_dir.cache_clear()
-        monkeypatch.chdir(tmp_path)
-        # Create a subdirectory with a pipeline file
-        sub = tmp_path / "pipelines"
-        sub.mkdir()
-        (sub / "main.py").write_text("")
-        # Write haute.toml
-        toml = tmp_path / "haute.toml"
-        toml.write_text('[project]\npipeline = "pipelines/main.py"\n')
-        result = pipeline_dir()
-        assert result == sub.resolve()
-        pipeline_dir.cache_clear()
-
-    def test_falls_back_when_toml_has_no_pipeline_key(self, tmp_path, monkeypatch):
-        """When haute.toml exists but has no [project].pipeline, falls back to cwd."""
-        from haute.routes._helpers import pipeline_dir
-
-        pipeline_dir.cache_clear()
-        monkeypatch.chdir(tmp_path)
-        toml = tmp_path / "haute.toml"
-        toml.write_text("[project]\n")
-        result = pipeline_dir()
-        assert result == tmp_path.resolve()
-        pipeline_dir.cache_clear()
-
-    def test_rejects_configured_pipeline_outside_project_root(self, tmp_path, monkeypatch):
-        import pytest
-
-        from haute.errors import ConfigError
-        from haute.routes._helpers import pipeline_dir
-
-        pipeline_dir.cache_clear()
-        monkeypatch.chdir(tmp_path)
-        toml = tmp_path / "haute.toml"
-        toml.write_text('[project]\npipeline = "../outside/main.py"\n')
-
-        with pytest.raises(ConfigError, match="must name a file inside the project"):
-            pipeline_dir()
-
-        pipeline_dir.cache_clear()
-
-    def test_agrees_with_the_builders_configured_pipeline_dir(self, tmp_path, monkeypatch):
-        """The routes and the engine read ``[project].pipeline`` through one reader."""
-        from haute._builders import _configured_pipeline_dir
-        from haute.routes._helpers import pipeline_dir
-
-        pipeline_dir.cache_clear()
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr("haute._sandbox._PROJECT_ROOT", tmp_path.resolve())
-        (tmp_path / "pipelines").mkdir()
-        (tmp_path / "pipelines" / "main.py").write_text("")
-        (tmp_path / "haute.toml").write_text('[project]\npipeline = "pipelines/main.py"\n')
-
-        configured = _configured_pipeline_dir()
-        assert configured is not None
-        assert pipeline_dir() == configured.resolve() == (tmp_path / "pipelines").resolve()
-        pipeline_dir.cache_clear()
-
-    def test_raises_config_error_when_project_is_not_a_table(self, tmp_path, monkeypatch):
-        """``project = "main.py"`` is a malformed configuration, not a crash."""
-        import pytest
-
-        from haute.errors import ConfigError
-        from haute.routes._helpers import pipeline_dir
-
-        pipeline_dir.cache_clear()
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "haute.toml").write_text('project = "main.py"\n')
-        with pytest.raises(ConfigError, match=r"\[project\] must be a table"):
-            pipeline_dir()
-        pipeline_dir.cache_clear()
-
-    def test_raises_config_error_when_pipeline_is_not_a_path(self, tmp_path, monkeypatch):
-        """``pipeline = [...]`` must not silently resolve (and cache) cwd."""
-        import pytest
-
-        from haute.errors import ConfigError
-        from haute.routes._helpers import pipeline_dir
-
-        pipeline_dir.cache_clear()
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "haute.toml").write_text('[project]\npipeline = ["rating/main.py"]\n')
-        with pytest.raises(ConfigError, match="must be a path string"):
-            pipeline_dir()
-        pipeline_dir.cache_clear()
-
-    def test_raises_config_error_when_toml_is_corrupt(self, tmp_path, monkeypatch):
-        """Malformed haute.toml raises ConfigError (changed in Phase 2 audit).
-
-        Previous behaviour silently fell back to cwd, which routed every
-        downstream save/load at the wrong directory and surfaced as
-        confusing "file not found" errors far from the real cause.
-        Narrowing the catch to ``TOMLDecodeError``/``OSError`` and re-
-        raising as ``ConfigError`` keeps the error close to its cause
-        so the user can fix the toml in one edit.
-        """
-        import pytest
-
-        from haute.errors import ConfigError
-        from haute.routes._helpers import pipeline_dir
-
-        pipeline_dir.cache_clear()
-        monkeypatch.chdir(tmp_path)
-        toml = tmp_path / "haute.toml"
-        toml.write_text("not valid toml {{{}}}}")
-        with pytest.raises(ConfigError):
-            pipeline_dir()
-        pipeline_dir.cache_clear()
-
-
 # ===========================================================================
 # find_typed_node — found, not found, wrong type
 # ===========================================================================
@@ -1180,7 +1054,10 @@ class TestLookupPipelineByName:
         # Manually inject a known pipeline index
         old_index = helpers._pipeline_index
         try:
-            helpers._pipeline_index = {"my_pipeline": Path("/path/to/my_pipeline.py")}
+            helpers._pipeline_index = (
+                current_project().root,
+                {"my_pipeline": Path("/path/to/my_pipeline.py")},
+            )
             result = lookup_pipeline_by_name("my_pipeline")
             assert result == Path("/path/to/my_pipeline.py")
         finally:
@@ -1192,7 +1069,7 @@ class TestLookupPipelineByName:
 
         old_index = helpers._pipeline_index
         try:
-            helpers._pipeline_index = {"other": Path("/other.py")}
+            helpers._pipeline_index = (current_project().root, {"other": Path("/other.py")})
             result = lookup_pipeline_by_name("nonexistent")
             assert result is None
         finally:

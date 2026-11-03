@@ -35,6 +35,7 @@ from haute._git import GitError, _validate_ref_name
 from haute._topo import topo_sort_ids
 from haute._types import GraphEdge
 from haute.errors import InvalidPathError, PathOutsideProjectError
+from tests._project import project_app, use_project
 from tests.conftest import make_file_output_config
 
 # =========================================================================
@@ -354,15 +355,13 @@ class TestPathTraversalJsonCache:
 
     @pytest.fixture()
     def client(self, tmp_path: Path):
-        # The route anchors paths to the configured project root, not the
+        # The route anchors paths to the installed project's root, not the
         # working directory; this project's root is tmp_path.
-        from haute._sandbox import set_project_root
-
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "main.py").write_text("")
         from fastapi.testclient import TestClient
 
-        from haute.server import app
+        app = project_app()
 
         return TestClient(app, raise_server_exceptions=False)
 
@@ -664,11 +663,11 @@ class TestNullByteHTTPParam:
 
     @pytest.fixture()
     def client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "main.py").write_text("")
         from fastapi.testclient import TestClient
 
-        from haute.server import app
+        app = project_app()
 
         return TestClient(app, raise_server_exceptions=False)
 
@@ -705,11 +704,11 @@ class TestDoubleEncodedHTTPTraversal:
 
     @pytest.fixture()
     def client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "main.py").write_text("")
         from fastapi.testclient import TestClient
 
-        from haute.server import app
+        app = project_app()
 
         return TestClient(app, raise_server_exceptions=False)
 
@@ -754,12 +753,12 @@ class TestW8bLocalSessionProtection:
 
     @pytest.fixture()
     def client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         monkeypatch.setenv("HAUTE_LOCAL_SESSION_TOKEN", self.SESSION_TOKEN)
         (tmp_path / "main.py").write_text("")
         from fastapi.testclient import TestClient
 
-        from haute.server import app
+        app = project_app()
 
         return TestClient(app, raise_server_exceptions=False)
 

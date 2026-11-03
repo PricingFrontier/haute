@@ -354,7 +354,7 @@ def _collect_static_data_input(
     """
     from haute._input_providers import source_cache_identity
     from haute._polars_io_registry import PolarsIoConfigError, validate_data_input_config
-    from haute._sandbox import _get_project_root
+    from haute._project_context import current_project
     from haute._source_cache import SourceCacheCorruptError, SourceCacheStore
 
     try:
@@ -381,7 +381,9 @@ def _collect_static_data_input(
     # Only a snapshot that is missing or does not verify is the project's to rebuild;
     # any other failure to lease it keeps its own type and message.
     try:
-        generation = resources.enter_context(SourceCacheStore(_get_project_root()).lease(identity))
+        generation = resources.enter_context(
+            SourceCacheStore(current_project().root).lease(identity)
+        )
     except (FileNotFoundError, SourceCacheCorruptError) as exc:
         raise DeployError(
             f"Data Input node {node_id!r} requires a ready, valid matching snapshot "

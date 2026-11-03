@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from haute.cli import cli
+from tests._project import use_project
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
 
 @pytest.fixture()
 def toml_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     (tmp_path / "haute.toml").write_text(
         '[project]\nname = "t"\npipeline = "main.py"\n[deploy]\nmodel_name = "motor-pricing"\n',
     )
@@ -145,7 +146,7 @@ class TestStatusPassesCatalogSchema:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Custom catalog/schema from haute.toml are forwarded correctly."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "haute.toml").write_text(
             '[project]\nname = "t"\npipeline = "main.py"\n'
             '[deploy]\nmodel_name = "home-pricing"\n'
@@ -173,7 +174,7 @@ class TestStatusPassesCatalogSchema:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Even with an explicit model_name arg, catalog/schema come from config."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "haute.toml").write_text(
             '[project]\nname = "t"\npipeline = "main.py"\n'
             '[deploy]\nmodel_name = "default"\n'
@@ -201,7 +202,7 @@ class TestStatusPassesCatalogSchema:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Without haute.toml, explicit model_name should use default catalog/schema."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         # Create a minimal pipeline file so DeployConfig.from_toml can build a config
         (tmp_path / "main.py").write_text("")
         mock_info = {

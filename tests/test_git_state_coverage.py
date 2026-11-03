@@ -9,6 +9,7 @@ would poison descendant checks.
 
 from __future__ import annotations
 
+import contextvars
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -192,11 +193,13 @@ class TestRecordPushedShasConcurrency:
         monkeypatch.setattr(git_state, "atomic_write_text", guarded_atomic_write)
         with ThreadPoolExecutor(max_workers=2) as pool:
             first = pool.submit(
+                contextvars.copy_context().run,
                 git_state.record_pushed_shas,
                 tmp_path,
                 {"origin/feature": "sha-feature"},
             )
             second = pool.submit(
+                contextvars.copy_context().run,
                 git_state.record_pushed_shas,
                 tmp_path,
                 {"upstream/review": "sha-review"},
@@ -233,6 +236,7 @@ class TestRecordPushedShasConcurrency:
         monkeypatch.setattr(Path, "replace", pause_before_replace)
         with ThreadPoolExecutor(max_workers=1) as pool:
             write = pool.submit(
+                contextvars.copy_context().run,
                 git_state.record_pushed_shas,
                 tmp_path,
                 {"origin/feature": "sha-feature"},

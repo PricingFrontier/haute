@@ -21,7 +21,6 @@ from polars.testing import assert_frame_equal
 
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionProfile
-from haute._sandbox import set_project_root
 from haute._types import PipelineGraph
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_artifacts import _cleanup_orphan_apply_result_artifact
@@ -31,6 +30,7 @@ from haute.schemas import (
     OptimiserEstimateRequest,
     OptimiserSolveRequest,
 )
+from tests._project import project_app, use_project
 from tests.test_training_seeding import _MODELLING, _train
 
 _QUOTES = 12
@@ -40,8 +40,7 @@ _SOLVER_COLUMNS = {"quote_id", "scenario_index", "scenario_value", "expected_inc
 
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
-    set_project_root(haute_scratch)
+    use_project(haute_scratch)
     for profile in ("OPTIMISER_SETUP", "OPTIMISER_SOLVE", "TRAINING"):
         monkeypatch.setenv(f"HAUTE_{profile}_MEMORY_LIMIT_MB", "1024")
     (haute_scratch / "main.py").write_text("# pipeline\n", encoding="utf-8")
@@ -461,7 +460,7 @@ def _plain_graph(project: Path) -> dict[str, Any]:
 def _client() -> Any:
     from fastapi.testclient import TestClient
 
-    from haute.server import app
+    app = project_app()
 
     return TestClient(app, raise_server_exceptions=False)
 
@@ -705,7 +704,7 @@ def test_optimiser_leaves_no_checkpoint_directory(
 
     from fastapi.testclient import TestClient
 
-    from haute.server import app
+    app = project_app()
 
     created: list[str] = []
     mkdtemp = tempfile.mkdtemp

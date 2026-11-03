@@ -14,15 +14,16 @@ from fastapi.testclient import TestClient
 from httpx import Response
 
 from tests._databricks_workspace_stub import workspace_stub
+from tests._project import project_app, use_project
 
 
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     monkeypatch.setenv("DATABRICKS_HOST", "https://workspace.example")
     monkeypatch.setenv("DATABRICKS_TOKEN", "token")
     (tmp_path / "main.py").write_text("")
-    from haute.server import app
+    app = project_app()
 
     return TestClient(app)
 

@@ -195,7 +195,8 @@ A content signature proved under a settled native revision is also recorded on d
 new process reuses it instead of reading the whole file again. One record per resolved source
 path lives at `<project root>/.haute_cache/source_proofs/<name>.json`, where `<name>` is the
 SHA-256 hex of `os.path.normcase(<resolved path>)` and the project root is
-`haute._sandbox._get_project_root()`, read through `_source_proof._proof_record_root()`.
+the current project's (`haute._project_context.current_project().root`), read through
+`_source_proof._proof_record_root()`.
 
 A record (`schema_version` 2) is `canonical_json` bytes written through
 `_file_ops.atomic_write_bytes`. It has exactly these keys at each level; a missing or extra
@@ -306,10 +307,10 @@ writes a table, for the data-point `building` probe. Schema inference stays on
 `POST /api/json-cache/infer`.
 
 Every `/api/input-cache/*` and `/api/json-cache/*` request anchors a relative locator to
-the configured project root (`haute._sandbox._get_project_root()`, the root automatic
-preparation and the store use) and the pipeline directory its `haute.toml` names under
-that root, never to the process's current directory, and the input-cache routes open the
-store under that root.
+the served project's root (`current_project().root`, the root automatic preparation and
+the store use) and the pipeline directory its `haute.toml` names under that root
+(`current_project().pipeline_dir`), never to the process's current directory, and the
+input-cache routes open the store under that root.
 
 ### Data points
 

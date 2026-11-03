@@ -17,6 +17,7 @@ import polars as pl
 import pytest
 
 from haute.errors import RequestRefusedError
+from tests._project import use_project
 from tests.conftest import make_edge, make_graph
 
 if TYPE_CHECKING:
@@ -45,7 +46,7 @@ def _clean_jobs():
 
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
+    use_project(haute_scratch)
     (haute_scratch / "main.py").write_text("# pipeline\n", encoding="utf-8")
     return haute_scratch
 

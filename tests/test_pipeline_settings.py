@@ -31,6 +31,7 @@ from haute._pipeline_settings import (
     update_pipeline_settings,
 )
 from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
+from tests._project import use_project
 
 GIB = 1024**3
 
@@ -45,7 +46,7 @@ def _write(root: Path, text: str) -> Path:
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A project root the routes and every consumer read the settings of."""
-    monkeypatch.chdir(haute_scratch)
+    use_project(haute_scratch)
     return haute_scratch
 
 

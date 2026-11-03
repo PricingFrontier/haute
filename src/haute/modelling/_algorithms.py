@@ -16,6 +16,7 @@ from haute._logging import get_logger
 from haute._polars_dtypes import is_string_or_categorical
 from haute._polars_utils import release_freed_memory
 from haute._process_memory import current_process_rss_bytes
+from haute._project_context import context_thread
 from haute.errors import HauteValidationError
 from haute.modelling._algorithm_base import BaseAlgorithm, FitResult, IterationCallback
 
@@ -387,7 +388,6 @@ def _run_gpu_fit_with_metric_polling(
       error-level log is emitted — the abandon is loud, never silent.
     """
     import shutil
-    import threading
 
     fit_error: BaseException | None = None
 
@@ -398,8 +398,8 @@ def _run_gpu_fit_with_metric_polling(
         except BaseException as exc:
             fit_error = exc
 
-    worker = threading.Thread(
-        target=_fit_thread,
+    worker = context_thread(
+        _fit_thread,
         name="catboost-gpu-fit",
         daemon=True,
     )

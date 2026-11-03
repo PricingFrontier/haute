@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import gc
 import io
 import subprocess
@@ -36,6 +37,7 @@ from haute._git_state import (
     write_working_branch,
 )
 from haute.routes._helpers import commit_pipeline_graph
+from tests._project import use_project
 
 WORKING = "pricing-dev"
 # CreateProcess takes at most this many characters of command line, its null included.
@@ -122,7 +124,7 @@ class TestRepositoryMutationLock:
         with ThreadPoolExecutor(max_workers=1) as pool:
             with repository_mutation(root):
                 _git(root, "init", "-b", "main")
-                future = pool.submit(mutate)
+                future = pool.submit(contextvars.copy_context().run, mutate)
                 assert not completed.wait(timeout=0.1)
             future.result(timeout=5)
 
@@ -145,7 +147,7 @@ class TestRepositoryMutationLock:
 
         with ThreadPoolExecutor(max_workers=1) as pool:
             with repository_mutation(repo):
-                future = pool.submit(mutate)
+                future = pool.submit(contextvars.copy_context().run, mutate)
                 assert not completed.wait(timeout=0.1)
             future.result(timeout=5)
 
@@ -176,7 +178,7 @@ class TestRepositoryMutationLock:
 
         with ThreadPoolExecutor(max_workers=1) as pool:
             with repository_mutation(repo):
-                future = pool.submit(mutate)
+                future = pool.submit(contextvars.copy_context().run, mutate)
                 assert not completed.wait(timeout=0.1)
             future.result(timeout=5)
 
@@ -193,7 +195,7 @@ class TestRepositoryMutationLock:
 
         with ThreadPoolExecutor(max_workers=1) as pool:
             with repository_mutation(repo):
-                future = pool.submit(mutate)
+                future = pool.submit(contextvars.copy_context().run, mutate)
                 assert not completed.wait(timeout=0.1)
             future.result(timeout=5)
 
@@ -206,8 +208,22 @@ class TestRepositoryMutationLock:
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             saves = [
-                pool.submit(commit_save, ["a.py"], WORKING, cwd=repo, message="save a"),
-                pool.submit(commit_save, ["b.py"], WORKING, cwd=repo, message="save b"),
+                pool.submit(
+                    contextvars.copy_context().run,
+                    commit_save,
+                    ["a.py"],
+                    WORKING,
+                    cwd=repo,
+                    message="save a",
+                ),
+                pool.submit(
+                    contextvars.copy_context().run,
+                    commit_save,
+                    ["b.py"],
+                    WORKING,
+                    cwd=repo,
+                    message="save b",
+                ),
             ]
             shas = [save.result(timeout=10) for save in saves]
 
@@ -250,7 +266,10 @@ class TestAtomicCloneState:
             write_pref(repo, key, True)
 
         with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [pool.submit(update, key) for key in ("first", "second")]
+            futures = [
+                pool.submit(contextvars.copy_context().run, update, key)
+                for key in ("first", "second")
+            ]
             for future in futures:
                 future.result(timeout=5)
 
@@ -508,7 +527,7 @@ class TestHistoricalPipelineReads:
             raise ValueError("malformed historical pipeline")
 
         monkeypatch.setattr(route_helpers, "parse_pipeline_to_graph", fail_parse)
-        monkeypatch.chdir(repo)
+        use_project(repo)
         with pytest.raises(GitHistoryReadError, match="could not be parsed"):
             commit_pipeline_graph("HEAD", "rating.py")
 
@@ -639,7 +658,7 @@ class TestHistoricalPipelineReads:
             real_rmtree(path)
 
         monkeypatch.setattr(route_helpers.shutil, "rmtree", contended_rmtree)
-        monkeypatch.chdir(repo)
+        use_project(repo)
 
         result = commit_pipeline_graph("HEAD", "rating.py")
         assert result.nodes == []

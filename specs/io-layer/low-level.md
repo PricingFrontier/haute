@@ -180,11 +180,11 @@ platforms, and on Windows with long paths on, nothing is renamed.
    `source_cache_identity`, `source_signature`, direct Parquet resolution, data points and
    the RAM estimate), the engine's canonical graph (`canonical_dataframe_execution_graph`)
    and runtime-input fingerprint, the node builders, the standalone sidecar run, the
-   standalone `Pipeline.run()` and `score()` (which scope the runtime root from the pipeline's
-   file through `standalone_project_root_scope` unless an execution already scoped one: the
-   nearest Haute project (`haute.toml`) holding the file, whatever the working directory;
-   a script in no project keeps the current project if it holds the file, else its own
-   folder), the explicit snapshot build, the preview request's path check and the API Input's schema
+   standalone `Pipeline.run()`, `score()` and a configured node called directly (which run
+   in the project `standalone_project_scope` installs from the pipeline's file unless one
+   is installed already: the nearest Haute project (`haute.toml`) holding the file,
+   whatever the working directory, or the file's own folder in no project; a pipeline with
+   no defining file runs in the project holding the session's working directory), the explicit snapshot build, the preview request's path check and the API Input's schema
    inference, so one locator names one file at every seam. Deploy bundles a Data Input's
    file by its own rule, the pipeline directory first ([deploy](../deploy/low-level.md)).
 3. `data_input_is_direct()` derives the execution mode: file-backed Parquet with
@@ -192,8 +192,8 @@ platforms, and on Windows with long paths on, nothing is renamed.
    No cache-mode field is stored — validation rejects a config still carrying the removed
    `cacheMode` field as inactive; nothing is normalised or migrated.
 4. Direct Parquet resolution anchors the configured path by the anchoring rule
-   (`anchor_config_source_path`; a pipeline directory outside the runtime project is its
-   own root, as `_infer_project_root` treats a pipeline outside the selected project) and
+   (`anchor_config_source_path`; a pipeline directory outside the current project is its
+   own root) and
    returns the registry's `scan_parquet` lazy scan without creating or consulting a source
    snapshot.
 5. Snapshot creation calls `build_input_snapshot()`, selects a provider builder, creates a
@@ -341,9 +341,9 @@ whose thread (`routes/input_cache.py::_run_build`) never builds a Data Input its
    `BuildProgressCounter`, two lock-free signed 64-bit slots in spawn-shared memory (rows,
    batches). The child is the only writer (`build_input_snapshot(progress=counter.advance)`);
    a lock would block the parent forever once a capped child was killed holding it. A
-   parent thread reads the slots every quarter second and passes the increase to the
-   caller's `progress(rows, batches)`, and once more after the worker returns, so the job's
-   counts reach the child's final ones. A builder that yields Arrow batches (database,
+   parent thread, started in the caller's context (`context_thread`), reads the slots every
+   quarter second and passes the increase to the caller's `progress(rows, batches)`, and
+   once more after the worker returns, so the job's counts reach the child's final ones. A builder that yields Arrow batches (database,
    Databricks) advances them once per batch; a LazyFrame build once per part file
    `write_parts(..., on_part=context.advance)` writes, by that part's footer row count.
    A sliced write (a Parquet or IPC scan, an in-memory frame) therefore counts each
@@ -1158,7 +1158,7 @@ failure sections above are the maintained answers.
   signature the route derives equal the ones execution derives from the same config after
   `canonical_dataframe_execution_graph()`, so a root-relative locator cannot build one
   snapshot while the run reads another file. With the process's current directory outside
-  the project, a relative locator is still resolved against the configured project root,
+  the project, a relative locator is still resolved against the served project's root,
   and a build publishes into that root's store. On a host without the cap, with the
   policy unset, a build of either class goes to a worker that does not require the cap;
   under `required`, the worker's refusal (raised by the spawn or by the child) fails the

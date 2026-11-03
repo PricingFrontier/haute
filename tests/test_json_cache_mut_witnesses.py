@@ -27,11 +27,11 @@ def test_resolve_data_path_outside_root_raises_403(tmp_path: Path) -> None:
     raise), L158 ``else 403`` (number), and L157 ``except ValueError`` (changing
     the caught type lets ValueError escape instead of becoming HTTPException).
 
-    ``tmp_path`` is an absolute path outside the worktree root, so
+    The test's project is ``tmp_path``, so its parent's file is outside it and
     ``resolve_runtime_file_path`` raises ValueError -> HTTPException(403).
     """
     with pytest.raises(HTTPException) as ei:
-        _resolve_data_path(str(tmp_path / "outside.json"))
+        _resolve_data_path(str(tmp_path.parent / "outside.json"))
     assert ei.value.status_code == 403
 
 

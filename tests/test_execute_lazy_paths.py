@@ -8,8 +8,8 @@ from unittest.mock import patch
 import pytest
 
 from haute._execute_lazy import _resolve_graph_paths
-from haute._sandbox import set_project_root
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+from tests._project import use_project
 
 
 def _node(node_id: str, node_type: NodeType, config: dict[str, object]) -> GraphNode:
@@ -137,7 +137,7 @@ def test_resolve_graph_paths_does_not_rewrite_non_file_optimiser_apply() -> None
 def test_resolve_graph_paths_without_source_file_uses_current_project(
     tmp_path: Path,
 ) -> None:
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     graph = PipelineGraph(
         nodes=[_node("api", NodeType.API_INPUT, {"path": "data/api.json"})],
     )
@@ -152,7 +152,7 @@ def test_resolve_graph_paths_without_source_file_uses_current_project(
 def test_lazy_graph_path_resolution_rejects_outside_project(
     tmp_path: Path,
 ) -> None:
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     outside = tmp_path.parent / "outside.parquet"
     graph = PipelineGraph(
         nodes=[

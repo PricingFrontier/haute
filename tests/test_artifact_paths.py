@@ -11,6 +11,7 @@ import pytest
 from haute._artifact_paths import safe_path
 from haute._pipeline_repair import PipelineRepairError
 from haute._project_mutation_lock import ProjectMutationLock
+from tests._project import use_project
 
 
 def test_safe_path_rejects_lexical_and_alias_paths(tmp_path: Path) -> None:
@@ -37,7 +38,7 @@ def test_safe_path_rejects_lexical_and_alias_paths(tmp_path: Path) -> None:
 async def test_project_mutation_locks_serialize_and_cancel_cleanly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     first, second = ProjectMutationLock(), ProjectMutationLock()
     await first.acquire()
     waiting = asyncio.create_task(second.acquire())

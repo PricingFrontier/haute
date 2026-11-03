@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from haute._logging import get_logger
+from haute._project_context import context_thread
 from haute._storage_types import (
     StorageClaimedError as StorageClaimedError,
 )
@@ -453,9 +454,7 @@ class PushQueue:
                 self._condition.notify_all()
             if self._thread is not None and self._thread.is_alive():
                 return
-            self._thread = threading.Thread(
-                target=self._run, name="haute-project-push", daemon=True
-            )
+            self._thread = context_thread(self._run, name="haute-project-push", daemon=True)
             self._thread.start()
 
     def stop(self) -> None:
@@ -672,8 +671,8 @@ class BindTask:
         # The user is told they can keep working; saves made from here until
         # the queue starts must still be counted as unpublished.
         _session.queue.arm()
-        thread = threading.Thread(
-            target=self._run,
+        thread = context_thread(
+            self._run,
             args=(url, project_root, bound_by),
             name="haute-storage-bind",
             daemon=True,

@@ -128,42 +128,6 @@ class TestWalksUp:
 # ===========================================================================
 
 
-class TestCwdDefault:
-    def test_no_arg_uses_cwd(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        _make_haute_toml(tmp_path)
-        _make_git_dir(tmp_path)
-        monkeypatch.chdir(tmp_path)
-        assert get_project_root() == tmp_path
-
-    def test_none_arg_uses_cwd(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Explicit ``None`` must behave identically to omission."""
-        _make_haute_toml(tmp_path)
-        _make_git_dir(tmp_path)
-        monkeypatch.chdir(tmp_path)
-        assert get_project_root(None) == tmp_path
-
-    def test_cwd_default_walks_up(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """cwd-based default still walks up to find the project root."""
-        _make_haute_toml(tmp_path)
-        _make_git_dir(tmp_path)
-        nested = tmp_path / "deep" / "subdir"
-        nested.mkdir(parents=True)
-        monkeypatch.chdir(nested)
-        assert get_project_root() == tmp_path
-
-
 # ===========================================================================
 # 4. No ``haute.toml`` anywhere — loud failure
 # ===========================================================================

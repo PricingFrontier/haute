@@ -25,8 +25,8 @@ from fastapi.responses import JSONResponse
 
 from haute._api_input_schema import ApiInputSchemaError
 from haute._path_resolution import RuntimePathError, resolve_node_input_path
+from haute._project_context import current_project
 from haute.routes._runtime_path_errors import runtime_path_http_exception
-from haute.routes.input_cache import input_pipeline_dir, input_project_root
 from haute.schemas import JsonCacheInferRequest, JsonCacheInferResponse
 
 router = APIRouter(prefix="/api/json-cache", tags=["json-cache"])
@@ -52,7 +52,9 @@ def _resolve_data_path(path: str) -> str:
     try:
         return str(
             resolve_node_input_path(
-                path, pipeline_dir=input_pipeline_dir(), project_root=input_project_root()
+                path,
+                pipeline_dir=current_project().pipeline_dir,
+                project_root=current_project().root,
             )
         )
     except RuntimePathError as exc:

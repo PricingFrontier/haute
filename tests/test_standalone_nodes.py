@@ -19,13 +19,14 @@ import pytest
 import haute
 import haute._standalone_nodes as standalone_nodes
 from haute._mlflow_io import ScoringModel
-from haute._sandbox import _get_project_root, set_project_root
+from haute._project_context import current_project
 from haute._standalone_nodes import has_empty_body, run_configured_node
 from haute._types import NodeType
 from haute._validation_error import ConfigSettingError
 from haute.errors import ConfigError, ExecutionError, NodeConfigError
 from haute.executor import _build_node_fn
 from haute.graph_utils import GraphNode, NodeData
+from tests._project import use_project
 from tests.conftest import write_node_config
 
 
@@ -58,13 +59,12 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """A Haute project root (``haute.toml`` in a git checkout) that the run treats as its own."""
     (tmp_path / ".git").mkdir()
     (tmp_path / "haute.toml").write_text('[project]\nname = "standalone"\n', encoding="utf-8")
-    original = _get_project_root()
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    original = current_project().root
+    use_project(tmp_path)
     try:
         yield tmp_path
     finally:
-        set_project_root(original)
+        use_project(original)
 
 
 # ---------------------------------------------------------------------------

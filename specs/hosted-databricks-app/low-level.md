@@ -26,7 +26,7 @@
 
 ## Control flow
 
-`create_app()` requires a complete environment contract, then records the hosted trust decision by disabling the local session gate *before* importing `haute.server`, so the middleware stack initialises with that decision already in force — and, in a deployment that restores a bound project, after the working directory is already the restored clone. It returns the server application wrapped in `PlatformProxyBoundary`.
+`create_app(project_dir)` requires a complete environment contract, then records the hosted trust decision by disabling the local session gate *before* importing `haute.server`, so the middleware stack initialises with that decision already in force. It builds the server application for the project in *project_dir*, the folder the bootstrap restored or seeded (`ProjectContext.at(project_dir)`: that folder itself, never the working directory), and returns it wrapped in `PlatformProxyBoundary`. The Databricks app's entry point passes the folder `bootstrap.ensure_project()` returns.
 
 For each HTTP or WebSocket scope, the boundary records `X-Forwarded-Email` (when present and non-blank, stripped of surrounding whitespace; blank or whitespace-only values are treated as absent) on the scope, strips `Forwarded` and every `X-Forwarded-*` header, and replaces `Host` with the loopback authority of the bound server. Non-HTTP scopes (lifespan) pass through untouched.
 

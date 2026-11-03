@@ -33,7 +33,9 @@ Every command uses a plain mutable `@dataclass` as a configuration value bag con
 - `RunConfig(pipeline_file: Path)` — `_run.py`.
 - `LintConfig(pipeline_file: Path)` — `_lint.py`.
 - `TrainConfig(training_script: Path)` — `_train.py`.
-- `ServeConfig(port, no_browser, host="localhost")` — `_serve.py`. The `host` default is on the
+- `ServeConfig(port, no_browser, project_root, host="localhost")` — `_serve.py`. `project_root`
+  is the project `serve` resolved; `handle_serve` passes it to the app factory in
+  `HAUTE_PROJECT_ROOT`. The `host` default is on the
   dataclass itself (not just the Click option) so every non-CLI caller inherits the loopback-safe
   default too. The browser-facing default deliberately uses the hostname rather than a numeric
   loopback address because the local HttpOnly session-cookie flow must work in ordinary browsers
@@ -98,6 +100,13 @@ reported. The CLI does not print schema warnings.
 | `haute gpu-setup` | `--check` (report only); `--cpu` (switch back to `xgboost-cpu`); `--yes`/`-y` (skip confirmation). | `--check` exits 0. Exactly one of `xgboost-cpu`/`xgboost` must be installed, else exit 1. The target build already installed exits 0 without changes. Any switch on macOS (which installs the standard `xgboost` package and has no CUDA build), or a CUDA request without an `nvidia-smi` GPU, exits 1 before installing. A declined confirmation, a failed uninstall/install step (the message names the command that restores the previous build), an XGBoost that no longer imports, or a fresh-process CUDA check that disagrees with the request exits 1. |
 
 ## Control flow
+
+**The command's directory.** The `cli` group callback reads the shell's working directory
+once and installs it as the project for the command (`project_scope(ProjectContext.at(cwd))`),
+unless its caller installed one already, as a test does; every command reads its directory
+from `current_project().root`, never from the working directory again. `run` and `lint`
+then run in the project holding their pipeline file (`project_holding`), and `serve`
+resolves the project holding the command's directory (`resolve_project`).
 
 **`init`**: `handle_init` takes each question's default (`_Defaults`): on a re-run, a project
 with a `haute.toml`, the project's current answers (`_current_answers`; a file that does not
@@ -178,8 +187,8 @@ traceback. A failure while collecting the target, which no node is to blame for,
 `Error:` line and exit 1. The admission is released on every path.
 
 **`lint`**: resolves the pipeline file and parses it as the editor loads it
-(`routes._helpers.parse_pipeline_to_graph`, strict, under the root the editor saves it in: the
-working directory when the file is inside it, else the file's folder). Any syntax,
+(`routes._helpers.parse_pipeline_to_graph`, strict, under the root of the project holding the
+file, or the file's folder in no project). Any syntax,
 configuration, topology, or other parse failure is reported and exits 1, as does a graph of no
 nodes. It then collects, before reporting, every problem a save would meet: the editor
 document's error diagnostics (`load_pipeline_editor_document`), each as
@@ -232,9 +241,18 @@ mode rather than serving source through an unrelated generated bundle.
     (`_open_browser_after_backend_ready` → `_wait_for_backend_then_open_browser` →
     `_wait_for_tcp_ready`, which on a timeout prints the URL to open instead), and runs plain
     `uvicorn.run(...)` with no autoreload.
+  - The Click wrapper first resolves the project holding the command's directory
+    (`resolve_project`); outside a Haute project (no `haute.toml`, or no git repository above
+    it) it prints the resolver's message and exits 1 before anything starts. It then changes
+    into the project's root once, so the user's pipeline code, which reads a relative path from
+    the working directory, names the files the project's configuration does.
   - Host resolution precedence (in the Click wrapper, before `ServeConfig` is built): `--host` flag
-    → `[server] host` in `haute.toml` (`_load_toml_server_host`) → `"localhost"`. Therefore plain
-    `haute serve` binds and opens `http://localhost:8000` without requiring project configuration.
+    → `[server] host` in the project's `haute.toml` (`_load_toml_server_host`) → `"localhost"`.
+    Therefore plain `haute serve` binds and opens `http://localhost:8000` without a `[server]`
+    table.
+  - uvicorn runs the factory `haute.server:create_app_from_environment` (`factory=True`), in dev
+    mode with autoreload too, so the app is built for the resolved project in the process that
+    serves it.
 
 **`deploy`**: `handle_deploy` first reads the project's `[workbench]` table
 (`read_workbench_config`): a workbench project hosts no scoring API, so an enabled workbench

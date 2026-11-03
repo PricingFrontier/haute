@@ -18,9 +18,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from haute._project_context import current_project
 from haute._sandbox import contained_path, is_contained, validate_project_path
 from haute.errors import InvalidPathError, PathOutsideProjectError, RequestRefusedError
-from haute.routes._helpers import pipeline_dir as _real_pipeline_dir
+from tests._project import project_app, use_project
 from tests._source_files import REPO_ROOT, source_files
 from tests.conftest import current_source_revision
 from tests.job_store_support import seed_job
@@ -56,17 +57,13 @@ def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]
         (project / "utility" / "link.py").symlink_to(outside / "evil.py")
     except OSError:
         pass  # the symlink cases skip themselves
-    monkeypatch.chdir(project)
-    monkeypatch.setattr("haute._sandbox._PROJECT_ROOT", project.resolve())
-    monkeypatch.setattr("haute.routes.utility.pipeline_dir", lambda: project)
-    monkeypatch.setattr("haute.routes._helpers.pipeline_dir", lambda: project)
-    monkeypatch.setattr("haute.routes.pipeline.pipeline_dir", lambda: project)
+    use_project(project)
     return project, outside
 
 
 @pytest.fixture
 def client() -> TestClient:
-    from haute.server import app
+    app = project_app()
 
     return TestClient(app, raise_server_exceptions=False)
 
@@ -586,18 +583,25 @@ class TestRuntimePaths:
         self, layout: tuple[Path, Path], escape: str
     ) -> None:
         from haute._path_resolution import (
-            RuntimePathOutsideProjectError,
-            runtime_project_root_scope,
+            resolve_runtime_file_path,
         )
 
         project, _ = layout
-        with runtime_project_root_scope(str(project / "main.py")) as root:
-            assert root == project.resolve()
-        with (
-            pytest.raises(RuntimePathOutsideProjectError),
-            runtime_project_root_scope(str(project / _escaping(project, escape, "main.py"))),
-        ):
-            pass
+        (project / "inputs").mkdir(exist_ok=True)
+        assert (
+            resolve_runtime_file_path("inputs/data.csv", source_file=str(project / "main.py"))
+            == (project / "inputs" / "data.csv").resolve()
+        )
+        # A source spelled to escape cannot carry a read out of the project: its folder is
+        # a candidate only inside the root, so the root's candidate is read.
+        assert (
+            resolve_runtime_file_path(
+                "inputs/data.csv",
+                source_file=str(project / _escaping(project, escape, "main.py")),
+                prefer="pipeline",
+            )
+            == (project / "inputs" / "data.csv").resolve()
+        )
 
 
 class TestExecutorOutputs:
@@ -1112,13 +1116,12 @@ class TestConfiguredPipelines:
         (outside / "main.py").write_text(_PIPELINE, encoding="utf-8")
         toml = project / "haute.toml"
         toml.write_text('[project]\npipeline = "main.py"\n', encoding="utf-8")
-        assert _real_pipeline_dir() == project.resolve()
-        _real_pipeline_dir.cache_clear()  # it is cached for the process
+        assert current_project().pipeline_dir == project.resolve()
         toml.write_text(
             f'[project]\npipeline = "{_escaping(project, escape, "main.py")}"\n', encoding="utf-8"
         )
         with pytest.raises(ConfigError, match="must name a file inside the project"):
-            _real_pipeline_dir()
+            current_project().pipeline_dir
 
     @_ESCAPES
     def test_the_pipeline_a_deployment_names(self, layout: tuple[Path, Path], escape: str) -> None:

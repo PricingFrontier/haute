@@ -67,7 +67,6 @@ class SessionSolveRequest:
     """Everything ``build_and_solve`` needs, as plain data."""
 
     session_id: str
-    project_root: str
     node_id: str
     mode: str
     config: dict[str, Any]
@@ -126,7 +125,6 @@ def _session(session_id: str) -> _SessionState:
 
 def build_and_solve(request: SessionSolveRequest) -> SessionSolveOutcome:
     """Build the grid, solve and finalize; keep the native state here, return the rest."""
-    from haute._sandbox import set_project_root
     from haute.routes._job_store import get_job_store
     from haute.routes._optimiser_input import (
         forecast_resident_grid_bytes,
@@ -147,7 +145,6 @@ def build_and_solve(request: SessionSolveRequest) -> SessionSolveOutcome:
     )
     from haute.routes._optimiser_worker import OptimiserWorkerFailure
 
-    set_project_root(Path(request.project_root))
     if request.session_id in _SESSIONS:
         raise RuntimeError(f"Solver session {request.session_id!r} has already solved")
     store = get_job_store("optimiser_worker")

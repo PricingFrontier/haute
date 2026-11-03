@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from haute import _cache
 from haute import _registry as registry
 from haute._types import NodeType
+from tests._project import project_app
 from tests._source_files import source_files
 
 
@@ -103,7 +104,8 @@ class TestGraphFingerprintCanonicalisation:
 class TestApiRouteContracts:
     def test_openapi_and_installed_package_versions_match_pyproject(self) -> None:
         from haute import __version__
-        from haute.server import app
+
+        app = project_app()
 
         pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
         with pyproject_path.open("rb") as pyproject_file:
@@ -126,7 +128,7 @@ class TestApiRouteContracts:
         assert app.version == installed_version
 
     def test_all_api_routes_declare_pydantic_response_models(self) -> None:
-        from haute.server import app
+        app = project_app()
 
         def is_pydantic_response(model: object) -> bool:
             if isinstance(model, type) and issubclass(model, BaseModel):

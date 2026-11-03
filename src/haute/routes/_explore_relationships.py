@@ -37,8 +37,9 @@ from haute._frame_profile import (
 )
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._polars_utils import cancellable_streaming_collect, streaming_collect
+from haute._project_context import current_project
 from haute.errors import InvalidRequestError, UnprocessableError
-from haute.routes._node_data_service import NodeDataService, node_data_project_root
+from haute.routes._node_data_service import NodeDataService
 from haute.routes._synchronous_analysis import run_synchronous_analysis
 from haute.schemas import (
     ExploreKeyCheck,
@@ -287,7 +288,7 @@ class ExploreRelationshipsService:
         except NodeDataPointInvalidError as exc:
             raise InvalidRequestError(str(exc)) from exc
         resolver = DataPointResolver(
-            body.graph, source=body.source, store=NodeSnapshotStore(node_data_project_root())
+            body.graph, source=body.source, store=NodeSnapshotStore(current_project().root)
         )
         return consumer, resolver
 

@@ -28,19 +28,20 @@ from haute._code_extraction import INCOMPLETE_TRANSFORM_MESSAGE
 from haute._types import PipelineGraph, SubmodelDefinition
 from haute.executor import execute_graph
 from haute.routes._save_pipeline import SavePipelineService
+from tests._project import project_app, use_project
 from tests.conftest import current_source_revision
 
 
 @pytest.fixture
 def isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """Save writes real files, so each test gets its own working directory."""
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     yield tmp_path
 
 
 @pytest.fixture
 def client(isolated_cwd: Path) -> TestClient:
-    from haute.server import app
+    app = project_app()
 
     return TestClient(app)
 

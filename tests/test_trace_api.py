@@ -15,6 +15,7 @@ from typing import Any
 import polars as pl
 import pytest
 
+from tests._project import use_project
 from tests.conftest import make_edge as _edge
 from tests.conftest import make_graph as _g
 from tests.conftest import make_source_node as _source_node
@@ -40,7 +41,7 @@ def _trace_api_project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     ``Path.cwd()``. These tests build per-test parquet files, so the
     temp directory must be the request's project root.
     """
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
 
 
 def _simple_graph(parquet_path: str | Path, code: str = "df = src") -> dict:

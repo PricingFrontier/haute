@@ -26,6 +26,7 @@ from haute._interactive_workers import (
     resolve_interactive_execution_mode,
     resolve_interactive_polars_threads,
 )
+from haute._project_context import context_thread, current_project
 from haute._worker_isolation import IsolatedWorkerHostError
 
 
@@ -526,7 +527,7 @@ def test_close_kills_in_flight_work_without_waiting_for_its_deadline(
         except BaseException as exc:
             failures.append(exc)
 
-    thread = threading.Thread(target=run_work)
+    thread = context_thread(run_work)
     thread.start()
     deadline = time.monotonic() + 5
     while not marker.exists() and time.monotonic() < deadline:
@@ -560,9 +561,11 @@ def test_exception_payload_and_entrypoint_protocols(monkeypatch: pytest.MonkeyPa
     assert worker_mod._public_exception_payload(BadPayloadError()) is None
     request = _Queue(
         [
-            pickle.dumps(("run", "one", _returns, (3,), {}, None, False, 500_000)),
+            pickle.dumps(
+                ("run", "one", _returns, (3,), {}, None, False, 500_000, current_project())
+            ),
             pickle.dumps(("ack", "one")),
-            pickle.dumps(("run", "two", _raises, (), {}, None, False, 500_000)),
+            pickle.dumps(("run", "two", _raises, (), {}, None, False, 500_000, current_project())),
             pickle.dumps(("ack", "two")),
             pickle.dumps(("shutdown",)),
         ]
@@ -782,7 +785,9 @@ def test_entrypoint_preload_unpicklable_and_malformed_requests(
     monkeypatch.setattr(worker_mod.importlib, "import_module", imported.append)
     requests = _Queue(
         [
-            pickle.dumps(("run", "x", _unpicklable_result, (), {}, None, False, 500_000)),
+            pickle.dumps(
+                ("run", "x", _unpicklable_result, (), {}, None, False, 500_000, current_project())
+            ),
             pickle.dumps(("ack", "x")),
             pickle.dumps(("shutdown",)),
         ]
@@ -825,7 +830,17 @@ def test_entrypoint_holds_native_lease_until_matching_ack_then_releases(
     requests = _Queue(
         [
             pickle.dumps(
-                ("run", "x", native.current_native_memory_backend, (), {}, 128, True, 500_000)
+                (
+                    "run",
+                    "x",
+                    native.current_native_memory_backend,
+                    (),
+                    {},
+                    128,
+                    True,
+                    500_000,
+                    current_project(),
+                )
             ),
             pickle.dumps(("ack", "x")),
             pickle.dumps(("shutdown",)),
@@ -863,7 +878,9 @@ def test_entrypoint_rejects_stale_ack_without_restoring_native_lease(
         worker_mod._interactive_worker_entrypoint(
             _Queue(
                 [
-                    pickle.dumps(("run", "x", _returns, (3,), {}, 128, True, 500_000)),
+                    pickle.dumps(
+                        ("run", "x", _returns, (3,), {}, 128, True, 500_000, current_project())
+                    ),
                     pickle.dumps(("ack", "other")),
                 ]
             ),
@@ -1628,7 +1645,7 @@ def test_entrypoint_reports_native_apply_and_restore_failures(
         def put(self, value: bytes) -> None:
             self.puts.append(value)
 
-    request = pickle.dumps(("run", "job", _returns, (), {}, 10, True, 500_000))
+    request = pickle.dumps(("run", "job", _returns, (), {}, 10, True, 500_000, current_project()))
     requests = Queue([request, pickle.dumps(("ack", "job")), pickle.dumps(("shutdown",))])
     results = Queue([])
     monkeypatch.setattr(
@@ -2066,8 +2083,8 @@ def test_preemptible_request_is_refused_at_once_while_unstarted_or_its_slot_is_h
 
         pool.start()
         marker = tmp_path / "busy.pid"
-        holder = threading.Thread(
-            target=pool.run,
+        holder = context_thread(
+            pool.run,
             args=(_worker_write_pid_then_sleep, str(marker), 2.0),
             kwargs={"affinity_key": "k", "timeout_seconds": 30},
         )
@@ -2106,7 +2123,7 @@ def test_an_editor_request_preempts_a_running_preemptible_job_and_runs_on_its_re
             outcome.append(exc)
 
     try:
-        check = threading.Thread(target=run_check)
+        check = context_thread(run_check)
         check.start()
         check_pid = _await_marker(marker)
         check_process = pool._slots[0].process
@@ -2156,10 +2173,10 @@ def test_a_preemptible_request_is_refused_while_a_preempting_request_has_not_res
         )
 
     try:
-        check = threading.Thread(target=run_check)
+        check = context_thread(run_check)
         check.start()
         first_pid = _await_marker(marker)
-        preview = threading.Thread(target=run_preview)
+        preview = context_thread(run_preview)
         preview.start()
         assert gated.released.wait(30), "the pre-empted job never released its slot"
         check.join(30)
@@ -2240,7 +2257,7 @@ def test_a_preemptible_request_is_refused_while_its_slots_replacement_is_startin
             timed_out.append(exc)
 
     try:
-        runner = threading.Thread(target=time_out)
+        runner = context_thread(time_out)
         runner.start()
         assert starting.wait(30)
         started = time.monotonic()

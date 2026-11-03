@@ -844,8 +844,31 @@ class TrainingJob:
         -------
         TrainResult
             Metrics, feature importances, model path, and split sizes.
-        """
 
+        A job run outside the server, the CLI or a worker (an exported training
+        script) runs in the project holding the working directory, as a
+        standalone pipeline run without a defining file does; one already
+        installed wins.
+        """
+        from haute._project_context import standalone_project_scope
+
+        with standalone_project_scope(None):
+            return self._run_in_project(
+                progress=progress,
+                on_iteration=on_iteration,
+                check_cancelled=check_cancelled,
+                execution_context=execution_context,
+                on_tuning_progress=on_tuning_progress,
+            )
+
+    def _run_in_project(
+        self,
+        progress: Callable[[str, float], None] | None,
+        on_iteration: IterationCallback | None,
+        check_cancelled: Callable[[], None] | None,
+        execution_context: ExecutionContext | None,
+        on_tuning_progress: Callable[[dict[str, Any]], None] | None,
+    ) -> TrainResult:
         if self.evaluation_plan is None and self.evaluation is not None:
             return self._run_evaluation(
                 progress=progress,
@@ -3329,7 +3352,7 @@ class TrainingJob:
         """Log this scripted run to MLflow as a contracted candidate run."""
         import uuid
 
-        from haute._sandbox import _get_project_root
+        from haute._project_context import current_project
         from haute.modelling._candidate_run import (
             CandidateArtifacts,
             build_candidate_run,
@@ -3376,7 +3399,7 @@ class TrainingJob:
                 job_id=uuid.uuid4().hex,
                 node_label=self.name,
                 training_identity_sha256=self.training_identity_sha256,
-                project_root=_get_project_root(),
+                project_root=current_project().root,
             ),
             algorithm=self.algorithm,
             weight=self.weight or "",

@@ -14,7 +14,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from haute._project_context import context_thread
 from haute.modelling._result_types import ModelCardMetadata, ModelDiagnostics
+from tests._project import use_project
 
 if TYPE_CHECKING:
     from haute.modelling._candidate_run import CandidateRun
@@ -134,10 +136,9 @@ def local_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any
     """
     from mlflow.tracking import MlflowClient
 
-    from haute._sandbox import set_project_root
     from haute.modelling._mlflow_log import resolve_tracking_backend
 
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
     tracking_uri, backend = resolve_tracking_backend()
     assert backend == "local"
@@ -217,9 +218,8 @@ class TestResolveTrackingBackend:
     def test_no_destination_is_local_even_with_databricks_credentials(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        from haute._sandbox import set_project_root
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
         monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "t")
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
@@ -509,12 +509,11 @@ class TestLocalRegistrationEndToEnd:
         import mlflow
         from mlflow.tracking import MlflowClient
 
-        from haute._sandbox import set_project_root
         from haute.modelling._mlflow_log import log_experiment
         from haute.modelling._mlflow_settings import MlflowSettings, save_mlflow_settings
         from haute.routes.mlflow import list_experiments
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
         save_mlflow_settings(MlflowSettings(folder="a"), tmp_path)
@@ -558,12 +557,9 @@ class TestLocalRegistrationEndToEnd:
         scoring-capable model."""
         import pandas as pd
 
-        from haute._sandbox import set_project_root
-
         # The model cache is `.cache/models` under the working directory: in the repository
         # root it is every worker's, and a test clearing it there removes this one's model.
-        monkeypatch.chdir(tmp_path)
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         frame = pd.DataFrame({"age": [20.0, 30.0, 40.0, 50.0]})
         artifacts = tmp_path / "artifacts"
         candidate = _candidate(artifacts, model_file=_real_catboost_model(artifacts))
@@ -972,11 +968,11 @@ class TestLogExperiment:
             patch("haute.modelling._mlflow_log._log_model_with_signature", model_log),
             patch.dict(os.environ, {"MLFLOW_ALLOW_FILE_STORE": "true"}),
         ):
-            slow = threading.Thread(target=log, args=("slow",), name="slow")
+            slow = context_thread(log, args=("slow",), name="slow")
             slow.start()
             try:
                 assert entered.wait(30)
-                fast = threading.Thread(target=log, args=("fast",), name="fast")
+                fast = context_thread(log, args=("fast",), name="fast")
                 fast.start()
                 fast.join(30)
                 finished_while_held = not fast.is_alive()
@@ -1188,12 +1184,11 @@ class TestLoggedModelEnvironment:
         import catboost
 
         from haute._mlflow_utils import mlflow_fluent_operation
-        from haute._sandbox import set_project_root
 
         monkeypatch.delenv("MLFLOW_UV_AUTO_DETECT", raising=False)
         monkeypatch.delenv("MLFLOW_LOG_UV_FILES", raising=False)
         monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         # A foreign uv project in the working directory, exactly the trap.
         (tmp_path / "pyproject.toml").write_text(
             '[project]\nname = "foreign"\nversion = "0.1.0"\ndependencies = ["bogus-package"]\n',
@@ -1203,7 +1198,7 @@ class TestLoggedModelEnvironment:
             'version = 1\n\n[[package]]\nname = "bogus-package"\nversion = "9.9.9"\n',
             encoding="utf-8",
         )
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         artifacts = tmp_path / "artifacts"
         candidate = _candidate(artifacts, model_file=_real_catboost_model(artifacts))

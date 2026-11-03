@@ -19,6 +19,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from haute._project_context import context_thread
 from haute._types import PipelineGraph
 from haute.errors import RequestRefusedError
 from haute.routes import _optimiser_artifacts, _optimiser_input, _optimiser_service
@@ -37,6 +38,7 @@ from haute.routes._optimiser_outcomes import (
     write_quote_analysis,
 )
 from haute.routes.optimiser import _store
+from tests._project import use_project
 from tests.conftest import make_edge, make_graph, make_ready_file_input_config
 
 _TERMINAL = {
@@ -659,9 +661,8 @@ class TestSideInputPath:
 
 @pytest.fixture()
 def project(tmp_path: Path) -> Path:
-    from haute._sandbox import set_project_root
 
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     return tmp_path
 
 
@@ -1198,8 +1199,8 @@ class TestChoiceQueries:
         monkeypatch.setattr(ChoiceQueryService, "_run", held_run)
         outcomes: list[Any] = []
         threads = [
-            threading.Thread(
-                target=lambda: outcomes.append(_choices(job_id, ScenarioHistogram())),
+            context_thread(
+                lambda: outcomes.append(_choices(job_id, ScenarioHistogram())),
                 daemon=True,
             )
             for _ in range(3)
@@ -1209,8 +1210,8 @@ class TestChoiceQueries:
         for thread in threads[1:]:
             thread.start()
         time.sleep(0.2)
-        other = threading.Thread(
-            target=lambda: outcomes.append(_choices(job_id, TopK("optimal_objective", k=1))),
+        other = context_thread(
+            lambda: outcomes.append(_choices(job_id, TopK("optimal_objective", k=1))),
             daemon=True,
         )
         other.start()

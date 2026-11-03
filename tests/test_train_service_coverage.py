@@ -27,6 +27,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._project_context import context_thread
 from haute._worker_protocol import (
     WorkerArtifactManifest,
     WorkerProgressEvent,
@@ -37,6 +38,7 @@ from haute.errors import BoundedMemoryUnsupportedError, PreambleError, RequestRe
 from haute.projection import AllExcept
 from haute.routes._job_store import JobStore
 from haute.routes._train_service import TrainService
+from tests._project import use_project
 from tests.conftest import make_edge, make_graph, make_ram_estimate, make_ready_file_input_config
 from tests.test_training_worker_protocol import _inline_protocol_runner, _SuccessfulTrainingJob
 
@@ -95,6 +97,7 @@ def _preparation_request(body, parquet_path, **overrides):
     """Build the picklable preparation request the child core consumes."""
     from haute.routes._training_preparation import TrainingPreparationRequest
 
+    use_project(Path(parquet_path).parent)
     return TrainingPreparationRequest(
         graph=body.graph,
         node_id=body.node_id,
@@ -102,7 +105,6 @@ def _preparation_request(body, parquet_path, **overrides):
         source=body.source,
         parquet_path=str(parquet_path),
         config={},
-        project_root=str(Path(parquet_path).parent),
         **overrides,
     )
 
@@ -1696,7 +1698,6 @@ class TestLaunchBackgroundWorker:
     def test_publication_reads_its_artifacts_with_status_polls_still_answering(self, tmp_path):
         """The evaluation artifacts are read and validated before the store's lock is
         taken: a status poll made while they are read answers at once."""
-        import threading
 
         from haute.routes import _training_artifacts
         from haute.routes import _training_lifecycle as _train_service
@@ -1709,9 +1710,7 @@ class TestLaunchBackgroundWorker:
         polls: list[str] = []
 
         def slow_reader(*args, **kwargs):
-            poll = threading.Thread(
-                target=lambda: polls.append(store.require_job(job_id)["status"])
-            )
+            poll = context_thread(lambda: polls.append(store.require_job(job_id)["status"]))
             poll.start()
             # Under the store's lock this poll could not answer until the read ends.
             poll.join(timeout=5)

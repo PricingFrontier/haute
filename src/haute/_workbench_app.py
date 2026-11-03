@@ -47,7 +47,7 @@ from haute._json_safe import to_json_safe
 from haute._local_security import DEFAULT_TRUSTED_HOSTS, LocalTrustedHostMiddleware
 from haute._logging import get_logger
 from haute._output_assembler import render_output_document
-from haute._sandbox import set_project_root
+from haute._project_context import ProjectContext, ProjectContextMiddleware, project_scope
 from haute._types import PipelineGraph
 from haute._workbench_app_store import QuoteStoreClosedError, StoreGate, no_environment
 from haute._workbench_config import ENVIRONMENT_ENV, StoreEnvironment, store_environments
@@ -338,27 +338,28 @@ def resolve_release(project_dir: Path) -> ResolvedRelease:
     from haute.deploy._config import DeployConfig, resolve_config
 
     project_dir = project_dir.resolve()
-    set_project_root(project_dir)
-    config = read_workbench_config(project_dir)
-    if not config.enabled:
-        raise WorkbenchAppError(
-            "This project has no workbench: add [workbench] enabled = true to haute.toml."
-        )
-    document = read_form_document(config)
-    unresolved = unresolved_references(document.spec)
-    if unresolved:
-        raise WorkbenchAppError(f"{config.form}/" + f"; {config.form}/".join(unresolved) + ".")
-    # The allowed values a params file gives are what it holds at this commit, not the copy
-    # the form kept when they were picked.
-    try:
-        form = with_param_options(document.spec, project_dir)
-    except ParamFileError as exc:
-        raise WorkbenchAppError(f"{config.form}: {exc.message}") from exc
-    deploy_config = DeployConfig.from_toml(project_dir / "haute.toml")
-    deploy_config.pipeline_file = resolve_pipeline_file(project_dir)
-    # The workbench nodes take their tables from the form the release ships, read once.
-    resolved = resolve_config(deploy_config, form=document)
-    return ResolvedRelease(config, document, form, deploy_config, resolved)
+    # The release is resolved in the project it is built from, whoever calls.
+    with project_scope(ProjectContext.at(project_dir)):
+        config = read_workbench_config(project_dir)
+        if not config.enabled:
+            raise WorkbenchAppError(
+                "This project has no workbench: add [workbench] enabled = true to haute.toml."
+            )
+        document = read_form_document(config)
+        unresolved = unresolved_references(document.spec)
+        if unresolved:
+            raise WorkbenchAppError(f"{config.form}/" + f"; {config.form}/".join(unresolved) + ".")
+        # The allowed values a params file gives are what it holds at this commit, not the copy
+        # the form kept when they were picked.
+        try:
+            form = with_param_options(document.spec, project_dir)
+        except ParamFileError as exc:
+            raise WorkbenchAppError(f"{config.form}: {exc.message}") from exc
+        deploy_config = DeployConfig.from_toml(project_dir / "haute.toml")
+        deploy_config.pipeline_file = resolve_pipeline_file(project_dir)
+        # The workbench nodes take their tables from the form the release ships, read once.
+        resolved = resolve_config(deploy_config, form=document)
+        return ResolvedRelease(config, document, form, deploy_config, resolved)
 
 
 @dataclass(frozen=True)
@@ -725,8 +726,9 @@ def create_app(
     with the refusal, while it does not, while it cannot be reached and without a store.
     """
     release, form, manifest = read_release(release_dir)
-    # The pipeline reads what it ships from the release, wherever the host starts the app.
-    set_project_root(release_dir)
+    # The pipeline reads what it ships from the release, wherever the host starts the app:
+    # the release folder is the project every request runs in.
+    release_project = ProjectContext.at(release_dir)
     static = _STATIC if static_dir is None else static_dir
     # The pipeline imports its utility code from beside its file: placed in the release, it
     # imports the bundle's copy, never the project's as it is edited afterwards.
@@ -990,4 +992,7 @@ def create_app(
         return FileResponse(built)
 
     app.mount("/assets", StaticFiles(directory=static / "assets", check_dir=False), name="assets")
+    # Added last, so it is outermost: everything the app runs, its lifespan included,
+    # runs in the release's project.
+    app.add_middleware(ProjectContextMiddleware, context=release_project)
     return app

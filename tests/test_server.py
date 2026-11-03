@@ -9,16 +9,17 @@ import os
 import sys
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
 
 import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 from watchfiles import Change
 
-from haute._sandbox import set_project_root
+from haute._project_context import ProjectContext, current_project
 from haute.errors import PathOutsideProjectError
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+from tests._project import project_app, use_project
 from tests.conftest import (
     build_test_input_snapshot,
     current_source_revision,
@@ -54,7 +55,7 @@ def _file_output_config(path: str) -> dict:
 @pytest.fixture()
 def pipeline_dir(tmp_path: Path) -> Path:
     """Create a temporary project with a root-level pipeline and sample data."""
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     pl.DataFrame({"x": [1, 2, 3], "y": [10, 20, 30]}).write_parquet(data_dir / "input.parquet")
@@ -92,9 +93,9 @@ pipeline.connect("source", "transform")
 @pytest.fixture()
 def client(pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """TestClient that runs with cwd set to the temp pipeline directory."""
-    monkeypatch.chdir(pipeline_dir)
+    use_project(pipeline_dir)
     # Re-import to pick up cwd change
-    from haute.server import app
+    app = project_app()
 
     return TestClient(app)
 
@@ -182,8 +183,8 @@ class TestGetFirstPipeline:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        monkeypatch.chdir(tmp_path)
-        from haute.server import app
+        use_project(tmp_path)
+        app = project_app()
 
         c = TestClient(app)
         resp = c.get("/api/pipeline")
@@ -200,8 +201,8 @@ class TestGetFirstPipeline:
         (tmp_path / "main.py").write_text(
             'import haute\n\npipeline = haute.Pipeline("my_project", description="")\n'
         )
-        monkeypatch.chdir(tmp_path)
-        from haute.server import app
+        use_project(tmp_path)
+        app = project_app()
 
         c = TestClient(app)
         resp = c.get("/api/pipeline")
@@ -222,9 +223,9 @@ class TestGetFirstPipeline:
             'import haute\npipeline = haute.Pipeline("broken")\ndef invalid(:\n    pass\n',
             encoding="utf-8",
         )
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
-        from haute.server import app
+        app = project_app()
 
         with patch(
             "haute.routes.pipeline.discover_pipelines",
@@ -939,10 +940,10 @@ class TestExecuteSinkEndpoint:
         pipeline_dir: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        set_project_root(pipeline_dir)
+        use_project(pipeline_dir)
         unrelated_cwd = pipeline_dir / "unrelated-cwd"
         unrelated_cwd.mkdir()
-        monkeypatch.chdir(unrelated_cwd)
+        use_project(unrelated_cwd)
         graph = {
             "source_file": str(pipeline_dir / "rating" / "test_pipeline.py"),
             "nodes": [
@@ -1487,7 +1488,7 @@ class TestWebSocketResync:
     ) -> None:
         from haute.server import _handle_ws_sync_message
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
         pipeline_file = pipeline_dir / "test_pipeline.py"
         loaded_paths: list[Path] = []
 
@@ -1528,7 +1529,7 @@ class TestWebSocketResync:
         from haute.routes._helpers import load_pipeline_editor_document
         from haute.server import _handle_ws_sync_message
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
         pipeline_file = pipeline_dir / "test_pipeline.py"
         current_fingerprint = pipeline_document_fingerprint(
             load_pipeline_editor_document(pipeline_file, project_root=pipeline_dir).model_dump(
@@ -1579,7 +1580,7 @@ class TestWebSocketResync:
     ) -> None:
         from haute.server import _handle_ws_sync_message
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
         pipeline_file = pipeline_dir / "test_pipeline.py"
 
         ws = self._CollectingWebSocket()
@@ -1643,7 +1644,7 @@ class TestWebSocketResync:
         from haute.routes._helpers import load_pipeline_editor_document
         from haute.server import _handle_ws_sync_message, _last_broadcast_fp
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         pipeline_file = pipeline_dir / "test_pipeline.py"
         _last_broadcast_fp.clear()
@@ -1736,7 +1737,7 @@ class TestWebSocketResync:
         from haute.routes._helpers import load_pipeline_editor_document
         from haute.server import _handle_ws_sync_message
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
         pipeline_file = pipeline_dir / "test_pipeline.py"
         document = load_pipeline_editor_document(pipeline_file, project_root=pipeline_dir)
         fingerprint = pipeline_document_fingerprint(document.model_dump(mode="json", by_alias=True))
@@ -1799,7 +1800,7 @@ class TestWebSocketResync:
 
         pipeline_file = tmp_path / "broken.py"
         pipeline_file.write_text(source, encoding="utf-8")
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         ws = self._CollectingWebSocket()
 
         with patch("haute.server.discover_pipelines", return_value=[pipeline_file]):
@@ -1829,7 +1830,7 @@ class TestWebSocketResync:
     ) -> None:
         from haute.server import _handle_ws_sync_message
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
         pipeline_file = pipeline_dir / "test_pipeline.py"
         ws = self._CollectingWebSocket()
 
@@ -1867,7 +1868,7 @@ class TestWebSocketResync:
     ) -> None:
         from haute.server import _handle_ws_sync_message
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
         pipeline_file = pipeline_dir / "test_pipeline.py"
         ws = self._CollectingWebSocket()
 
@@ -1911,7 +1912,7 @@ class TestWebSocketResync:
 
         from haute.server import _handle_ws_sync_message
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         ordinary_file = pipeline_dir / "helper.py"
         ordinary_file.write_text("def helper():\n    return 1\n")
@@ -1967,7 +1968,7 @@ class TestWebSocketResync:
 
         from haute.server import ws_sync
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         pipeline_file = pipeline_dir / "test_pipeline.py"
 
@@ -2082,7 +2083,7 @@ class TestServerPipelineDiscoveryHelpers:
     ) -> None:
         from haute.server import _resolve_client_source_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         assert (
             _resolve_client_source_file("pipelines/main.py")
@@ -2096,7 +2097,7 @@ class TestServerPipelineDiscoveryHelpers:
     ) -> None:
         from haute.routes._helpers import wire_source_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         main = tmp_path / "main.py"
         main.write_text("import haute\n\npipeline = haute.Pipeline('main')\n")
 
@@ -2393,7 +2394,7 @@ class TestFileWatcher:
 
         from watchfiles import Change
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         py_file = str(pipeline_dir / "test_pipeline.py")
         fake_changes = [(Change.modified, py_file)]
@@ -2438,7 +2439,7 @@ class TestFileWatcher:
 
         from watchfiles import Change
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         fake_changes = [(Change.modified, str(pipeline_dir / "test_pipeline.py"))]
 
@@ -2476,7 +2477,7 @@ class TestFileWatcher:
 
         from watchfiles import Change
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         fake_changes = [(Change.modified, str(pipeline_dir / "readme.txt"))]
 
@@ -2540,7 +2541,7 @@ class TestFileWatcher:
 
         from watchfiles import Change
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
         (pipeline_dir / "haute.toml").write_text(
             f'[project]\nname = "x"\n\n[workbench]\n{workbench}\n', encoding="utf-8"
         )
@@ -2578,7 +2579,7 @@ class TestFileWatcher:
 
         from watchfiles import Change
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         fake_changes = [(Change.modified, str(pipeline_dir / "test_pipeline.py"))]
 
@@ -2621,7 +2622,7 @@ class TestFileWatcher:
 
         from haute.routes._helpers import mark_self_write
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         self_written = pipeline_dir / "server_saved.py"
         user_edited = pipeline_dir / "test_pipeline.py"
@@ -2676,7 +2677,7 @@ class TestFileWatcher:
 
         from haute.routes._helpers import mark_self_write
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         pipeline_file = pipeline_dir / "test_pipeline.py"
         content_x = b"""\
@@ -2748,7 +2749,7 @@ def unique_node_y():
 
         from haute.routes._helpers import mark_self_write
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         pipeline_file = pipeline_dir / "test_pipeline.py"
         content_x = b"""\
@@ -2807,7 +2808,7 @@ def node_x():
 
         from haute.routes._helpers import mark_self_write
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         sidecar = pipeline_dir / "test_pipeline.haute.json"
         sidecar_content = json.dumps(
@@ -2874,7 +2875,7 @@ def node_x():
 
         from haute.routes._helpers import mark_self_write
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         pipeline_file = pipeline_dir / "test_pipeline.py"
 
@@ -2965,7 +2966,7 @@ def node_b():
 
         from haute.routes._helpers import mark_self_write
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         self_written = pipeline_dir / "server_saved.py"
         user_edited = pipeline_dir / "test_pipeline.py"
@@ -3035,7 +3036,7 @@ def distinctive_node():
 
         from watchfiles import Change
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         ordinary_file = pipeline_dir / "helper.py"
         ordinary_file.write_text("def helper():\n    return 1\n")
@@ -3104,7 +3105,7 @@ def distinctive_node():
 
         from watchfiles import Change
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         pipeline_file = pipeline_dir / "test_pipeline.py"
         fake_changes = [(Change.modified, str(pipeline_file))]
@@ -3437,11 +3438,11 @@ class TestListPipelinesParseError:
 
     def test_broken_pipeline_in_list(self, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch):
         """A syntax-broken pipeline is listed as source-only instead of disappearing."""
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
         from haute.routes._helpers import invalidate_pipeline_index
 
         invalidate_pipeline_index()
-        from haute.server import app
+        app = project_app()
 
         (pipeline_dir / "bad_pipe.py").write_text(
             """\
@@ -3474,8 +3475,8 @@ class TestGetPipelineParseError:
 
     def test_indexed_file_unparseable(self, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch):
         """If the indexed file becomes unparseable, fall back to linear scan."""
-        monkeypatch.chdir(pipeline_dir)
-        from haute.server import app
+        use_project(pipeline_dir)
+        app = project_app()
 
         c = TestClient(app)
         # Corrupt the file after it's been indexed
@@ -3560,7 +3561,7 @@ class TestStartupLeavesTheInstalledPackageAlone:
         monkeypatch.setattr(server, "_reap_stale_job_artifacts_in_background", idle)
 
         async def start_and_stop() -> None:
-            async with server._lifespan(server.app):
+            async with server._lifespan(server.create_app(current_project())):
                 pass
 
         asyncio.run(start_and_stop())
@@ -3668,7 +3669,7 @@ class TestFileWatcherRecoverySidecars:
         pipeline_dir: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
         sidecar = pipeline_dir / "test_pipeline.haute.json"
         broadcast_calls: list[dict] = []
 
@@ -3689,7 +3690,9 @@ class TestFileWatcherRecoverySidecars:
             patch("watchfiles.awatch", _fake_awatch),
             patch("haute.server.broadcast", _capture_broadcast),
             patch("haute.server.is_self_write", return_value=False),
-            patch("haute.server.pipeline_dir", return_value=pipeline_dir),
+            patch.object(
+                ProjectContext, "pipeline_dir", new_callable=PropertyMock, return_value=pipeline_dir
+            ),
             patch("haute.server._DEBOUNCE_SECONDS", 0),
         ):
             asyncio.run(_run_file_watcher_and_drain())
@@ -3735,7 +3738,7 @@ class TestFileWatcherRecoverySidecars:
             'import haute\npipeline = haute.Pipeline("unrelated")\n',
             encoding="utf-8",
         )
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         owners = pipelines_naming_artifacts(
             [child.with_suffix(".haute.json")], [owner, unrelated], project_root=tmp_path
@@ -3757,7 +3760,7 @@ class TestFileWatcherJsonConfig:
 
         from watchfiles import Change
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         # Create a config directory with a JSON file
         config_dir = pipeline_dir / "config"
@@ -3780,7 +3783,9 @@ class TestFileWatcherJsonConfig:
             patch("watchfiles.awatch", _fake_awatch),
             patch("haute.server.broadcast", _capture_broadcast),
             patch("haute.server.is_self_write", return_value=False),
-            patch("haute.server.pipeline_dir", return_value=pipeline_dir),
+            patch.object(
+                ProjectContext, "pipeline_dir", new_callable=PropertyMock, return_value=pipeline_dir
+            ),
             patch("haute.server._DEBOUNCE_SECONDS", 0),
         ):
 
@@ -3808,7 +3813,7 @@ class TestFileWatcherJsonConfig:
 
         from watchfiles import Change
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         config_dir = tmp_path / "config"
         config_dir.mkdir()
@@ -3828,7 +3833,9 @@ class TestFileWatcherJsonConfig:
             patch("watchfiles.awatch", _fake_awatch),
             patch("haute.server.broadcast", _capture_broadcast),
             patch("haute.server.is_self_write", return_value=False),
-            patch("haute.server.pipeline_dir", return_value=tmp_path),
+            patch.object(
+                ProjectContext, "pipeline_dir", new_callable=PropertyMock, return_value=tmp_path
+            ),
             patch("haute.server._DEBOUNCE_SECONDS", 0),
         ):
 
@@ -3854,7 +3861,7 @@ class TestFileWatcherJsonConfig:
 
         from watchfiles import Change
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         other_pipeline = pipeline_dir / "other_pipeline.py"
         other_pipeline.write_text(
@@ -3883,7 +3890,9 @@ class TestFileWatcherJsonConfig:
             patch("watchfiles.awatch", _fake_awatch),
             patch("haute.server.broadcast", _capture_broadcast),
             patch("haute.server.is_self_write", return_value=False),
-            patch("haute.server.pipeline_dir", return_value=pipeline_dir),
+            patch.object(
+                ProjectContext, "pipeline_dir", new_callable=PropertyMock, return_value=pipeline_dir
+            ),
             patch(
                 "haute.server.discover_pipelines",
                 return_value=[
@@ -3919,7 +3928,7 @@ class TestFileWatcherJsonConfig:
 
         from haute.server import _last_broadcast_fp
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         py_path = pipeline_dir / "test_pipeline.py"
         fp_key = str(py_path.resolve())
@@ -3957,7 +3966,12 @@ class TestFileWatcherJsonConfig:
                 patch("watchfiles.awatch", _fake_awatch),
                 patch("haute.server.broadcast", _capture_broadcast),
                 patch("haute.server.is_self_write", return_value=False),
-                patch("haute.server.pipeline_dir", return_value=pipeline_dir),
+                patch.object(
+                    ProjectContext,
+                    "pipeline_dir",
+                    new_callable=PropertyMock,
+                    return_value=pipeline_dir,
+                ),
                 patch("haute.server.discover_pipelines", return_value=[py_path]),
                 patch(
                     "haute.server.load_pipeline_editor_document",
@@ -3997,7 +4011,7 @@ class TestFileWatcherJsonConfig:
 
         from haute.server import _last_broadcast_fp
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         py_path = pipeline_dir / "test_pipeline.py"
         fp_key = str(py_path.resolve())
@@ -4038,7 +4052,12 @@ class TestFileWatcherJsonConfig:
                 patch("watchfiles.awatch", _fake_awatch),
                 patch("haute.server.broadcast", _capture_broadcast),
                 patch("haute.server.is_self_write", return_value=False),
-                patch("haute.server.pipeline_dir", return_value=pipeline_dir),
+                patch.object(
+                    ProjectContext,
+                    "pipeline_dir",
+                    new_callable=PropertyMock,
+                    return_value=pipeline_dir,
+                ),
                 patch("haute.server.discover_pipelines", return_value=[py_path]),
                 patch(
                     "haute.server.load_pipeline_editor_document",
@@ -4078,7 +4097,7 @@ class TestFileWatcherModuleChange:
 
         from watchfiles import Change
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         # Create a modules directory
         modules_dir = pipeline_dir / "modules"
@@ -4130,7 +4149,7 @@ class TestFileWatcherModuleChange:
 
         from watchfiles import Change
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         nested_module = pipeline_dir / "modules" / "pricing" / "helper.py"
         nested_module.parent.mkdir(parents=True)
@@ -4193,7 +4212,7 @@ class TestFileWatcherModuleChange:
 
         from haute.server import _last_broadcast_fp
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         modules_dir = pipeline_dir / "modules"
         modules_dir.mkdir(exist_ok=True)
@@ -4271,7 +4290,7 @@ class TestFileWatcherModuleChange:
 
         from haute.server import _last_broadcast_fp
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         modules_dir = pipeline_dir / "modules"
         modules_dir.mkdir(exist_ok=True)
@@ -4351,7 +4370,7 @@ class TestFileWatcherParseError:
 
         from watchfiles import Change
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
         py_file = str(pipeline_dir / "test_pipeline.py")
 
         async def _fake_awatch(*dirs, **kw):
@@ -4399,7 +4418,7 @@ class TestFileWatcherParseError:
 
         from watchfiles import Change
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         py_file = str(pipeline_dir / "test_pipeline.py")
 
@@ -4464,7 +4483,7 @@ class TestFileWatcherParseError:
 
         from haute.server import _last_broadcast_fp
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         py_path = pipeline_dir / "test_pipeline.py"
         good_bytes = py_path.read_bytes()
@@ -4528,7 +4547,7 @@ class TestFileWatcherFingerprintDedup:
 
         from watchfiles import Change
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         py_file = str(pipeline_dir / "test_pipeline.py")
 
@@ -4578,7 +4597,7 @@ class TestFileWatcherRecovery:
         """A crashed watcher must not leave a stale debounce flush running."""
         from haute.server import _file_watcher
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
         py_file = str(pipeline_dir / "test_pipeline.py")
         published: list[tuple[str, dict[str, object]]] = []
 
@@ -4613,7 +4632,7 @@ class TestFileWatcherRecovery:
         """A failed flush should retry the current batch even without a second edit."""
         from haute.server import _file_watcher
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
         py_file = str(pipeline_dir / "test_pipeline.py")
         published: list[tuple[str, dict[str, object]]] = []
 
@@ -4650,7 +4669,7 @@ class TestFileWatcherRecovery:
         """A dependency edit changes graphs, not the pipeline name-to-path index."""
         from haute.server import _file_watcher
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
         modules_dir = pipeline_dir / "modules"
         modules_dir.mkdir()
         module_file = modules_dir / "shared.py"
@@ -4684,7 +4703,7 @@ class TestFileWatcherRecovery:
         """A deleted pipeline must invalidate the index without a parse attempt."""
         from haute.server import _file_watcher
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
         deleted_file = pipeline_dir / "deleted_pipeline.py"
 
         async def _single_deletion(*dirs, **kw):
@@ -4713,7 +4732,7 @@ class TestFileWatcherRecovery:
         """Cancellation after snapshotting must not discard the interrupted change."""
         from haute.server import _file_watcher
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
         interrupted_file = pipeline_dir / "interrupted.py"
         later_file = pipeline_dir / "later.py"
         interrupted_file.write_text("interrupted = True\n")
@@ -4782,7 +4801,7 @@ class TestFileWatcherRecovery:
         """A poisoned change gets bounded batch retries plus one isolated attempt."""
         from haute.server import _file_watcher
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
         py_file = str(pipeline_dir / "test_pipeline.py")
 
         async def _single_change(*dirs, **kw):
@@ -4813,7 +4832,7 @@ class TestFileWatcherRecovery:
         """One bad event must not remain queued or suppress a healthy sibling forever."""
         from haute.server import _file_watcher
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
         healthy_file = pipeline_dir / "test_pipeline.py"
         poisoned_file = pipeline_dir / "poisoned.py"
         published: list[tuple[str, dict[str, object]]] = []
@@ -4870,7 +4889,7 @@ class TestFileWatcherRecovery:
 
         from watchfiles import Change
 
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
 
         py_file = str(pipeline_dir / "test_pipeline.py")
 
@@ -4960,7 +4979,7 @@ class TestFileWatcherRecovery:
         """Without watchfiles, live sync is disabled without crashing startup."""
         from haute.server import _file_watcher
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         with patch.dict(sys.modules, {"watchfiles": None}):
             asyncio.run(_file_watcher())
@@ -5478,7 +5497,7 @@ class TestBroadcastTreeChange:
         from haute import server
         from haute._event_bus import default_bus
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         # Pipelines other tests broadcast would count as known, and gone.
         monkeypatch.setattr(server, "_last_broadcast_fp", {})
         server.invalidate_pipeline_index()
@@ -5524,7 +5543,7 @@ class TestBroadcastTreeChange:
         from haute._event_bus import default_bus
         from haute.routes._helpers import invalidate_pipeline_index
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         monkeypatch.setattr(server, "_last_broadcast_fp", {})
         monkeypatch.setattr(server, "_workbench_form_file", lambda _root: None)
         (tmp_path / "haute.toml").write_text('[project]\npipeline = "main.py"\n')
@@ -5549,7 +5568,7 @@ class TestBroadcastTreeChange:
         from haute._event_bus import default_bus
         from haute.routes._helpers import invalidate_pipeline_index
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         monkeypatch.setattr(server, "_last_broadcast_fp", {})
         monkeypatch.setattr(server, "_workbench_form_file", lambda _root: None)
         invalidate_pipeline_index()
@@ -5592,7 +5611,7 @@ class TestBroadcastTreeChange:
         from haute._event_bus import default_bus
         from haute.routes._helpers import invalidate_pipeline_index
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         monkeypatch.setattr(server, "_last_broadcast_fp", {})
         monkeypatch.setattr(server, "_workbench_form_file", lambda _root: None)
         for name in ("kept", "gone"):
@@ -6009,7 +6028,7 @@ class TestModuleWatchingFollowsTheConfiguredPipeline:
     def test_an_imported_module_edit_refreshes_its_importer(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, folder: str
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         pipeline, _ = _module_project(tmp_path, folder)
         module = tmp_path / folder / "modules" / "rates.py"
         module.write_text(_RATES_MODULE.format(premium=150), encoding="utf-8")
@@ -6025,7 +6044,7 @@ class TestModuleWatchingFollowsTheConfiguredPipeline:
     def test_an_added_or_deleted_imported_module_refreshes_its_importer(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: Change
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         pipeline, module = _module_project(tmp_path, "rating")
         if change == Change.deleted:
             module.unlink()
@@ -6037,7 +6056,7 @@ class TestModuleWatchingFollowsTheConfiguredPipeline:
     def test_an_unrelated_python_file_beside_the_pipeline_is_not_broadcast(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _module_project(tmp_path, "rating")
         scratch = tmp_path / "rating" / "modules" / "scratch.py"
         scratch.write_text("x = 1\n", encoding="utf-8")
@@ -6049,7 +6068,7 @@ class TestModuleWatchingFollowsTheConfiguredPipeline:
     ) -> None:
         from haute.routes._helpers import mark_self_write
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _module_project(tmp_path, "rating")
         module = tmp_path / "rating" / "modules" / "rates.py"
         content = _RATES_MODULE.format(premium=175).encode("utf-8")

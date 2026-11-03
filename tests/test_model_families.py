@@ -25,6 +25,7 @@ from haute._model_flavors import (
     register_model_family,
 )
 from haute.errors import ConfigError
+from tests._project import use_project
 
 BUILT_IN_SUFFIXES = [".cbm", ".rsglm", ".ubj", ".lgbm", ".ebm", ".tboost"]
 
@@ -87,15 +88,14 @@ def _log_to_local_run(
     import mlflow
 
     from haute._mlflow_utils import mlflow_fluent_operation, set_tracking_uri_preserving_env
-    from haute._sandbox import set_project_root
     from haute.modelling._feature_contract import build_contract, save_contract
     from haute.modelling._mlflow_log import resolve_tracking_backend
     from haute.modelling._training_job import model_contract_filename
 
     # The local file store sits under the project root; keep it in tmp_path.
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     # Logged beside the model, as training logs it.
     contract = path.with_name(model_contract_filename(path.stem))
     save_contract(

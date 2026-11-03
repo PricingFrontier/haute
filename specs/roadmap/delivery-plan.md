@@ -41,10 +41,9 @@ not an inventory of all active work; see [Not scheduled](#not-scheduled).
 | Phase | Round | Theme | Packages, in order | Needs | Size | Why here |
 |---|---:|---|---|---|---|---|
 | B | 8 | Worker primitive | `ROAD-WORKER-05` | — | L | One worker primitive and one failure family, mapped once to HTTP and job states, after the estimate has moved and services raise domain errors. |
-| C | 9 | Project context | `PCFG-R04` | 8 | L | The worker request format changes once, after the primitive. Two or more PRs: the context, accessor, fixture and ratchet with the first modules, then the remaining `chdir` migration and the deletion of the fallbacks. |
 | E | 13 | Typed node configs | `PCFG-R07` | — | L | The generated browser contract types a node's config as an open object; the typed models narrow it with a regeneration. The existing Model Scoring file source supplies its config seam; round 21 extends the same models with external-family selection and pyfunc trust. |
 | E | 14 | Node specification | `PCFG-R09` | 13 | M | It builds on the typed models and the complete generated contract. |
-| F | 17 | Dead code | `ENGQ-R01` | 9 | M | After the refactors have deleted what they replace; adds knip to the frontend lint. |
+| F | 17 | Dead code | `ENGQ-R01` | — | M | After the refactors have deleted what they replace; adds knip to the frontend lint. |
 | F | 18 | Test organisation | `ENGQ-R05` | 17 | L | Last, so the suite is reorganised once, under the risk-based coverage rule. Several PRs, by component. |
 | I | 21 | Models trained outside Haute | `MSC-06`, then `MSC-05` | — | M | Generic suffixes and the XGBoost missing-value sentinel first; pyfunc files after, on the same file source. |
 | J | 23 | Remaining Polars 2 evidence | `PL2-17`, `PL2-18` | — | L | Reverify the training overhead and width calibration, operator evidence at `10m`, and worker baselines. Apply only the policy changes those measurements justify. |

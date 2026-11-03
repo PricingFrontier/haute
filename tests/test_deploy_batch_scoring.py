@@ -56,11 +56,19 @@ from haute.errors import BoundedMemoryUnsupportedError, DeployError, PreambleErr
 from haute.graph_utils import NodeType, PipelineGraph
 from haute.parser import parse_pipeline_file
 from tests._deploy_helpers import make_resolved_deploy
+from tests._project import use_project
+from tests._source_files import REPO_ROOT
 from tests.conftest import make_edge, make_graph
 
-FIXTURE_DIR = Path("tests/fixtures")
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
 DATA_DIR = FIXTURE_DIR / "data"
+
+
+@pytest.fixture(autouse=True)
+def _repository_project() -> None:
+    """The fixture pipeline is the repository's: its relative paths resolve there."""
+    use_project(REPO_ROOT)
 
 
 # ---------------------------------------------------------------------------
@@ -1173,7 +1181,7 @@ class TestOutputSchemaConservativeFallback:
         graph = _write_policy_sample(tmp_path, _conservative_graph())
         # The spawned child computes its own project root from the working
         # directory it inherits, so the sample must live inside it.
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         spawns: list[str] = []
         outcomes: list[Any] = []
         real_runner = _schema.run_isolated_worker
@@ -1236,7 +1244,7 @@ class TestOutputSchemaConservativeFallback:
                 ]
             }
         )
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         spawns: list[str] = []
         real_runner = _schema.run_isolated_worker
 

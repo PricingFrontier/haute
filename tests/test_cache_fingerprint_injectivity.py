@@ -31,6 +31,7 @@ from haute._cache import (
     preamble_execution_fingerprint,
 )
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from tests._project import use_project
 
 
 def _node(nid: str, config: dict | None = None) -> GraphNode:
@@ -202,7 +203,7 @@ class TestUtilitySyspathResolution:
         pipeline_dir.mkdir()
         work = tmp_path / "work"
         work.mkdir()
-        monkeypatch.chdir(work)
+        use_project(work)
 
         libs = tmp_path / "libs"
         libs.mkdir()
@@ -227,7 +228,7 @@ class TestUtilitySyspathResolution:
         pipeline_dir.mkdir()
         work = tmp_path / "work"
         work.mkdir()
-        monkeypatch.chdir(work)
+        use_project(work)
 
         libs = tmp_path / "libs"
         libs.mkdir()

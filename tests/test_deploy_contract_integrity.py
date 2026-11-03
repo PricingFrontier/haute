@@ -36,11 +36,12 @@ from haute.modelling._feature_contract import (
 )
 from haute.modelling._training_job import model_contract_filename
 from tests._deploy_helpers import artifact_digests, resolved_paths
+from tests._project import use_project
 from tests.conftest import make_output_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
-FIXTURE_DIR = Path("tests/fixtures")
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
 
 
@@ -425,7 +426,7 @@ class TestFeatureContractBundled:
         """
         from haute.deploy._bundler import collect_artifacts
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         # Pre-populate the MLflow disk cache with the model and the contract
         # training logs beside it.
@@ -563,7 +564,7 @@ class TestFeatureContractBundled:
         from haute.deploy._bundler import collect_artifacts
         from haute.deploy._scorer import score_graph
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         self._seed_xgboost_run(tmp_path, "run_xgb")
         graph = _api_score_graph(
             {"sourceType": "run", "run_id": "run_xgb", "artifact_path": "xgb.ubj"}
@@ -595,7 +596,7 @@ class TestFeatureContractBundled:
         from haute.deploy._bundler import collect_artifacts
         from haute.deploy._scorer import score_graph
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         self._seed_xgboost_run(tmp_path, "run_bare", with_contract=False)
         graph = _api_score_graph(
             {"sourceType": "run", "run_id": "run_bare", "artifact_path": "xgb.ubj"}
@@ -783,7 +784,7 @@ def _local_run_with_contract(project: Path, monkeypatch: pytest.MonkeyPatch) -> 
 
     from haute._mlflow_utils import resolve_backend
 
-    monkeypatch.chdir(project)
+    use_project(project)
     monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
     backend = resolve_backend("", project_root=project)
     logged = project / "logged"

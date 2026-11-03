@@ -57,6 +57,7 @@ from haute._git import (
     working_milestones,
     working_name,
 )
+from haute._project_context import context_thread
 from haute._types import GraphNode, NodeData, PipelineGraph
 from haute.graph_utils import _sanitize_func_name
 from haute.schemas import SavePipelineRequest, SavePipelineResponse
@@ -3663,7 +3664,7 @@ class TestRemotesAndPush:
             with repository_mutation(repo):
                 reacquired.set()
 
-        thread = threading.Thread(target=acquire_after_failure, daemon=True)
+        thread = context_thread(acquire_after_failure, daemon=True)
         thread.start()
         assert reacquired.wait(timeout=2)
         thread.join(timeout=2)

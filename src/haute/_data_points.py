@@ -39,6 +39,7 @@ from haute._node_snapshots import (
     node_snapshot_signature,
     pipeline_source_file_key,
 )
+from haute._project_context import current_project
 from haute._source_cache import (
     SourceCacheGenerationMissingError,
     SourceCacheIdentity,
@@ -241,16 +242,15 @@ def _lineage_fingerprint(graph: PipelineGraph, node_id: str, memo: GraphFingerpr
 
 
 def _pipeline_base_dir(graph: PipelineGraph) -> Path | None:
-    from haute._builders import _configured_pipeline_dir
-    from haute.execution import _cache_pipeline_dir
+    from haute._project_context import current_project, graph_pipeline_dir
 
-    return _cache_pipeline_dir(graph) or _configured_pipeline_dir()
+    return graph_pipeline_dir(graph) or current_project().pipeline_dir
 
 
 def _default_store() -> NodeSnapshotStore:
-    from haute._sandbox import _get_project_root
+    from haute._project_context import current_project
 
-    return NodeSnapshotStore(_get_project_root())
+    return NodeSnapshotStore(current_project().root)
 
 
 class DataPointResolver:
@@ -375,7 +375,7 @@ class DataPointResolver:
         base_dir = _pipeline_base_dir(self.graph)
         lineage = _lineage_fingerprint(self.graph, node.id, self._memo)
         if data_input_is_direct(config):
-            anchored = anchor_config_source_path(config, Path(base_dir or Path.cwd()))
+            anchored = anchor_config_source_path(config, Path(base_dir or current_project().root))
             path = Path(str(anchored["path"])).resolve()
             # A folder or glob pattern is versioned by every file it names.
             file_version: object = [
@@ -658,13 +658,14 @@ class DataPointResolver:
         execution_context: ExecutionContext | None,
     ) -> pl.LazyFrame:
         """Lazily execute the single Data Input node, never building its snapshot."""
+        from haute._project_context import graph_pipeline_dir
         from haute.execution import execute_lazy_graph
-        from haute.executor import _build_node_fn, _compile_preamble, _pipeline_dir
+        from haute.executor import _build_node_fn, _compile_preamble
 
         node = _node(self.graph, point.producer_node_id)
         subgraph = self.graph.model_copy(update={"nodes": [node], "edges": []})
         preamble_ns = _compile_preamble(
-            subgraph.preamble or "", pipeline_dir=_pipeline_dir(subgraph)
+            subgraph.preamble or "", pipeline_dir=graph_pipeline_dir(subgraph)
         )
         outputs, *_ = execute_lazy_graph(
             subgraph,

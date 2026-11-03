@@ -23,26 +23,25 @@ from fastapi.testclient import TestClient
 from haute._path_resolution import (
     RuntimePathOutsideProjectError,
     resolve_graph_source_path,
-    runtime_project_root_scope,
 )
 from haute._polars_io_registry import anchor_config_source_path
-from haute._sandbox import _get_project_root, set_project_root
+from haute._project_context import ProjectContext, current_project, project_scope
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.deploy._schema import _resolve_pipeline_path
 from haute.deploy._scorer import _bundled_input_artifact, _resolve_runtime_graph_paths
+from tests._project import project_app, use_project
 
 
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A project with its pipeline in ``rating/``, served from the project root."""
-    original = _get_project_root()
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    original = current_project().root
+    use_project(tmp_path)
     (tmp_path / "rating").mkdir()
     try:
         yield tmp_path
     finally:
-        set_project_root(original)
+        use_project(original)
 
 
 def _file(path: Path) -> Path:
@@ -142,7 +141,7 @@ def test_deploy_prefers_the_file_beside_the_pipeline(project: Path) -> None:
 
 
 def test_the_file_browser_writes_forward_slashes(project: Path) -> None:
-    from haute.server import app
+    app = project_app()
 
     _file(project / "data" / "quotes" / "policies.parquet")
 
@@ -185,7 +184,7 @@ def test_deploy_resolves_inside_the_root_it_validated(project: Path, tmp_path_fa
         source_file=str(other / "rating" / "main.py"),
     )
 
-    with runtime_project_root_scope(graph.source_file, project_root=other):
+    with project_scope(ProjectContext.at(other)):
         assert Path(_resolve_pipeline_path(graph, "data/policies.parquet")) == saved.resolve()
 
 

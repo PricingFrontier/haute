@@ -32,6 +32,7 @@ from haute._native_memory_limit import (
 )
 from haute._parent_watch import exit_with_parent
 from haute._polars_environment import release_polars_spill_dir
+from haute._project_context import ProjectContext, current_project, project_scope
 from haute._sandbox import contained_path
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
@@ -375,6 +376,8 @@ def run_worker_protocol(
             worker_config.require_memory_limit,
             worker_config.address_space_allowance_bytes,
             worker_config.preload_modules,
+            # The caller's project, which the child installs for the job.
+            current_project(),
         ),
     )
     primary_error: BaseException | None = None
@@ -582,9 +585,10 @@ def _protocol_entrypoint(
     request: WorkerRequest,
     artifact_root: str,
     memory_limit_bytes: int | None,
-    require_memory_limit: bool = False,
-    address_space_allowance_bytes: int = 0,
-    preload_modules: tuple[str, ...] = (),
+    require_memory_limit: bool,
+    address_space_allowance_bytes: int,
+    preload_modules: tuple[str, ...],
+    project: ProjectContext,
 ) -> None:
     from haute._polars_utils import apply_spawned_streaming_chunk_size
 
@@ -613,7 +617,10 @@ def _protocol_entrypoint(
                 address_space_allowance_bytes=address_space_allowance_bytes,
             )
         report_worker_ready(result_queue, ("ready", os.getpid()), go)
-        with native_memory_backend_scope(lease.backend if applied else None, lease):
+        with (
+            native_memory_backend_scope(lease.backend if applied else None, lease),
+            project_scope(project),
+        ):
             result = function(runtime, request)
         if isinstance(result, WorkerFailurePayload):
             result_queue.put(("error", result))

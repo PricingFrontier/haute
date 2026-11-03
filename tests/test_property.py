@@ -30,6 +30,7 @@ from haute.graph_utils import (
     topo_sort_ids,
 )
 from haute.parser import parse_pipeline_file, parse_pipeline_source
+from tests._project import use_project
 from tests.conftest import make_edge, make_file_input_config, make_output_config
 
 # ---------------------------------------------------------------------------
@@ -880,10 +881,10 @@ class TestPathValidation:
     @settings(max_examples=100)
     def test_dotdot_escaping_root_is_rejected(self, segments, tmp_path_factory):
         """validate_project_path should reject paths that escape the root."""
-        from haute._sandbox import set_project_root, validate_project_path
+        from haute._sandbox import validate_project_path
 
         root = tmp_path_factory.mktemp("root")
-        set_project_root(root)
+        use_project(root)
         path = root.joinpath(*segments)
         resolved = path.resolve()
         if not resolved.is_relative_to(root.resolve()):
@@ -900,13 +901,13 @@ class TestPathValidation:
     @settings(max_examples=50)
     def test_pure_dotdot_always_rejected(self, n_dotdots, tmp_path_factory):
         """A path of N '..' segments from a nested root should be rejected."""
-        from haute._sandbox import set_project_root, validate_project_path
+        from haute._sandbox import validate_project_path
 
         root = tmp_path_factory.mktemp("deep")
         # Create a subdirectory as the root so '..' can escape
         nested = root / "a" / "b" / "c"
         nested.mkdir(parents=True, exist_ok=True)
-        set_project_root(nested)
+        use_project(nested)
         escaping = nested / Path(*([".."] * (n_dotdots + 3)))  # enough to escape
         resolved = escaping.resolve()
         if not resolved.is_relative_to(nested.resolve()):

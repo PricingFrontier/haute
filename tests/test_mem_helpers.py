@@ -8,6 +8,7 @@ import polars as pl
 import pytest
 
 from haute.modelling._algorithms import _get_available_mb, _get_rss_mb, _mem_checkpoint
+from tests._project import use_project
 
 # ---------------------------------------------------------------------------
 # _get_rss_mb
@@ -60,7 +61,7 @@ class TestMemCheckpoint:
 
         work = tmp_path / "work"
         work.mkdir()
-        monkeypatch.chdir(work)
+        use_project(work)
         monkeypatch.delenv("HAUTE_MEM_LOG", raising=False)
         frame = pl.DataFrame({"x": [0.1, 0.5, 0.9, 0.3] * 10, "y": [1.0, 2.0, 3.0, 4.0] * 10})
         CatBoostAlgorithm().fit(

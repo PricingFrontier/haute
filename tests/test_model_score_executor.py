@@ -12,6 +12,7 @@ from haute._mlflow_io import ScoringModel, _artifact_cache_path
 from haute.errors import ConfigError
 from haute.executor import _build_node_fn, execute_graph
 from haute.graph_utils import GraphNode, NodeData, PipelineGraph
+from tests._project import use_project
 from tests.conftest import (
     make_edge,
     make_graph,
@@ -555,7 +556,7 @@ class TestResolveArtifactLocal:
         """Returns cached path without calling download_artifacts."""
         from haute._mlflow_io import _resolve_artifact_local
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         backend = _fake_backend()
         cached_file = _artifact_cache_path(
             tmp_path / ".cache" / "models", backend.digest, "run123", "model.cbm"
@@ -575,7 +576,7 @@ class TestResolveArtifactLocal:
 
         from haute._mlflow_io import _resolve_artifact_local
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         def fake_download(uri, dst_path, *, tracking_uri):
             assert tracking_uri == "http://tracking.example.invalid"

@@ -19,9 +19,11 @@ import pytest
 from haute._analysis_results import AnalysisKey, AnalysisResultStore, SynchronousAnalysisCache
 from haute._data_points import CacheRequiredError, DataPoint, DataPointResolver
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+from haute._project_context import context_thread
 from haute.errors import RequestRefusedError
 from haute.routes import _node_data_service as service_mod
 from haute.schemas import ExploreOverviewSummary, NodeDataProfile
+from tests._project import use_project
 from tests.conftest import make_edge, make_graph
 
 if TYPE_CHECKING:
@@ -246,7 +248,7 @@ def test_a_synchronous_analysis_is_memoised_per_point_data_version_and_request()
 
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
+    use_project(haute_scratch)
     (haute_scratch / "main.py").write_text("# pipeline\n", encoding="utf-8")
     pl.DataFrame(
         {
@@ -657,7 +659,7 @@ def test_a_clear_never_interleaves_with_a_profile_that_is_publishing(
     def clear_the_point() -> None:
         cleared.update(client.post("/api/node-data/clear", json=_body(graph, "explore")).json())
 
-    clearing = threading.Thread(target=clear_the_point, name="clear-during-publication")
+    clearing = context_thread(clear_the_point, name="clear-during-publication")
     clearing.start()
     time.sleep(0.2)
     release.set()

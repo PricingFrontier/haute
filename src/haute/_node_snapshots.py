@@ -584,9 +584,9 @@ def node_snapshot_signature(
 
 def pipeline_source_file_key(graph: PipelineGraph) -> str:
     """Return the resolved pipeline file that scopes a graph's snapshot slots."""
-    from haute._path_resolution import _infer_project_root
+    from haute._project_context import current_project
 
-    project_root = _infer_project_root(project_root=None, source_file=graph.source_file)
+    project_root = current_project().root
     source_file = Path(graph.source_file or "")
     if not source_file.is_absolute():
         source_file = project_root / source_file

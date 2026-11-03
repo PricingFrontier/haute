@@ -47,7 +47,7 @@ Out of scope (owned by neighbouring components, cross-linked below):
 - The submodel occurrence/port-classification and flatten algorithms themselves
   (`_flatten.py`, `_submodel_instances.py`) — [submodels](../submodels/high-level.md); this component
   only decides *when* to invoke them and supplies the parsed child graphs.
-- Project-root resolution and config file I/O (`_project.py`, `_config_io.py`) —
+- Project-root resolution and config file I/O (`src/haute/_project.py`, `_config_io.py`) —
   [pipeline-config](../pipeline-config/high-level.md).
 - Sandboxed execution of user code at runtime (`_sandbox.py`) —
   [sandbox-security](../sandbox-security/high-level.md). Expression evaluation builds the located

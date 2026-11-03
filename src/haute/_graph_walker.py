@@ -74,7 +74,6 @@ from haute._global_constants import node_code_globals
 from haute._graph_utils import edge_input_name, resolve_orig_source_names
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._logging import get_logger
-from haute._path_resolution import runtime_project_root_scoped
 from haute._polars_dtypes import refuse_wide_integers
 from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_utils import _malloc_trim, projected_or_carrier_columns, streaming_collect
@@ -391,7 +390,6 @@ class _UpstreamFailedError(Exception):
     """A node's input failed, and the walk recorded that against the node."""
 
 
-@runtime_project_root_scoped
 def walk_graph(
     graph: PipelineGraph,
     build_node_fn: Callable[..., Any],

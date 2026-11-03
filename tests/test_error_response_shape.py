@@ -36,7 +36,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from haute.server import app
+from tests._project import project_app, use_project
 from tests._source_files import source_files
 
 # ---------------------------------------------------------------------------
@@ -58,8 +58,8 @@ def isolated_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClie
         'import haute\npipeline = haute.Pipeline("p")\n',
         encoding="utf-8",
     )
-    monkeypatch.chdir(tmp_path)
-    return TestClient(app, raise_server_exceptions=False)
+    use_project(tmp_path)
+    return TestClient(project_app(), raise_server_exceptions=False)
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ from typing import Generic, Literal, ParamSpec, TypeVar, overload
 
 from haute._git_lock import repository_mutation
 from haute._logging import get_logger
+from haute._project_context import current_project
 from haute._project_layout import VERSIONED_FILE_LIMIT_BYTES
 from haute.errors import HauteError
 from haute.schemas import (
@@ -242,7 +243,7 @@ def _serialized_mutation(func: Callable[_P, _R]) -> Callable[_P, _R]:
         location = bound.arguments.get("cwd")
         if location is None:
             location = bound.arguments.get("project_root")
-        root = Path(location) if location is not None else Path.cwd()
+        root = Path(location) if location is not None else current_project().root
         with repository_mutation(root):
             return func(*args, **kwargs)
 
@@ -297,7 +298,7 @@ def _run_git_process(
     newlines, as a text-mode ``subprocess.run`` would."""
     try:
         completed = _run_process_group(
-            ["git", *args], cwd=cwd or Path.cwd(), env=env, timeout=timeout
+            ["git", *args], cwd=cwd or current_project().root, env=env, timeout=timeout
         )
     except subprocess.TimeoutExpired as exc:
         raise _GitProcessTimeoutError() from exc
@@ -473,7 +474,7 @@ def _run_git(
             capture_output=True,
             text=True,
             encoding="utf-8",
-            cwd=cwd or Path.cwd(),
+            cwd=cwd or current_project().root,
             env=_git_env(env),
         )
         returncode = result.returncode
@@ -486,7 +487,7 @@ def _run_git(
         byte_result = subprocess.run(
             cmd,
             capture_output=True,
-            cwd=cwd or Path.cwd(),
+            cwd=cwd or current_project().root,
             env=_git_env(env),
             input=input_text.encode("utf-8"),
         )
@@ -508,7 +509,7 @@ def _run_git_ok(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
         capture_output=True,
         text=True,
         encoding="utf-8",
-        cwd=cwd or Path.cwd(),
+        cwd=cwd or current_project().root,
         env=_git_env(),
     )
     return result.returncode == 0, result.stdout.strip()
@@ -528,7 +529,7 @@ def _run_git_rc(*args: str, cwd: Path | None = None) -> tuple[int, str]:
         capture_output=True,
         text=True,
         encoding="utf-8",
-        cwd=cwd or Path.cwd(),
+        cwd=cwd or current_project().root,
         env=_git_env(),
     )
     return result.returncode, result.stdout.strip()
@@ -1286,7 +1287,7 @@ def _git_dir(cwd: Path | None = None) -> Path:
     """Return the repository Git directory, including linked-worktree paths."""
     raw = _run_git("rev-parse", "--git-dir", cwd=cwd)
     path = Path(raw)
-    return path if path.is_absolute() else (cwd or Path.cwd()) / path
+    return path if path.is_absolute() else (cwd or current_project().root) / path
 
 
 def _assert_no_git_op_in_progress(cwd: Path | None = None) -> None:
@@ -1335,7 +1336,7 @@ def _tracked_changes(cwd: Path | None = None) -> set[str]:
         capture_output=True,
         text=True,
         encoding="utf-8",
-        cwd=cwd or Path.cwd(),
+        cwd=cwd or current_project().root,
         env=_git_env(),
     )
     if result.returncode != 0:
@@ -1367,7 +1368,7 @@ def _run_git_capture(*args: str, cwd: Path | None = None) -> tuple[int, str]:
         capture_output=True,
         text=True,
         encoding="utf-8",
-        cwd=cwd or Path.cwd(),
+        cwd=cwd or current_project().root,
         env=_git_env(),
     )
     return result.returncode, result.stderr.strip()
@@ -1437,7 +1438,7 @@ def _rewrite_tree(*args: str, cwd: Path | None = None) -> None:
     if left:
         from haute._git_state import record_interrupted
 
-        record_interrupted(cwd or Path.cwd(), args[0], left)
+        record_interrupted(cwd or current_project().root, args[0], left)
     raise GitFilesInUseError(held)
 
 

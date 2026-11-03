@@ -27,6 +27,7 @@ from typing import Any
 
 import pytest
 
+from tests._project import project_app
 from tests._source_files import source_files
 
 _SRC = Path(__file__).parent.parent / "src" / "haute"
@@ -87,7 +88,7 @@ def _walk_schema(
 
 
 def test_no_secret_shaped_fields_in_any_response_model() -> None:
-    from haute.server import app
+    app = project_app()
 
     spec = app.openapi()
     components = (spec.get("components") or {}).get("schemas") or {}

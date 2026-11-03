@@ -211,6 +211,51 @@ The GUI's plural listing path applies the same strict configured-path checks
 but also returns additional valid root-level pipelines. It lists rather than
 chooses among them; the single-pipeline binding policy remains authoritative.
 
+**Project context.** A process resolves its project once, where it starts, and every call
+reads it from the one accessor, `current_project()`; nothing reads the working directory or a
+process global to find the project. The context (`ProjectContext`) is a small frozen value,
+the project root; what the root's `haute.toml` says is read when used, so the pipeline folder
+(the folder of the pipeline `[project].pipeline` names, or the root when it names none) and
+settings the server can change while it runs, such as the `[mlflow]` table, reach the next
+call, a worker's included. The context does not bind one pipeline file, because the editor
+serves every pipeline in the project; a command that binds one pipeline resolves it through
+the four-tier chain above as before. The one resolver,
+`resolve_project`, walks up from where the process starts to the first `haute.toml` inside a
+git repository, and anywhere else raises. Who installs the project:
+
+- **The editor server.** `haute serve` resolves the project holding the directory it is run in
+  and refuses to start outside one. The application is built for that context, and every
+  request, websocket and the lifespan run with it installed, so an app built for project A
+  serves A even after the working directory moves to project B. The server process runs in
+  the project's root, set once at start: Haute never reads the working directory, but the
+  user's pipeline code reads a relative path from it, and this way it names the same file a
+  relative path in the project's configuration does.
+- **The CLI.** A command works in the shell's working directory, read once when the command
+  starts (a caller that installed a project already, such as a test, keeps it), so
+  `haute deploy`, `haute init` and the rest read that directory's `haute.toml` as before; a
+  command given a pipeline file (`run`, `lint`) runs in the project holding that file
+  instead, and `haute serve` resolves the project holding the directory and refuses to start
+  outside one.
+- **A standalone run.** `Pipeline.run()`, `Pipeline.score()`, a configured node called
+  directly and a `TrainingJob` run by an exported training script run in the project already
+  installed, if any (a deploy's validated root);
+  otherwise in the project holding the pipeline's file, or the file's own folder in no
+  project. A pipeline with no defining file (built in an interactive session) runs in the
+  project holding the session's working directory.
+- **Workers and jobs.** Every worker request carries the project of the call that made it,
+  and the worker installs it for that request alone, so a warm worker serving requests from
+  different projects never mixes them and no worker changes a process global. A job thread
+  runs in the project of the request that started it.
+- **The underwriter app, the hosted editor and deployed models.** Each is built for its own
+  folder: a release folder, the project folder the hosted bootstrap restored, or the folder
+  a scoring container's `app.py` or an MLflow model's manifest ships in. A deploy resolves
+  its pipeline inside the project it validated, and validates it, scores its test quotes and
+  ships it there, whoever calls the deploy API.
+
+A call that needs a project and finds none installed fails with
+`NoProjectContextError` naming the fix. A relative path in project configuration names a file
+under the project root, never one under the working directory.
+
 `haute init` scaffolds a new project, asking at a terminal what its flags leave out
 ([cli](../cli/high-level.md)): `haute.toml`,
 `.env.example`, CI workflow YAML for one of several CI providers, a valid blank pipeline and
@@ -374,10 +419,11 @@ a free-code step keeps its authored layout with only the whitespace ruff removes
 off, the spaces ending a line outside a string literal (a multiline string keeps every
 character it holds). A saved body is compared with the rendering of its steps as a
 program, not as text (the same syntax tree and the same comments, a comment's trailing
-whitespace aside), so a body saved in an earlier layout, quoting or call spelling of the
-same steps (lists where the renderer now passes separate arguments, Polars' sort and
-unique defaults spelled out), or reformatted by `ruff format`, keeps its steps, while
-any other edit discards them.
+whitespace aside), so a body saved in an earlier layout or quoting of the same steps,
+or reformatted by `ruff format`, keeps its steps, while any other edit discards them. A
+body in a call spelling only an earlier renderer wrote (Haute 0.5's lists where the
+renderer now passes separate arguments) is not the steps' program, so it is read as code
+and its steps are discarded.
 Step-id uniqueness checks for valid lists run in linear time in the number of steps.
 The vocabulary covers filters
 (comparison, null, membership, text and regex operators), derived columns (formulas,

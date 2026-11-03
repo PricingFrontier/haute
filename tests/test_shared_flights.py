@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from haute._execution_context import ExecutionCancellationToken, ExecutionCancelledError
+from haute._project_context import context_thread
 from haute.routes._shared_flights import FlightReplacedError, LatestWinsQueue, SharedFlights
 
 _WAIT = 10.0
@@ -42,7 +43,7 @@ def _in_thread(fn: Callable[[], Any]) -> tuple[threading.Thread, dict[str, Any]]
         except BaseException as exc:  # recorded for the assertion
             outcome["error"] = exc
 
-    thread = threading.Thread(target=target, daemon=True)
+    thread = context_thread(target, daemon=True)
     thread.start()
     return thread, outcome
 

@@ -59,7 +59,13 @@ from haute._pipeline_settings import (
     follow_chunk_rows,
     stop_following_chunk_rows,
 )
-from haute._sandbox import _get_project_root, contained_path
+from haute._project_context import (
+    ProjectContext,
+    ProjectContextMiddleware,
+    current_project,
+    resolve_project,
+)
+from haute._sandbox import contained_path
 from haute._workbench_config import WorkbenchConfigError, read_workbench_config
 from haute.errors import ConfigError, PathOutsideProjectError
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
@@ -74,7 +80,6 @@ from haute.routes._helpers import (
     invalidate_pipeline_index,
     is_self_write,
     load_pipeline_editor_document,
-    pipeline_dir,
     pipelines_importing_module,
     pipelines_naming_artifacts,
     watcher_is_paused,
@@ -273,7 +278,7 @@ def _resolve_client_source_file(source_file: Any) -> Path | None:
         return None
     path = Path(raw)
     if not path.is_absolute():
-        path = Path.cwd() / path
+        path = current_project().root / path
     return path.resolve()
 
 
@@ -320,7 +325,7 @@ def _prepare_ws_document_resync(
     source_file = wire_source_file(pipeline_path)
     try:
         document_payload = load_pipeline_editor_document(
-            pipeline_path, project_root=Path.cwd()
+            pipeline_path, project_root=current_project().root
         ).model_dump(mode="json", by_alias=True)
         document_fingerprint = pipeline_document_fingerprint(document_payload)
         if client_document_fingerprint == document_fingerprint:
@@ -464,7 +469,7 @@ def _follow_pipeline_settings_chunk_rows() -> None:
     to fix, and the next read after the fix applies its chunk rows.
     """
     try:
-        follow_chunk_rows(_get_project_root())
+        follow_chunk_rows(current_project().root)
     except PipelineSettingsError as exc:
         logger.error("pipeline_settings_invalid_at_startup", error=str(exc))
 
@@ -475,7 +480,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     configure_logging()
     configure_process_high_qos()
-    _load_env(Path.cwd())
+    _load_env(current_project().root)
     configure_execution_telemetry()
     recover_json_runtime_storage()
     stale_after_seconds = _artifact_stale_seconds()
@@ -546,8 +551,6 @@ async def _stop_background_jobs() -> None:
         )
 
 
-app = FastAPI(title="Haute", version=__version__, lifespan=_lifespan)
-install_exception_handlers(app)
 _TRUSTED_LOCAL_HOSTS = ["localhost", "127.0.0.1", "::1"]
 
 
@@ -632,25 +635,16 @@ class _RequestIdMiddleware(BaseHTTPMiddleware):
         return response
 
 
-app.add_middleware(_RequestIdMiddleware)
-app.add_middleware(LocalSessionMiddleware)
-app.add_middleware(
-    LocalTrustedHostMiddleware,
-    allowed_hosts=_trusted_hosts(),
-)
-
 # ---------------------------------------------------------------------------
 # Include route modules
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/session", response_model=SessionStatusResponse)
 async def get_session_status() -> SessionStatusResponse:
     """Protected no-op endpoint used by the frontend to verify its session token."""
     return SessionStatusResponse()
 
 
-@app.post("/api/session/bootstrap", response_model=SessionStatusResponse)
 async def bootstrap_session(response: Response) -> SessionStatusResponse:
     """Establish the browser-only session cookie after Origin validation."""
     response.headers["Cache-Control"] = "no-store"
@@ -668,29 +662,6 @@ async def bootstrap_session(response: Response) -> SessionStatusResponse:
             path="/",
         )
     return SessionStatusResponse()
-
-
-app.include_router(pipeline_router)
-app.include_router(assistant_router)
-app.include_router(output_assemble_router)
-app.include_router(databricks_router)
-app.include_router(files_router)
-app.include_router(project_files_router)
-app.include_router(io_capabilities_router)
-app.include_router(input_cache_router)
-app.include_router(json_cache_router)
-app.include_router(submodel_router)
-app.include_router(explore_router)
-app.include_router(node_data_router)
-app.include_router(cache_router)
-app.include_router(banding_router)
-app.include_router(rating_router)
-app.include_router(modelling_router)
-app.include_router(optimiser_router)
-app.include_router(mlflow_router)
-app.include_router(utility_router)
-app.include_router(git_router)
-app.include_router(workbench_router)
 
 
 # ---------------------------------------------------------------------------
@@ -720,20 +691,11 @@ async def _api_ws_not_found(request: Request) -> JSONResponse:
     )
 
 
-app.router.routes.append(
-    Route("/api/{rest:path}", _api_ws_not_found, methods=["GET"], include_in_schema=False)
-)
-app.router.routes.append(
-    Route("/ws/{rest:path}", _api_ws_not_found, methods=["GET"], include_in_schema=False)
-)
-
-
 # ---------------------------------------------------------------------------
 # WebSocket endpoint for live code ↔ GUI sync
 # ---------------------------------------------------------------------------
 
 
-@app.websocket("/ws/sync")
 async def ws_sync(websocket: WebSocket) -> None:
     """WebSocket endpoint for live code ↔ GUI sync."""
     try:
@@ -829,7 +791,7 @@ def _publish_pipeline_document(path: Path, *, skip_unchanged: bool) -> None:
         # remains available in degraded and source-only states, so an authored
         # error still reaches clients as an honest document rather than a parse
         # error.
-        document = load_pipeline_editor_document(path, project_root=Path.cwd())
+        document = load_pipeline_editor_document(path, project_root=current_project().root)
         document_payload = document.model_dump(mode="json", by_alias=True)
         document_fingerprint = pipeline_document_fingerprint(document_payload)
         _last_broadcast_fp[fp_key] = fp
@@ -897,7 +859,7 @@ def _broadcast_tree_change(payload: dict[str, Any]) -> None:
                 "parse.error",
                 {"error": PIPELINE_NOT_IN_VERSION, "source_file": wire_source_file(pipeline_path)},
             )
-    form_file = _workbench_form_file(Path.cwd())
+    form_file = _workbench_form_file(current_project().root)
     if form_file is not None:
         default_bus.publish("workbench.form.changed", {"form": form_file[0]})
 
@@ -921,10 +883,10 @@ async def _file_watcher() -> None:
         logger.warning("watchfiles_missing", msg="live sync disabled")
         return
 
-    cwd = Path.cwd()
-    pipe_dir = pipeline_dir()
-    watch_dirs = [cwd]
-    if pipe_dir != cwd:
+    root = current_project().root
+    pipe_dir = current_project().pipeline_dir
+    watch_dirs = [root]
+    if pipe_dir != root:
         watch_dirs.append(pipe_dir)
     config_dir = pipe_dir / "config"
     if config_dir.is_dir():
@@ -975,7 +937,7 @@ async def _file_watcher() -> None:
             config_changed = False
             recovery_artifact_changes: list[Path] = []
             self_write_keys: set[str] = set()
-            form_file = _workbench_form_file(cwd)
+            form_file = _workbench_form_file(root)
             form_changed = False
             for change_type, changed_path in to_process:
                 p = Path(changed_path)
@@ -1077,7 +1039,7 @@ async def _file_watcher() -> None:
                 for pipeline_path in pipelines_naming_artifacts(
                     recovery_artifact_changes,
                     _discovered().values(),
-                    project_root=Path.cwd(),
+                    project_root=current_project().root,
                 ):
                     key = str(pipeline_path.resolve())
                     changed_files[key] = (pipeline_path, True)
@@ -1210,14 +1172,93 @@ def _serve_index_html(static_dir: Path = STATIC_DIR) -> HTMLResponse:
     )
 
 
-if static_build_ready(STATIC_DIR):
-    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
+async def serve_spa(full_path: str) -> Response:
+    """Serve the React SPA - all non-API routes return index.html."""
+    file_path = _spa_static_file(STATIC_DIR, full_path)
+    if file_path is not None and file_path.name != "index.html":
+        media_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        return FileResponse(file_path, media_type=media_type)
+    return _serve_index_html(STATIC_DIR)
 
-    @app.get("/{full_path:path}", response_model=None)
-    async def serve_spa(full_path: str) -> Response:
-        """Serve the React SPA - all non-API routes return index.html."""
-        file_path = _spa_static_file(STATIC_DIR, full_path)
-        if file_path is not None and file_path.name != "index.html":
-            media_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
-            return FileResponse(file_path, media_type=media_type)
-        return _serve_index_html(STATIC_DIR)
+
+def create_app(context: ProjectContext) -> FastAPI:
+    """The editor server for *context*'s project.
+
+    Every request, websocket and the lifespan run with *context* installed
+    (:class:`~haute._project_context.ProjectContextMiddleware`), so the app
+    serves its own project whatever the working directory or the caller's
+    context.
+    """
+    app = FastAPI(title="Haute", version=__version__, lifespan=_lifespan)
+    install_exception_handlers(app)
+    app.add_middleware(_RequestIdMiddleware)
+    app.add_middleware(LocalSessionMiddleware)
+    app.add_middleware(
+        LocalTrustedHostMiddleware,
+        allowed_hosts=_trusted_hosts(),
+    )
+    app.add_api_route(
+        "/api/session", get_session_status, methods=["GET"], response_model=SessionStatusResponse
+    )
+    app.add_api_route(
+        "/api/session/bootstrap",
+        bootstrap_session,
+        methods=["POST"],
+        response_model=SessionStatusResponse,
+    )
+    app.include_router(pipeline_router)
+    app.include_router(assistant_router)
+    app.include_router(output_assemble_router)
+    app.include_router(databricks_router)
+    app.include_router(files_router)
+    app.include_router(project_files_router)
+    app.include_router(io_capabilities_router)
+    app.include_router(input_cache_router)
+    app.include_router(json_cache_router)
+    app.include_router(submodel_router)
+    app.include_router(explore_router)
+    app.include_router(node_data_router)
+    app.include_router(cache_router)
+    app.include_router(banding_router)
+    app.include_router(rating_router)
+    app.include_router(modelling_router)
+    app.include_router(optimiser_router)
+    app.include_router(mlflow_router)
+    app.include_router(utility_router)
+    app.include_router(git_router)
+    app.include_router(workbench_router)
+    # The JSON 404 guards come after every router and before the SPA catch-all.
+    app.router.routes.append(
+        Route("/api/{rest:path}", _api_ws_not_found, methods=["GET"], include_in_schema=False)
+    )
+    app.router.routes.append(
+        Route("/ws/{rest:path}", _api_ws_not_found, methods=["GET"], include_in_schema=False)
+    )
+    app.add_api_websocket_route("/ws/sync", ws_sync)
+    if static_build_ready(STATIC_DIR):
+        app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
+        app.add_api_route("/{full_path:path}", serve_spa, methods=["GET"], response_model=None)
+    # Added last, so it is outermost: everything the app runs is in its project.
+    app.add_middleware(ProjectContextMiddleware, context=context)
+    return app
+
+
+#: The project root ``haute serve`` resolved, passed to the process uvicorn imports
+#: the app in.
+PROJECT_ROOT_ENV = "HAUTE_PROJECT_ROOT"
+
+
+def create_app_from_environment() -> FastAPI:
+    """The app ``haute serve`` starts: for the project the CLI resolved.
+
+    Uvicorn imports the app in its own process (the reloader's child), so the
+    CLI passes the project root it resolved in ``HAUTE_PROJECT_ROOT``; the
+    project is resolved again from it here, and its absence is an error.
+    """
+    root = os.environ.get(PROJECT_ROOT_ENV)
+    if not root:
+        raise ConfigError(
+            f"{PROJECT_ROOT_ENV} is not set: start the server with 'haute serve' from inside a "
+            "Haute project."
+        )
+    return create_app(resolve_project(Path(root)))

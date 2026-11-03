@@ -17,6 +17,7 @@ import pytest
 
 from haute.cli import cli
 from haute.cli._output import utf8_output
+from tests._project import make_haute_project, use_project
 from tests.conftest import write_data_input_config
 
 if TYPE_CHECKING:
@@ -201,7 +202,7 @@ class TestInit:
     def test_creates_project_structure(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         result = runner.invoke(cli, ["init"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
         assert (tmp_path / "data").is_dir()
@@ -258,7 +259,7 @@ class TestInit:
         monkeypatch: pytest.MonkeyPatch,
     ):
         """If .git/hooks exists, the pre-commit hook is installed there too."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / ".git" / "hooks").mkdir(parents=True)
         result = runner.invoke(cli, ["init"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
@@ -271,7 +272,7 @@ class TestInit:
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         """haute init should layer on top of an existing pyproject.toml from uv init."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         # Simulate uv init output
         (tmp_path / "pyproject.toml").write_text(
             '[project]\nname = "motor-pricing"\nversion = "0.1.0"\n'
@@ -311,7 +312,7 @@ class TestInit:
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         """If pyproject.toml already lists haute, don't duplicate it."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "pyproject.toml").write_text(
             '[project]\nname = "my-project"\nversion = "0.1.0"\n'
             'dependencies = [\n    "haute",\n]\n',
@@ -332,7 +333,7 @@ class TestInit:
         monkeypatch: pytest.MonkeyPatch,
     ):
         """If pyproject.toml already has [dependency-groups], don't duplicate it."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "pyproject.toml").write_text(
             '[project]\nname = "my-project"\nversion = "0.1.0"\n'
             'dependencies = [\n    "haute",\n]\n\n'
@@ -347,7 +348,7 @@ class TestInit:
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         """If .gitignore exists (from uv init), append haute entries."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / ".gitignore").write_text("__pycache__/\n.venv/\n")
         result = runner.invoke(cli, ["init"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
@@ -361,7 +362,7 @@ class TestInit:
     def test_an_initialised_project_is_set_up_again_writing_no_starter_files(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "haute.toml").write_text(
             '[project]\nname = "x"\n\n[deploy]\ntarget = "databricks"\n\n'
             '[ci]\nprovider = "github"\n'
@@ -377,7 +378,7 @@ class TestInit:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         result = runner.invoke(cli, ["init", "--target", "container"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
         toml_content = (tmp_path / "haute.toml").read_text()
@@ -394,7 +395,7 @@ class TestInit:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         result = runner.invoke(cli, ["init", "--ci", "github"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
         assert (tmp_path / ".github" / "workflows" / "ci.yml").exists()
@@ -407,7 +408,7 @@ class TestInit:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         result = runner.invoke(cli, ["init", "--ci", "azure-devops"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
         pipeline_file = tmp_path / "azure-pipelines.yml"
@@ -429,7 +430,7 @@ class TestInit:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         result = runner.invoke(
             cli,
             ["init", "--target", "container", "--ci", "azure-devops"],
@@ -448,7 +449,7 @@ class TestInit:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         result = runner.invoke(cli, ["init", "--ci", "none"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
         assert not (tmp_path / ".github").exists()
@@ -459,7 +460,7 @@ class TestInit:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         result = runner.invoke(cli, ["init"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
         toml_content = (tmp_path / "haute.toml").read_text()
@@ -517,7 +518,7 @@ class TestRun:
     def test_run_auto_discover(
         self, runner: CliRunner, project_dir: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        monkeypatch.chdir(project_dir)
+        use_project(project_dir)
         result = runner.invoke(cli, ["run", "--node", "transform"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
         assert "test_cli" in result.output
@@ -532,7 +533,7 @@ class TestRun:
         sure we reference "no pipeline file" and "main.py" so the hint
         lands.
         """
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         result = runner.invoke(cli, ["run"])
         assert result.exit_code == 1
         msg = result.output.lower()
@@ -715,7 +716,7 @@ class TestLint:
         project_dir: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        monkeypatch.chdir(project_dir)
+        use_project(project_dir)
         # Create a haute.toml pointing to main.py
         (project_dir / "haute.toml").write_text(
             '[project]\nname = "test"\npipeline = "main.py"\n',
@@ -757,7 +758,7 @@ class TestSmoke:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         result = runner.invoke(cli, ["smoke"])
         assert result.exit_code == 1
         assert "haute.toml" in result.output.lower()
@@ -768,7 +769,7 @@ class TestSmoke:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "haute.toml").write_text(
             '[project]\nname = "t"\npipeline = "main.py"\n'
             '[deploy]\nmodel_name = "t"\nendpoint_name = "t"\n',
@@ -783,7 +784,7 @@ class TestSmoke:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "haute.toml").write_text(
             '[project]\nname = "t"\npipeline = "main.py"\n'
             '[deploy]\nmodel_name = "t"\nendpoint_name = "t"\n'
@@ -800,7 +801,7 @@ class TestServe:
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         """Without frontend/ or built static, serve should fail with a clear message."""
-        monkeypatch.chdir(tmp_path)
+        use_project(make_haute_project(tmp_path))
         # Mock STATIC_DIR to a non-existent path so we hit the error branch
         # (the real STATIC_DIR may exist from a previous npm run build)
         monkeypatch.setattr("haute.server.STATIC_DIR", tmp_path / "nonexistent_static")

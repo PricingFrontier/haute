@@ -14,20 +14,20 @@ import orjson
 import pytest
 from fastapi.testclient import TestClient
 
-from haute._sandbox import set_project_root
+from tests._project import project_app, use_project
 
 
 @pytest.fixture()
 def project(tmp_path: Path) -> Path:
-    """A fresh tmp dir as the project root the route anchors paths to."""
-    set_project_root(tmp_path)
+    """A fresh tmp dir as the project the route anchors paths to."""
+    use_project(tmp_path)
     return tmp_path
 
 
 @pytest.fixture()
 def client(project: Path) -> TestClient:
     """TestClient serving that project, for route-level tests."""
-    from haute.server import app
+    app = project_app()
 
     return TestClient(app)
 

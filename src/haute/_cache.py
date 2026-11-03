@@ -17,6 +17,7 @@ from haute._global_constants import ConstantReads, graph_constant_reads
 from haute._hashing import content_hash_bytes
 from haute._json_shred._source_proof import file_signature
 from haute._logging import get_logger
+from haute._project_context import graph_pipeline_dir
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 
 logger = get_logger(component="cache")
@@ -1221,16 +1222,6 @@ def preamble_imports_utility(preamble: str) -> bool:
     return False
 
 
-def _pipeline_dir(graph: PipelineGraph) -> Path | None:
-    source_file = graph.source_file
-    if not source_file:
-        return None
-    path = Path(source_file)
-    if not path.is_absolute():
-        path = Path.cwd() / path
-    return path.resolve().parent
-
-
 def _resolve_utility_locations(pipeline_dir: str | Path | None) -> list[Path] | None:
     """Resolve the top-level ``utility`` module/package the preamble will import.
 
@@ -1432,7 +1423,7 @@ def graph_fingerprint(
     base = graph._haute_base_fingerprint if memo is None else _graph_base_fingerprint(graph, memo)
     context_fingerprint = preamble_execution_fingerprint(
         graph.preamble,
-        pipeline_dir=_pipeline_dir(graph),
+        pipeline_dir=graph_pipeline_dir(graph),
         memo=memo,
     )
     inputs = checked_cache_inputs(

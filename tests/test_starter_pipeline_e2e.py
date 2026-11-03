@@ -2,30 +2,20 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
-from contextlib import contextmanager
 from pathlib import Path
 
 from click.testing import CliRunner
 
+from haute._project_context import ProjectContext, project_scope
 from haute.cli import cli
 from haute.parser import parse_pipeline_file
 
 
-@contextmanager
-def _pushd(path: Path):
-    old_cwd = Path.cwd()
-    os.chdir(path)
-    try:
-        yield
-    finally:
-        os.chdir(old_cwd)
-
-
 def _scaffold_project(project_root: Path) -> Path:
-    with _pushd(project_root):
+    # The command works in the installed project, as it would in the shell's directory.
+    with project_scope(ProjectContext.at(project_root)):
         result = CliRunner().invoke(cli, ["init"], catch_exceptions=False)
     assert result.exit_code == 0, result.output
     return project_root / "rating" / "main.py"

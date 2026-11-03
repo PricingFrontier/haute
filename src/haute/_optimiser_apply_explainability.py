@@ -8,7 +8,6 @@ from typing import Any, cast
 import polars as pl
 
 from haute._builders import (
-    _configured_pipeline_dir,
     _prepare_online_apply_frame,
     _select_optimiser_apply_input,
     _split_ratebook_level,
@@ -19,6 +18,7 @@ from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._node_apply import load_configured_optimiser_artifact
 from haute._price_contour import price_contour
+from haute._project_context import current_project
 from haute._ratebook_collar import (
     COMBINED_FACTOR_BOUNDS_KEY,
     CombinedFactorBoundsError,
@@ -86,7 +86,7 @@ def _load_artifact_from_config(config: dict[str, Any]) -> dict[str, Any]:
     apply and the deploy scorer do, so a trace explains the artifact the apply
     actually ran against.
     """
-    artifact = load_configured_optimiser_artifact(config, base_dir=_configured_pipeline_dir())
+    artifact = load_configured_optimiser_artifact(config, base_dir=current_project().pipeline_dir)
     if artifact is None:
         raise OptimiserApplyTraceError(
             "optimiserApply trace requires a configured file or MLflow artifact source"

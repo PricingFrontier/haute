@@ -30,6 +30,8 @@ from typing import TYPE_CHECKING
 
 import click
 
+from haute._project_context import current_project
+
 if TYPE_CHECKING:
     from haute._workbench_test_quotes import Checked
 
@@ -140,7 +142,9 @@ def _told(results: Sequence[Checked], *, report: bool) -> None:
         elif result.outcome == "failed":
             click.echo(f"  ✗ Test quote {result.file} failed: {result.why}")
     if report:
-        (Path.cwd() / REPORT_FILE).write_bytes(render_test_quotes_report(results).encode("utf-8"))
+        (current_project().root / REPORT_FILE).write_bytes(
+            render_test_quotes_report(results).encode("utf-8")
+        )
         click.echo(f"  ✓ Test quotes report written: {REPORT_FILE}")
 
 
@@ -150,7 +154,7 @@ def handle_app_build(config: AppBuildConfig) -> None:
     names it, push it and print the reference by digest it pushed as the last line."""
     from haute._workbench_app import build_image, image_reference, push_image
 
-    project_dir = Path.cwd()
+    project_dir = current_project().root
     reference: str | None = None
     if config.push:
         # A push needs a registry: a project naming none is refused before anything is built.
@@ -182,7 +186,7 @@ def handle_app_rollout(config: AppRolloutConfig) -> None:
     from haute import _workbench_rollout as rollouts
     from haute._workbench_config import read_workbench_config
 
-    project_dir = Path.cwd()
+    project_dir = current_project().root
     with _said():
         workbench = read_workbench_config(project_dir)
         target = rollouts.app_environment(workbench, config.environment)
@@ -222,7 +226,7 @@ def handle_app_impact(config: AppImpactConfig) -> None:
     from haute import _workbench_rollout as rollouts
     from haute._workbench_config import read_workbench_config
 
-    project_dir = Path.cwd()
+    project_dir = current_project().root
     with _said():
         workbench = read_workbench_config(project_dir)
         staging = rollouts.app_environment(workbench, "staging")
@@ -254,7 +258,7 @@ def handle_app_serve(config: AppServeConfig) -> None:
     from haute._git_setup import get_identity
     from haute._workbench_app import create_app
 
-    project_dir = Path.cwd()
+    project_dir = current_project().root
     name, email = get_identity(project_dir)
     principal = email or name
     if principal is None:

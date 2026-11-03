@@ -18,13 +18,14 @@ from haute.deploy._container import build_and_push_image, prepare_build_director
 from haute.errors import DeployError
 from scripts.container_smoke import run_smoke
 from tests._fake_uv import path_with_fake_uv
+from tests._project import use_project
 
 # Container builds pin price-contour from the package index; see the fixture.
 pytestmark = pytest.mark.usefixtures("released_price_contour")
 
 
 def _resolve_minimal_live_quote(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     repo_root = Path(__file__).resolve().parents[1]
     example_dir = (
         repo_root / "src" / "haute" / "assistant" / "assets" / "examples" / "minimal_live_quote"
@@ -132,7 +133,7 @@ class TestContainerSmokeServeCheck:
     def test_prepare_only_without_serve_check(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         build_dir = tmp_path / "prep_only"
         code = run_smoke(
             build_dir=build_dir,

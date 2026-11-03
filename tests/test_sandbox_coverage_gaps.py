@@ -29,8 +29,8 @@ from haute._sandbox import (
     restricted_joblib_load,
     safe_joblib_load,
     safe_unpickle,
-    set_project_root,
 )
+from tests._project import use_project
 
 
 class TestRestrictedUnpicklerAcceptArms:
@@ -74,7 +74,7 @@ class TestSafeUnpickleRoundTrip:
         """A numpy array (module 'numpy*') round-trips via the prefix arm."""
         import numpy as np
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "arr.pkl"
         arr = np.array([1.0, 2.0, 3.0])
         f.write_bytes(pickle.dumps(arr))
@@ -83,7 +83,7 @@ class TestSafeUnpickleRoundTrip:
 
     def test_builtin_collections_round_trip(self, tmp_path: Path):
         """Nested builtins (dict/list/tuple/set) load via the 2-tuple arm."""
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "coll.pkl"
         obj = {"nums": [1, 2, 3], "pair": (4, 5), "uniq": {6, 7}}
         f.write_bytes(pickle.dumps(obj))
@@ -92,7 +92,7 @@ class TestSafeUnpickleRoundTrip:
 
     def test_disallowed_class_still_raises(self, tmp_path: Path):
         """An os.system payload is rejected even though accept arms exist."""
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "evil.pkl"
         payload = (
             b"\x80\x04\x95%\x00\x00\x00\x00\x00\x00\x00"
@@ -127,7 +127,7 @@ class TestJoblibAcceptArm:
         """
         import joblib
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "ba.joblib"
         obj = {"blob": bytearray(b"abc"), "n": range(3), "z": complex(1, 2)}
         joblib.dump(obj, str(f))
@@ -141,7 +141,7 @@ class TestJoblibAcceptArm:
         import joblib
         import numpy as np
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "arr.joblib"
         arr = np.arange(10)
         joblib.dump(arr, str(f))
@@ -151,7 +151,7 @@ class TestJoblibAcceptArm:
         """A malicious joblib payload is still blocked after accept arms run."""
         import joblib
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "evil.joblib"
 
         class _Evil:
@@ -178,7 +178,7 @@ class TestRestrictedJoblibLoadHasNoFallback:
         reading the file as a plain pickle instead."""
         project = tmp_path / "project"
         project.mkdir()
-        monkeypatch.setattr("haute._sandbox._PROJECT_ROOT", project.resolve())
+        use_project(project)
         artifact = tmp_path / "model.joblib"
         artifact.write_bytes(pickle.dumps({"must": "not fall back"}))
         monkeypatch.setitem(sys.modules, "joblib", None)
@@ -200,32 +200,10 @@ class TestRestrictedJoblibLoadHasNoFallback:
     ):
         import joblib.numpy_pickle as numpy_pickle
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         artifact = tmp_path / "plain.pkl"
         artifact.write_bytes(pickle.dumps({"must": "not fall back"}))
         monkeypatch.delattr(numpy_pickle, private_api)
 
         with pytest.raises(RuntimeError, match="[Ii]nstalled joblib is incompatible"):
             safe_joblib_load(artifact)
-
-
-def test_project_root_lazy_capture_uses_cwd_at_first_call(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The server relies on the first _get_project_root() call capturing cwd.
-
-    Tests normally pin the root eagerly (conftest baseline), so this is the
-    only place the lazy branch runs; it pins the production startup semantic.
-    """
-    import haute._sandbox as sandbox
-
-    original = sandbox._get_project_root()
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(sandbox, "_PROJECT_ROOT", None)
-    try:
-        assert sandbox._get_project_root() == tmp_path.resolve()
-        # The captured value is cached; a later cwd change does not move it.
-        monkeypatch.chdir(tmp_path.parent)
-        assert sandbox._get_project_root() == tmp_path.resolve()
-    finally:
-        sandbox.set_project_root(original)

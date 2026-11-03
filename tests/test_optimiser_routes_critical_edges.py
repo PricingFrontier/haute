@@ -11,8 +11,10 @@ import polars as pl
 import pytest
 from fastapi import HTTPException
 
+from haute._project_context import current_project
 from haute.errors import RequestRefusedError
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+from tests._project import use_project
 from tests.job_store_support import discard_corrupt_job, seed_job
 from tests.optimiser_fixtures import (
     SOLVE_SCENARIO_GRID,
@@ -141,10 +143,9 @@ def test_estimate_schema_rejects_numeric_quote_ids() -> None:
 
 
 def _estimate_graph(tmp_path: Path):
-    from haute._sandbox import set_project_root
     from tests.conftest import make_edge, make_graph, make_ready_file_input_config
 
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     data_path = tmp_path / "scored.parquet"
     pl.DataFrame(
         {
@@ -457,9 +458,8 @@ def test_save_reraises_http_exception_from_artifact_build(
     clean_job_store,
     tmp_path: Path,
 ):
-    from haute._sandbox import _get_project_root, set_project_root
 
-    original_root = _get_project_root()
+    original_root = current_project().root
     seed_job(
         clean_job_store,
         "save_artifact_http_error",
@@ -483,7 +483,7 @@ def test_save_reraises_http_exception_from_artifact_build(
     )
 
     try:
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         with patch(
             "haute.routes.optimiser._build_artifact_payload",
             side_effect=HTTPException(status_code=418, detail="artifact rejected"),
@@ -496,7 +496,7 @@ def test_save_reraises_http_exception_from_artifact_build(
                 },
             )
     finally:
-        set_project_root(original_root)
+        use_project(original_root)
 
     assert resp.status_code == 418
     assert resp.json()["detail"] == "artifact rejected"

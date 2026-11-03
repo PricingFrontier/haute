@@ -36,7 +36,7 @@ from haute._mlflow_utils import (
     search_versions,
 )
 from haute._model_flavors import model_file_suffixes
-from haute._sandbox import _get_project_root
+from haute._project_context import context_thread, current_project
 from haute.errors import MlflowConfigError, RequestRefusedError
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.schemas import (
@@ -183,7 +183,7 @@ def _ensure_tracking(destination: str = "") -> tuple[_types.ModuleType, MlflowCl
 
         from haute.modelling._mlflow_settings import node_destination_key, resolve_destination
 
-        root = _get_project_root()
+        root = current_project().root
         config = resolve_destination(node_destination_key(destination), root)
         tracking_uri, backend = config.tracking_uri, config.mode
         allow_file_store_if_local(tracking_uri, backend)
@@ -263,7 +263,7 @@ def _settings_response() -> MlflowSettingsResponse:
         resolve_destination,
     )
 
-    root = _get_project_root()
+    root = current_project().root
     stored = load_mlflow_settings(root)
     detail = ""
     resolved_folder = ""
@@ -300,7 +300,7 @@ def put_mlflow_settings(body: MlflowSettingsUpdateRequest) -> MlflowSettingsResp
         folder=body.folder,
     )
     try:
-        save_mlflow_settings(settings, _get_project_root())
+        save_mlflow_settings(settings, current_project().root)
     except MlflowConfigError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return _settings_response()
@@ -340,7 +340,7 @@ def _run_probe_bounded(
         finally:
             _PROBE_SLOTS.release()
 
-    threading.Thread(target=_worker, name="mlflow-probe", daemon=True).start()
+    context_thread(_worker, name="mlflow-probe", daemon=True).start()
     try:
         result = outcome.get(timeout=timeout)
     except Empty:
@@ -430,7 +430,7 @@ def mlflow_destinations(probe: bool = Query(False)) -> MlflowDestinationsRespons
         resolve_destination,
     )
 
-    root = _get_project_root()
+    root = current_project().root
     installed, importable, detail = _mlflow_availability()
     # Per-entry truth: list_destinations never raises for a configuration problem — each
     # key reports its own reason (a malformed [mlflow] table lands on the toml-backed server and
@@ -490,7 +490,7 @@ def mlflow_test_connection(
     if not (installed and importable):
         return MlflowTestConnectionResponse(ok=False, category="configuration", detail=detail)
 
-    root = _get_project_root()
+    root = current_project().root
     try:
         if body is None or (body.tracking_uri is None and body.folder is None):
             key = node_destination_key(body.destination if body is not None else "")

@@ -11,6 +11,8 @@ from typing import Any
 
 import pytest
 
+from haute._project_context import ProjectContext, current_project
+
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows process power policy")
 
 
@@ -54,13 +56,19 @@ def _protocol_probe(_runtime: Any, _request: Any) -> Any:
 
 
 def _start_with_automatic_policy(
-    kind: str, results: Any, progress: Any, requests: Any, artifact_root: str, go: Any
+    kind: str,
+    results: Any,
+    progress: Any,
+    requests: Any,
+    artifact_root: str,
+    go: Any,
+    project: ProjectContext,
 ) -> None:
     _policy(reset=True)
     if kind == "isolated":
         from haute._worker_isolation import _isolated_worker_entrypoint
 
-        _isolated_worker_entrypoint(results, go, _policy, (), {}, None)
+        _isolated_worker_entrypoint(results, go, _policy, (), {}, None, False, project)
     elif kind == "protocol":
         from haute._worker_protocol import WorkerRequest, _protocol_entrypoint
 
@@ -72,6 +80,10 @@ def _start_with_automatic_policy(
             WorkerRequest("probe", "probe", {}),
             artifact_root,
             None,
+            False,
+            0,
+            (),
+            project,
         )
     else:
         from haute._interactive_workers import _interactive_worker_entrypoint
@@ -88,7 +100,7 @@ def test_spawned_worker_enables_high_qos_before_user_work(kind: str, tmp_path: P
     go.set()
     process = context.Process(
         target=_start_with_automatic_policy,
-        args=(kind, results, progress, requests, str(tmp_path), go),
+        args=(kind, results, progress, requests, str(tmp_path), go, current_project()),
     )
     process.start()
     try:
@@ -96,7 +108,11 @@ def test_spawned_worker_enables_high_qos_before_user_work(kind: str, tmp_path: P
             assert pickle.loads(results.get(timeout=30)) == ("ready", process.pid)
             # Two jobs also prove the warm worker keeps its policy between requests.
             for job_id in ("first", "second"):
-                requests.put(pickle.dumps(("run", job_id, _policy, (), {}, None, False, 500_000)))
+                requests.put(
+                    pickle.dumps(
+                        ("run", job_id, _policy, (), {}, None, False, 500_000, current_project())
+                    )
+                )
                 envelope = pickle.loads(results.get(timeout=30))
                 assert envelope[:3] == ("result", job_id, "ok"), envelope
                 control, state = envelope[3]

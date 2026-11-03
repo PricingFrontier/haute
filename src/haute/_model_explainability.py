@@ -733,16 +733,16 @@ def explain_model_score_from_config(
     that does not parse raises its ``ConfigError``; a failed explanation raises
     :class:`ModelExplanationError` naming the family's method.
     """
-    from haute._builders import _configured_pipeline_dir
     from haute._model_flavors import model_family
     from haute._model_source import load_scoring_model, parse_model_source, scoring_contract_path
+    from haute._project_context import current_project
 
     source = parse_model_source(config)
     if source is None:
         return None
 
     task = config.get("task", "regression")
-    base_dir = _configured_pipeline_dir()
+    base_dir = current_project().pipeline_dir
     scoring_model = load_scoring_model(
         source,
         task,

@@ -13,6 +13,7 @@ from haute.deploy._bundler import collect_artifacts
 from haute.errors import DeployError, ParseError, RequestRefusedError
 from haute.parser import parse_pipeline_file
 from haute.routes._save_pipeline import SavePipelineService
+from tests._project import use_project
 from tests.conftest import write_node_config
 
 
@@ -230,10 +231,8 @@ def test_a_strict_parse_refuses_one_destination_and_keeps_drafts(
 def test_a_relative_and_an_absolute_path_to_one_file_are_one_destination(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from haute._sandbox import set_project_root
 
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     graph = PipelineGraph(
         nodes=[
             _file_output("first", "out/result.parquet"),

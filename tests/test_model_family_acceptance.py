@@ -23,6 +23,7 @@ from haute.errors import HauteValidationError
 from haute.modelling import _training_job
 from haute.modelling._training_job import TrainingJob, model_contract_filename
 from haute.routes._training_worker import _training_response_payload
+from tests._project import use_project
 from tests.conftest import make_ram_estimate
 
 EVALUATION = {
@@ -144,7 +145,6 @@ def every_path(
     from haute._mlflow_utils import mlflow_fluent_operation, set_tracking_uri_preserving_env
     from haute._model_scorer import ModelScorer, score_from_config
     from haute._model_source import FileModelSource, RunModelSource, scoring_contract_path
-    from haute._sandbox import set_project_root
     from haute.deploy._scorer import _clear_deploy_artifact_caches, score_graph
     from haute.modelling._feature_contract import CONTRACT_FILENAME
     from haute.modelling._mlflow_log import resolve_tracking_backend
@@ -174,7 +174,7 @@ def every_path(
         return frame.select(list(columns)).rename(columns)
 
     # Deployed scoring reads bundle files only from inside the project root.
-    set_project_root(model_path.parent)
+    use_project(model_path.parent)
     _clear_deploy_artifact_caches()
     deployed = score_graph(
         graph=_deploy_graph(model_path.name, task),
@@ -239,7 +239,7 @@ def every_path(
     # The MLflow artifact cache nests hashed folders under the working directory;
     # the model's own folder keeps those paths within Windows' length limit.
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-    monkeypatch.chdir(model_path.parent)
+    use_project(model_path.parent)
     with mlflow_fluent_operation():
         set_tracking_uri_preserving_env(mlflow, resolve_tracking_backend("")[0])
         with mlflow.start_run() as run:
@@ -697,7 +697,6 @@ def test_a_prediction_only_classifier_deploys_its_labels(tmp_path: Path) -> None
     from sklearn.svm import LinearSVC
 
     from haute._mlflow_io import ScoringModel
-    from haute._sandbox import set_project_root
     from haute.deploy._scorer import _clear_deploy_artifact_caches, score_graph
     from haute.modelling._feature_contract import (
         CONTRACT_FILENAME,
@@ -761,7 +760,7 @@ def test_a_prediction_only_classifier_deploys_its_labels(tmp_path: Path) -> None
             ],
         }
     )
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     _clear_deploy_artifact_caches()
     with patch("haute._mlflow_io.load_local_model", return_value=scoring):
         scored = score_graph(

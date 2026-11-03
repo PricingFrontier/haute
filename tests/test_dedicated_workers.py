@@ -34,6 +34,7 @@ from haute._interactive_workers import (
 )
 from haute._native_memory_limit import JOB_OBJECT_MSG_JOB_MEMORY_LIMIT, native_memory_caps_supported
 from haute._process_memory import process_rss_bytes
+from haute._project_context import context_thread
 
 _MIB = 1024 * 1024
 _GROWTH = 512 * _MIB
@@ -241,7 +242,7 @@ def test_a_child_dying_holding_the_evidence_lock_never_stalls(worker: DedicatedW
 
 
 def _cancel_after(token: ExecutionCancellationToken, seconds: float) -> threading.Thread:
-    thread = threading.Thread(target=lambda: (time.sleep(seconds), token.cancel()))
+    thread = context_thread(lambda: (time.sleep(seconds), token.cancel()))
     thread.start()
     return thread
 
@@ -315,7 +316,7 @@ def test_a_child_holding_the_cancel_lock_never_stalls_its_owner(worker: Dedicate
         except BaseException as exc:
             errors.append(exc)
 
-    thread = threading.Thread(target=run, daemon=True)
+    thread = context_thread(run, daemon=True)
     thread.start()
     thread.join(timeout=10)
     canceller.join()
@@ -338,7 +339,7 @@ def test_terminate_stops_a_running_command_promptly(worker: DedicatedWorker) -> 
         except BaseException as exc:
             errors.append(exc)
 
-    thread = threading.Thread(target=run_blocked)
+    thread = context_thread(run_blocked)
     thread.start()
     time.sleep(0.5)
     pid = worker.pid
@@ -359,7 +360,7 @@ def test_the_worker_outlives_the_thread_that_started_it() -> None:
         created.start(start_timeout_seconds=60)
         holder.append(created)
 
-    thread = threading.Thread(target=start)
+    thread = context_thread(start)
     thread.start()
     thread.join()
     created = holder[0]
@@ -391,18 +392,22 @@ _HARNESS = textwrap.dedent(
     """
     import sys, threading, time
     sys.path.insert(0, {tests_dir!r})
+    from pathlib import Path
     from haute._dedicated_workers import DedicatedWorker
+    from haute._project_context import ProjectContext, context_thread, project_scope
     import test_dedicated_workers as commands
 
     worker = DedicatedWorker(owner="harness", polars_threads=2, process_name="haute-harness")
     worker.start(start_timeout_seconds=60)
     if {busy!r}:
-        threading.Thread(
-            target=lambda: worker.run(
-                commands.block_forever, growth_bytes=None, required=False
-            ),
-            daemon=True,
-        ).start()
+        # The server's command runs in its project, which the request carries.
+        with project_scope(ProjectContext.at(Path.cwd())):
+            context_thread(
+                lambda: worker.run(
+                    commands.block_forever, growth_bytes=None, required=False
+                ),
+                daemon=True,
+            ).start()
     print("WORKER_PID", worker.pid, flush=True)
     time.sleep(600)
     """
@@ -559,7 +564,7 @@ def test_a_worker_terminated_while_it_spawns_does_not_survive(
     stopper: list[threading.Thread] = []
 
     def spawn_while_terminated(process, environment):  # noqa: ANN001 - the helper's shape
-        thread = threading.Thread(target=created.terminate, args=("cancelled",))
+        thread = context_thread(created.terminate, args=("cancelled",))
         thread.start()
         stopper.append(thread)
         time.sleep(0.3)  # the terminate is now waiting for the spawn to finish

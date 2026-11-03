@@ -281,10 +281,10 @@ def _run_configured_work(
         return resolve_api_input_from_config(path, base_dir=base_dir)
     if node_type == NodeType.DATA_INPUT:
         from haute._input_providers import resolve_data_input_from_config
-        from haute._project import get_project_root
+        from haute._project_context import current_project
 
         return resolve_data_input_from_config(
-            path, base_dir=base_dir, project_root=get_project_root(base_dir)
+            path, base_dir=base_dir, project_root=current_project().root
         )
     if node_type == NodeType.MODEL_SCORE:
         from haute._model_scorer import score_from_config

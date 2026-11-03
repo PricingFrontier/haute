@@ -27,11 +27,12 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
-from haute._sandbox import _get_project_root, set_project_root
+from haute._project_context import current_project
 from haute._trace_correlation import _correlate_rows_posthoc
 from haute._types import NodeType
 from haute.executor import _preview_cache
 from haute.trace import execute_trace
+from tests._project import project_app, use_project
 from tests.conftest import build_test_api_input_snapshots, head_frame_resolver, make_graph
 from tests.test_output_nested_roundtrip import _FIXTURE, _api_input_config, _output_mapping
 
@@ -58,9 +59,9 @@ def _multi_frame_graph(api_config: dict[str, Any], code: str) -> dict[str, Any]:
 @pytest.fixture()
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """Isolated tmp project with the nested data-model fixture + built cache."""
-    monkeypatch.chdir(tmp_path)
-    original = _get_project_root()
-    set_project_root(tmp_path)
+    use_project(tmp_path)
+    original = current_project().root
+    use_project(tmp_path)
     _preview_cache.clear()
 
     data_path = tmp_path / "data" / "data_model_example.json"
@@ -68,7 +69,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     data_path.write_text(_FIXTURE.read_text())
     build_test_api_input_snapshots(data_path, _api_input_config(data_path))
     yield data_path
-    set_project_root(original)
+    use_project(original)
     _preview_cache.clear()
 
 
@@ -284,7 +285,7 @@ def test_trace_target_on_multi_frame_source_is_clear_error(project: Path) -> Non
 
 def test_trace_route_multi_frame_not_opaque_500(project: Path) -> None:
     """The trace route must not map a multi-frame trace to an opaque 500."""
-    from haute.server import app
+    app = project_app()
 
     client = TestClient(app)
     graph = _multi_frame_graph(

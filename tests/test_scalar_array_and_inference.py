@@ -29,7 +29,7 @@ from haute._json_shred import _inference, _inference_filter
 from haute._json_shred._cache import load_v2_api_source
 from haute._json_shred._inference import infer_v2_schema_from_data
 from haute._json_shred._inference_filter import InferenceFilter
-from haute._sandbox import set_project_root
+from tests._project import use_project
 from tests.conftest import build_test_api_input_snapshots
 
 
@@ -45,7 +45,7 @@ def _config(p: Path, schema: dict[str, Any]) -> dict[str, Any]:
 
 def _build(p: Path, schema: dict[str, Any]) -> dict[str, Any]:
     """Build every emitting table's input snapshot for *schema* against *p*."""
-    set_project_root(p.parent)
+    use_project(p.parent)
     return build_test_api_input_snapshots(p, _config(p, schema))
 
 

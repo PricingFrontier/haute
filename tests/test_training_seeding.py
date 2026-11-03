@@ -30,7 +30,7 @@ from haute._execution_context import (
 from haute._execution_schemas import ExecutionMetricsPayload
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
-from haute._sandbox import set_project_root
+from haute._project_context import context_thread
 from haute._source_cache import SourceCacheIdentity
 from haute._types import PipelineGraph
 from haute.routes import _training_lifecycle, _training_preparation
@@ -38,6 +38,7 @@ from haute.routes._job_store import JobStore
 from haute.routes._train_service import TrainService
 from haute.routes._training_preparation import prepare_training_data_worker
 from haute.schemas import TrainRequest
+from tests._project import project_app, use_project
 from tests.conftest import make_ram_estimate
 
 ALL = NodeSnapshotColumns.all()
@@ -66,8 +67,7 @@ _CHAIN_TRAINING_COLUMNS = NodeSnapshotColumns.of({*_QUOTE_FEATURES, "k0", "k1", 
 
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
-    set_project_root(haute_scratch)
+    use_project(haute_scratch)
     # Every profile a training run admits under, pinned so the limit does not
     # move with whatever memory the machine has left. The value is each
     # profile's own adaptive floor (4 GiB): pinning below it caps the run
@@ -714,7 +714,7 @@ def test_terminated_training_worker_leaves_no_capture_staging(
     staged: list[Path] = []
 
     def staged_then_killed(request: Any, _budget: Any) -> Any:
-        store = NodeSnapshotStore(request.seed_plan.project_root)
+        store = NodeSnapshotStore(request.seed_plan.store_root)
         artifact = store.stage_node_output(
             _identity(store, graph, "B"), staging_token=request.seed_plan.staging_token
         )
@@ -958,7 +958,7 @@ def _train_to_completion(client: Any, graph: dict[str, Any]) -> dict[str, Any]:
 def test_completed_training_job_keeps_preparation_evidence(project: Path) -> None:
     from fastapi.testclient import TestClient
 
-    from haute.server import app
+    app = project_app()
 
     client = TestClient(app, raise_server_exceptions=False)
     graph = _chain(project, b_code="df = A.with_columns(pl.lit(1).alias('k1')).sort('id')")
@@ -983,7 +983,6 @@ def test_concurrent_training_workers_publish_each_capture_once(
     """Two preparation workers in their own processes, both planned before either
     publishes, publish each captured identity once; the later one is superseded
     and continues from its own data."""
-    import threading
 
     from haute import _execution_admission
     from haute._execution_admission import (
@@ -1051,6 +1050,7 @@ def test_concurrent_training_workers_publish_each_capture_once(
                 execution_context=context,
             )
             plans.append(plan)
+            use_project(project)
             requests.append(
                 TrainingPreparationRequest(
                     graph=pipeline,
@@ -1059,7 +1059,6 @@ def test_concurrent_training_workers_publish_each_capture_once(
                     source="live",
                     parquet_path=create_training_parquet_path(),
                     config=config,
-                    project_root=str(project),
                     row_limit=None,
                     project_to_keep_columns=True,
                     keep_columns=_training_projection_keep_columns(config),
@@ -1085,7 +1084,7 @@ def test_concurrent_training_workers_publish_each_capture_once(
                 ),
             )
 
-        workers = [threading.Thread(target=prepare, args=(index,)) for index in range(2)]
+        workers = [context_thread(prepare, args=(index,)) for index in range(2)]
         for worker in workers:
             worker.start()
         for worker in workers:

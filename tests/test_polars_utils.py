@@ -44,6 +44,7 @@ from haute._polars_utils import (
     set_streaming_chunk_size,
     streaming_collect,
 )
+from haute._project_context import context_thread
 from tests._execution_faults import FaultInjectingExecutionContext
 
 # ---------------------------------------------------------------------------
@@ -1127,7 +1128,7 @@ class TestAtomicWrite:
             except BaseException as exc:  # noqa: BLE001 - surfaced below
                 errors.append(exc)
 
-        threads = [threading.Thread(target=write, args=(value,)) for value in (1, 2)]
+        threads = [context_thread(write, args=(value,)) for value in (1, 2)]
         for thread in threads:
             thread.start()
         for thread in threads:

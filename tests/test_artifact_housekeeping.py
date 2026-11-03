@@ -18,6 +18,7 @@ from haute._artifact_housekeeping import (
     create_owned_artifact_directory,
     reap_stale_artifact_directories,
 )
+from haute._project_context import current_project
 
 
 def _marker(directory: Path, *, owner: str = "test-owner", created_at: float = 0.0) -> None:
@@ -550,7 +551,7 @@ def test_server_lifespan_reaps_artifacts_without_delaying_readiness(
         leave = asyncio.Event()
 
         async def run_lifespan() -> None:
-            async with server._lifespan(server.app):
+            async with server._lifespan(server.create_app(current_project())):
                 calls.append("ready")
                 entered.set()
                 await leave.wait()
@@ -630,7 +631,7 @@ def test_server_lifespan_cleans_partial_interactive_startup(
 
     async def exercise_lifespan() -> None:
         with pytest.raises(RuntimeError, match=f"task {fail_on_task} failed"):
-            async with server._lifespan(server.app):
+            async with server._lifespan(server.create_app(current_project())):
                 raise AssertionError("startup failure must not yield readiness")
 
     asyncio.run(exercise_lifespan())
