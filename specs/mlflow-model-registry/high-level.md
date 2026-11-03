@@ -272,7 +272,9 @@ Out of scope (owned elsewhere):
   Haute class labels (every Haute-trained binary classifier scores a
   probability), its column contract declares that column as produced, so
   deployed projection and output mappings can use it; a prediction-only
-  classifier declares none.
+  classifier declares none. Planned from the loaded model instead (no
+  contract), a classification node declares it whenever the model scores
+  probabilities, a pyfunc classifier among them.
 - The output column and the `_proba` column replace a same-named column
   already in the input frame, by design: a pipeline may score over an
   existing column. Two Model Score nodes that should both survive need
@@ -523,8 +525,9 @@ has it and never demanded, so a logged model's exposure (declared optional, see
 `modelling/_signature.py`) prices a quote without one for a full policy term, exactly as its
 native artifact does. Outputs that are exactly `pred_label` and `pred_proba` score as a
 classifier: the label column takes `pred_label` with its declared type and
-`<output_col>_proba` takes `pred_proba`, row for row, on every eager and batched path; the
-node must score classification. Any other pyfunc returns one prediction per row, and a
+`<output_col>_proba` takes `pred_proba`, row for row, on every eager, preview and batched
+path, and the declared types give an empty result its columns; the node must score
+classification. Any other pyfunc returns one prediction per row, and a
 declaration or a result of several columns is refused, never flattened into more values than
 rows.
 

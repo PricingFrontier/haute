@@ -942,7 +942,12 @@ endpoint.
   declares for `pred_label` (so an empty input keeps a typed column) and
   `predict_proba` the probabilities, one model call per input (`predict`
   keeps the probabilities, per thread, for the `predict_proba` every
-  classification path makes next on the same input). Declaring that pair
+  classification path makes next on the same input). Its `label_dtype`
+  is the declared output schema that `_declared_score_dtypes` reads, so a
+  preview and an empty batch never probe the model with an all-null row
+  (which MLflow refuses for an integer input), and column planning declares
+  `<output_col>_proba` produced for it, as for every classification node
+  whose loaded model has `predict_proba` (the scorer's own rule). Declaring that pair
   for a node scoring regression, or declaring any other set of two or more
   outputs, raises `ConfigError` at load. `_PyfuncPredictor` serves every
   other model and accepts one prediction per row (a vector, an `(n, 1)`
@@ -1114,7 +1119,9 @@ to a live MLflow tracking server.
   precision preservation. Haute's own classifier pyfunc (a trained CatBoost
   model saved as training logs it) scores separate `<output>` labels and
   `<output>_proba` probabilities equal to the native model's, row for row,
-  eagerly and batched, and an empty input keeps both typed columns; its
+  eagerly, batched and in a limited preview with an integer input, an empty
+  input keeps both typed columns, and planning declares the probability
+  column; its
   classifier outputs scored as regression are refused at load; a model
   returning two columns is refused rather than flattened; and a logged
   Poisson model with an exposure prices as its native artifact with and

@@ -1401,6 +1401,11 @@ class _PyfuncClassifier(_PyfuncPredictor):
         self._label_dtype = model.metadata.signature.outputs.inputs[0].type.to_numpy()
         self._pending = threading.local()
 
+    @property
+    def label_dtype(self) -> pl.DataType:
+        """The Polars type of the labels, as the signature declares them."""
+        return pl.Series("label", np.array([], dtype=self._label_dtype)).dtype
+
     def _pair(self, x_data: Any) -> tuple[np.ndarray, np.ndarray]:
         import pandas as pd
 

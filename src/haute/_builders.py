@@ -1302,9 +1302,13 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract | Contract:
     # swallow hid real config/infra problems from downstream nodes. Planning
     # loads exactly the model the scorer built for this node loads, from the
     # node's own destination.
-    scoring_model = load_scoring_model(
-        model_source, model_score_task(config), base_dir=current_project().pipeline_dir
-    )
+    task = model_score_task(config)
+    scoring_model = load_scoring_model(model_source, task, base_dir=current_project().pipeline_dir)
+    from haute._model_scorer import _raw_model_supports_predict_proba
+
+    if task == "classification" and _raw_model_supports_predict_proba(scoring_model):
+        # The scorer's own rule for writing the positive-class probability.
+        produced = {*produced, f"{out}_proba"}
     if scoring_model.feature_names or scoring_model.optional_feature_names:
         return _model_score_inputs(
             produced,

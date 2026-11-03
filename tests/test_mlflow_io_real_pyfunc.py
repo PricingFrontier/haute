@@ -286,6 +286,8 @@ def _training_frame(n: int = 300, seed: int = 0) -> pl.DataFrame:
             "exposure": exposure,
             "claims": rng.poisson(rate * exposure).astype(float),
             "flag": np.where(positive, "yes", "no").tolist(),
+            # An integer input: MLflow refuses the NaN of an all-null probe row.
+            "years": rng.integers(0, 20, n),
         }
     )
 
@@ -313,7 +315,7 @@ def _saved_haute_pyfunc(directory: Path, **training: Any) -> tuple[Any, Any]:
             "seed": 5,
             "validation": {"method": "single", "size": 0.2},
         },
-        feature_columns=["region", "age"],
+        feature_columns=["region", "age", "years"],
         **training,
     ).run()
     model_path = Path(result.model_path)
@@ -365,25 +367,42 @@ def haute_exposure_model(tmp_path_factory: pytest.TempPathFactory) -> tuple[Any,
     )
 
 
-def _scored(scoring_model: Any, frame: pl.DataFrame, task: str, source: str) -> pl.DataFrame:
+def _scored(
+    scoring_model: Any,
+    frame: pl.DataFrame,
+    task: str,
+    source: str,
+    row_limit: int | None = None,
+) -> pl.DataFrame:
     from haute._model_scorer import _run_score_pipeline
 
     return _run_score_pipeline(
-        scoring_model, frame.lazy(), task=task, output_col="pred", source=source
+        scoring_model,
+        frame.lazy(),
+        task=task,
+        output_col="pred",
+        source=source,
+        row_limit=row_limit,
     ).collect()
 
 
 class TestHauteClassifierPyfunc:
     """The label and probability columns stay separate, row for row."""
 
-    @pytest.mark.parametrize("source", ["live", "batch"])
-    def test_labels_and_probabilities_match_the_native_model(self, haute_classifier, source):
+    @pytest.mark.parametrize(
+        ("source", "row_limit"),
+        [("live", None), ("batch", None), ("live", 100)],
+        ids=["eager", "batch", "preview"],
+    )
+    def test_labels_and_probabilities_match_the_native_model(
+        self, haute_classifier, source, row_limit
+    ):
         pyfunc, native = haute_classifier
         frame = _training_frame(n=20, seed=7)
 
         scoring = _wrap_pyfunc(pyfunc, task="classification")
-        scored = _scored(scoring, frame, "classification", source)
-        reference = _scored(native, frame, "classification", source)
+        scored = _scored(scoring, frame, "classification", source, row_limit)
+        reference = _scored(native, frame, "classification", source, row_limit)
 
         assert scored.height == frame.height
         assert scored["age"].to_list() == frame["age"].to_list()
@@ -406,6 +425,29 @@ class TestHauteClassifierPyfunc:
         assert scored.height == 0
         assert scored.schema["pred"] == reference.schema["pred"]
         assert scored.schema["pred_proba"] == reference.schema["pred_proba"] == pl.Float64
+
+    def test_planning_declares_the_probability_column(self, haute_classifier):
+        """A projection asking for ``<output>_proba`` gets it from the scorer."""
+        from unittest.mock import patch
+
+        from haute._builders import _model_score_columns
+
+        pyfunc, _native = haute_classifier
+        config = {
+            "sourceType": "run",
+            "run_id": "run",
+            "artifact_path": "model",
+            "task": "classification",
+            "output_column": "pred",
+        }
+        with patch(
+            "haute._model_source.load_scoring_model",
+            return_value=_wrap_pyfunc(pyfunc, task="classification"),
+        ):
+            contract = _model_score_columns(config)
+
+        assert contract.outputs == frozenset({"pred", "pred_proba"})
+        assert "pred_proba" not in contract.inputs
 
     def test_a_classifier_output_scored_as_regression_is_refused(self, haute_classifier):
         from haute.errors import ConfigError

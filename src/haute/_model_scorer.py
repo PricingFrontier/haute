@@ -1773,22 +1773,24 @@ def _declared_score_dtypes(
     """Return output dtypes when the scoring contract fixes them.
 
     Regression predictions are ``Float64`` for every flavor. CatBoost
-    classification declares its labels through ``classes_``. Any other
+    classification declares its labels through ``classes_``, and a pyfunc
+    classifier's signature declares its ``pred_label`` type. Any other
     classifier must be probed.
     """
     proba_dtype = pl.Float64 if include_proba else None
     if task != "classification":
         return pl.Float64, proba_dtype
-    if model_family(flavor).self_describing:
-        raw = getattr(scoring_model, "raw_model", scoring_model)
-        if raw.class_labels is None:
-            raise ValueError(f"{flavor} classification model has no recorded class labels")
-        return pl.Series("prediction", list(raw.class_labels)).dtype, proba_dtype
-    if flavor != "catboost":
-        return None
-    from haute._mlflow_io import catboost_class_labels
+    from haute._mlflow_io import _PyfuncClassifier, catboost_class_labels
 
     raw_model = getattr(scoring_model, "raw_model", scoring_model)
+    if isinstance(raw_model, _PyfuncClassifier):
+        return raw_model.label_dtype, proba_dtype
+    if model_family(flavor).self_describing:
+        if raw_model.class_labels is None:
+            raise ValueError(f"{flavor} classification model has no recorded class labels")
+        return pl.Series("prediction", list(raw_model.class_labels)).dtype, proba_dtype
+    if flavor != "catboost":
+        return None
     labels = catboost_class_labels(raw_model)
     if labels is None:
         raise ValueError(
