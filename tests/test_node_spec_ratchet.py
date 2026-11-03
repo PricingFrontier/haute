@@ -801,6 +801,7 @@ def _counts(scan: Scan) -> Counter[str]:
     return Counter(site.module for site in scan.flagged)
 
 
+@pytest.mark.meta
 def test_every_module_keeps_to_its_baseline() -> None:
     scan = scan_sources(_src_sources())
     counts = _counts(scan)
@@ -818,6 +819,7 @@ def test_every_module_keeps_to_its_baseline() -> None:
     )
 
 
+@pytest.mark.meta
 def test_no_endpoint_or_exemption_is_stale() -> None:
     scan = scan_sources(_src_sources())
     stale_endpoints = sorted(set(SINGLE_TYPE_ENDPOINTS) - set(scan.endpoint_hits))
@@ -830,6 +832,7 @@ def test_no_endpoint_or_exemption_is_stale() -> None:
     assert not wrong_counts, f"Exemptions whose count no longer matches: {wrong_counts}"
 
 
+@pytest.mark.meta
 def test_no_node_type_table_or_the_specification_repeats_a_key() -> None:
     sources = _src_sources()
     repeated = {
