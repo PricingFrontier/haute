@@ -980,6 +980,39 @@ def test_pivot_formula_runtime_failure_names_its_cause(
     }
 
 
+def test_a_python_error_a_formula_raises_on_the_data_names_its_cause(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "python-formula-failure.parquet"
+    pl.DataFrame({"region": ["North"], "year": [2024], "claims": [0.0]}).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    pivot = _pivot(
+        values=[],
+        formulas=[
+            {
+                "id": "formula_1",
+                "reference": "calculated",
+                "display_name": "Calculated",
+                "expression": (
+                    'pl.col("claims").map_elements(lambda v: 1 / v, return_dtype=pl.Float64).sum()'
+                ),
+            }
+        ],
+    )
+
+    final, result = _run_pivot(client, graph, pivot)
+
+    assert final["status"] == "contract_error", final
+    assert result is None
+    assert final["failure"]["reason_code"] == "invalid_pivot_formula"
+    assert final["failure"]["message"].startswith(
+        'The pivot failed on the data with formulas "Calculated": ZeroDivisionError'
+    )
+    assert final["failure"]["dimensions"] == {"formula_ids": "formula_1"}
+
+
 def test_a_memory_limit_during_a_formula_pivot_is_not_blamed_on_the_formula(
     client: TestClient,
     tmp_path: Path,
@@ -1077,7 +1110,9 @@ def test_pivot_formula_missing_source_field_is_typed_and_remediable(
     assert final["status"] == "contract_error"
     assert result is None
     assert final["failure"]["reason_code"] == "invalid_pivot_formula"
-    assert "missing_claims" in final["failure"]["message"]
+    assert final["failure"]["message"] == (
+        'Formula "Calculated" uses unavailable source fields: missing_claims.'
+    )
     assert "missing_claims" in final["failure"]["remediation"]
     assert final["failure"]["dimensions"] == {
         "formula_id": "formula_1",
@@ -2036,6 +2071,44 @@ def test_a_member_of_a_time_zone_aware_datetime_filters_its_rows(
     assert final["status"] == "contract_error"
     assert final["failure"]["reason_code"] == "invalid_pivot_filter_member"
     assert "time zone" in final["failure"]["message"]
+
+
+@pytest.mark.parametrize("time_unit", ["ms", "us", "ns"])
+def test_each_occurrence_of_a_repeated_local_time_filters_its_own_row(
+    client: TestClient, tmp_path: Path, time_unit: str
+) -> None:
+    # 01:30 happens twice in London on 27 October 2024, an hour apart.
+    path = tmp_path / f"repeated-hour-{time_unit}.parquet"
+    pl.DataFrame(
+        {
+            "moment": pl.Series([datetime(2024, 10, 27, 0, 30), datetime(2024, 10, 27, 1, 30)])
+            .dt.replace_time_zone("UTC")
+            .dt.convert_time_zone("Europe/London")
+            .dt.cast_time_unit(time_unit),
+            "claims": [11.0, 22.0],
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+
+    for value, expected in [
+        ("2024-10-27T01:30:00+01:00", 11.0),
+        ("2024-10-27T01:30:00+00:00", 22.0),
+    ]:
+        member = {"kind": "datetime", "value": value}
+        final, result = _run_pivot(
+            client,
+            graph,
+            _pivot(
+                filters=[{"id": "filter_moment", "field": "moment", "members": [member]}],
+                rows=[],
+                columns=[],
+                options={"row_grand_totals": False, "column_grand_totals": False},
+            ),
+        )
+        assert final["status"] == "completed", final
+        assert result is not None
+        assert _cell(result, [], [], "sum_claims") == expected
 
 
 def test_an_invalid_pivot_card_is_refused_naming_the_field(

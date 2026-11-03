@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from datetime import time as datetime_time
 from decimal import Decimal
 from functools import cmp_to_key, reduce
@@ -401,7 +401,8 @@ def _filter_member_expression(
     if kind == "datetime":
         # The literal takes the column's time zone and unit: an offset-carrying
         # member is otherwise typed UTC, which Polars refuses to compare.
-        time_zone = cast(pl.Datetime, dtype).time_zone
+        datetime_dtype = cast(pl.Datetime, dtype)
+        time_zone = datetime_dtype.time_zone
         if (literal.tzinfo is None) != (time_zone is None):
             raise PivotContractError(
                 "invalid_pivot_filter_member",
@@ -410,7 +411,15 @@ def _filter_member_expression(
                 field=field,
                 member_kind=kind,
             )
-        return column.eq(pl.lit(literal, dtype=dtype))
+        if time_zone is None:
+            return column.eq(pl.lit(literal, dtype=dtype))
+        # Through UTC, so each occurrence of a local time the clocks repeat
+        # keeps its own instant: the ISO text carries the offset, not the fold.
+        return column.eq(
+            pl.lit(literal.astimezone(UTC))
+            .dt.convert_time_zone(time_zone)
+            .dt.cast_time_unit(datetime_dtype.time_unit)
+        )
     return column.eq(pl.lit(literal))
 
 
@@ -446,12 +455,14 @@ def _formula_error(
     formula: ExplorePivotFormula,
     message: str,
     remediation: str,
+    **dimensions: str | int,
 ) -> PivotContractError:
     return PivotContractError(
         "invalid_pivot_formula",
         f'Formula "{formula["display_name"]}" {message}',
         remediation,
         formula_id=formula["id"],
+        **dimensions,
     )
 
 
@@ -512,11 +523,10 @@ def _compile_formulas(
         missing = sorted(source_fields - schema.keys())
         if missing:
             missing_text = ", ".join(missing)
-            raise PivotContractError(
-                "invalid_pivot_formula",
-                f"Pivot formula uses unavailable source fields: {missing_text}.",
+            raise _formula_error(
+                formula,
+                f"uses unavailable source fields: {missing_text}.",
                 f"Use fields from the Explore dataset instead of: {missing_text}.",
-                formula_id=formula["id"],
                 missing_fields=missing_text,
             )
         aggregate_remediation = (
@@ -1092,16 +1102,25 @@ class PivotService:
         query = query.rename({alias: field for field, alias in group_aliases.items()})
         try:
             return cancellable_streaming_collect(query, execution_context=context)
-        except pl.exceptions.PolarsError as exc:
-            # Cancellation and memory limits are not Polars errors, so they keep
-            # their own terminal states instead of being blamed on a formula.
+        except (ExecutionCancelledError, MemoryError):
+            # Cancellation, admission and memory limits keep their own terminal
+            # states instead of being blamed on a formula.
+            raise
+        except Exception as exc:
             if compiled_formulas:
                 names = ", ".join(
                     f'"{formula["display_name"]}"' for formula, _ in compiled_formulas
                 )
+                # A Polars error names its own kind; a Python error a formula's
+                # callback raised (map_elements) is named by its type.
+                cause = (
+                    _cause_text(exc)
+                    if isinstance(exc, pl.exceptions.PolarsError)
+                    else f"{type(exc).__name__}: {_cause_text(exc)}"
+                )
                 raise PivotContractError(
                     "invalid_pivot_formula",
-                    f"The pivot failed on the data with formulas {names}: {_cause_text(exc)}",
+                    f"The pivot failed on the data with formulas {names}: {cause}",
                     "Check the formulas against the source field values and types.",
                     formula_ids=", ".join(formula["id"] for formula, _ in compiled_formulas),
                 ) from exc

@@ -171,6 +171,7 @@ function ChartConfigHarness({
   onShowPivots,
   currentConfigHash = DATA_IDENTITY,
   externalEdit,
+  mergeIntoRenderedConfig = false,
 }: {
   initialConfig?: Record<string, unknown>
   onCommittedUpdate?: () => void
@@ -178,14 +179,18 @@ function ChartConfigHarness({
   currentConfigHash?: string | null
   /** An edit landing from elsewhere, applied by the "Apply edit from elsewhere" button. */
   externalEdit?: (config: Record<string, unknown>) => Record<string, unknown>
+  /** Merge each update into the config this render holds, as NodePanel does. */
+  mergeIntoRenderedConfig?: boolean
 }) {
   const [config, setConfig] = useState(initialConfig)
   const onUpdate: OnUpdateConfig = (keyOrUpdates, value) => {
-    setConfig((current) =>
+    const merge = (base: Record<string, unknown>) =>
       typeof keyOrUpdates === "string"
-        ? { ...current, [keyOrUpdates]: value }
-        : { ...current, ...keyOrUpdates },
-    )
+        ? { ...base, [keyOrUpdates]: value }
+        : { ...base, ...keyOrUpdates }
+    // NodePanel merges an update into the config it rendered with, so a
+    // handler kept from an earlier render writes that render's config back.
+    setConfig(mergeIntoRenderedConfig ? merge(config) : merge)
     onCommittedUpdate?.()
     return { ok: true }
   }
@@ -793,6 +798,7 @@ describe("ExploreChartsConfig", () => {
     const second = chart(null, { id: "chart_2", name: "Chart 2" })
     const renameSecond = (config: Record<string, unknown>) => ({
       ...config,
+      edited_elsewhere: true,
       charts: (config.charts as ExploreChartConfig[]).map((item) =>
         item.id === "chart_2" ? { ...item, name: "Renamed meanwhile" } : item,
       ),
@@ -801,6 +807,7 @@ describe("ExploreChartsConfig", () => {
       <ChartConfigHarness
         initialConfig={{ charts: [first, second] }}
         externalEdit={renameSecond}
+        mergeIntoRenderedConfig
       />,
     )
 
@@ -814,6 +821,7 @@ describe("ExploreChartsConfig", () => {
     expect(persisted.charts.map((item: ExploreChartConfig) => [item.id, item.name])).toEqual([
       ["chart_2", "Renamed meanwhile"],
     ])
+    expect(persisted.edited_elsewhere).toBe(true)
   })
 
   it("guides an empty chart workflow to Pivots without mutating config", () => {
@@ -999,6 +1007,7 @@ describe("ExploreChartsConfig", () => {
     const configured = chart(first)
     const renameChart = (config: Record<string, unknown>) => ({
       ...config,
+      edited_elsewhere: true,
       charts: (config.charts as ExploreChartConfig[]).map((item) => ({
         ...item,
         name: "Renamed meanwhile",
@@ -1008,6 +1017,7 @@ describe("ExploreChartsConfig", () => {
       <ChartConfigHarness
         initialConfig={{ charts: [configured], pivots: [first, second] }}
         externalEdit={renameChart}
+        mergeIntoRenderedConfig
       />,
     )
 
@@ -1029,6 +1039,7 @@ describe("ExploreChartsConfig", () => {
       pivot_id: second.id,
       series_overrides: [],
     })
+    expect(persisted.edited_elsewhere).toBe(true)
   })
 
   it("composes a column + secondary line via per-field controls and commits axis, legend, and category settings", async () => {

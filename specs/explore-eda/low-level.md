@@ -160,9 +160,12 @@
   `Formula "<display name>"` and states the cause: `is not a valid Python expression at column
   N: <syntax error>`, `cannot run: <sandbox refusal>`, `raised <ExceptionType>: <message>`,
   `returns <type>, not a Polars expression`, `cannot be aggregated per group: <Polars error>`, or
-  `produces <dtype> per group, not one value`. A Polars error while the grouped query runs with
-  formulas selected names every selected formula and the error's first line; only Polars errors
-  are attributed to formulas, so cancellation and memory limits keep their own states.
+  `produces <dtype> per group, not one value`, and a formula reading a field the data lacks
+  `uses unavailable source fields: <fields>`. An error while the grouped query runs with formulas
+  selected names every selected formula and the cause: a Polars error's first line, or a Python
+  error a formula's callback raised (for example inside `map_elements`) as `<Type>: <message>`.
+  Cancellation (`ExecutionCancelledError`) and admission and memory limits (`MemoryError`) are
+  never attributed to formulas and keep their own states.
   Each expression is physically aliased to a reserved name derived from its stable placement id,
   so a public formula reference may safely equal a grouped source-field name. Formula and ordinary
   Value outputs follow the pivot's combined `value_order` and use the existing value-cell
@@ -200,7 +203,9 @@
   A time-zone-aware `Datetime` member carries its offset; the filter literal is built in the
   column's own dtype (unit and time zone), so it compares as the same instant. A member whose
   awareness differs from the column's (an offset against a naive column, or none against an
-  aware one) is refused as `invalid_pivot_filter_member`.
+  aware one) is refused as `invalid_pivot_filter_member`. An aware member is converted through
+  UTC into the column's zone, so both occurrences of a local time the clocks repeat (the hour
+  daylight saving ends) keep their own instants.
 - Explore materialisation and pivot calculation share the Explore job-store namespace, and every
   job record carries its owning kind: `kind: "explore"` for materialisation jobs and
   `kind: "pivot"` for pivot jobs. Each service's status and cancel reject a job id whose kind it

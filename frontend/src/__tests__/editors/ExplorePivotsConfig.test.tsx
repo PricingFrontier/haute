@@ -137,6 +137,7 @@ function PivotConfigHarness({
   loadFilterMembers,
   currentConfigHash = "hash",
   externalEdit,
+  mergeIntoRenderedConfig = false,
 }: {
   initialConfig?: Record<string, unknown>
   columns?: typeof upstreamColumns
@@ -145,14 +146,18 @@ function PivotConfigHarness({
   currentConfigHash?: string | null
   /** An edit landing from elsewhere, applied by the "Apply edit from elsewhere" button. */
   externalEdit?: (config: Record<string, unknown>) => Record<string, unknown>
+  /** Merge each update into the config this render holds, as NodePanel does. */
+  mergeIntoRenderedConfig?: boolean
 }) {
   const [config, setConfig] = useState(initialConfig)
   const onUpdate: OnUpdateConfig = (keyOrUpdates, value) => {
-    setConfig((current) =>
+    const merge = (base: Record<string, unknown>) =>
       typeof keyOrUpdates === "string"
-        ? { ...current, [keyOrUpdates]: value }
-        : { ...current, ...keyOrUpdates },
-    )
+        ? { ...base, [keyOrUpdates]: value }
+        : { ...base, ...keyOrUpdates }
+    // NodePanel merges an update into the config it rendered with, so a
+    // handler kept from an earlier render writes that render's config back.
+    setConfig(mergeIntoRenderedConfig ? merge(config) : merge)
     onCommittedUpdate?.()
     return { ok: true }
   }
@@ -1695,6 +1700,7 @@ describe("ExplorePivotsConfig", () => {
     const second = fullPivot({ id: "pivot_2", name: "Pivot 2" })
     const renameFirst = (config: Record<string, unknown>) => ({
       ...config,
+      edited_elsewhere: true,
       pivots: (config.pivots as ExplorePivotConfig[]).map((item) =>
         item.id === "pivot_1" ? { ...item, name: "Renamed meanwhile" } : item,
       ),
@@ -1703,6 +1709,7 @@ describe("ExplorePivotsConfig", () => {
       <PivotConfigHarness
         initialConfig={{ pivots: [first, second] }}
         externalEdit={renameFirst}
+        mergeIntoRenderedConfig
       />,
     )
 
@@ -1716,6 +1723,7 @@ describe("ExplorePivotsConfig", () => {
     expect(persisted.pivots.map((item: ExplorePivotConfig) => [item.id, item.name])).toEqual([
       ["pivot_1", "Renamed meanwhile"],
     ])
+    expect(persisted.edited_elsewhere).toBe(true)
   })
 
   it("writes nothing when another document loads while a delete confirmation is open", async () => {
@@ -1754,6 +1762,7 @@ describe("ExplorePivotsConfig", () => {
     const second = fullPivot({ id: "pivot_2", name: "Pivot 2" })
     const renameSecond = (config: Record<string, unknown>) => ({
       ...config,
+      edited_elsewhere: true,
       pivots: (config.pivots as ExplorePivotConfig[]).map((item) =>
         item.id === "pivot_2" ? { ...item, name: "Renamed meanwhile" } : item,
       ),
@@ -1765,6 +1774,7 @@ describe("ExplorePivotsConfig", () => {
           pivots: [{ ...first, formulas: [formula.id] }, second],
         }}
         externalEdit={renameSecond}
+        mergeIntoRenderedConfig
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Configure Pivot 1" }))
@@ -1781,6 +1791,7 @@ describe("ExplorePivotsConfig", () => {
       ["Pivot 1", []],
       ["Renamed meanwhile", []],
     ])
+    expect(persisted.edited_elsewhere).toBe(true)
   })
 
   it("surfaces malformed persisted pivots without destructive controls", () => {
