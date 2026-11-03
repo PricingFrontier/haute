@@ -693,7 +693,8 @@ class TestGraphToCode:
         assert 'Pipeline("test_pipe"' in code
         assert "def Source()" in code
         assert "def Transform(Source: pl.LazyFrame)" in code
-        assert 'pipeline.connect("Source", "Transform")' in code
+        # The signature names the source, so no connect() repeats the edge (READ-30).
+        assert "pipeline.connect" not in code
         compile(code, "<test>", "exec")
 
     def test_preamble_positioned_before_pipeline_def(self):
@@ -769,9 +770,10 @@ class TestGraphToCode:
         )
         code = graph_to_code(graph)
         compile(code, "<test>", "exec")
-        # Verify edges are emitted
-        assert 'pipeline.connect("Read", "Clean")' in code
-        assert 'pipeline.connect("Clean", "Out")' in code
+        # Each edge is said by its target's signature, so no connect() repeats it (READ-30).
+        assert "def Clean(Read: pl.LazyFrame) -> pl.LazyFrame:\n" in code
+        assert "def Out(Clean): ...\n" in code
+        assert "pipeline.connect" not in code
 
     def test_optimiser_apply_ratebook_input_returns_selected_source(self):
         graph = _g(
@@ -3132,8 +3134,12 @@ class TestSpecialCharacterLabels:
         assert "def " in code
         _compile_node_code(code)
 
-    def test_connect_with_sanitized_labels(self):
-        """Graph connect calls must use sanitized names matching function defs."""
+    def test_an_edge_between_sanitized_labels_parses_back(self, tmp_path):
+        """The signature names the source by the sanitized name its function is defined
+        under, so the parser infers the edge from it (READ-30)."""
+        from haute._config_io import collect_node_configs
+        from haute.parser import parse_pipeline_source
+
         graph = _g(
             {
                 "nodes": [
@@ -3142,7 +3148,7 @@ class TestSpecialCharacterLabels:
                         "data": {
                             "label": "My Source (v2)",
                             "nodeType": "dataInput",
-                            "config": {"path": "d.parquet"},
+                            "config": _file_input_config("d.parquet"),
                         },
                     },
                     {
@@ -3155,8 +3161,14 @@ class TestSpecialCharacterLabels:
         )
         code = graph_to_code(graph)
         compile(code, "<test>", "exec")
-        # The connect call and the def must use the same sanitized name
-        assert "pipeline.connect(" in code
+        assert "def My_Source_v2(): ...\n" in code
+        assert "def Clean__Filter(My_Source_v2: pl.LazyFrame) -> pl.LazyFrame:\n" in code
+        assert "pipeline.connect" not in code
+        for rel_path, content in collect_node_configs(graph).items():
+            (tmp_path / rel_path).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel_path).write_text(content, encoding="utf-8")
+        parsed = parse_pipeline_source(code, _base_dir=tmp_path)
+        assert [(e.source, e.target) for e in parsed.edges] == [("My_Source_v2", "Clean__Filter")]
 
 
 # ---------------------------------------------------------------------------

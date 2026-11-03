@@ -249,7 +249,7 @@ def test_a_node_config_that_is_not_utf8_makes_its_node_unavailable(tmp_path: Pat
     (tmp_path / "config" / "constant").mkdir(parents=True)
     config = _write_bytes(
         tmp_path / "config" / "constant" / "rates.json",
-        b'{"values": [{"name": "Pr\xe4mie", "value": "1.0"}]}',
+        b'{"values": {"Pr\xe4mie": 1.0}}',
     )
     pipeline_file = _write(
         tmp_path / "main.py",
@@ -280,7 +280,7 @@ def test_a_node_config_that_is_not_utf8_makes_its_node_unavailable(tmp_path: Pat
     [diagnostic] = [
         item for item in document.diagnostics if item.diagnostic_id in by_id["rates"].diagnostic_ids
     ]
-    assert "rates.json is not valid UTF-8: byte 0xE4 at line 1, column 25" in diagnostic.message
+    assert "rates.json is not valid UTF-8: byte 0xE4 at line 1, column 16" in diagnostic.message
     assert config.read_bytes() == before
 
 
@@ -776,10 +776,7 @@ def test_undeclared_sidecar_key_fails_the_parse_and_localises_to_its_node(
 
     sidecar = tmp_path / "config" / "constant" / "rates.json"
     sidecar.parent.mkdir(parents=True)
-    sidecar.write_text(
-        '{"values": [{"name": "base_rate", "value": "1.0"}], "legacyScale": 2}',
-        encoding="utf-8",
-    )
+    sidecar.write_text('{"values": {"base_rate": 1.0}, "legacyScale": 2}', encoding="utf-8")
     pipeline_file = _write(
         tmp_path / "main.py",
         """
@@ -1227,7 +1224,7 @@ def test_recovery_revision_authenticates_the_sidecars_and_configs_the_document_p
 
     (tmp_path / "config" / "constant").mkdir(parents=True)
     config = tmp_path / "config" / "constant" / "rates.json"
-    _write(config, '{"values": [{"name": "base", "value": "1"}]}')
+    _write(config, '{"values": {"base": 1}}')
     pipeline_file = _write(
         tmp_path / "main.py",
         """
@@ -1248,7 +1245,7 @@ def test_recovery_revision_authenticates_the_sidecars_and_configs_the_document_p
     def edit_after_discovery(*args: object, **kwargs: object):
         artifacts = real_artifacts(*args, **kwargs)  # type: ignore[arg-type]
         sidecar.write_text('{"positions": {"rates": {"x": 9, "y": 9}}}', encoding="utf-8")
-        config.write_text('{"values": [{"name": "base", "value": "2"}]}', encoding="utf-8")
+        config.write_text('{"values": {"base": 2}}', encoding="utf-8")
         return artifacts
 
     monkeypatch.setattr(_pipeline_recovery, "_recovery_artifacts", edit_after_discovery)
@@ -1256,6 +1253,7 @@ def test_recovery_revision_authenticates_the_sidecars_and_configs_the_document_p
 
     [node] = document.nodes
     assert node.display_position == {"x": 5.0, "y": 7.0}
+    # The map the file held when it was read, as the editor's rows (READ-28).
     assert node.config == {"values": [{"name": "base", "value": "1"}]}
     artifacts = [
         ("parent_source", pipeline_file),
@@ -1301,8 +1299,8 @@ def test_two_configs_differing_only_in_case_never_share_bytes(tmp_path: Path) ->
     folder.mkdir(parents=True)
     upper = folder / "Rates.json"
     lower = folder / "rates.json"
-    upper.write_text('{"values": [{"name": "base", "value": "1"}]}', encoding="utf-8")
-    lower.write_text('{"values": [{"name": "base", "value": "2"}]}', encoding="utf-8")
+    upper.write_text('{"values": {"base": 1}}', encoding="utf-8")
+    lower.write_text('{"values": {"base": 2}}', encoding="utf-8")
     pipeline_file = _write(
         tmp_path / "main.py",
         """
@@ -1319,10 +1317,13 @@ def test_two_configs_differing_only_in_case_never_share_bytes(tmp_path: Path) ->
             ...
         """,
     )
-    on_disk = {
-        "upper": json.loads(upper.read_text(encoding="utf-8")),
-        "lower": json.loads(lower.read_text(encoding="utf-8")),
-    }
+
+    def as_rows(path: Path) -> dict:
+        """The file's map of constants as the editor's rows, each number as its text."""
+        values = json.loads(path.read_text(encoding="utf-8"))["values"]
+        return {"values": [{"name": name, "value": str(value)} for name, value in values.items()]}
+
+    on_disk = {"upper": as_rows(upper), "lower": as_rows(lower)}
 
     strict = {node.id: node.data.config for node in parse_pipeline_file(pipeline_file).nodes}
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)

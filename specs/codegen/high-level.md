@@ -101,8 +101,9 @@ Out of scope (owned by neighbouring components):
   node's function goes and nothing else moves, and each new node, in the order the graph
   lists them (their creation), goes just above the first function that uses its output,
   or at the end when nothing does yet. Submodel files follow the same rule, each by its
-  own file. A file not yet written follows a topological sort
-  (`haute._topo.topo_sort_ids`) in which every node without inputs that feeds another
+  own file. A file not yet written follows a topological sort that takes, of the
+  nodes ready at once, the one the graph lists first, never the order of its edges, so
+  generating a parsed graph again gives the same file, and in which every node without inputs that feeds another
   node is placed immediately before its first consumer; a node without inputs or
   consumers keeps its topological position. No existing file is regrouped. Contract dicts and column sets are sorted, while connect
   calls preserve the graph's edge order (apart from edge-join role ordering and root-boundary
@@ -376,8 +377,8 @@ Out of scope (owned by neighbouring components):
 
   Comments follow the same rule. Regeneration keeps a comment in the preamble, in a preserved
   block, or in a node's code (the body lines its extraction keeps, from the comment lines
-  above its first statement to its last statement before the closing `return df`), and the
-  wire comment it writes above the connect calls. Every other comment is dropped: one above
+  above its first statement to its last statement before the closing `return df`). Every
+  other comment is dropped: one above
   the imports, on the constructor, between node functions, on a decorator or a signature,
   on a docstring or `return df` line, after a body's last statement, inside a declaration
   (whose body is regenerated), on a registration or a connect call, at the end of the file.

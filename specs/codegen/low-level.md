@@ -92,8 +92,9 @@
    same check at dry-run, before anything is generated.
 4. **No-submodel path:** order edges (`_order_edge_join_incoming_edges` puts
    each edge-join's two incoming edges in base-then-join order), topo-sort
-   nodes (`_topo_sort` via strict `haute._topo.topo_sort_ids`, which raises
-   `UnknownEdgeEndpointError` with dropped-edge evidence for any dangling endpoint) and
+   nodes (`_topo_sort`: strict `haute._topo.topo_sort_ids` first, which raises
+   `UnknownEdgeEndpointError` with dropped-edge evidence for any dangling endpoint and
+   refuses a cycle, then a sort that takes the ready node the graph lists first) and
    place each input-less node that feeds another immediately before its first consumer
    (`_emission_order`), build
    id→func-name maps and each node's per-edge input-name list

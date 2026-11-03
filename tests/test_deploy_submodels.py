@@ -216,7 +216,7 @@ def test_artifacts_inside_submodels_bundle_under_flat_distinct_files(
         monkeypatch,
         """\
 @pipeline.output(config="config/output.json")
-def response(rated): ...
+def response(second): ...
 
 
 pipeline.submodel(rated.submodel, "first")

@@ -20,7 +20,7 @@ from haute._scaffold import (
     pre_commit_hook,
     workbench_ci_files,
 )
-from haute._workbench_form import blank_form
+from haute._workbench_form import blank_form, render_form
 from haute.cli import cli
 from haute.cli._init_cmd import _ensure_haute_dependency
 from tests._git_helpers import git_run
@@ -1208,7 +1208,8 @@ class TestInitWorkbench:
             doc = tomllib.load(fh)
         # No scoring API: [deploy] holds the app's image alone, and no endpoint's checks.
         assert set(doc["deploy"]) == {"container"}
-        assert set(doc["deploy"]["container"]) == {"registry", "port", "base_image"}
+        # The port is left at its default, so not written (READ-41).
+        assert set(doc["deploy"]["container"]) == {"registry", "base_image"}
         assert "safety" not in doc and "staging" not in doc["ci"]
         # The workbench as its own reader reads it: the host, and dev, staging and prod on the
         # one database, each signed in to by the app's managed identity.
@@ -1260,7 +1261,8 @@ class TestInitWorkbench:
         ]
         # Written as the folder's own saves write them: LF, so a first save rewrites nothing.
         assert b"\r\n" not in (folder / "form.json").read_bytes()
-        assert self._form(project_dir).spec == blank_form("motor")
+        # Sheet parts are known by title and number, not their ids (READ-24).
+        assert render_form(self._form(project_dir).spec) == render_form(blank_form("motor"))
         for reported in (
             "rating/workbench/",
             "connections.toml",
@@ -1420,7 +1422,7 @@ class TestInitWorkbench:
         assert result.exit_code == 0, result.output
         assert _own_files(tmp_path) == own
         assert read_workbench_config(tmp_path).enabled
-        assert self._form(tmp_path).spec == blank_form("motor")
+        assert render_form(self._form(tmp_path).spec) == render_form(blank_form("motor"))
         assert {(c.provider, c.auth) for c in read_connections(tmp_path).values()} == {
             ("sqlserver", "password")
         }

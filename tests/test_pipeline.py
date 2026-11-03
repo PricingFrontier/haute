@@ -1513,19 +1513,30 @@ class TestGlobalConstantsRuntimeApi:
             assert module.global_constants is Pipeline("x").global_constants
 
 
+def _write_sidecar(base_dir, node_type: NodeType, func_name: str, config: dict) -> str:
+    """Write *config*, as the editor holds it, to the node's sidecar in the form a save
+    writes it (a Constant's values as a map, a rating table as a grid), and return the
+    sidecar's path relative to *base_dir*."""
+    from haute._config_io import config_path_for_node, node_config_json
+
+    rel_path = config_path_for_node(node_type, func_name)
+    target = base_dir / rel_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(node_config_json(node_type, config, node_label=func_name).encode("utf-8"))
+    return rel_path.as_posix()
+
+
 def _switch_pipeline(tmp_path, *, sources: list[str] | None) -> Pipeline:
     """A file-backed pipeline whose switch routes ``live`` and ``nb_batch``."""
     import json
 
-    from tests.conftest import write_node_config
-
     def constant(name: str, origin: str) -> str:
         values = {"values": [{"name": "origin", "value": origin}]}
-        return write_node_config(tmp_path, NodeType.CONSTANT, name, values)
+        return _write_sidecar(tmp_path, NodeType.CONSTANT, name, values)
 
     live = constant("live_rows", "live")
     batch = constant("nb_rows", "nb_batch")
-    switch = write_node_config(
+    switch = _write_sidecar(
         tmp_path,
         NodeType.LIVE_SWITCH,
         "switch",
@@ -1625,9 +1636,7 @@ def _exec_pipeline(path, source: str) -> dict:
 
 def _submodel_pipeline(tmp_path, main_body: str, factors: str = _FACTORS_MODULE):
     """Write a pipeline importing ``modules/factors.py``; return its path and live pipeline."""
-    from tests.conftest import write_node_config
-
-    rows = write_node_config(
+    rows = _write_sidecar(
         tmp_path,
         NodeType.CONSTANT,
         "quotes",
@@ -1828,9 +1837,7 @@ class TestStandaloneSubmodels:
             pipeline.run()
 
     def test_a_hooks_df_input_from_a_port_comes_first(self, tmp_path) -> None:
-        from tests.conftest import write_node_config
-
-        rated_config = write_node_config(
+        rated_config = _write_sidecar(
             tmp_path,
             NodeType.RATING_STEP,
             "rated",
@@ -1886,9 +1893,7 @@ class TestStandaloneSubmodels:
         ]
 
     def test_a_quote_input_frame_is_named_by_its_frame_handle(self, tmp_path) -> None:
-        from tests.conftest import write_node_config
-
-        rated_config = write_node_config(
+        rated_config = _write_sidecar(
             tmp_path,
             NodeType.RATING_STEP,
             "rated",

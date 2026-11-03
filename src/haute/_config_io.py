@@ -145,16 +145,26 @@ def _config_node_type_from_path(path: Path) -> NodeType | None:
 
 
 def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None) -> dict[str, Any]:
-    if node_type is not None:
-        from haute._config_validation import reject_form_given_keys, reject_removed_config_keys
+    if node_type is None:
+        return config
+    from haute._config_validation import reject_form_given_keys, reject_removed_config_keys
 
-        reject_removed_config_keys(node_type, config)
-        reject_form_given_keys(node_type, config)
-        # A setting a sidecar leaves out at its default reads as that default (READ-10), so
-        # the config is the one the node had before it was written.
-        for key, default in _SIDECAR_DEFAULTS.get(node_type, {}).items():
-            if key not in config:
-                config = {**config, key: deepcopy(default)}
+    reject_removed_config_keys(node_type, config)
+    reject_form_given_keys(node_type, config)
+    return config_from_sidecar(node_type, config)
+
+
+def config_from_sidecar(node_type: NodeType, config: dict[str, Any]) -> dict[str, Any]:
+    """A sidecar's settings as the editor and the engine hold them, its file format decoded:
+    rating tables from grids, banding from band lists, constants from a map, and a setting
+    left out at its default given it again (READ-10, 26, 27, 28). A file in a form before
+    one of those is refused, naming its conversion. Nothing else is checked, so Recover can
+    read a sidecar whose keys the contract no longer takes."""
+    # A setting a sidecar leaves out at its default reads as that default (READ-10), so
+    # the config is the one the node had before it was written.
+    for key, default in _SIDECAR_DEFAULTS.get(node_type, {}).items():
+        if key not in config:
+            config = {**config, key: deepcopy(default)}
     if node_type == NodeType.BANDING:
         # A sidecar writes breakpoints as a list of bands (READ-27).
         return expand_banding_config_from_sidecar(bands_read_from_sidecar(config))
