@@ -29,5 +29,14 @@ test suite or a product-behaviour contract.
   choice queries (histogram, group-by, row index, top-k) at 1M and 5M quotes,
   with and without an analysis side table (26 September 2026). The numbers and
   the thresholds they set are in `specs/optimiser/low-level.md`.
+- `opt-w02-solve-memory.*`: the solver session's memory growth over one
+  `build_and_solve` (grid build, solve, inline frontier, summary and apply
+  artifact), online and ratebook, at 1M, 4M, 5M and 10M quotes and varied
+  steps, constraints, quote-id widths and factors (3 November 2026). The
+  numbers, the forecast fitted to them and its thresholds are in
+  `specs/optimiser/low-level.md`. Runs made before the forecast existed record
+  the resident-grid estimate it replaced (`grid_forecast_bytes`); the six-step
+  runs, remeasured after a fix to their sweep's baseline, record the forecast
+  (`solve_memory_forecast_bytes`).
 - `price_contour_ratebook_frontier/`: a standalone reproduction of a slow
   ratebook efficient frontier, with its metadata.

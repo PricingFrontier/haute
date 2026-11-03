@@ -220,7 +220,10 @@ def test_estimate_of_an_unknown_source_size_keeps_the_input_metrics(client, tmp_
         )
 
     assert resp.status_code == 200
-    assert resp.json() == {
+    body = resp.json()
+    assert isinstance(body.pop("solve_memory_forecast_bytes"), int)
+    assert isinstance(body.pop("solve_memory_cap_bytes"), int)
+    assert body == {
         "total_rows": None,
         "quote_count": 2,
         "scenarios_per_quote_min": 2,

@@ -94,7 +94,9 @@ re-sized before every command to what the machine can give at that moment and ne
 (OPT-W01). Pressing Solve is never refused on a memory estimate: the solve runs, and only a solve
 that exceeds the cap stops, as `memory_limited`, with the server and other jobs unaffected;
 cancelling a solve terminates its session at once. The explicit `thread` compatibility mode runs
-the same steps on the job's thread and keeps the resident-grid estimate as its gate. The input estimate runs on the warm
+the same steps on the job's thread and keeps the solve-memory forecast as its gate. Before a solve, the Solve
+panel shows that forecast, fitted to measured session peaks, against the memory a solve started now would be
+given, and warns when it exceeds it; Solve stays enabled (OPT-W02). The input estimate runs on the warm
 interactive worker pool that preview and trace use, under the estimate's admitted memory caps,
 and a memory-limited estimate answers the typed 507. Auto-range runs solve setup's own pipeline
 stage in that worker, in one attempt; the request thread resolves its config, column demand and

@@ -709,6 +709,70 @@ def test_an_absolute_process_rss_limit_caps_the_grant_and_names_itself(
     assert refused.value.reason == "process_rss_limit_exceeded"
 
 
+def _preview(**kwargs: Any) -> int:
+    from haute._execution_admission import preview_growth_grant_bytes
+
+    return preview_growth_grant_bytes(
+        ExecutionProfile.OPTIMISER_SOLVE,
+        operation="optimiser_estimate",
+        memory_sampler=kwargs.pop("memory_sampler", lambda: 100),
+        **kwargs,
+    )
+
+
+def test_the_grant_preview_is_what_a_grant_would_get_and_reserves_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import (
+        _IN_FLIGHT_RESERVATIONS,
+        create_admitted_execution_context,
+    )
+
+    _pin_ten_gib_host(monkeypatch)
+    monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_MB", str(3 * 1024))
+    training = create_admitted_execution_context(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    try:
+        held = dict(_IN_FLIGHT_RESERVATIONS)
+        assert _preview() == 5 * _GIB
+        assert _preview() == 5 * _GIB
+        assert dict(_IN_FLIGHT_RESERVATIONS) == held
+        grant = _grant()
+        try:
+            assert grant.memory_limit_bytes == 5 * _GIB
+        finally:
+            grant.release_admission()
+    finally:
+        training.release_admission()
+    assert _preview() == 8 * _GIB
+
+
+def test_the_grant_preview_is_zero_where_a_grant_would_refuse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_BYTES", str(8 * _GIB))
+    training = create_admitted_execution_context(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    try:
+        assert _preview() == 0
+        with pytest.raises(ExecutionAdmissionError):
+            _grant()
+    finally:
+        training.release_admission()
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_PROCESS_RSS_LIMIT_BYTES", str(1 * _GIB))
+    assert _preview(memory_sampler=lambda: 256 * 1024 * 1024) == 768 * 1024 * 1024
+    assert _preview(memory_sampler=lambda: 2 * _GIB) == 0
+
+
 def test_the_solve_profile_takes_the_whole_usable_machine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

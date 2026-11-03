@@ -380,6 +380,12 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
 
 export default useSettingsStore
 
+/** Selects one pipeline setting as the server last confirmed it, never an unsaved edit. */
+export function selectConfirmedPipelineSetting<K extends PipelineSettingKey>(key: K) {
+  return (state: SettingsState): PipelineSettingsValues[K] | null =>
+    state._confirmedPipelineSettings?.settings[key] ?? null
+}
+
 /**
  * The MLflow inventory as display code wants it: the store's `"pending"`
  * becomes `"loading"` here and nowhere else — the store itself never uses

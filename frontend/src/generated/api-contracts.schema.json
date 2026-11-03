@@ -13156,6 +13156,14 @@
           "default": null,
           "title": "Scenarios Per Quote Min"
         },
+        "solve_memory_cap_bytes": {
+          "title": "Solve Memory Cap Bytes",
+          "type": "integer"
+        },
+        "solve_memory_forecast_bytes": {
+          "title": "Solve Memory Forecast Bytes",
+          "type": "integer"
+        },
         "total_rows": {
           "anyOf": [
             {
@@ -13175,7 +13183,9 @@
         "scenarios_per_quote_min",
         "scenarios_per_quote_max",
         "scenarios_per_quote_mean",
-        "expanded_row_count"
+        "expanded_row_count",
+        "solve_memory_forecast_bytes",
+        "solve_memory_cap_bytes"
       ],
       "title": "OptimiserEstimateResponse",
       "type": "object"

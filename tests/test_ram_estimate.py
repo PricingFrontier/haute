@@ -4033,3 +4033,117 @@ class TestEstimatorResolvesPathsLikeTheExecutor:
 
         assert metadata is not None
         assert metadata.row_count == 4
+
+
+# The solver session's measured growth over one build_and_solve ("Measured solve
+# memory" in the optimiser low-level specification): mode, quotes, steps,
+# constraints, quote-id bytes, ratebook factors, peak growth in MiB.
+_MEASURED_SOLVE_GROWTH_MIB = (
+    ("online", 1_000_000, 6, 1, 10, 2, 374),
+    ("online", 4_000_000, 6, 1, 10, 2, 1041),
+    ("online", 1_000_000, 11, 1, 10, 2, 416),
+    ("online", 5_000_000, 11, 1, 10, 2, 1419),
+    ("online", 10_000_000, 11, 1, 10, 2, 2594),
+    ("online", 1_000_000, 11, 1, 36, 2, 548),
+    ("online", 4_000_000, 11, 1, 36, 2, 1714),
+    ("online", 1_000_000, 11, 3, 10, 2, 514),
+    ("online", 4_000_000, 11, 3, 10, 2, 1693),
+    ("online", 1_000_000, 21, 1, 10, 2, 490),
+    ("online", 4_000_000, 21, 1, 10, 2, 1513),
+    ("online", 1_000_000, 21, 2, 24, 4, 632),
+    ("online", 4_000_000, 21, 2, 24, 4, 2185),
+    ("ratebook", 1_000_000, 6, 1, 10, 2, 737),
+    ("ratebook", 4_000_000, 6, 1, 10, 2, 2203),
+    ("ratebook", 1_000_000, 11, 1, 10, 2, 770),
+    ("ratebook", 5_000_000, 11, 1, 10, 2, 3009),
+    ("ratebook", 10_000_000, 11, 1, 10, 2, 4914),
+    ("ratebook", 1_000_000, 11, 1, 10, 6, 928),
+    ("ratebook", 4_000_000, 11, 1, 10, 6, 2637),
+    ("ratebook", 1_000_000, 11, 1, 36, 2, 981),
+    ("ratebook", 4_000_000, 11, 1, 36, 2, 3120),
+    ("ratebook", 1_000_000, 11, 3, 10, 2, 881),
+    ("ratebook", 4_000_000, 11, 3, 10, 2, 2732),
+    ("ratebook", 1_000_000, 21, 1, 10, 2, 846),
+    ("ratebook", 4_000_000, 21, 1, 10, 2, 2659),
+    ("ratebook", 1_000_000, 21, 2, 24, 4, 1047),
+    ("ratebook", 4_000_000, 21, 2, 24, 4, 3266),
+)
+
+
+def _solve_forecast(**shape: object) -> int:
+    from haute._ram_estimate import forecast_solve_memory_bytes
+
+    arguments: dict[str, object] = {
+        "mode": "online",
+        "quote_count": 1_000_000,
+        "row_count": 11_000_000,
+        "constraint_count": 1,
+        "factor_count": 0,
+        "quote_id_bytes": 10.0,
+        "chunk_rows": 500_000,
+    }
+    arguments.update(shape)
+    return forecast_solve_memory_bytes(**arguments)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "mode, quotes, steps, constraints, quote_id_bytes, factors, measured_mib",
+    _MEASURED_SOLVE_GROWTH_MIB,
+)
+def test_the_solve_forecast_is_within_one_and_a_half_times_every_measured_peak(
+    mode: str,
+    quotes: int,
+    steps: int,
+    constraints: int,
+    quote_id_bytes: int,
+    factors: int,
+    measured_mib: int,
+) -> None:
+    forecast = _solve_forecast(
+        mode=mode,
+        quote_count=quotes,
+        row_count=quotes * steps,
+        constraint_count=constraints,
+        factor_count=factors if mode == "ratebook" else 0,
+        quote_id_bytes=float(quote_id_bytes),
+    )
+    ratio = forecast / (measured_mib * 1024 * 1024)
+    assert 1.0 <= ratio <= 1.5, f"forecast is {ratio:.2f}x the measured peak"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"quote_count": 2_000_000, "row_count": 22_000_000},
+        {"row_count": 21_000_000},
+        {"constraint_count": 2},
+        {"quote_id_bytes": 36.0},
+        {"chunk_rows": 2_000_000},
+    ],
+)
+def test_the_solve_forecast_grows_with_each_input(change: dict[str, object]) -> None:
+    assert _solve_forecast(**change) > _solve_forecast()
+
+
+def test_a_ratebook_solve_forecast_grows_with_its_factors_and_exceeds_online() -> None:
+    two = _solve_forecast(mode="ratebook", factor_count=2)
+    assert _solve_forecast(mode="ratebook", factor_count=6) > two > _solve_forecast()
+
+
+def test_the_solve_forecast_prices_two_reader_chunks_of_the_solver_input() -> None:
+    from haute._ram_estimate import solver_input_row_width_bytes
+
+    width = solver_input_row_width_bytes(constraint_count=1, quote_id_bytes=10.0)
+    assert width == 4 + 4 + 8 + 16 + 10
+    small = _solve_forecast(chunk_rows=100_000)
+    large = _solve_forecast(chunk_rows=200_000)
+    assert large - small == pytest.approx(1.15 * 2 * 100_000 * width, abs=1)
+    # A chunk larger than the input reads the input once.
+    assert _solve_forecast(chunk_rows=11_000_000) == _solve_forecast(chunk_rows=50_000_000)
+
+
+def test_the_solve_forecast_refuses_an_unknown_mode_or_a_negative_count() -> None:
+    with pytest.raises(ValueError, match="mode must be"):
+        _solve_forecast(mode="grouped")
+    with pytest.raises(ValueError, match="must not be negative"):
+        _solve_forecast(quote_count=-1)

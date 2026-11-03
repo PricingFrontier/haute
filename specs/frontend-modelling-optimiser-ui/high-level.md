@@ -547,9 +547,14 @@ Pane ownership:
   its efficient-frontier phase) through the existing cancel route and records the returned
   terminal state the way modelling's Cancel does. The size estimate is requested only when an
   input that changes it changes (the Objectives & Constraints input, mode, the Row ID / Scenario
-  Index / Scenario Value mappings, the Rating Factor Source and factors, the active source or the
-  graph structure), never on objective, constraint, solver or export edits; an estimate the server
-  cannot size reads "Size unknown". While the configuration cannot be solved the Optimise action
+  Index / Scenario Value mappings, the Rating Factor Source and factors, the number of
+  constraints, the saved **Chunk rows** or **Memory kept free** pipeline setting, the active
+  source or the graph structure), never on objective, constraint-bound,
+  solver or export edits; an estimate the server cannot size reads "Size unknown". Beneath the
+  sizes, "Estimated solve memory X of Y" sets the solve's memory forecast against what a solve
+  started now would be given (OPT-W02); when X exceeds Y the line takes the warning colour and an
+  alert icon labelled "More than this machine can give", and Optimise stays enabled: a solve is
+  never refused on an estimate. While the configuration cannot be solved the Optimise action
   stays disabled and one alert beneath it lists every blocking issue, each with a **Go to** link
   that opens the pane that fixes it: no resolvable Objectives & Constraints input; no objective,
   or an objective or constraint column the input does not have (checked once the input's columns
