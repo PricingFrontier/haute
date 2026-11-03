@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import subprocess
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -155,6 +156,35 @@ def test_a_schema_file_holding_an_id_is_refused(project: Path) -> None:
 
     with pytest.raises(Exception, match="id"):
         _read(project)
+
+
+def test_a_revision_saved_before_the_change_is_refused_naming_its_conversion(
+    project: Path,
+) -> None:
+    """The schema pane's SQL from the default branch reads its form at that revision: one
+    saved with ids is refused naming the conversion, not handed to the parser (READ-20)."""
+    from haute._workbench_config import read_workbench_config
+    from haute._workbench_folder import WorkbenchFormError, form_at_ref
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+            cwd=project,
+            check=True,
+            capture_output=True,
+        )
+
+    write_form(project, _form())
+    path = form_folder(project) / "schema" / "policy.json"
+    data = json.loads(path.read_bytes())
+    data["id"] = "t_policy"
+    path.write_bytes(json.dumps(data).encode("utf-8"))
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-q", "-m", "form saved with ids")
+
+    with pytest.raises(WorkbenchFormError, match="read_23_schema_names.py"):
+        form_at_ref(read_workbench_config(project), "HEAD")
 
 
 def test_two_columns_differing_only_in_case_are_refused_on_save_and_on_read(

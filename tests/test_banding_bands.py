@@ -68,6 +68,8 @@ def test_the_open_ended_band_comes_last_and_a_null_default_is_left_out(tmp_path:
     assert text.index('"upper": 4') < text.index('{"label": "top"}')
     assert '"default"' not in text
     assert [rule["boundary"] for rule in loaded["factors"][0]["rules"]] == ["4", ""]
+    # It reads back as the null it was, so the factor loads as it was saved.
+    assert loaded["factors"][0]["default"] is None
 
 
 def test_categorical_banding_keeps_its_map(tmp_path: Path) -> None:

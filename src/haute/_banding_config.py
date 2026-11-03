@@ -297,6 +297,9 @@ def bands_read_from_sidecar(config: dict[str, Any]) -> dict[str, Any]:
         return config
     read: list[Any] = []
     for factor in factors:
+        # A null default is left unwritten (READ-27): it reads back as the null it was.
+        if isinstance(factor, dict) and "default" not in factor:
+            factor = {**factor, "default": None}
         if not isinstance(factor, dict) or _banding_type(factor) != "breakpoints":
             read.append(factor)
             continue

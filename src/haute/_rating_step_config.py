@@ -250,23 +250,6 @@ def _level_key(level: Any) -> str:
     return json.dumps(level, sort_keys=True)
 
 
-def _numeric_default(value: Any) -> Any:
-    """A ``defaultValue`` written as text, written as the number it is; anything else as is."""
-    if not isinstance(value, str) or not value.strip():
-        return value
-    try:
-        number = float(value)
-    except ValueError:
-        return value
-    if not math.isfinite(number):
-        return value
-    return (
-        int(number)
-        if number.is_integer() and "." not in value and "e" not in value.lower()
-        else number
-    )
-
-
 def grid_from_entries(table: dict[str, Any]) -> dict[str, Any]:
     """*table* as its sidecar writes it: ``rows`` (and ``columns``) in place of ``entries``.
 
@@ -275,9 +258,8 @@ def grid_from_entries(table: dict[str, Any]) -> dict[str, Any]:
     combination of the other factors, in that order, then one rate per column, ``null``
     where no entry is. A rate of 0 is a rate. Levels keep their JSON type.
     """
+    # ``defaultValue`` is written as the editor holds it, text, which the engine reads.
     result = {key: value for key, value in table.items() if key != "entries"}
-    if "defaultValue" in result:
-        result["defaultValue"] = _numeric_default(result["defaultValue"])
     entries = table.get("entries")
     factors = table.get("factors") or []
     if not isinstance(entries, list) or not factors:

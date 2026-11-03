@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import functools
+import heapq
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
@@ -359,10 +360,33 @@ def _generate_node_code(node: GraphNode, source_names: list[str] | None = None) 
 
 
 def _topo_sort(nodes: list[GraphNode], edges: list[GraphEdge]) -> list[GraphNode]:
-    """Sort nodes in topological order based on edges."""
+    """Sort nodes in topological order based on edges, the nodes ready at once taken in the
+    order the graph lists them, never the order of its edges: a parsed graph lists its nodes
+    as the file has them but builds the edges a signature implies (READ-30) in another
+    order, and generating it again must give the same file."""
     node_map = {n.id: n for n in nodes}
-    order = topo_sort_ids(list(node_map.keys()), edges)
-    return [node_map[nid] for nid in order if nid in node_map]
+    # Refuses an unknown endpoint or a cycle as the shared sort does.
+    topo_sort_ids(list(node_map), edges)
+    place = {node_id: index for index, node_id in enumerate(node_map)}
+    parents: dict[str, set[str]] = {node_id: set() for node_id in node_map}
+    children: dict[str, list[str]] = {node_id: [] for node_id in node_map}
+    for edge in edges:
+        if edge.source in node_map and edge.target in node_map:
+            if edge.source not in parents[edge.target]:
+                parents[edge.target].add(edge.source)
+                children[edge.source].append(edge.target)
+    waiting = {node_id: len(sources) for node_id, sources in parents.items()}
+    ready = [(place[node_id], node_id) for node_id, count in waiting.items() if count == 0]
+    heapq.heapify(ready)
+    order: list[GraphNode] = []
+    while ready:
+        _, node_id = heapq.heappop(ready)
+        order.append(node_map[node_id])
+        for child in children[node_id]:
+            waiting[child] -= 1
+            if waiting[child] == 0:
+                heapq.heappush(ready, (place[child], child))
+    return order
 
 
 def _emit_preserved_block(block: str) -> str:

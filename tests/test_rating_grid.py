@@ -56,6 +56,14 @@ def _round_trip(tmp_path: Path, config: dict) -> tuple[str, dict]:
             ],
         },
         {
+            # The editor holds a default as typed, text; it reads back as that text.
+            "name": "Typed default",
+            "factors": ["region"],
+            "outputColumn": "h",
+            "defaultValue": "1",
+            "entries": [{"region": "north", "value": 1.1}],
+        },
+        {
             "name": "Three",
             "factors": ["a", "b", "c"],
             "outputColumn": "g",
@@ -65,7 +73,7 @@ def _round_trip(tmp_path: Path, config: dict) -> tuple[str, dict]:
             ],
         },
     ],
-    ids=["one-factor", "two-factor-sparse-typed", "three-factor"],
+    ids=["one-factor", "two-factor-sparse-typed", "typed-default", "three-factor"],
 )
 def test_a_table_round_trips_through_its_grid(tmp_path: Path, table: dict) -> None:
     config = {"tables": [table]}
