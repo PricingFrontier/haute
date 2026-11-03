@@ -49,7 +49,7 @@ Each package states its formats in its owning specification before behaviour cha
 | READ-02 | Planned | P1 | A module docstring written by hand in `main.py` is kept on save. |
 | READ-03 | Planned | P2 | Files a project's scaffold writes have LF line endings, at creation and at every checkout. |
 | READ-04 | Planned | P3 | Git ignores `test_quotes_report.md`. |
-| READ-05 | Planned | P1 | Saving a quote keeps its values in store columns the form no longer holds. |
+| READ-05 | Planned | P1 | Saving a quote keeps its input values in store columns the form no longer holds; outputs are written afresh by each pricing. |
 | READ-06 | Planned | P1 | A rating table with two entries for the same levels is refused, not resolved by the last one. |
 | READ-10 | Planned | P2 | One printer writes every committed JSON file, with a fixed shape per kind of record. |
 | READ-11 | Planned | P2 | Node positions are whole numbers, on one line per node, and only a move changes them. |
@@ -152,7 +152,7 @@ The parser infers edges from parameter names, but the runtime `Pipeline` takes e
 **Evidence:** `src/haute/_gitignore_guard.py::GITIGNORE_GUARD_ENTRIES`;
 `src/haute/_workbench_test_quotes.py::REPORT_FILE`.
 
-### READ-05 — Saving a quote keeps its values in store columns the form no longer holds
+### READ-05 — Saving a quote keeps its input values in store columns the form no longer holds
 **Why:** When a column leaves the form, the SQL Haute writes for the store keeps the column: its `DROP` is left commented out. But saving a quote deletes each of its rows outside `quote_details` and writes them back with only the form's columns. So each quote loses its value in the kept column the next time it is saved. This happens today when a column is removed. After `READ-23`, every renamed column reads as removed and added, so it would happen on every rename.
 
 **Plan:**
@@ -164,6 +164,7 @@ The parser infers edges from parameter names, but the runtime `Pipeline` takes e
 - The save accepts the field only for store columns the form doesn't hold, typed as the store holds them, and refuses anything else by name.
 - A new row has no such values, and a deleted row takes its values with it.
 - A one-row table works the same way. `quote_details` is updated in place and keeps its values already.
+- **Output tables are excluded.** Each save prices the quote again and writes its output rows afresh from that pricing, in that pricing's order; a save without pricing writes none. A value in an output column the form no longer holds came from an older pricing, so it is cleared on the quote's next save, like every other output of that pricing. A renamed output column is filled again by the next pricing.
 
 **Acceptance:** On SQLite and on a hosted engine, remove a column from the form and open a quote saved before the change. Then:
 - save and reopen it: the kept SQL column still holds every row's value;
@@ -171,6 +172,7 @@ The parser infers edges from parameter names, but the runtime `Pipeline` takes e
 - insert a row before a remaining row and save twice: the new row holds none, and the others keep their own;
 - type while a save is pending, and replay a save whose response was lost: every row keeps its own value.
 - The save refuses the field for a column the form holds and for a column the store doesn't hold.
+- An output column removed from the form holds no value after a priced save, or after a save without pricing. The input tables keep theirs.
 
 **Dependencies:** None. `READ-23` depends on it.
 
