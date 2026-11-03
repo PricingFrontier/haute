@@ -73,6 +73,14 @@ SINGLE_TYPE_ENDPOINTS: Mapping[tuple[str, str], tuple[str, str]] = {}
 #: Node-type-looking strings that are not about node types:
 #: ``(module, qualname, value, context) -> (count, reason)``.
 NOT_NODE_TYPES: Mapping[tuple[str, str, str, str], tuple[int, str]] = {
+    ("_trace_lineage.py", "_Derivation._rule_references", "banding", "compare:detail_type"): (
+        1,
+        "trace detail type",
+    ),
+    ("_trace_waterfall.py", "_detail_uses_default", "banding", "compare:detail_type"): (
+        1,
+        "trace detail type",
+    ),
     ("assistant/_change_record.py", "_not_checked_words", "submodel", "compare:reason"): (
         1,
         "the data check's not-checked reason for a submodel",
@@ -138,10 +146,6 @@ BASELINE: Mapping[str, int] = {
     "_submodel_instances.py": 4,
     "_submodel_recovery.py": 2,
     "_support_code_names.py": 1,
-    "_trace_correlation.py": 31,
-    "_trace_enrichment.py": 14,
-    "_trace_lineage.py": 6,
-    "_trace_waterfall.py": 2,
     "_workbench_compare.py": 1,
     "_workbench_folder.py": 1,
     "_workbench_folder_files.py": 1,
@@ -178,7 +182,6 @@ BASELINE: Mapping[str, int] = {
     "routes/pipeline.py": 5,
     "routes/submodel.py": 1,
     "schemas.py": 8,
-    "trace.py": 2,
 }
 
 

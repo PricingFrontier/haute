@@ -63,7 +63,7 @@ from haute._input_preparation import preparation_base_dir, prepare_input_snapsho
 from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
-from haute._node_specs import REQUEST_INPUT_NODE_TYPES
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES, node_type_table
 from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_steps import stepped_surface_allows_input_references
 from haute._project_context import graph_pipeline_dir
@@ -86,6 +86,7 @@ from haute._trace_correlation import (
     _match_rows_vectorized,
     _RowMatchStatus,
     edge_join_role_edges,
+    joins_by_role,
     trace_edge_alignment,
     trace_head_prefixes,
 )
@@ -483,16 +484,15 @@ def execute_trace(
 
     table_fill = None
     target_port = None
-    if graph.node_map[target_node_id].data.nodeType == NodeType.WORKBENCH_OUTPUT:
-        (target_node_id, target_port, column, row_values, seed_plan, table_fill) = (
-            _workbench_output_trace_target(
-                graph,
-                target_node_id,
-                port_label=port_label,
-                column=column,
-                row_values=row_values,
-                seed_plan=seed_plan,
-            )
+    table_target = _TABLE_TRACE_TARGETS[graph.node_map[target_node_id].data.nodeType]
+    if table_target is not None:
+        (target_node_id, target_port, column, row_values, seed_plan, table_fill) = table_target(
+            graph,
+            target_node_id,
+            port_label=port_label,
+            column=column,
+            row_values=row_values,
+            seed_plan=seed_plan,
         )
 
     core = functools.partial(
@@ -658,6 +658,37 @@ class _TableFill:
             and name in frame.schema
             and column_fits(self.declared[name], frame.schema[name])
         )
+
+
+#: How a target of each node type is traced through one of its tables: its cell
+#: is traced from the node connected to that table. ``None`` for a node type
+#: whose own row is traced.
+_TABLE_TRACE_TARGETS = node_type_table(
+    "trace table target",
+    {
+        NodeType.API_INPUT: None,
+        NodeType.WORKBENCH_INPUT: None,
+        NodeType.WORKBENCH_OUTPUT: _workbench_output_trace_target,
+        NodeType.DATA_INPUT: None,
+        NodeType.DATA_OUTPUT: None,
+        NodeType.POLARS: None,
+        NodeType.EDGE_JOIN: None,
+        NodeType.MODEL_SCORE: None,
+        NodeType.BANDING: None,
+        NodeType.RATING_STEP: None,
+        NodeType.OUTPUT: None,
+        NodeType.EXPLORE: None,
+        NodeType.EXTERNAL_FILE: None,
+        NodeType.LIVE_SWITCH: None,
+        NodeType.MODELLING: None,
+        NodeType.OPTIMISER: None,
+        NodeType.SCENARIO_EXPANDER: None,
+        NodeType.OPTIMISER_APPLY: None,
+        NodeType.CONSTANT: None,
+        NodeType.SUBMODEL: None,
+        NodeType.SUBMODEL_PORT: None,
+    },
+)
 
 
 #: Why the ancestors of a seed are not traced, completing "Not traced above the
@@ -1215,7 +1246,7 @@ def _execute_trace_core(
     edge_join_roles: dict[str, tuple[str, str]] = {}
     join_inputs: dict[str, JoinInputs] = {}
     for node in nodes:
-        if node.data.nodeType != NodeType.EDGE_JOIN:
+        if not joins_by_role(node.data.nodeType):
             continue
         roles = edge_join_role_edges(node, edge_metadata)
         edge_join_roles[node.id] = (roles.base.source_id, roles.join.source_id)

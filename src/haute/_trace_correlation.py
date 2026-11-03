@@ -24,7 +24,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from functools import lru_cache, partial
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Protocol
 
 import polars as pl
 from polars.datatypes import DataTypeClass
@@ -40,7 +40,7 @@ from haute._json_safe import (
 )
 from haute._json_safe import row_to_json_safe as _jsonify_row
 from haute._logging import get_logger
-from haute._node_specs import RESPONSE_NODE_TYPES
+from haute._node_specs import node_spec, node_type_table
 from haute._python_syntax import StructuredSyntaxError, method_call_sites
 from haute._types import GraphNode, NodeType
 from haute.errors import ConfigError, TraceRowOutOfRangeError
@@ -1044,12 +1044,26 @@ def _child_transform_may_reorder(child_node: GraphNode | None) -> bool:
     return _code_may_reorder_rows(code)
 
 
+def joins_by_role(node_type: NodeType | str | None) -> bool:
+    """Whether a node of *node_type* joins its inputs by role: an Edge Join.
+
+    Its edges carry the ``base`` and ``join`` roles its specification declares
+    (``NodeSpec.input_roles``). ``False`` for anything that is not a node type.
+    """
+    if node_type is None:
+        return False
+    try:
+        return bool(node_spec(node_type).input_roles)
+    except KeyError:
+        return False
+
+
 def _allows_relaxed_parent_match(
     child_node: GraphNode | None,
     target_role: str | None,
 ) -> bool:
     """Edge-join right parents must not relax a miss into false lineage."""
-    if child_node is None or child_node.data.nodeType != NodeType.EDGE_JOIN:
+    if child_node is None or not joins_by_role(child_node.data.nodeType):
         return True
     return target_role != "join"
 
@@ -1221,7 +1235,7 @@ def _build_parent_match_row(
     parent's columns survive a join under their original names with the
     base row's values, so the generic projection remains correct there.
     """
-    if child_node is not None and child_node.data.nodeType == NodeType.EDGE_JOIN:
+    if child_node is not None and joins_by_role(child_node.data.nodeType):
         config = child_node.data.config
         base_id, base_handle, _base_target_handle = edge_join_role_edges(
             child_node, edge_metadata
@@ -1526,19 +1540,6 @@ def _correlate_rows_posthoc(
 # the values its child carried through unchanged.
 
 _LEFT_ORDER_PRESERVING_JOINS = frozenset({"left", "left_right"})
-_ROW_PRESERVING_BUILDER_TYPES = frozenset(
-    {NodeType.MODEL_SCORE, NodeType.BANDING, NodeType.RATING_STEP, NodeType.SCENARIO_EXPANDER}
-)
-_PASS_THROUGH_TRACE_TYPES = frozenset(
-    {
-        NodeType.LIVE_SWITCH,
-        NodeType.DATA_OUTPUT,
-        NodeType.MODELLING,
-        NodeType.SUBMODEL,
-        NodeType.SUBMODEL_PORT,
-    }
-)
-_CODE_FREE_PASS_THROUGH_TYPES = frozenset({NodeType.EXPLORE, NodeType.EXTERNAL_FILE})
 _ROW_DROPPING_METHODS = frozenset({"filter", "drop_nulls"})
 _ROW_SCOPE_CANDIDATE_LIMIT = 2
 # A key probe reading more candidate rows than this falls back to the full filter.
@@ -1687,6 +1688,84 @@ def _code_edge_alignment(
     return _ALIGNED
 
 
+@dataclass(frozen=True, slots=True)
+class _AlignmentEdge:
+    """One incoming edge of *child*, as :func:`trace_edge_alignment` classifies it."""
+
+    child: GraphNode
+    code: str
+    target_role: str | None
+    edge_input: str | None
+    input_names: Sequence[str]
+    selector_aliases: frozenset[str]
+    input_aliases: Mapping[str, str] | None
+
+
+def _never_aligned(edge: _AlignmentEdge) -> TraceEdgeAlignment:
+    return _NOT_ALIGNED
+
+
+def _always_aligned(edge: _AlignmentEdge) -> TraceEdgeAlignment:
+    """A pass-through returns one of its inputs' rows in order."""
+    return _ALIGNED
+
+
+def _aligned_without_code(edge: _AlignmentEdge) -> TraceEdgeAlignment:
+    """A row-preserving builder, or code-free Load File, keeps its input's order."""
+    return _NOT_ALIGNED if edge.code else _ALIGNED
+
+
+def _code_aligned(edge: _AlignmentEdge) -> TraceEdgeAlignment:
+    """Single-input code the chunk-locality classifier admits keeps its input's order."""
+    if edge.code and len(edge.input_names) == 1:
+        return _code_edge_alignment(
+            edge.code, (*edge.input_names, *(edge.input_aliases or {})), edge.selector_aliases
+        )
+    return _NOT_ALIGNED
+
+
+def _explore_aligned(edge: _AlignmentEdge) -> TraceEdgeAlignment:
+    return _ALIGNED if not edge.code else _code_aligned(edge)
+
+
+def _edge_join_aligned(edge: _AlignmentEdge) -> TraceEdgeAlignment:
+    if edge.target_role != "base":
+        return _NOT_ALIGNED
+    kwargs = build_edge_join_kwargs(edge.child.data.config)
+    return TraceEdgeAlignment(
+        kwargs["how"] == "left" and kwargs.get("maintain_order") in _LEFT_ORDER_PRESERVING_JOINS
+    )
+
+
+def _optimiser_aligned(edge: _AlignmentEdge) -> TraceEdgeAlignment:
+    data_input = edge.child.data.config.get("data_input")
+    selected = len(edge.input_names) == 1 or (bool(data_input) and data_input == edge.edge_input)
+    return TraceEdgeAlignment(selected)
+
+
+def _optimiser_apply_aligned(edge: _AlignmentEdge) -> TraceEdgeAlignment:
+    # Ratebook apply left-joins factor tables onto its selected input in
+    # order; online apply collapses each quote's scenarios into one row.
+    # The apply reads one input: its ``ratebook_input`` in ratebook mode and
+    # its first input in online mode. ``optimiser_mode`` is the artifact's
+    # resolved mode; while it is unknown, both candidates count as read.
+    config = edge.child.data.config
+    input_names = edge.input_names
+    edge_input = edge.edge_input
+    mode = config.get("optimiser_mode")
+    ratebook_input = config.get("ratebook_input")
+    selected = len(input_names) == 1 or (bool(ratebook_input) and ratebook_input == edge_input)
+    if len(input_names) <= 1:
+        read = True
+    elif mode == "ratebook":
+        read = selected
+    elif mode == "online":
+        read = edge_input == input_names[0]
+    else:
+        read = edge_input in {input_names[0], ratebook_input}
+    return TraceEdgeAlignment(mode == "ratebook" and selected, read=read)
+
+
 def trace_edge_alignment(
     child: GraphNode,
     *,
@@ -1701,47 +1780,17 @@ def trace_edge_alignment(
     *input_names* are the child's edge input names; *input_aliases* adds the
     logical names its code may use for them (``inputMapping``).
     """
-    node_type = child.data.nodeType
-    code = _node_code(child)
-    if node_type is NodeType.EDGE_JOIN:
-        if target_role != "base":
-            return _NOT_ALIGNED
-        kwargs = build_edge_join_kwargs(child.data.config)
-        return TraceEdgeAlignment(
-            kwargs["how"] == "left" and kwargs.get("maintain_order") in _LEFT_ORDER_PRESERVING_JOINS
+    return _row_rule(child.data.nodeType).alignment(
+        _AlignmentEdge(
+            child,
+            code=_node_code(child),
+            target_role=target_role,
+            edge_input=edge_input,
+            input_names=input_names,
+            selector_aliases=selector_aliases,
+            input_aliases=input_aliases,
         )
-    if node_type in _ROW_PRESERVING_BUILDER_TYPES:
-        return _NOT_ALIGNED if code else _ALIGNED
-    if node_type in _PASS_THROUGH_TRACE_TYPES:
-        return _ALIGNED
-    if node_type in _CODE_FREE_PASS_THROUGH_TYPES and not code:
-        return _ALIGNED
-    if node_type is NodeType.OPTIMISER:
-        data_input = child.data.config.get("data_input")
-        selected = len(input_names) == 1 or (bool(data_input) and data_input == edge_input)
-        return TraceEdgeAlignment(selected)
-    if node_type is NodeType.OPTIMISER_APPLY:
-        # Ratebook apply left-joins factor tables onto its selected input in
-        # order; online apply collapses each quote's scenarios into one row.
-        # The apply reads one input: its ``ratebook_input`` in ratebook mode and
-        # its first input in online mode. ``optimiser_mode`` is the artifact's
-        # resolved mode; while it is unknown, both candidates count as read.
-        config = child.data.config
-        mode = config.get("optimiser_mode")
-        ratebook_input = config.get("ratebook_input")
-        selected = len(input_names) == 1 or (bool(ratebook_input) and ratebook_input == edge_input)
-        if len(input_names) <= 1:
-            read = True
-        elif mode == "ratebook":
-            read = selected
-        elif mode == "online":
-            read = edge_input == input_names[0]
-        else:
-            read = edge_input in {input_names[0], ratebook_input}
-        return TraceEdgeAlignment(mode == "ratebook" and selected, read=read)
-    if node_type in (NodeType.POLARS, NodeType.EXPLORE) and code and len(input_names) == 1:
-        return _code_edge_alignment(code, (*input_names, *(input_aliases or {})), selector_aliases)
-    return _NOT_ALIGNED
+    )
 
 
 TraceEdgeKey = tuple[str, str, str | None, str | None]
@@ -1965,25 +2014,8 @@ class RowScopeResolver:
         child = self.node_map[child_id]
         if child.data.config.get("column_renames"):
             return None
-        node_type = child.data.nodeType
-        if node_type is NodeType.EDGE_JOIN:
-            if target_role != "base":
-                return None
-            if build_edge_join_kwargs(child.data.config)["how"] not in (
-                _ROW_TRANSFER_JOIN_STRATEGIES
-            ):
-                return None
-        elif node_type in _PASS_THROUGH_TRACE_TYPES:
-            # A pass-through node returns one of its inputs; only a sole traced
-            # input is the one its rows come from.
-            lineage_inputs = [
-                key
-                for key, alignment in self.alignments.items()
-                if key[1] == child_id and alignment.read
-            ]
-            if len(lineage_inputs) != 1:
-                return None
-        else:
+        transfers = _row_rule(child.data.nodeType).transfer
+        if transfers is None or not transfers(self, child_id, child, target_role):
             return None
         parent_schema = self.schema_for(parent_id, None)
         if parent_schema is None:
@@ -2000,7 +2032,7 @@ class RowScopeResolver:
             lineage_children = {child_id for _parent, child_id, _handle, _role in self.alignments}
             for child_id in sorted(lineage_children):
                 node = self.node_map[child_id]
-                if node.data.nodeType is NodeType.EDGE_JOIN:
+                if joins_by_role(node.data.nodeType):
                     base_keys, join_keys = edge_join_key_columns_by_role(node.data.config)
                     columns.update(base_keys, join_keys)
             self._join_key_columns = frozenset(columns)
@@ -2087,9 +2119,10 @@ class RowScopeResolver:
     ) -> _CarriedValues | None:
         """Return the values *child_row* provably carried from its parent row."""
         child = self.node_map[child_id]
-        if child.data.nodeType is NodeType.OPTIMISER_APPLY:
-            chosen = self._online_apply_chosen_row(
-                child, parent_id=parent_id, source_handle=source_handle, child_row=child_row
+        chosen_row = _row_rule(child.data.nodeType).chosen_row
+        if chosen_row is not None:
+            chosen = chosen_row(
+                self, child, parent_id=parent_id, source_handle=source_handle, child_row=child_row
             )
             if chosen is not None:
                 return chosen
@@ -2157,7 +2190,7 @@ class RowScopeResolver:
         other values do not is not reported as a miss.
         """
         child = self.node_map[child_id]
-        if child.data.nodeType is not NodeType.EDGE_JOIN or target_role != "join":
+        if not joins_by_role(child.data.nodeType) or target_role != "join":
             return None
         join_kwargs = build_edge_join_kwargs(child.data.config)
         if join_kwargs["how"] not in _JOIN_SIDE_OPTIONAL_STRATEGIES:
@@ -2184,73 +2217,54 @@ class RowScopeResolver:
         child_row: Mapping[str, Any],
     ) -> _CarriedValues | None:
         child = self.node_map[child_id]
-        node_type = child.data.nodeType
         code = _node_code(child)
         parent_schema = self.schema_for(parent_id, source_handle)
         if parent_schema is None:
             return None
         parent_columns = set(parent_schema.names())
         shared = {name: value for name, value in child_row.items() if name in parent_columns}
-        if node_type is NodeType.EDGE_JOIN:
-            if target_role == "base":
-                return _CarriedValues(shared, {})
-            if target_role != "join":
-                return None
-            base = edge_join_role_edges(child, self.edge_metadata).base
-            base_schema = self.schema_for(base.source_id, base.source_handle)
-            if base_schema is None:
-                return None
-            return _CarriedValues(
-                _edge_join_right_match_row(
-                    dict(child_row),
-                    parent_columns,
-                    set(base_schema.names()),
-                    child.data.config,
-                ),
-                {},
+        return _row_rule(child.data.nodeType).carried(
+            _CarryEdge(
+                self,
+                child,
+                child_id=child_id,
+                parent_id=parent_id,
+                source_handle=source_handle,
+                target_role=target_role,
+                child_row=child_row,
+                code=code,
+                parent_columns=parent_columns,
+                shared=shared,
             )
-        if (
-            node_type in _PASS_THROUGH_TRACE_TYPES
-            or node_type == NodeType.OPTIMISER
-            or node_type in RESPONSE_NODE_TYPES
-        ):
-            return _CarriedValues(shared, {})
-        if node_type in _CODE_FREE_PASS_THROUGH_TYPES and not code:
-            return _CarriedValues(shared, {})
-        carried = shared
-        if node_type in _ROW_PRESERVING_BUILDER_TYPES or node_type is NodeType.OPTIMISER_APPLY:
-            from haute.projection import projection_contract
+        )
 
-            builder = child
-            if code:
-                config = {
-                    key: value
-                    for key, value in child.data.config.items()
-                    if key not in ("code", "steps")
-                }
-                builder = child.with_config(config)
-            produced, _referenced = projection_contract(builder).to_tuple()
-            if produced is None:
-                return None
-            carried = {name: value for name, value in carried.items() if name not in produced}
-        elif node_type not in (NodeType.POLARS, NodeType.EXPLORE, NodeType.EXTERNAL_FILE):
-            return None
-        if not code:
+    def _code_carried_values(
+        self, edge: _CarryEdge, carried: dict[str, Any], inputs: _CodeInputs
+    ) -> _CarriedValues | None:
+        """Narrow *carried* to the columns *edge*'s child code provably carries.
+
+        *inputs* says how the code names its inputs; a child without code
+        carries *carried* unchanged.
+        """
+        if not edge.code:
             return _CarriedValues(carried, {})
         from haute._column_lineage import carried_column_proof
 
+        child_id = edge.child_id
+        parent_id = edge.parent_id
+        source_handle = edge.source_handle
         input_names = self.child_input_names.get(child_id, ())
-        explicit_inputs = node_type in (NodeType.POLARS, NodeType.EXTERNAL_FILE)
+        explicit_inputs = inputs is _CodeInputs.EDGES
         proof = carried_column_proof(
-            code,
+            edge.code,
             input_names if explicit_inputs else ("df",),
-            **self._code_input_schemas(child_id, node_type, explicit_inputs=explicit_inputs),
+            **self._code_input_schemas(child_id, inputs),
             selector_aliases=self.selector_aliases,
             input_aliases=self.child_input_aliases.get(child_id) if explicit_inputs else None,
         )
         if proof is None:
             return None
-        edge_input = self.input_names.get((parent_id, child_id, source_handle, target_role))
+        edge_input = self.input_names.get((parent_id, child_id, source_handle, edge.target_role))
         # The proof names explicit inputs; other code reads its one parent as ``df``.
         proof_input = edge_input if explicit_inputs and edge_input is not None else proof.root_input
         carried = {
@@ -2286,21 +2300,16 @@ class RowScopeResolver:
         )
         return _CarriedValues(carried, {}, aggregated=aggregated)
 
-    def _code_input_schemas(
-        self,
-        child_id: str,
-        node_type: NodeType,
-        *,
-        explicit_inputs: bool,
-    ) -> dict[str, Any]:
+    def _code_input_schemas(self, child_id: str, inputs: _CodeInputs) -> dict[str, Any]:
         """Return the proof's input column names and dtypes for *child_id*'s code.
 
         Explicit inputs are read from each parent port's plan; Explore code's
         ``df`` is its single parent. Builder post-code runs on the builder's own
         output, whose schema the plans do not hold, so it gets none.
         """
-        if not explicit_inputs and node_type is not NodeType.EXPLORE:
+        if inputs is _CodeInputs.OUTPUT:
             return {}
+        explicit_inputs = inputs is _CodeInputs.EDGES
         columns: dict[str, list[str]] = {}
         dtypes: dict[str, dict[str, pl.DataType]] = {}
         for (parent_id, other_child), edges in self.edge_metadata.items():
@@ -2572,3 +2581,191 @@ class RowScopeResolver:
             self.frames[parent_id] = merged
         else:
             self.frames[parent_id] = frame
+
+
+# ---------------------------------------------------------------------------
+# Per node type: how a trace follows a child's rows back to its parents' rows
+# ---------------------------------------------------------------------------
+
+
+class _CodeInputs(StrEnum):
+    """How a node's code names its inputs, for the carried-column proof."""
+
+    #: By each incoming edge's name (a Transform, Load File).
+    EDGES = "edges"
+    #: As ``df``, its single parent (Explore).
+    DF = "df"
+    #: As ``df``, the builder's own output, whose schema no plan holds (post-code).
+    OUTPUT = "output"
+
+
+@dataclass(frozen=True, slots=True)
+class _CarryEdge:
+    """One parent edge of a child row, as its carried values are read."""
+
+    resolver: RowScopeResolver
+    child: GraphNode
+    child_id: str
+    parent_id: str
+    source_handle: str | None
+    target_role: str | None
+    child_row: Mapping[str, Any]
+    code: str
+    parent_columns: set[str]
+    #: The child row's values of every column the parent also holds.
+    shared: dict[str, Any]
+
+
+def _carries_nothing(edge: _CarryEdge) -> _CarriedValues | None:
+    return None
+
+
+def _carries_shared(edge: _CarryEdge) -> _CarriedValues | None:
+    """A pass-through or a response holds its parent's columns unchanged."""
+    return _CarriedValues(edge.shared, {})
+
+
+def _edge_join_carries(edge: _CarryEdge) -> _CarriedValues | None:
+    if edge.target_role == "base":
+        return _CarriedValues(edge.shared, {})
+    if edge.target_role != "join":
+        return None
+    resolver = edge.resolver
+    base = edge_join_role_edges(edge.child, resolver.edge_metadata).base
+    base_schema = resolver.schema_for(base.source_id, base.source_handle)
+    if base_schema is None:
+        return None
+    return _CarriedValues(
+        _edge_join_right_match_row(
+            dict(edge.child_row),
+            edge.parent_columns,
+            set(base_schema.names()),
+            edge.child.data.config,
+        ),
+        {},
+    )
+
+
+def _edge_code_carries(edge: _CarryEdge) -> _CarriedValues | None:
+    """Code naming its inputs by edge carries what its proof shows."""
+    return edge.resolver._code_carried_values(edge, edge.shared, _CodeInputs.EDGES)
+
+
+def _explore_code_carries(edge: _CarryEdge) -> _CarriedValues | None:
+    return edge.resolver._code_carried_values(edge, edge.shared, _CodeInputs.DF)
+
+
+def _builder_carries(edge: _CarryEdge) -> _CarriedValues | None:
+    """A builder with a column contract carries every shared column it does not produce."""
+    from haute.projection import projection_contract
+
+    child = edge.child
+    builder = child
+    if edge.code:
+        config = {
+            key: value for key, value in child.data.config.items() if key not in ("code", "steps")
+        }
+        builder = child.with_config(config)
+    produced, _referenced = projection_contract(builder).to_tuple()
+    if produced is None:
+        return None
+    carried = {name: value for name, value in edge.shared.items() if name not in produced}
+    return edge.resolver._code_carried_values(edge, carried, _CodeInputs.OUTPUT)
+
+
+def _join_base_transfers(
+    resolver: RowScopeResolver, child_id: str, child: GraphNode, target_role: str | None
+) -> bool:
+    """A row-transferring join's base row is proved by the unique row it yields."""
+    return (
+        target_role == "base"
+        and build_edge_join_kwargs(child.data.config)["how"] in _ROW_TRANSFER_JOIN_STRATEGIES
+    )
+
+
+def _sole_input_transfers(
+    resolver: RowScopeResolver, child_id: str, child: GraphNode, target_role: str | None
+) -> bool:
+    """A pass-through returns one of its inputs; only a sole traced input is the one
+    its rows come from."""
+    lineage_inputs = [
+        key
+        for key, alignment in resolver.alignments.items()
+        if key[1] == child_id and alignment.read
+    ]
+    return len(lineage_inputs) == 1
+
+
+class _ChosenRow(Protocol):
+    def __call__(
+        self,
+        resolver: RowScopeResolver,
+        child: GraphNode,
+        /,
+        *,
+        parent_id: str,
+        source_handle: str | None,
+        child_row: Mapping[str, Any],
+    ) -> _CarriedValues | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _TraceRowRule:
+    """How a limited-preview trace follows one node type's rows back to its parents."""
+
+    #: Classifies one incoming edge (:func:`trace_edge_alignment`).
+    alignment: Callable[[_AlignmentEdge], TraceEdgeAlignment]
+    #: The values a child row provably carried from one parent row.
+    carried: Callable[[_CarryEdge], _CarriedValues | None]
+    #: Whether a unique child row proves exactly one parent row over an edge
+    #: of this target role; ``None`` where it never does.
+    transfer: Callable[[RowScopeResolver, str, GraphNode, str | None], bool] | None = None
+    #: The values a child row names before its shared columns are read: an
+    #: online Optimiser Apply's chosen scenario row.
+    chosen_row: _ChosenRow | None = None
+
+
+_SOURCE_ROWS = _TraceRowRule(_never_aligned, _carries_nothing)
+_RESPONSE_ROWS = _TraceRowRule(_never_aligned, _carries_shared)
+_PASS_THROUGH_ROWS = _TraceRowRule(_always_aligned, _carries_shared, _sole_input_transfers)
+_BUILDER_ROWS = _TraceRowRule(_aligned_without_code, _builder_carries)
+
+#: How a trace correlates each node type's rows with its parents' rows.
+_TRACE_ROW_RULES: Mapping[NodeType, _TraceRowRule] = node_type_table(
+    "trace row correlation",
+    {
+        NodeType.API_INPUT: _SOURCE_ROWS,
+        NodeType.WORKBENCH_INPUT: _SOURCE_ROWS,
+        NodeType.WORKBENCH_OUTPUT: _RESPONSE_ROWS,
+        NodeType.DATA_INPUT: _SOURCE_ROWS,
+        NodeType.DATA_OUTPUT: _PASS_THROUGH_ROWS,
+        NodeType.POLARS: _TraceRowRule(_code_aligned, _edge_code_carries),
+        NodeType.EDGE_JOIN: _TraceRowRule(
+            _edge_join_aligned, _edge_join_carries, _join_base_transfers
+        ),
+        NodeType.MODEL_SCORE: _BUILDER_ROWS,
+        NodeType.BANDING: _BUILDER_ROWS,
+        NodeType.RATING_STEP: _BUILDER_ROWS,
+        NodeType.OUTPUT: _RESPONSE_ROWS,
+        NodeType.EXPLORE: _TraceRowRule(_explore_aligned, _explore_code_carries),
+        NodeType.EXTERNAL_FILE: _TraceRowRule(_aligned_without_code, _edge_code_carries),
+        NodeType.LIVE_SWITCH: _PASS_THROUGH_ROWS,
+        NodeType.MODELLING: _PASS_THROUGH_ROWS,
+        NodeType.OPTIMISER: _TraceRowRule(_optimiser_aligned, _carries_shared),
+        NodeType.SCENARIO_EXPANDER: _BUILDER_ROWS,
+        NodeType.OPTIMISER_APPLY: _TraceRowRule(
+            _optimiser_apply_aligned,
+            _builder_carries,
+            chosen_row=RowScopeResolver._online_apply_chosen_row,
+        ),
+        NodeType.CONSTANT: _SOURCE_ROWS,
+        NodeType.SUBMODEL: _PASS_THROUGH_ROWS,
+        NodeType.SUBMODEL_PORT: _PASS_THROUGH_ROWS,
+    },
+)
+
+
+def _row_rule(node_type: NodeType) -> _TraceRowRule:
+    """The row rule of *node_type*. A value that is not a node type (a stand-in
+    node) is correlated through no edge, as a source is."""
+    return _TRACE_ROW_RULES.get(node_type, _SOURCE_ROWS)

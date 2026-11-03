@@ -28,6 +28,7 @@ import ast
 import dataclasses
 import math
 from collections.abc import Callable, Collection, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -47,7 +48,8 @@ from haute._expression_parser import (
 )
 from haute._graph_utils import edge_input_name, select_edge_source_output
 from haute._logging import get_logger
-from haute._node_specs import REQUEST_INPUT_NODE_TYPES
+from haute._node_specs import node_type_table
+from haute._node_type import NodeType
 from haute._rating import (
     SUPPORTED_BANDING_OPERATORS,
     _banding_rule_comparators,
@@ -841,6 +843,45 @@ def enrich_optimiser_apply(
 # ---------------------------------------------------------------------------
 
 
+def _known_node_type(node_type: str) -> NodeType | None:
+    """*node_type* as a :class:`NodeType`, or ``None`` for any other value."""
+    try:
+        return NodeType(node_type)
+    except ValueError:
+        return None
+
+
+#: How each node type produces its rows when its type alone decides it, checked
+#: before any code-sniffing because config-driven nodes carry no literal
+#: operation in code; ``None`` where the node's code operation decides.
+_ROW_LINEAGE_BY_NODE_TYPE: Mapping[NodeType, str | None] = node_type_table(
+    "trace row lineage",
+    {
+        NodeType.API_INPUT: "created",
+        NodeType.WORKBENCH_INPUT: "created",
+        NodeType.WORKBENCH_OUTPUT: None,
+        NodeType.DATA_INPUT: "created",
+        NodeType.DATA_OUTPUT: None,
+        NodeType.POLARS: None,
+        NodeType.EDGE_JOIN: "joined",
+        NodeType.MODEL_SCORE: None,
+        NodeType.BANDING: None,
+        NodeType.RATING_STEP: None,
+        NodeType.OUTPUT: None,
+        NodeType.EXPLORE: None,
+        NodeType.EXTERNAL_FILE: None,
+        NodeType.LIVE_SWITCH: "selected",
+        NodeType.MODELLING: None,
+        NodeType.OPTIMISER: None,
+        NodeType.SCENARIO_EXPANDER: "expanded",
+        NodeType.OPTIMISER_APPLY: "aggregated",
+        NodeType.CONSTANT: "created",
+        NodeType.SUBMODEL: None,
+        NodeType.SUBMODEL_PORT: None,
+    },
+)
+
+
 def detect_row_lineage_type(
     *,
     node_type: str = "",
@@ -862,17 +903,10 @@ def detect_row_lineage_type(
       - "passthrough" : rows unchanged (with_columns, rename, etc.)
     """
     try:
-        if node_type in REQUEST_INPUT_NODE_TYPES or node_type in ("dataInput", "constant"):
-            return "created"
-        if node_type == "liveSwitch":
-            return "selected"
-        # Config-driven nodes carry no literal operation in code.
-        if node_type == "edgeJoin":
-            return "joined"
-        if node_type == "scenarioExpander":
-            return "expanded"
-        if node_type == "optimiserApply":
-            return "aggregated"
+        known = _known_node_type(node_type)
+        label = _ROW_LINEAGE_BY_NODE_TYPE[known] if known is not None else None
+        if label is not None:
+            return label
 
         op = operation_type.lower() if operation_type else ""
         if op in ("group_by", "groupby", "agg"):
@@ -1035,7 +1069,7 @@ def input_source_entry(
     config = node.data.config if node is not None and isinstance(node.data.config, dict) else {}
     try:
         factor = None
-        if step.node_type == "banding":
+        if _step_enrichment(step.node_type).banding_factors:
             detail = enrich_banding(
                 config, step.input_values, step.output_values, traced_column=column
             )
@@ -1471,6 +1505,154 @@ def _pass_through_origin(
             return current
 
 
+@dataclass(frozen=True, slots=True)
+class _EnrichmentInputs:
+    """What :func:`enrich_steps` was given, for a node type's detail."""
+
+    column: str | None
+    source: str
+    eager_outputs: dict[str, pl.DataFrame]
+    parents_of: dict[str, list[str]]
+    source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None
+    node_map: dict[str, Any]
+    incoming_edges_of: Mapping[str, Sequence[GraphEdge]] | None
+    lineage_plans: Callable[[], Mapping[str, Any]] | None
+
+
+def _rating_step_detail(
+    step: TraceStep, cfg: dict[str, Any], inputs: _EnrichmentInputs
+) -> dict[str, Any] | None:
+    factor_input_dtypes = _resolve_factor_input_dtypes(
+        step.node_id,
+        inputs.eager_outputs,
+        inputs.parents_of,
+        inputs.source_frames_of,
+    )
+    return enrich_rating_step(
+        cfg,
+        step.input_values,
+        step.output_values,
+        factor_input_dtypes=factor_input_dtypes,
+    )
+
+
+def _banding_detail(
+    step: TraceStep, cfg: dict[str, Any], inputs: _EnrichmentInputs
+) -> dict[str, Any] | None:
+    # Resolve each factor's source column dtype from the parent frames so
+    # interval re-matching compares in the engine's own numeric domain
+    # (Float32-faithful), not widened float64.
+    factor_input_dtypes = _resolve_factor_input_dtypes(
+        step.node_id,
+        inputs.eager_outputs,
+        inputs.parents_of,
+        inputs.source_frames_of,
+    )
+    return enrich_banding(
+        cfg,
+        step.input_values,
+        step.output_values,
+        traced_column=inputs.column,
+        factor_input_dtypes=factor_input_dtypes,
+    )
+
+
+def _model_score_detail(
+    step: TraceStep, cfg: dict[str, Any], inputs: _EnrichmentInputs
+) -> dict[str, Any] | None:
+    return enrich_model_score(cfg, step.input_values, step.output_values)
+
+
+def _scenario_expansion_detail(
+    step: TraceStep, cfg: dict[str, Any], inputs: _EnrichmentInputs
+) -> dict[str, Any] | None:
+    return enrich_scenario_expansion(
+        cfg,
+        step.input_values,
+        step.output_values,
+    )
+
+
+def _live_switch_detail(
+    step: TraceStep, cfg: dict[str, Any], inputs: _EnrichmentInputs
+) -> dict[str, Any] | None:
+    return enrich_live_switch(cfg, inputs.source)
+
+
+def _optimiser_apply_detail(
+    step: TraceStep, cfg: dict[str, Any], inputs: _EnrichmentInputs
+) -> dict[str, Any] | None:
+    # A ratebook apply is row-local, so the head frames that produced the
+    # clicked row explain it; an online apply reads the uncapped plans.
+    row_local = cfg.get("optimiser_mode") == "ratebook"
+    input_frames, source_names = _resolve_optimiser_apply_inputs(
+        step.node_id,
+        inputs.eager_outputs
+        if row_local or inputs.lineage_plans is None
+        else inputs.lineage_plans(),
+        inputs.node_map,
+        inputs.incoming_edges_of,
+    )
+    return enrich_optimiser_apply(
+        cfg,
+        step.input_values,
+        step.output_values,
+        input_frames=input_frames,
+        source_names=source_names,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _StepEnrichment:
+    """How a trace explains a step of one node type beyond its code."""
+
+    #: The step's ``node_detail``; ``None`` for a node type without one.
+    detail: (
+        Callable[[TraceStep, dict[str, Any], _EnrichmentInputs], dict[str, Any] | None] | None
+    ) = None
+    #: The detail names the banding factor that wrote each output column: that
+    #: factor is the traced column's lineage, which code never replaces.
+    banding_factors: bool = False
+
+
+_NO_ENRICHMENT = _StepEnrichment()
+
+#: The node-type enrichment of each node type's trace step.
+_STEP_ENRICHMENT: Mapping[NodeType, _StepEnrichment] = node_type_table(
+    "trace step enrichment",
+    {
+        NodeType.API_INPUT: _NO_ENRICHMENT,
+        NodeType.WORKBENCH_INPUT: _NO_ENRICHMENT,
+        NodeType.WORKBENCH_OUTPUT: _NO_ENRICHMENT,
+        NodeType.DATA_INPUT: _NO_ENRICHMENT,
+        NodeType.DATA_OUTPUT: _NO_ENRICHMENT,
+        NodeType.POLARS: _NO_ENRICHMENT,
+        NodeType.EDGE_JOIN: _NO_ENRICHMENT,
+        NodeType.MODEL_SCORE: _StepEnrichment(_model_score_detail),
+        NodeType.BANDING: _StepEnrichment(_banding_detail, banding_factors=True),
+        NodeType.RATING_STEP: _StepEnrichment(_rating_step_detail),
+        NodeType.OUTPUT: _NO_ENRICHMENT,
+        NodeType.EXPLORE: _NO_ENRICHMENT,
+        NodeType.EXTERNAL_FILE: _NO_ENRICHMENT,
+        NodeType.LIVE_SWITCH: _StepEnrichment(_live_switch_detail),
+        NodeType.MODELLING: _NO_ENRICHMENT,
+        NodeType.OPTIMISER: _NO_ENRICHMENT,
+        NodeType.SCENARIO_EXPANDER: _StepEnrichment(_scenario_expansion_detail),
+        NodeType.OPTIMISER_APPLY: _StepEnrichment(_optimiser_apply_detail),
+        NodeType.CONSTANT: _NO_ENRICHMENT,
+        NodeType.SUBMODEL: _NO_ENRICHMENT,
+        NodeType.SUBMODEL_PORT: _NO_ENRICHMENT,
+    },
+)
+
+
+def _step_enrichment(node_type: str) -> _StepEnrichment:
+    """The enrichment of a step whose ``node_type`` is *node_type*; none for any
+    value that is not a node type."""
+    known = _known_node_type(node_type)
+    return _STEP_ENRICHMENT[known] if known is not None else _NO_ENRICHMENT
+
+
 def enrich_steps(
     steps: list[TraceStep],
     node_map: dict[str, Any],
@@ -1504,6 +1686,16 @@ def enrich_steps(
     full scenario set and a ratio constraint's whole-frame baseline both lie
     outside a limited preview's head rows.
     """
+    inputs = _EnrichmentInputs(
+        column=column,
+        source=source,
+        eager_outputs=eager_outputs,
+        parents_of=parents_of,
+        source_frames_of=source_frames_of,
+        node_map=node_map,
+        incoming_edges_of=incoming_edges_of,
+        lineage_plans=lineage_plans,
+    )
     for step in steps:
         if getattr(step, "snapshot_generation_id", None) is not None and not getattr(
             step, "snapshot_reproduced", False
@@ -1808,69 +2000,13 @@ def enrich_steps(
 
             # --- Node-type enrichment ---
             try:
-                detail: dict[str, Any] | None = None
-                if node_type == "ratingStep":
-                    factor_input_dtypes = _resolve_factor_input_dtypes(
-                        step.node_id,
-                        eager_outputs,
-                        parents_of,
-                        source_frames_of,
-                    )
-                    detail = enrich_rating_step(
-                        cfg,
-                        step.input_values,
-                        step.output_values,
-                        factor_input_dtypes=factor_input_dtypes,
-                    )
-                elif node_type == "banding":
-                    # Resolve each factor's source column dtype from
-                    # the parent frames so interval re-matching
-                    # compares in the engine's own numeric domain
-                    # (Float32-faithful), not widened float64.
-                    factor_input_dtypes = _resolve_factor_input_dtypes(
-                        step.node_id,
-                        eager_outputs,
-                        parents_of,
-                        source_frames_of,
-                    )
-                    detail = enrich_banding(
-                        cfg,
-                        step.input_values,
-                        step.output_values,
-                        traced_column=column,
-                        factor_input_dtypes=factor_input_dtypes,
-                    )
-                elif node_type == "modelScore":
-                    detail = enrich_model_score(cfg, step.input_values, step.output_values)
-                elif node_type == "scenarioExpander":
-                    detail = enrich_scenario_expansion(
-                        cfg,
-                        step.input_values,
-                        step.output_values,
-                    )
-                elif node_type == "liveSwitch":
-                    detail = enrich_live_switch(cfg, source)
-                elif node_type == "optimiserApply":
-                    # A ratebook apply is row-local, so the head frames that
-                    # produced the clicked row explain it; an online apply
-                    # reads the uncapped plans.
-                    row_local = cfg.get("optimiser_mode") == "ratebook"
-                    input_frames, source_names = _resolve_optimiser_apply_inputs(
-                        step.node_id,
-                        eager_outputs if row_local or lineage_plans is None else lineage_plans(),
-                        node_map,
-                        incoming_edges_of,
-                    )
-                    detail = enrich_optimiser_apply(
-                        cfg,
-                        step.input_values,
-                        step.output_values,
-                        input_frames=input_frames,
-                        source_names=source_names,
-                    )
+                enrichment = _step_enrichment(node_type)
+                detail = (
+                    enrichment.detail(step, cfg, inputs) if enrichment.detail is not None else None
+                )
                 if detail is not None:
                     step.node_detail = detail
-                    if node_type == "banding":
+                    if enrichment.banding_factors:
                         _attach_banding_lineage(step, detail, column)
             except Exception as exc:
                 logger.warning(

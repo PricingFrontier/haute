@@ -28,6 +28,7 @@ from haute._expression_parser import assigns_column, wrap_node_code
 from haute._graph_utils import upstream_node_ids
 from haute._json_safe import MAX_SAFE_INTEGER
 from haute._logging import get_logger
+from haute._trace_correlation import joins_by_role
 from haute._trace_enrichment import _effective_node_code
 
 if TYPE_CHECKING:
@@ -138,7 +139,7 @@ def _edge_join_config(node_map: dict[str, Any] | None, node_id: str) -> dict[str
         return None
     node = node_map.get(node_id)
     data = getattr(node, "data", None)
-    if getattr(data, "nodeType", None) != "edgeJoin":
+    if not joins_by_role(getattr(data, "nodeType", None)):
         return None
     config = getattr(data, "config", None)
     return config if isinstance(config, dict) else None
