@@ -8,6 +8,7 @@ the two sites cannot drift.
 from pathlib import Path
 
 from haute._gitignore_guard import GITIGNORE_GUARD_ENTRIES, ensure_gitignore_guards
+from haute._workbench_test_quotes import REPORT_FILE
 
 
 class TestGuardEntryList:
@@ -20,6 +21,7 @@ class TestGuardEntryList:
         assert {".haute_build/", "__pycache__/"} <= set(GITIGNORE_GUARD_ENTRIES)
         assert "mlruns/" in GITIGNORE_GUARD_ENTRIES
         assert "impact_report.md" in GITIGNORE_GUARD_ENTRIES
+        assert REPORT_FILE in GITIGNORE_GUARD_ENTRIES  # haute app build's test quotes report
         assert ".venv/" in GITIGNORE_GUARD_ENTRIES  # matches the *.py seed pathspec otherwise
 
     def test_stable_layer_json_is_not_ignored(self) -> None:
@@ -39,11 +41,12 @@ class TestGuardEntryList:
             "outputs/scored.parquet",
             ".cache/models/x.cbm",
             "rating/__pycache__/main.pyc",
+            "test_quotes_report.md",
             "rating/files/data/postcodes.csv",
             "rating/files/models/freq.cbm",
         ]
         ignored = git_run(tmp_path, "check-ignore", "--no-index", *paths).splitlines()
-        assert ignored == paths[:4]
+        assert ignored == paths[:5]
 
 
 class TestEnsureGitignoreGuards:

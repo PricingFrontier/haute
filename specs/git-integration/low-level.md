@@ -139,7 +139,8 @@ In steady state a clone-state read performs one marker `stat` plus cache lookup,
 repository with no callers leaves no permanent registry entry.
 
 **Gitignore guards** (`_gitignore_guard.py`): `GITIGNORE_GUARD_ENTRIES` is exactly
-`.env`, `.haute/`, `impact_report.md`, `.haute_cache/`, `mlruns/`, `/data/`, `/outputs/`,
+`.env`, `.haute/`, `impact_report.md`, `test_quotes_report.md` (the report `haute app build`
+writes), `.haute_cache/`, `mlruns/`, `/data/`, `/outputs/`,
 `/.cache/`, `.haute_build/`, `__pycache__/` and `.venv/`. `/data/`, `/outputs/` and
 `/.cache/` are anchored to the project root, so the pipeline folder's `files/data/` stays
 versioned; an unanchored `data/` line in an existing project ignores it, and the project

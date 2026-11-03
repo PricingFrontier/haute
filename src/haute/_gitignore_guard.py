@@ -19,6 +19,8 @@ GITIGNORE_GUARD_ENTRIES: tuple[str, ...] = (
     ".env",
     ".haute/",
     "impact_report.md",
+    # The test quotes report haute app build writes, which CI keeps as an artifact.
+    "test_quotes_report.md",
     ".haute_cache/",
     "mlruns/",
     # The root's local folders, anchored so the versioned pipeline folder's files/data/
