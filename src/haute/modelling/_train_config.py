@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from copy import deepcopy
+from datetime import datetime, timedelta
 from types import MappingProxyType
 from typing import Any
 
@@ -359,6 +361,50 @@ def blank_evaluation_settings(raw: Any) -> list[str]:
         if value == "":
             blank.append(".".join(("evaluation", *path)))
     return blank
+
+
+def evaluation_with_blanks_filled(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """*raw* with each blank setting (:func:`blank_evaluation_settings`) given a stand-in its
+    rules accept, so every other value is checked while the blanks wait for the author.
+
+    A blank column takes a placeholder name. A blank temporal boundary takes a date one
+    day either side of the boundary that is set, so the rule that the validation starts
+    before the test holds, or a fixed day when none is.
+    """
+    filled = deepcopy(dict(raw))
+    for key in ("group_column", "date_column"):
+        if filled.get(key) == "":
+            filled[key] = "_"
+    validation = filled.get("validation")
+    test = filled.get("test")
+    validation_start = validation.get("start") if isinstance(validation, dict) else None
+    test_start = test.get("start") if isinstance(test, dict) else None
+    if validation_start == "" or test_start == "":
+        if validation_start == "":
+            validation_start = (
+                _day_beside(test_start, -1) if test_start not in (None, "") else "2000-01-01"
+            )
+        if test_start == "":
+            test_start = (
+                _day_beside(validation_start, 1) if validation_start is not None else "2000-01-02"
+            )
+        if isinstance(validation, dict) and "start" in validation:
+            filled["validation"] = {**validation, "start": validation_start}
+        if isinstance(test, dict) and "start" in test:
+            filled["test"] = {**test, "start": test_start}
+    return filled
+
+
+def _day_beside(boundary: object, days: int) -> object:
+    """The day *days* from an ISO *boundary*; a boundary that does not parse is kept, so
+    its own rule refuses it."""
+    if not isinstance(boundary, str):
+        return boundary
+    try:
+        parsed = datetime.fromisoformat(boundary.replace("Z", "+00:00"))
+    except ValueError:
+        return boundary
+    return (parsed + timedelta(days=days)).isoformat()
 
 
 def parse_evaluation_config(raw: Any) -> dict[str, Any]:

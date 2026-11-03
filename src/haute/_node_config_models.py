@@ -1385,6 +1385,7 @@ def _check_modelling(config: Mapping[str, Any]) -> None:
         blank_evaluation_settings,
         build_train_params,
         effective_metrics,
+        evaluation_with_blanks_filled,
         parse_evaluation_config,
         parse_tuning_config,
         validate_modelling_config_values,
@@ -1393,15 +1394,16 @@ def _check_modelling(config: Mapping[str, Any]) -> None:
 
     validate_modelling_config_values(config)
     validate_training_device(config)
-    # A present evaluation and tuning are each checked; an absent evaluation, or one
-    # the editor left a setting of blank, is completeness, and tuning's one rule that
-    # needs it waits for it.
+    # A present evaluation and tuning are each checked; an absent evaluation, and a
+    # setting the editor left blank, are completeness, and tuning's one rule that needs
+    # the split waits for them. The rest of an evaluation with a blank is still checked.
     raw_evaluation = config.get("evaluation")
-    evaluation = (
-        None
-        if raw_evaluation is None or blank_evaluation_settings(raw_evaluation)
-        else parse_evaluation_config(raw_evaluation)
-    )
+    evaluation = None
+    if raw_evaluation is not None:
+        if blank_evaluation_settings(raw_evaluation):
+            parse_evaluation_config(evaluation_with_blanks_filled(raw_evaluation))
+        else:
+            evaluation = parse_evaluation_config(raw_evaluation)
     if config.get("tuning") is not None:
         parse_tuning_config(
             config["tuning"],

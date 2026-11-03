@@ -154,7 +154,7 @@
   pivot and chart validators, `_edge_join.build_edge_join_kwargs`,
   `_node_apply.scenario_step_count`, `_node_apply.constant_frame`'s name rules,
   `_keyword_parameters.validate_keyword_parameters`, Model Training's pure rules
-  (`modelling/_train_config`: `validate_modelling_config_values`, `parse_evaluation_config` for a present `evaluation` none of whose settings is blank,
+  (`modelling/_train_config`: `validate_modelling_config_values`, `parse_evaluation_config` for a present `evaluation`, each setting the Split pane leaves blank given a stand-in its rules accept (`evaluation_with_blanks_filled`) so every other value is checked,
   `parse_tuning_config` for a present `tuning`, checked whether or not an evaluation is chosen
   (its one rule that needs the split, a validation fit, waits for one), and
   `validate_training_device`, which refuses a

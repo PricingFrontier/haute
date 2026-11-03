@@ -297,6 +297,57 @@ def test_an_evaluation_setting_the_editor_leaves_blank_is_unfinished(
     assert refused.value.setting == blank[0]
 
 
+_TEMPORAL = {
+    "schema_version": 1,
+    "strategy": "temporal",
+    "date_column": "inception",
+    "validation": {"method": "single", "start": "2024-01-01"},
+    "test": {"start": "2024-06-01"},
+}
+
+
+@pytest.mark.parametrize(
+    "evaluation",
+    [
+        {**_TEMPORAL, "validation": {"method": "single", "start": ""}},
+        {**_TEMPORAL, "test": {"start": ""}},
+        {**_TEMPORAL, "validation": {"method": "single", "start": ""}, "test": {"start": ""}},
+    ],
+    ids=["validation-start", "test-start", "both"],
+)
+def test_a_blank_temporal_boundary_waits_beside_the_one_that_is_set(
+    evaluation: dict[str, Any],
+) -> None:
+    validate_node_config(NodeType.MODELLING, {"algorithm": "catboost", "evaluation": evaluation})
+
+
+@pytest.mark.parametrize(
+    ("evaluation", "refusal"),
+    [
+        ({**EVALUATION, "strategy": "group", "group_column": "", "seed": "wrong"}, "seed"),
+        (
+            {**EVALUATION, "strategy": "group", "group_column": "", "schema_version": 99},
+            "schema_version",
+        ),
+        ({**EVALUATION, "strategy": "group", "group_column": "", "validation": True}, "validation"),
+        (
+            {**_TEMPORAL, "date_column": "", "test": {"start": "not a date"}},
+            "test.start",
+        ),
+    ],
+    ids=["seed", "schema-version", "validation", "test-start"],
+)
+def test_a_blank_setting_leaves_its_siblings_held_to_the_rules(
+    evaluation: dict[str, Any], refusal: str
+) -> None:
+    with pytest.raises(TrainingConfigError, match=refusal):
+        validate_node_config(
+            NodeType.MODELLING,
+            {"algorithm": "catboost", "evaluation": evaluation},
+            require_complete=False,
+        )
+
+
 def test_an_evaluation_with_no_blank_setting_is_held_to_its_rules() -> None:
     evaluation = {**EVALUATION, "strategy": "group", "group_column": "g", "seed": "x"}
     with pytest.raises(TrainingConfigError, match="seed"):
