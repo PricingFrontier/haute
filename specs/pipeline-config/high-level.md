@@ -112,7 +112,10 @@ node that binds receives its frames in the order its parameters read them, in ev
 UTF-8 with nothing escaped, LF line endings, a two-space indent and a final newline, and
 shapes a record by its kind, never by a width limit, so a one-character edit changes one
 line: a rating entry, a node position, a Workbench layout box, a schema column and a
-show-when condition each sit on one line, as does any list or mapping of numbers alone;
+show-when condition each sit on one line, as does any list or mapping of numbers alone
+(a node position is whole pixels: the canvas places and drags nodes on them, and the save
+rounds an older fractional one half up, as the canvas does, so loading and saving an
+unchanged pipeline leaves its `.haute.json` byte for byte the same);
 everything else, a sheet's list of fields among it, is one item a line. Each kind of
 record keeps its key order, its identifying key first; a map whose order means nothing is
 sorted, and the analyst's data keeps the order it was written in. A setting is left out at

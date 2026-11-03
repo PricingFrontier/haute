@@ -35,7 +35,7 @@ The owner decided the following on 3 November 2026:
 **Out of scope:** `haute init` rewrites `haute.toml` from scratch on a re-run, as decided on 1 November 2026, so editing that file in place is not planned.
 
 The packages fall into two groups:
-- **Writing changes:** `READ-11` to `READ-13` change how files are written, but every file loads to the same values. The next save rewrites each file once, and no conversion is needed.
+- **Writing changes:** `READ-12` and `READ-13` change how files are written, but every file loads to the same values. The next save rewrites each file once, and no conversion is needed.
 - **Format changes:** `READ-20` onwards. The loader accepts only the current format ([specification governance](../README.md)), and `READ-20` says how commercial-pricing moves to each new one.
 
 Each package states its formats in its owning specification before behaviour changes, and names the contract it replaces there. Golden tests are written from those specifications, not from the implementation's output.
@@ -44,7 +44,6 @@ Each package states its formats in its owning specification before behaviour cha
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| READ-11 | Planned | P2 | Node positions are whole numbers, on one line per node, and only a move changes them. |
 | READ-12 | Planned | P2 | Adding or removing a node leaves every unaffected function in `main.py` where it was. |
 | READ-13 | Planned | P3 | Generated code leaves out a default it repeats and a comment that says nothing, and new nodes get plain names. |
 | READ-20 | Planned | P2 | Each format change comes with a one-off script that converts commercial-pricing and Haute's fixtures, proven before and after. |
@@ -64,26 +63,6 @@ Each package states its formats in its owning specification before behaviour cha
 | READ-41 | Planned | P3 | A new project holds no `uv init` placeholders and no settings at their default values. |
 
 ## Planned improvements
-
-### READ-11 — Node positions are whole numbers
-**Why:**
-- The sidecar holds positions such as `-355.61225658228415` beside `2332.0`, over 4 lines per node.
-- In one commit of the investigated pull request, a one-word Polars edit moved five nodes by 1 to 3 pixels, and nothing explains why.
-
-**Plan:**
-- Round positions to whole pixels in the canvas when a node is placed or dragged, as well as on save. The editor compares positions exactly, so rounding only on save would mark every node as moved.
-- Find the cause of the 1 to 3 pixel moves, and stop an edit that moves no node from writing positions.
-- One line per node comes from the one JSON printer ([pipeline-config](../pipeline-config/high-level.md), JSON files Haute writes).
-
-**Acceptance:**
-- A store test: a drag ending at fractional coordinates stores whole numbers.
-- Editing a Polars step and saving leaves every position unchanged.
-- Loading and saving an unchanged pipeline leaves its sidecar byte for byte the same.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/stores/useGraphStore.ts::positionsEqual`;
-`src/haute/routes/_helpers.py::save_sidecar`.
 
 ### READ-12 — Adding or removing a node leaves unaffected functions where they were
 **Why:** Functions are written in a topological order with each data source placed just before its first consumer. Inserting a node can push everything below it further down and reshuffle functions that did not change. One commit in the investigated pull request moved two unchanged functions. The `br_` and `ce_` chains are also interleaved.

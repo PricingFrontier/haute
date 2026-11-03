@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json as _json
+import math
 import shutil
 import tempfile
 import threading
@@ -817,7 +818,14 @@ def save_sidecar(
             f"because both sanitize to {sanitized!r}"
         )
 
-    positions = {_sidecar_position_key(node): node.position for node in graph.nodes}
+    # Whole pixels (READ-11): the canvas places and drags nodes on them, and a position
+    # loaded from an older sidecar is rounded the way the canvas rounds, half up.
+    positions = {
+        _sidecar_position_key(node): {
+            axis: math.floor(value + 0.5) for axis, value in node.position.items()
+        }
+        for node in graph.nodes
+    }
     # Written in key order, so the file depends on where nodes sit, never on
     # the order the graph lists them (a reloaded graph follows the source file).
     positions = dict(sorted(positions.items()))

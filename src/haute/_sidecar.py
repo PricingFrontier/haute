@@ -48,7 +48,8 @@ class SidecarModel(BaseModel):
     :meth:`model_validate_json` for typed access.
     """
 
-    positions: dict[str, dict[str, float]] = Field(default_factory=dict)
+    #: Whole pixels as written (READ-11); an older sidecar's fractional ones still read.
+    positions: dict[str, dict[str, int | float]] = Field(default_factory=dict)
     sources: list[str] = Field(default_factory=lambda: ["live"])
     active_source: str = "live"
     managed_parent: str | None = None

@@ -93,13 +93,12 @@ def test_a_pipeline_sidecar_writes_a_position_a_line(tmp_path: Path) -> None:
     graph = PipelineGraph(
         nodes=[
             GraphNode(id=nid, position={"x": x, "y": 0}, data=NodeData(label=nid))
-            for nid, x in (("b", 300), ("a", 0))
+            for nid, x in (("b", 299.5), ("a", 0.4))
         ]
     )
     save_sidecar(tmp_path / "main.py", graph)
     assert (tmp_path / "main.haute.json").read_bytes() == (
-        b'{\n  "positions": {\n'
-        b'    "a": {"x": 0.0, "y": 0.0},\n    "b": {"x": 300.0, "y": 0.0}\n  }\n}\n'
+        b'{\n  "positions": {\n    "a": {"x": 0, "y": 0},\n    "b": {"x": 300, "y": 0}\n  }\n}\n'
     )
 
 
@@ -134,3 +133,21 @@ def test_a_workbench_schema_column_and_a_show_when_condition_sit_on_one_line() -
         '{\n  "show_when": {\n    "match": "any",\n    "conditions": [\n'
         '      {"column": "p.x", "op": "ticked"}\n    ]\n  }\n}\n'
     )
+
+
+def test_an_unchanged_pipeline_saves_its_sidecar_byte_for_byte(tmp_path: Path) -> None:
+    from haute.routes._helpers import parse_pipeline_to_graph
+
+    main = tmp_path / "main.py"
+    main.write_text(
+        'import haute\nimport polars as pl\n\npipeline = haute.Pipeline("main")\n\n\n'
+        "@pipeline.polars\ndef data() -> pl.LazyFrame:\n"
+        '    df = pl.LazyFrame({"x": [1]})\n    return df\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "main.haute.json").write_bytes(
+        b'{\n  "positions": {\n    "data": {"x": 120, "y": -356}\n  }\n}\n'
+    )
+    before = (tmp_path / "main.haute.json").read_bytes()
+    save_sidecar(main, parse_pipeline_to_graph(main))
+    assert (tmp_path / "main.haute.json").read_bytes() == before
