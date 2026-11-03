@@ -86,7 +86,7 @@ test.describe("Explore cached field pivot journey", () => {
     await page.getByRole("tab", { name: "Transform", exact: true }).click()
     // A new Explore node starts in step mode, so its Polars code is authored
     // as a Free code step: the step builder is the default authoring surface
-    // on every Polars surface, and the switch to code is one way.
+    // on every Polars surface; there is no switch to code.
     const stepsEditor = page.getByTestId("polars-steps-editor")
     await expect(stepsEditor).toBeVisible()
     await stepsEditor.getByRole("button", { name: "Add step" }).click()
@@ -236,7 +236,7 @@ test.describe("Explore cached field pivot journey", () => {
     await page.getByRole("tab", { name: "Transform", exact: true }).click()
     // A new Explore node starts in step mode, so its Polars code is authored
     // as a Free code step: the step builder is the default authoring surface
-    // on every Polars surface, and the switch to code is one way.
+    // on every Polars surface; there is no switch to code.
     const stepsEditor = page.getByTestId("polars-steps-editor")
     await expect(stepsEditor).toBeVisible()
     await stepsEditor.getByRole("button", { name: "Add step" }).click()
@@ -352,7 +352,7 @@ test.describe("Explore cached field pivot journey", () => {
     await page.getByRole("tab", { name: "Transform", exact: true }).click()
     // A new Explore node starts in step mode, so its Polars code is authored
     // as a Free code step: the step builder is the default authoring surface
-    // on every Polars surface, and the switch to code is one way.
+    // on every Polars surface; there is no switch to code.
     const stepsEditor = page.getByTestId("polars-steps-editor")
     await expect(stepsEditor).toBeVisible()
     await stepsEditor.getByRole("button", { name: "Add step" }).click()

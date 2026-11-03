@@ -132,7 +132,7 @@ A Databricks table:
     | **SELECT CLAUSE** | `query` (absent when empty) |
     | **RECORDS** | `records`: a list of row objects |
     | **ARGUMENTS** | `arguments`: an object of argument names and values |
-    | **TRANSFORM** tab | `steps`, or the function body after **Switch to code** |
+    | **TRANSFORM** tab | `steps`, or the function body when the node's code is not steps |
     | **COLUMNS** tab | `selected_columns` |
 
     The formats each provider accepts:

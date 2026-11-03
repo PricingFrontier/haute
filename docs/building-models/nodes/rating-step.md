@@ -122,7 +122,7 @@ With **ON MISS** on **Stop the run**, the run fails with a `RatingTableMissError
     | **COMBINED OUTPUT COLUMN** | `combinedOutputs[].outputColumn` |
     | **OPERATION** | `combinedOutputs[].operation`: `"multiply"`, `"add"`, `"min"` or `"max"` |
     | **BASE VALUE** | `combinedOutputs[].baseValue`, a number |
-    | **TRANSFORM** tab | `steps`, or the function body after **Switch to code** |
+    | **TRANSFORM** tab | `steps`, or the function body when the node's code is not steps |
     | **COLUMNS** tab | `selected_columns` |
 
     With no editor control:

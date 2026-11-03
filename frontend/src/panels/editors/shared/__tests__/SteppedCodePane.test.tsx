@@ -43,13 +43,11 @@ describe("SteppedCodePane", () => {
     ["input", ["quotes"]],
     ["frame", []],
   ] as const)("renders the step builder for a steps list in %s mode, passing the surface through", (start, inputNames) => {
-    const onReplace = vi.fn()
     render(
       <SteppedCodePane
         nodeId="node-1"
         config={{ steps: [] }}
         onUpdate={vi.fn()}
-        onReplaceConfig={onReplace}
         inputSources={[{ sourceNodeId: "q", name: "quotes", sourceLabel: "Quotes", edgeId: "e1" }]}
         inputNames={[...inputNames]}
         start={start}
@@ -64,7 +62,6 @@ describe("SteppedCodePane", () => {
       nodeId: "node-1",
       inputNames: [...inputNames],
       runError: "boom",
-      onReplaceConfig: onReplace,
     })
   })
 

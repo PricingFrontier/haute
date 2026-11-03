@@ -1162,7 +1162,8 @@ describe("NodePanel", () => {
     expect(paneProps.inputNames).toEqual([])
     expect(paneProps.inputSources).toEqual([])
     expect(paneProps.runError).toBe("boom")
-    expect(typeof paneProps.onReplaceConfig).toBe("function")
+    // There is no switch to code: a Free code step holds hand-written code.
+    expect(paneProps.onReplaceConfig).toBeUndefined()
     expect(paneProps.config).toEqual({ steps: [] })
   })
 

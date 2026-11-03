@@ -63,7 +63,7 @@ The index column keeps its default name, `scenario_index`. Both ends of the rang
     | **VALUE COLUMN** | `column_name` |
     | **Min** | `min_value` (absent means `0.8`) |
     | **Max** | `max_value` (absent means `1.2`) |
-    | **TRANSFORM** tab | `steps`, or the function body after **Switch to code** |
+    | **TRANSFORM** tab | `steps`, or the function body when the node's code is not steps |
     | **COLUMNS** tab | `selected_columns` |
 
 **See also:**

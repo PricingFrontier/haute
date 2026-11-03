@@ -1,6 +1,6 @@
 import type { NodeEditorState } from "../../types/node"
 import SteppedCodePane from "./shared/SteppedCodePane"
-import type { InputSource, OnReplaceConfig, OnUpdateConfig } from "./_shared"
+import type { InputSource, OnUpdateConfig } from "./_shared"
 
 /**
  * Explore's "Transform" pane: the shared stepped-code pane in `frame` mode.
@@ -11,7 +11,6 @@ import type { InputSource, OnReplaceConfig, OnUpdateConfig } from "./_shared"
 export default function ExploreCodeEditor(props: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
-  onReplaceConfig?: OnReplaceConfig
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
   errorLine?: number | null

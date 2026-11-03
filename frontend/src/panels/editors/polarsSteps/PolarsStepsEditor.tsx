@@ -1,16 +1,15 @@
-import { AlertTriangle, Code } from "lucide-react"
+import { AlertTriangle } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 
 import useListReorder from "../../../hooks/useListReorder"
-import { confirmed } from "../../../stores/useQuestionStore"
 import { NODE_GROUP_COLORS } from "../../../theme/colors"
 import type { StepStart } from "../../../utils/polarsStepInputs"
 import { InputSourcesBar, INPUT_STYLE } from "../_shared"
-import type { InputSource, OnReplaceConfig, OnUpdateConfig } from "../_shared"
+import type { InputSource, OnUpdateConfig } from "../_shared"
 import AddStepMenu, { type StepPreset } from "./AddStepMenu"
 import { stepIcon, stepTitle } from "./calculations"
 import { bareConstants } from "./formula"
-import { createStep, stepDisplayLabel, stepProblem, variablesBefore } from "./catalogue"
+import { createStep, stepProblem, variablesBefore } from "./catalogue"
 import { columnChange, columnNames, columnsAtEachStep, unknownColumnsOf, type ColumnSource } from "./derivedColumns"
 import { StepForm } from "./forms"
 import GeneratedCodePanel from "./GeneratedCodePanel"
@@ -25,13 +24,6 @@ let stepCounter = 0
 function newStepId(): string {
   stepCounter += 1
   return `s${Date.now().toString(36)}${stepCounter.toString(36)}`
-}
-
-const SWITCH_QUESTION = {
-  title: "Switch this node to code?",
-  text: "The steps are removed and the generated code becomes editable. This cannot be undone.",
-  confirm: "Switch to code",
-  danger: true,
 }
 
 /** Join and concat need an input name to reference; withheld while none is eligible. */
@@ -98,8 +90,8 @@ function UnknownColumnsNote({ names }: { names: string[] }) {
 
 /**
  * Low-code authoring: a fixed start card, numbered step cards, the grouped
- * `Add step` menu, the locked generated-code panel and the one-way switch to
- * code. In `input` mode (a Transform) the start card chooses the input and
+ * `Add step` menu and the locked generated-code panel; a Free code step holds
+ * anything the steps do not (there is no switch to code). In `input` mode (a Transform) the start card chooses the input and
  * the first step is the `source` step; in `frame` mode (a surface whose `df`
  * is already bound) there is no start card, every card is a numbered step,
  * and a `source` step is invalid.
@@ -107,7 +99,6 @@ function UnknownColumnsNote({ names }: { names: string[] }) {
 export default function PolarsStepsEditor({
   config,
   onUpdate,
-  onReplaceConfig,
   inputSources,
   inputNames,
   onDeleteInput,
@@ -121,7 +112,6 @@ export default function PolarsStepsEditor({
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
-  onReplaceConfig?: OnReplaceConfig
   /** The input chips on display, each with its columns as the last preview recorded them. */
   inputSources: InputSource[]
   /** The input names the steps may reference (the surface's eligibility, not the chips). */
@@ -278,29 +268,6 @@ export default function PolarsStepsEditor({
   }
   const dragFor = useListReorder(reorder)
 
-  const switchAllowed =
-    steps.length === 0 || (rendered.status === "ok" && rendered.revisionRendered === rendered.revision)
-  const switchDisabledReason =
-    rendered.status === "pending"
-      ? "Rendering…"
-      : renderError
-        ? `Fix ${renderError.stepIndex != null ? stepDisplayLabel(renderError.stepIndex, start) : "the steps"} first`
-        : "Rendering…"
-  const switchEnabled = switchAllowed && onReplaceConfig !== undefined
-  const switchToCode = () => {
-    if (!switchAllowed || !onReplaceConfig) return
-    const replace = onReplaceConfig
-    // The code as it is when asked, which the answer switches to.
-    const code = steps.length === 0 ? "" : rendered.code
-    const rest: Record<string, unknown> = {}
-    for (const [key, value] of Object.entries(config)) {
-      if (key !== "steps") rest[key] = value
-    }
-    void (async () => {
-      if (await confirmed(SWITCH_QUESTION)) replace({ ...rest, code })
-    })()
-  }
-
   const currentStepLines = rendered.status === "ok" && rendered.revisionRendered === rendered.revision ? rendered.stepLines : []
   const runtimeErrorLineFor = (index: number): number | null => {
     const range = currentStepLines[index]
@@ -351,20 +318,6 @@ export default function PolarsStepsEditor({
   const stepCards = steps.slice(cardOffset)
   const withheldKinds = inputNames.length === 0 ? INPUT_REFERENCING_KINDS : undefined
 
-  const switchButton = (
-    <button
-      type="button"
-      onClick={switchToCode}
-      disabled={!switchEnabled}
-      title={switchEnabled ? "Replace the steps with editable code" : switchDisabledReason}
-      className="focus-ring inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-      style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}
-    >
-      <Code size={12} aria-hidden="true" />
-      Switch to code
-    </button>
-  )
-
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-y-auto px-3 py-2 gap-2" data-testid="polars-steps-editor" onKeyDown={keepGraphKeysInEditor}>
       <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
@@ -375,8 +328,7 @@ export default function PolarsStepsEditor({
 
       {!isFrame && !hasInputs ? (
         <EmptyBox>
-          <span>Connect an input to start building steps, or switch to code.</span>
-          {switchButton}
+          <span>Connect an input to start building steps.</span>
         </EmptyBox>
       ) : (
         <>
@@ -538,9 +490,6 @@ export default function PolarsStepsEditor({
             activeStep={pointedStep}
             onPointStep={setPointedStep}
             onOpenStep={openFromCode}
-            switchEnabled={switchEnabled}
-            switchDisabledReason={switchDisabledReason}
-            onSwitchToCode={switchToCode}
           />
         </>
       )}

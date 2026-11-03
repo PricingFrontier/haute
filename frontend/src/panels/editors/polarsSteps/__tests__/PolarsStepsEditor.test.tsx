@@ -28,7 +28,6 @@ import type { Step } from "../types"
 import type { InputSource } from "../../_shared"
 import useGraphStore, { resetGraphStoreForTests } from "../../../../stores/useGraphStore"
 import { makeNode } from "../../../../test-utils/factories"
-import { answerQuestion, asked } from "../../../../test-utils/question"
 
 const mockRender = vi.mocked(renderPolarsSteps)
 const mockResolve = vi.mocked(resolveFreeCodeColumns)
@@ -73,7 +72,6 @@ function Harness({
   inputSources,
   inputNames = inputSources.map((source) => source.name),
   start = "input",
-  onReplace = vi.fn(),
   errorLine,
   runError,
   spy,
@@ -82,7 +80,6 @@ function Harness({
   inputSources: InputSource[]
   inputNames?: string[]
   start?: "input" | "frame"
-  onReplace?: (config: Record<string, unknown>) => void
   errorLine?: number | null
   runError?: string | null
   spy?: (key: string, value: unknown) => void
@@ -101,11 +98,6 @@ function Harness({
         } else {
           setConfig((c) => ({ ...c, ...keyOrUpdates }))
         }
-        return { ok: true }
-      }}
-      onReplaceConfig={(next) => {
-        onReplace(next)
-        setConfig(next)
         return { ok: true }
       }}
       inputSources={inputSources}
@@ -314,7 +306,6 @@ describe("PolarsStepsEditor", () => {
     const filterButton = screen.getByRole("button", { name: "Step 1: Filter rows" })
     expect(filterButton).toHaveAttribute("aria-expanded", "false")
     expect(screen.getAllByRole("status")[0]).toHaveTextContent("Add at least one condition.")
-    expect(screen.getByRole("button", { name: "Switch to code" })).toBeDisabled()
     fireEvent.click(screen.getByRole("button", { name: "Go to error" }))
     expect(filterButton).toHaveAttribute("aria-expanded", "true")
   })
@@ -344,7 +335,6 @@ describe("PolarsStepsEditor", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     const card = screen.getByRole("button", { name: "Step 1: Value" }).closest("[data-testid='polars-step-card']")
     expect(card).toHaveTextContent("Needs a name for the new column.")
-    expect(screen.getByRole("button", { name: "Switch to code" })).toBeDisabled()
     rerender(<Harness initial={{ steps: [source, { id: "w", kind: "with_column", name: "", expr: { type: "operand", operand: { kind: "column", name: "premium" } } }] }} inputSources={[quotes]} runError="Step 1: Column name must be a non-empty string." />)
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Step 1: Column name must be a non-empty string."), { timeout: 5000 })
     expect(screen.queryByTestId("polars-code-note")).not.toBeInTheDocument()
@@ -357,7 +347,7 @@ describe("PolarsStepsEditor", () => {
     await waitFor(() => expect(limitCard).toHaveTextContent("Failed when the pipeline ran"), { timeout: 5000 })
   })
 
-  it("adds and edits multiline free code as a step, then switches using its rendered text", async () => {
+  it("adds and edits multiline free code as a step, which holds code the other steps do not", async () => {
     mockRender.mockImplementation(async ({ steps }) => ({
       ok: true,
       code: (steps as Step[]).map((step) => step.kind === "source" ? "df = quotes" : step.kind === "free_code" ? step.code : "df = df.step()").join("\n"),
@@ -366,17 +356,12 @@ describe("PolarsStepsEditor", () => {
       message: "",
     }))
     const spy = vi.fn()
-    const onReplace = vi.fn()
-    render(<Harness initial={{ steps: [source] }} inputSources={[quotes]} spy={spy} onReplace={onReplace} />)
+    render(<Harness initial={{ steps: [source] }} inputSources={[quotes]} spy={spy} />)
     fireEvent.click(screen.getByRole("button", { name: "Add step" }))
     fireEvent.click(screen.getByRole("menuitem", { name: "Free code" }))
     fireEvent.change(screen.getByRole("textbox", { name: "Free code" }), { target: { value: "# prepare\ndf = df.with_columns(\n  pl.col('premium') * 2\n)" } })
     await waitFor(() => expect(lastSteps(spy)).toEqual([source, expect.objectContaining({ kind: "free_code", code: "# prepare\ndf = df.with_columns(\n  pl.col('premium') * 2\n)" })]), { timeout: 5000 })
-    expect(onReplace).not.toHaveBeenCalled()
-    await waitFor(() => expect(screen.getByRole("button", { name: "Switch to code" })).toBeEnabled(), { timeout: 5000 })
-    fireEvent.click(screen.getByRole("button", { name: "Switch to code" }))
-    await answerQuestion("confirm")
-    expect(onReplace).toHaveBeenCalledWith({ code: "df = quotes\n# prepare\ndf = df.with_columns(\n  pl.col('premium') * 2\n)" })
+    await waitFor(() => expect(screen.getByTestId("polars-generated-code")).toHaveTextContent("pl.col('premium') * 2"), { timeout: 5000 })
   })
 
   it("maps an execution line in a multiline free-code range to its card, then maps the next range to the following card", async () => {
@@ -404,24 +389,10 @@ describe("PolarsStepsEditor", () => {
     await waitFor(() => expect(lastSteps(spy)).toEqual([source, limit]), { timeout: 5000 })
   })
 
-  it("switches to code only after a successful render and asks for confirmation", async () => {
-    const onReplace = vi.fn()
-    render(<Harness initial={{ steps: [source, limit], selected_columns: ["premium"] }} inputSources={[quotes]} onReplace={onReplace} />)
-    const button = screen.getByRole("button", { name: "Switch to code" })
-    expect(button).toBeDisabled()
-    await waitFor(() => expect(button).toBeEnabled(), { timeout: 5000 })
-    fireEvent.click(button)
-    expect(asked()).toMatchObject({
-      title: "Switch this node to code?",
-      text: "The steps are removed and the generated code becomes editable. This cannot be undone.",
-      confirm: "Switch to code",
-    })
-    // No keeps the steps.
-    await answerQuestion(null)
-    expect(onReplace).not.toHaveBeenCalled()
-    fireEvent.click(button)
-    await answerQuestion("confirm")
-    expect(onReplace).toHaveBeenCalledWith({ selected_columns: ["premium"], code: "df = quotes\ndf = df.step_1()" })
+  it("offers no switch to code: a Free code step holds what the other steps do not", async () => {
+    render(<Harness initial={{ steps: [source, limit], selected_columns: ["premium"] }} inputSources={[quotes]} />)
+    await waitFor(() => expect(screen.getByTestId("polars-generated-code")).toHaveTextContent("df = df.step_1()"), { timeout: 5000 })
+    expect(screen.queryByRole("button", { name: "Switch to code" })).not.toBeInTheDocument()
   })
 
   it("shows a malformed persisted step as an invalid card instead of crashing", async () => {
@@ -450,14 +421,11 @@ describe("PolarsStepsEditor", () => {
     await waitFor(() => expect(lastSteps(spy)).toEqual([source, nested, badMembership, limit]), { timeout: 5000 })
   })
 
-  it("lets a new zero-input node switch to empty code without a render", async () => {
-    const onReplace = vi.fn()
-    render(<Harness initial={{ steps: [] }} inputSources={[]} onReplace={onReplace} />)
-    expect(screen.getByText(/Connect an input to start building steps/)).toBeInTheDocument()
+  it("asks a new zero-input node for an input, without a render or a switch to code", () => {
+    render(<Harness initial={{ steps: [] }} inputSources={[]} />)
+    expect(screen.getByText("Connect an input to start building steps.")).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Add step" })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Switch to code" }))
-    await answerQuestion("confirm")
-    expect(onReplace).toHaveBeenCalledWith({ code: "" })
+    expect(screen.queryByRole("button", { name: "Switch to code" })).not.toBeInTheDocument()
     expect(mockRender).not.toHaveBeenCalled()
   })
 
@@ -545,22 +513,10 @@ describe("PolarsStepsEditor", () => {
     expect(screen.getByRole("button", { name: "Step 3: Filter rows" })).toHaveAttribute("aria-expanded", "false")
   })
 
-  it("disables the switch to code in the no-input state while the persisted steps cannot render", async () => {
-    mockRender.mockImplementation(async () => ({
-      ok: false,
-      code: "",
-      step_lines: [],
-      step_index: 0,
-      message: "Unknown input 'quotes'; connected inputs: none.",
-    }))
-    const onReplace = vi.fn()
-    render(<Harness initial={{ steps: [source] }} inputSources={[]} onReplace={onReplace} />)
-    const button = screen.getByRole("button", { name: "Switch to code" })
-    expect(button).toBeDisabled()
-    await waitFor(() => expect(button).toHaveAttribute("title", "Fix Start from first"), { timeout: 5000 })
-    expect(button).toBeDisabled()
-    fireEvent.click(button)
-    expect(onReplace).not.toHaveBeenCalled()
+  it("asks for an input when the persisted steps' input is no longer connected", () => {
+    render(<Harness initial={{ steps: [source] }} inputSources={[]} />)
+    expect(screen.getByText("Connect an input to start building steps.")).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Switch to code" })).not.toBeInTheDocument()
   })
 })
 
@@ -583,7 +539,7 @@ describe("PolarsStepsEditor in frame mode", () => {
     expect(screen.queryByRole("group", { name: "Start from" })).not.toBeInTheDocument()
     expect(screen.queryByText("Start from")).not.toBeInTheDocument()
     expect(screen.queryByLabelText("Start from input")).not.toBeInTheDocument()
-    expect(screen.queryByText("Connect an input to start building steps, or switch to code.")).not.toBeInTheDocument()
+    expect(screen.queryByText("Connect an input to start building steps.")).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Add step" })).toBeEnabled()
     expect(mockRender).not.toHaveBeenCalled()
   })
@@ -637,12 +593,10 @@ describe("PolarsStepsEditor in frame mode", () => {
     await waitFor(() => expect(lastSteps(spy)).toEqual([limit]), { timeout: 5000 })
   })
 
-  it("switches an empty list to empty code without a render", async () => {
-    const onReplace = vi.fn()
-    render(<Harness initial={{ steps: [], path: "quotes.parquet" }} inputSources={[]} start="frame" onReplace={onReplace} />)
-    fireEvent.click(screen.getByRole("button", { name: "Switch to code" }))
-    await answerQuestion("confirm")
-    expect(onReplace).toHaveBeenCalledWith({ path: "quotes.parquet", code: "" })
+  it("offers an empty list Add step and no switch to code", () => {
+    render(<Harness initial={{ steps: [], path: "quotes.parquet" }} inputSources={[]} start="frame" />)
+    expect(screen.getByRole("button", { name: "Add step" })).toBeEnabled()
+    expect(screen.queryByRole("button", { name: "Switch to code" })).not.toBeInTheDocument()
     expect(mockRender).not.toHaveBeenCalled()
   })
 })
