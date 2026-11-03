@@ -38,7 +38,7 @@ import {
   type EdgeJoinFailureReason,
   type EdgeJoinInsertResult,
 } from "../utils/edgeJoinGraph"
-import { appEdge, appNode, selectOnlyNode } from "../utils/flowElements"
+import { appEdge, appNode, freshNodeLabel, nodeLabels, selectOnlyNode } from "../utils/flowElements"
 import { attachEditorEdgeIdentities } from "../utils/editorIdentities"
 import { EDGE_JOIN_BASE_HANDLE, edgeJoinCanonicalTargetHandle } from "../utils/edgeJoinRoles"
 import { normalizeDefaultTargetHandle } from "../utils/flowHandles"
@@ -579,7 +579,7 @@ export default function useEdgeHandlers({
     setConnectionDropMenu(null)
 
     const id = `${type}_${nodeIdCounterRef.current + 1}`
-    const newNode = appNode({ id, type, position: drop.position })
+    const newNode = appNode({ id, type, position: drop.position, label: freshNodeLabel(type, nodeLabels(graphRef.current.nodes)) })
     const connection = {
       source: drop.source,
       sourceHandle: drop.sourceHandle,
@@ -766,6 +766,7 @@ export default function useEdgeHandlers({
         type: type as NodeTypeValue,
         position,
         config,
+        label: freshNodeLabel(type as NodeTypeValue, nodeLabels(graphRef.current.nodes)),
       })
 
       createNodeAfterIdentity(newNode, (resolved) => {

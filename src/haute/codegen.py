@@ -42,7 +42,6 @@ from haute._registry import NODE_REGISTRY
 from haute._source_layout import (
     INDENT,
     LINE_WIDTH,
-    WIRE_COMMENT,
     Doc,
     arguments,
     literal,
@@ -791,7 +790,7 @@ def _render_module(
     pairs = list(dict.fromkeys(connect_pairs)) if dedup_connects else connect_pairs
     if pairs:
         calls = [_connect_call(obj_name, pair) for pair in pairs]
-        body.append(_Block("\n".join([WIRE_COMMENT, *calls])))
+        body.append(_Block("\n".join(calls)))
 
     uses_pl = _refers_to_pl("\n\n".join(block.text for block in body))
     imports = "import haute\nimport polars as pl" if uses_pl else "import haute"

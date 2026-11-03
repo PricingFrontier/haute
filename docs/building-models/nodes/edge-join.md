@@ -83,7 +83,7 @@ If the scores table calls the key `id` instead, choose **Paired base/join keys**
     An Edge Join has no JSON sidecar. Its settings are arguments of the `@pipeline.edge_join` decorator in the pipeline's `.py` file, on a one-line declaration, and its inputs are ordinary `pipeline.connect(...)` calls whose `target_port` gives each input's role. The decorator performs the join when the file runs on its own:
 
     ```python
-    @pipeline.edge_join(how="left", on=["quote_id"], suffix="_right", maintain_order="left_right")
+    @pipeline.edge_join(how="left", on=["quote_id"], maintain_order="left_right")
     def join_scores(policies, competitor_scores): ...
 
 
@@ -99,7 +99,7 @@ If the scores table calls the key `id` instead, choose **Paired base/join keys**
     | **JOIN TYPE** | `how`: `"inner"`, `"left"`, `"right"`, `"full"`, `"semi"`, `"anti"` or `"cross"` |
     | **SAME-NAME KEY** | `on`: the same-name join keys, for example `["quote_id"]` |
     | **BASE KEY** / **JOIN KEY** | `leftOn` / `rightOn`, written `left_on` / `right_on` in the decorator |
-    | **SUFFIX** | `suffix` (defaults to `"_right"`) |
+    | **SUFFIX** | `suffix`, left out at its default `"_right"` |
     | **COALESCE** | `coalesce`: `true` or `false` (absent when not set) |
     | **VALIDATE** | `validate`: `"1:1"`, `"1:m"`, `"m:1"` or `"m:m"` (absent when not set) |
     | **MAINTAIN ORDER** | `maintainOrder`, written `maintain_order` in the decorator: `"none"`, `"left"`, `"right"`, `"left_right"` or `"right_left"`. Required: a pipeline file that leaves it out opens for recovery, and **Recover settings** gives the join the order for its type. For a join inside a submodel, select the submodel: its panel lists the join with its own **Recover settings** |

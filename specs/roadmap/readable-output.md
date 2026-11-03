@@ -34,9 +34,7 @@ The owner decided the following on 3 November 2026:
 
 **Out of scope:** `haute init` rewrites `haute.toml` from scratch on a re-run, as decided on 1 November 2026, so editing that file in place is not planned.
 
-The packages fall into two groups:
-- **Writing change:** `READ-13` changes how files are written, but every file loads to the same values. The next save rewrites each file once, and no conversion is needed.
-- **Format changes:** `READ-20` onwards. The loader accepts only the current format ([specification governance](../README.md)), and `READ-20` says how commercial-pricing moves to each new one.
+All the packages left are **format changes**. The loader accepts only the current format ([specification governance](../README.md)), and `READ-20` says how commercial-pricing moves to each new one.
 
 Each package states its formats in its owning specification before behaviour changes, and names the contract it replaces there. Golden tests are written from those specifications, not from the implementation's output.
 
@@ -44,7 +42,6 @@ Each package states its formats in its owning specification before behaviour cha
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| READ-13 | Planned | P3 | Generated code leaves out a default it repeats and a comment that says nothing, and new nodes get plain names. |
 | READ-20 | Planned | P2 | Each format change comes with a one-off script that converts commercial-pricing and Haute's fixtures, proven before and after. |
 | READ-21 | Planned | P2 | A prototype proves that Haute can rebuild every kind of Polars step from the code it renders. |
 | READ-22 | Planned | P2 | A Polars node is stored only as code in `main.py`, and a hand edit or comment keeps the rest of its steps. |
@@ -62,31 +59,6 @@ Each package states its formats in its owning specification before behaviour cha
 | READ-41 | Planned | P3 | A new project holds no `uv init` placeholders and no settings at their default values. |
 
 ## Planned improvements
-
-### READ-13 — Generated code leaves out what it repeats
-**Why:**
-- Every join carries `suffix="_right"`, though it is the default.
-- The `# Wire nodes together - edges define data flow` comment says nothing a reader needs.
-- A new node's name is its type plus a counter for the session, so a pipeline's only Workbench Output is called `Workbench_Output_4`.
-
-**Plan:**
-- Drop `suffix` when it is the default.
-- Keep `how`, because Haute's default (`left`) differs from Polars' (`inner`).
-- Keep `maintain_order`, which the determinism rule requires.
-- Drop the wire comment.
-- Name a new node by its type in snake_case (`workbench_output`), numbered only when the name is taken (`polars_2`). Existing names don't change.
-
-**Acceptance:**
-- A codegen golden without the default suffix or the comment.
-- Frontend tests:
-  - a pipeline's first Workbench Output is named `workbench_output`;
-  - a second node of a type takes the next free number;
-  - names stay as they are after a reload.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_source_layout.py::WIRE_COMMENT`;
-`frontend/src/utils/flowElements.ts::nodeLabel`.
 
 ### READ-20 — Each format change converts commercial-pricing with a one-off script
 **Why:** The loader accepts only the current format. The canonical-only rule in the [specification governance](../README.md) forbids any production code that converts an old format: "Nothing migrates it". Each format change from `READ-22` onwards must still bring commercial-pricing across. The owner decided on 3 November 2026 that no other project needs converting, so the rule stays and Haute gets no `haute migrate` command.

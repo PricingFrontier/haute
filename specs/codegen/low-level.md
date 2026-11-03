@@ -134,7 +134,8 @@ omitted), any preserved blocks (`_emit_preserved_block`, wrapped in
 `# haute:preserve-start/-end` markers), then each node function preceded by two
 blank lines (in emission order), the
 submodel registration calls, and the `pipeline.connect(...)`/
-`submodel.connect(...)` calls under the `# Wire nodes together` comment (`_source_layout.WIRE_COMMENT`)
+`submodel.connect(...)` calls, with no comment over them (READ-13: the parser still passes an older
+file's `_source_layout.WIRE_COMMENT` over them without a diagnostic, and the next save drops it)
 (deduped when `dedup_connects=True`). The module ends with exactly one newline.
 The imports are `import haute` followed by `import polars as pl`; the second is
 emitted only when the rest of the module refers to the name `pl` (checked on

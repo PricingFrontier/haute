@@ -219,7 +219,8 @@ Out of scope (owned by neighbouring components):
 - **Declarations and code.** Every node type except `polars` is a *configured
   node*: its behaviour comes from its settings, which live in a JSON sidecar
   named by the decorator's `config=` keyword (inline decorator keywords for
-  Edge Join and Explore), and the decorator itself performs that behaviour when
+  Edge Join and Explore, an Edge Join's `suffix` left out at its default `_right` while
+  `how` and `maintain_order` are always written), and the decorator itself performs that behaviour when
   the file runs on its own (see [pipeline-config](../pipeline-config/high-level.md)).
   Codegen therefore emits no loader, scoring, join, switch or assembly call:
   - A configured node without user code is a **declaration**,
