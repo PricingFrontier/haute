@@ -24,8 +24,16 @@ In scope:
 - Combining multiple rating-table outputs with a required fixed finite numeric
   base value using `multiply` / `add` / `min` / `max`.
 - Config normalisation: in memory a rating table's entries are one canonical
-  ordered row array; its sidecar writes them as a grid (below). Categorical and
-  breakpoints banding rules retain their compact key/value-map sidecar shape.
+  ordered row array; its sidecar writes them as a grid (below). A breakpoint
+  banding factor's sidecar writes its bands as a list, one `{"upper", "label"}`
+  a band in order, the open-ended band with no `upper` last (READ-27): an edge is a
+  number where the number reads back to the text it was typed as (`4`, `6.5`),
+  otherwise its text, a date or a date with a time among them; whether a band
+  includes its upper edge stays the factor's `rightClosed`, and a `default` of
+  null is left out. A sidecar still writing breakpoints as a map from edge to
+  label is refused, naming its one-off conversion. Categorical banding keeps its
+  value-to-group map, identity entries included, since an unlisted value falls to
+  the default.
 - The dtype-faithful canonical string form of a rating-table factor key
   (`normalise_rating_key(value, dtype)`) and its Polars-expression twin, shared
   with trace enrichment and the optimiser's ratebook save/apply path so every

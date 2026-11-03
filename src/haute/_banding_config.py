@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from copy import deepcopy
 from typing import Any
 
@@ -70,6 +71,13 @@ def normalise_banding_rules(
     if isinstance(rules, dict):
         return _expand_rule_map(str(banding_type or ""), rules)
     if isinstance(rules, list):
+        if (
+            banding_type == "breakpoints"
+            and rules
+            and all(isinstance(rule, dict) and "boundary" not in rule for rule in rules)
+        ):
+            # A sidecar's bands (READ-27), each an upper edge and a label.
+            return bands_from_sidecar(rules)
         return deepcopy(rules)
     raise ConfigSettingError(f"{banding_type} banding rules must be a list", setting="factors")
 
@@ -227,6 +235,81 @@ def _compact_rule_rows(
     return compact
 
 
+#: The conversion a banding sidecar with breakpoints as a map needs.
+BANDS_CONVERSION = "scripts/one_off/read_27_band_lists.py"
+_INTEGER_TEXT = re.compile(r"-?(?:0|[1-9]\d*)")
+
+
+def _edge_as_written(boundary: str) -> Any:
+    """A band's upper edge as its sidecar writes it: a number where the number reads back to
+    the same text (``4``, ``4.5``), else its text, a date or a date with a time among them."""
+    if _INTEGER_TEXT.fullmatch(boundary):
+        return int(boundary)
+    try:
+        number = float(boundary)
+    except ValueError:
+        return boundary
+    return number if math.isfinite(number) and repr(number) == boundary else boundary
+
+
+def _edge_as_read(upper: Any) -> str:
+    """A band's upper edge as the editor and the engine hold it: its text."""
+    if isinstance(upper, bool) or not isinstance(upper, int | float | str):
+        raise ConfigSettingError(
+            "a band's upper edge must be a number or text", setting="factors", values=(upper,)
+        )
+    return repr(upper) if isinstance(upper, float) else str(upper)
+
+
+def _bands_for_sidecar(compact: dict[str, Any]) -> list[dict[str, Any]]:
+    """A breakpoint factor's bands as its sidecar writes them (READ-27): one
+    ``{"upper", "label"}`` a band in order, the open-ended band, with no ``upper``, last."""
+    bands = [
+        {"upper": _edge_as_written(key), "label": label} for key, label in compact.items() if key
+    ]
+    if "" in compact:
+        bands.append({"label": compact[""]})
+    return bands
+
+
+def bands_from_sidecar(bands: Any) -> list[dict[str, Any]]:
+    """A breakpoint factor's sidecar bands as the editor's and the engine's rule rows."""
+    if not isinstance(bands, list):
+        raise ConfigSettingError("breakpoint bands must be a list", setting="factors")
+    rows: list[dict[str, Any]] = []
+    for index, band in enumerate(bands):
+        if not isinstance(band, dict) or set(band) - {"upper", "label"} or "label" not in band:
+            raise ConfigSettingError(
+                f"breakpoint bands[{index}] must be an upper edge and a label",
+                setting="factors",
+            )
+        if "upper" not in band and index != len(bands) - 1:
+            raise ConfigSettingError(
+                "only the last band may be open-ended, with no upper edge", setting="factors"
+            )
+        boundary = _edge_as_read(band["upper"]) if "upper" in band else ""
+        _validate_map_value(band["label"], "breakpoint", boundary)
+        rows.append({"boundary": boundary, "label": band["label"]})
+    return rows
+
+
+def refuse_breakpoint_maps(config: dict[str, Any]) -> None:
+    """Refuse a banding sidecar that writes breakpoints as an edge-to-label map, the form
+    before bands were written as a list, naming the conversion."""
+    for factor in config.get("factors") or []:
+        if (
+            isinstance(factor, dict)
+            and _banding_type(factor) == "breakpoints"
+            and isinstance(factor.get("rules"), dict)
+        ):
+            raise ConfigSettingError(
+                "This banding sidecar writes breakpoints as a map from each band's edge to "
+                f"its label, the form before bands were written as a list. Convert the "
+                f"project's banding sidecars with {BANDS_CONVERSION}.",
+                setting="factors",
+            )
+
+
 def _compact_banding_factor_for_sidecar(factor: dict[str, Any]) -> dict[str, Any]:
     # Expanded rule rows carry the editor's _id; underscore-prefixed properties
     # of factor and rule records are never settings. A compact rules dictionary
@@ -267,6 +350,11 @@ def _compact_banding_factor_for_sidecar(factor: dict[str, Any]) -> dict[str, Any
             )
     else:
         raise ConfigSettingError(f"{banding_type} banding rules must be a list", setting="factors")
+    if banding_type == "breakpoints":
+        result["rules"] = _bands_for_sidecar(result["rules"])
+    if "default" in result and result["default"] is None:
+        # The default an absent key reads as (READ-27).
+        del result["default"]
     return result
 
 

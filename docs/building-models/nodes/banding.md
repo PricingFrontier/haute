@@ -118,7 +118,7 @@ For a rate change from 1 April 2024, band a `start_date` column with **Up to** `
     | **INPUT COLUMN** | `factors[].column` |
     | **OUTPUT COLUMN** | `factors[].outputColumn` |
     | **DEFAULT** | `factors[].default` (`null` when empty) |
-    | **BREAKPOINTS** | `factors[].rules`: a map from each **Up to** boundary to its **Band name**, in order, with `""` as the key of an open-ended final band |
+    | **BREAKPOINTS** | `factors[].rules`: one `{"upper": ..., "label": ...}` a band, its **Up to** boundary and its **Band name**, in order, an open-ended final band with no `upper` |
     | **RULES** | `factors[].rules`: a map from each **Value** to its **Maps To** group |
     | **COLUMNS** tab | `selected_columns` |
 
@@ -130,7 +130,11 @@ For a rate change from 1 April 2024, band a `start_date` column with **Up to** `
         "banding": "breakpoints",
         "column": "driver_age",
         "outputColumn": "age_band",
-        "rules": { "25": "18-25", "65": "26-65", "": "65+" },
+        "rules": [
+          {"upper": 25, "label": "18-25"},
+          {"upper": 65, "label": "26-65"},
+          {"label": "65+"}
+        ],
         "default": "Unknown"
       }, {
         "banding": "categorical",

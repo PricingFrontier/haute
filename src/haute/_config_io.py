@@ -29,6 +29,7 @@ from pydantic import ValidationError
 from haute._banding_config import (
     compact_banding_config_for_sidecar,
     expand_banding_config_from_sidecar,
+    refuse_breakpoint_maps,
 )
 from haute._graph_utils import _sanitize_func_name
 from haute._io import utf8_decode_failure
@@ -155,6 +156,8 @@ def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None)
         reject_removed_config_keys(node_type, config)
         reject_form_given_keys(node_type, config)
     if node_type == NodeType.BANDING:
+        # A sidecar writes breakpoints as a list of bands (READ-27).
+        refuse_breakpoint_maps(config)
         return expand_banding_config_from_sidecar(config)
     if node_type == NodeType.RATING_STEP:
         # A sidecar writes each table as a grid (READ-26); the editor and the engine read rows.
@@ -220,7 +223,11 @@ _RATING_TABLE_KEYS = (
 #: A sidecar's records written on one line each: a rating table's factors, its columns and
 #: each row of its grid (READ-26).
 _SIDECAR_ONE_LINE = at(
-    ("tables", ANY, "factors"), ("tables", ANY, "columns"), ("tables", ANY, "rows", ANY)
+    ("tables", ANY, "factors"),
+    ("tables", ANY, "columns"),
+    ("tables", ANY, "rows", ANY),
+    # A banding factor's bands, one a line (READ-27).
+    ("factors", ANY, "rules", ANY),
 )
 
 

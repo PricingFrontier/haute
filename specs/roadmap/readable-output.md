@@ -48,7 +48,6 @@ Each package states its formats in its owning specification before behaviour cha
 | READ-23 | Planned | P2 | Workbench columns and tables are identified by their names, with no ids in the form folder or a release. |
 | READ-24 | Planned | P2 | A sheet, its sections and their components are identified by file name, title and number, not random ids. |
 | READ-25 | Planned | P2 | A column's sourced allowed values are stored only as a reference to their parameter file. |
-| READ-27 | Planned | P3 | Banding is written as a list of bands, each with its upper edge and its label. |
 | READ-28 | Planned | P3 | Constants are a map from name to value, and constants that only formulas read become global constants. |
 | READ-29 | Planned | P3 | Every key Haute's schemas own is snake_case on disk; keys the analyst names are untouched. |
 | READ-30 | Planned | P3 | `main.py` holds a `connect()` call only for an edge the signatures cannot express. |
@@ -266,25 +265,6 @@ The owner judged that the complexity isn't worth it.
 
 **Evidence:** `src/haute/_workbench_params.py::with_param_options`;
 `src/haute/_workbench_folder.py::form_at_ref`; `src/haute/_workbench_app.py`.
-
-### READ-27 — Banding is written as a list of bands
-**Why:** Breakpoint banding is stored as a map from each band's upper edge to its label. Reading it takes knowledge of that convention, and the open-ended top band is spelled `"": "9-10"`.
-
-**Plan:**
-- Write one band per line as `{"upper": 4, "label": "1-4"}`, in order.
-- The open-ended band has no `upper` and comes last.
-- Edges keep today's kinds: numbers, dates and dates with times, written as today.
-- Whether a band includes its upper edge stays a setting of the factor (`rightClosed`).
-- Drop `"default": null`.
-- Categorical banding keeps its map. Identity entries such as `"Frame": "Frame"` stay, because an unlisted value falls to the default and misses the rating.
-
-**Acceptance:**
-- Round-trip tests for numeric, date and datetime edges, for bands closed on either side, for an open-ended top band and for categorical maps.
-- The reference pipeline prices the same after conversion.
-
-**Dependencies:** `READ-20`.
-
-**Evidence:** `src/haute/_banding_config.py::compact_banding_config_for_sidecar`.
 
 ### READ-28 — Constants are a map from name to value
 **Why:** A constant node holds each constant in 4 lines, with its value as text (`"1.45"`); a numeric text becomes a number when it runs. In the investigated pipeline, constants that only formulas read reach them through a cross join. That costs four nodes, four `connect()` calls, two sidecar entries and two positions.
