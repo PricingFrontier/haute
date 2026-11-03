@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { makeTraceStep } from "../../test-utils/factories"
 import type { TraceColumnDerivation, TraceColumnRead, TraceStep } from "../../types/trace"
 import {
   buildDerivationTree,
@@ -34,7 +35,7 @@ function read(column: string, ...sources: Array<[string, string]>): TraceColumnR
 }
 
 function step(node_id: string, node_type: string, derivations: TraceColumnDerivation[]): TraceStep {
-  return {
+  return makeTraceStep({
     node_id,
     node_name: node_id,
     node_type,
@@ -45,7 +46,7 @@ function step(node_id: string, node_type: string, derivations: TraceColumnDeriva
     column_relevant: true,
     contributed_columns: derivations.map((d) => d.column),
     derivations,
-  }
+  })
 }
 
 /** The demo's shape: a loaded premium, a burn cost, scenarios rescaling the premium, a model, an optimiser. */

@@ -116,6 +116,7 @@ from haute.schemas import (
     SchemaResponse,
     SessionStatusResponse,
     TableListResponse,
+    TraceResponse,
     TrainEstimateResponse,
     TrainResponse,
     TrainStatusResponse,
@@ -300,6 +301,7 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         PreviewInputsResponse,
         PreviewProgressResponse,
     ),
+    "trace": (TraceResponse,),
     # Carried by the node-data, explore, training, optimiser and output responses: shared.
     "execution-metrics": (ExecutionMetricsPayload,),
     "workbench": (

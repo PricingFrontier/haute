@@ -23,6 +23,7 @@ import type {
   MlflowTestConnectionResponse as GeneratedMlflowTestConnectionResponse,
   NodeDataStatusResponse as GeneratedNodeDataStatusResponse,
   PreviewNodeResponse as GeneratedPreviewNodeResponse,
+  TraceResponse as GeneratedTraceResponse,
   WriteOutputResponse as GeneratedWriteOutputResponse,
   OptimiserFrontierAutoRangeStatusResponse as GeneratedOptimiserFrontierAutoRangeStatusResponse,
   OptimiserFrontierResponse as GeneratedOptimiserFrontierResponse,
@@ -194,12 +195,7 @@ export interface DissolveSubmodelResponse {
   definition_id: string
 }
 
-/** HTTP response envelope for /api/pipeline/trace (wraps TraceResult).
- *  The backend (`TraceResponse` in `src/haute/schemas.py`) always returns a
- *  `trace`; failures raise an HTTP error rather than a 200 body — so `trace`
- *  is required and there is no `error` field on the envelope. */
-export interface TraceResponse {
-  status: string
+export type TraceResponse = Omit<GeneratedTraceResponse, "trace"> & {
   trace: import("../types/trace").TraceResult
 }
 

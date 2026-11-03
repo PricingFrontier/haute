@@ -2455,6 +2455,117 @@ export interface ProjectFileDeleteResponse {
   uncaptured: string[];
   warnings: string[];
 }
+export interface TraceResponse {
+  status: string;
+  trace: TraceResultResponse;
+}
+export interface TraceResultResponse {
+  column: string | null;
+  correlation_diagnostics: TraceCorrelationDiagnosticResponse[];
+  execution_ms: number;
+  execution_origin: 'fresh_execution' | 'trace_cache';
+  generated_at: string;
+  nodes_in_trace: number;
+  omissions: TraceOmissionResponse[];
+  output_value: unknown;
+  pipeline_source: string | null;
+  row_id_column: string | null;
+  row_id_value: unknown;
+  row_index: number;
+  steps: TraceStepResponse[];
+  target_node_id: string;
+  total_nodes_in_pipeline: number;
+  waterfall: TraceWaterfallEntryResponse[] | TraceWaterfallErrorResponse | null;
+}
+export interface TraceCorrelationDiagnosticResponse {
+  child_node_id: string | null;
+  code: string;
+  ignored_columns: string[];
+  match_columns: string[];
+  match_strategy: string | null;
+  matched_row_count: number | null;
+  matched_row_indices: number[];
+  message: string;
+  node_id: string | null;
+  reason: string;
+  seed_node_ids: string[];
+  severity: string;
+  [k: string]: unknown;
+}
+export interface TraceOmissionResponse {
+  diagnostic_index: number;
+  node_id: string;
+  node_name: string;
+  node_type: string;
+  reason: string;
+  topological_rank: number;
+}
+export interface TraceStepResponse {
+  calculation: {
+    [k: string]: unknown;
+  } | null;
+  column_relevant: boolean;
+  contributed_columns: string[];
+  derivations: TraceColumnDerivationResponse[];
+  expression: {
+    [k: string]: unknown;
+  } | null;
+  identical_row_count: number | null;
+  input_values: {
+    [k: string]: unknown;
+  };
+  node_detail: {
+    [k: string]: unknown;
+  } | null;
+  node_id: string;
+  node_name: string;
+  node_type: string;
+  output_values: {
+    [k: string]: unknown;
+  };
+  row_lineage_type: string | null;
+  schema_diff: SchemaDiffResponse;
+  snapshot_generation_id: string | null;
+  topological_rank: number;
+}
+export interface TraceColumnDerivationResponse {
+  column: string;
+  error: string | null;
+  error_type: string | null;
+  expression_text: string | null;
+  not_computable_reason: string | null;
+  reads: TraceColumnReadResponse[] | null;
+  result_source: string | null;
+  result_value: unknown;
+  substituted_text: string | null;
+}
+export interface TraceColumnReadResponse {
+  column: string;
+  sources: TraceColumnSourceResponse[];
+}
+export interface TraceColumnSourceResponse {
+  before_code: boolean;
+  column: string;
+  node_id: string;
+}
+export interface SchemaDiffResponse {
+  columns_added: string[];
+  columns_modified: string[];
+  columns_passed: string[];
+  columns_removed: string[];
+}
+export interface TraceWaterfallEntryResponse {
+  cumulative: number;
+  default_used: boolean;
+  delta: number;
+  label: string;
+  operation: 'base' | 'multiply' | 'add';
+  value: number;
+}
+export interface TraceWaterfallErrorResponse {
+  error: string;
+  error_type: string;
+}
 export interface TrainResponse {
   actual_vs_predicted: {
     [k: string]: number;

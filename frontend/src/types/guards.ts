@@ -28,6 +28,7 @@ import type {
   ExplorePivotStatusResponse as GeneratedExplorePivotStatusResponse,
   NodeDataStatusResponse as GeneratedNodeDataStatusResponse,
   PreviewNodeResponse as GeneratedPreviewNodeResponse,
+  TraceResponse as GeneratedTraceResponse,
   WriteOutputResponse as GeneratedWriteOutputResponse,
 } from "../generated/api-contracts.generated"
 import type {
@@ -66,17 +67,12 @@ import {
   type PipelineEdge,
 } from "./node"
 import type {
-  TraceColumnDerivation,
-  TraceColumnRead,
-  TraceColumnSource,
-  TraceCorrelationDiagnostic,
+  TraceCalculation,
+  TraceExpression,
+  TraceExpressionChainLink,
   TraceInputSource,
-  TraceOmission,
-  TraceResult,
-  TraceSchemaDiff,
+  TraceNodeDetail,
   TraceStep,
-  WaterfallEntry,
-  WaterfallError,
 } from "./trace"
 
 // ---------------------------------------------------------------------------
@@ -799,17 +795,32 @@ export function previewFromContract(
 // Trace contracts
 // ---------------------------------------------------------------------------
 
-function parseTraceSchemaDiff(value: unknown, field: string): TraceSchemaDiff {
-  const obj = expectPlainObject("parseTraceResponse", value, field)
+
+// The generated trace validator owns the trace's structure. The server leaves a step's
+// expression and calculation open, so the UI shapes them here.
+export function traceFromContract(response: GeneratedTraceResponse): TraceResponse {
   return {
-    columns_added: obj.columns_added === undefined ? [] : parseStringArray("parseTraceResponse", obj.columns_added, `${field}.columns_added`),
-    columns_removed: obj.columns_removed === undefined ? [] : parseStringArray("parseTraceResponse", obj.columns_removed, `${field}.columns_removed`),
-    columns_modified: obj.columns_modified === undefined ? [] : parseStringArray("parseTraceResponse", obj.columns_modified, `${field}.columns_modified`),
-    columns_passed: obj.columns_passed === undefined ? [] : parseStringArray("parseTraceResponse", obj.columns_passed, `${field}.columns_passed`),
+    ...response,
+    trace: {
+      ...response.trace,
+      steps: response.trace.steps.map((step, index): TraceStep => {
+        const field = `trace.steps[${index}]`
+        return {
+          ...step,
+          expression: step.expression === null
+            ? null
+            : parseTraceExpression(step.expression, `${field}.expression`),
+          calculation: step.calculation === null
+            ? null
+            : parseTraceCalculation(step.calculation, `${field}.calculation`),
+          node_detail: step.node_detail as TraceNodeDetail | null,
+        }
+      }),
+    },
   }
 }
 
-function parseTraceExpression(value: unknown, field: string): NonNullable<TraceStep["expression"]> {
+function parseTraceExpression(value: unknown, field: string): TraceExpression {
   const obj = expectPlainObject("parseTraceResponse", value, field)
   return {
     expression_text: expectString("parseTraceResponse", obj.expression_text, `${field}.expression_text`),
@@ -818,7 +829,7 @@ function parseTraceExpression(value: unknown, field: string): NonNullable<TraceS
   }
 }
 
-function parseTraceCalculation(value: unknown, field: string): NonNullable<TraceStep["calculation"]> {
+function parseTraceCalculation(value: unknown, field: string): TraceCalculation {
   const obj = expectPlainObject("parseTraceResponse", value, field)
   return {
     substituted_text: expectString("parseTraceResponse", obj.substituted_text, `${field}.substituted_text`),
@@ -840,7 +851,7 @@ function parseTraceCalculation(value: unknown, field: string): NonNullable<Trace
 function parseExpressionChain(
   value: unknown,
   field: string,
-): NonNullable<NonNullable<TraceStep["calculation"]>["expression_chain"]> {
+): TraceExpressionChainLink[] {
   return parseArray("parseTraceResponse", value, field, (item, itemField) => {
     const obj = expectPlainObject("parseTraceResponse", item, itemField)
     return {
@@ -884,230 +895,18 @@ function parseTraceInputSource(value: unknown, field: string): TraceInputSource 
   }
 }
 
-function parseTraceColumnSource(value: unknown, field: string): TraceColumnSource {
-  const obj = expectPlainObject("parseTraceResponse", value, field)
-  return {
-    node_id: expectString("parseTraceResponse", obj.node_id, `${field}.node_id`),
-    column: expectString("parseTraceResponse", obj.column, `${field}.column`),
-    before_code: expectBoolean("parseTraceResponse", obj.before_code, `${field}.before_code`),
-  }
-}
 
-function parseTraceColumnRead(value: unknown, field: string): TraceColumnRead {
-  const obj = expectPlainObject("parseTraceResponse", value, field)
-  return {
-    column: expectString("parseTraceResponse", obj.column, `${field}.column`),
-    sources: parseArray("parseTraceResponse", obj.sources, `${field}.sources`, parseTraceColumnSource),
-  }
-}
 
-function parseTraceColumnDerivation(value: unknown, field: string): TraceColumnDerivation {
-  const obj = expectPlainObject("parseTraceResponse", value, field)
-  if (!("result_value" in obj)) {
-    throw new Error(`parseTraceResponse: expected ${field}.result_value, got missing`)
-  }
-  return {
-    column: expectString("parseTraceResponse", obj.column, `${field}.column`),
-    expression_text: expectNullableString("parseTraceResponse", obj.expression_text, `${field}.expression_text`),
-    substituted_text: expectNullableString("parseTraceResponse", obj.substituted_text, `${field}.substituted_text`),
-    result_value: obj.result_value,
-    not_computable_reason: expectNullableString("parseTraceResponse", obj.not_computable_reason, `${field}.not_computable_reason`),
-    result_source: expectNullableString("parseTraceResponse", obj.result_source, `${field}.result_source`),
-    reads: obj.reads === null
-      ? null
-      : parseArray("parseTraceResponse", obj.reads, `${field}.reads`, parseTraceColumnRead),
-    error: expectNullableString("parseTraceResponse", obj.error, `${field}.error`),
-    error_type: expectNullableString("parseTraceResponse", obj.error_type, `${field}.error_type`),
-  }
-}
 
-function parseTraceStep(value: unknown, field: string): TraceStep {
-  const obj = expectPlainObject("parseTraceResponse", value, field)
-  const expression = obj.expression === undefined || obj.expression === null ? null : parseTraceExpression(obj.expression, `${field}.expression`)
-  const calculation = obj.calculation === undefined || obj.calculation === null ? null : parseTraceCalculation(obj.calculation, `${field}.calculation`)
-  const node_detail = obj.node_detail === undefined || obj.node_detail === null ? null : expectPlainObject("parseTraceResponse", obj.node_detail, `${field}.node_detail`)
 
-  return {
-    node_id: expectString("parseTraceResponse", obj.node_id, `${field}.node_id`),
-    node_name: expectString("parseTraceResponse", obj.node_name, `${field}.node_name`),
-    node_type: expectString("parseTraceResponse", obj.node_type, `${field}.node_type`),
-    schema_diff: parseTraceSchemaDiff(obj.schema_diff, `${field}.schema_diff`),
-    input_values: obj.input_values === undefined ? {} : expectPlainObject("parseTraceResponse", obj.input_values, `${field}.input_values`),
-    output_values: obj.output_values === undefined ? {} : expectPlainObject("parseTraceResponse", obj.output_values, `${field}.output_values`),
-    topological_rank: expectNonNegativeTraceInteger(obj.topological_rank, `${field}.topological_rank`),
-    column_relevant: obj.column_relevant === undefined ? true : expectBoolean("parseTraceResponse", obj.column_relevant, `${field}.column_relevant`),
-    contributed_columns: parseStringArray("parseTraceResponse", obj.contributed_columns, `${field}.contributed_columns`),
-    derivations: parseArray("parseTraceResponse", obj.derivations, `${field}.derivations`, parseTraceColumnDerivation),
-    expression,
-    calculation,
-    node_detail,
-    row_lineage_type: optionalNullableString("parseTraceResponse", obj, "row_lineage_type"),
-    snapshot_generation_id: optionalNullableString("parseTraceResponse", obj, "snapshot_generation_id"),
-    identical_row_count: parseIdenticalRowCount(obj.identical_row_count, `${field}.identical_row_count`),
-  }
-}
 
-function parseIdenticalRowCount(value: unknown, field: string): number | null {
-  if (value === undefined || value === null) return null
-  const parsed = expectNonNegativeTraceInteger(value, field)
-  if (parsed < 2) {
-    throw new Error(`parseTraceResponse: expected ${field} to be at least 2`)
-  }
-  return parsed
-}
 
-function parseWaterfallEntry(value: unknown, field: string): WaterfallEntry {
-  const obj = expectPlainObject("parseTraceResponse", value, field)
-  return {
-    label: expectString("parseTraceResponse", obj.label, `${field}.label`),
-    operation: expectStringLiteral("parseTraceResponse", obj.operation, `${field}.operation`, [
-      "base",
-      "multiply",
-      "add",
-    ]),
-    value: expectNumber("parseTraceResponse", obj.value, `${field}.value`),
-    delta: expectNumber("parseTraceResponse", obj.delta, `${field}.delta`),
-    cumulative: expectNumber("parseTraceResponse", obj.cumulative, `${field}.cumulative`),
-    default_used: expectBoolean("parseTraceResponse", obj.default_used, `${field}.default_used`),
-  }
-}
 
-function parseWaterfallError(value: unknown, field: string): WaterfallError {
-  const obj = expectPlainObject("parseTraceResponse", value, field)
-  return {
-    error: expectString("parseTraceResponse", obj.error, `${field}.error`),
-    error_type: expectString("parseTraceResponse", obj.error_type, `${field}.error_type`),
-  }
-}
 
-function parseTraceCorrelationDiagnostic(value: unknown, field: string): TraceCorrelationDiagnostic {
-  const obj = expectPlainObject("parseTraceResponse", value, field)
-  return {
-    ...obj,
-    code: expectString("parseTraceResponse", obj.code, `${field}.code`),
-    severity: expectString("parseTraceResponse", obj.severity, `${field}.severity`),
-    reason: expectString("parseTraceResponse", obj.reason, `${field}.reason`),
-    message: expectString("parseTraceResponse", obj.message, `${field}.message`),
-    node_id: optionalNullableString("parseTraceResponse", obj, "node_id"),
-    child_node_id: optionalNullableString("parseTraceResponse", obj, "child_node_id"),
-    match_strategy: optionalNullableString("parseTraceResponse", obj, "match_strategy"),
-    match_columns: obj.match_columns === undefined ? [] : parseStringArray("parseTraceResponse", obj.match_columns, `${field}.match_columns`),
-    ignored_columns: obj.ignored_columns === undefined ? [] : parseStringArray("parseTraceResponse", obj.ignored_columns, `${field}.ignored_columns`),
-    matched_row_count: optionalNullableNumber("parseTraceResponse", obj, "matched_row_count"),
-    matched_row_indices: obj.matched_row_indices === undefined
-      ? []
-      : parseArray("parseTraceResponse", obj.matched_row_indices, `${field}.matched_row_indices`, (item, itemField) =>
-        expectNumber("parseTraceResponse", item, itemField)),
-    seed_node_ids: obj.seed_node_ids === undefined
-      ? []
-      : parseStringArray("parseTraceResponse", obj.seed_node_ids, `${field}.seed_node_ids`),
-  }
-}
 
-function expectNonNegativeTraceInteger(value: unknown, field: string): number {
-  const parsed = expectNumber("parseTraceResponse", value, field)
-  if (!Number.isInteger(parsed) || parsed < 0) {
-    throw new Error(`parseTraceResponse: expected ${field} to be a non-negative integer`)
-  }
-  return parsed
-}
 
-function parseTraceOmission(value: unknown, field: string): TraceOmission {
-  const obj = expectPlainObject("parseTraceResponse", value, field)
-  const reason = expectString("parseTraceResponse", obj.reason, `${field}.reason`)
-  if (reason.length === 0) {
-    throw new Error(`parseTraceResponse: expected ${field}.reason to be non-empty`)
-  }
-  return {
-    node_id: expectString("parseTraceResponse", obj.node_id, `${field}.node_id`),
-    node_name: expectString("parseTraceResponse", obj.node_name, `${field}.node_name`),
-    node_type: expectString("parseTraceResponse", obj.node_type, `${field}.node_type`),
-    topological_rank: expectNonNegativeTraceInteger(obj.topological_rank, `${field}.topological_rank`),
-    reason,
-    diagnostic_index: expectNonNegativeTraceInteger(obj.diagnostic_index, `${field}.diagnostic_index`),
-  }
-}
 
-function parseTraceGeneratedAt(value: unknown, field: string): string {
-  const timestamp = expectString("parseTraceResponse", value, field)
-  if (
-    Number.isNaN(Date.parse(timestamp)) ||
-    !/(?:Z|[+-]00:00)$/.test(timestamp)
-  ) {
-    throw new Error(`parseTraceResponse: expected ${field} to be a UTC ISO-8601 timestamp`)
-  }
-  return timestamp
-}
 
-function parseTraceResult(value: unknown, field: string): TraceResult {
-  const obj = expectPlainObject("parseTraceResponse", value, field)
-  let waterfall: TraceResult["waterfall"] = null
-  if (obj.waterfall !== undefined && obj.waterfall !== null) {
-    waterfall = Array.isArray(obj.waterfall)
-      ? parseArray("parseTraceResponse", obj.waterfall, `${field}.waterfall`, parseWaterfallEntry)
-      : parseWaterfallError(obj.waterfall, `${field}.waterfall`)
-  }
-  const steps = obj.steps === undefined
-    ? []
-    : parseArray("parseTraceResponse", obj.steps, `${field}.steps`, parseTraceStep)
-  const omissions = parseArray(
-    "parseTraceResponse",
-    obj.omissions,
-    `${field}.omissions`,
-    parseTraceOmission,
-  )
-  const correlationDiagnostics = parseArray(
-    "parseTraceResponse",
-    obj.correlation_diagnostics,
-    `${field}.correlation_diagnostics`,
-    parseTraceCorrelationDiagnostic,
-  )
-  for (const omission of omissions) {
-    const diagnostic = correlationDiagnostics[omission.diagnostic_index]
-    if (!diagnostic) {
-      throw new Error(
-        `parseTraceResponse: omission for ${omission.node_id} references missing diagnostic ${omission.diagnostic_index}`,
-      )
-    }
-    if (diagnostic.node_id !== omission.node_id) {
-      throw new Error(
-        `parseTraceResponse: omission for ${omission.node_id} references a diagnostic for ${diagnostic.node_id ?? "no node"}`,
-      )
-    }
-  }
-
-  return {
-    target_node_id: expectString("parseTraceResponse", obj.target_node_id, `${field}.target_node_id`),
-    row_index: expectNumber("parseTraceResponse", obj.row_index, `${field}.row_index`),
-    column: optionalNullableString("parseTraceResponse", obj, "column"),
-    output_value: obj.output_value,
-    steps,
-    omissions,
-    row_id_column: optionalNullableString("parseTraceResponse", obj, "row_id_column"),
-    row_id_value: obj.row_id_value,
-    total_nodes_in_pipeline: optionalNumber("parseTraceResponse", obj, "total_nodes_in_pipeline"),
-    nodes_in_trace: optionalNumber("parseTraceResponse", obj, "nodes_in_trace"),
-    execution_ms: optionalNumber("parseTraceResponse", obj, "execution_ms"),
-    waterfall,
-    correlation_diagnostics: correlationDiagnostics,
-    generated_at: parseTraceGeneratedAt(obj.generated_at, `${field}.generated_at`),
-    pipeline_source: expectNullableString("parseTraceResponse", obj.pipeline_source, `${field}.pipeline_source`),
-    execution_origin: expectStringLiteral(
-      "parseTraceResponse",
-      obj.execution_origin,
-      `${field}.execution_origin`,
-      ["fresh_execution", "trace_cache"],
-    ),
-  }
-}
-
-export function parseTraceResponse(value: unknown): TraceResponse {
-  const obj = expectPlainObject("parseTraceResponse", value)
-  return {
-    status: expectString("parseTraceResponse", obj.status, "field `status`"),
-    trace: parseTraceResult(obj.trace, "field `trace`"),
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Schema + modelling contracts

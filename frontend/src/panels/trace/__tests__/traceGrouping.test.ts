@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest"
+import { makeTraceStep } from "../../../test-utils/factories"
 import {
   findTargetStep,
   collapsePassthroughs,
@@ -8,7 +9,7 @@ import { isTraceGeneratedColumnOriginType, isTraceSourceNodeType } from "../../.
 import type { TraceStep } from "../../../types/trace"
 
 function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
-  return {
+  return makeTraceStep({
     node_id: "n1",
     node_name: "Transform 1",
     node_type: "polars",
@@ -24,7 +25,7 @@ function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
     column_relevant: true,
     contributed_columns: [], derivations: [],
     ...overrides,
-  }
+  })
 }
 
 // ---------------------------------------------------------------------------

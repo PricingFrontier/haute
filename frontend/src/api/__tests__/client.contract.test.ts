@@ -675,7 +675,7 @@ describe("client runtime contracts", () => {
 
     await expect(
       traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1", seed_plan: [] }),
-    ).rejects.toThrow(/parseTraceResponse/i)
+    ).rejects.toThrow("TraceResponse: invalid contract")
   })
 
   it("fetchSchema rejects malformed schema payloads", async () => {

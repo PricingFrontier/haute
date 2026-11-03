@@ -1,11 +1,33 @@
-/** Trace types — mirrors backend TraceResult shape. */
+/**
+ * Trace types. The trace's structure is the generated `TraceResponse`; the step's
+ * `expression`, `calculation` and `node_detail` are open objects on the server, which
+ * the UI gives the shapes below (`traceFromContract` checks the first two).
+ */
 
-export interface TraceSchemaDiff {
-  columns_added: string[]
-  columns_removed: string[]
-  columns_modified: string[]
-  columns_passed: string[]
-}
+import type {
+  SchemaDiffResponse,
+  TraceColumnDerivationResponse,
+  TraceColumnReadResponse,
+  TraceColumnSourceResponse,
+  TraceCorrelationDiagnosticResponse,
+  TraceOmissionResponse,
+  TraceResultResponse,
+  TraceStepResponse,
+  TraceWaterfallEntryResponse,
+  TraceWaterfallErrorResponse,
+} from "../generated/api-contracts.generated"
+
+export type TraceSchemaDiff = SchemaDiffResponse
+/** A node that computed a value a step read. */
+export type TraceColumnSource = TraceColumnSourceResponse
+/** A column a computed column read, and the nodes that computed the value read. */
+export type TraceColumnRead = TraceColumnReadResponse
+/** How a step computed one column the traced value depends on. */
+export type TraceColumnDerivation = TraceColumnDerivationResponse
+export type WaterfallEntry = TraceWaterfallEntryResponse
+export type WaterfallError = TraceWaterfallErrorResponse
+export type TraceCorrelationDiagnostic = TraceCorrelationDiagnosticResponse
+export type TraceOmission = TraceOmissionResponse
 
 export interface TraceInputSource {
   node_name: string
@@ -17,85 +39,37 @@ export interface TraceInputSource {
   input_sources?: Record<string, TraceInputSource> | null
 }
 
-/** A node that computed a value a step read. */
-export interface TraceColumnSource {
-  node_id: string
-  column: string
-  /** The value the node's rule generated before its code rewrote the column,
-   * so the node's row holds a later value. */
-  before_code: boolean
+export interface TraceExpression {
+  expression_text: string
+  expression_type: string
+  referenced_columns: string[]
 }
 
-/** A column a computed column read, and the nodes that computed the value read:
- * none when the trace found none, several when it may have come from any. */
-export interface TraceColumnRead {
-  column: string
-  sources: TraceColumnSource[]
+export interface TraceExpressionChainLink {
+  expression_text: string
+  target_column: string
+  substituted_text?: string
+  result_value?: unknown
+  not_computable_reason?: string | null
+  result_source?: string | null
 }
 
-/** How a step computed one column the traced value depends on. */
-export interface TraceColumnDerivation {
-  column: string
-  /** The step's formula, evaluated on the traced row; null for a column a
-   * rule computed (a model, an optimiser) or a source loaded. */
-  expression_text: string | null
-  substituted_text: string | null
+export interface TraceCalculation {
+  substituted_text: string
   result_value: unknown
-  not_computable_reason: string | null
-  result_source: string | null
-  /** null when which inputs the column read could not be told apart. */
-  reads: TraceColumnRead[] | null
-  error: string | null
-  error_type: string | null
+  not_computable_reason?: string | null
+  result_source?: string | null
+  input_values: Record<string, unknown>
+  taken_branch?: string | null
+  taken_branch_index?: number | null
+  expression_chain?: TraceExpressionChainLink[] | null
+  input_sources?: Record<string, TraceInputSource> | null
 }
 
-export interface TraceStep {
-  node_id: string
-  node_name: string
-  node_type: string
-  schema_diff: TraceSchemaDiff
-  input_values: Record<string, unknown>
-  output_values: Record<string, unknown>
-  topological_rank: number
-  /** In a column trace, whether the step is on the traced value's lineage:
-   * it computes or carries a column the value depends on. */
-  column_relevant: boolean
-  /** In a column trace, the columns this step computes that the traced value
-   * depends on; empty for a step that only carries them. */
-  contributed_columns: string[]
-  /** How the step computed each contributed column, and what each read. */
-  derivations: TraceColumnDerivation[]
-  expression?: {
-    expression_text: string
-    expression_type: string
-    referenced_columns: string[]
-  } | null
-  calculation?: {
-    substituted_text: string
-    result_value: unknown
-    not_computable_reason?: string | null
-    result_source?: string | null
-    input_values: Record<string, unknown>
-    taken_branch?: string | null
-    taken_branch_index?: number | null
-    expression_chain?: Array<{
-      expression_text: string
-      target_column: string
-      substituted_text?: string
-      result_value?: unknown
-      not_computable_reason?: string | null
-      result_source?: string | null
-    }> | null
-    input_sources?: Record<string, TraceInputSource> | null
-  } | null
-  node_detail?: TraceNodeDetail | null
-  row_lineage_type?: string | null
-  /** Set when this step's row was read from the shared snapshot generation
-   * the trace was seeded with, instead of computing the node. */
-  snapshot_generation_id?: string | null
-  /** Set when this step's row is one of several candidates identical in every
-   * column: how many there are. No physical row was chosen. */
-  identical_row_count?: number | null
+export type TraceStep = Omit<TraceStepResponse, "expression" | "calculation" | "node_detail"> & {
+  expression: TraceExpression | null
+  calculation: TraceCalculation | null
+  node_detail: TraceNodeDetail | null
 }
 
 export interface RatingStepFactorDetail {
@@ -345,62 +319,4 @@ export type TraceNodeDetail = (
   | GenericTraceNodeDetail
 ) & Record<string, unknown>
 
-export interface WaterfallEntry {
-  label: string
-  /** The first entry's value, a factor the entry multiplied by, or a delta it added. */
-  operation: "base" | "multiply" | "add"
-  value: number
-  delta: number
-  cumulative: number
-  default_used: boolean
-}
-
-export interface TraceCorrelationDiagnostic {
-  code: string
-  severity: string
-  reason: string
-  message: string
-  node_id: string | null
-  child_node_id: string | null
-  match_strategy?: string | null
-  match_columns: string[]
-  ignored_columns: string[]
-  matched_row_count?: number | null
-  matched_row_indices: number[]
-  /** For a node not traced above a snapshot: the seeded node it lies above. */
-  seed_node_ids: string[]
-  [metadata: string]: unknown
-}
-
-export interface TraceOmission {
-  node_id: string
-  node_name: string
-  node_type: string
-  topological_rank: number
-  reason: string
-  diagnostic_index: number
-}
-
-export interface TraceResult {
-  target_node_id: string
-  row_index: number
-  column: string | null
-  output_value: unknown
-  steps: TraceStep[]
-  omissions: TraceOmission[]
-  row_id_column: string | null
-  row_id_value: unknown
-  total_nodes_in_pipeline: number
-  nodes_in_trace: number
-  execution_ms: number
-  waterfall?: WaterfallEntry[] | WaterfallError | null
-  correlation_diagnostics: TraceCorrelationDiagnostic[]
-  generated_at: string
-  pipeline_source: string | null
-  execution_origin: "fresh_execution" | "trace_cache"
-}
-
-export interface WaterfallError {
-  error: string
-  error_type: string
-}
+export type TraceResult = Omit<TraceResultResponse, "steps"> & { steps: TraceStep[] }

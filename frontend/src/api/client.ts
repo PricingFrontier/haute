@@ -142,9 +142,9 @@ import {
   parseSubmodelCreateResponse,
   parseNodeInstanceCreateResponse,
   parseSubmodelGraphResponse,
-  parseTraceResponse,
   isPlainObject,
   previewFromContract,
+  traceFromContract,
   type ExecutionMetricsValidator,
 } from "../types/guards"
 import { expectGeneratedContract } from "../types/generatedContractValidation"
@@ -165,6 +165,7 @@ const nodeDataValidators = () => import("../generated/api-contracts.node-data.va
 const optimiserValidators = () => import("../generated/api-contracts.optimiser.validators.mjs")
 const outputValidators = () => import("../generated/api-contracts.output.validators.mjs")
 const previewValidators = () => import("../generated/api-contracts.preview.validators.mjs")
+const traceValidators = () => import("../generated/api-contracts.trace.validators.mjs")
 const sessionValidators = () => import("../generated/api-contracts.session.validators.mjs")
 const utilityValidators = () => import("../generated/api-contracts.utility.validators.mjs")
 const executionMetricsValidators = () =>
@@ -1156,7 +1157,8 @@ export interface TraceCellArgs {
 
 export function traceCell(args: TraceCellArgs): Promise<TraceResponse> {
   const { signal, timeout = null, ...payload } = args
-  return post<unknown>("/api/pipeline/trace", payload, { signal, timeout }).then(parseTraceResponse)
+  return post<unknown>("/api/pipeline/trace", payload, { signal, timeout }).then(async (data) =>
+    traceFromContract(expectGeneratedContract("TraceResponse", (await traceValidators()).validateTraceResponse, data)))
 }
 
 export interface WriteOutputArgs {

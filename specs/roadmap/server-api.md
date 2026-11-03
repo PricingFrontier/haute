@@ -59,10 +59,10 @@ apply, save, MLflow log, frontier status, auto-range start and status, frontier
 select).
 
 **Remaining:** the responses that carry node configs or the editor document:
-pipeline load and save, trace, submodel, recovery and repair
+pipeline load and save, submodel, recovery and repair
 (`PipelineRepairApplyResponse.document` is a `PipelineEditorDocument`). The preview,
-its inputs and progress, a file's schema and JSON-cache inference are generated
-(`preview`, `io`, `input-cache`), and the execution metrics are one shared module
+its inputs and progress, the trace, a file's schema and JSON-cache inference are
+generated (`preview`, `trace`, `io`, `input-cache`), and the execution metrics are one shared module
 (`execution-metrics`).
 
 **Acceptance:** Every response the client parses is validated by generated

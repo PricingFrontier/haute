@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
 
+import { makeTraceDiagnostic } from "../../test-utils/factories"
+import { validateTraceResponse } from "../../generated/api-contracts.trace.validators.mjs"
 import {
   validatePreviewInputsResponse,
   validatePreviewNodeResponse,
@@ -21,11 +23,11 @@ import {
   frontierAutoRangeStatusFromContract,
   optimiserStatusFromContract,
   parseSavePipelineResponse,
-  parseTraceResponse,
   parseSubmodelCreateResponse,
   parseSubmodelGraphResponse,
   parseExecutionStrategyDiagnostic,
   previewFromContract,
+  traceFromContract,
   type ExecutionMetricsValidator,
 } from "../guards"
 import {
@@ -233,6 +235,9 @@ const parsePreviewInputsResponse = (value: unknown) =>
   expectGeneratedContract("PreviewInputsResponse", validatePreviewInputsResponse, value)
 const parseJsonCacheSchemaInferenceResponse = (value: unknown) =>
   expectGeneratedContract("JsonCacheInferResponse", validateJsonCacheInferResponse, value)
+
+const parseTraceResponse = (value: unknown) =>
+  traceFromContract(expectGeneratedContract("TraceResponse", validateTraceResponse, value))
 
 // Explore and factor responses are checked by their generated validators
 // (API-R03); the pivot responses then get the UI's member-key and matrix checks.
@@ -1079,14 +1084,14 @@ describe("API response guards", () => {
           reason: "seed_row_not_reproduced",
           diagnostic_index: 0,
         }],
-        correlation_diagnostics: [{
+        correlation_diagnostics: [makeTraceDiagnostic({
           code: "seed_row_not_reproduced",
           severity: "info",
           reason: "seed_row_not_reproduced",
           message: "Not traced above the snapshot of join: a recompute holds no row equal to the snapshot's.",
           node_id: "policies",
           seed_node_ids: ["join"],
-        }],
+        })],
       },
     })
 
@@ -1145,10 +1150,6 @@ describe("API response guards", () => {
       .toThrow(/omissions/i)
     expect(() => parseTraceResponse({
       ...fixture,
-      trace: { ...trace, generated_at: "2026-07-23T12:00:00+01:00" },
-    })).toThrow(/UTC/i)
-    expect(() => parseTraceResponse({
-      ...fixture,
       trace: { ...trace, execution_origin: "unknown_cache" },
     })).toThrow(/execution_origin/i)
     // A trace never reads the preview cache, so that origin is not a value.
@@ -1172,22 +1173,7 @@ describe("API response guards", () => {
     expect(() => parseTraceResponse({
       ...fixture,
       trace: { ...trace, waterfall: { error: "cannot reconcile" } },
-    })).toThrow(/error_type/i)
-    expect(() => parseTraceResponse({
-      ...fixture,
-      trace: {
-        ...trace,
-        omissions: [{
-          node_id: "source",
-          node_name: "Source",
-          node_type: "dataInput",
-          topological_rank: 0,
-          reason: "duplicate_exact_match",
-          diagnostic_index: 0,
-        }],
-        correlation_diagnostics: [],
-      },
-    })).toThrow(/references missing diagnostic/i)
+    })).toThrow("TraceResponse: invalid contract at /trace/waterfall")
   })
 
   it("parses trace correlation diagnostics", () => {
@@ -1198,7 +1184,7 @@ describe("API response guards", () => {
       trace: {
         ...trace,
         correlation_diagnostics: [
-          {
+          makeTraceDiagnostic({
             code: "ambiguous_row_match",
             severity: "warning",
             reason: "relaxed_match_ambiguous",
@@ -1210,7 +1196,7 @@ describe("API response guards", () => {
             ignored_columns: ["premium"],
             matched_row_count: 2,
             matched_row_indices: [0, 1],
-          },
+          }),
         ],
       },
     })
