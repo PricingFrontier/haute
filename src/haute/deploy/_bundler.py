@@ -11,8 +11,9 @@ from haute._logging import get_logger
 from haute._model_flavors import family_for_artifact
 from haute._path_resolution import PathPreference, RuntimePathError, resolve_runtime_file_path
 from haute._sandbox import is_contained
+from haute.deploy._node_roles import DEPLOY_ARTIFACTS
 from haute.errors import DeployError
-from haute.graph_utils import NodeType, PipelineGraph
+from haute.graph_utils import PipelineGraph
 
 if TYPE_CHECKING:
     from mlflow.tracking import MlflowClient
@@ -108,17 +109,19 @@ def collect_artifacts(
         nid = node.id
         node_type = node.data.nodeType
         config = node.data.config
+        # What the node reads that the bundle must carry (``DEPLOY_ARTIFACTS``).
+        artifact = DEPLOY_ARTIFACTS[node_type]
 
-        if node_type == NodeType.EXTERNAL_FILE:
+        if artifact == "file":
             raw_path = config.get("path", "")
             if not raw_path:
                 continue
             abs_path = _resolve_path(raw_path, pipeline_dir, project_root, nid, "path")
             artifact_name = _artifact_name(nid, abs_path)
-            _check_exists(abs_path, nid, "externalFile")
+            _check_exists(abs_path, nid, node_type.value)
             artifacts.add(nid, artifact_name, abs_path)
 
-        elif node_type == NodeType.OPTIMISER_APPLY:
+        elif artifact == "optimiser_result":
             source_type = config.get("sourceType", "")
             raw_path = config.get("artifact_path", "")
             if not raw_path:
@@ -129,10 +132,10 @@ def collect_artifacts(
                 )
             abs_path = _resolve_path(raw_path, pipeline_dir, project_root, nid, "artifact_path")
             artifact_name = _artifact_name(nid, abs_path)
-            _check_exists(abs_path, nid, "optimiserApply")
+            _check_exists(abs_path, nid, node_type.value)
             artifacts.add(nid, artifact_name, abs_path)
 
-        elif node_type == NodeType.MODEL_SCORE:
+        elif artifact == "model":
             from haute._model_source import (
                 FileModelSource,
                 IncompleteModelSourceError,
@@ -178,7 +181,13 @@ def collect_artifacts(
                 continue
             if isinstance(model_source, FileModelSource):
                 _collect_model_file(
-                    nid, model_source, explicit_contract, pipeline_dir, project_root, artifacts
+                    nid,
+                    node_type.value,
+                    model_source,
+                    explicit_contract,
+                    pipeline_dir,
+                    project_root,
+                    artifacts,
                 )
                 continue
 
@@ -238,7 +247,7 @@ def collect_artifacts(
                 if run_contract is not None:
                     artifacts.add(nid, f"{nid}__feature_contract.json", run_contract)
 
-        elif node_type == NodeType.DATA_INPUT and nid not in input_set:
+        elif artifact == "dataset" and nid not in input_set:
             _collect_static_data_input(
                 nid,
                 config,
@@ -267,6 +276,7 @@ def with_served_configs(
 
 def _collect_model_file(
     node_id: str,
+    node_label: str,
     model_source: Any,
     explicit_contract: str | None,
     pipeline_dir: Path,
@@ -297,7 +307,7 @@ def _collect_model_file(
         "model_path",
         prefer="project",
     )
-    _check_exists(model_path, node_id, "modelScore")
+    _check_exists(model_path, node_id, node_label)
     artifacts.add(node_id, f"{node_id}__{artifact_basename(model_source.model_path)}", model_path)
     if explicit_contract is not None:
         return
@@ -474,7 +484,7 @@ def _shipped_file_inputs(
     return [
         (node.id, validate_data_input_config(node.data.config))
         for node in graph.nodes
-        if node.data.nodeType == NodeType.DATA_INPUT
+        if DEPLOY_ARTIFACTS[node.data.nodeType] == "dataset"
         and node.id not in input_node_ids
         and node.data.config.get("inputType") in _FILE_INPUT_TYPES
     ]

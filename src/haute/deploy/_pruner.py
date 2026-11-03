@@ -7,8 +7,13 @@ from typing import Any
 
 from haute._graph_utils import edge_input_name
 from haute._logging import get_logger
-from haute._node_specs import REQUEST_INPUT_NODE_TYPES, RESPONSE_NODE_TYPES
-from haute.graph_utils import GraphEdge, GraphNode, NodeType, PipelineGraph
+from haute._node_specs import (
+    REQUEST_INPUT_NODE_TYPES,
+    RESPONSE_NODE_TYPES,
+    SOURCE_NODE_TYPES,
+    node_spec,
+)
+from haute.graph_utils import GraphEdge, GraphNode, PipelineGraph
 
 logger = get_logger(component="deploy.pruner")
 
@@ -67,7 +72,7 @@ def _live_ancestry(graph: PipelineGraph, output_node_id: str) -> tuple[set[str],
     while pending:
         node = node_map[pending.pop()]
         edges = incoming.get(node.id, [])
-        if node.data.nodeType == NodeType.LIVE_SWITCH:
+        if node_spec(node.data.nodeType).scenario_router:
             edges = _live_input_edges(node, edges, node_map, submodels=graph.submodels)
         for edge in edges:
             kept_edges.add(edge.id)
@@ -152,9 +157,4 @@ def find_deploy_input_nodes(graph: PipelineGraph) -> list[str]:
 
 def find_source_nodes(graph: PipelineGraph) -> list[str]:
     """Find all source nodes in a graph (dataInput, the request inputs, constant)."""
-    return [
-        n.id
-        for n in graph.nodes
-        if n.data.nodeType in REQUEST_INPUT_NODE_TYPES
-        or n.data.nodeType in (NodeType.DATA_INPUT, NodeType.CONSTANT)
-    ]
+    return [n.id for n in graph.nodes if n.data.nodeType in SOURCE_NODE_TYPES]

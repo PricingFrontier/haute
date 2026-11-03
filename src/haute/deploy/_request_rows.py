@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import ast
 import shutil
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
@@ -41,11 +41,13 @@ from haute._hashing import HashingWriter, content_hash
 from haute._json_shred._shred import table_is_emitting
 from haute._logging import get_logger
 from haute._node_builder import node_fn_name
+from haute._node_specs import node_type_table
 from haute._polars_operations import POLARS_OPERATIONS, OperationClass
 from haute._polars_selectors import preamble_selector_aliases
 from haute._topo import topo_sort_ids
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.chunking import classify_row_local_expression
+from haute.deploy._node_roles import DEPLOY_ARTIFACTS, is_workbench_input
 from haute.errors import DeployError, QuoteAnswerRowsError, RequestRowCountError
 
 logger = get_logger(component="deploy.request_rows")
@@ -349,77 +351,13 @@ class _Walk:
     def node(self, node: GraphNode) -> _FrameFacts:
         edges = self.edges_by_target.get(node.id, [])
         inputs = [self.edge_facts(edge) for edge in edges]
-        node_type = node.data.nodeType
         if node.id in self.input_node_ids:
             return self.request_input(node)
-        if node_type is NodeType.CONSTANT:
-            return _FrameFacts(_Rows.ONE, from_request=False, carried=True)
-        if not inputs:
-            # A source the request does not reach: a bundled Data Input, or code that
-            # builds its own frame. The build can read it.
-            return _FrameFacts(_Rows.OTHER, from_request=False, carried=True)
-        request_in = any(facts.rows is _Rows.REQUEST for facts in inputs)
-        first = inputs[0]
-        if node_type in {NodeType.DATA_OUTPUT, NodeType.MODELLING}:
-            return first
-        if node_type is NodeType.LIVE_SWITCH:
-            # Deploy pruning keeps only the live input's edge.
-            if len(inputs) != 1:
-                return (
-                    self.refuse(node, "Live Switch", "unproven")
-                    if request_in
-                    else _lost_like(inputs)
-                )
-            return first
-        if node_type is NodeType.OPTIMISER:
-            return (
-                self.named_input(node, edges, inputs, node.data.config.get("data_input")) or first
-            )
-        if node_type is NodeType.BANDING:
-            return first
-        if node_type in {NodeType.RATING_STEP, NodeType.EXPLORE}:
-            # A Rating Step's lookups are deduplicated and joined ``maintain_order="left"``;
-            # its code, and an Explore's, see the frame as ``df`` alone.
-            code = _code(node)
-            return self.code_box(node, code, {"df": (first, edges[0])}) if code else first
-        if node_type is NodeType.MODEL_SCORE:
-            return self.model_score(node, edges, inputs)
-        if node_type is NodeType.EXTERNAL_FILE:
-            code = _code(node)
-            if not code:
-                return first
-            return self.bound_code_box(node, code, edges, inputs, alias_first_as_df=True)
-        if node_type is NodeType.POLARS:
-            code = _code(node)
-            if not code:
-                return (
-                    self.refuse(node, "no code", "unproven") if request_in else _lost_like(inputs)
-                )
-            return self.bound_code_box(node, code, edges, inputs, alias_first_as_df=False)
-        if node_type is NodeType.EDGE_JOIN:
-            return self.edge_join(node, edges, inputs)
-        if node_type is NodeType.OPTIMISER_APPLY:
-            return self.optimiser_apply(node, edges, inputs)
-        if node_type is NodeType.OUTPUT:
-            return self.response(node, edges, inputs)
-        if node_type is NodeType.SCENARIO_EXPANDER:
-            return self.refuse(node, "Expander", "repeats") if request_in else _lost_like(inputs)
-        if node_type is NodeType.WORKBENCH_OUTPUT:
-            # It answers one quote per request.
-            return (
-                self.refuse(node, "Workbench Output", "unproven")
-                if request_in
-                else _lost_like(inputs)
-            )
-        return (
-            self.refuse(node, str(node_type.value), "unproven")
-            if request_in
-            else _lost_like(inputs)
-        )
+        return _REQUEST_ROWS[node.data.nodeType](self, node, edges, inputs)
 
     def request_input(self, node: GraphNode) -> _FrameFacts:
         config = node.data.config
-        if node.data.nodeType is NodeType.DATA_INPUT:
+        if DEPLOY_ARTIFACTS[node.data.nodeType] == "dataset":
             # A promoted Data Input: its post-load code runs on the request.
             code = _code(node)
             if not code:
@@ -831,6 +769,212 @@ def _code(node: GraphNode) -> str:
     return str(node.data.config.get("code") or "").strip()
 
 
+#: How a node's output rows relate to the request's quotes, from its inputs' facts.
+_Rule = Callable[[_Walk, GraphNode, Sequence[GraphEdge], Sequence[_FrameFacts]], _FrameFacts]
+#: A rule for a node something is wired into, told whether the request reaches it.
+_WiredRule = Callable[
+    [_Walk, GraphNode, Sequence[GraphEdge], Sequence[_FrameFacts], bool], _FrameFacts
+]
+
+
+def _wired(rule: _WiredRule) -> _Rule:
+    """*rule* for a node with inputs; a node with none is a source the request does not reach."""
+
+    def rows(
+        walk: _Walk, node: GraphNode, edges: Sequence[GraphEdge], inputs: Sequence[_FrameFacts]
+    ) -> _FrameFacts:
+        if not inputs:
+            # A source the request does not reach: a bundled Data Input, or code that
+            # builds its own frame. The build can read it.
+            return _FrameFacts(_Rows.OTHER, from_request=False, carried=True)
+        request_in = any(facts.rows is _Rows.REQUEST for facts in inputs)
+        return rule(walk, node, edges, inputs, request_in)
+
+    return rows
+
+
+def _refusing(operation: str | None, effect: RowEffect) -> _Rule:
+    """A node that stops the proof when the request reaches it, named *operation* in the
+    refusal (``None``: by its node type)."""
+
+    @_wired
+    def rows(
+        walk: _Walk,
+        node: GraphNode,
+        edges: Sequence[GraphEdge],
+        inputs: Sequence[_FrameFacts],
+        request_in: bool,
+    ) -> _FrameFacts:
+        if not request_in:
+            return _lost_like(inputs)
+        return walk.refuse(node, operation or str(node.data.nodeType.value), effect)
+
+    return rows
+
+
+def _constant_rows(
+    walk: _Walk, node: GraphNode, edges: Sequence[GraphEdge], inputs: Sequence[_FrameFacts]
+) -> _FrameFacts:
+    return _FrameFacts(_Rows.ONE, from_request=False, carried=True)
+
+
+@_wired
+def _first_input_rows(
+    walk: _Walk,
+    node: GraphNode,
+    edges: Sequence[GraphEdge],
+    inputs: Sequence[_FrameFacts],
+    request_in: bool,
+) -> _FrameFacts:
+    return inputs[0]
+
+
+@_wired
+def _switch_rows(
+    walk: _Walk,
+    node: GraphNode,
+    edges: Sequence[GraphEdge],
+    inputs: Sequence[_FrameFacts],
+    request_in: bool,
+) -> _FrameFacts:
+    # Deploy pruning keeps only the live input's edge.
+    if len(inputs) != 1:
+        return walk.refuse(node, "Live Switch", "unproven") if request_in else _lost_like(inputs)
+    return inputs[0]
+
+
+@_wired
+def _optimiser_rows(
+    walk: _Walk,
+    node: GraphNode,
+    edges: Sequence[GraphEdge],
+    inputs: Sequence[_FrameFacts],
+    request_in: bool,
+) -> _FrameFacts:
+    return walk.named_input(node, edges, inputs, node.data.config.get("data_input")) or inputs[0]
+
+
+@_wired
+def _df_code_rows(
+    walk: _Walk,
+    node: GraphNode,
+    edges: Sequence[GraphEdge],
+    inputs: Sequence[_FrameFacts],
+    request_in: bool,
+) -> _FrameFacts:
+    # A Rating Step's lookups are deduplicated and joined ``maintain_order="left"``;
+    # its code, and an Explore's, see the frame as ``df`` alone.
+    code = _code(node)
+    return walk.code_box(node, code, {"df": (inputs[0], edges[0])}) if code else inputs[0]
+
+
+@_wired
+def _model_score_rows(
+    walk: _Walk,
+    node: GraphNode,
+    edges: Sequence[GraphEdge],
+    inputs: Sequence[_FrameFacts],
+    request_in: bool,
+) -> _FrameFacts:
+    return walk.model_score(node, edges, inputs)
+
+
+@_wired
+def _load_file_rows(
+    walk: _Walk,
+    node: GraphNode,
+    edges: Sequence[GraphEdge],
+    inputs: Sequence[_FrameFacts],
+    request_in: bool,
+) -> _FrameFacts:
+    code = _code(node)
+    if not code:
+        return inputs[0]
+    return walk.bound_code_box(node, code, edges, inputs, alias_first_as_df=True)
+
+
+@_wired
+def _transform_rows(
+    walk: _Walk,
+    node: GraphNode,
+    edges: Sequence[GraphEdge],
+    inputs: Sequence[_FrameFacts],
+    request_in: bool,
+) -> _FrameFacts:
+    code = _code(node)
+    if not code:
+        return walk.refuse(node, "no code", "unproven") if request_in else _lost_like(inputs)
+    return walk.bound_code_box(node, code, edges, inputs, alias_first_as_df=False)
+
+
+@_wired
+def _edge_join_rows(
+    walk: _Walk,
+    node: GraphNode,
+    edges: Sequence[GraphEdge],
+    inputs: Sequence[_FrameFacts],
+    request_in: bool,
+) -> _FrameFacts:
+    return walk.edge_join(node, edges, inputs)
+
+
+@_wired
+def _optimiser_apply_rows(
+    walk: _Walk,
+    node: GraphNode,
+    edges: Sequence[GraphEdge],
+    inputs: Sequence[_FrameFacts],
+    request_in: bool,
+) -> _FrameFacts:
+    return walk.optimiser_apply(node, edges, inputs)
+
+
+@_wired
+def _response_rows(
+    walk: _Walk,
+    node: GraphNode,
+    edges: Sequence[GraphEdge],
+    inputs: Sequence[_FrameFacts],
+    request_in: bool,
+) -> _FrameFacts:
+    return walk.response(node, edges, inputs)
+
+
+#: A node type the proof cannot follow, named by its type in the refusal.
+_UNPROVEN_ROWS = _refusing(None, "unproven")
+
+#: Each node type's rule, for a node that is not the request input (the walk reads a
+#: request input, the Quote or Workbench Input or a promoted Data Input, itself).
+_REQUEST_ROWS: Mapping[NodeType, _Rule] = node_type_table(
+    "deploy request rows",
+    {
+        NodeType.API_INPUT: _UNPROVEN_ROWS,
+        NodeType.WORKBENCH_INPUT: _UNPROVEN_ROWS,
+        # It answers one quote per request.
+        NodeType.WORKBENCH_OUTPUT: _refusing("Workbench Output", "unproven"),
+        NodeType.DATA_INPUT: _UNPROVEN_ROWS,
+        NodeType.DATA_OUTPUT: _first_input_rows,
+        NodeType.POLARS: _transform_rows,
+        NodeType.EDGE_JOIN: _edge_join_rows,
+        NodeType.MODEL_SCORE: _model_score_rows,
+        NodeType.BANDING: _first_input_rows,
+        NodeType.RATING_STEP: _df_code_rows,
+        NodeType.OUTPUT: _response_rows,
+        NodeType.EXPLORE: _df_code_rows,
+        NodeType.EXTERNAL_FILE: _load_file_rows,
+        NodeType.LIVE_SWITCH: _switch_rows,
+        NodeType.MODELLING: _first_input_rows,
+        NodeType.OPTIMISER: _optimiser_rows,
+        NodeType.SCENARIO_EXPANDER: _refusing("Expander", "repeats"),
+        NodeType.OPTIMISER_APPLY: _optimiser_apply_rows,
+        # One row whatever is wired into it.
+        NodeType.CONSTANT: _constant_rows,
+        NodeType.SUBMODEL: _UNPROVEN_ROWS,
+        NodeType.SUBMODEL_PORT: _UNPROVEN_ROWS,
+    },
+)
+
+
 def _key_tuple(value: object) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -922,7 +1066,7 @@ def prove_request_rows(
     """
     node_map = {node.id: node for node in graph.nodes}
     inputs = frozenset(input_node_ids)
-    if any(node_map[node_id].data.nodeType is NodeType.WORKBENCH_INPUT for node_id in inputs):
+    if any(is_workbench_input(node_map[node_id].data.nodeType) for node_id in inputs):
         return "one_quote_per_request", (), ()
     edges_by_target: dict[str, list[GraphEdge]] = {}
     for edge in graph.edges:

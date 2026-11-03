@@ -14,8 +14,9 @@ from typing import Any
 
 from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
-from haute._types import NodeType, PipelineGraph
+from haute._types import PipelineGraph
 from haute.deploy._config import ResolvedDeploy
+from haute.deploy._node_roles import is_workbench_input
 
 logger = get_logger(component="deploy.utils")
 
@@ -85,7 +86,7 @@ def shipped_graph(graph: PipelineGraph) -> dict[str, Any]:
 
 def _drop_samples(graph: dict[str, Any]) -> None:
     for node in graph["nodes"]:
-        if node["data"]["nodeType"] == NodeType.WORKBENCH_INPUT:
+        if is_workbench_input(node["data"]["nodeType"]):
             node["data"]["config"].pop("sample", None)
     for submodel in (graph.get("submodels") or {}).values():
         _drop_samples(submodel["graph"])

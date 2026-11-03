@@ -17,7 +17,7 @@ import polars as pl
 from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._output_assembler import pruned_document
-from haute._types import GLOBAL_CONSTANTS_FILE, NodeType, PipelineGraph
+from haute._types import GLOBAL_CONSTANTS_FILE, PipelineGraph
 from haute._workbench_config import read_workbench_config
 from haute._workbench_folder import unresolved_references
 from haute._workbench_form import identity_clashes
@@ -27,6 +27,7 @@ from haute.deploy._config import (
     output_fields_are_valid,
     test_quote_files,
 )
+from haute.deploy._node_roles import DEPLOY_ARTIFACTS
 from haute.deploy._scorer import (
     DeployInput,
     QuoteRequest,
@@ -560,7 +561,7 @@ def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> li
     # every other canonical Data Input must resolve to a ready snapshot.
     # Provider exceptions are deliberately redacted.
     for node in resolved.pruned_graph.nodes:
-        if node.data.nodeType != NodeType.DATA_INPUT:
+        if DEPLOY_ARTIFACTS[node.data.nodeType] != "dataset":
             continue
         try:
             from haute._polars_io_registry import validate_data_input_config

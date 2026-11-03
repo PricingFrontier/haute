@@ -23,9 +23,10 @@ from haute._node_specs import REQUEST_INPUT_NODE_TYPES
 from haute._workbench_input import null_quote, workbench_input_tables
 from haute._workbench_tables import WorkbenchTable, WorkbenchTablesError, request_schema
 from haute._worker_isolation import IsolatedWorkerError, run_isolated_worker
+from haute.deploy._node_roles import DEPLOY_ARTIFACTS, is_workbench_input
 from haute.errors import ConfigError
 from haute.execution import dataframe_graph_input_fingerprint
-from haute.graph_utils import GraphNode, NodeType, PipelineGraph, read_data_source, read_source
+from haute.graph_utils import GraphNode, PipelineGraph, read_data_source, read_source
 
 if TYPE_CHECKING:
     from haute.deploy._scorer import DeployInput
@@ -57,7 +58,7 @@ def _resolve_pipeline_path(graph: PipelineGraph, path: str) -> str:
 
 def _read_input_source(graph: PipelineGraph, node: GraphNode, resolved_path: str) -> pl.LazyFrame:
     config = node.data.config
-    if node.data.nodeType == NodeType.DATA_INPUT:
+    if DEPLOY_ARTIFACTS[node.data.nodeType] == "dataset":
         from haute._input_providers import resolve_data_input
         from haute._project_context import current_project
         from haute._source_cache import SourceCacheStore
@@ -94,11 +95,11 @@ def infer_input_schema(graph: PipelineGraph, input_node_id: str) -> dict[str, st
     """
     node = _find_node(graph, input_node_id)
     config = node.data.config
-    if node.data.nodeType is NodeType.WORKBENCH_INPUT:
+    if is_workbench_input(node.data.nodeType):
         return {col: str(dtype) for col, dtype in request_schema(_workbench_tables(node)).items()}
     path = config.get("path", "")
 
-    if not path and node.data.nodeType != NodeType.DATA_INPUT:
+    if not path and DEPLOY_ARTIFACTS[node.data.nodeType] != "dataset":
         raise ValueError(
             f"Input node '{input_node_id}' has no path configured. Cannot infer schema."
         )
@@ -172,13 +173,13 @@ def _read_sample_row(graph: PipelineGraph, input_node_ids: list[str]) -> DeployI
     if not input_node_ids:
         raise ValueError("No API input nodes found in the graph")
     node = _find_node(graph, input_node_ids[0])
-    if node.data.nodeType is NodeType.WORKBENCH_INPUT:
+    if is_workbench_input(node.data.nodeType):
         tables = _workbench_tables(node)
         return pl.DataFrame([null_quote(tables)], schema=request_schema(tables))
     config = node.data.config
     path = config.get("path", "")
 
-    if not path and node.data.nodeType != NodeType.DATA_INPUT:
+    if not path and DEPLOY_ARTIFACTS[node.data.nodeType] != "dataset":
         raise ValueError(
             f"Input node '{input_node_ids[0]}' has no path - cannot create sample row."
         )
