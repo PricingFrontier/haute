@@ -117,7 +117,15 @@ Out of scope, owned elsewhere:
   exactly the placeholder `uv init` writes, its project name aside, is deleted: a Haute
   project's entry point is `rating/main.py`, and removing the placeholder keeps it
   unambiguous. Any other root `main.py` is the team's, in a repository Haute is set up in,
-  so it is kept and the summary says so. No `prompts/` directory or
+  so it is kept and the summary says so. A first `haute init` also removes `uv init`'s other
+  leftovers that are still exactly as uv wrote them and that nothing references, keeping a
+  working build configuration (`remove_uv_init_leftovers`): an empty README with the
+  pyproject's `readme` naming it, the placeholder `description`, and a `--package` or `--lib`
+  project's `src/<module>/` with the `[project.scripts]` entry and the `[build-system]` that
+  name it, each named in the summary. A re-run removes no file, the root `main.py` included
+  (READ-41). `.env.example` says in a comment what each credential is for, and the
+  `.gitignore` guard writes its `# Haute` heading once, adding a newer Haute's entries under
+  it. No `prompts/` directory or
   starter nodes/sidecars are generated.
 - `haute run [pipeline_file] [--node NODE] [--source SOURCE] [--rows N]` runs a pipeline
   to its output node (a Quote Response, a Workbench Output or a node marked as the output),

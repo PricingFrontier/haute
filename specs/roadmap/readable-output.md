@@ -56,7 +56,6 @@ Each package states its formats in its owning specification before behaviour cha
 | READ-31 | Planned | P3 | Gaps, conditions and appearance on a sheet are written where a reader looks for them. |
 | READ-33 | Deferred | P2 | A column or table renamed against the project's default branch keeps its saved values in the quote store. |
 | READ-40 | Planned | P3 | Generated workflows declare each secret, setup and check once. |
-| READ-41 | Planned | P3 | A new project holds no `uv init` placeholders and no settings at their default values. |
 
 ## Planned improvements
 
@@ -460,24 +459,3 @@ The owner judged that the complexity isn't worth it.
 **Evidence:** `src/haute/_scaffold.py::_github_ci_yml`; `src/haute/_scaffold.py::_github_deploy_yml`;
 `src/haute/_scaffold.py::_github_secrets_env`.
 
-### READ-41 — A new project holds no `uv init` placeholders and no default settings
-**Why:**
-- A new project keeps leftovers from `uv init`: an empty README, `"Add your description here"`, `[project.scripts]` and `src/<project>/`.
-- `haute.toml` writes settings at their default values (`[test_quotes] dir`, `port = 8080`).
-- `.env.example` doesn't say what the `AZURE_*` values are for.
-- The generated `.gitignore` repeats its `# Haute` header.
-
-**Plan:**
-- **`uv init` leftovers:** on a first `haute init` only, remove those that are still exactly as uv wrote them and that nothing references, keeping a working build configuration. A re-run never removes a file.
-- **Settings:** write only those that differ from their defaults.
-- **`.env.example`:** explain each entry in a comment.
-- **`.gitignore`:** write the header once.
-- The quote store's `provider` stays in both `haute.toml` and `connections.toml`. Releases read only `haute.toml`, and a local connection is checked against it.
-
-**Acceptance:**
-- A scaffold test of a new workbench project finds none of the leftovers and no settings at their defaults, and the project builds.
-- A re-run on a project whose README and `src/` were written by hand keeps them.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/cli/_init_cmd.py::write_generated_files`; `src/haute/_scaffold.py`.

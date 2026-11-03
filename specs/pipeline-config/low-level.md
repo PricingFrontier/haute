@@ -458,12 +458,13 @@ nodes. `starter_test(name)` parses that file and asserts only the configured pip
 `rating/files/data/`, `rating/files/models/` and `rating/files/params/` folders
 (`PIPELINE_FILES_SUBFOLDERS`), but no node sidecars or `prompts/` directory, and removes
 any root `main.py` before writing `rating/main.py`.
-`haute_toml()` assembles `[project]`/`[deploy]`/`[test_quotes]`/`[safety]`/`[safety.approval]`
+`haute_toml()` assembles `[project]`/`[deploy]`/`[safety]`/`[safety.approval]`
 (`min_approvers` hardcoded to 2 in the template — solo users lower it by hand)/`[ci]`/
 `[ci.staging]` sections, splicing in `_target_section()`'s
-`[deploy.<target>]` block. A workbench project's `haute.toml` is `workbench_haute_toml()`'s
-instead: `[project]`, `[deploy.container]` (registry, port and the base image on the project's
-Python) and no other `[deploy]` key, `[test_quotes]`, `[ci]` and `workbench_table()`'s
+`[deploy.<target>]` block. Neither writes a setting at its default: no `[test_quotes] dir` (its
+folder is `tests/quotes` when it names none) and no `[deploy.container] port` (8080) (READ-41). A workbench project's `haute.toml` is `workbench_haute_toml()`'s
+instead: `[project]`, `[deploy.container]` (registry and the base image on the project's
+Python) and no other `[deploy]` key, `[ci]` and `workbench_table()`'s
 `[workbench]`, `[workbench.app] host` and the three store environments on one provider, with
 no `[safety]` or `[ci.staging]`, which only an endpoint's smoke and impact read. Its
 `[safety]` table names no `impact_dataset`: `haute impact` compares the test quotes until a

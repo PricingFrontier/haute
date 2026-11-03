@@ -123,8 +123,8 @@ request group, which only the tests load, so the form's models are generated typ
 `src/haute/routes/_error_handlers.py` answers a `WorkbenchError` as 409. `src/haute/deploy/_config.py` lists the `[workbench]` table,
 with `WORKBENCH_TOML_KEYS`, in the `haute.toml` schema its whole-file check accepts.
 `src/haute/_scaffold.py` renders a workbench project's `haute.toml`, `workbench_haute_toml`
-(`[project]`, `[deploy.container]` with the base image on the project's Python, `[test_quotes]`,
-`[ci]` and the table, `workbench_table`, its `[workbench.app] host`, `HOSTED_ENVIRONMENTS`'
+(`[project]`, `[deploy.container]` with the base image on the project's Python and no setting at
+its default, `[ci]` and the table, `workbench_table`, its `[workbench.app] host`, `HOSTED_ENVIRONMENTS`'
 `[workbench.app.<name>]` with `resource_group` and `container_app` empty, and the quote store's
 `WORKBENCH_ENVIRONMENTS` declared on the one provider, `STORE_USERNAME_ENV` naming the role on
 `postgresql`), `connections_toml`, their connections on that provider with the analyst's

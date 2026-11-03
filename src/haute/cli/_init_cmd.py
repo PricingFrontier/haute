@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 import sys
 import tomllib
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -637,6 +637,98 @@ _UV_INIT_PLACEHOLDER = re.compile(
 )
 
 
+#: ``uv init --package``'s and ``--lib``'s ``src/<module>/__init__.py``, its project name aside.
+_UV_INIT_PACKAGE = re.compile(
+    r"def (?:main\(\) -> None:\n    print|hello\(\) -> str:\n    return)"
+    r'\("Hello from [^"\\\n]+!"\)\n'
+)
+#: The description ``uv init`` writes, which says nothing about the project.
+_UV_INIT_DESCRIPTION = "Add your description here"
+#: The build backends ``uv init`` names for a package.
+_UV_INIT_BACKENDS = frozenset({"uv_build", "hatchling.build"})
+
+
+def _referenced(project_dir: Path, module: str, skip: Path) -> bool:
+    """Whether a Python file of the project outside *skip* imports *module*."""
+    pattern = re.compile(rf"^\s*(?:import|from)\s+{re.escape(module)}\b", re.MULTILINE)
+    for path in project_dir.rglob("*.py"):
+        if skip in path.parents or ".venv" in path.parts:
+            continue
+        try:
+            if pattern.search(path.read_bytes().decode("utf-8", errors="replace")):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def remove_uv_init_leftovers(project_dir: Path, pyproject_path: Path) -> list[str]:
+    """Remove what ``uv init`` left that a Haute project has no use for (READ-41); return
+    what went, for the summary.
+
+    Only on a project's first ``haute init``, and only what is still exactly as uv wrote it
+    and nothing references: an empty README and the pyproject's ``readme`` naming it, the
+    placeholder ``description``, and a ``--package`` or ``--lib`` project's
+    ``src/<module>/`` with the ``[project.scripts]`` entry and the ``[build-system]`` that
+    name it, so the build configuration left works. A file written by hand is kept.
+    """
+    import tomlkit
+
+    if not pyproject_path.is_file():
+        return []
+    original = read_user_text(pyproject_path)
+    document = tomlkit.parse(original)
+    project = document.get("project")
+    if not isinstance(project, MutableMapping):
+        return []
+    removed: list[str] = []
+    readme = project_dir / "README.md"
+    if (
+        project.get("readme") == "README.md"
+        and readme.is_file()
+        and not readme.read_bytes().strip()
+    ):
+        readme.unlink()
+        del project["readme"]
+        removed.append("the empty README.md")
+    if project.get("description") == _UV_INIT_DESCRIPTION:
+        del project["description"]
+        removed.append("the placeholder description")
+    name = project.get("name")
+    module = re.sub(r"[-.]+", "_", str(name)).lower() if isinstance(name, str) else ""
+    package = project_dir / "src" / module
+    init = package / "__init__.py"
+    scripts = project.get("scripts")
+    files = sorted(path.name for path in package.iterdir()) if package.is_dir() else []
+    untouched = (
+        module
+        and init.is_file()
+        and set(files) <= {"__init__.py", "py.typed", "__pycache__"}
+        and _UV_INIT_PACKAGE.fullmatch(
+            init.read_bytes().decode("utf-8", "replace").replace("\r\n", "\n")
+        )
+        is not None
+        and not _referenced(project_dir, module, package)
+    )
+    build = document.get("build-system")
+    if untouched and (scripts is None or dict(scripts) == {str(name): f"{module}:main"}):
+        for path in sorted(package.rglob("*"), reverse=True):
+            path.unlink() if path.is_file() else path.rmdir()
+        package.rmdir()
+        if not any((project_dir / "src").iterdir()):
+            (project_dir / "src").rmdir()
+        if scripts is not None:
+            del project["scripts"]
+        if isinstance(build, Mapping) and build.get("build-backend") in _UV_INIT_BACKENDS:
+            del document["build-system"]
+        removed.append(f"src/{module}/, uv init's package")
+    text = tomlkit.dumps(document)
+    if text != original:
+        tomllib.loads(text)  # what is written must read back as TOML
+        write_lf(pyproject_path, text)
+    return removed
+
+
 def _is_uv_init_placeholder(path: Path) -> bool:
     """Whether *path* holds exactly what ``uv init`` writes as a root ``main.py``, its
     project name aside; a checkout's CRLF line endings count as its LF ones."""
@@ -780,6 +872,11 @@ def handle_init(config: InitConfig) -> None:
     # A workbench project's release installs its quote store's driver, and its CI rolls the
     # hosted app out through the Azure management packages, so haute comes with both extras.
     requirement = f"haute[{answers.store},azure]" if workbench else "haute"
+    # A first init removes uv init's leftovers that are still as uv wrote them; a re-run
+    # never removes a file (READ-41).
+    leftovers = [] if rerun else remove_uv_init_leftovers(project_dir, pyproject_path)
+    for leftover in leftovers:
+        click.echo(f"  Removed {leftover}, which uv init wrote and nothing uses.")
     pyproject_changed = _ensure_haute_dependency(pyproject_path, name, requirement)
 
     # -- .python-version - one Python for local, CI and the deployed model -----
@@ -793,7 +890,7 @@ def handle_init(config: InitConfig) -> None:
 
     # -- Remove the root placeholder ``uv init`` writes, and only that ----------
     root_main = project_dir / "main.py"
-    if root_main.is_file():
+    if root_main.is_file() and not rerun:
         if _is_uv_init_placeholder(root_main):
             root_main.unlink()
             click.echo("  Removed root main.py, uv init's placeholder (Haute uses rating/main.py).")
