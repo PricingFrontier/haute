@@ -220,10 +220,12 @@ project root) after the executable-name check.
 dict[str, dict[str, float]]` (written in key order, so re-saving a graph reloaded in its source file's node order leaves the file unchanged), `sources: list[str]` (defaults to `["live"]`), `active_source:
 str`, optional `managed_parent: str | None`, and `unfinished_steps`, a transform's whole
 step list by node while one of its steps cannot be rendered (READ-22): `save_sidecar` writes
-it from each transform whose editor state holds a `steps_error`, and
-`parse_pipeline_to_graph` gives each transform whose body is the placeholder (no code, no
-steps) its list back (`with_unfinished_steps`), an entry for any other node ignored and
-dropped by the next save. `managed_parent` is emitted
+it from each transform whose editor state holds a `steps_error`, and a node-scoped save
+(`_pipeline_repair_actions._unfinished_steps_edit`) sets or drops the one node's entry;
+`parse_pipeline_to_graph` and the editor's document, canonical or recovered, give each
+transform whose body is the placeholder (no code, no steps) its list back
+(`with_unfinished_steps`), an entry for any other node ignored and dropped by the next
+save. `managed_parent` is emitted
 only when the existing child sidecar already proves the same canonical
 project-relative owner, or when explicit Save derives a new definition from
 the persisted/submitted registry diff after source-and-sidecar no-clobber. A

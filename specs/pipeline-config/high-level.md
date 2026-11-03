@@ -568,8 +568,9 @@ before and after the unfinished one included, in the pipeline's `.haute.json` un
 the node's name (`unfinished_steps`), and the save warns which step; so the node fails
 in the editor, `haute run`, a standalone run and a deploy alike, never returning the
 steps before the unfinished one. Loading in the editor gives such a node the steps the
-sidecar holds; once every step is complete the next save renders them into the body
-and drops them from the sidecar. A sidecar entry for a node whose body is not the
+sidecar holds, in a degraded document too; a save of the one node keeps them in its
+file's sidecar as a whole save does; once every step is complete the next save renders
+them into the body and drops them from the sidecar. A sidecar entry for a node whose body is not the
 placeholder is ignored, and the next save drops it.
 
 **Stepped surfaces.** The same step list authors the Polars code of every surface

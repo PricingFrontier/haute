@@ -10,7 +10,7 @@ import os
 import re
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -78,6 +78,7 @@ from haute._types import (
     REQUEST_INPUT_NODE_TYPES,
     GlobalConstant,
     GraphNode,
+    NodeData,
     NodeEditorState,
     NodeType,
     PipelineGraph,
@@ -1204,20 +1205,6 @@ def _editor_sidecar(
     return sidecar
 
 
-def _editor_sidecar_positions(
-    source_path: Path,
-    *,
-    source_file: str,
-    captures: _SourceCaptures,
-    diagnostics: list[PipelineRecoveryDiagnostic],
-) -> dict[str, dict[str, float]]:
-    """The canvas positions in one file's editor sidecar, read through *captures*."""
-    sidecar = _editor_sidecar(
-        source_path, source_file=source_file, captures=captures, diagnostics=diagnostics
-    )
-    return _sidecar_values(sidecar)[0]
-
-
 def _canonical_snapshot(
     graph: PipelineGraph,
     *,
@@ -1482,6 +1469,32 @@ class _FileGraph:
     occurrences: _SubmodelOccurrences
 
 
+def _with_unfinished_candidate_steps(
+    candidate: _RecoveredCandidate, unfinished: Mapping[str, Any]
+) -> _RecoveredCandidate:
+    """*candidate*, a transform saved with an unfinished step list, given its steps from
+    the sidecar by the rule a parsed graph's nodes are (:func:`with_unfinished_steps`)."""
+    if (
+        candidate.node_type != NodeType.POLARS
+        or candidate.config is None
+        or candidate.authored_id not in unfinished
+    ):
+        return candidate
+    node = GraphNode(
+        id=candidate.authored_id,
+        data=NodeData(
+            label=candidate.authored_id,
+            nodeType=NodeType.POLARS,
+            config=candidate.config,
+            editor=candidate.editor,
+        ),
+    )
+    [given] = with_unfinished_steps([node], dict(unfinished))
+    if given is node:
+        return candidate
+    return replace(candidate, config=dict(given.data.config), editor=given.data.editor)
+
+
 def _recover_file_graph(
     tree: ast.Module,
     source: str,
@@ -1490,6 +1503,7 @@ def _recover_file_graph(
     source_file: str,
     base_dir: Path,
     positions: dict[str, dict[str, float]],
+    unfinished_steps: Mapping[str, Any],
     diagnostics: list[PipelineRecoveryDiagnostic],
     failure: BaseException | None,
     occurrence_identities: Sequence[tuple[str, int]] = (),
@@ -1522,12 +1536,15 @@ def _recover_file_graph(
         + list(occurrence_identities)
     )
     candidates = [
-        _candidate_from_ast(
-            skeleton,
-            recovery_id=recovery_id(skeleton.authored_id, skeleton.start_line),
-            source_file=source_file,
-            base_dir=base_dir,
-            diagnostics=diagnostics,
+        _with_unfinished_candidate_steps(
+            _candidate_from_ast(
+                skeleton,
+                recovery_id=recovery_id(skeleton.authored_id, skeleton.start_line),
+                source_file=source_file,
+                base_dir=base_dir,
+                diagnostics=diagnostics,
+            ),
+            unfinished_steps,
         )
         for skeleton in skeletons
     ]
@@ -1585,9 +1602,10 @@ def _recover_submodel_snapshot(
     except (OSError, ParseError, SyntaxError):
         return RecoveryGraphSnapshot(), [], []
 
-    positions = _editor_sidecar_positions(
+    child_sidecar = _editor_sidecar(
         child_path, source_file=child_source_file, captures=captures, diagnostics=diagnostics
     )
+    positions = _sidecar_values(child_sidecar)[0]
 
     try:
         _definition_id, input_ports, output_ports = _extract_definition_contract(tree)
@@ -1609,6 +1627,7 @@ def _recover_submodel_snapshot(
         source_file=child_source_file,
         base_dir=config_base,
         positions=positions,
+        unfinished_steps={} if child_sidecar.data is None else child_sidecar.data.unfinished_steps,
         diagnostics=diagnostics,
         failure=failure,
         boundary_incoming=boundary_incoming,
@@ -2514,6 +2533,7 @@ def _load_readable_pipeline_editor_document(
                 source_file=source_file,
                 base_dir=path.parent,
                 positions=positions,
+                unfinished_steps={} if sidecar.data is None else sidecar.data.unfinished_steps,
                 diagnostics=diagnostics,
                 failure=strict_failure,
                 occurrence_identities=[

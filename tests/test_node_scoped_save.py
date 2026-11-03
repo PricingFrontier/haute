@@ -180,6 +180,51 @@ def test_scoped_save_edits_blocked_node_downstream_of_broken_input(tmp_path):
     assert json.loads((tmp_path / "a.json").read_text()) == BROKEN_INPUT
 
 
+def test_scoped_save_keeps_an_unfinished_step_list_until_it_is_complete(tmp_path):
+    """Saved with an unfinished step, a transform's body is the raising placeholder, so its
+    steps are kept in the canvas sidecar (READ-22): the degraded document opens the node
+    with them, and completing them moves them into the code and out of the sidecar."""
+    from haute._pipeline_repair_actions import apply_scoped_node_save
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    main = tmp_path / "main.py"
+    main.write_text(
+        "import haute\nimport polars as pl\n"
+        'pipeline = haute.Pipeline("demo")\n'
+        '@pipeline.data_input(config="a.json")\ndef source_a(): ...\n'
+        "@pipeline.polars\ndef transform(source_a: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    df: pl.LazyFrame\n    df = source_a\n    return df\n"
+    )
+    (tmp_path / "a.json").write_text(json.dumps(BROKEN_INPUT))
+    document = load_pipeline_editor_document(main, project_root=tmp_path)
+    config = next(node for node in document.nodes if node.authored_id == "transform").config
+    assert config is not None
+    unfinished = [*config["steps"], {"id": "filter-2", "kind": "filter", "match": "all"}]
+
+    saved = apply_scoped_node_save(
+        project_root=tmp_path,
+        request=_save_request(tmp_path, "transform", {**config, "steps": unfinished}),
+    )
+
+    assert "raise NotImplementedError" in main.read_text()
+    sidecar = main.with_suffix(".haute.json")
+    assert json.loads(sidecar.read_text())["unfinished_steps"] == {"transform": unfinished}
+    assert saved.load_status == "degraded"
+    opened = next(node for node in saved.nodes if node.authored_id == "transform")
+    assert opened.config is not None
+    assert opened.config["steps"] == unfinished
+    assert opened.editor.steps_error is not None
+
+    complete = [*config["steps"], {"id": "limit-2", "kind": "limit", "n": 1}]
+    apply_scoped_node_save(
+        project_root=tmp_path,
+        request=_save_request(tmp_path, "transform", {**config, "steps": complete}),
+    )
+
+    assert "df.head(1)" in main.read_text()
+    assert "unfinished_steps" not in json.loads(sidecar.read_text())
+
+
 def test_scoped_save_regenerates_the_contract_annotation_from_the_saved_settings(tmp_path):
     """Renaming a banding output changes the columns the node creates, so the
     annotation carried back from the last parse is stale; the save regenerates

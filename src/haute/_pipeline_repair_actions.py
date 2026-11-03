@@ -126,6 +126,47 @@ def _edit(
     )
 
 
+def _unfinished_steps_edit(path: Path, root: Path, node: GraphNode) -> RepairArtifactEdit | None:
+    """The edit to *path*'s canvas sidecar that keeps the transform *node*'s step list while
+    one of its steps is unfinished, or drops it once none is (READ-22): its body is then the
+    raising placeholder, so the sidecar holds the steps' only copy. None when it holds them
+    as they should be."""
+    from haute._json_files import render_json
+    from haute._sidecar import _read_sidecar_json
+
+    sidecar = path.with_suffix(".haute.json")
+    state, payload, _error = _read_sidecar_json(sidecar)
+    if state in ("corrupt", "unreadable"):
+        raise _unsupported(
+            f"{sidecar.name} cannot be read, so this node's unfinished steps could not be kept; "
+            "repair it first."
+        )
+    held = dict(payload or {})
+    unfinished = dict(held.get("unfinished_steps") or {})
+    steps = node.data.config.get("steps")
+    if isinstance(steps, list) and node.data.editor.steps_error is not None:
+        if unfinished.get(node.id) == steps:
+            return None
+        unfinished[node.id] = steps
+    elif node.id in unfinished:
+        del unfinished[node.id]
+    else:
+        return None
+    held.pop("unfinished_steps", None)
+    if unfinished:
+        held["unfinished_steps"] = dict(sorted(unfinished.items()))
+    before = sidecar.read_bytes() if state == "valid" else None
+    return _edit(
+        sidecar,
+        root,
+        before,
+        render_json(held).encode("utf-8"),
+        f"Keep {node.id!r}'s steps while one is unfinished."
+        if node.id in unfinished
+        else f"Drop {node.id!r}'s unfinished steps, now in its code.",
+    )
+
+
 def _target_graph(
     document: PipelineEditorDocument, target: RecoveryPipelineNode
 ) -> PipelineEditorDocument | RecoveryGraphSnapshot:
@@ -401,6 +442,10 @@ def _reset_node(
                     f"{target.authored_id!r} no longer names.",
                 )
             )
+    if node_type == NodeType.POLARS:
+        sidecar_edit = _unfinished_steps_edit(path, root, node)
+        if sidecar_edit is not None:
+            edits.append(sidecar_edit)
     # LibCST matches the function's definition span and replaces its decorators too.
     updated = _with_polars_import(_replace_spans(before, [(function, generated.rstrip("\n"))]))
     edits.insert(
