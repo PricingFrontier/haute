@@ -445,6 +445,65 @@ class TestPruner:
         with pytest.raises(ValueError, match="'inner' maps no input to the 'live' scenario"):
             prune_for_deploy(graph, "out")
 
+    def test_prune_refuses_a_live_input_that_matches_no_connected_edge(self) -> None:
+        from haute.deploy._pruner import prune_for_deploy
+
+        graph = self._switch_graph(
+            inner_map={"a": "batch", "b": "batch"},
+            outer_map={"renamed_source": "live", "inner": "batch"},
+        )
+
+        with pytest.raises(ValueError, match="'renamed_source' does not match any connected"):
+            prune_for_deploy(graph, "out")
+
+    def test_prune_ignores_an_edge_whose_end_the_graph_does_not_hold(self) -> None:
+        from haute.deploy._pruner import prune_for_deploy
+
+        graph = _g(
+            {
+                "nodes": [
+                    {"id": "out", "data": {"nodeType": "output", "config": make_output_config([])}}
+                ],
+                "edges": [{"id": "dangling", "source": "ghost", "target": "out"}],
+            }
+        )
+
+        pruned, kept, removed = prune_for_deploy(graph, "out")
+
+        assert (kept, removed, pruned.edges) == (["out"], [], [])
+
+    def test_find_output_node_refuses_two_and_counts_a_repeated_id_once(self) -> None:
+        from haute.deploy._pruner import find_output_node
+
+        def output(node_id: str) -> dict:
+            return {"id": node_id, "data": {"nodeType": "output", "config": make_output_config([])}}
+
+        assert find_output_node(_g({"nodes": [output("out"), output("out")], "edges": []})) == (
+            "out"
+        )
+        with pytest.raises(ValueError, match=r"Multiple output nodes found: \['a', 'b'\]"):
+            find_output_node(_g({"nodes": [output("a"), output("b")], "edges": []}))
+
+    def test_find_source_nodes_names_the_inputs_and_constants(self) -> None:
+        from haute.deploy._pruner import find_source_nodes
+
+        graph = _g(
+            {
+                "nodes": [
+                    {"id": node_id, "data": {"nodeType": node_type, "config": {}}}
+                    for node_id, node_type in (
+                        ("quote", "apiInput"),
+                        ("rates", "dataInput"),
+                        ("base", "constant"),
+                        ("calc", "polars"),
+                    )
+                ],
+                "edges": [],
+            }
+        )
+
+        assert find_source_nodes(graph) == ["quote", "rates", "base"]
+
     def test_prune_missing_output_raises(self, full_graph: dict) -> None:
         from haute.deploy._pruner import prune_for_deploy
 

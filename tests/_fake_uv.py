@@ -4,9 +4,10 @@
 a lock line with a digest derived from the pin, a wheel path as ``haute @ file://...``, and
 an index option carrying a credential, as a real resolve can; it adds no transitive
 dependency. ``--version`` names it. With ``HAUTE_FAKE_UV_FAIL`` set it fails, printing that
-message, as a resolve with no wheel for the target does; with ``HAUTE_FAKE_UV_ARGS`` set it
-writes the arguments it was given there, as JSON. Tests that need the real resolver
-are marked ``index`` and skip the fixture that installs this one (``tests/conftest.py``).
+message, as a resolve with no wheel for the target does. The lock's first line is a
+comment holding the arguments it was given, as JSON (``ARGS_COMMENT``). Tests that need
+the real resolver are marked ``index`` and skip the fixture that installs this one
+(``tests/conftest.py``).
 """
 
 from __future__ import annotations
@@ -17,6 +18,9 @@ import os
 import re
 import sys
 from pathlib import Path
+
+#: The comment line that opens every lock the fake writes, holding the arguments it was given.
+ARGS_COMMENT = "# fake uv args: "
 
 _ROOT = re.compile(r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?==(?P<version>\S+)$")
 
@@ -42,15 +46,16 @@ def main(args: list[str]) -> int:
     if args[:2] != ["pip", "compile"]:
         print(f"fake uv: unexpected command {args}", file=sys.stderr)
         return 2
-    recorded = os.environ.get("HAUTE_FAKE_UV_ARGS")
-    if recorded:
-        Path(recorded).write_text(json.dumps(args), encoding="utf-8")
     failure = os.environ.get("HAUTE_FAKE_UV_FAIL")
     if failure:
         print(failure, file=sys.stderr)
         return 1
     output = Path(args[args.index("--output-file") + 1])
-    lines = ["--index-url https://deploy-bot:s3cret@index.example/simple", ""]
+    lines = [
+        f"{ARGS_COMMENT}{json.dumps(args)}",
+        "--index-url https://deploy-bot:s3cret@index.example/simple",
+        "",
+    ]
     for root in Path(args[2]).read_text(encoding="utf-8").splitlines():
         root = root.strip()
         if not root:

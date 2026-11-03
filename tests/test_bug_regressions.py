@@ -461,8 +461,9 @@ class TestBugB16ValidateDeployCall:
             assert received_resolved is resolved
             calls.append("validate")
 
-        def fake_deploy_to_mlflow(received_resolved: object) -> object:
+        def fake_deploy_to_mlflow(received_resolved: object, *, keep_build: bool) -> object:
             assert received_resolved is resolved
+            assert keep_build is False
             calls.append("deploy")
             return deployed
 

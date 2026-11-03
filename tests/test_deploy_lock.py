@@ -21,6 +21,7 @@ from haute.deploy._lock import uv_command as real_uv_command
 from haute.deploy._runtime_check import main as check_main
 from haute.deploy._runtime_check import runtime_problems, selected_extras
 from haute.errors import DeployError
+from tests._fake_uv import ARGS_COMMENT
 
 # ---------------------------------------------------------------------------
 # The resolver
@@ -28,11 +29,9 @@ from haute.errors import DeployError
 
 
 def test_a_lock_is_resolved_for_the_target_from_wheels_whatever_the_host(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A Windows or macOS host locks what Linux installs, wheels only, every file hashed."""
-    recorded = tmp_path / "args.json"
-    monkeypatch.setenv("HAUTE_FAKE_UV_ARGS", str(recorded))
     monkeypatch.setattr(sys, "platform", "win32")
 
     lock = lock_requirements(
@@ -41,7 +40,8 @@ def test_a_lock_is_resolved_for_the_target_from_wheels_whatever_the_host(
         constraints=["websockets>=16,<17"],
     )
 
-    args = json.loads(recorded.read_text())
+    [recorded] = [line for line in lock.requirements.splitlines() if line.startswith(ARGS_COMMENT)]
+    args = json.loads(recorded.removeprefix(ARGS_COMMENT))
     assert args[args.index("--python-platform") + 1] == TARGET_PLATFORM == "x86_64-manylinux_2_28"
     assert args[args.index("--python-version") + 1] == "3.11"
     assert args[args.index("--only-binary") + 1] == ":all:"
@@ -180,7 +180,7 @@ def test_an_image_that_installed_its_lock_passes(tmp_path: Path) -> None:
 
 def test_a_missing_transitive_dependency_fails(tmp_path: Path) -> None:
     site = _image(tmp_path)
-    shutil.rmtree(next(site.glob("anyio-*.dist-info")))
+    shutil.rmtree(tmp_path / "site" / "anyio-4.16.0.dist-info")
 
     assert _problems(site) == [
         "anyio==4.16.0 is locked but not installed.",
@@ -190,7 +190,7 @@ def test_a_missing_transitive_dependency_fails(tmp_path: Path) -> None:
 
 def test_an_incompatible_version_fails(tmp_path: Path) -> None:
     site = _image(tmp_path)
-    shutil.rmtree(next(site.glob("starlette-*.dist-info")))
+    shutil.rmtree(tmp_path / "site" / "starlette-0.48.0.dist-info")
     _install(site, "starlette", "0.52.0", "anyio>=3.6")
 
     assert _problems(site) == [
@@ -218,7 +218,7 @@ def test_haute_may_lack_only_what_the_record_omits(tmp_path: Path) -> None:
 def test_a_root_s_extras_are_required_of_it(tmp_path: Path) -> None:
     """uvicorn[standard] needs uvloop; uvicorn alone does not."""
     site = _image(tmp_path)
-    shutil.rmtree(next(site.glob("uvloop-*.dist-info")))
+    shutil.rmtree(tmp_path / "site" / "uvloop-0.22.1.dist-info")
     pins = {name: version for name, version in _RECORD["pins"].items() if name != "uvloop"}
 
     assert _problems(site, {**_RECORD, "pins": pins}) == [
@@ -238,9 +238,9 @@ def test_an_extra_a_dependency_requests_is_required_of_its_target(
     """starlette asks for anyio[trio]: anyio's trio requirement holds, though no root
     selects that extra."""
     site = _image(tmp_path)
-    shutil.rmtree(next(site.glob("starlette-*.dist-info")))
+    shutil.rmtree(tmp_path / "site" / "starlette-0.48.0.dist-info")
     _install(site, "starlette", "0.48.0", "anyio[trio]>=3.6")
-    shutil.rmtree(next(site.glob("anyio-*.dist-info")))
+    shutil.rmtree(tmp_path / "site" / "anyio-4.16.0.dist-info")
     _install(site, "anyio", "4.16.0", 'trio>=0.31; extra == "trio"')
     pins = dict(_RECORD["pins"])
     if installed is not None:
@@ -270,6 +270,6 @@ def test_the_command_line_exits_non_zero_naming_each_problem(
     assert check_main([str(record)]) == 0
     assert "matches the lock" in capsys.readouterr().out
 
-    shutil.rmtree(next(site.glob("click-*.dist-info")))
+    shutil.rmtree(tmp_path / "site" / "click-8.4.2.dist-info")
     assert check_main([str(record)]) == 1
     assert "runtime check: click==8.4.2 is locked but not installed." in capsys.readouterr().err

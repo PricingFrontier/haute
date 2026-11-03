@@ -1491,8 +1491,9 @@ class TestBuildAndPushImage:
         project.mkdir(exist_ok=True)
         paths = {}
         for name, content in (artifacts or {"model.cbm": "fake model data"}).items():
-            paths[name] = project / name
-            paths[name].write_text(content)
+            path = project / name
+            path.write_text(content)
+            paths[name] = path
         return _make_resolved(
             artifacts=paths,
             project_root=project,

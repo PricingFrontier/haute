@@ -228,11 +228,15 @@ class TestBuildDirCleanup:
     """DEP-R12A: a deploy stages in a directory of its own under the project's
     ``.haute_build`` and removes only that one, shipped or failed, unless kept."""
 
-    def test_failure_removes_only_its_own_build_dir(self, deploy_pipeline_file: Path) -> None:
+    def test_failure_removes_only_its_own_build_dir(
+        self, deploy_pipeline_file: Path, tmp_path: Path
+    ) -> None:
         from haute.deploy._mlflow import deploy_to_mlflow
 
         resolved = _make_resolved(pipeline_file=deploy_pipeline_file)
-        builds = resolved.project_root / ".haute_build"
+        # The project is the pipeline's own directory, the test's scratch directory.
+        builds = tmp_path / ".haute_build"
+        assert resolved.project_root == tmp_path.resolve()
         builds.mkdir()
         (builds / "notes.txt").write_text("the user's own file")
 
