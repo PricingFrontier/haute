@@ -266,7 +266,8 @@ else:
     TableComponentFile = _derived(
         "TableComponentFile",
         TableInputWidget,
-        drop=PLACEMENT | {"column_looks"},
+        drop=PLACEMENT | {"id", "column_looks"},
+        required=frozenset({"number"}),
         replace={
             "type": (Literal["table"], ...),
             "fields": (list[Dotted | FieldLookFile], Field(default_factory=list)),
@@ -276,7 +277,8 @@ else:
     CollectionComponentFile = _derived(
         "CollectionComponentFile",
         CollectionWidget,
-        drop=PLACEMENT | {"column_looks", "spacers"},
+        drop=PLACEMENT | {"id", "column_looks", "spacers"},
+        required=frozenset({"number"}),
         replace={
             "fields": (list[Dotted | FieldLookFile | None], Field(default_factory=list)),
             "show_when": _SHOW_WHEN,
@@ -285,7 +287,8 @@ else:
     ChartComponentFile = _derived(
         "ChartComponentFile",
         ChartWidget,
-        drop=PLACEMENT,
+        drop=PLACEMENT | {"id"},
+        required=frozenset({"number"}),
         replace={
             "fields": (list[Dotted], Field(default_factory=list)),
             "show_when": _SHOW_WHEN,
@@ -293,7 +296,11 @@ else:
         },
     )
     HeadingComponentFile = _derived(
-        "HeadingComponentFile", HeadingWidget, drop=PLACEMENT, replace={"show_when": _SHOW_WHEN}
+        "HeadingComponentFile",
+        HeadingWidget,
+        drop=PLACEMENT | {"id"},
+        required=frozenset({"number"}),
+        replace={"show_when": _SHOW_WHEN},
     )
     SqlImportFile = _derived(
         "SqlImportFile", SqlImport, replace={"parameters": (list[QueryParameterFile], ...)}
@@ -302,7 +309,8 @@ else:
     ImportComponentFile = _derived(
         "ImportComponentFile",
         ImportWidget,
-        drop=PLACEMENT,
+        drop=PLACEMENT | {"id"},
+        required=frozenset({"number"}),
         replace={
             "show_when": _SHOW_WHEN,
             "source": (
@@ -320,7 +328,8 @@ else:
     ExportComponentFile = _derived(
         "ExportComponentFile",
         ExportWidget,
-        drop=PLACEMENT,
+        drop=PLACEMENT | {"id"},
+        required=frozenset({"number"}),
         replace={
             "show_when": _SHOW_WHEN,
             "target": (
@@ -352,14 +361,16 @@ else:
 
 
 class SectionFile(_File):
-    id: str
+    """A section, known by its title on its sheet (READ-24)."""
+
     title: str
     show_when: ShowWhenFile = Field(default_factory=ShowWhenFile)
     components: list[ComponentFile]
 
 
 class SheetFile(_File):
-    id: str
+    """A sheet, known by its file's name (READ-24)."""
+
     title: str
     show_when: ShowWhenFile = Field(default_factory=ShowWhenFile)
     sections: list[SectionFile] = Field(min_length=1)
@@ -379,11 +390,13 @@ class RectFile(_File):
 
 class LayoutSectionFile(_File):
     height: Annotated[_Whole, Field(gt=0)]
+    #: Each component's box, by its number in the section (READ-24).
     components: dict[str, RectFile]
 
 
 class LayoutFile(_File):
     width: Annotated[_Whole, Field(gt=0)]
+    #: Each section's height and boxes, by its title (READ-24).
     sections: dict[str, LayoutSectionFile]
 
 

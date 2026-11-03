@@ -119,8 +119,8 @@ export const sheetForm = (): FormSpec => ({
   },
   pages: [
     sheet("p1", "Sheet 1", [
-      { id: "w_boxes", type: "collection", x: 16, y: 16, w: 400, h: 120, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, column_looks: [], spacers: [], fields: [{ table: "policy", column: "policy.state" }], show_when: { match: "all", conditions: [] } },
-      {
+      { number: null, id: "w_boxes", type: "collection", x: 16, y: 16, w: 400, h: 120, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, column_looks: [], spacers: [], fields: [{ table: "policy", column: "policy.state" }], show_when: { match: "all", conditions: [] } },
+      { number: null,
         id: "w_grid",
         type: "tableInput",
         x: 16,
@@ -156,7 +156,7 @@ export const hiddenPerilsForm = (): FormSpec => {
       ],
     }),
   )
-  const grid = (id: string, shown: string, y: number, showWhen: ShowWhen): Widget => ({
+  const grid = (id: string, shown: string, y: number, showWhen: ShowWhen): Widget => ({ number: null,
     id,
     type: "tableInput",
     x: 16,
@@ -179,6 +179,7 @@ export const hiddenPerilsForm = (): FormSpec => {
 /** A Chart plotting `fields`, with a new Chart's options unless `overrides` says otherwise, always shown. */
 export const chartWidget = (id: string, fields: FieldRef[], overrides: Partial<ChartWidget> = {}): ChartWidget => ({
   id,
+  number: null,
   type: "chart",
   x: 16,
   y: 380,
@@ -194,6 +195,7 @@ export const chartWidget = (id: string, fields: FieldRef[], overrides: Partial<C
 /** A Heading of `text`, with no description and a new Heading's options unless `overrides` says otherwise, always shown. */
 export const headingWidget = (id: string, text: string, overrides: Partial<HeadingWidget> = {}): HeadingWidget => ({
   id,
+  number: null,
   type: "heading",
   x: 16,
   y: 380,
@@ -218,7 +220,7 @@ export const coverForm = (): FormSpec => {
     "p2",
     "Cover",
     [
-      {
+      { number: null,
         id: "w_year",
         type: "collection",
         x: 16,

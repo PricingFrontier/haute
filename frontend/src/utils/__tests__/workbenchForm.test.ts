@@ -592,8 +592,8 @@ describe("what the sheets show", () => {
           show_when: { match: "all", conditions: [] },
           sections: [
             section("s", "Section 1", 560, [
-              { id: "w_boxes", type: "collection", x: 0, y: 0, w: 720, h: 120, title: "Policy", columns: 3, ...COLLECTION_OPTIONS, fields: [{ table: "policy", column: "policy.state" }], show_when: { match: "all", conditions: [] } },
-              {
+              { number: null, id: "w_boxes", type: "collection", x: 0, y: 0, w: 720, h: 120, title: "Policy", columns: 3, ...COLLECTION_OPTIONS, fields: [{ table: "policy", column: "policy.state" }], show_when: { match: "all", conditions: [] } },
+              { number: null,
                 id: "w_grid",
                 type: "tableInput",
                 x: 0,
@@ -744,6 +744,7 @@ describe("what the sheets show", () => {
     // In the file's order, so a component the view made compares equal to it saved.
     expect(Object.keys(grid)).toEqual([
       "id",
+      "number",
       "x",
       "y",
       "w",
@@ -781,6 +782,7 @@ describe("what the sheets show", () => {
     expect(grid.column_looks).not.toBe(TABLE_OPTIONS.column_looks)
     expect(Object.keys(boxes)).toEqual([
       "id",
+      "number",
       "x",
       "y",
       "w",
@@ -874,7 +876,7 @@ describe("what the sheets show", () => {
     // Its rows numbered, of columns, upright, unstacked, its legend at the bottom and no data labels.
     expect(CHART_OPTIONS).toEqual({ category: null, chart_type: "column", orientation: "vertical", stacked: false, legend: "bottom", data_labels: false })
     expect(chart).toMatchObject({ type: "chart", title: "", fields: [], ...CHART_OPTIONS })
-    expect(Object.keys(chart)).toEqual(["id", "x", "y", "w", "h", "type", "title", "fields", "show_when", "category", "chart_type", "orientation", "stacked", "legend", "data_labels"])
+    expect(Object.keys(chart)).toEqual(["id", "number", "x", "y", "w", "h", "type", "title", "fields", "show_when", "category", "chart_type", "orientation", "stacked", "legend", "data_labels"])
     expect(chart).not.toHaveProperty("rows")
     expect(chart).not.toHaveProperty("density")
     expect(chart).not.toHaveProperty("columns")
@@ -902,7 +904,7 @@ describe("what the sheets show", () => {
     // Medium and aligned left, with no text or description yet, and no title or fields, in the file's order.
     expect(HEADING_OPTIONS).toEqual({ size: "medium", align: "left" })
     expect(heading).toMatchObject({ type: "heading", text: "", description: "", ...HEADING_OPTIONS })
-    expect(Object.keys(heading)).toEqual(["id", "x", "y", "w", "h", "type", "text", "description", "show_when", "size", "align"])
+    expect(Object.keys(heading)).toEqual(["id", "number", "x", "y", "w", "h", "type", "text", "description", "show_when", "size", "align"])
     expect([showsFields(heading), showsFields(grid)]).toEqual([false, true])
 
     let spec = [heading, grid].reduce((current, widget) => addWidget(current, "s", widget), blank())
@@ -1060,7 +1062,7 @@ describe("what the sheets show", () => {
     // The year removed after the copy: pasted, the copy is as the original is now.
     const lost = removeSchemaColumn(spec, "policy", "policy.year")
     const pasted = pasteWidget(lost, copied, "s")
-    expect(findWidget(pasted.spec, pasted.id)?.widget).toEqual({ ...findWidget(lost, "w_boxes")!.widget, id: pasted.id, x: 16, y: 16 })
+    expect(findWidget(pasted.spec, pasted.id)?.widget).toEqual({ ...findWidget(lost, "w_boxes")!.widget, id: pasted.id, number: 1, x: 16, y: 16 })
     expect(findWidget(pasted.spec, pasted.id)?.widget).toMatchObject({
       fields: [{ table: "policy", column: "policy.state" }, { table: "policy", column: "policy.region" }],
       spacers: [1],
@@ -1257,6 +1259,32 @@ describe("sections", () => {
     expect(createSection(spec.pages[0], 300).height).toBe(300)
     // Counted on its own sheet: a new sheet's next section is its second.
     expect(createSection(createPage(spec)).title).toBe("Section 2")
+  })
+
+  it("numbers a component one more than the highest in the section it enters, added, duplicated, moved or pasted", () => {
+    const numbers = (spec: FormSpec) => spec.pages[0].sections.map((s) => s.widgets.map((widget) => widget.number))
+    // As a file numbers them: Policy's and Equipment's one component each 1, Notes empty.
+    let spec = stacked()
+    for (const s of spec.pages[0].sections) s.widgets.forEach((widget, index) => (widget.number = index + 1))
+    spec = addWidget(spec, "s_notes", { ...createWidget("heading", nowhere), id: "w_a" })
+    spec = addWidget(spec, "s_notes", { ...createWidget("heading", { ...nowhere, y: 24 }), id: "w_b" })
+    expect(numbers(spec)).toEqual([[1], [1], [1, 2]])
+    // A copy sits after its original, numbered after the highest.
+    spec = duplicateWidget(spec, "w_a").spec
+    expect(numbers(spec)[2]).toEqual([1, 3, 2])
+    // Moved to another section, it takes the next number there; its old one is not reused.
+    spec = placeWidget(spec, "w_a", "s_policy", { x: 440, y: 16, w: 80, h: 24 })
+    expect(numbers(spec)).toEqual([[1, 2], [1], [3, 2]])
+    const pasted = pasteWidget(spec, findWidget(spec, "w_grid")!.widget, "s_notes")
+    spec = pasted.spec
+    expect(numbers(spec)[2]).toEqual([3, 2, 4])
+    // Moved within its section, it keeps its number.
+    spec = placeWidget(spec, "w_b", "s_notes", { x: 200, y: 0, w: 80, h: 24 })
+    expect(numbers(spec)[2]).toEqual([3, 2, 4])
+    // Once the highest is deleted, its number can come back, its box gone with it.
+    spec = removeWidget(spec, pasted.id)
+    spec = addWidget(spec, "s_notes", { ...createWidget("heading", nowhere), id: "w_c" })
+    expect(numbers(spec)[2]).toEqual([3, 2, 4])
   })
 
   it("adds a section at a place on its sheet, or at the end", () => {
@@ -1631,7 +1659,7 @@ describe("sections", () => {
 
     // Into its own section, over its original: 16 right, and as far down as Policy's 136 lets it, last there.
     const once = pasteWidget(spec, boxes, "s_policy")
-    expect(at(once)).toMatchObject({ section: { id: "s_policy" }, index: 1, widget: { ...boxes, id: once.id, x: 32, y: 16 } })
+    expect(at(once)).toMatchObject({ section: { id: "s_policy" }, index: 1, widget: { ...boxes, id: once.id, number: 1, x: 32, y: 16 } })
     expect(once.id).not.toBe("w_boxes")
     expect(findWidget(once.spec, "w_boxes")?.widget).toEqual(boxes)
     expect(heights(once.spec)).toEqual([136, 232, 48])
@@ -1744,6 +1772,7 @@ describe("when sheets and components show", () => {
   const always = (): ShowWhen => ({ match: "all", conditions: [] })
   const ticked: Condition = { table: "policy", column: "policy.bi", op: "ticked", values: [], field: null, days: 0 }
   const collection = (id: string, title: string, columns: [string, string][], showWhen: ShowWhen = always()) => ({
+    number: null,
     id,
     type: "collection" as const,
     x: 0,
@@ -1990,7 +2019,7 @@ describe("when sheets and components show", () => {
     const spec = covered()
     const columns = [column("drivers.age", "age", { type: "int", label: "Age" }), column("drivers.cover", "cover", { options: ["Full", "Partial"] })]
     spec.schema.tables.push(table("drivers", "drivers", { rows: "many", columns }))
-    return addWidget(spec, sectionId, {
+    return addWidget(spec, sectionId, { number: null,
       id: "w_drivers",
       type: "tableInput",
       x: 0,
@@ -2168,6 +2197,7 @@ describe("charts", () => {
   const ref = (tableId: string, columnId: string): FieldRef => ({ table: tableId, column: columnId })
   const chart = (fields: FieldRef[], options: Partial<ChartWidget> = {}): ChartWidget => ({
     id: "w_chart",
+    number: null,
     type: "chart",
     x: 0,
     y: 0,
@@ -2352,6 +2382,7 @@ describe("Imports and Exports", () => {
 
     expect(imported(spec)).toEqual({
       id: "w_in",
+      number: 1,
       ...rect,
       type: "import",
       label: "Import",

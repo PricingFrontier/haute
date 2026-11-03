@@ -1,13 +1,11 @@
 {
-  "id": "sheet_cv01",
   "title": "BR Coverages",
   "sections": [
     {
-      "id": "section_cv01",
       "title": "Cover",
       "components": [
         {
-          "id": "collection_k3f9",
+          "number": 1,
           "type": "collection",
           "title": "Policy",
           "fields": [
@@ -29,7 +27,7 @@
           "labels": "beside"
         },
         {
-          "id": "table_l4y5",
+          "number": 2,
           "type": "table",
           "title": "Layers",
           "fields": [
@@ -49,7 +47,7 @@
           "rows": 5
         },
         {
-          "id": "chart_c6h7",
+          "number": 3,
           "type": "chart",
           "title": "Limits",
           "fields": [
@@ -61,7 +59,6 @@
       ]
     },
     {
-      "id": "section_pr01",
       "title": "Perils",
       "show_when": {
         "at_least": 1,
@@ -71,14 +68,14 @@
       },
       "components": [
         {
-          "id": "heading_h8d9",
+          "number": 1,
           "type": "heading",
           "text": "Équipement",
           "description": "By peril",
           "size": "large"
         },
         {
-          "id": "table_p2r3",
+          "number": 2,
           "type": "table",
           "title": "Perils",
           "fields": [
@@ -87,7 +84,7 @@
           ]
         },
         {
-          "id": "import_i1m2",
+          "number": 3,
           "type": "import",
           "label": "Import perils",
           "source": {
@@ -111,7 +108,7 @@
           ]
         },
         {
-          "id": "export_e3x4",
+          "number": 4,
           "type": "export",
           "label": "Export",
           "target": {

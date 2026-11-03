@@ -24,7 +24,7 @@ The owner decided the following on 3 November 2026:
 - **Polars code lives only in `main.py`.** Haute rebuilds as many steps as it can from the code. Statements it cannot recognise become a code step, and the rest of the node stays as steps.
 - **Only commercial-pricing is converted to each new format.** No other project needs converting (`READ-20`).
 - **Workbench columns and tables have no ids.** Their names identify them. Following a rename in the quote store's SQL is left to a later package (`READ-33`).
-- **Sheets, sections and components have no random ids.** A sheet is identified by its file name, a section by its title, and a component by a number (`READ-24`).
+- **Sheets, sections and components have no random ids.** A sheet is identified by its file name, a section by its title, and a component by a number.
 - **`main.py` keeps its function order.** A new node's function goes just above the first function that uses it.
 - **Formats:**
   - rating tables are written as a grid;
@@ -46,7 +46,6 @@ Each package states its formats in its owning specification before behaviour cha
 | READ-21 | Planned | P2 | A prototype proves that Haute can rebuild every kind of Polars step from the code it renders. |
 | READ-22 | Planned | P2 | A Polars node is stored only as code in `main.py`, and a hand edit or comment keeps the rest of its steps. |
 | READ-23 | Planned | P2 | Workbench columns and tables are identified by their names, with no ids in the form folder or a release. |
-| READ-24 | Planned | P2 | A sheet, its sections and their components are identified by file name, title and number, not random ids. |
 | READ-28 | Planned | P3 | Constants that only formulas read become global constants. |
 | READ-29 | Planned | P3 | Every key Haute's schemas own is snake_case on disk; keys the analyst names are untouched. |
 | READ-33 | Deferred | P2 | A column or table renamed against the project's default branch keeps its saved values in the quote store. |
@@ -205,43 +204,6 @@ The owner judged that the complexity isn't worth it.
 `src/haute/_quote_store/_schema.py::structure`; `src/haute/_quote_store/_schema.py::_named`;
 `src/haute/_quote_store/_rows.py::_row_cells`; `src/haute/_quote_store/_migrate.py::_plan_columns`;
 `src/haute/_workbench_tables.py`; `src/haute/_workbench_app.py`.
-
-### READ-24 — A sheet and its parts are identified by file name, title and number
-**Why:**
-- A sheet file holds random ids for the sheet (`sheet_sdzj`), each section (`section_0kih`) and each component (`collection_nj2i`).
-- The layout file beside it places each section and component by those ids, so a line that moves a component doesn't say which one moved.
-- A component written by hand needs the same made-up id in both files.
-
-**Plan:** The owner set this direction on 3 November 2026.
-- **The sheet** has no id: its file name identifies it, as for a table.
-- **A section** is identified by its title:
-  - titles are unique within a sheet, and the editor numbers a new section's title;
-  - a duplicate title is refused on load and on save, naming the sheet and the title;
-  - renaming a section renames its key in the layout file.
-- **A component** is identified by its section's title and a number:
-  - the number is one more than the highest number in its section, so the first is 1;
-  - it is stored on the component in the sheet file and keys its box in the layout file;
-  - adding, removing or reordering components changes only their own lines;
-  - a number can come back after the highest component is deleted, which is harmless, since that component's box goes with it;
-  - a component moved to another section, or duplicated, takes the next number there;
-  - two branches adding to one section can choose the same number, so a duplicate number in a section is refused on load, naming the sheet, the section and the number.
-- **The component's place in its section's list** was considered as the number instead. It was rejected because a hand edit that reorders one file and not the other would swap boxes silently.
-- **In the editor:** each part gets an id in memory on load, for selection and moves. None reaches a file or a release.
-- **Conversion and contract:** `READ-20` converts existing sheets and layouts. The stable-id rationale in the [workbench specification](../workbench/high-level.md) is replaced.
-
-**Acceptance:**
-- A sheet and its layout round-trip with no random ids.
-- Duplicate section titles and duplicate component numbers are refused.
-- Adding or deleting a component changes one entry in each file.
-- Renaming a section keeps its layout.
-- Moving a component between sections keeps its box.
-- Converting the workbench fixture gives the same sheets and positions, and builds the same release twice.
-
-**Dependencies:** `READ-20`.
-
-**Evidence:** `src/haute/_workbench_folder.py::_sheet_and_layout`; `src/haute/_workbench_folder.py::_page`;
-`src/haute/_workbench_folder_files.py::LayoutFile`; `src/haute/_workbench_folder_files.py::SectionFile`;
-`frontend/src/utils/workbenchForm.ts`.
 
 ### READ-28 — Constants that only formulas read become global constants
 **Why:** A Constant node's sidecar is a map from name to value ([pipeline-config](../pipeline-config/high-level.md)). In the investigated pipeline, constants that only formulas read reach them through a cross join. That costs four nodes, four `connect()` calls, two sidecar entries and two positions.

@@ -637,7 +637,7 @@ describe("SchemaEditor", () => {
   it("asks before removing a column or a table a sheet shows, and takes it off the sheet", async () => {
     const shown = form(POLICY, LAYERS)
     shown.pages[0].sections[0].widgets = [
-      { id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "t_policy", column: "c_state" }], show_when: { match: "all", conditions: [] } },
+      { number: null, id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "t_policy", column: "c_state" }], show_when: { match: "all", conditions: [] } },
     ]
     load(shown)
     render(<SchemaEditor />)
@@ -666,7 +666,7 @@ describe("SchemaEditor", () => {
     const condition = { table: "t_policy", column: "c_state", op: "filled" as const, values: [], field: null, days: 0 }
     tested.pages[0].show_when = { match: "all", conditions: [condition] }
     tested.pages[0].sections[0].widgets = [
-      { id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "t_policy", column: "c_state" }], show_when: { match: "all", conditions: [] } },
+      { number: null, id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "t_policy", column: "c_state" }], show_when: { match: "all", conditions: [] } },
     ]
     load(tested)
     render(<SchemaEditor />)
@@ -786,7 +786,7 @@ describe("SchemaEditor", () => {
   it("asks before removing an index a sheet shows", async () => {
     const indexed = form(POLICY, { ...LAYERS, columns: [column("c_row", "row_number", { type: "int", index: true }), ...LAYERS.columns] })
     indexed.pages[0].sections[0].widgets = [
-      { id: "w", type: "tableInput", x: 0, y: 0, w: 400, h: 100, title: "Layers", rows: 3, ...TABLE_OPTIONS, fields: [{ table: "t_layers", column: "c_row" }], show_when: { match: "all", conditions: [] } },
+      { number: null, id: "w", type: "tableInput", x: 0, y: 0, w: 400, h: 100, title: "Layers", rows: 3, ...TABLE_OPTIONS, fields: [{ table: "t_layers", column: "c_row" }], show_when: { match: "all", conditions: [] } },
     ]
     load(indexed)
     render(<SchemaEditor />)

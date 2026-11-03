@@ -1067,7 +1067,8 @@ export function createWidget<T extends WidgetType>(type: T, rect: Rect, taken?: 
 export function createWidget(type: WidgetType, rect: Rect, taken: Iterable<string> = []): Widget {
   // In the file's order, so a component the view made compares equal to it saved.
   const { x, y, w, h } = rect
-  const placed = { id: newPartId(partKind(type), taken), x, y, w, h }
+  // No number until it enters a section (`nextWidgetNumber`).
+  const placed = { id: newPartId(partKind(type), taken), number: null, x, y, w, h }
   const showing = { title: "", fields: [] as FieldRef[], show_when: alwaysShown() }
   switch (type) {
     case "collection":
@@ -1107,15 +1108,28 @@ export const setThemeColour = (spec: FormSpec, key: ThemeColour, colour: string 
   })
 
 /**
- * Add a component to a section, kept inside it and its sheet's width (`keptInside`); only
- * one taller than the section grows it, and only one wider than the sheet widens it.
+ * A component's number on entering `section`: one more than the highest there, so the
+ * first is 1. It keys the component's box in the layout file (READ-24).
+ */
+export const nextWidgetNumber = (section: Section): number =>
+  Math.max(0, ...section.widgets.map((widget) => widget.number ?? 0)) + 1
+
+/**
+ * Add a new component to a section, numbered there (`nextWidgetNumber`), kept inside it and
+ * its sheet's width (`keptInside`); only one taller than the section grows it, and only one
+ * wider than the sheet widens it.
  */
 export const addWidget = (spec: FormSpec, sectionId: string, widget: Widget): FormSpec =>
   edit(spec, (draft) => {
     const found = findSection(draft, sectionId)
     if (found === null) throw new Error(`No sheet has a section ${sectionId}`)
     const { section, page } = found
-    const kept = { ...widget, x: keptInside(widget.x, widget.w, page.width), y: keptInside(widget.y, widget.h, section.height) }
+    const kept = {
+      ...widget,
+      number: nextWidgetNumber(section),
+      x: keptInside(widget.x, widget.w, page.width),
+      y: keptInside(widget.y, widget.h, section.height),
+    }
     section.widgets.push(kept)
     holdWidget(page, section, kept)
   })
@@ -1132,8 +1146,9 @@ export function addWidgetInFreePlace(spec: FormSpec, sectionId: string, type: Wi
   const widget = createWidget(type, { ...freePlace(found.section.widgets, fitted, found.page.width), ...fitted }, formPartIds(spec))
   const next = edit(spec, (draft) => {
     const { page, section } = findSection(draft, sectionId)!
-    section.widgets.push(widget)
-    holdWidget(page, section, widget)
+    const numbered = { ...widget, number: nextWidgetNumber(section) }
+    section.widgets.push(numbered)
+    holdWidget(page, section, numbered)
   })
   return { spec: next, id: widget.id }
 }
@@ -1213,7 +1228,7 @@ export const keptInside = (y: number, h: number, height: number): number => Math
 /**
  * Move a component to `rect` in a section, its own or another, kept inside it and its
  * sheet's width (`keptInside`); into another it goes last, so it is drawn over the
- * components there. Only a component taller than the section it lands in grows it, or one
+ * components there, and takes the next number there (`nextWidgetNumber`). Only a component taller than the section it lands in grows it, or one
  * wider than the sheet widens it; the section it left keeps its height.
  */
 export function placeWidget(spec: FormSpec, id: string, sectionId: string, rect: Rect): FormSpec {
@@ -1231,7 +1246,7 @@ export function placeWidget(spec: FormSpec, id: string, sectionId: string, rect:
       from.widgets[found.index] = placed
     } else {
       from.widgets.splice(found.index, 1)
-      section.widgets.push(placed)
+      section.widgets.push({ ...placed, number: nextWidgetNumber(section) })
     }
     holdWidget(page, section, placed)
   })
@@ -1265,6 +1280,7 @@ export function duplicateWidget(spec: FormSpec, id: string): { spec: FormSpec; i
     const copy = {
       ...structuredClone(found.widget),
       id: copyId,
+      number: nextWidgetNumber(found.section),
       x: keptInside(x + COPY_OFFSET, w, found.page.width),
       y: keptInside(y + COPY_OFFSET, h, found.section.height),
     }
@@ -1293,7 +1309,8 @@ export function pasteWidget(spec: FormSpec, widget: Widget, sectionId: string): 
     at = next
   }
   const id = newPartId(partKind(widget.type), formPartIds(spec))
-  const copy: Widget = { ...structuredClone(widget), id, ...at }
+  // Numbered as it enters the section (`addWidget`).
+  const copy: Widget = { ...structuredClone(widget), id, number: null, ...at }
   const gone = (field: FieldRef) => fieldColumn(spec, field) === null
   dropShown(copy, gone)
   dropButtonUses(copy, (table) => !spec.schema.tables.some((candidate) => candidate.id === table), gone)

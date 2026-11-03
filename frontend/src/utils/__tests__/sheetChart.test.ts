@@ -109,9 +109,9 @@ const motorForm = (): FormSpec => ({
           height: 700,
           show_when: always,
           widgets: [
-            { id: "w_policy", type: "collection", x: 0, y: 0, w: 400, h: 120, title: "Policy", columns: 3, ...COLLECTION_OPTIONS, fields: [field("policy", "state"), field("policy", "sum_insured"), field("policy", "cover")], show_when: always },
-            { id: "w_excess", type: "collection", x: 0, y: 140, w: 400, h: 120, title: "Excess", columns: 1, ...COLLECTION_OPTIONS, fields: [field("policy", "excess")], show_when: whileCovered },
-            {
+            { number: null, id: "w_policy", type: "collection", x: 0, y: 0, w: 400, h: 120, title: "Policy", columns: 3, ...COLLECTION_OPTIONS, fields: [field("policy", "state"), field("policy", "sum_insured"), field("policy", "cover")], show_when: always },
+            { number: null, id: "w_excess", type: "collection", x: 0, y: 140, w: 400, h: 120, title: "Excess", columns: 1, ...COLLECTION_OPTIONS, fields: [field("policy", "excess")], show_when: whileCovered },
+            { number: null,
               id: "w_equipment",
               type: "tableInput",
               x: 0,
@@ -124,7 +124,7 @@ const motorForm = (): FormSpec => ({
               fields: [field("equipment", "row"), field("equipment", "item"), field("equipment", "value"), field("equipment", "count"), field("equipment", "new")],
               show_when: always,
             },
-            { id: "w_notes", type: "tableInput", x: 0, y: 500, w: 720, h: 200, title: "Notes", rows: 3, ...TABLE_OPTIONS, fields: [field("equipment", "note")], show_when: whileCovered },
+            { number: null, id: "w_notes", type: "tableInput", x: 0, y: 500, w: 720, h: 200, title: "Notes", rows: 3, ...TABLE_OPTIONS, fields: [field("equipment", "note")], show_when: whileCovered },
           ],
         },
       ],

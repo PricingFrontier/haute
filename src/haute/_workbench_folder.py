@@ -88,6 +88,7 @@ from haute._workbench_form import (
     _condition_kind,
     _grown_to_hold,
     quote_details_table,
+    sheet_name,
     with_quote_details,
 )
 from haute._workbench_tables import store_name_problems
@@ -100,8 +101,6 @@ SAMPLE_DIR = "sample"
 LAYOUT_SUFFIX = ".layout.json"
 #: The folder format: what each file holds and each setting's default.
 FOLDER_VERSION = 1
-#: The longest name a sheet's title makes.
-SHEET_NAME_MAX = 64
 #: The longest full path a file of the folder may have.
 PATH_MAX = 240
 
@@ -122,13 +121,6 @@ class FormFolderNameError(WorkbenchFormError):
 
 
 # -- Names -------------------------------------------------------------------------------
-
-
-def sheet_name(title: str) -> str:
-    """The name a sheet's title makes, its file's name: lower case, each run of other
-    characters than ASCII letters and digits one ``_``, none at either end, 64 at most."""
-    name = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")
-    return name[:SHEET_NAME_MAX].rstrip("_")
 
 
 def _table_file(name: str) -> str:
@@ -259,6 +251,14 @@ def folder_name_problems(spec: FormSpec, folder: Path) -> list[str]:
             )
         else:
             sheets[name] = page.title
+        # A section is known by its title on its sheet (READ-24), which keys its layout.
+        titles = [section.title for section in page.sections]
+        twice = next((title for title in titles if titles.count(title) > 1), None)
+        if twice is not None:
+            problems.append(
+                f"the sheet {page.title!r} holds two sections titled {twice!r}: a section is "
+                "known by its title, so give each its own"
+            )
     longest = max(
         [_table_file(table.name) for table in spec.data_schema.tables]
         + [_sheet_files(name)[1] for name in sheets],
@@ -366,7 +366,7 @@ def _entry_file(entry: Any, names: _Names) -> dict[str, Any]:
 
 
 def _component_file(widget: Any, names: _Names) -> dict[str, Any]:
-    data: dict[str, Any] = widget.model_dump(mode="json", exclude=PLACEMENT)
+    data: dict[str, Any] = widget.model_dump(mode="json", exclude=PLACEMENT | {"id"})
     data["show_when"] = _show_when_file(widget.show_when, names)
     if widget.type == "tableInput":
         data["type"] = "table"
@@ -430,19 +430,37 @@ def _fields_file(widget: Any, names: _Names) -> list[Any]:
     return placed
 
 
+def _numbers(section: Any) -> list[int]:
+    """Each of *section*'s components' numbers (READ-24): its own, or, for one sent without,
+    one more than the highest in the section, in the section's order."""
+    highest = max((widget.number for widget in section.widgets if widget.number), default=0)
+    numbers: list[int] = []
+    for widget in section.widgets:
+        if widget.number is None:
+            highest += 1
+            numbers.append(highest)
+        else:
+            numbers.append(widget.number)
+    return numbers
+
+
 def _sheet_and_layout(page: Any, names: _Names) -> tuple[SheetFile, LayoutFile]:
+    """A sheet's file and its layout file, neither holding an id (READ-24): a section is known
+    by its title and a component by its number in its section, which key their boxes."""
+    numbered = [(section, _numbers(section)) for section in page.sections]
     sections = [
         {
-            "id": section.id,
             "title": section.title,
             "show_when": _show_when_file(section.show_when, names),
-            "components": [_component_file(widget, names) for widget in section.widgets],
+            "components": [
+                {**_component_file(widget, names), "number": number}
+                for widget, number in zip(section.widgets, numbers, strict=True)
+            ],
         }
-        for section in page.sections
+        for section, numbers in numbered
     ]
     sheet = SheetFile.model_validate(
         {
-            "id": page.id,
             "title": page.title,
             "show_when": _show_when_file(page.show_when, names),
             "sections": sections,
@@ -452,14 +470,14 @@ def _sheet_and_layout(page: Any, names: _Names) -> tuple[SheetFile, LayoutFile]:
         {
             "width": page.width,
             "sections": {
-                section.id: {
+                section.title: {
                     "height": section.height,
                     "components": {
-                        widget.id: {"x": widget.x, "y": widget.y, "w": widget.w, "h": widget.h}
-                        for widget in section.widgets
+                        str(number): {"x": widget.x, "y": widget.y, "w": widget.w, "h": widget.h}
+                        for widget, number in zip(section.widgets, numbers, strict=True)
                     },
                 }
-                for section in page.sections
+                for section, numbers in numbered
             },
         }
     )
@@ -841,42 +859,59 @@ def _page(
     component placed."""
     where = f"{config.form}/{_sheet_files(name)[1]}"
     sections: list[dict[str, Any]] = []
+    titles = [section.title for section in sheet.sections]
+    twice = next((title for title in titles if titles.count(title) > 1), None)
+    if twice is not None:
+        raise WorkbenchFormError(
+            f"{config.form}/{_sheet_files(name)[0]} holds two sections titled {twice!r}: a "
+            "section is known by its title, so give each its own",
+            path=where,
+        )
     for section in sheet.sections:
-        placed = layout.sections.get(section.id)
+        placed = layout.sections.get(section.title)
         if placed is None:
             raise WorkbenchFormError(
-                f"{where} leaves out the section {section.title!r} ({section.id})", path=where
+                f"{where} leaves out the section {section.title!r}", path=where
             )
-        extras = sorted(set(placed.components) - {component.id for component in section.components})
+        numbers = [component.number for component in section.components]
+        doubled = next((number for number in numbers if numbers.count(number) > 1), None)
+        if doubled is not None:
+            raise WorkbenchFormError(
+                f"{config.form}/{_sheet_files(name)[0]}: the section {section.title!r} holds two "
+                f"components numbered {doubled}; give one of them the next free number",
+                path=where,
+            )
+        extras = sorted(set(placed.components) - {str(number) for number in numbers})
         if extras:
             raise WorkbenchFormError(
-                f"{where} places {extras[0]}, which the section {section.title!r} does not hold",
+                f"{where} places component {extras[0]}, which the section {section.title!r} "
+                "does not hold",
                 path=where,
             )
         components: list[dict[str, Any]] = []
         for component in section.components:
-            rect = placed.components.get(component.id)
+            rect = placed.components.get(str(component.number))
             if rect is None:
                 kind = "tableInput" if component.type == "table" else component.type
                 named = _component_named({**component.model_dump(), "type": kind})
-                raise WorkbenchFormError(f"{where} leaves out {named} ({component.id})", path=where)
+                raise WorkbenchFormError(
+                    f"{where} leaves out {named} (number {component.number})", path=where
+                )
             components.append(_component(component, rect, names))
         sections.append(
             {
-                "id": section.id,
                 "title": section.title,
                 "height": placed.height,
                 "show_when": _show_when(section.show_when, names),
                 "widgets": components,
             }
         )
-    extra_sections = sorted(set(layout.sections) - {section.id for section in sheet.sections})
+    extra_sections = sorted(set(layout.sections) - set(titles))
     if extra_sections:
         raise WorkbenchFormError(
             f"{where} places a section {extra_sections[0]} the sheet does not hold", path=where
         )
     return {
-        "id": sheet.id,
         "title": sheet.title,
         "width": layout.width,
         "show_when": _show_when(sheet.show_when, names),

@@ -23,6 +23,7 @@ without it unless a column of the table's own holds either name.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
@@ -179,10 +180,25 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+#: The longest name a sheet's title makes.
+SHEET_NAME_MAX = 64
+
+
+def sheet_name(title: str) -> str:
+    """The name a sheet's title makes, its file's name: lower case, each run of other
+    characters than ASCII letters and digits one ``_``, none at either end, 64 at most."""
+    name = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")
+    return name[:SHEET_NAME_MAX].rstrip("_")
+
+
 class _Placed(_Strict):
-    """A widget's place in its section, in pixels from the section's top-left corner."""
+    """A widget's place in its section, in pixels from the section's top-left corner, and
+    its number in the section (READ-24): one more than the highest when it entered it, kept
+    in the sheet's file and keying its box in the layout file. The editor numbers a component
+    as it enters a section; one sent without a number, None, is numbered by the save."""
 
     id: str
+    number: int | None = Field(default=None, ge=1)
     x: int = Field(ge=0)
     y: int = Field(ge=0)
     w: int = Field(gt=0)
@@ -697,6 +713,13 @@ class Section(_Strict):
 
     @model_validator(mode="after")
     def _holds_its_widgets(self) -> Section:
+        numbers = [widget.number for widget in self.widgets if widget.number is not None]
+        twice = next((n for n in numbers if numbers.count(n) > 1), None)
+        if twice is not None:
+            raise ValueError(
+                f"section {self.title!r} holds two components numbered {twice}: give one of "
+                "them another number"
+            )
         for widget in self.widgets:
             if widget.y + widget.h > self.height:
                 raise ValueError(
@@ -824,6 +847,40 @@ class FormSpec(_Strict):
     #: id, each value as typed (text, or a tick). The Workbench Input's previews run on it.
     #: Held as typed, strictly: a number or a null for a cell is not a form the view writes.
     sample: dict[str, list[dict[str, Cell]]] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _gives_each_part_an_id(cls, data: Any) -> Any:
+        """A sheet, a section and a component read from a file or a release hold no id: each
+        is given one from what identifies it (READ-24), its sheet's file name, its section's
+        title and its number, so the editor can select and move it. An id a part holds, one
+        the editor made, is kept. The caller's data is left as it was."""
+        pages = data.get("pages") if isinstance(data, dict) else None
+        if not isinstance(pages, list) or all(
+            isinstance(page, dict) and "id" in page for page in pages
+        ):
+            return data
+        given: list[Any] = []
+        for page in pages:
+            if not isinstance(page, dict):
+                given.append(page)
+                continue
+            page_id = page.get("id") or sheet_name(str(page.get("title", "")))
+            sections: list[Any] = []
+            for section in page.get("sections") or []:
+                if not isinstance(section, dict):
+                    sections.append(section)
+                    continue
+                section_id = section.get("id") or f"{page_id}/{section.get('title', '')}"
+                widgets = [
+                    {**widget, "id": f"{section_id}/{widget.get('number')}"}
+                    if isinstance(widget, dict) and "id" not in widget
+                    else widget
+                    for widget in section.get("widgets") or []
+                ]
+                sections.append({**section, "id": section_id, "widgets": widgets})
+            given.append({**page, "id": page_id, "sections": sections})
+        return {**data, "pages": given}
 
     @model_validator(mode="before")
     @classmethod
@@ -1143,8 +1200,22 @@ def blank_form(name: str) -> FormSpec:
 def render_form(spec: FormSpec) -> str:
     """The form as one document's text, as a release ships it and the quote store keeps
     it: every field, defaults included, indented, ending in a newline."""
-    # Non-ASCII text as typed, a label or an allowed value, as the node configs keep it.
-    return json.dumps(spec.model_dump(mode="json"), indent=2, ensure_ascii=False) + "\n"
+    # Non-ASCII text as typed, a label or an allowed value, as the node configs keep it. A
+    # sheet's, a section's and a component's ids are the editor's, never the release's
+    # (READ-24): a release gives them from the sheet's name, the title and the number.
+    no_ids = {"__all__": {"id": True}}
+    data = spec.model_dump(
+        mode="json",
+        exclude={
+            "pages": {
+                "__all__": {
+                    "id": True,
+                    "sections": {"__all__": {"id": True, "widgets": no_ids}},
+                }
+            }
+        },
+    )
+    return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
 
 
 def form_revision(data: bytes) -> str:

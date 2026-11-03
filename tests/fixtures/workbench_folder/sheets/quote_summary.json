@@ -1,5 +1,4 @@
 {
-  "id": "sheet_qs01",
   "title": "Quote & Summary!",
   "show_when": {
     "conditions": [
@@ -8,11 +7,10 @@
   },
   "sections": [
     {
-      "id": "section_sm01",
       "title": "Summary",
       "components": [
         {
-          "id": "collection_s5m6",
+          "number": 1,
           "type": "collection",
           "fields": [
             "pricing.premium"

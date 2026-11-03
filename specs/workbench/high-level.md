@@ -482,14 +482,15 @@ Out of scope:
     column holds no rule (`required`, `min`, `max`, `options`, `options_source`), no
     `row_per_value` and no `default_value`.
   - `sheets/<sheet>.json` for each sheet the index names, named by its title made a name
-    (below): its `id`, `title`, `show_when` and `sections`, each section its `id`, `title`,
-    `show_when` and `components`, each component its `id`, its `type` (`table`, which the
-    document calls `tableInput`, `collection`, `chart`, `heading`, `import` or `export`) and
-    its settings, but not where it sits.
-  - `sheets/<sheet>.layout.json` beside it: the sheet's `width` and, by id, each section's
-    `height` and each component's place, `{"x": 8, "y": 312, "w": 832, "h": 192}` on one
-    line; an entry for every section and component of the sheet and for nothing else. A
-    pull request that only moves or resizes things changes only layout files.
+    (below): its `title`, `show_when` and `sections`, each section its `title`, `show_when`
+    and `components`, each component its `number`, its `type` (`table`, which the document
+    calls `tableInput`, `collection`, `chart`, `heading`, `import` or `export`) and its
+    settings, but not where it sits.
+  - `sheets/<sheet>.layout.json` beside it: the sheet's `width` and, by title, each
+    section's `height` and, by number, each of its components' place,
+    `{"x": 8, "y": 312, "w": 832, "h": 192}` on one line; an entry for every section and
+    component of the sheet and for nothing else. A pull request that only moves or resizes
+    things changes only layout files.
   - `sample/<table>.json` for each input table the sample has rows in, named as its schema
     file is: the rows as they stand, an empty row kept, since a row's place numbers it and
     lines it up with the values a column gives its table; each row's values by their
@@ -501,9 +502,9 @@ Out of scope:
 
   Only what is set is written. The keys that say what a thing is are always written: the
   index's `version`, `name`, `schema` and `sheets`; a table's `id`, `role`, `rows` and
-  `columns`; a column's `id`, `name` and `type`; a sheet's and a section's `id` and
-  `title`, with their `sections` and `components`; a component's `id` and `type`; every
-  layout number. A setting with no default, such as an Import's source or an Export's
+  `columns`; a column's `id`, `name` and `type`; a sheet's and a section's `title`, with
+  their `sections` and `components`; a component's `number` and `type`; every layout
+  number. A setting with no default, such as an Import's source or an Export's
   target, is always written. Any other setting is written only when it is not its default,
   and a default written out by hand reads as that setting and is left out at the next
   save. The defaults are the folder format's: a different default is a new `version`.
@@ -519,10 +520,15 @@ Out of scope:
   name. A reference to a name the schema does not hold is kept as written: the editor shows
   it where it is, as it shows a field on a column dropped, `haute app build` and `haute
   deploy` refuse the form naming it, and nothing reads it as another column. A sheet, a
-  section and a component keep the id their file gives them, unique in the form; the
-  editor makes one from what it is (`sheet_`, `section_`, `table_`, `collection_`,
-  `chart_`, `heading_`, `import_`, `export_`) and four random letters or digits
-  (`collection_k3f9`), so a layout line says what it places.
+  section and a component hold no id in a file or a release: a sheet is known by its
+  file's name, a section by its title, unique on its sheet, and a component by its
+  `number` in its section, one more than the highest there when it was made, so the first
+  is 1. A component moved to another section or duplicated takes the next number there; a
+  number can come back once the highest component is deleted, its box gone with it. The
+  editor gives each part an id in memory as it reads the form, for selecting and moving
+  it, and none reaches a file. A read refuses two sections of one title on a sheet or two
+  components of one number in a section, which two branches adding to one section can
+  make, naming the sheet, the section and the number.
 
   A sheet's name is its title in lower case, each run of characters other than ASCII
   letters and digits one `_`, none at either end, at most 64 characters: "BR Coverages" is
@@ -531,7 +537,8 @@ Out of scope:
   column name that is not an identifier (letters, digits and underscores, not starting
   with a digit), a table or sheet name Windows keeps (`con`, `prn`, `aux`, `nul`, `com1` to
   `com9`, `lpt1` to `lpt9`, whatever their case), a sheet title that gives no name or
-  another sheet's, and a file whose full path would pass 240 characters. Every path a save
+  another sheet's, two sections of one title on a sheet, and a file whose full path would
+  pass 240 characters. Every path a save
   writes or deletes is held to the project's write rules first, as every file Haute writes
   is: none through a link, a junction or a reserved name. Files are named in lower case, so
   a rename that changes only a name's case changes no file's name.
@@ -2366,9 +2373,13 @@ Out of scope:
   reads least, so it has a file of its own beside each sheet's: a pull request that only
   moves things lists only layout files, and a sheet file's history is a history of what
   the sheet shows. How components look stays with them, read in context and changed on
-  purpose. Ids that start with their kind say what a layout line places, and their random
-  ends keep two branches that each add a component to one sheet from giving two
-  components one id.
+  purpose. A layout line names its section by title and its component by number, the
+  number kept on the component in the sheet file, so a hand edit to either file lines up
+  with the other and a moved box says where it is. A component's place in its section's
+  list would serve as its number too, but a hand edit that reorders one file and not the
+  other would swap two boxes without a word; a stored number cannot. Two branches that each
+  add a component to one section can give two components one number, which a read
+  refuses, naming it.
 - **A missing folder is a loss, not a new form.** A form does not go missing in the
   ordinary course of work; when it does, version history holds it, and a blank form in its
   place would invite a save that commits the loss. A new workbench comes from

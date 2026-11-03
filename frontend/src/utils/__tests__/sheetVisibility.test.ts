@@ -144,7 +144,7 @@ const valued: SchemaTable = {
 }
 const premium: SchemaTable = { id: "t_out", name: "premium", role: "output", rows: "one", columns: [column("c_premium", "premium", { type: "float" })] }
 
-const collection = (id: string, fields: [string, string][], showWhen: ShowWhen = ALWAYS): Widget => ({
+const collection = (id: string, fields: [string, string][], showWhen: ShowWhen = ALWAYS): Widget => ({ number: null,
   id,
   type: "collection",
   title: id,
