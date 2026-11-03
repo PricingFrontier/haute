@@ -3,13 +3,7 @@
   "title": "Quote & Summary!",
   "show_when": {
     "conditions": [
-      {
-        "column": "policy.state",
-        "op": "equals",
-        "values": [
-          "NY"
-        ]
-      }
+      {"column": "policy.state", "op": "equals", "values": ["NY"]}
     ]
   },
   "sections": [

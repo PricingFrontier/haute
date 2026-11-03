@@ -24,17 +24,7 @@
               "bold": true,
               "show_when": {
                 "conditions": [
-                  {
-                    "table": "layers",
-                    "where": [
-                      {
-                        "column": "limit",
-                        "op": "filled"
-                      }
-                    ],
-                    "op": "at_least",
-                    "count": 1
-                  }
+                  {"table": "layers", "where": [{"column": "limit", "op": "filled"}], "op": "at_least", "count": 1}
                 ]
               }
             }
@@ -53,19 +43,7 @@
           "show_when": {
             "match": "any",
             "conditions": [
-              {
-                "table": "layers",
-                "rows": "any",
-                "where": [
-                  {
-                    "column": "limit",
-                    "op": "above",
-                    "values": [
-                      "0"
-                    ]
-                  }
-                ]
-              }
+              {"table": "layers", "rows": "any", "where": [{"column": "limit", "op": "above", "values": ["0"]}]}
             ]
           },
           "rows": 5,
@@ -94,27 +72,7 @@
       "show_when": {
         "match": 1,
         "conditions": [
-          {
-            "match": "any",
-            "conditions": [
-              {
-                "column": "policy.state",
-                "op": "one_of",
-                "values": [
-                  "CA",
-                  "NY"
-                ]
-              },
-              {
-                "table": "BR_Perils",
-                "total": "sum",
-                "column": "rate",
-                "where": [],
-                "op": "below",
-                "value": "10"
-              }
-            ]
-          }
+          {"match": "any", "conditions": [{"column": "policy.state", "op": "one_of", "values": ["CA", "NY"]}, {"table": "BR_Perils", "total": "sum", "column": "rate", "where": [], "op": "below", "value": "10"}]}
         ]
       },
       "components": [
