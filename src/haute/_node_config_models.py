@@ -1107,12 +1107,23 @@ class NodeConfigModel:
     #: The builder applies ``check`` as its first step, so a run leaves it to the
     #: builder rather than pay for it twice (a Rating Step's tables' normalisation).
     builder_checks: bool = False
-    adapter: TypeAdapter[Any] = field(init=False, repr=False)
     keys: frozenset[str] = field(init=False)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "adapter", TypeAdapter(self.shape))
         object.__setattr__(self, "keys", frozenset(_shape_keys(self.shape)))
+
+    @property
+    def adapter(self) -> TypeAdapter[Any]:
+        """The shape's validator, built on first use: building every type's at import
+        would add half a second to the server's start."""
+        adapter = _ADAPTERS.get(self.node_type)
+        if adapter is None:
+            adapter = _ADAPTERS[self.node_type] = TypeAdapter(self.shape)
+        return adapter
+
+
+#: Each node type's built validator (``NodeConfigModel.adapter``).
+_ADAPTERS: dict[NodeType, TypeAdapter[Any]] = {}
 
 
 def branch_values(model: NodeConfigModel) -> frozenset[str]:
