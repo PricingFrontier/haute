@@ -50,8 +50,7 @@ from haute._logging import get_logger
 from haute._path_resolution import RuntimePathError, resolve_node_input_path
 from haute._pipeline_settings import PipelineSettingsError, project_pipeline_settings
 from haute._polars_io_registry import PolarsIoConfigError, validate_data_input_config
-from haute._project import _toml_configured_pipeline
-from haute._sandbox import _get_project_root
+from haute._project_context import context_thread, current_project
 from haute._source_cache import (
     BuildClass,
     SourceCacheBuildError,
@@ -151,33 +150,13 @@ def _provider_error_diagnostic(
     )
 
 
-def input_project_root() -> Path:
-    """The configured project root, never the process's current directory.
-
-    Automatic preparation, execution and the snapshot store all use this root,
-    so an explicit build publishes where a run looks for it.
-    """
-    return _get_project_root()
-
-
-def input_pipeline_dir() -> Path:
-    """Where a Data or API Input's relative locator is anchored.
-
-    The directory of the pipeline ``haute.toml`` names under the project root,
-    else that root.
-    """
-    root = input_project_root()
-    configured = _toml_configured_pipeline(root)
-    return configured.parent.resolve() if configured is not None else root
-
-
 @functools.cache
 def _source_store(root: str) -> SourceCacheStore:
     return SourceCacheStore(Path(root))
 
 
 def _cache_store() -> SourceCacheStore:
-    return _source_store(str(input_project_root()))
+    return _source_store(str(current_project().root))
 
 
 def _safe_config(
@@ -202,8 +181,8 @@ def _safe_config(
             config["path"] = str(
                 resolve_node_input_path(
                     str(config["path"]),
-                    pipeline_dir=input_pipeline_dir(),
-                    project_root=input_project_root(),
+                    pipeline_dir=current_project().pipeline_dir,
+                    project_root=current_project().root,
                 )
             )
         except RuntimePathError as exc:
@@ -218,8 +197,8 @@ def _safe_config(
         try:
             validate_sqlite_project_path(
                 str(config["uri"]),
-                base_dir=input_pipeline_dir(),
-                project_root=input_project_root(),
+                base_dir=current_project().pipeline_dir,
+                project_root=current_project().root,
             )
         except DatabaseConfigError:
             raise HTTPException(
@@ -230,7 +209,7 @@ def _safe_config(
             raise HTTPException(status_code=403, detail=str(exc)) from None
 
     try:
-        identity = source_cache_identity(config, base_dir=input_pipeline_dir())
+        identity = source_cache_identity(config, base_dir=current_project().pipeline_dir)
     except (PolarsIoConfigError, TypeError, ValueError):
         raise HTTPException(
             status_code=400,
@@ -262,7 +241,7 @@ def _safe_api_input(body: InputCacheSourceRequest) -> ApiInputSnapshotSource:
         raise _invalid_api_input()
     try:
         data_path = resolve_node_input_path(
-            path, pipeline_dir=input_pipeline_dir(), project_root=input_project_root()
+            path, pipeline_dir=current_project().pipeline_dir, project_root=current_project().root
         )
     except RuntimePathError as exc:
         raise runtime_path_http_exception(exc) from None
@@ -447,7 +426,9 @@ def _status_for_config(
 ) -> InputCacheSnapshotStatusResponse:
     read = input_snapshot_read_status(
         identity,
-        verified_signature=lambda: source_signature(config, base_dir=input_pipeline_dir()),
+        verified_signature=lambda: source_signature(
+            config, base_dir=current_project().pipeline_dir
+        ),
     )
     if read.cache_status is None:
         return InputCacheSnapshotStatusResponse(
@@ -631,8 +612,7 @@ def _supervise_data_input_build(
         config,
         store=store,
         identity=identity,
-        base_dir=input_pipeline_dir(),
-        project_root=input_project_root(),
+        base_dir=current_project().pipeline_dir,
         profile=profile,
         refresh=refresh,
         budget=budget,
@@ -958,7 +938,7 @@ def _chosen_build(config: dict[str, Any]) -> tuple[ExecutionProfile, _BuildableC
     """
     build_class = input_snapshot_build_class(
         config,
-        base_dir=input_pipeline_dir(),
+        base_dir=current_project().pipeline_dir,
         profile=ExecutionProfile.LAZY_SINK,
         allow_admitted_eager=True,
     )
@@ -1041,8 +1021,8 @@ def _start_build(
         _active_builds += 1
         for table_digest in table_digests:
             _building_tables[table_digest] = job_id
-        thread = threading.Thread(
-            target=_run_build,
+        thread = context_thread(
+            _run_build,
             kwargs={
                 **target_kwargs,
                 "job_id": job_id,

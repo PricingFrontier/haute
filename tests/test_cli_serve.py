@@ -12,9 +12,18 @@ import pytest
 
 from haute.cli import _serve as serve_mod
 from haute.cli import cli
+from tests._project import use_project
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
+
+
+@pytest.fixture(autouse=True)
+def _a_haute_project(tmp_path: Path) -> None:
+    """``haute serve`` serves the Haute project holding its directory, and refuses to
+    start outside one."""
+    (tmp_path / "haute.toml").write_text("[project]\n", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
 
 
 @pytest.fixture(autouse=True)
@@ -46,7 +55,7 @@ class TestServe:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Prod mode without static dir should fail."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         with (
             patch(
@@ -73,7 +82,7 @@ class TestServe:
         ``exists()`` gate and uvicorn crashed with an opaque
         ``RuntimeError`` mounting the missing ``assets/`` subdirectory.
         """
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         static = tmp_path / "static"
         static.mkdir()
 
@@ -98,7 +107,7 @@ class TestServe:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """In a source checkout the error must be actionable: npm steps + script."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         repo_root = tmp_path / "checkout"
         (repo_root / "frontend").mkdir(parents=True)
         (repo_root / "frontend" / "package.json").write_text("{}")
@@ -126,7 +135,7 @@ class TestServe:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A wheel install with broken assets should say reinstall, not npm."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         with (
             patch(
@@ -356,7 +365,7 @@ class TestServe:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Prod mode should serve from built static directory."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         static = _built_static_dir(tmp_path)
 
         with (
@@ -386,7 +395,7 @@ class TestServe:
         the host machine — we only want to verify the CLI flags reach
         :func:`uvicorn.run`, not exercise real socket binding.
         """
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         static = _built_static_dir(tmp_path)
 
         with (
@@ -416,7 +425,7 @@ class TestServe:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Dev mode should start Vite subprocess + uvicorn."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         fe = tmp_path / "frontend"
         fe.mkdir()
         (fe / "package.json").write_text("{}")
@@ -450,7 +459,7 @@ class TestServe:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Dev mode should not use a blind timer before opening the browser."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         fe = tmp_path / "frontend"
         fe.mkdir()
         (fe / "package.json").write_text("{}")
@@ -479,7 +488,7 @@ class TestServe:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A bare ``haute serve`` must establish the browser-safe local authority."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         static = _built_static_dir(tmp_path)
 
         with (
@@ -508,7 +517,7 @@ class TestServe:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Prod mode browser URL should reflect custom host/port."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         static = _built_static_dir(tmp_path)
 
         with (
@@ -533,7 +542,7 @@ class TestServe:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """When uvicorn.run raises, the vite process should be terminated in the finally block."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         fe = tmp_path / "frontend"
         fe.mkdir()
         (fe / "package.json").write_text("{}")
@@ -563,7 +572,7 @@ class TestServe:
         fe = tmp_path / "frontend"
         fe.mkdir()
         (fe / "package.json").write_text("{}")
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         result = _find_frontend_dir()
         assert result is not None
@@ -583,7 +592,7 @@ class TestServe:
         """
         from haute.cli._helpers import _find_frontend_dir
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         with pytest.raises(FileNotFoundError):
             _find_frontend_dir()
@@ -595,7 +604,7 @@ class TestServe:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Dev mode should print helpful dev mode information."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         fe = tmp_path / "frontend"
         fe.mkdir()
         (fe / "package.json").write_text("{}")
@@ -622,7 +631,7 @@ class TestServe:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         frontend = tmp_path / "frontend"
         frontend.mkdir()
         (frontend / "package.json").write_text("{}")
@@ -648,7 +657,7 @@ class TestServe:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         fe = tmp_path / "frontend"
         fe.mkdir()
         (fe / "package.json").write_text("{}")

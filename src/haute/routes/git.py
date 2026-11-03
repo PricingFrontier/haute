@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 
@@ -58,6 +57,7 @@ from haute._git import (
 )
 from haute._git_lock import repository_mutation
 from haute._logging import get_logger
+from haute._project_context import current_project
 from haute._project_layout import pipeline_folder
 from haute.errors import ConfigError
 from haute.graph_utils import PipelineGraph
@@ -209,7 +209,7 @@ def git_get_working_branch() -> GitWorkingBranchResponse:
     """Repository readiness, identity, durable-storage state, and the
     branches choosable as a working branch — everything the startup modal and
     toolbar indicator need in one call."""
-    status = working_branch_status(Path.cwd())
+    status = working_branch_status(current_project().root)
     return _with_storage_state(status)
 
 
@@ -224,8 +224,8 @@ def git_retry_interrupted(background: BackgroundTasks) -> GitWorkingBranchRespon
     another program held open), once the analyst has closed them, and answer the
     readiness after. Files still held are 400, naming them."""
     with _rewriting_tree(background):
-        retry_interrupted(Path.cwd())
-    return _with_storage_state(working_branch_status(Path.cwd()))
+        retry_interrupted(current_project().root)
+    return _with_storage_state(working_branch_status(current_project().root))
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +261,7 @@ def git_set_working_branch(
     """Adopt a working branch for this clone, spawning its ledger and recording
     the association. Confirms both the startup modal and the save-gate."""
     with _rewriting_tree(background):  # M4: adopting a branch checks out its ledger
-        response = set_working_branch(body.branch, Path.cwd(), create=body.create)
+        response = set_working_branch(body.branch, current_project().root, create=body.create)
     return response
 
 
@@ -282,7 +282,9 @@ def git_restore_version(
     durable storage."""
     with _rewriting_tree(background):
         response = restore_version(
-            body.sha, Path.cwd(), pipeline_folder=pipeline_folder(Path.cwd())
+            body.sha,
+            current_project().root,
+            pipeline_folder=pipeline_folder(current_project().root),
         )
     _project_storage.enqueue_push()
     return response
@@ -310,7 +312,7 @@ def git_capture(body: GitCaptureRequest) -> SaveCapture:
     reported ``uncaptured``: the editor's retry once a git identity is set, and at the next
     Save. A path that is not an ordinary one inside the project is refused, 400. Under the
     repository's lock, as every write's own capture is: the capture writes no file."""
-    root = Path.cwd().resolve()
+    root = current_project().root
     for path in body.paths:
         if ordinary_path_problem(root, path)[1] is not None:
             raise HTTPException(status_code=400, detail=f"{path} is not a file in the project.")
@@ -340,10 +342,10 @@ def git_commit(body: GitCommitRequest) -> GitCommitResponse:
     try:
         response = commit_milestone(
             body.message,
-            Path.cwd(),
+            current_project().root,
             version_label=body.version_label,
             allow_fork=body.allow_fork,
-            pipeline_folder=pipeline_folder(Path.cwd()),
+            pipeline_folder=pipeline_folder(current_project().root),
         )
         # Publish the milestone (and any ledger saves it folded in) when the
         # project is bound to durable storage. A no-op for local sessions.
@@ -365,7 +367,7 @@ def git_milestones(
 ) -> GitMilestonesResponse:
     """Milestone history (first-parent chain). Defaults to the working branch;
     ``?branch=`` peeks at another branch without switching."""
-    return working_milestones(Path.cwd(), limit=limit, branch=branch)
+    return working_milestones(current_project().root, limit=limit, branch=branch)
 
 
 # ---------------------------------------------------------------------------
@@ -379,7 +381,7 @@ def git_graph(limit: int = Query(50, ge=1, le=500)) -> GitGraphResponse:
     attachments — the data behind the graph rail. Entries are windowed to
     ``limit`` per branch; fork points come from full spines and are reported
     even when outside the window. Read-only (no checkout, no HEAD change)."""
-    return graph_topology(Path.cwd(), limit=limit)
+    return graph_topology(current_project().root, limit=limit)
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +400,7 @@ def git_milestone_saves(sha: str) -> GitLedgerSavesResponse:
 def git_pending_saves(branch: str | None = Query(None)) -> GitLedgerSavesResponse:
     """Saves on a branch's ledger ahead of its tip — the next milestone preview.
     Defaults to the working branch; ``?branch=`` peeks at another."""
-    return pending_ledger_saves(Path.cwd(), branch=branch)
+    return pending_ledger_saves(current_project().root, branch=branch)
 
 
 # ---------------------------------------------------------------------------
@@ -410,7 +412,7 @@ def git_pending_saves(branch: str | None = Query(None)) -> GitLedgerSavesRespons
 def git_archive(body: GitArchiveRequest, background: BackgroundTasks) -> GitArchiveResponse:
     """Archive a working branch and its ledger together (S32, pair-aware)."""
     with _rewriting_tree(background):  # M4: archiving the active pair switches away
-        response = archive_working_pair(body.branch, Path.cwd())
+        response = archive_working_pair(body.branch, current_project().root)
     return response
 
 
@@ -426,7 +428,7 @@ def git_delete_branch(
     """Delete a working branch and its ledger together; refuses on unmerged
     ledger saves unless ``confirm`` (§8, pair-aware)."""
     with _rewriting_tree(background):  # M4: deleting the active pair switches away
-        response = delete_working_pair(body.branch, Path.cwd(), confirm=body.confirm)
+        response = delete_working_pair(body.branch, current_project().root, confirm=body.confirm)
     return response
 
 
@@ -440,7 +442,7 @@ def git_undelete(body: GitUndeleteRequest) -> GitUndeleteResponse:
     """Restore a deleted working pair from its trash refs + tombstone (the
     inverse of DELETE /branches). Pure ref/state ops — no checkout, no HEAD
     movement — so no watcher pause is needed."""
-    return undelete_working_pair(body.id, Path.cwd(), as_name=body.as_name)
+    return undelete_working_pair(body.id, current_project().root, as_name=body.as_name)
 
 
 # ---------------------------------------------------------------------------
@@ -451,13 +453,13 @@ def git_undelete(body: GitUndeleteRequest) -> GitUndeleteResponse:
 @router.get("/working-branches", response_model=GitWorkingBranchesResponse)
 def git_working_branches() -> GitWorkingBranchesResponse:
     """List working branches (active + archived) for the branch manager."""
-    return working_branches(Path.cwd())
+    return working_branches(current_project().root)
 
 
 @router.post("/restore", response_model=GitRestoreResponse)
 def git_restore(body: GitRestoreRequest) -> GitRestoreResponse:
     """Un-archive a working branch and its ledger together (inverse of archive)."""
-    return restore_working_pair(body.branch, Path.cwd())
+    return restore_working_pair(body.branch, current_project().root)
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +472,7 @@ def git_repair_pair(body: GitRepairPairRequest) -> GitRepairPairResponse:
     """Make whole a pair readiness lists in ``broken_pairs``: finish a half-done archive,
     or give an orphan ledger its working branch back at its last milestone. Refs only —
     no checkout, so no watcher pause."""
-    return repair_working_pair(body.ledger, Path.cwd())
+    return repair_working_pair(body.ledger, current_project().root)
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +489,7 @@ def git_create_working_branch(
     whether the new branch is opened (S38)."""
     with _rewriting_tree(background):  # M4: move and switch forks check out the new ledger
         response = create_working_branch(
-            body.name, Path.cwd(), at=body.at, move=body.move, switch=body.switch
+            body.name, current_project().root, at=body.at, move=body.move, switch=body.switch
         )
     return response
 
@@ -500,13 +502,13 @@ def git_create_working_branch(
 @router.get("/prefs", response_model=GitPrefs)
 def git_get_prefs() -> GitPrefs:
     """This clone's local UI preferences (e.g. switch-confirm 'don't ask again')."""
-    return get_prefs(Path.cwd())
+    return get_prefs(current_project().root)
 
 
 @router.post("/prefs", response_model=GitPrefs)
 def git_set_prefs(body: GitPrefs) -> GitPrefs:
     """Persist this clone's local UI preferences."""
-    return set_prefs(body, Path.cwd())
+    return set_prefs(body, current_project().root)
 
 
 # ---------------------------------------------------------------------------
@@ -517,7 +519,7 @@ def git_set_prefs(body: GitPrefs) -> GitPrefs:
 @router.get("/remotes", response_model=GitRemotesResponse)
 def git_remotes() -> GitRemotesResponse:
     """Configured remotes + the working branch's ahead/behind vs each (no fetch)."""
-    return list_remotes(Path.cwd())
+    return list_remotes(current_project().root)
 
 
 # ---------------------------------------------------------------------------
@@ -543,7 +545,7 @@ def git_commit_context(sha: str, base: str | None = Query(None)) -> GitCommitCon
     """A commit's nearest ancestor milestone and the distance from it — the
     breadcrumb shown in the version-compare UI. ``?base=`` additionally reports the
     commit delta ``base..sha`` (the historic↔current span). Read-only (no checkout)."""
-    return commit_context(Path.cwd(), sha, base=base)
+    return commit_context(current_project().root, sha, base=base)
 
 
 # ---------------------------------------------------------------------------
@@ -572,7 +574,7 @@ def git_push(body: GitPushRequest) -> GitPushResponse:
     there; a first publication sets the missing ones before the default branch is
     created (:func:`haute._ci_secrets.push_with_ci_secrets`)."""
     try:
-        return push_with_ci_secrets(body.remote, Path.cwd())
+        return push_with_ci_secrets(body.remote, current_project().root)
     except GitPushRejectedError as e:
         logger.warning("git_push_rejected", remote=body.remote, message=e.rejection.message)
         raise HTTPException(status_code=409, detail=e.rejection.model_dump())
@@ -591,7 +593,7 @@ def git_set_ci_secrets(body: GitCiSecretsRequest) -> GitCiSecrets:
     A remote they do not apply to, or a step that cannot be taken (a value unset or
     a placeholder, a pair Databricks refuses, no ``gh``), is a 400 naming why."""
     try:
-        return set_missing_ci_secrets(body.remote, Path.cwd())
+        return set_missing_ci_secrets(body.remote, current_project().root)
     except CiSecretsError as e:
         logger.info("git_ci_secrets_not_set", remote=body.remote)
         raise HTTPException(status_code=400, detail=str(e))
@@ -618,7 +620,7 @@ def git_bind_storage(body: GitBindStorageRequest, request: Request) -> GitBindSt
         remote_url = _project_storage.precheck_bind(body.remote_url)
         _project_storage.bind_task().start(
             remote_url,
-            Path.cwd(),
+            current_project().root,
             # Platform-authenticated visitor, when hosted behind an SSO proxy.
             bound_by=request.scope.get(FORWARDED_USER_SCOPE_KEY),
         )
@@ -645,7 +647,7 @@ def git_acknowledge_bind() -> GitWorkingBranchResponse:
     The result persists after the bind completes so a slow poll cannot
     miss it; this is how the UI says it no longer needs it."""
     _project_storage.bind_task().acknowledge()
-    return _with_storage_state(working_branch_status(Path.cwd()))
+    return _with_storage_state(working_branch_status(current_project().root))
 
 
 # ---------------------------------------------------------------------------
@@ -664,7 +666,7 @@ def git_fork_storage(body: GitForkStorageRequest, request: Request) -> GitForkSt
         lineage = _project_storage.fork_uc_location(
             body.source_url,
             body.target_url,
-            Path.cwd(),
+            current_project().root,
             forked_by=request.scope.get(FORWARDED_USER_SCOPE_KEY),
         )
     except _project_storage.StorageConfigError as e:
@@ -736,7 +738,7 @@ def git_check_upstream() -> GitUpstreamStatusResponse:
     On demand only — it downloads the parent's whole stored bundle, which
     is why it is deliberately absent from the polled readiness response."""
     try:
-        status = _project_storage.check_upstream(Path.cwd())
+        status = _project_storage.check_upstream(current_project().root)
     except _project_storage.StorageConfigError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except _project_storage.StorageUnavailableError as e:
@@ -761,7 +763,7 @@ def git_pull_upstream(background: BackgroundTasks) -> GitFastForwardResponse:
     the wholesale tree replacement, exactly as the remote catch-up does."""
     try:
         with _rewriting_tree(background):
-            response = _project_storage.pull_upstream(Path.cwd())
+            response = _project_storage.pull_upstream(current_project().root)
         return response
     except _project_storage.StorageConfigError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -778,7 +780,7 @@ def git_pull_upstream(background: BackgroundTasks) -> GitFastForwardResponse:
 def git_retry_storage_sync() -> GitWorkingBranchResponse:
     """Retry publishing after a failure, returning the refreshed readiness."""
     _project_storage.push_queue().retry_now()
-    return _with_storage_state(working_branch_status(Path.cwd()))
+    return _with_storage_state(working_branch_status(current_project().root))
 
 
 # ---------------------------------------------------------------------------
@@ -795,7 +797,7 @@ def git_fast_forward(
     fast-forward (the user spins off a copy instead). The watcher is paused for
     the wholesale tree replacement (S30/M4)."""
     with _rewriting_tree(background):
-        response = fast_forward_pair(body.remote, Path.cwd())
+        response = fast_forward_pair(body.remote, current_project().root)
     return response
 
 
@@ -813,5 +815,5 @@ def git_branch_away(
     nothing rewritten, never a merge. The watcher is paused for the tree
     replacement (S30/M4)."""
     with _rewriting_tree(background):
-        response = branch_away(body.remote, Path.cwd())
+        response = branch_away(body.remote, current_project().root)
     return response

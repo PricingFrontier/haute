@@ -66,9 +66,9 @@ if __name__ == "__main__":
     from haute.hosted import create_app
 
     probe.run()
-    bootstrap.ensure_project()
+    project_dir = bootstrap.ensure_project()
     uvicorn.run(
-        create_app(),
+        create_app(project_dir),
         host="0.0.0.0",
         port=int(os.environ.get("DATABRICKS_APP_PORT", "8000")),
     )

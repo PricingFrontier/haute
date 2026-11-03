@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from sqlalchemy.exc import OperationalError
 
+from haute._project_context import context_thread
 from haute._quote_store import (
     QuoteStoreEnvironmentError,
     QuoteStoreMismatchError,
@@ -199,7 +200,7 @@ def test_one_check_runs_at_a_time() -> None:
 
     gate = StoreGate(slow)
     answers: list[Any] = []
-    threads = [threading.Thread(target=lambda: answers.append(gate.book())) for _ in range(2)]
+    threads = [context_thread(lambda: answers.append(gate.book())) for _ in range(2)]
     threads[0].start()
     assert entered.wait(5)
     threads[1].start()

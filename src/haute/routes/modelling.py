@@ -17,7 +17,7 @@ from fastapi.concurrency import run_in_threadpool
 from haute._file_ops import atomic_copy_files
 from haute._logging import get_logger
 from haute._path_resolution import RuntimePathError
-from haute._sandbox import _get_project_root
+from haute._project_context import current_project
 from haute.errors import HauteValidationError, RequestRefusedError
 from haute.modelling._model_export import (
     MODEL_FILE_SUFFIXES,
@@ -487,7 +487,7 @@ def model_save_destination(body: ModelSaveDestinationRequest) -> ModelSaveDestin
         destination = resolve_model_export_destination(
             body.output_path,
             model_suffix=MODEL_FILE_SUFFIXES[body.algorithm],
-            project_root=_get_project_root(),
+            project_root=current_project().root,
         )
     except RuntimePathError as exc:
         raise runtime_path_http_exception(exc) from None
@@ -531,7 +531,7 @@ def save_model(body: SaveModelRequest) -> SaveModelResponse:
             destination = resolve_model_export_destination(
                 body.output_path,
                 model_suffix=source_model.suffix,
-                project_root=_get_project_root(),
+                project_root=current_project().root,
             )
         except RuntimePathError as exc:
             raise runtime_path_http_exception(exc) from None

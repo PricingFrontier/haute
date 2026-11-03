@@ -45,6 +45,7 @@ from haute._file_ops import (
     atomic_write_text,
     ensure_disk_headroom,
 )
+from haute._project_context import context_thread
 
 
 def test_ensure_disk_headroom_accepts_exact_boundary_and_refuses_one_byte_less(
@@ -684,8 +685,8 @@ class TestWriterEdgeCases:
             except BaseException as exc:  # noqa: BLE001 — collect for main thread
                 errors.append(exc)
 
-        t1 = threading.Thread(target=_run, args=(payload_a,))
-        t2 = threading.Thread(target=_run, args=(payload_b,))
+        t1 = context_thread(_run, args=(payload_a,))
+        t2 = context_thread(_run, args=(payload_b,))
         t1.start()
         t2.start()
         t1.join(timeout=10)

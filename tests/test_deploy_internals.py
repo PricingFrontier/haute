@@ -27,11 +27,13 @@ import numpy as np
 import polars as pl
 import pytest
 
+from haute._project_context import current_project
 from haute._types import PipelineGraph
 from haute.deploy._request_rows import RequestRows
 from haute.errors import DeployError
 from tests._deploy_helpers import FIXTURE_DIR
 from tests._deploy_helpers import make_resolved_deploy as _make_resolved
+from tests._project import use_project
 from tests.conftest import make_graph as _g
 from tests.conftest import make_output_config, make_ready_file_input_config
 
@@ -255,6 +257,7 @@ class TestHauteModelPredict:
         )
         model = HauteModel()
         model._graph = PipelineGraph()
+        model._project = current_project()
         model._input_node_ids = ["src"]
         model._output_node_id = "out"
         model._artifact_paths = {}
@@ -293,6 +296,7 @@ class TestHauteModelPredict:
 
         model = HauteModel()
         model._graph = PipelineGraph()
+        model._project = current_project()
         model._input_node_ids = ["src"]
         model._output_node_id = "out"
         model._artifact_paths = {}
@@ -342,6 +346,7 @@ class TestHauteModelPredict:
         )
         model = HauteModel()
         model._graph = PipelineGraph()
+        model._project = current_project()
         model._input_node_ids = ["src"]
         model._output_node_id = "out"
         model._artifact_paths = {}
@@ -379,6 +384,7 @@ class TestHauteModelPredict:
         )
         model = HauteModel()
         model._graph = PipelineGraph()
+        model._project = current_project()
         model._input_node_ids = ["src"]
         model._output_node_id = "out"
         model._artifact_paths = {}
@@ -413,6 +419,7 @@ class TestHauteModelPredict:
 
         model = HauteModel()
         model._graph = PipelineGraph()
+        model._project = current_project()
         model._input_node_ids = ["src"]
         model._output_node_id = "out"
         model._artifact_paths = {}
@@ -441,6 +448,7 @@ class TestHauteModelPredict:
 
         model = HauteModel()
         model._graph = PipelineGraph()
+        model._project = current_project()
         model._input_node_ids = ["src"]
         model._output_node_id = "out"
         model._artifact_paths = {"model.pkl": "/served/model.pkl"}
@@ -473,6 +481,7 @@ class TestHauteModelPredict:
 
         model = HauteModel()
         model._graph = pruned
+        model._project = current_project()
         model._input_node_ids = ["quotes"]
         model._output_node_id = "output"
         model._output_fields = output_fields
@@ -727,7 +736,7 @@ class TestInferOutputSchema:
         """When cache has matching fingerprint, score_graph is not called."""
         from haute.deploy._schema import infer_output_schema
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         graph = _g(
             {
@@ -790,7 +799,7 @@ class TestInferOutputSchema:
         """Corrupt cache JSON triggers recomputation (no crash)."""
         from haute.deploy._schema import infer_output_schema
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         # Write a sample data file for the input node
         pq_path = tmp_path / "data.parquet"
@@ -854,7 +863,7 @@ class TestInferOutputSchema:
         """A cache that is not one logs a warning with path and error details."""
         from haute.deploy._schema import infer_output_schema
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         pq_path = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1.0]}).write_parquet(pq_path)
@@ -920,7 +929,7 @@ class TestInferOutputSchema:
         """Cache miss computes schema and writes cache file."""
         from haute.deploy._schema import infer_output_schema
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         pq_path = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1.0]}).write_parquet(pq_path)
@@ -975,7 +984,7 @@ class TestInferOutputSchema:
         """Stale fingerprint in cache causes recomputation."""
         from haute.deploy._schema import infer_output_schema
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         pq_path = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1.0]}).write_parquet(pq_path)
@@ -1037,7 +1046,7 @@ class TestInferOutputSchema:
         """
         from haute.deploy._schema import infer_output_schema
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         pq_path = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1.0]}).write_parquet(pq_path)
         graph = _passthrough_input_graph(pq_path)
@@ -1081,7 +1090,7 @@ class TestInferOutputSchema:
         """
         from haute.deploy._schema import infer_output_schema
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         pq_path = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1.0]}).write_parquet(pq_path)
         graph = _passthrough_input_graph(pq_path)
@@ -4390,7 +4399,7 @@ class TestResolveConfigEdgeCases:
 
         # The capped dry-run really spawns; the child derives its project root
         # from the working directory it inherits.
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         graph = self._conservative_deploy_graph(tmp_path)
         config = DeployConfig(
             pipeline_file=self._tmp_pipeline_file(tmp_path),
@@ -5775,7 +5784,7 @@ class TestValidateDeployEdgeCases:
         def source_cache_must_not_run(*_args: object, **_kwargs: object) -> object:
             raise AssertionError("direct Parquet validation must not access the source cache")
 
-        monkeypatch.setattr("haute._sandbox._get_project_root", lambda: tmp_path)
+        use_project(tmp_path)
         monkeypatch.setattr(
             "haute._input_providers.source_cache_identity", source_cache_must_not_run
         )
@@ -6069,3 +6078,34 @@ class TestOmittableRequestColumns:
         assert omittable_request_columns(graph, artifacts, carried) == ["exposure"]
         # An exposure the request does not carry is nothing a quote can leave out.
         assert omittable_request_columns(graph, artifacts, {"age": "Int64"}) == []
+
+
+def test_a_data_input_s_deploy_schema_reads_through_the_project_s_snapshot_store(
+    tmp_path: Path,
+) -> None:
+    """A deployment whose request input is a Data Input reads its schema as execution does,
+    through the installed project's snapshot store, its relative path anchored there."""
+    from haute.deploy._schema import infer_input_schema
+    from tests.conftest import make_ready_file_input_config
+
+    (tmp_path / "data").mkdir()
+    pl.DataFrame({"area": ["A"], "exposure": [1.0]}).write_parquet(
+        tmp_path / "data" / "policies.parquet"
+    )
+    graph = _g(
+        {
+            "nodes": [
+                {
+                    "id": "policies",
+                    "data": {
+                        "label": "policies",
+                        "nodeType": "dataInput",
+                        "config": make_ready_file_input_config("data/policies.parquet"),
+                    },
+                }
+            ],
+            "edges": [],
+        }
+    ).model_copy(update={"source_file": str(tmp_path / "main.py")})
+
+    assert infer_input_schema(graph, "policies") == {"area": "String", "exposure": "Float64"}

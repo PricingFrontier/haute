@@ -30,17 +30,15 @@ from haute._cache import (
     preamble_execution_fingerprint,
     selected_live_switch_path,
 )
-from haute._cache import (
-    _pipeline_dir as _cache_pipeline_dir,
-)
 from haute._estimate_calibration import calibrate_materialisation_bytes
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_utils import upstream_node_ids
 from haute._hashing import HASH_ALGO, content_hash_bytes
 from haute._json_shred._source_proof import file_signature
 from haute._native_memory_limit import current_native_memory_backend
-from haute._path_resolution import _infer_project_root, resolve_node_input_path
+from haute._path_resolution import resolve_node_input_path
 from haute._polars_selectors import preamble_selector_aliases
+from haute._project_context import current_project, graph_pipeline_dir
 from haute._ram_estimate import (
     MaterialisationEstimate,
     MaterialisationEstimateBasis,
@@ -204,8 +202,8 @@ def canonical_dataframe_execution_graph(
 
 
 def _canonical_dataframe_execution_graph(graph: PipelineGraph) -> PipelineGraph:
-    root = _infer_project_root(project_root=None, source_file=graph.source_file)
-    pipeline_dir = _cache_pipeline_dir(graph)
+    root = current_project().root
+    pipeline_dir = graph_pipeline_dir(graph)
     if pipeline_dir is None:
         from haute._project import _toml_configured_pipeline
 
@@ -901,13 +899,13 @@ def _snapshot_source_signature(
     config: Mapping[str, object],
 ) -> str | None:
     """Current source signature of a snapshot-backed input (``None`` when none)."""
-    from haute._builders import _configured_pipeline_dir
     from haute._input_providers import source_signature
+    from haute._project_context import current_project
 
     try:
         return source_signature(
             config,
-            base_dir=_cache_pipeline_dir(graph) or _configured_pipeline_dir(),
+            base_dir=graph_pipeline_dir(graph) or current_project().pipeline_dir,
         )
     except (TypeError, ValueError):
         return None
@@ -919,12 +917,12 @@ def _snapshot_source_files(graph: PipelineGraph, config: Mapping[str, object]) -
     Called only for an input whose generation pointer resolved, whose cache
     identity already validated and anchored this configuration.
     """
-    from haute._builders import _configured_pipeline_dir
     from haute._input_providers import signed_source_files
+    from haute._project_context import current_project
 
     return signed_source_files(
         config,
-        base_dir=_cache_pipeline_dir(graph) or _configured_pipeline_dir(),
+        base_dir=graph_pipeline_dir(graph) or current_project().pipeline_dir,
     )
 
 
@@ -1154,7 +1152,7 @@ def canonical_graph_input_identity(
             "sources": source_entries,
             "preamble_fingerprint": preamble_execution_fingerprint(
                 scoped_graph.preamble,
-                pipeline_dir=_cache_pipeline_dir(scoped_graph),
+                pipeline_dir=graph_pipeline_dir(scoped_graph),
                 memo=memo,
             ),
         }
@@ -1227,16 +1225,17 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
                 return {"path": path, **_direct_source_files(config, path)}
             return {}
         try:
-            from haute._builders import _configured_pipeline_dir
             from haute._input_providers import source_cache_identity
-            from haute._sandbox import _get_project_root
+            from haute._project_context import current_project
             from haute._source_cache import SourceCacheStore
 
             identity = source_cache_identity(
                 config,
-                base_dir=_cache_pipeline_dir(graph) or _configured_pipeline_dir(),
+                base_dir=graph_pipeline_dir(graph) or current_project().pipeline_dir,
             )
-            pointer = SourceCacheStore(_get_project_root()).identity_path(identity) / "current.json"
+            pointer = (
+                SourceCacheStore(current_project().root).identity_path(identity) / "current.json"
+            )
             return {"snapshot_pointer": pointer}
         except (TypeError, ValueError):
             return {}
@@ -1280,14 +1279,14 @@ def _api_input_table_pointer_paths(config: Mapping[str, Any], path: Path) -> dic
         return {}
     from haute._api_input_schema import ApiInputSchemaError
     from haute._json_shred._snapshots import api_input_snapshot_source
-    from haute._sandbox import _get_project_root
+    from haute._project_context import current_project
     from haute._source_cache import SourceCacheStore
 
     try:
         source = api_input_snapshot_source(config, path)
     except (ApiInputSchemaError, TypeError, ValueError):
         return {}
-    store = SourceCacheStore(_get_project_root())
+    store = SourceCacheStore(current_project().root)
     return {
         f"snapshot_pointer:{table.label}": store.identity_path(table.identity) / "current.json"
         for table in source.tables

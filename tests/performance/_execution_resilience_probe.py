@@ -376,4 +376,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # A script entry point: it runs in the project holding its working directory.
+    from haute._project_context import standalone_project_scope
+
+    with standalone_project_scope(None):
+        main()

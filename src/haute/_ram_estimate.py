@@ -687,17 +687,16 @@ def _data_input_parquet_artifact(
     Parquet source returns ``None`` so callers touch the footer only when they
     actually need the count — each caller reads source metadata at most once.
     """
-    from haute._builders import _configured_pipeline_dir
     from haute._input_providers import source_cache_identity
     from haute._polars_io_registry import (
         anchor_config_source_path,
         data_input_is_direct,
         validate_data_input_config,
     )
-    from haute._sandbox import _get_project_root
+    from haute._project_context import current_project
     from haute._source_cache import SourceCacheStore
 
-    base_dir = _configured_pipeline_dir()
+    base_dir = current_project().pipeline_dir
     validated = validate_data_input_config(config)
     if data_input_is_direct(validated):
         anchored = anchor_config_source_path(validated, base_dir)
@@ -707,7 +706,7 @@ def _data_input_parquet_artifact(
         validated,
         base_dir=base_dir,
     )
-    generation = SourceCacheStore(_get_project_root()).open_generation(identity)
+    generation = SourceCacheStore(current_project().root).open_generation(identity)
     return generation.metadata.row_count, generation.data_paths
 
 
@@ -750,7 +749,7 @@ def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSource
     """
     from haute._builders import _config_with_resolved_data_path
     from haute._json_shred._snapshots import api_input_snapshot_source
-    from haute._sandbox import _get_project_root
+    from haute._project_context import current_project
     from haute._source_cache import SourceCacheStore
 
     config = _config_with_resolved_data_path(node.data.config)
@@ -763,7 +762,7 @@ def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSource
             identity = source.table(port).identity
         except KeyError:
             return None
-        generation = SourceCacheStore(_get_project_root()).open_generation(identity)
+        generation = SourceCacheStore(current_project().root).open_generation(identity)
         return _source_scoped_metadata(
             _detailed_parquet_metadata(generation.data_paths),
             node.id,

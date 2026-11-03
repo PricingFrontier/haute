@@ -11,7 +11,6 @@ generator (the regression-sensitivity control for the ENG-T02 fix).
 from __future__ import annotations
 
 import itertools
-import os
 from pathlib import Path
 from typing import Any
 
@@ -21,9 +20,10 @@ from fastapi.testclient import TestClient
 from hypothesis import example, given
 from hypothesis import strategies as st
 
-from haute.routes._helpers import invalidate_pipeline_index, pipeline_dir
+from haute._project_context import ProjectContext, project_scope
+from haute.routes._helpers import invalidate_pipeline_index
 from haute.routes._save_pipeline import SavePipelineService
-from haute.server import app
+from tests._project import project_app, use_project
 from tests._property_budget import pr_budget
 
 _case_counter = itertools.count(1)
@@ -181,11 +181,10 @@ def test_saves_follow_the_revision_model_and_stale_writes_never_replace_accepted
 ) -> None:
     case_dir = tmp_path / f"case_{next(_case_counter)}"
     case_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.chdir(case_dir)
-    pipeline_dir.cache_clear()
+    use_project(case_dir)
     invalidate_pipeline_index()
 
-    client = TestClient(app)
+    client = TestClient(project_app())
     pipeline_name = "seq_pipeline"
     source_file = f"{pipeline_name}.py"
     py_path = case_dir / source_file
@@ -303,10 +302,9 @@ def test_omitted_revision_comparison_is_detected(
     def predicate(ops: list[tuple]) -> bool:
         case_dir = tmp_path / f"case_{next(counter)}"
         case_dir.mkdir(parents=True, exist_ok=True)
-        orig_cwd = os.getcwd()
+        scope = project_scope(ProjectContext.at(case_dir))
+        scope.__enter__()
         try:
-            os.chdir(case_dir)
-            pipeline_dir.cache_clear()
             invalidate_pipeline_index()
             model = RevisionModel()
             actual_clients: dict[str, str | None] = {"A": None, "B": None}
@@ -320,7 +318,7 @@ def test_omitted_revision_comparison_is_detected(
                     "_require_base_revision",
                     lambda self, document, base_revision: None,
                 )
-                client = TestClient(app)
+                client = TestClient(project_app())
 
                 for op in ops:
                     if op[0] == "save":
@@ -362,7 +360,7 @@ def test_omitted_revision_comparison_is_detected(
                                 actual_clients[c] = resp.json().get("source_revision")
             return False
         finally:
-            os.chdir(orig_cwd)
+            scope.__exit__(None, None, None)
 
     found = hypothesis.find(
         _seq_strategy,
@@ -401,11 +399,10 @@ def test_creation_requires_a_null_base_and_an_existing_file_requires_its_revisio
 ) -> None:
     case_dir = tmp_path / f"case_{next(_case_counter)}"
     case_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.chdir(case_dir)
-    pipeline_dir.cache_clear()
+    use_project(case_dir)
     invalidate_pipeline_index()
 
-    client = TestClient(app)
+    client = TestClient(project_app())
     pipeline_name = "create_pipeline"
     source_file = f"{pipeline_name}.py"
 

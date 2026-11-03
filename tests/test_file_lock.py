@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from haute import _file_lock
+from haute._project_context import context_thread
 
 
 def _windows_lock_error(winerror: int) -> OSError:
@@ -452,7 +453,7 @@ def test_file_lock_object_process_contention_releases_everything(
         if acquired:
             lock._thread_lock.release()
 
-    other = threading.Thread(target=take_and_release)
+    other = context_thread(take_and_release)
     other.start()
     other.join(timeout=5)
     assert taken == [True]
@@ -588,7 +589,7 @@ def test_a_failed_acquisition_closes_its_handle_and_frees_the_thread(
         if acquired:
             lock._thread_lock.release()
 
-    other = threading.Thread(target=take_and_release)
+    other = context_thread(take_and_release)
     other.start()
     other.join(timeout=5)
     assert taken == [True]

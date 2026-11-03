@@ -28,6 +28,7 @@ from haute._input_providers import (
 )
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._polars_steps import is_stepped_config, render_polars_steps, stepped_surface_for
+from haute._project_context import current_project, graph_pipeline_dir
 from haute._rating import normalise_combined_outputs, validate_banding_config
 from haute._rating_step_config import normalise_rating_step_config
 from haute._sandbox import contained_path
@@ -74,7 +75,6 @@ from haute.execution import execute_lazy_graph
 from haute.executor import (
     _build_node_fn,
     _compile_preamble,
-    _pipeline_dir,
 )
 from haute.modelling._train_config import (
     MISSING_TARGET_MESSAGE,
@@ -378,14 +378,14 @@ class _PreparedGraph:
         try:
             preamble_ns = _compile_preamble(
                 graph.preamble or "",
-                pipeline_dir=_pipeline_dir(graph),
+                pipeline_dir=graph_pipeline_dir(graph),
             )
         except PreambleError as exc:
             raise PreambleFailedError(exc, graph=graph) from exc
         return cls(
             graph=graph,
             # Run as the project's pipeline: its workbench nodes take the form's tables.
-            flattened=flatten_with_form_tables(graph, project_root=Path.cwd()),
+            flattened=flatten_with_form_tables(graph, project_root=current_project().root),
             preamble_ns=preamble_ns or None,
         )
 

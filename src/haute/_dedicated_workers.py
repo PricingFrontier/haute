@@ -66,6 +66,7 @@ from haute._parent_watch import exit_with_parent
 from haute._polars_environment import release_polars_spill_dir
 from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
 from haute._process_memory import process_rss_bytes
+from haute._project_context import current_project, project_scope
 from haute._step_progress import ProgressCell, StepProgress, bind_job_progress
 from haute._worker_isolation import (
     WorkerTerminalReason,
@@ -301,7 +302,7 @@ def _dedicated_worker_entrypoint(
         request = pickle.loads(raw_request)
         if request == ("shutdown",):
             return
-        if not isinstance(request, tuple) or len(request) != 10 or request[0] != "run":
+        if not isinstance(request, tuple) or len(request) != 11 or request[0] != "run":
             raise RuntimeError("dedicated worker received a malformed request")
         (
             _kind,
@@ -314,6 +315,7 @@ def _dedicated_worker_entrypoint(
             allowance,
             streaming_chunk_size,
             max_result_bytes,
+            project,
         ) = request
         set_streaming_chunk_size(streaming_chunk_size)
         envelope: tuple[Any, ...]
@@ -340,6 +342,7 @@ def _dedicated_worker_entrypoint(
                     with (
                         bind_job_progress(progress_cell, command_id),
                         _bind_command_cancel(cancel_cell, command_id),
+                        project_scope(project),
                     ):
                         value = function(*args, **kwargs)
                     envelope = ("result", command_id, "ok", value, cap)
@@ -550,6 +553,7 @@ class DedicatedWorker:
                 allowance_bytes,
                 current_streaming_chunk_size(),
                 max_result_bytes,
+                current_project(),
             )
             try:
                 serialised = pickle.dumps(request, protocol=pickle.HIGHEST_PROTOCOL)

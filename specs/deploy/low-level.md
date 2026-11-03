@@ -415,7 +415,7 @@ reached through a link refused through `ordinary_path_problem`; the `[mlflow]` t
 10. `resolve_project_modules(pruned_graph.preamble, pipeline_dir)`, run first, after the
    runtime path checks and before step 7, since nothing below may run the preamble before
    its project imports are known. The project directories
-   are the pipeline directory and the working directory, the directories the executor's
+   are the pipeline directory and the project root, the directories the executor's
    `utility` finder searches (`_project_imports.utility_search_dirs`), searched once when
    they are the same directory. `utility` is looked up in those directories only
    (`importlib.machinery.PathFinder.find_spec`). A match is the package directory or
@@ -545,6 +545,11 @@ an independently relocatable contract. A bundled `utility` gets its own `COPY` i
 searches the working directory too. Spawned batch workers inherit the parent's `sys.path`.
 
 **Generated container HTTP runtime (`_container.py::_generate_app_source`)**
+00. The outermost middleware (`ProjectContextMiddleware`) installs the bundle's project, the
+   folder `app.py` ships in (`ProjectContext.at(Path(__file__).parent)`), for every request,
+   whatever the working directory the image starts in; the MLflow model does the same in
+   `HauteModel.predict`, for the folder holding its manifest (set in `load_context`). The
+   pipeline settings and every relative path the served pipeline reads resolve there.
 0. An HTTP middleware gives every request a fresh id (`uuid4().hex`, on
    `request.state.request_id`) and sends it back as the `X-Request-ID` header. Every 500
    goes through `_internal_error`, which logs the failure in flight with
@@ -763,9 +768,13 @@ not exist, listing the catalogs the token can see (many workspaces have no `main
    neither candidate leaving the project root
    (`_resolve_runtime_graph_paths`, through `_path_resolution.resolve_graph_source_path`,
    which `_schema._resolve_pipeline_path` shares for schema inference and the sample row;
-   the root is the scoped runtime root, else the one inferred from `graph.source_file`.
-   `resolve_config` runs schema and policy inference inside
-   `runtime_project_root_scope(pipeline_file, project_root=<the validated root>)`, so they
+   the root is the current project's. `resolve_config` runs everything after validating the
+   project root (parsing, project modules, snapshot preparation, schema and policy inference)
+   inside `project_scope(ProjectContext.at(<the validated root>))`, whoever calls it; every
+   step on the resolved deployment (`validate_deploy`, `score_test_quotes`,
+   `score_test_quote_file`, `deploy_to_mlflow` and the dispatch behind `deploy` and
+   `deploy_resolved`) runs in that project too
+   (`src/haute/deploy/_config.py::in_resolved_project`), so they
    read exactly the files its path validation admitted. Only a path scoring reads is resolved:
    a request input (its sample is replaced by the live request) and a node served from a
    bundled artifact (`_bundled_input_artifact`, which the Data Input intercept shares) keep

@@ -7,11 +7,12 @@ from fastapi.testclient import TestClient
 
 from haute._polars_io_registry import FORMATS_BY_NAME
 from haute.schemas import IoCapabilitiesResponse
+from tests._project import project_app
 
 
 @pytest.fixture()
 def client() -> TestClient:
-    from haute.server import app
+    app = project_app()
 
     return TestClient(app)
 

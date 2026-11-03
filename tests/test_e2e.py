@@ -15,6 +15,7 @@ import polars as pl
 import pytest
 
 from haute._config_io import collect_node_configs
+from haute._project_context import current_project
 from haute._submodel_instances import qualified_runtime_node_id
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code, graph_to_code_multi
@@ -23,6 +24,7 @@ from haute.graph_utils import _prune_live_switch_edges, flatten_graph
 from haute.parser import parse_pipeline_file, parse_pipeline_source
 from haute.routes._submodel_ops import create_submodel_graph
 from haute.trace import execute_trace
+from tests._project import use_project
 from tests.conftest import (
     make_file_input_config,
     make_file_output_config,
@@ -30,7 +32,7 @@ from tests.conftest import (
     make_ready_file_input_config,
 )
 
-FIXTURE_DIR = Path("tests/fixtures")
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
 EXPECTED_FIXTURE_PREMIUM = 2.75
 
@@ -60,7 +62,6 @@ def _isolate_json_cache(tmp_path, monkeypatch, _widen_sandbox_root):
     """
     import json
 
-    from haute._sandbox import _get_project_root, set_project_root
     from tests.conftest import build_test_api_input_snapshots
 
     # Keep the root supplied by _widen_sandbox_root: this fixture executes
@@ -80,14 +81,14 @@ def _isolate_json_cache(tmp_path, monkeypatch, _widen_sandbox_root):
     # The tmp_path-copy generation must be built under tmp_path as the
     # selected root — that's the root TestEndToEnd's tests execute under, and
     # therefore the store they'll look for this table's generation in.
-    original_root = _get_project_root()
-    set_project_root(tmp_path)
+    original_root = current_project().root
+    use_project(tmp_path)
     try:
         build_test_api_input_snapshots(
             str((runtime_data_dir / "api_input.json").resolve()), v2_config
         )
     finally:
-        set_project_root(original_root)
+        use_project(original_root)
 
 
 class TestEndToEnd:
@@ -113,12 +114,11 @@ class TestEndToEnd:
         into ``tmp_path/data`` and built that copy's generation under this
         same root, so the relative apiInput path resolves to it.
         """
-        from haute._sandbox import _get_project_root, set_project_root
 
-        original_root = _get_project_root()
-        set_project_root(tmp_path)
+        original_root = current_project().root
+        use_project(tmp_path)
         yield
-        set_project_root(original_root)
+        use_project(original_root)
 
     def test_parse_fixture_pipeline(self):
         """Fixture pipeline parses into a valid graph."""
@@ -259,9 +259,7 @@ class TestEndToEnd:
             cfg_file.parent.mkdir(parents=True, exist_ok=True)
             cfg_file.write_text(content)
 
-        from haute._sandbox import set_project_root
-
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         reparsed = parse_pipeline_source(code, _base_dir=tmp_path)
         assert len(reparsed.nodes) == len(graph.nodes)
 
@@ -906,7 +904,7 @@ class TestUtilityModuleLifecycle:
         import sys
 
         # Set up the project root in tmp_path so utility imports resolve
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         if str(tmp_path) not in sys.path:
             sys.path.insert(0, str(tmp_path))
 

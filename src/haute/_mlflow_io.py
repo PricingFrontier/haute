@@ -55,6 +55,7 @@ from haute._model_flavors import (
     model_file_suffixes,
     supported_model_files_description,
 )
+from haute._project_context import current_project
 from haute._sandbox import contained_path
 from haute._stat_gated_cache import StatGatedCache, artifact_cache_key, resolve_artifact_path
 from haute.errors import PathOutsideProjectError
@@ -235,7 +236,7 @@ _model_cache: _ModelCacheWithCascade = _ModelCacheWithCascade(
 
 def _disk_cache_root() -> Path:
     """Return the working-directory-local root for cached model artifacts."""
-    return Path.cwd() / ".cache" / "models"
+    return current_project().root / ".cache" / "models"
 
 
 # ---------------------------------------------------------------------------

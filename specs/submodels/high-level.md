@@ -541,7 +541,7 @@ across a rewire.
   codegen is invoked only by the explicit Save transaction (`SavePipelineService`,
   server-api); the submodel routes neither generate nor write code.
 - Depends on [server-api](../server-api/high-level.md) for
-  `SavePipelineService`, the shared `save_lock`, `pipeline_dir()` resolution,
+  `SavePipelineService`, the shared `save_lock`, the project's pipeline folder,
   sidecar position loading, and the codebase-wide sanitised-error-detail
   convention for internal failures.
 - Depended on by the GUI graph editor, the sole caller of `/api/submodel/*`. The frontend

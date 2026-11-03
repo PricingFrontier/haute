@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
@@ -92,6 +93,7 @@ class TestPreviewCacheByteLimit:
         )
         with ThreadPoolExecutor(max_workers=1) as pool:
             slow_store = pool.submit(
+                contextvars.copy_context().run,
                 cache.put,
                 "same-fp",
                 {"payload": {"bytes": 40, "label": "slow"}},
@@ -125,6 +127,7 @@ class TestPreviewCacheByteLimit:
         )
         with ThreadPoolExecutor(max_workers=1) as pool:
             rejected_store = pool.submit(
+                contextvars.copy_context().run,
                 cache.put,
                 "same-fp",
                 {"payload": {"bytes": 101, "label": "rejected"}},
@@ -157,6 +160,7 @@ class TestPreviewCacheByteLimit:
         assert cache.put("same-fp", {"payload": {"bytes": 10, "label": "old"}})
         with ThreadPoolExecutor(max_workers=1) as pool:
             rejected_store = pool.submit(
+                contextvars.copy_context().run,
                 cache.put,
                 "same-fp",
                 {"payload": {"bytes": 101, "label": "rejected"}},

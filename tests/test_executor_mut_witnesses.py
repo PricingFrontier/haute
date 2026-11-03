@@ -23,7 +23,6 @@ from haute.executor import (
     PreparedDataOutput,
     _cache_has_required_materialization,
     _contain_output_path,
-    _pipeline_dir,
     _preview_row_limit_for_width,
 )
 
@@ -56,19 +55,15 @@ def test_prepared_output_is_frozen_slotted_and_non_transactional_by_default() ->
         prepared.transactional = True  # type: ignore[misc]
 
 
-# ── L150: ``p = Path.cwd() / p`` is a path-join, not arithmetic ───────
+# ── a relative source joins the project root, never the working directory ──
 
 
-def test_pipeline_dir_relative_source_uses_path_join() -> None:
-    """A relative ``source_file`` drives ``Path.cwd() / p`` (L150). Any
-    ``ReplaceBinaryOperator`` mutation of ``/`` (-> ``+``/``*``/... on Path
-    operands) raises TypeError at runtime, so simply reaching this branch and
-    getting a Path back kills all of them.
-    """
+def test_pipeline_dir_relative_source_joins_the_project_root(tmp_path: Path) -> None:
+    """A relative ``source_file`` names a file under the installed project's root."""
+    from haute._project_context import graph_pipeline_dir
+
     graph = types.SimpleNamespace(source_file="rel/sub/pipeline.py")
-    result = _pipeline_dir(graph)
-    assert isinstance(result, Path)
-    assert result.is_absolute()
+    assert graph_pipeline_dir(graph) == (tmp_path / "rel" / "sub").resolve()  # type: ignore[arg-type]
 
 
 def test_contain_output_path_anchors_relative_pipeline_to_project_root(tmp_path: Path) -> None:

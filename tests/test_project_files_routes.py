@@ -12,8 +12,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from haute._git_state import write_working_branch
-from haute._sandbox import set_project_root
 from tests._git_helpers import git_run, init_repo
+from tests._project import project_app, use_project
 
 WORKING = "pricing-dev"
 
@@ -32,14 +32,13 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     git_run(root, "commit", "-m", "project")
     git_run(root, "checkout", "-b", WORKING)
     write_working_branch(root, WORKING)
-    monkeypatch.chdir(root)
-    set_project_root(root)
+    use_project(root)
     return root
 
 
 @pytest.fixture()
 def client(project: Path) -> TestClient:
-    from haute.server import app
+    app = project_app()
 
     return TestClient(app, raise_server_exceptions=False)
 

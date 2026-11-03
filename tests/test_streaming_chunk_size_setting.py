@@ -24,7 +24,9 @@ from haute._polars_utils import (
     current_streaming_chunk_size,
     set_streaming_chunk_size,
 )
+from haute._project_context import context_thread
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from tests._project import use_project
 from tests.conftest import make_ready_file_input_config
 from tests.optimiser_fixtures import setup_launch_context
 
@@ -47,7 +49,7 @@ def _report_pid_and_chunk_size() -> tuple[int, int]:
 
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
+    use_project(haute_scratch)
     return haute_scratch
 
 
@@ -191,7 +193,6 @@ def _optimiser_graph(data_path: Path) -> dict:
 def test_an_estimate_completes_while_a_solve_is_running(
     client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from haute._sandbox import set_project_root
     from haute.routes._job_store import JobStore
     from haute.routes._optimiser_service import OptimiserSolveService
 
@@ -200,7 +201,7 @@ def test_an_estimate_completes_while_a_solve_is_running(
     # anything. Modest budgets let both run, so the test sees only whether the
     # estimate waits for the solve.
     monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_MB", "512")
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     data_path = tmp_path / "data.parquet"
     pl.DataFrame(
         {
@@ -239,7 +240,7 @@ def test_an_estimate_completes_while_a_solve_is_running(
         )
         try:
             assert solving.wait(timeout=30), "the solve never started"
-            worker = threading.Thread(target=estimate, daemon=True)
+            worker = context_thread(estimate, daemon=True)
             worker.start()
             worker.join(timeout=30)
             assert not worker.is_alive(), "the estimate waited for the running solve"

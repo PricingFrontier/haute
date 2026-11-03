@@ -56,9 +56,9 @@ from haute._interactive_workers import (
     run_in_interactive_worker,
 )
 from haute._logging import get_logger
-from haute._path_resolution import current_runtime_project_root
 from haute._pipeline_settings import project_pipeline_settings
 from haute._polars_io_registry import PolarsIoConfigError
+from haute._project_context import current_project, graph_pipeline_dir
 from haute._sandbox import contained_path
 from haute._source_cache import SourceCacheError
 from haute._submodel_instances import (
@@ -140,13 +140,11 @@ from haute.execution import execute_lazy_graph
 from haute.executor import (
     _build_node_fn,
     _compile_preamble,
-    _pipeline_dir,
 )
 from haute.graph_utils import flatten_graph
 from haute.routes._helpers import (
     load_pipeline_editor_document,
     parse_pipeline_to_graph,
-    pipeline_dir,
     save_lock,
 )
 from haute.routes._supersession import SupersededRequestError, SupersessionCoordinator
@@ -349,7 +347,7 @@ def _config_setting_message(
     if exc.values:
         try:
             if policy is None:
-                policy = resolve_egress_policy(Path.cwd().resolve())
+                policy = resolve_egress_policy(current_project().root)
             readable = _part_requirement(policy, "config") is None
         except Exception:  # noqa: BLE001 - an unreadable policy withholds
             readable = False
@@ -393,7 +391,7 @@ def _input_columns(
     """
 
     try:
-        flat = flatten_with_form_tables(graph, project_root=Path.cwd())
+        flat = flatten_with_form_tables(graph, project_root=current_project().root)
         inputs = _node_inputs(graph, flat, node)
     except Exception as exc:  # noqa: BLE001 - an unresolvable site discloses nothing
         logger.info("assistant_failure_schema_unresolved", node=node, error=type(exc).__name__)
@@ -432,7 +430,7 @@ def _schema_metadata_names(site: _FailureSite) -> set[str]:
     if site.own_output and site.input_name is None:
         try:
             output = _resolve_schema_outputs(
-                flatten_with_form_tables(site.graph, project_root=Path.cwd()),
+                flatten_with_form_tables(site.graph, project_root=current_project().root),
                 site.graph,
                 target=site.node,
                 preserve=frozenset({site.node}),
@@ -535,7 +533,7 @@ def _execution_failure(
     elif line is not None:
         summary += f" at line {line} of the node code"
     try:
-        policy = resolve_egress_policy(Path.cwd().resolve())
+        policy = resolve_egress_policy(current_project().root)
         allowed = policy.allow_row_samples
         allow_executable_source = policy.allow_executable_source
         withheld_because = (
@@ -892,7 +890,7 @@ def _resolve_schema_outputs(
 
     preamble_ns = _compile_preamble(
         graph.preamble or "",
-        pipeline_dir=_pipeline_dir(graph),
+        pipeline_dir=graph_pipeline_dir(graph),
     )
     lazy_outputs, *_ = execute_lazy_graph(
         flat,
@@ -1003,7 +1001,7 @@ def node_schema(source_file: str, node: str) -> dict[str, object]:
         if validation_error is not None:
             return validation_error
         project_revision = _project_revision(source_file, graph)
-        flat = flatten_with_form_tables(graph, project_root=Path.cwd())
+        flat = flatten_with_form_tables(graph, project_root=current_project().root)
         inputs = _node_inputs(graph, flat, node)
         occurrence = resolve_submodel_instances(graph).get(node)
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
@@ -1164,7 +1162,7 @@ def _project_revision(
     graph: PipelineGraph,
     project_sources: tuple[Path | ProjectSourceEvidence, ...] = (),
 ) -> str:
-    project_root = Path.cwd().resolve()
+    project_root = current_project().root
     source = Path(source_file)
     if not source.is_absolute():
         source = project_root / source
@@ -1180,7 +1178,7 @@ def get_pipeline(source_file: str) -> dict[str, object]:
     """Return the saved graph in the assistant's compact graph shape."""
 
     try:
-        policy = resolve_egress_policy(Path.cwd().resolve())
+        policy = resolve_egress_policy(current_project().root)
         graph = _parse_graph(source_file)
         project_revision = _project_revision(source_file, graph)
         return {
@@ -1382,7 +1380,7 @@ def _brief_flat(graph: PipelineGraph) -> PipelineGraph:
     broken node does, and every other node is still briefed."""
 
     try:
-        return flatten_with_form_tables(graph, project_root=Path.cwd())
+        return flatten_with_form_tables(graph, project_root=current_project().root)
     except (WorkbenchError, WorkbenchTablesError):
         return flatten_graph(graph)
 
@@ -1417,7 +1415,7 @@ def _preview_error(graph: PipelineGraph, node: str) -> PreviewError:
 
     try:
         _resolve_schema_outputs(
-            flatten_with_form_tables(graph, project_root=Path.cwd()),
+            flatten_with_form_tables(graph, project_root=current_project().root),
             graph,
             target=node,
             preserve=frozenset({node}),
@@ -1538,7 +1536,7 @@ def node_config(source_file: str, node: str) -> dict[str, object]:
     """`inspect_node`'s config part, with executable and secret values redacted by policy."""
 
     try:
-        policy = resolve_egress_policy(Path.cwd().resolve())
+        policy = resolve_egress_policy(current_project().root)
         required = _part_requirement(policy, "config")
         if required is not None:
             return _error(
@@ -1681,7 +1679,7 @@ def _prepare_column_profile(
     """Gate, parse and validate on the server; return the request or an error."""
 
     try:
-        policy = resolve_egress_policy(Path.cwd().resolve())
+        policy = resolve_egress_policy(current_project().root)
         required = _part_requirement(policy, "profile")
         if required is not None:
             return _error(
@@ -1695,7 +1693,9 @@ def _prepare_column_profile(
         if validation_error is not None:
             return validation_error
         project_revision = _project_revision(source_file, graph)
-        inputs = _node_inputs(graph, flatten_with_form_tables(graph, project_root=Path.cwd()), node)
+        inputs = _node_inputs(
+            graph, flatten_with_form_tables(graph, project_root=current_project().root), node
+        )
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         return _error("profile_unavailable", _error_message(exc, operation="inspect_node"))
     if input_name is not None and all(item.name != input_name for item in inputs):
@@ -1732,7 +1732,7 @@ def _collect_column_profile(
     """
 
     try:
-        flat = flatten_with_form_tables(request.graph, project_root=current_runtime_project_root())
+        flat = flatten_with_form_tables(request.graph, project_root=current_project().root)
         if request.input_name is None:
             lazy_outputs = _resolve_frame_outputs(
                 flat,
@@ -2037,7 +2037,7 @@ async def inspect_node(
             validation_reason="column_without_data",
         )
     try:
-        policy = resolve_egress_policy(Path.cwd().resolve())
+        policy = resolve_egress_policy(current_project().root)
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         return _error("egress_policy_unavailable", _error_message(exc, operation="inspect_node"))
     requested = [part for part in INSPECT_NODE_PARTS if part in parts]
@@ -2202,7 +2202,7 @@ def dataset_listing(
     try:
         if not isinstance(recursive, bool):
             return _error("invalid_request", "recursive must be a boolean.")
-        base = Path.cwd().resolve()
+        base = current_project().root
         target = contained_path(base, directory or ".")
         if _dataset_path_forbidden(target, base):
             return _error(
@@ -2234,7 +2234,7 @@ def dataset_schema(
     """Return a dataset's schema without materialising or returning row values."""
 
     try:
-        base = Path.cwd().resolve()
+        base = current_project().root
         target = contained_path(base, path)
         if _dataset_path_forbidden(target, base):
             return _error(
@@ -2383,7 +2383,7 @@ def get_project_knowledge(
     """Return bounded source-linked facts allowed by the effective egress policy."""
 
     try:
-        project_root = Path.cwd().resolve()
+        project_root = current_project().root
         policy = resolve_egress_policy(project_root)
         view = build_project_knowledge(project_root, source_file, policy=policy)
         items = query_project_knowledge(view, query, limit=limit)
@@ -2437,7 +2437,7 @@ def _publish_document_update(
     from haute.routes._helpers import wire_source_file
 
     document_payload = load_pipeline_editor_document(
-        Path(source_file), project_root=Path.cwd()
+        Path(source_file), project_root=current_project().root
     ).model_dump(mode="json", by_alias=True)
     fingerprint = pipeline_document_fingerprint(document_payload)
     payload: PipelineDocumentUpdatePayload = {
@@ -2471,11 +2471,11 @@ def application_service(
     never saves, has none and refuses to publish.
     """
 
-    project_root = Path.cwd().resolve()
+    project_root = current_project().root
 
     return PipelineApplicationService(
         project_root=project_root,
-        pipeline_root=pipeline_dir(),
+        pipeline_root=current_project().pipeline_dir,
         mutations_readiness=mutations_readiness,
         publish_document_update=(
             _no_publication
@@ -3575,7 +3575,7 @@ def build_tool_executor(
     either keeps one of its own.
     """
 
-    project_root = Path.cwd().resolve()
+    project_root = current_project().root
     ledger = SourceEvidenceLedger() if evidence is None else evidence
     build_plan = BuildPlan() if plan is None else plan
     ledger.begin_turn()
@@ -3601,7 +3601,7 @@ def build_tool_executor(
             )
         if name in _INTERNAL_PROJECT_TOOLS:
             try:
-                policy = resolve_egress_policy(Path.cwd().resolve())
+                policy = resolve_egress_policy(current_project().root)
             except Exception as exc:  # noqa: BLE001 - executor must not raise
                 return _attributed_tool_result(
                     name,

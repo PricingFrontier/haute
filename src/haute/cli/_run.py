@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, NoReturn
 import click
 
 from haute._project import resolve_pipeline_file
+from haute._project_context import current_project
 from haute.cli._helpers import EXPECTED_FAILURES
 from haute.errors import ConfigError
 
@@ -50,6 +51,14 @@ def _fail(message: str) -> NoReturn:
 
 
 def handle_run(config: RunConfig) -> None:
+    """Run the command in the project holding its pipeline file."""
+    from haute._project_context import project_holding, project_scope
+
+    with project_scope(project_holding(Path(config.pipeline_file).resolve().parent)):
+        _handle_run_in_project(config)
+
+
+def _handle_run_in_project(config: RunConfig) -> None:
     """Run the pipeline in *config.pipeline_file* to its output node, or *config.node*, lazily.
 
     The output node's ancestors are walked once as lazy plans
@@ -65,12 +74,12 @@ def handle_run(config: RunConfig) -> None:
     from haute._execution_admission import create_admitted_execution_context
     from haute._execution_context import ExecutionProfile
     from haute._polars_utils import streaming_collect
-    from haute._project import get_project_root
+    from haute._project_context import current_project, graph_pipeline_dir
     from haute._workbench_nodes import form_owner, with_form_tables
     from haute.deploy._pruner import find_output_node
     from haute.errors import failing_node, mark_failing_node
     from haute.execution import execute_lazy_graph
-    from haute.executor import _build_node_fn, _compile_preamble, _pipeline_dir
+    from haute.executor import _build_node_fn, _compile_preamble
     from haute.parser import parse_pipeline_file
 
     filepath = config.pipeline_file
@@ -84,8 +93,7 @@ def handle_run(config: RunConfig) -> None:
     # A workbench node's tables are the form folder's, of the project the file is in.
     if form_owner(graph) is not None:
         try:
-            project_root = get_project_root(filepath.resolve().parent)
-            graph = with_form_tables(graph, project_root=project_root)
+            graph = with_form_tables(graph, project_root=current_project().root)
         except EXPECTED_FAILURES as e:
             _fail(f"Error reading the workbench's form: {e}")
 
@@ -114,7 +122,9 @@ def handle_run(config: RunConfig) -> None:
     expected: tuple[type[Exception], ...] = (*EXPECTED_FAILURES, pl.exceptions.PolarsError)
     try:
         try:
-            preamble_ns = _compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+            preamble_ns = _compile_preamble(
+                graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph)
+            )
             outputs, order, _parents, _names = execute_lazy_graph(
                 graph,
                 _build_node_fn,
@@ -194,8 +204,9 @@ def run(pipeline_file: str | None, node: str | None, source: str, rows: int | No
     output is ever collected.
     """
     try:
+        # No file named: the pipeline the shell's working directory holds.
         resolved = resolve_pipeline_file(
-            Path(pipeline_file) if pipeline_file else None,
+            Path(pipeline_file) if pipeline_file else current_project().root
         )
     except (FileNotFoundError, ConfigError) as exc:
         click.echo(f"Error: {exc}", err=True)

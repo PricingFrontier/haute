@@ -13,7 +13,6 @@ import weakref
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
-from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, NoReturn, TypeVar
 
@@ -28,6 +27,7 @@ from haute._pipeline_recovery import (
     load_pipeline_editor_document,
     pipeline_document_fingerprint,
 )
+from haute._project_context import current_project
 from haute._project_mutation_lock import ProjectMutationLock
 from haute._sidecar import (
     SidecarModel,
@@ -62,57 +62,6 @@ logger = get_logger(component="server")
 # ---------------------------------------------------------------------------
 # Path safety
 # ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Pipeline directory resolution
-# ---------------------------------------------------------------------------
-
-
-@lru_cache(maxsize=1)
-def pipeline_dir() -> Path:
-    """Return the directory containing the active pipeline file as an absolute Path.
-
-    Resolution order:
-
-    1. ``[project].pipeline`` from ``haute.toml`` in cwd — return its parent dir.
-    2. Fall back to ``Path.cwd()``.
-
-    The result is cached for the lifetime of the process (the pipeline location
-    won't change during a session).
-
-    ``[project].pipeline`` is parsed by
-    :func:`haute._project._toml_configured_pipeline`, the reader pipeline
-    binding and the builders use (the builders apply it to the
-    execution-scoped project root, this helper to cwd). A missing ``[project].pipeline`` key is a
-    soft configuration omission: we warn and fall back to cwd so a fresh
-    project still works. A malformed or unreadable ``haute.toml``, a
-    ``[project]`` that is not a table, or a pipeline it names outside the
-    project root raises ``ConfigError`` — silently
-    returning cwd would route every subsequent save / load at the wrong
-    directory and surface as confusing "file not found" errors far from the
-    real cause.
-    """
-    from haute._project import _toml_configured_pipeline
-
-    project_root = Path.cwd().resolve()
-    toml_path = project_root / "haute.toml"
-    if not toml_path.exists():
-        logger.error(
-            "haute_toml_missing", cwd=str(Path.cwd()), hint="Run 'haute init' to create a project"
-        )
-        return project_root
-
-    # The reader refuses a pipeline outside the project root.
-    configured = _toml_configured_pipeline(project_root)
-    if configured is not None:
-        return configured.resolve().parent
-    logger.warning(
-        "haute_toml_missing_pipeline",
-        path=str(toml_path),
-        hint="Add [project].pipeline to haute.toml",
-    )
-    return Path.cwd().resolve()
 
 
 # ---------------------------------------------------------------------------
@@ -563,7 +512,9 @@ async def broadcast(
 # the end of ``_ensure_pipeline_index`` assigns a fully-built local dict to
 # the module global in a single bytecode op; readers therefore either see
 # the previous dict or the new dict, never a half-populated one.
-_pipeline_index: dict[str, Path] | None = None
+# Each cache below is held with the project root it was built for, and is
+# rebuilt for any other: an app built for another project never reads it.
+_pipeline_index: tuple[Path, dict[str, Path]] | None = None
 _pipeline_index_lock = threading.Lock()
 _pipeline_index_generation = 0
 
@@ -595,9 +546,10 @@ def _ensure_pipeline_index() -> dict[str, Path]:
     """
     global _pipeline_index
 
+    root = current_project().root
     cached = _pipeline_index
-    if cached is not None:
-        return cached
+    if cached is not None and cached[0] == root:
+        return cached[1]
 
     from haute.discovery import discover_pipelines as _discover
     from haute.parser import parse_pipeline_file
@@ -608,8 +560,8 @@ def _ensure_pipeline_index() -> dict[str, Path]:
         # redundant filesystem scan and guarantees all concurrent callers
         # agree on the same object.
         cached = _pipeline_index
-        if cached is not None:
-            return cached
+        if cached is not None and cached[0] == root:
+            return cached[1]
 
         new_index: dict[str, Path] = {}
         for f in _discover():
@@ -633,7 +585,7 @@ def _ensure_pipeline_index() -> dict[str, Path]:
 
         # Atomic publish: a single assignment is one bytecode op in CPython,
         # so readers never see ``None`` as a transient state during rebuild.
-        _pipeline_index = new_index
+        _pipeline_index = (root, new_index)
         return new_index
 
 
@@ -647,7 +599,7 @@ def discover_pipelines() -> list[Path]:
 # ---------------------------------------------------------------------------
 # Module dependency map: imported module file → set of pipeline Paths that import it
 # ---------------------------------------------------------------------------
-_module_deps: dict[str, set[Path]] | None = None
+_module_deps: tuple[Path, dict[str, set[Path]]] | None = None
 _module_deps_lock = threading.Lock()
 
 
@@ -677,9 +629,10 @@ def _ensure_module_deps() -> dict[str, set[Path]]:
     only if it is unchanged; otherwise it rescans before returning.
     """
     global _module_deps
+    root = current_project().root
     cached = _module_deps
-    if cached is not None:
-        return cached
+    if cached is not None and cached[0] == root:
+        return cached[1]
 
     import ast
 
@@ -687,8 +640,8 @@ def _ensure_module_deps() -> dict[str, set[Path]]:
         while True:
             with _pipeline_index_lock:
                 cached = _module_deps
-                if cached is not None:
-                    return cached
+                if cached is not None and cached[0] == root:
+                    return cached[1]
                 build_generation = _pipeline_index_generation
 
             deps: dict[str, set[Path]] = {}
@@ -720,7 +673,7 @@ def _ensure_module_deps() -> dict[str, set[Path]]:
                         current_generation=_pipeline_index_generation,
                     )
                     continue
-                _module_deps = deps
+                _module_deps = (root, deps)
                 return deps
 
 
@@ -871,7 +824,7 @@ def wire_source_file(path: Path) -> str:
     """Return the project-relative source id used in WebSocket frames."""
     resolved = path.resolve()
     try:
-        return resolved.relative_to(Path.cwd().resolve()).as_posix()
+        return resolved.relative_to(current_project().root).as_posix()
     except ValueError:
         return str(resolved)
 
@@ -981,16 +934,15 @@ def parse_pipeline_to_graph(
     *,
     project_root: Path | None = None,
 ) -> PipelineGraph:
-    """Parse a .py file and merge with sidecar positions + source state."""
+    """Parse a .py file and merge with sidecar positions + source state.
+
+    A relative *py_path* names a file under the project root, never one under the
+    working directory.
+    """
     from haute.parser import parse_pipeline_file
 
-    resolved_path = py_path.resolve()
-    if project_root is None:
-        cwd = Path.cwd().resolve()
-        # not contained_path: chooses the root; a file outside the working directory is its own
-        root = cwd if resolved_path.is_relative_to(cwd) else resolved_path.parent
-    else:
-        root = project_root.resolve()
+    root = current_project().root if project_root is None else project_root.resolve()
+    resolved_path = (py_path if py_path.is_absolute() else root / py_path).resolve()
 
     graph = parse_pipeline_file(resolved_path)
     sidecar = load_sidecar(resolved_path)

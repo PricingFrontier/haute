@@ -36,6 +36,7 @@ from haute._model_source import (
 )
 from haute._polars_dtypes import refuse_wide_integers
 from haute._polars_utils import bounded_collect_batches
+from haute._project_context import current_project
 from haute._sandbox import contained_path
 from haute._types import _Frame
 from haute.errors import ConfigError, HauteValidationError, PathOutsideProjectError
@@ -1660,7 +1661,7 @@ def score_from_config(
         config: Path to the JSON config file (e.g.
             ``"config/model_scoring/competitor_scoring.json"``).
         base_dir: Directory to resolve *config* against.  When ``None``
-            the path is resolved relative to ``Path.cwd()``.  The standalone
+            the path is resolved relative to the project root.  The standalone
             runtime passes the pipeline file's directory, so the config is
             always found regardless of the working directory at runtime.
     """
@@ -1668,11 +1669,12 @@ def score_from_config(
 
     from haute._io import read_user_text
 
+    base = Path(base_dir) if base_dir else current_project().root
     config_path = Path(config)
-    if base_dir is not None and not config_path.is_absolute():
-        config_path = Path(base_dir) / config_path
+    if not config_path.is_absolute():
+        config_path = base / config_path
     try:
-        resolved = contained_path(Path(base_dir) if base_dir else Path.cwd(), config_path.resolve())
+        resolved = contained_path(base, config_path.resolve())
     except PathOutsideProjectError:
         raise ValueError(f"Config path {config!r} resolves outside project root") from None
     cfg = json.loads(read_user_text(resolved))

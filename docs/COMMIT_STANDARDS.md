@@ -174,15 +174,13 @@ The lockfile — not the manifest — is the actual supply-chain control: it rec
 ## 15. Security Basics
 
 - No hardcoded secrets or API keys. Use environment variables.
-- File access endpoints must validate paths stay within the project root. Use `_get_project_root()` from `haute._sandbox`, resolve the path, and check with `.startswith()`:
+- File access endpoints must validate paths stay within the project root. Take the root from the current project and check with `contained_path`, the one containment check:
 
 ```python
-from haute._sandbox import _get_project_root
+from haute._project_context import current_project
+from haute._sandbox import contained_path
 
-base = _get_project_root()
-target = (base / user_path).resolve()
-if not str(target).startswith(str(base)):
-    raise HTTPException(status_code=403, detail="Cannot save outside project root")
+target = contained_path(current_project().root, user_path)  # PathOutsideProjectError → 403
 ```
 
 - Path validation must include a test that verifies traversal paths like `../../etc/passwd` are rejected with 403.
@@ -637,7 +635,7 @@ Engineering Standards
 - [ ] `HTTPException` raised outside `try/except Exception` blocks
 - [ ] Consistent naming (snake_case Python and API fields, camelCase TypeScript functions/variables, PascalCase classes/components)
 - [ ] React state in hooks/refs, not module-level variables
-- [ ] File access endpoints validate paths with `_get_project_root()` + resolve + startswith
+- [ ] File access endpoints validate paths with `contained_path(current_project().root, ...)`
 - [ ] Path traversal rejection tested (e.g. `../../etc/passwd` → 403)
 - [ ] Tests added for new logic; bug fixes include regression tests
 - [ ] Design doc in `docs/` if change touches >3 files or changes a public API

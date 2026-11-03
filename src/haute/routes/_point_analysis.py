@@ -29,8 +29,9 @@ from haute._data_points import (
 from haute._execution_context import ExecutionCancellationToken, ExecutionContext
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._polars_utils import cancellable_streaming_collect
+from haute._project_context import current_project
 from haute.errors import InvalidRequestError, UnprocessableError
-from haute.routes._node_data_service import NodeDataService, node_data_project_root
+from haute.routes._node_data_service import NodeDataService
 from haute.routes._synchronous_analysis import run_synchronous_analysis
 from haute.schemas import Graph, NodeDataPointResponse
 
@@ -132,7 +133,7 @@ class PointAnalysisService:
         except NodeDataPointInvalidError as exc:
             raise InvalidRequestError(str(exc)) from exc
         resolver = DataPointResolver(
-            body.graph, source=body.source, store=NodeSnapshotStore(node_data_project_root())
+            body.graph, source=body.source, store=NodeSnapshotStore(current_project().root)
         )
         # What is being edited may name columns the saved node does not read, so the
         # demand covers them: a point without one of them is not current for this

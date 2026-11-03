@@ -31,6 +31,7 @@ from haute._path_resolution import RuntimePathOutsideProjectError
 from haute.errors import ConfigError, FeatureMismatchError, HauteValidationError
 from haute.modelling._feature_contract import build_contract, save_contract
 from haute.modelling._training_job import model_contract_filename
+from tests._project import use_project
 
 FEATURES = ["age", "region"]
 
@@ -119,13 +120,11 @@ def score(source: ModelSource, frame: pl.DataFrame) -> np.ndarray:
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A project with a local MLflow folder; every file is spelled from it."""
     from haute._mlflow_io import clear_local_model_cache, clear_model_cache
-    from haute._sandbox import set_project_root
 
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
     for name in ("MLFLOW_TRACKING_URI", "DATABRICKS_MLFLOW_HOST", "DATABRICKS_MLFLOW_TOKEN"):
         monkeypatch.delenv(name, raising=False)
-    set_project_root(tmp_path)
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     monkeypatch.setattr("haute._mlflow_io._disk_cache_root", lambda: tmp_path / ".cache")
     clear_model_cache()
     clear_local_model_cache()
@@ -826,13 +825,12 @@ def test_a_run_logged_contract_scores_values_the_model_never_saw(project: Path) 
 
 
 def test_a_sibling_contract_outside_the_project_is_refused(project: Path) -> None:
-    from haute._sandbox import set_project_root
     from haute.deploy._bundler import collect_artifacts
     from haute.errors import DeployError
 
     inner = project / "inner"
     inner.mkdir()
-    set_project_root(inner)
+    use_project(inner)
     external_catboost(inner, offset=False, stamp="")
     outside = write_contract(project / "outside.cbm", offset=None, link=None)
     link = inner / "ext.feature_contract.json"

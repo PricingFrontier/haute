@@ -10,7 +10,8 @@ Proves the end-user install path end to end, on the OS it runs on:
    specifiers, not the repo lockfile — exactly what an end user gets).
 3. Verify the installed wheel's ``python -m haute`` package entry point and
    its generated ``haute`` console entry point.
-4. ``haute init`` in an empty scratch directory outside the repo.
+4. ``git init`` and ``haute init`` in an empty scratch directory outside the repo, as
+   the getting-started guide's ``uv init`` makes the folder a git repository.
 5. ``haute serve`` headless from the scratch project root; the server must
    fall back to the packaged static frontend (no dev frontend present).
 6. Bootstrap the canonical local-session cookie, drive the file-listing
@@ -181,6 +182,9 @@ def _install_into_fresh_venv(wheel: Path, venv_dir: Path) -> Path:
 
 
 def _scaffold_project(haute_exe: Path, project_dir: Path) -> None:
+    # A Haute project sits in a git repository, as `uv init` makes the folder in the
+    # getting-started guide; `haute serve` refuses to start anywhere else.
+    _run_step("git init", ["git", "init", "-q"], cwd=project_dir, timeout=INIT_TIMEOUT_SECONDS)
     # Every answer given, so init asks nothing even when the smoke runs at a terminal.
     _run_step(
         "haute init",

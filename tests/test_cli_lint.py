@@ -10,6 +10,7 @@ import pytest
 
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.cli import cli
+from tests._project import use_project
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -70,7 +71,7 @@ class TestLintEdgeCases:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Without haute.toml, lint should default to main.py."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         result = runner.invoke(cli, ["lint"])
         assert result.exit_code == 1
         assert "main.py" in result.output
@@ -101,7 +102,7 @@ class TestPipelineResolutionErrors:
         project = tmp_path / "project"
         project.mkdir()
         (project / "haute.toml").write_text(toml, encoding="utf-8")
-        monkeypatch.chdir(project)
+        use_project(project)
 
         result = runner.invoke(cli, [command])
 

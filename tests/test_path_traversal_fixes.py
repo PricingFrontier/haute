@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from haute.errors import InvalidPathError, PathOutsideProjectError
+from tests._project import use_project
 from tests.conftest import make_file_input_config
 from tests.job_store_support import seed_job
 from tests.optimiser_fixtures import make_input_summary
@@ -25,7 +26,7 @@ from tests.optimiser_fixtures import make_input_summary
 @pytest.fixture(autouse=True)
 def _isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Run every test in a temporary directory."""
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     (tmp_path / "haute.toml").write_text("[project]\nname = 'test'\n")
 
 
@@ -129,9 +130,8 @@ class TestOptimiserSavePathTraversal:
 
     def test_valid_relative_path(self, client, clean_job_store, tmp_path):
         """A normal relative path within the project root should succeed."""
-        from haute._sandbox import set_project_root
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         job_id = "save_ok"
         seed_job(clean_job_store, job_id, _make_completed_job(tmp_path))
 
@@ -146,9 +146,8 @@ class TestOptimiserSavePathTraversal:
 
     def test_traversal_blocked(self, client, clean_job_store, tmp_path):
         """Traversal via ../ must be rejected with 403."""
-        from haute._sandbox import set_project_root
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         job_id = "save_traversal"
         seed_job(clean_job_store, job_id, _make_completed_job(tmp_path))
 

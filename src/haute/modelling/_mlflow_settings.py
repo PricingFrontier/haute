@@ -31,6 +31,7 @@ from pathlib import Path
 from urllib.parse import SplitResult, unquote, urlsplit, urlunsplit
 
 from haute._mlflow_utils import tracking_uri_from_environment
+from haute._project_context import current_project
 from haute.errors import MlflowConfigError
 
 DESTINATION_KEYS: tuple[str, ...] = ("databricks", "server", "local")
@@ -92,20 +93,8 @@ def node_destination_key(value: str) -> str:
     return validate_destination_key(value) or "local"
 
 
-def _project_root_default() -> Path:
-    """The process-wide project root every tracking consumer shares.
-
-    Uses ``haute._sandbox._get_project_root`` (cwd at import, overridable by
-    tests/CLI) so the settings surface, discovery routes, and logging paths
-    all resolve the same ``haute.toml`` and default runs folder.
-    """
-    from haute._sandbox import _get_project_root
-
-    return _get_project_root()
-
-
 def _toml_path(project_root: Path | None) -> Path:
-    return (project_root if project_root is not None else _project_root_default()) / "haute.toml"
+    return (project_root if project_root is not None else current_project().root) / "haute.toml"
 
 
 def _split_uri(value: str, *, source: str) -> SplitResult:
@@ -277,7 +266,7 @@ def _project_write_target(toml_path: Path, project_root: Path | None) -> Path:
     from haute._sandbox import contained_path
     from haute.errors import PathOutsideProjectError
 
-    root = project_root if project_root is not None else _project_root_default()
+    root = project_root if project_root is not None else current_project().root
     try:
         return contained_path(root, toml_path.resolve())
     except PathOutsideProjectError:
@@ -428,7 +417,7 @@ def resolve_destination(key: str, project_root: Path | None = None) -> TrackingC
         raise MlflowConfigError(
             "A destination key is required; node_destination_key() maps '' to local."
         )
-    root = project_root if project_root is not None else _project_root_default()
+    root = project_root if project_root is not None else current_project().root
     if key == "databricks":
         return _resolve_databricks()
     stored = load_mlflow_settings(project_root)
@@ -481,7 +470,7 @@ def candidate_tracking_config(
     if key not in DESTINATION_KEYS:
         validate_destination_key(key)
         raise MlflowConfigError("A destination key is required for a candidate probe.")
-    root = project_root if project_root is not None else _project_root_default()
+    root = project_root if project_root is not None else current_project().root
     if key == "databricks":
         return _resolve_databricks()
     if key == "server":

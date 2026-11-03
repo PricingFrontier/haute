@@ -30,6 +30,7 @@ import pytest
 
 from haute._cache import GraphFingerprintMemo, graph_fingerprint
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from tests._project import use_project
 from tests.conftest import make_ready_file_input_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
@@ -259,7 +260,7 @@ class TestMutationBehaviour:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Utility edits must invalidate cache keys even for the same graph instance."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         utility_dir = tmp_path / "utility"
         utility_dir.mkdir()
         (utility_dir / "__init__.py").write_text("", encoding="utf-8")
@@ -314,7 +315,7 @@ class TestUtilityFileContentHashMemo:
         """Repeated request-local fingerprints should not stream unchanged files."""
         from haute._json_shred import _source_proof
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _, files = self._make_utility_package(tmp_path, n_modules=30)
         graph = self._make_utility_graph(tmp_path)
 
@@ -343,7 +344,7 @@ class TestUtilityFileContentHashMemo:
         """Edits/creates/replacements hash affected files; deletes hash nothing."""
         from haute._json_shred import _source_proof
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _, files = self._make_utility_package(tmp_path, n_modules=6)
         graph = self._make_utility_graph(tmp_path)
 
@@ -406,7 +407,7 @@ class TestUtilityFileContentHashMemo:
         """
         from haute._json_shred import _source_proof
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         utility_dir = tmp_path / "utility"
         utility_dir.mkdir()
         (utility_dir / "__init__.py").write_text("", encoding="utf-8")

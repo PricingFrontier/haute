@@ -35,6 +35,7 @@ from haute._json_shred._shred import (
     _scalar_to_str,
     table_is_emitting,
 )
+from tests._project import use_project
 
 
 def test_json_shred_resource_defaults_are_explicit_contracts() -> None:
@@ -73,12 +74,12 @@ def test_json_shred_internal_value_objects_preserve_mutability_contracts() -> No
     outcome = _snapshots.ApiInputBuildOutcome(generation_ids={})
     source = _snapshots.ApiInputSnapshotSource(data_path=Path("data.json"), config={}, tables=())
     table = _snapshots.ApiInputTable(label="rows", spec=None, identity=None)  # type: ignore[arg-type]
+    use_project(Path("root"))
     request = _snapshots.ApiInputBuildRequest(
         config={},
         data_path="data.json",
         labels=(),
         cache_root="root",
-        project_root="root",
         profile=None,  # type: ignore[arg-type]
         plans={},
         scratch_token="token",

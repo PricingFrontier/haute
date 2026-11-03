@@ -24,6 +24,7 @@ from pathlib import Path
 
 import polars as pl
 
+from haute._project_context import context_thread
 from scripts.memory_smoke import StdlibMemorySampler
 
 #: The streaming controls. ``scan`` is the full-width passthrough sink and the
@@ -250,7 +251,7 @@ class _SpillSampler:
         self.peak_bytes = 0
         self.peak_files = 0
         self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._poll, name="spill-sampler", daemon=True)
+        self._thread = context_thread(self._poll, name="spill-sampler", daemon=True)
 
     def _poll(self) -> None:
         while not self._stop.is_set():
@@ -329,4 +330,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # A script entry point: it runs in the project holding its working directory.
+    from haute._project_context import standalone_project_scope
+
+    with standalone_project_scope(None):
+        raise SystemExit(main())

@@ -36,6 +36,7 @@ from haute.cli import cli
 from haute.cli._init_cmd import InitConfig, handle_init
 from haute.parser import parse_pipeline_file
 from scripts.spec_corpus_inventory import load_corpus_manifest
+from tests._project import use_project
 from tests._source_files import source_files
 
 # Every check here reads repository files — specs, docs, source listings — and
@@ -2200,7 +2201,7 @@ def _scaffolded_docs_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
         '[project]\nname = "my-project"\nversion = "0.1.0"\n', encoding="utf-8"
     )
     (project / "main.py").write_text(_UV_INIT_MAIN, encoding="utf-8")
-    monkeypatch.chdir(project)
+    use_project(project)
     handle_init(InitConfig(target="databricks", ci="github"))
     return project
 

@@ -5,12 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from haute._hashing import content_hash
+from haute._project_context import current_project
 from haute.deploy._config import ContainerConfig, DeployConfig, ResolvedDeploy
 from haute.deploy._project_modules import ProjectModules
 from haute.deploy._request_rows import RequestRows
 from haute.graph_utils import PipelineGraph
 
-FIXTURE_DIR = Path("tests/fixtures")
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
 DEFAULT_PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
 
 # Patch-pinned image used by tests that target container builds but do not
@@ -68,9 +69,15 @@ def make_resolved_deploy(
             )
         config = DeployConfig(**config_kwargs)
 
+    paths: dict[str, Path] = resolved_paths(config)
+    if config.project_dir is None and config.pipeline_file == DEFAULT_PIPELINE_FILE:
+        # The default pipeline is the repository's fixture: the deployment is resolved in
+        # the test's project instead, which holds the files the test writes; its steps run
+        # there (``in_resolved_project``). A pipeline the test names keeps its own folder.
+        paths["project_root"] = current_project().root
     defaults: dict[str, object] = {
         "config": config,
-        **resolved_paths(config),
+        **paths,
         "full_graph": PipelineGraph(),
         "pruned_graph": PipelineGraph(),
         "input_node_ids": ["policies"],

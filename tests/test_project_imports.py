@@ -17,6 +17,7 @@ from haute._project_imports import evict_utility_modules
 from haute.deploy._project_modules import resolve_project_modules
 from haute.errors import PreambleError
 from haute.executor import _compile_preamble
+from tests._project import use_project
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +44,7 @@ def test_compiling_and_running_leave_sys_path_unchanged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pipeline_dir = _project(tmp_path, {"rating/utility/__init__.py": "VALUE = 3\n"})
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     before = list(sys.path)
 
     ns = _compile_preamble("from utility import VALUE\n", pipeline_dir=str(pipeline_dir))
@@ -70,7 +71,7 @@ def test_a_helper_importing_utility_at_collect_time_resolves_through_the_finder(
         tmp_path,
         {"rating/utility/__init__.py": "", "rating/utility/sub.py": "VALUE = 7\n"},
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     ns = _compile_preamble(
         """
 def add_value(frame):
@@ -98,7 +99,7 @@ def test_a_deferred_utility_import_resolves_the_project_compiled_last(
     """The finder is bound to the project whose preamble was compiled last: a helper
     project A's preamble defined imports project B's ``utility`` once B compiled after
     it. One process serves one project, so the binding is that project's."""
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     helper = """
 def add_value(frame):
     import utility.sub
@@ -132,7 +133,7 @@ def test_a_same_size_same_mtime_edit_reaches_the_next_compile(
     if module_path.endswith("rates.py"):
         files["rating/utility/__init__.py"] = ""
     pipeline_dir = _project(tmp_path, files)
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     module = tmp_path / module_path
     stat = module.stat()
     statement = (
@@ -158,7 +159,7 @@ def test_utility_beside_the_pipeline_wins_over_one_at_the_working_directory(
         tmp_path,
         {"utility.py": "WHERE = 'root'\n", "rating/utility.py": "WHERE = 'pipeline'\n"},
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
 
     ns = _compile_preamble("from utility import WHERE\n", pipeline_dir=str(pipeline_dir))
 
@@ -172,7 +173,7 @@ def test_a_local_module_outside_utility_is_not_importable(
     project code it imports, as only it is deployed. (The interpreter's own path is its
     own: ``python -m`` adds the working directory, so the test leaves that entry out.)"""
     pipeline_dir = _project(tmp_path, {"rating/helpers.py": "VALUE = 1\n"})
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     monkeypatch.setattr(sys, "path", [entry for entry in sys.path if entry not in ("", ".")])
 
     with pytest.raises(PreambleError, match="No module named 'helpers'"):
@@ -185,13 +186,14 @@ def test_a_file_named_like_an_installed_package_does_not_shadow_it(tmp_path: Pat
     pipeline_dir = _project(tmp_path, {"rating/six.py": "SHADOW = True\n"})
     script = textwrap.dedent(
         f"""
-        import os
-        os.chdir({str(tmp_path)!r})
+        from pathlib import Path
+        from haute._project_context import ProjectContext, project_scope
         from haute.executor import _compile_preamble
-        ns = _compile_preamble(
-            "import six\\nSHADOWED = hasattr(six, 'SHADOW')\\n",
-            pipeline_dir={str(pipeline_dir)!r},
-        )
+        with project_scope(ProjectContext.at(Path({str(tmp_path)!r}))):
+            ns = _compile_preamble(
+                "import six\\nSHADOWED = hasattr(six, 'SHADOW')\\n",
+                pipeline_dir={str(pipeline_dir)!r},
+            )
         print(ns["SHADOWED"])
         """
     )
@@ -210,7 +212,7 @@ def test_the_fingerprint_and_the_deploy_bundle_read_the_utility_the_finder_loads
         tmp_path,
         {"utility/__init__.py": "WHERE = 'root'\n", "rating/utility/__init__.py": "WHERE = 'x'\n"},
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     _compile_preamble("import utility\n", pipeline_dir=str(pipeline_dir))
     loaded = Path(sys.modules["utility"].__file__ or "").resolve().parent
 
@@ -229,7 +231,7 @@ def test_a_namespace_package_utility_is_fingerprinted_as_it_is_imported(
     (elsewhere / "utility").mkdir(parents=True)
     (elsewhere / "utility" / "__init__.py").write_text("", encoding="utf-8")
     (elsewhere / "utility" / "helpers.py").write_text("WHERE = 0\n", encoding="utf-8")
-    monkeypatch.chdir(tmp_path / "project")
+    use_project(tmp_path / "project")
     monkeypatch.syspath_prepend(str(elsewhere))
     helpers = tmp_path / "project" / "rating" / "utility" / "helpers.py"
     stat = helpers.stat()
@@ -252,7 +254,7 @@ def test_a_project_without_utility_leaves_the_name_to_the_import_system(
     code_path = tmp_path / "code"
     (code_path / "utility").mkdir(parents=True)
     (code_path / "utility" / "__init__.py").write_text("WHERE = 'code path'\n", encoding="utf-8")
-    monkeypatch.chdir(tmp_path / "project")
+    use_project(tmp_path / "project")
     monkeypatch.syspath_prepend(str(code_path))
 
     ns = _compile_preamble("from utility import WHERE\n", pipeline_dir=str(pipeline_dir))

@@ -27,6 +27,7 @@ import pytest
 from pydantic import ValidationError
 
 from haute import _workbench_folder
+from haute._project_context import context_thread
 from haute._workbench_config import WorkbenchConfig, read_workbench_config
 from haute._workbench_folder import (
     FormFolderNameError,
@@ -2445,7 +2446,7 @@ def _first_line(process: subprocess.Popen[str], timeout: float) -> str:
     said: list[str] = []
     assert process.stdout is not None
     stdout = process.stdout
-    listener = threading.Thread(target=lambda: said.append(stdout.readline()), daemon=True)
+    listener = context_thread(lambda: said.append(stdout.readline()), daemon=True)
     listener.start()
     listener.join(timeout)
     return said[0] if said else ""
@@ -2472,7 +2473,7 @@ def test_a_reader_in_another_process_waits_on_a_save_and_reads_the_saved_form_wh
             finish.wait(timeout=60)
             write_files(folder, {path: after[path] for path in order[1:]})
 
-    writer = threading.Thread(target=save)
+    writer = context_thread(save)
     writer.start()
     reader: subprocess.Popen[str] | None = None
     try:
@@ -2523,7 +2524,7 @@ def test_the_form_folder_s_lock_is_the_project_s_own_however_its_path_is_spelt(
             held.set()
             done.wait(timeout=30)
 
-    holder = threading.Thread(target=hold)
+    holder = context_thread(hold)
     holder.start()
     try:
         assert held.wait(timeout=30)

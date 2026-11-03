@@ -27,6 +27,7 @@ from haute._ci_secrets import GH_TIMEOUT_SECONDS, CiSecretsError, github_reposit
 from haute.cli import cli
 from tests._git_helpers import git_run as _git
 from tests._git_helpers import init_repo
+from tests._project import use_project
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -99,7 +100,7 @@ def project(runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, client: Tes
     an empty bare remote ``origin`` whose pre-receive hook logs each receive session."""
     project_dir = tmp_path / "motor"
     project_dir.mkdir()
-    monkeypatch.chdir(project_dir)
+    use_project(project_dir)
     for name in _VALUES:
         monkeypatch.delenv(name, raising=False)
     result = runner.invoke(cli, ["init", "--target", "databricks", "--ci", "github"])
@@ -577,7 +578,7 @@ def test_remote_secrets_of_a_workbench_project_are_its_app_hosts(
     app's image with, its host's, never the Databricks target its [deploy] reads as."""
     from haute._scaffold import ci_secret_names
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     result = runner.invoke(
         cli, ["init", "--workbench", "--store", "sqlserver", "--sign-in", "password"]
     )

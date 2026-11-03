@@ -14,12 +14,12 @@ import pytest
 
 from haute._execution_context import ExecutionProfile
 from haute._input_providers import build_input_snapshot
-from haute._sandbox import set_project_root
 from haute._source_cache import SourceCacheStore
 from haute.assistant._assets import materialize_example_bundle
 from haute.executor import execute_graph
 from haute.graph_utils import flatten_graph
 from haute.routes._helpers import parse_pipeline_to_graph
+from tests._project import use_project
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -53,7 +53,7 @@ def _bundle(tmp_path: Path, name: str) -> tuple[Path, PipelineGraph]:
 
 
 def _prepare_inputs(destination: Path, graph: PipelineGraph) -> None:
-    set_project_root(destination)
+    use_project(destination)
     store = SourceCacheStore(destination)
     for node in graph.nodes:
         if node.data.nodeType.value != "dataInput":
@@ -175,7 +175,7 @@ def test_model_training_and_resulting_model_scoring(
     from catboost import CatBoostRegressor
 
     destination, graph = _bundle(tmp_path, "model_lifecycle")
-    monkeypatch.chdir(destination)
+    use_project(destination)
     _prepare_inputs(destination, graph)
     response = client.post(
         "/api/modelling/train",
@@ -204,7 +204,7 @@ def test_online_scenario_expansion_and_real_optimisation(
     monkeypatch: pytest.MonkeyPatch,
 ):
     destination, graph = _bundle(tmp_path, "online_scenario_optimisation")
-    monkeypatch.chdir(destination)
+    use_project(destination)
     _prepare_inputs(destination, graph)
 
     expanded = execute_graph(
@@ -238,7 +238,7 @@ def test_ratebook_solve_save_and_versioned_apply(
     from haute.graph_utils import apply_optimiser_apply_from_config
 
     destination, graph = _bundle(tmp_path, "ratebook_optimisation_apply")
-    monkeypatch.chdir(destination)
+    use_project(destination)
     _prepare_inputs(destination, graph)
     optimiser = graph.node_map["optimise"]
     assert optimiser.data.config["banding_source"] == "rating_factors"
@@ -301,8 +301,7 @@ def test_deployment_preflight_and_unpinned_container_rejection(
     from haute.errors import DeployError
 
     destination, _graph = _bundle(tmp_path, "deployment_safety")
-    set_project_root(destination)
-    monkeypatch.chdir(destination)
+    use_project(destination)
     safe = DeployConfig.from_toml(destination / "haute.toml")
     with resolve_config(safe) as resolved:
         validate_deploy(resolved)

@@ -51,6 +51,7 @@ from haute.executor import (
 from haute.projection import ExecutionStrategy, ExecutionStrategyStatus
 from haute.routes._isolated_worker_async import WorkerCancellationGate
 from haute.schemas import ExecutionMetricsPayload, WriteOutputResponse
+from tests._project import use_project
 from tests.conftest import build_test_input_snapshot
 
 ensure_registry_ready()
@@ -190,7 +191,6 @@ class TestExecuteSinkDataOutput:
             PipelineGraph(),
             "sink",
             "batch",
-            str(tmp_path),
             False,
             None,
             None,
@@ -221,7 +221,6 @@ class TestExecuteSinkDataOutput:
                 PipelineGraph(),
                 "sink",
                 "batch",
-                str(tmp_path),
                 False,
                 None,
                 None,
@@ -2047,7 +2046,7 @@ class TestResolveDataOutputPath:
     ) -> None:
         nested = haute_scratch / "rating"
         nested.mkdir()
-        monkeypatch.chdir(nested)
+        use_project(nested)
         graph = PipelineGraph(nodes=[], edges=[], source_file="rating/main.py")
 
         resolved, display = resolve_data_output_path(
@@ -2563,6 +2562,7 @@ def test_generated_data_input_resolves_project_relative_dataset_from_nested_pipe
     assert frame.collect().to_dicts() == [{"quote_id": 1}, {"quote_id": 2}]
 
 
+@pytest.mark.no_project
 def test_standalone_data_input_declaration_reads_from_the_discovered_project_root(
     tmp_path: Path,
 ) -> None:

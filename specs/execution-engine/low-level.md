@@ -7,8 +7,8 @@
 | `src/haute/_cpu_performance.py` | Process-local Windows HighQoS read/set/verify policy, invoked at CLI, server and worker startup; preserves unrelated power-policy bits and reports unsupported or rejected native operations. |
 | `src/haute/executor.py` | GUI-facing eager entry point: `execute_graph()` (preview, with the `_preview_cache` `LRUCache`), `write_data_output()` (batch/data-output writes), preamble compilation + single-flight cache (`_compile_preamble`), preview-column projection/schema-warning assembly, and output-destination containment. |
 | `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points, runtime-input fingerprints, `preview_lineage_cache_key`, and `PREVIEW_EXECUTION_SEMANTICS_VERSION`. It is the stable application import boundary, but is not currently a thin re-export module. |
-| `src/haute/_project_imports.py` | The project's `utility` package imported without editing `sys.path`: `utility_search_dirs` (the pipeline directory, then the working directory, one entry when they coincide), `find_utility_spec` (the `utility` an import loads: those directories first, then the rest of the path for a project without one, so a project namespace package wins over a regular package elsewhere, as it does when imported), the meta-path finder that answers `utility` and every `utility.*` name from the project `bind_project_utility` last bound (installed ahead of every other finder on first use), its source-only loader, and `evict_utility_modules`. The cache fingerprint (`src/haute/_cache.py`) hashes what `find_utility_spec` resolves, and the deploy bundle (`src/haute/deploy/_project_modules.py`) reads `utility` from the same directories. |
-| `src/haute/_path_resolution.py` | Cross-component dependency owned by [sandbox-security](../sandbox-security/low-level.md); canonical local-runtime-path resolution: separator normalization, project/pipeline candidate choice, symlink-aware containment, selected-external-pipeline root inference, and the context-local root used by eager/lazy builders. |
+| `src/haute/_project_imports.py` | The project's `utility` package imported without editing `sys.path`: `utility_search_dirs` (the pipeline directory, then the current project's root, one entry when they coincide), `find_utility_spec` (the `utility` an import loads: those directories first, then the rest of the path for a project without one, so a project namespace package wins over a regular package elsewhere, as it does when imported), the meta-path finder that answers `utility` and every `utility.*` name from the project `bind_project_utility` last bound (installed ahead of every other finder on first use), its source-only loader, and `evict_utility_modules`. The cache fingerprint (`src/haute/_cache.py`) hashes what `find_utility_spec` resolves, and the deploy bundle (`src/haute/deploy/_project_modules.py`) reads `utility` from the same directories. |
+| `src/haute/_path_resolution.py` | Cross-component dependency owned by [sandbox-security](../sandbox-security/low-level.md); canonical local-runtime-path resolution: separator normalization, project/pipeline candidate choice, symlink-aware containment against the current project's root, which eager and lazy builders read from the installed project context ([pipeline-config](../pipeline-config/low-level.md)). |
 | `src/haute/_execute_lazy.py` | Node-boundary machinery the graph walker uses: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), and `_PlannedCaptures` (seed-plan closures and captures), with the contract, column-shaping, recipe and runtime-demand helpers each node step uses, and the recorded-failure line helpers `_extract_error_line` and `_located_step`. |
 | `src/haute/_graph_walker.py` | The graph walker: `walk_graph(graph, build_node_fn, *, policy: CollectPolicy, ...)` walks a graph once and returns a `WalkResult` (each built node's frame, the prepared order, parents, names, and the join and write recipes and pre-shaping frames it built). `WalkRequest` holds the execution-independent inputs, `CollectPolicy` what the walk collects, at which row and column limits, whether it records node failures, and its purpose (`WalkPurpose.SINK` hands lazy frames to a sink; `WalkPurpose.DISPLAY` reports schemas and collects for a person; `WalkPurpose.MEASURE` builds a lineage as a display walk does but, at each checked node, collects the caller's `MeasurementQueries` over its input frames and then its output ports, each cut to a row bound, and returns one `NodeMeasurement` per checked node, never a frame, with each failure an `AttributedFailure` naming the node it is attributed to). The Data Output sink, every lazy execution through the execution facade, the preview, the trace and the assistant's data check walk through it. No function in the module exceeds a cyclomatic complexity of 15, held by ruff's C901 rule scoped to this module alone. |
 | `src/haute/_contracts.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution consumes the shared column-contract model and registry lookup. |
@@ -389,8 +389,8 @@ and miss stages therefore always use a concrete context and always record teleme
 there is no silent no-op stage path.
 
 **Previews under a seed plan.** With `shared_snapshots=True` (the preview route), caching
-on in the pipeline settings of the graph's project (read inside its
-`runtime_project_root_scope`, in whichever process runs the preview), and a
+on in the pipeline settings of the current project (read in whichever process runs the
+preview, which runs in the requesting project), and a
 target whose lineage `preview_lineage_admitted` accepts, `execute_graph()` opens a
 `PREVIEW_EAGER` seed plan — preparing only the inputs it executes, under the caller's
 `staging_token` — holds it for the rest of the request, and runs `_execute_graph_core()`
@@ -435,14 +435,10 @@ for are not in the cache key: the bundle holds every frame whichever are preview
 
 Before fingerprinting or building functions,
 `canonical_dataframe_execution_graph()` resolves every local runtime input field
-with `enforce_project_root=True`. `walk_graph` is
-wrapped by `runtime_project_root_scoped`; its wrapper resolves the declared
-`graph` argument from either positional or keyword calls and fails clearly when
-the value is not a `PipelineGraph`. `_resolve_runtime_data_path` therefore
-repeats the same check at the final builder seam. Relative, absolute, traversal,
-mixed-separator, and symlink spellings therefore share one resolved containment
-decision on both strategies. An absolute selected pipeline outside cwd establishes
-its parent as the scoped root; it does not authorize sibling directories. A path
+with `enforce_project_root=True` against the current project's root.
+`_resolve_runtime_data_path` repeats the same check at the final builder seam.
+Relative, absolute, traversal, mixed-separator, and symlink spellings therefore share
+one resolved containment decision on both strategies. A path
 spelled inside the configured project cannot acquire that exception by resolving
 through a symlink, and HTTP graph payloads are validated against the configured
 project before execution so only a direct/operator-controlled caller can select
@@ -996,7 +992,7 @@ There is no uncontained direct-executor output mode or separate sink-path façad
 
 **Admission (`_execution_admission.create_admitted_execution_context`).**
 Admission first reads the [pipeline settings](#pipeline-settings) of the execution's
-project (`current_runtime_project_root()`), so an invalid settings file refuses the run
+project (`current_project().root`), so an invalid settings file refuses the run
 with `PipelineSettingsError` before anything is sampled or reserved.
 `execution_budget_for_profile()` then resolves an `ExecutionBudget` for the run's profile.
 `PREVIEW_EAGER` — every preview, trace, Output dry run and other interactive eager
@@ -2005,7 +2001,7 @@ present a structural or schema result as execution evidence.
   hashed, a missing one by its stat, so replacing either
   sibling, adding the higher-priority one, or deleting the selected one
   changes the identity. A file source records no MLflow backend.
-- **`_compile_preamble` single-flight cache.** Keyed on `(preamble text, cwd,
+- **`_compile_preamble` single-flight cache.** Keyed on `(preamble text, project root,
   pipeline_dir, execution_fingerprint)`; a `_PreambleCell` per key is created under a
   tiny `_preamble_cells_guard` lock (never held during exec, so a hot cache hit never
   waits behind a slow compile in another thread) and populated under the coarser
@@ -2013,13 +2009,17 @@ present a structural or schema result as execution evidence.
   return the *same* namespace dict rather than each compiling their own. By default
   each call recomputes the dependency fingerprint (`preamble_execution_fingerprint`). A
   compile binds the project's `utility` finder (`_project_imports.bind_project_utility`)
-  to the pipeline directory and the working directory, and evicts every imported
+  to the pipeline directory and the current project's root, and evicts every imported
   `utility` module when the binding changed or the preamble imports `utility`; the
   finder's loader compiles each `utility` module from its source and never reads or
   writes bytecode, so a same-size, same-mtime edit, which changes the fingerprint, reaches
   the next compile. `sys.path` is never edited: a helper that imports `utility` while
-  Polars collects resolves it through the finder, bound to the project whose preamble
-  was compiled last (a hot hit does not rebind it; one process serves one project); and
+  Polars collects resolves it through the finder, bound to the project of the last
+  compile or cache hit: a hot hit whose project differs from the finder's binding rebinds
+  it and evicts the other project's `utility` modules under `_preamble_lock`
+  (`utility_bound_to`), so requests for projects A, then B, then A on one warm worker
+  each import their own `utility`; one process collects one project's frames at a time;
+  and
   Haute puts no project directory on the import path, so a file beside the pipeline cannot
   shadow an installed package and no project module but `utility` is imported through
   Haute, as only it is in a deploy bundle (a directory the interpreter itself puts on the

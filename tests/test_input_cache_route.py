@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import os
 import sqlite3
 import sys
@@ -14,6 +15,9 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+
+from haute._project_context import context_thread, current_project
+from tests._project import project_app, use_project, work_elsewhere
 
 
 def _file_config(path: str = "input.csv") -> dict[str, Any]:
@@ -61,7 +65,8 @@ def _threaded_spawn(function: Any, *args: Any, config: Any, **kwargs: Any) -> An
         except BaseException as exc:
             outcome["error"] = exc
 
-    child = threading.Thread(target=run, daemon=True, name="test-input-cache-child")
+    # The real spawn carries the caller's project to the child.
+    child = context_thread(run, daemon=True, name="test-input-cache-child")
     child.start()
     deadline = time.monotonic() + config.timeout_seconds
     while child.is_alive():
@@ -121,11 +126,9 @@ def client(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> TestClient:
-    from haute._sandbox import set_project_root
     from haute.routes import input_cache
-    from haute.server import app
 
-    set_project_root(tmp_path)
+    app = project_app()
     # Every explicit build runs in an isolated worker; here its entry point runs on a thread.
     monkeypatch.setattr(input_cache, "run_isolated_worker", _threaded_spawn)
     input_cache._reset_for_tests()
@@ -895,25 +898,20 @@ def test_a_required_cap_the_host_cannot_install_fails_the_import_as_cap_unavaila
     assert terminal["snapshot"] is None
 
 
-def test_routes_anchor_relative_paths_to_the_configured_project_root(
+def test_routes_anchor_relative_paths_to_the_served_project_root(
     client: TestClient,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Not the process's current directory, which another project may own (IO-R07)."""
-    from haute._sandbox import set_project_root
-
-    project = tmp_path / "project"
+    project = tmp_path
     elsewhere = tmp_path / "elsewhere"
-    project.mkdir()
     elsewhere.mkdir()
     (project / "input.csv").write_text("id,value\n1,a\n2,b\n3,c\n", encoding="utf-8")
     (project / "quotes.jsonl").write_text('{"quote_id": 1}\n', encoding="utf-8")
     # The same names in the current directory, which the routes must not read.
     (elsewhere / "input.csv").write_text("id,value\n9,z\n", encoding="utf-8")
     (elsewhere / "quotes.jsonl").write_text('{"decoy": 1}\n', encoding="utf-8")
-    set_project_root(project)
-    monkeypatch.chdir(elsewhere)
+    work_elsewhere(elsewhere)
     body = {"schema_version": 1, "config": _file_config()}
 
     started = client.post("/api/input-cache/build", json=body)
@@ -1039,12 +1037,15 @@ def test_clear_and_build_admission_are_linearized(
     _child_build(monkeypatch, fail_build)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
+        # Each request runs in the test's project, as the server would run it.
         clearing = pool.submit(
+            contextvars.copy_context().run,
             input_cache.clear_input_cache,
             InputCacheSourceRequest(config=_file_config()),
         )
         assert clear_entered.wait(timeout=5)
         building = pool.submit(
+            contextvars.copy_context().run,
             input_cache.build_input_cache,
             InputCacheBuildRequest(config=_file_config()),
         )
@@ -1283,7 +1284,6 @@ def test_build_identity_names_the_file_execution_opens(
     """
     from haute._input_preparation import preparation_base_dir
     from haute._input_providers import source_cache_identity, source_signature
-    from haute._sandbox import set_project_root
     from haute._types import GraphNode, NodeData, PipelineGraph
     from haute.execution import canonical_dataframe_execution_graph
     from haute.routes import input_cache
@@ -1301,8 +1301,8 @@ def test_build_identity_names_the_file_execution_opens(
     (tmp_path / "data" / "x.csv").write_text("id,value\n1,a\n", encoding="utf-8")
     (pipeline_dir / "data").mkdir()
     (pipeline_dir / "data" / "x.csv").write_text("id,value\n9,z\n10,y\n", encoding="utf-8")
-    set_project_root(tmp_path)
-    assert input_cache.input_pipeline_dir() == pipeline_dir.resolve()
+    use_project(tmp_path)
+    assert current_project().pipeline_dir == pipeline_dir.resolve()
 
     raw_config = _file_config("data/x.csv")
     node = GraphNode(
@@ -1330,7 +1330,7 @@ def test_build_identity_names_the_file_execution_opens(
     assert built_identity.descriptor["path"] == str((tmp_path / "data" / "x.csv").resolve())
     assert source_signature(
         built_config,
-        base_dir=input_cache.input_pipeline_dir(),
+        base_dir=current_project().pipeline_dir,
     ) == source_signature(executed_config, base_dir=execution_base_dir)
 
 
@@ -1395,10 +1395,9 @@ class _ApiInputWorker:
         import haute._execution_admission as admission
         from haute._execution_admission import IsolatedExecutionBudget
         from haute._execution_context import ExecutionProfile
-        from haute._sandbox import set_project_root
         from haute.routes import input_cache
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         worker = self
         budget = IsolatedExecutionBudget(
             operation="input_snapshot_build",
@@ -1698,7 +1697,6 @@ def test_a_stopped_api_input_build_kills_its_worker_and_discards_its_staging(
 ) -> None:
     """A real capped worker, stopped by cancellation or its deadline, publishes nothing."""
     from haute._json_shred import _snapshots
-    from haute._sandbox import set_project_root
     from haute._worker_isolation import process_memory_caps_supported, run_isolated_worker
     from haute.routes import input_cache
 
@@ -1710,7 +1708,7 @@ def test_a_stopped_api_input_build_kills_its_worker_and_discards_its_staging(
         monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
     if stop == "timed_out":
         pipeline_settings(pipeline_time_limit_minutes=6 / 60)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     source = _write_quotes(tmp_path)
     monkeypatch.setattr(_snapshots, "build_api_input_tables_worker", _blocking_table_worker)
     inputs = tmp_path / ".haute_cache" / "inputs"

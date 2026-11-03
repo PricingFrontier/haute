@@ -9,6 +9,7 @@ import pytest
 
 from haute.discovery import _configured_pipeline, discover_pipelines
 from haute.errors import ConfigError
+from tests._project import use_project
 
 PIPELINE_CONTENT = """\
 import haute
@@ -212,7 +213,7 @@ class TestErrorHandling:
 
 class TestRootParameter:
     def test_none_root_uses_cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "haute.toml").write_text('[project]\nname = "x"\n')
         (tmp_path / "pipe.py").write_text(PIPELINE_CONTENT)
         result = discover_pipelines(None)

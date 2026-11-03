@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-from haute._sandbox import set_project_root
+from tests._project import use_project
 
 _TOML = """\
 # project comment survives settings writes
@@ -64,7 +64,7 @@ _DATABRICKS_UNCONFIGURED_DETAIL = (
 @pytest.fixture
 def project_root(tmp_path: Path) -> Path:
     (tmp_path / "haute.toml").write_text(_TOML, encoding="utf-8")
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     return tmp_path
 
 

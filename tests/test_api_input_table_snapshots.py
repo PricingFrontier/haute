@@ -38,9 +38,9 @@ from haute._json_shred._snapshots import (
     scratch_directory,
 )
 from haute._native_memory_limit import native_memory_backend_scope
-from haute._sandbox import set_project_root
 from haute._source_cache import SourceCacheCorruptError, SourceCacheStore
 from haute.errors import InputPreparationError
+from tests._project import use_project
 from tests.conftest import make_edge, make_graph, make_output_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
@@ -101,8 +101,7 @@ def _write_source(path: Path, count: int = 3) -> Path:
 
 @pytest.fixture()
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, SourceCacheStore]:
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     return tmp_path, SourceCacheStore(tmp_path)
 
 
@@ -573,12 +572,12 @@ def worker_context(monkeypatch: pytest.MonkeyPatch) -> list[_ContextStub]:
 
 def _request(source: Any, store: SourceCacheStore, root: Path) -> ApiInputBuildRequest:
     labels = [table.label for table in source.tables]
+    use_project(root)
     return ApiInputBuildRequest(
         config=dict(source.config),
         data_path=str(source.data_path),
         labels=tuple(labels),
         cache_root=str(store.root),
-        project_root=str(root),
         profile=_PROFILE,
         plans=new_table_build_plans(source, labels),
         scratch_token="abcdef04",
@@ -654,7 +653,6 @@ def test_a_supervised_build_returns_the_published_tables(
 
     assert spawn.request is not None and spawn.config == "config"
     assert spawn.request.labels == ("quotes", "drivers")
-    assert spawn.request.project_root == str(root)
     assert {digest: gen.generation_id for digest, gen in generations.items()} == {
         digest: plan.generation_id for digest, plan in spawn.request.plans.items()
     }
@@ -1294,6 +1292,7 @@ def test_a_dead_worker_is_a_failure_unless_every_table_was_published(
 
 def test_one_row_and_many_row_tables_shred_from_one_request(tmp_path: Path) -> None:
     """One-row tables as objects in each quote and many-row tables as arrays shred together."""
+    use_project(tmp_path)  # a standalone shred spills under its project
 
     def columns(table: str, *named: tuple[str, str], many: bool = False) -> list[dict[str, Any]]:
         level = f"$[:].{table}[:]" if many else f"$[:].{table}"

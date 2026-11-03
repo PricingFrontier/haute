@@ -189,12 +189,13 @@ def _resolve_project_file(
     input, so the preview, a standalone run and the deploy bundler pick the same
     file. *project_root* defaults to the execution-scoped project root.
     """
-    from haute._path_resolution import current_runtime_project_root, resolve_node_input_path
+    from haute._path_resolution import resolve_node_input_path
+    from haute._project_context import current_project
 
     resolved = resolve_node_input_path(
         raw_path,
         pipeline_dir=base_dir,
-        project_root=project_root if project_root is not None else current_runtime_project_root(),
+        project_root=project_root if project_root is not None else current_project().root,
     )
     if not resolved.is_file():
         raise ConfigError(
@@ -406,7 +407,7 @@ def inspect_model_file(
     """
     from haute._mlflow_io import load_local_model_cached
     from haute._model_flavors import model_family
-    from haute._path_resolution import current_runtime_project_root
+    from haute._project_context import current_project
     from haute.modelling._feature_contract import load_contract_cached
 
     source = FileModelSource(model_path=model_path)
@@ -430,7 +431,7 @@ def inspect_model_file(
     family = model_family(scoring_model.flavor)
     if task is None and family.self_describing:
         task = scoring_model.raw_model.task
-    root = current_runtime_project_root()
+    root = current_project().root
     return ModelFileInspection(
         model_path=model_path,
         flavor=family.flavor,

@@ -18,7 +18,7 @@ from haute._config_io import collect_node_configs
 from haute._flatten import flatten_executable_graph
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._project import get_project_root
-from haute._sandbox import bound_project_root
+from haute._project_context import ProjectContext, project_scope
 from haute._submodel_instances import qualified_runtime_node_id
 from haute._types import (
     SINK_ONLY_NODE_TYPES,
@@ -33,10 +33,11 @@ from haute.codegen import graph_to_code_multi
 from haute.deploy import DeployConfig, resolve_config
 from haute.executor import execute_graph
 from haute.parser import parse_pipeline_file
-from haute.routes._helpers import invalidate_pipeline_index, parse_pipeline_to_graph, pipeline_dir
+from haute.routes._helpers import invalidate_pipeline_index, parse_pipeline_to_graph
 from haute.routes._save_pipeline import SavePipelineService
 from haute.routes._submodel_ops import create_node_instance_graph
 from tests._git_helpers import git_run, init_repo
+from tests._project import use_project
 from tests.test_deploy_submodels import _score_bundle
 from tests.test_optimiser_apply import _make_ratebook_artifact
 from tests.test_optimiser_routes_real_library import _scored_frame
@@ -387,15 +388,14 @@ def _proof_graph(kind: NodeType, root: Path) -> tuple[PipelineGraph, list[dict],
 def test_one_node_instance_cross_path_proof(
     kind: NodeType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, client: TestClient
 ) -> None:
-    monkeypatch.chdir(tmp_path)
-    pipeline_dir.cache_clear()
+    use_project(tmp_path)
     invalidate_pipeline_index()
     (tmp_path / "haute.toml").write_text(
         '[project]\npipeline = "pipeline.py"\n[deploy]\ntarget = "container"\n'
         '[deploy.container]\nbase_image = "python:3.11.9-slim"\n',
         encoding="utf-8",
     )
-    with bound_project_root(tmp_path):
+    with project_scope(ProjectContext.at(tmp_path)):
         graph, expected, column = _proof_graph(kind, tmp_path)
         target = qualified_runtime_node_id("rate_calc_2", "rate_calc_node")
         raw = graph.model_dump(mode="json", by_alias=True)
@@ -524,8 +524,7 @@ def test_training_occurrences_publish_distinct_readable_artifacts(
     from haute.modelling._feature_contract import load_contract
     from haute.modelling._training_job import model_contract_filename
 
-    monkeypatch.chdir(tmp_path)
-    pipeline_dir.cache_clear()
+    use_project(tmp_path)
     invalidate_pipeline_index()
     graph, rows, _ = _proof_graph(NodeType.MODELLING, tmp_path)
     graph.submodels["rate_calc"].graph.nodes[0].data.label = "Risk model"
@@ -556,7 +555,7 @@ def test_training_occurrences_publish_distinct_readable_artifacts(
     )
     raw = graph.model_dump(mode="json", by_alias=True)
     models: list[tuple[str, Path, bytes, list[float]]] = []
-    with bound_project_root(tmp_path):
+    with project_scope(ProjectContext.at(tmp_path)):
         for occurrence, stem in [
             ("rate_calc", "Risk_model"),
             ("rate_calc_2", "rate_calc_2__Risk_model"),
@@ -682,10 +681,9 @@ def test_node_instance_acceptance_tracks_shared_edits_and_output_rename(
 ) -> None:
     from haute._graph_utils import edge_input_name
 
-    monkeypatch.chdir(tmp_path)
-    pipeline_dir.cache_clear()
+    use_project(tmp_path)
     invalidate_pipeline_index()
-    with bound_project_root(tmp_path):
+    with project_scope(ProjectContext.at(tmp_path)):
         config, expected, _ = _case(kind, tmp_path)
         rows = _input_rows(kind)
         original = PipelineGraph(

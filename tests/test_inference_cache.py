@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import copy
 import dataclasses
 import threading
@@ -266,13 +267,17 @@ def test_deterministic_shared_scan(
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         try:
-            fut1 = executor.submit(cache.get, path, record_limit=10, loader=loader)
+            fut1 = executor.submit(
+                contextvars.copy_context().run, cache.get, path, record_limit=10, loader=loader
+            )
             assert started.wait(timeout=5), "first loader did not start"
 
             if clear_during_load:
                 cache.clear()
 
-            fut2 = executor.submit(cache.get, path, record_limit=10, loader=loader)
+            fut2 = executor.submit(
+                contextvars.copy_context().run, cache.get, path, record_limit=10, loader=loader
+            )
             assert second_seen.wait(timeout=5), "second query was not observed"
             assert not fut2.done(), "second future completed prematurely"
 
@@ -339,10 +344,14 @@ def test_waiter_rechecks_revision_after_shared_result(
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         try:
-            fut1 = executor.submit(cache.get, path, record_limit=10, loader=loader)
+            fut1 = executor.submit(
+                contextvars.copy_context().run, cache.get, path, record_limit=10, loader=loader
+            )
             assert started.wait(timeout=5), "first loader did not start"
 
-            fut2 = executor.submit(cache.get, path, record_limit=10, loader=loader)
+            fut2 = executor.submit(
+                contextvars.copy_context().run, cache.get, path, record_limit=10, loader=loader
+            )
             assert second_seen.wait(timeout=5), "second query was not observed"
             assert not fut2.done(), "second future completed prematurely"
 
@@ -452,7 +461,9 @@ def test_fork_reset_seam(
     executor = ThreadPoolExecutor(max_workers=1)
     try:
         cache._process_id = module.os.getpid() + pid_delta
-        fut = executor.submit(cache.get, path, record_limit=10, loader=loader)
+        fut = executor.submit(
+            contextvars.copy_context().run, cache.get, path, record_limit=10, loader=loader
+        )
         res2 = fut.result(timeout=5)
 
         assert calls == 2

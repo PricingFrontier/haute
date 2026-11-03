@@ -17,6 +17,7 @@ from pathlib import Path
 import click
 
 from haute._project import resolve_pipeline_file
+from haute._project_context import current_project
 from haute._scaffold import BUILD_AND_PUSH_ONLY_TARGETS
 from haute.cli._helpers import ENDPOINT_SUFFIX_HELP, EXPECTED_FAILURES
 from haute.errors import DeployError
@@ -88,7 +89,7 @@ def handle_deploy(config: DeployCliConfig) -> None:
 
     # 0. A workbench project hosts no scoring API: what it releases is the underwriter app.
     try:
-        workbench = read_workbench_config(Path.cwd()).enabled
+        workbench = read_workbench_config(current_project().root).enabled
     except WorkbenchConfigError as exc:
         click.echo(f"Error: {exc}", err=True)
         raise SystemExit(1) from exc
@@ -101,14 +102,14 @@ def handle_deploy(config: DeployCliConfig) -> None:
         raise SystemExit(1)
 
     # 1. Load config — prefer haute.toml when present, else build from CLI.
-    toml_path = Path.cwd() / "haute.toml"
+    toml_path = current_project().root / "haute.toml"
     if toml_path.exists():
         deploy_config = DeployConfig.from_toml(toml_path)
         click.echo("  \u2713 Loaded config from haute.toml")
     else:
         try:
             resolved = resolve_pipeline_file(
-                Path(config.pipeline_file) if config.pipeline_file else None,
+                Path(config.pipeline_file) if config.pipeline_file else current_project().root,
             )
             deploy_config = DeployConfig.from_cli_args(
                 pipeline_file=resolved,
@@ -136,7 +137,7 @@ def handle_deploy(config: DeployCliConfig) -> None:
         from haute.deploy import check_credentials
         from haute.deploy._config import _load_env
 
-        _load_env(deploy_config.project_dir or Path.cwd())
+        _load_env(deploy_config.project_dir or current_project().root)
         try:
             check_credentials(deploy_config)
         except DeployError as exc:
@@ -155,7 +156,7 @@ def handle_deploy(config: DeployCliConfig) -> None:
     pipeline_candidate = (
         Path(config.pipeline_file)
         if config.pipeline_file
-        else deploy_config.project_dir or Path.cwd()
+        else deploy_config.project_dir or current_project().root
     )
     deploy_config.pipeline_file = resolve_pipeline_file(pipeline_candidate)
 

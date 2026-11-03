@@ -11,6 +11,7 @@ import pytest
 from haute.cli import cli
 from haute.cli._deploy import _CI_PROVIDER_ENV_VARS
 from haute.errors import DeployError
+from tests._project import use_project
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -78,7 +79,7 @@ class TestDeploy:
     ) -> None:
         """A workbench project releases the underwriter app: deploy refuses before it reads
         or resolves anything, a dry run included, in CI or not (specs/cli)."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         monkeypatch.setenv("GITHUB_ACTIONS", "true")
         _make_toml(tmp_path)
         toml = tmp_path / "haute.toml"
@@ -102,7 +103,7 @@ class TestDeploy:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Deploys must go through CI/CD unless --dry-run is used."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _make_toml(tmp_path)
         _clear_ci_env(monkeypatch)
 
@@ -116,7 +117,7 @@ class TestDeploy:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _make_toml(tmp_path)
 
         resolved = _mock_resolved()
@@ -139,7 +140,7 @@ class TestDeploy:
     ) -> None:
         from haute.deploy._request_rows import RequestRows, RowRefusal
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _make_toml(tmp_path)
         resolved = _mock_resolved()
         resolved.request_rows = RequestRows(
@@ -163,7 +164,7 @@ class TestDeploy:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _make_toml(tmp_path)
 
         resolved = _mock_resolved()
@@ -189,7 +190,7 @@ class TestDeploy:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         pipeline = tmp_path / "rating.py"
         pipeline.write_text('import haute\npipeline = haute.Pipeline("rating")\n')
         resolved = _mock_resolved()
@@ -212,7 +213,7 @@ class TestDeploy:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _make_toml(tmp_path)
 
         with patch("haute.deploy._config.resolve_config", side_effect=ValueError("No output node")):
@@ -227,7 +228,7 @@ class TestDeploy:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _make_toml(tmp_path)
 
         resolved = _mock_resolved()
@@ -255,7 +256,7 @@ class TestDeploy:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _make_toml(tmp_path)
 
         resolved = _mock_resolved()
@@ -287,7 +288,7 @@ class TestDeploy:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _make_toml(tmp_path)
         monkeypatch.setenv("CI", "true")
 
@@ -318,7 +319,7 @@ class TestDeploy:
         monkeypatch: pytest.MonkeyPatch,
         target: str,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _make_toml(tmp_path)
         monkeypatch.setenv("CI", "true")
 
@@ -351,7 +352,7 @@ class TestDeploy:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _make_toml(tmp_path)
         monkeypatch.setenv("CI", "true")
 
@@ -383,7 +384,7 @@ class TestDeploy:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # DEP-R12A: a build's directory is removed once it shipped, unless asked to keep it.
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _make_toml(tmp_path)
         monkeypatch.setenv("CI", "true")
         resolved = _mock_resolved()
@@ -413,7 +414,7 @@ class TestDeploy:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The CLI must deploy the exact ResolvedDeploy it validated and scored."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _make_toml(tmp_path)
         monkeypatch.setenv("CI", "true")
 
@@ -462,7 +463,7 @@ class TestDeploy:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _make_toml(tmp_path)
         monkeypatch.setenv("CI", "true")
 
@@ -487,7 +488,7 @@ class TestDeploy:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _make_toml(tmp_path)
         monkeypatch.setenv("CI", "true")
 
@@ -511,7 +512,7 @@ class TestDeploy:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Backend programming failures retain their original exception type."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _make_toml(tmp_path)
         monkeypatch.setenv("CI", "true")
         resolved = _mock_resolved()
@@ -532,7 +533,7 @@ class TestDeploy:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _make_toml(tmp_path)
 
         resolved = _mock_resolved()
@@ -561,7 +562,7 @@ class TestResolutionFailures:
         monkeypatch: pytest.MonkeyPatch,
         failure: Exception,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _make_toml(tmp_path)
         with patch("haute.deploy._config.resolve_config", side_effect=failure):
             result = runner.invoke(cli, ["deploy", "--dry-run"])
@@ -573,7 +574,7 @@ class TestResolutionFailures:
     def test_a_type_error_reaches_the_terminal_with_its_traceback(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _make_toml(tmp_path)
         with patch(
             "haute.deploy._config.resolve_config",

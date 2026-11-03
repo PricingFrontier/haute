@@ -325,8 +325,9 @@ Out of scope (owned elsewhere, linked where relevant):
   low-level specification), and by the io-layer (`_io.py`) for `validate_project_path`,
   `safe_unpickle`, and `safe_joblib_load` when loading external model/data
   artifacts (`load_external_object`), and by `routes/optimiser.py` and
-  `routes/pipeline.py` for `_get_project_root()` when resolving user-supplied
-  output paths against the project root.
+  `routes/pipeline.py` for the current project's root
+  (`haute._project_context.current_project`) when resolving user-supplied output paths
+  against the project root.
 - Depended on by the CLI `cli/_serve.py` for
   `ensure_local_session_token_env`/`TRUSTED_HOSTS_ENV` when starting the dev
   server and its child processes.

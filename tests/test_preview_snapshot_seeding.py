@@ -23,6 +23,7 @@ from haute._seed_plans import SeedPlan, SeedPlanRequest, open_seed_plan
 from haute._source_cache import SourceCacheIdentity
 from haute._step_progress import StepProgress
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from tests._project import project_app, use_project
 
 ALL = NodeSnapshotColumns.all()
 _ROWS = 100
@@ -124,7 +125,7 @@ def test_preview_staging_cleanup_failure_does_not_mask_worker_result(
         seen.append(token)
         raise OSError("filesystem unavailable")
 
-    monkeypatch.setattr(pipeline, "_get_project_root", lambda: project)
+    use_project(project)
     monkeypatch.setattr(NodeSnapshotStore, "discard_node_output_staging", unavailable)
     pipeline._discard_preview_staging("owned-staging-token")
     assert seen == ["owned-staging-token"]
@@ -160,7 +161,7 @@ def _graph(
 
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
+    use_project(haute_scratch)
     (haute_scratch / "main.py").write_text("# pipeline\n", encoding="utf-8")
     pl.DataFrame({"id": list(range(_ROWS)), "a": list(range(_ROWS))}).write_parquet(
         haute_scratch / "policies.parquet"
@@ -270,7 +271,8 @@ def _previewing(
     step_progress: Callable[[StepProgress], None] | None = None,
 ) -> Iterator[Preview]:
     import haute.execution as execution_facade
-    from haute.executor import _compile_preamble, _pipeline_dir
+    from haute._project_context import graph_pipeline_dir
+    from haute.executor import _compile_preamble
 
     context = _context()
     context.step_progress = step_progress
@@ -313,7 +315,9 @@ def _previewing(
                 record_failures=True,
             ),
             target_node_id=target,
-            preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+            preamble_ns=_compile_preamble(
+                graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph)
+            )
             or None,
             source=source,
             enforce_contracts=True,
@@ -816,7 +820,8 @@ def test_a_capture_writes_the_columns_its_generation_keeps(
         profile=ExecutionProfile.TRAINING_PREP,
     ).close()
     required = {"banding": ["band"]}
-    from haute.executor import _compile_preamble, _pipeline_dir
+    from haute._project_context import graph_pipeline_dir
+    from haute.executor import _compile_preamble
 
     context = _context()
     request = SeedPlanRequest(
@@ -833,7 +838,9 @@ def test_a_capture_writes_the_columns_its_generation_keeps(
             _counting_build(Counter(), Counter()),
             policy=CollectPolicy.display(collect={"banding"}, row_limit=3, record_failures=True),
             target_node_id="banding",
-            preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph)),
+            preamble_ns=_compile_preamble(
+                graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph)
+            ),
             source="live",
             required_columns_by_node=required,
             execution_context=context,
@@ -987,7 +994,8 @@ def api(project: Path) -> Iterator[Any]:
     from fastapi.testclient import TestClient
 
     from haute.executor import _preview_cache
-    from haute.server import app
+
+    app = project_app()
 
     _preview_cache.clear()
     yield TestClient(app)
@@ -1098,8 +1106,9 @@ def test_join_target_preview_captures_and_collects_from_its_capture(
 def test_training_run_seeds_preview_capture(
     project: Path, api: Any, store: NodeSnapshotStore
 ) -> None:
+    from haute._project_context import graph_pipeline_dir
     from haute.execution import execute_lazy_graph
-    from haute.executor import _compile_preamble, _pipeline_dir
+    from haute.executor import _compile_preamble
 
     graph = _join_graph(project)
     captured = _post_preview(api, graph, "banding")["seed_plan"][0]["generation_id"]
@@ -1120,7 +1129,9 @@ def test_training_run_seeds_preview_capture(
             graph,
             _counting_build(built, Counter()),
             target_node_id="banding",
-            preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+            preamble_ns=_compile_preamble(
+                graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph)
+            )
             or None,
             source="live",
             enforce_contracts=True,

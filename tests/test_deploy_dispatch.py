@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-FIXTURE_DIR = Path("tests/fixtures")
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
 
 

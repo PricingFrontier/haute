@@ -30,7 +30,7 @@ from haute._global_constants import (
 )
 from haute._graph_utils import _edge_id, _sanitize_func_name, executable_input_name
 from haute._logging import get_logger
-from haute._path_resolution import standalone_project_root_scope
+from haute._project_context import standalone_project_scope
 from haute._standalone_nodes import (
     SOURCE_NODE_TYPES,
     FunctionKind,
@@ -141,16 +141,19 @@ class Node:
         frames: tuple[pl.DataFrame, ...],
         target_ports: Sequence[str | None] | None = None,
     ) -> pl.DataFrame:
-        result: pl.DataFrame = run_configured_node(
-            self.node_type,
-            self.kind,
-            name=self.name,
-            config=self.config,
-            fn=fn,
-            frames=frames,
-            pipeline_dir=self.pipeline_dir,
-            target_ports=target_ports,
-        )
+        # Called from a run, this is the run's project; called directly, the
+        # project holding the node's file.
+        with standalone_project_scope(getattr(self.fn, "__globals__", {}).get("__file__")):
+            result: pl.DataFrame = run_configured_node(
+                self.node_type,
+                self.kind,
+                name=self.name,
+                config=self.config,
+                fn=fn,
+                frames=frames,
+                pipeline_dir=self.pipeline_dir,
+                target_ports=target_ports,
+            )
         return result
 
     def __call__(self, *dfs: pl.DataFrame) -> pl.DataFrame:
@@ -913,7 +916,7 @@ class Pipeline(NodeRegistry):
 
         _token = _scenario_ctx.set(source)
         try:
-            with standalone_project_root_scope(self._pipeline_file()):
+            with standalone_project_scope(self._pipeline_file()):
                 order = self._topo_order()
                 constants = self._run_constants(source)
                 outputs: dict[str, Any] = {}
@@ -981,7 +984,7 @@ class Pipeline(NodeRegistry):
             return self._with_submodels_expanded().score(df)
         _token = _scenario_ctx.set("live")
         try:
-            with standalone_project_root_scope(self._pipeline_file()):
+            with standalone_project_scope(self._pipeline_file()):
                 order = self._topo_order()
                 constants = self._run_constants("live")
                 outputs: dict[str, Any] = {}

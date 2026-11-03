@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import copy
+import functools
 import os
 import re
-from collections.abc import Collection, Sequence
+from collections.abc import Callable, Collection, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from haute._artifact_paths import PATH_PROBLEMS, ordinary_path_problem
 from haute._graph_shape import validate_singleton_groups
@@ -633,6 +634,27 @@ def output_fields_are_valid(fields: Sequence[object], available: Collection[str]
     )
 
 
+_ResolvedStep = TypeVar("_ResolvedStep", bound=Callable[..., Any])
+
+
+def in_resolved_project(step: _ResolvedStep) -> _ResolvedStep:
+    """Run a step on a resolved deployment in the project it was resolved in.
+
+    Validation, test-quote scoring and dispatch read the project's pipeline settings,
+    snapshots and relative paths, so they run there whoever calls them, with or
+    without a project installed.
+    """
+
+    @functools.wraps(step)
+    def run_in_project(resolved: ResolvedDeploy, *args: Any, **kwargs: Any) -> Any:
+        from haute._project_context import ProjectContext, project_scope
+
+        with project_scope(ProjectContext.at(resolved.project_root)):
+            return step(resolved, *args, **kwargs)
+
+    return cast(_ResolvedStep, run_in_project)
+
+
 @dataclass
 class ResolvedDeploy:
     """Computed state after resolving a DeployConfig against a parsed pipeline.
@@ -759,9 +781,9 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
     from haute._path_resolution import (
         RuntimePathError,
         resolve_runtime_file_path,
-        runtime_project_root_scope,
     )
     from haute._project import resolve_pipeline_file
+    from haute._project_context import ProjectContext, project_scope
     from haute.deploy._bundler import (
         collect_artifacts,
         prepare_shipped_snapshots,
@@ -811,131 +833,134 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
     _load_env(project_root)
     _validate_python_versions(config, project_root)
 
-    # Parse the pipeline as it runs, as `haute run` and the editor do: each submodel
-    # occurrence expanded into its own nodes (``submodel_runtime/<occurrence>/<node>``),
-    # so the response, the request input and the artefacts inside a submodel are
-    # found, bundled and scored, and the submodel's nodes run in its place.
-    full_graph = parse_pipeline_file(pipeline_file, flatten=True)
-    if not full_graph.nodes:
-        raise ValueError(f"No nodes found in {pipeline_file}")
-    # One request input and one response, counting those inside submodels, as
-    # save requires: a pipeline file written by hand can hold more.
-    validate_singleton_groups(full_graph)
-    # A workbench node's tables are the form's, read once here, so the bundle carries the
-    # tables the deployed pipeline was validated on and never reads a folder.
-    owner = form_owner(full_graph)
-    if owner is not None:
-        if form is None:
-            form = read_project_form(project_root, owner=owner)
-        full_graph = with_tables(full_graph, workbench_tables(form.spec))
-        unconnectable = connection_errors(full_graph, read_workbench_config(project_root).form)
-        if unconnectable:
-            raise DeployError("\n".join(unconnectable))
-    else:
-        form = None
+    # Everything below works in the deployed project, whoever calls: its root anchors
+    # every relative path, the pipeline settings and the project's `utility`.
+    with project_scope(ProjectContext.at(project_root)):
+        # Parse the pipeline as it runs, as `haute run` and the editor do: each submodel
+        # occurrence expanded into its own nodes (``submodel_runtime/<occurrence>/<node>``),
+        # so the response, the request input and the artefacts inside a submodel are
+        # found, bundled and scored, and the submodel's nodes run in its place.
+        full_graph = parse_pipeline_file(pipeline_file, flatten=True)
+        if not full_graph.nodes:
+            raise ValueError(f"No nodes found in {pipeline_file}")
+        # One request input and one response, counting those inside submodels, as
+        # save requires: a pipeline file written by hand can hold more.
+        validate_singleton_groups(full_graph)
+        # A workbench node's tables are the form's, read once here, so the bundle carries the
+        # tables the deployed pipeline was validated on and never reads a folder.
+        owner = form_owner(full_graph)
+        if owner is not None:
+            if form is None:
+                form = read_project_form(project_root, owner=owner)
+            full_graph = with_tables(full_graph, workbench_tables(form.spec))
+            unconnectable = connection_errors(full_graph, read_workbench_config(project_root).form)
+            if unconnectable:
+                raise DeployError("\n".join(unconnectable))
+        else:
+            form = None
 
-    # Find output node
-    output_node_id = find_output_node(full_graph)
+        # Find output node
+        output_node_id = find_output_node(full_graph)
 
-    # Prune to scoring path
-    pruned_graph, _kept_ids, removed_ids = prune_for_deploy(full_graph, output_node_id)
+        # Prune to scoring path
+        pruned_graph, _kept_ids, removed_ids = prune_for_deploy(full_graph, output_node_id)
 
-    # Find input nodes
-    deploy_inputs = find_deploy_input_nodes(pruned_graph)
-    if not deploy_inputs:
-        # Fallback: use the single source node in the pruned graph
-        all_sources = find_source_nodes(pruned_graph)
-        if len(all_sources) == 1:
-            source_id = all_sources[0]
-            source = next(node for node in pruned_graph.nodes if node.id == source_id)
-            if source.data.nodeType != NodeType.DATA_INPUT:
+        # Find input nodes
+        deploy_inputs = find_deploy_input_nodes(pruned_graph)
+        if not deploy_inputs:
+            # Fallback: use the single source node in the pruned graph
+            all_sources = find_source_nodes(pruned_graph)
+            if len(all_sources) == 1:
+                source_id = all_sources[0]
+                source = next(node for node in pruned_graph.nodes if node.id == source_id)
+                if source.data.nodeType != NodeType.DATA_INPUT:
+                    raise ValueError(
+                        f"Sole source node {source_id!r} is {source.data.nodeType.value!r}, "
+                        "not a dataInput. Add a Quote Input (@pipeline.api_input(...)) or a "
+                        "Workbench Input (@pipeline.workbench_input(...))."
+                    )
+                deploy_inputs = all_sources
+            elif len(all_sources) == 0:
+                raise ValueError("No source nodes in the pruned graph.")
+            else:
                 raise ValueError(
-                    f"Sole source node {source_id!r} is {source.data.nodeType.value!r}, "
-                    "not a dataInput. Add a Quote Input (@pipeline.api_input(...)) or a "
+                    f"Multiple source nodes in pruned graph ({all_sources}) but none "
+                    "is a request input. Add a Quote Input (@pipeline.api_input(...)) or a "
                     "Workbench Input (@pipeline.workbench_input(...))."
                 )
-            deploy_inputs = all_sources
-        elif len(all_sources) == 0:
-            raise ValueError("No source nodes in the pruned graph.")
-        else:
-            raise ValueError(
-                f"Multiple source nodes in pruned graph ({all_sources}) but none "
-                "is a request input. Add a Quote Input (@pipeline.api_input(...)) or a "
-                "Workbench Input (@pipeline.workbench_input(...))."
+
+        # Collect artifacts. Snapshot generations remain leased until the
+        # resolved deployment is validated and shipped (or explicitly closed).
+        pipeline_dir = pipeline_file.parent
+        resources = ExitStack()
+        snapshot_provenance: dict[str, dict[str, Any]] = {}
+        model_sources: dict[str, dict[str, Any]] = {}
+        try:
+            # Validate every local runtime path before any bundle copy, schema
+            # read, or sample load.  Reuse execution's maintained enumeration so
+            # deploy cannot drift from runtime's definition of local file reads.
+            from haute.execution import _local_runtime_input_path_fields
+
+            for node in pruned_graph.nodes:
+                for field_name in _local_runtime_input_path_fields(node):
+                    raw_path = node.data.config.get(field_name)
+                    if not isinstance(raw_path, str) or not raw_path:
+                        continue
+                    try:
+                        resolve_runtime_file_path(
+                            raw_path,
+                            source_file=pipeline_file,
+                            pipeline_dir=pipeline_dir,
+                            project_root=project_root,
+                            prefer="pipeline",
+                            enforce_project_root=True,
+                        )
+                    except RuntimePathError as exc:
+                        raise DeployError(
+                            f"Node {node.id!r} field {field_name!r} has invalid local "
+                            f"runtime path {raw_path!r} ({type(exc).__name__}): {exc}. "
+                            "Use a path inside the configured project.",
+                            node_id=node.id,
+                            field=field_name,
+                            path=raw_path,
+                        ) from exc
+            # Project code is read statically before anything runs the preamble: an
+            # import the bundle does not carry is not importable here either, so the
+            # schema dry run below could only fail on it with a bare import error.
+            project_modules = resolve_project_modules(pruned_graph.preamble or "", pipeline_dir)
+            if project_modules.unbundled_imports:
+                raise DeployError(" ".join(project_modules.unbundled_imports))
+            # Only data in the pipeline folder ships, from a snapshot that is current.
+            refuse_data_outside_pipeline_folder(
+                pruned_graph, deploy_inputs, pipeline_dir, project_root
             )
-
-    # Collect artifacts. Snapshot generations remain leased until the
-    # resolved deployment is validated and shipped (or explicitly closed).
-    pipeline_dir = pipeline_file.parent
-    resources = ExitStack()
-    snapshot_provenance: dict[str, dict[str, Any]] = {}
-    model_sources: dict[str, dict[str, Any]] = {}
-    try:
-        # Validate every local runtime path before any bundle copy, schema
-        # read, or sample load.  Reuse execution's maintained enumeration so
-        # deploy cannot drift from runtime's definition of local file reads.
-        from haute.execution import _local_runtime_input_path_fields
-
-        for node in pruned_graph.nodes:
-            for field_name in _local_runtime_input_path_fields(node):
-                raw_path = node.data.config.get(field_name)
-                if not isinstance(raw_path, str) or not raw_path:
-                    continue
-                try:
-                    resolve_runtime_file_path(
-                        raw_path,
-                        source_file=pipeline_file,
-                        pipeline_dir=pipeline_dir,
-                        project_root=project_root,
-                        prefer="pipeline",
-                        enforce_project_root=True,
-                    )
-                except RuntimePathError as exc:
-                    raise DeployError(
-                        f"Node {node.id!r} field {field_name!r} has invalid local "
-                        f"runtime path {raw_path!r} ({type(exc).__name__}): {exc}. "
-                        "Use a path inside the configured project.",
-                        node_id=node.id,
-                        field=field_name,
-                        path=raw_path,
-                    ) from exc
-        # Project code is read statically before anything runs the preamble: an
-        # import the bundle does not carry is not importable here either, so the
-        # schema dry run below could only fail on it with a bare import error.
-        project_modules = resolve_project_modules(pruned_graph.preamble or "", pipeline_dir)
-        if project_modules.unbundled_imports:
-            raise DeployError(" ".join(project_modules.unbundled_imports))
-        # Only data in the pipeline folder ships, from a snapshot that is current.
-        refuse_data_outside_pipeline_folder(pruned_graph, deploy_inputs, pipeline_dir, project_root)
-        with runtime_project_root_scope(pipeline_file, project_root=project_root):
             prepare_shipped_snapshots(pruned_graph, deploy_inputs, pipeline_dir, project_root)
-        served_configs: dict[str, dict[str, Any]] = {}
-        artifacts = collect_artifacts(
-            pruned_graph,
-            deploy_inputs,
-            pipeline_dir,
-            project_root=project_root,
-            resources=resources,
-            snapshot_provenance=snapshot_provenance,
-            model_sources=model_sources,
-            served_configs=served_configs,
-        )
-        # The graph that ships names each MLflow model's bundled file; the parsed graph,
-        # whose nodes it shared, keeps the configs the pipeline file gave.
-        pruned_graph = with_served_configs(pruned_graph, served_configs)
-        # Before anything below reads an artefact: every copy into a bundle is checked
-        # against these, so it carries the bytes this resolution checked.
-        artifact_digests = record_digests(artifacts)
+            served_configs: dict[str, dict[str, Any]] = {}
+            artifacts = collect_artifacts(
+                pruned_graph,
+                deploy_inputs,
+                pipeline_dir,
+                project_root=project_root,
+                resources=resources,
+                snapshot_provenance=snapshot_provenance,
+                model_sources=model_sources,
+                served_configs=served_configs,
+            )
+            # The graph that ships names each MLflow model's bundled file; the parsed graph,
+            # whose nodes it shared, keeps the configs the pipeline file gave.
+            pruned_graph = with_served_configs(pruned_graph, served_configs)
+            # Before anything below reads an artefact: every copy into a bundle is checked
+            # against these, so it carries the bytes this resolution checked.
+            artifact_digests = record_digests(artifacts)
 
-        # Infer schemas. The output-schema dry-run scores with the exact bundled
-        # artifacts the container serves so validate-time and serve-time load the
-        # same model bytes (not a live MLflow lookup), and so the schema cache key
-        # reflects the served model identity.
-        artifact_paths = {name: str(path) for name, path in artifacts.items()}
-        # Schema inference re-resolves the graph's relative paths; scoping them to
-        # the project root validated above makes it read the files that check
-        # admitted, never one outside the project.
-        with runtime_project_root_scope(pipeline_file, project_root=project_root):
+            # Infer schemas. The output-schema dry-run scores with the exact bundled
+            # artifacts the container serves so validate-time and serve-time load the
+            # same model bytes (not a live MLflow lookup), and so the schema cache key
+            # reflects the served model identity.
+            artifact_paths = {name: str(path) for name, path in artifacts.items()}
+            # Schema inference re-resolves the graph's relative paths; scoping them to
+            # the project root validated above makes it read the files that check
+            # admitted, never one outside the project.
             input_schema = infer_input_schema(pruned_graph, deploy_inputs[0])
             from haute.deploy._scorer import reads_records
 
@@ -968,54 +993,54 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
                 artifact_paths=artifact_paths,
                 project_root=project_root,
             )
-        if config.output_fields is not None:
-            fields = config.output_fields
-            available = list(output_schema)
-            if not output_fields_are_valid(fields, output_schema):
-                raise DeployError(
-                    "[deploy].output_fields must be a non-empty, duplicate-free list "
-                    "of non-empty output column names present in the inferred schema. "
-                    f"Available fields: {available!r}. Correct [deploy].output_fields.",
-                    output_fields=fields,
-                    available_fields=available,
-                )
-            output_schema = {field: output_schema[field] for field in fields}
-        # Whether a request of several quotes is answered in request order; a lookup
-        # the bundle carries is read here for repeated join keys.
-        rows = request_rows(pruned_graph, deploy_inputs, output_node_id, artifact_paths)
-    except BaseException:
-        resources.close()
-        raise
+            if config.output_fields is not None:
+                fields = config.output_fields
+                available = list(output_schema)
+                if not output_fields_are_valid(fields, output_schema):
+                    raise DeployError(
+                        "[deploy].output_fields must be a non-empty, duplicate-free list "
+                        "of non-empty output column names present in the inferred schema. "
+                        f"Available fields: {available!r}. Correct [deploy].output_fields.",
+                        output_fields=fields,
+                        available_fields=available,
+                    )
+                output_schema = {field: output_schema[field] for field in fields}
+            # Whether a request of several quotes is answered in request order; a lookup
+            # the bundle carries is read here for repeated join keys.
+            rows = request_rows(pruned_graph, deploy_inputs, output_node_id, artifact_paths)
+        except BaseException:
+            resources.close()
+            raise
 
-    logger.info(
-        "config_resolved",
-        pipeline=str(pipeline_file),
-        total_nodes=len(full_graph.nodes),
-        pruned_nodes=len(pruned_graph.nodes),
-        removed_nodes=len(removed_ids),
-        input_nodes=len(deploy_inputs),
-        artifacts=len(artifacts),
-        multi_quote=rows.multi_quote,
-    )
-    return ResolvedDeploy(
-        config=config,
-        pipeline_file=pipeline_file,
-        project_root=project_root,
-        full_graph=full_graph,
-        pruned_graph=pruned_graph,
-        input_node_ids=deploy_inputs,
-        output_node_id=output_node_id,
-        artifacts=artifacts,
-        input_schema=input_schema,
-        output_schema=output_schema,
-        project_modules=project_modules,
-        request_rows=rows,
-        artifact_digests=artifact_digests,
-        omittable_inputs=omittable_inputs,
-        execution_policy=execution_policy,
-        removed_node_ids=removed_ids,
-        snapshot_provenance=snapshot_provenance,
-        model_sources=model_sources,
-        workbench_form=form,
-        _resources=resources,
-    )
+        logger.info(
+            "config_resolved",
+            pipeline=str(pipeline_file),
+            total_nodes=len(full_graph.nodes),
+            pruned_nodes=len(pruned_graph.nodes),
+            removed_nodes=len(removed_ids),
+            input_nodes=len(deploy_inputs),
+            artifacts=len(artifacts),
+            multi_quote=rows.multi_quote,
+        )
+        return ResolvedDeploy(
+            config=config,
+            pipeline_file=pipeline_file,
+            project_root=project_root,
+            full_graph=full_graph,
+            pruned_graph=pruned_graph,
+            input_node_ids=deploy_inputs,
+            output_node_id=output_node_id,
+            artifacts=artifacts,
+            input_schema=input_schema,
+            output_schema=output_schema,
+            project_modules=project_modules,
+            request_rows=rows,
+            artifact_digests=artifact_digests,
+            omittable_inputs=omittable_inputs,
+            execution_policy=execution_policy,
+            removed_node_ids=removed_ids,
+            snapshot_provenance=snapshot_provenance,
+            model_sources=model_sources,
+            workbench_form=form,
+            _resources=resources,
+        )

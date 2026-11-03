@@ -70,6 +70,7 @@ from haute._model_scorer import (
     _model_feature_contract_key,
     _validate_features,
 )
+from haute._project_context import context_thread
 
 # ---------------------------------------------------------------------------
 # Small helpers — shared across every test class in this file.
@@ -612,7 +613,7 @@ class TestValidationCacheThreadSafety:
             except BaseException as exc:  # noqa: BLE001 - test recorder
                 errors.append(exc)
 
-        threads = [threading.Thread(target=worker) for _ in range(8)]
+        threads = [context_thread(worker) for _ in range(8)]
         for t in threads:
             t.start()
         for t in threads:
@@ -641,7 +642,7 @@ class TestValidationCacheThreadSafety:
             except BaseException as exc:  # noqa: BLE001
                 errors.append(exc)
 
-        threads = [threading.Thread(target=worker, args=(i,)) for i in range(len(models))]
+        threads = [context_thread(worker, args=(i,)) for i in range(len(models))]
         for t in threads:
             t.start()
         for t in threads:

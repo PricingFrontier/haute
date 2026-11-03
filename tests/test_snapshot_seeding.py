@@ -35,6 +35,7 @@ from haute.errors import (
     failing_node,
 )
 from haute.execution import execute_lazy_graph
+from tests._project import use_project
 
 ALL = NodeSnapshotColumns.all()
 _ROWS = 200
@@ -145,7 +146,7 @@ def _write_sources(project: Path) -> None:
 
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
+    use_project(haute_scratch)
     (haute_scratch / "main.py").write_text("# pipeline\n", encoding="utf-8")
     _write_sources(haute_scratch)
     return haute_scratch
@@ -270,7 +271,8 @@ def _planned(
     **fields: Any,
 ) -> Iterator[tuple[SeedPlan, ExecutionContext, Callable[[], tuple[pl.LazyFrame, Counter[str]]]]]:
     """Open a plan and yield a callable that executes the graph under it."""
-    from haute.executor import _compile_preamble, _pipeline_dir
+    from haute._project_context import graph_pipeline_dir
+    from haute.executor import _compile_preamble
 
     context = context if context is not None else _context(profile)
     request = _request(graph, target, required=required, profile=profile, source=source, **fields)
@@ -283,7 +285,7 @@ def _planned(
                 _counting_build(calls),
                 target_node_id=target,
                 preamble_ns=_compile_preamble(
-                    graph.preamble or "", pipeline_dir=_pipeline_dir(graph)
+                    graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph)
                 )
                 or None,
                 source=source,
@@ -951,7 +953,8 @@ def test_equivalent_cloned_passthrough_frame_retains_its_write_recipe(
     project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from haute._chunked_writes import WriteRecipe
-    from haute.executor import _compile_preamble, _pipeline_dir
+    from haute._project_context import graph_pipeline_dir
+    from haute.executor import _compile_preamble
 
     graph = _graph(
         project,
@@ -979,7 +982,9 @@ def test_equivalent_cloned_passthrough_frame_retains_its_write_recipe(
             graph,
             _counting_build(Counter()),
             target_node_id="T",
-            preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph)),
+            preamble_ns=_compile_preamble(
+                graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph)
+            ),
             execution_context=context,
             prepare_inputs=False,
             snapshot_plan=plan,
@@ -995,7 +1000,8 @@ def test_equivalent_cloned_passthrough_frame_retains_its_write_recipe(
 def test_seeded_execution_does_not_require_a_metrics_context(
     project: Path, store: NodeSnapshotStore, eager: bool
 ) -> None:
-    from haute.executor import _compile_preamble, _pipeline_dir
+    from haute._project_context import graph_pipeline_dir
+    from haute.executor import _compile_preamble
 
     graph = _join_graph(project)
     expected = _run(graph, store).frame
@@ -1006,7 +1012,7 @@ def test_seeded_execution_does_not_require_a_metrics_context(
         kwargs = {
             "target_node_id": "T",
             "preamble_ns": _compile_preamble(
-                graph.preamble or "", pipeline_dir=_pipeline_dir(graph)
+                graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph)
             ),
             "snapshot_plan": plan,
         }
@@ -1751,7 +1757,8 @@ def test_metrics_list_skipped_capture_points(
     profile = ExecutionProfile.TRAINING_PREP
     context = _context(profile)
     if eager:
-        from haute.executor import _compile_preamble, _pipeline_dir
+        from haute._project_context import graph_pipeline_dir
+        from haute.executor import _compile_preamble
 
         with _planned(graph, store, context=context, profile=profile) as (plan, _, _):
             result = walk_graph(
@@ -1760,7 +1767,7 @@ def test_metrics_list_skipped_capture_points(
                 policy=CollectPolicy.display(),
                 target_node_id="T",
                 preamble_ns=_compile_preamble(
-                    graph.preamble or "", pipeline_dir=_pipeline_dir(graph)
+                    graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph)
                 ),
                 execution_context=context,
                 snapshot_plan=plan,
@@ -1939,7 +1946,8 @@ def test_composed_passthrough_recipe_over_filtered_parent_is_input_sliced_and_eq
     project: Path, tmp_path: Path, store: NodeSnapshotStore
 ) -> None:
     from haute._chunked_writes import WriteRecipe, part_paths, scan_parts, sliceable, write_parts
-    from haute.executor import _compile_preamble, _pipeline_dir
+    from haute._project_context import graph_pipeline_dir
+    from haute.executor import _compile_preamble
 
     graph = _graph(
         project,
@@ -1986,7 +1994,9 @@ def test_composed_passthrough_recipe_over_filtered_parent_is_input_sliced_and_eq
             graph,
             _counting_build(calls),
             target_node_id="T",
-            preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+            preamble_ns=_compile_preamble(
+                graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph)
+            )
             or None,
             source="live",
             enforce_contracts=True,
@@ -2023,7 +2033,8 @@ def test_passthrough_recipe_over_rejected_parent_records_parent_rejection(
     project: Path, store: NodeSnapshotStore
 ) -> None:
     from haute._chunked_writes import WriteRecipe
-    from haute.executor import _compile_preamble, _pipeline_dir
+    from haute._project_context import graph_pipeline_dir
+    from haute.executor import _compile_preamble
 
     graph = _graph(
         project,
@@ -2070,7 +2081,9 @@ def test_passthrough_recipe_over_rejected_parent_records_parent_rejection(
             graph,
             _counting_build(calls),
             target_node_id="T",
-            preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+            preamble_ns=_compile_preamble(
+                graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph)
+            )
             or None,
             source="live",
             enforce_contracts=True,
@@ -2093,7 +2106,8 @@ def test_passthrough_over_parent_with_no_recipe_gets_no_recipe_entry(
     project: Path, store: NodeSnapshotStore
 ) -> None:
     from haute._chunked_writes import WriteRecipe
-    from haute.executor import _compile_preamble, _pipeline_dir
+    from haute._project_context import graph_pipeline_dir
+    from haute.executor import _compile_preamble
 
     graph = _graph(
         project,
@@ -2146,7 +2160,9 @@ def test_passthrough_over_parent_with_no_recipe_gets_no_recipe_entry(
             graph,
             _counting_build(calls),
             target_node_id="T",
-            preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+            preamble_ns=_compile_preamble(
+                graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph)
+            )
             or None,
             source="live",
             enforce_contracts=True,
@@ -2164,7 +2180,8 @@ def test_passthrough_recipe_with_multiple_edges_follows_selected_edge_schema(
     project: Path, store: NodeSnapshotStore
 ) -> None:
     from haute._chunked_writes import WriteRecipe
-    from haute.executor import _compile_preamble, _pipeline_dir
+    from haute._project_context import graph_pipeline_dir
+    from haute.executor import _compile_preamble
 
     graph = _graph(
         project,
@@ -2218,7 +2235,9 @@ def test_passthrough_recipe_with_multiple_edges_follows_selected_edge_schema(
             graph,
             _counting_build(calls),
             target_node_id="T",
-            preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+            preamble_ns=_compile_preamble(
+                graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph)
+            )
             or None,
             source="live",
             enforce_contracts=True,
@@ -2243,7 +2262,8 @@ def test_link_proof_refuses_captured_parent_output_and_omits_child_recipe(
     project: Path, store: NodeSnapshotStore
 ) -> None:
     from haute._chunked_writes import WriteRecipe
-    from haute.executor import _compile_preamble, _pipeline_dir
+    from haute._project_context import graph_pipeline_dir
+    from haute.executor import _compile_preamble
 
     graph = _graph(
         project,
@@ -2302,7 +2322,9 @@ def test_link_proof_refuses_captured_parent_output_and_omits_child_recipe(
             graph,
             _counting_build(calls),
             target_node_id="T",
-            preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+            preamble_ns=_compile_preamble(
+                graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph)
+            )
             or None,
             source="live",
             enforce_contracts=True,
@@ -2320,7 +2342,8 @@ def test_composed_shaped_passthrough_recipe_is_input_sliced_and_preserves_shaped
     project: Path, tmp_path: Path, store: NodeSnapshotStore
 ) -> None:
     from haute._chunked_writes import WriteRecipe, part_paths, scan_parts, sliceable, write_parts
-    from haute.executor import _compile_preamble, _pipeline_dir
+    from haute._project_context import graph_pipeline_dir
+    from haute.executor import _compile_preamble
 
     p_config = {
         "selected_columns": ["b", "id", "a"],
@@ -2371,7 +2394,9 @@ def test_composed_shaped_passthrough_recipe_is_input_sliced_and_preserves_shaped
             graph,
             _counting_build(calls),
             target_node_id="T",
-            preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+            preamble_ns=_compile_preamble(
+                graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph)
+            )
             or None,
             source="live",
             enforce_contracts=True,
@@ -2410,7 +2435,8 @@ def test_two_hop_passthrough_chain_recipe_over_filtered_parent_is_input_sliced_a
     project: Path, tmp_path: Path, store: NodeSnapshotStore
 ) -> None:
     from haute._chunked_writes import WriteRecipe, part_paths, scan_parts, sliceable, write_parts
-    from haute.executor import _compile_preamble, _pipeline_dir
+    from haute._project_context import graph_pipeline_dir
+    from haute.executor import _compile_preamble
 
     graph = _graph(
         project,
@@ -2459,7 +2485,9 @@ def test_two_hop_passthrough_chain_recipe_over_filtered_parent_is_input_sliced_a
             graph,
             _counting_build(calls),
             target_node_id="T",
-            preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+            preamble_ns=_compile_preamble(
+                graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph)
+            )
             or None,
             source="live",
             enforce_contracts=True,

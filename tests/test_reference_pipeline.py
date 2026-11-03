@@ -13,10 +13,10 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from haute._sandbox import set_project_root
 from haute.cli import cli
 from haute.executor import execute_graph
 from haute.parser import parse_pipeline_file
+from tests._project import use_project
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -46,9 +46,9 @@ def test_default_pipeline_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     for relative in _tracked("examples"):
         (checkout / relative).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / relative, checkout / relative)
-    monkeypatch.chdir(checkout)
-    # The suite widens the sandbox root; a fresh checkout's root is its own directory.
-    set_project_root(checkout)
+    # A checkout is a git repository: `haute run` runs in the project holding the file.
+    (checkout / ".git").mkdir()
+    use_project(checkout)
 
     result = CliRunner().invoke(cli, ["run"])
 

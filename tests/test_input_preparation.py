@@ -35,7 +35,12 @@ from haute._input_preparation import (
 from haute._input_providers import build_input_snapshot, resolve_data_input
 from haute._native_memory_limit import native_memory_backend_scope
 from haute._polars_io_registry import PolarsIoConfigError
-from haute._sandbox import set_project_root
+from haute._project_context import (
+    ProjectContext,
+    context_thread,
+    current_project,
+    installed_project,
+)
 from haute._source_cache import SourceCacheStore
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
@@ -45,6 +50,7 @@ from haute._worker_isolation import (
     process_memory_caps_supported,
 )
 from haute.errors import InputPreparationError
+from tests._project import use_project
 from tests.conftest import make_edge, make_graph, make_output_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
@@ -104,8 +110,7 @@ def _project(
     *,
     retire_grace_seconds: float | None = None,
 ) -> SourceCacheStore:
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     store = SourceCacheStore(tmp_path)
     if retire_grace_seconds is not None:
         # The sandbox fixture wraps the store constructor, so the retirement
@@ -383,7 +388,7 @@ def test_two_concurrent_executions_share_one_build(
         except BaseException as exc:  # pragma: no cover - surfaced by the assertion
             errors.append(exc)
 
-    threads = [threading.Thread(target=run) for _ in range(2)]
+    threads = [context_thread(run) for _ in range(2)]
     try:
         for thread in threads:
             thread.start()
@@ -1189,7 +1194,7 @@ def test_a_spawned_build_is_stopped_when_the_execution_is_cancelled(
         entered.wait(30)
         context.cancellation_token.cancel()
 
-    canceller = threading.Thread(target=cancel_when_running)
+    canceller = context_thread(cancel_when_running)
     canceller.start()
     try:
         with pytest.raises(InputPreparationError) as excinfo:
@@ -1920,7 +1925,7 @@ def test_a_single_flight_waiter_inherits_the_owners_typed_failure(
         except BaseException as exc:  # noqa: BLE001 - recorded for the assertion below
             owner_failure.append(exc)
 
-    owner = threading.Thread(target=run_owner)
+    owner = context_thread(run_owner)
     owner.start()
     try:
         # The other thread owns the slot before this execution asks for it.
@@ -1972,10 +1977,12 @@ def test_automatic_preparation_runs_a_real_hard_capped_worker(
 def test_the_progress_relay_reports_while_the_build_runs() -> None:
     counter = BuildProgressCounter()
     reported: list[tuple[int, int]] = []
+    projects: list[ProjectContext | None] = []
     heard = threading.Event()
 
     def progress(rows: int, batches: int) -> None:
         reported.append((rows, batches))
+        projects.append(installed_project())
         heard.set()
 
     with _relayed_progress(counter, progress, interval_seconds=0.01):
@@ -1984,6 +1991,8 @@ def test_the_progress_relay_reports_while_the_build_runs() -> None:
         counter.advance(2)
 
     assert reported[0] == (5, 1)
+    # The poller calls back in the caller's project.
+    assert projects[0] == current_project()
     # The last increase arrives once the build has returned.
     assert (sum(rows for rows, _ in reported), sum(batches for _, batches in reported)) == (7, 2)
 
@@ -2028,7 +2037,6 @@ def test_a_spawned_build_relays_the_rows_it_writes_to_its_parent(
         store=store,
         identity=identity,
         base_dir=tmp_path,
-        project_root=tmp_path,
         profile=ExecutionProfile.LAZY_SINK,
         refresh=False,
         budget=budget,

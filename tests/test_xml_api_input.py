@@ -12,7 +12,8 @@ from haute._input_providers import InputSnapshotMissingError
 from haute._json_shred._cache import load_v2_api_source
 from haute._json_shred._inference import infer_v2_schema_from_data
 from haute._json_shred._records import _iter_xml_records, _xml_element_value, _xml_local_name
-from haute._sandbox import _get_project_root, set_project_root
+from haute._project_context import current_project
+from tests._project import use_project
 from tests.conftest import build_test_api_input_snapshots
 
 
@@ -38,15 +39,15 @@ def test_xml_routes_through_structured_api_input_codec(tmp_path) -> None:
     }
 
     config = {"path": str(data_path), "contract": "opaque", **inferred}
-    original_root = _get_project_root()
-    set_project_root(tmp_path)
+    original_root = current_project().root
+    use_project(tmp_path)
     try:
         build_test_api_input_snapshots(data_path, config)
         frame = load_v2_api_source(str(data_path), config, read_snapshots=True)[
             root["label"]
         ].collect()
     finally:
-        set_project_root(original_root)
+        use_project(original_root)
     assert frame.to_dicts() == [
         {"id": "1", "premium": "12.50"},
         {"id": "2", "premium": "18.75"},
@@ -292,14 +293,14 @@ def _xml_tables(tmp_path: Path, source: str, config: dict | None = None) -> dict
         for table in config["tables"]:
             table["emit"] = True
     config = {"path": str(data_path), "contract": "opaque", **config}
-    original_root = _get_project_root()
-    set_project_root(tmp_path)
+    original_root = current_project().root
+    use_project(tmp_path)
     try:
         build_test_api_input_snapshots(data_path, config)
         frames = load_v2_api_source(str(data_path), config, read_snapshots=True)
         return {label: frame.collect().to_dicts() for label, frame in frames.items()}
     finally:
-        set_project_root(original_root)
+        use_project(original_root)
 
 
 def test_a_single_xml_element_where_another_quote_repeats_it_is_a_one_row_list(
@@ -409,10 +410,10 @@ def test_a_table_built_before_singleton_lists_is_not_read_as_current(
     for table in config["tables"]:
         table["emit"] = True
     config = {"path": str(data_path), "contract": "opaque", **config}
-    original_root = _get_project_root()
-    set_project_root(tmp_path)
+    original_root = current_project().root
+    use_project(tmp_path)
     try:
         with pytest.raises(InputSnapshotMissingError):
             load_v2_api_source(str(data_path), config, read_snapshots=True)
     finally:
-        set_project_root(original_root)
+        use_project(original_root)

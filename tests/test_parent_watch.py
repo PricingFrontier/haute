@@ -54,13 +54,18 @@ _ISOLATED_HARNESS = textwrap.dedent(
         print("WORKER_PID", process.pid, flush=True)
 
     _worker_isolation.start_process_with_environment = announce
-    threading.Thread(
-        target=lambda: run_isolated_worker(
-            commands.block_forever,
-            config=IsolatedWorkerConfig(timeout_seconds=None, memory_limit_bytes=None),
-        ),
-        daemon=True,
-    ).start()
+    # The server's job runs in its project, which the request carries.
+    from pathlib import Path
+    from haute._project_context import ProjectContext, context_thread, project_scope
+
+    with project_scope(ProjectContext.at(Path.cwd())):
+        context_thread(
+            lambda: run_isolated_worker(
+                commands.block_forever,
+                config=IsolatedWorkerConfig(timeout_seconds=None, memory_limit_bytes=None),
+            ),
+            daemon=True,
+        ).start()
     time.sleep(600)
     """
 )

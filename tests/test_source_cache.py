@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import errno
 import json
 import os
@@ -877,9 +878,13 @@ def test_same_identity_build_is_single_flight(tmp_path: Path) -> None:
 
     builder = _BlockingBuilder()
     with ThreadPoolExecutor(max_workers=2) as pool:
-        first = pool.submit(store.build, identity, builder, context=_context())
+        first = pool.submit(
+            contextvars.copy_context().run, store.build, identity, builder, context=_context()
+        )
         assert entered.wait(timeout=5)
-        second = pool.submit(store.build, identity, builder, context=_context())
+        second = pool.submit(
+            contextvars.copy_context().run, store.build, identity, builder, context=_context()
+        )
         release.set()
         first_generation = first.result(timeout=5)
         second_generation = second.result(timeout=5)
@@ -902,12 +907,14 @@ def test_different_identities_build_concurrently(tmp_path: Path) -> None:
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         a = pool.submit(
+            contextvars.copy_context().run,
             store.build,
             _identity(path="a.parquet"),
             _BarrierBuilder(1),
             context=_context(),
         )
         b = pool.submit(
+            contextvars.copy_context().run,
             store.build,
             _identity(path="b.parquet"),
             _BarrierBuilder(2),

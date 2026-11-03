@@ -29,6 +29,7 @@ from haute.deploy._databricks_serving import (
     serving_workspace_client,
     wait_for_endpoint,
 )
+from tests._project import use_project
 
 _HOST = "https://adb-1.azuredatabricks.net"
 _TOKEN = "dapi-serving-token"
@@ -349,7 +350,7 @@ def test_haute_deploy_refuses_missing_credentials_before_parsing(
 ) -> None:
     from haute.cli import cli
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     (tmp_path / "haute.toml").write_text(
         '[project]\nname = "p"\npipeline = "main.py"\n\n'

@@ -15,10 +15,12 @@ import polars as pl
 import pytest
 
 from haute._global_constants import GlobalConstantsNamespace, bind_function_view, restricted_view
+from haute._project_context import context_thread
 from haute._types import GlobalConstant, PipelineGraph
 from haute.deploy._validators import _global_constant_errors
 from haute.errors import GlobalConstantError, RequestRefusedError
 from haute.executor import _build_node_fn, execute_graph, write_data_output
+from tests._project import use_project
 from tests.conftest import (
     make_edge,
     make_file_output_config,
@@ -577,7 +579,7 @@ class TestStandaloneRuns:
             except BaseException as exc:  # pragma: no cover - reported below
                 errors.append(exc)
 
-        threads = [threading.Thread(target=run, args=(s,)) for s in ("live", "nb_batch")]
+        threads = [context_thread(run, args=(s,)) for s in ("live", "nb_batch")]
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -772,7 +774,7 @@ class TestFinalReviewFindings:
         project = tmp_path / "project"
         project.mkdir()
         _link_directory(project / "config", outside)
-        monkeypatch.chdir(project)
+        use_project(project)
         graph = _graph([make_transform_node("t", "df = df")], [], RATE)
         request = SavePipelineRequest(
             name="main",

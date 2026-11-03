@@ -24,6 +24,7 @@ from haute.modelling._ebm import EBMAlgorithm, EBMModel, _cell_labels
 from haute.modelling._feature_contract import load_contract, save_contract
 from haute.modelling._train_config import TrainingConfigError, build_training_job_kwargs
 from haute.modelling._training_job import TrainingJob, model_contract_filename
+from tests._project import use_project
 
 EVALUATION = {
     "schema_version": 1,
@@ -598,12 +599,10 @@ def test_an_mlflow_run_artifact_loads_with_the_contract_logged_beside_it(
 
     from haute._mlflow_io import load_mlflow_model
     from haute._mlflow_utils import mlflow_fluent_operation, set_tracking_uri_preserving_env
-    from haute._sandbox import set_project_root
     from haute.modelling._mlflow_log import resolve_tracking_backend
 
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     data = frame()
     _job, result = train(tmp_path / "train", target="severity", loss="RMSE")
     model_path = Path(result.model_path)
@@ -627,12 +626,10 @@ def test_an_mlflow_run_artifact_loads_without_a_contract(
 
     from haute._mlflow_io import load_mlflow_model
     from haute._mlflow_utils import mlflow_fluent_operation, set_tracking_uri_preserving_env
-    from haute._sandbox import set_project_root
     from haute.modelling._mlflow_log import resolve_tracking_backend
 
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     data = frame()
     _job, result = train(tmp_path / "train", target="severity", loss="RMSE")
     model_path = Path(result.model_path)
@@ -810,12 +807,10 @@ def test_a_run_contract_change_rebinds_without_reloading_the_model(
         resolve_backend,
         set_tracking_uri_preserving_env,
     )
-    from haute._sandbox import set_project_root
     from haute.modelling._mlflow_log import resolve_tracking_backend
 
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     _job, result = train(tmp_path / "train", target="severity", loss="RMSE")
     model_path = Path(result.model_path)
     with mlflow_fluent_operation():

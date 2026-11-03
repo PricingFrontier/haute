@@ -21,6 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from haute._graph_walker import CollectPolicy, walk_graph
+from tests._project import project_app, use_project
 from tests.job_store_support import seed_job
 from tests.training_artifacts_support import publish_trained_job
 
@@ -207,14 +208,12 @@ def _source_and_transform_graph(
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """TestClient with cwd set to a temp directory and Databricks env set."""
-    from haute._sandbox import set_project_root
 
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     monkeypatch.setenv("DATABRICKS_HOST", "https://test.cloud.databricks.com")
     monkeypatch.setenv("DATABRICKS_TOKEN", "dapi_test_token")
     (tmp_path / "main.py").write_text("")
-    from haute.server import app
+    app = project_app()
 
     return TestClient(app)
 
@@ -486,9 +485,8 @@ class TestSafeDetailOnError:
         assert detail == _SAFE_DETAIL
 
     def test_pipeline_sink_500_no_leak(self, client: TestClient, tmp_path: Path) -> None:
-        from haute._sandbox import set_project_root
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         data_path = tmp_path / "data" / "input.parquet"
         graph = _minimal_source_graph(str(data_path))
         # Add a sink node
@@ -560,9 +558,8 @@ class TestOptimiserRoutesSafeDetail:
     def test_save_oserror_no_path_leak(
         self, client: TestClient, clean_job_store, tmp_path, monkeypatch
     ) -> None:
-        from haute._sandbox import set_project_root
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         store = clean_job_store
         seed_job(
             store,
@@ -864,10 +861,10 @@ class TestDomainErrorsStillExposed:
     # output cannot leak through ``str(exc)``.
 
     def test_databricks_missing_credentials_exposed(self, tmp_path, monkeypatch) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-        from haute.server import app
+        app = project_app()
 
         c = TestClient(app)
         resp = c.get("/api/databricks/warehouses")
@@ -1145,14 +1142,14 @@ class TestSensitiveInfoLeakage:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         bad_py = tmp_path / "bad_pipeline.py"
         bad_py.write_text(
             "import haute\npipeline = haute.Pipeline('bad')\n"
             "@pipeline.data_input(path='/nonexistent')\ndef src(config): pass\n"
         )
 
-        from haute.server import app
+        app = project_app()
 
         c = TestClient(app)
         # A single loader system failure is represented by a bounded summary;
@@ -1424,13 +1421,10 @@ class TestPreambleErrorSanitization:
         (utility_dir / "__init__.py").write_text("")
         (utility_dir / "broken.py").write_text("result = undefined_var + 1\n")
 
-        import os
         import sys
 
-        old_cwd = os.getcwd()
         old_path = sys.path[:]
         try:
-            os.chdir(tmp_path)
             if str(tmp_path) not in sys.path:
                 sys.path.insert(0, str(tmp_path))
 
@@ -1443,7 +1437,6 @@ class TestPreambleErrorSanitization:
             assert "exec(" not in error_msg
             assert "safe_globals" not in error_msg
         finally:
-            os.chdir(old_cwd)
             sys.path[:] = old_path
             for mod_name in [k for k in sys.modules if k.startswith("utility")]:
                 del sys.modules[mod_name]

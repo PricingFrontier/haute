@@ -30,11 +30,13 @@ import asyncio
 import threading
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
 
 import polars as pl
 import pytest
 
+from haute._project_context import ProjectContext, context_thread
+from tests._project import project_app, use_project
 from tests._source_files import source_files
 from tests.conftest import write_data_input_config
 
@@ -143,7 +145,7 @@ class TestStartupPopulatesCache:
         """
         import haute.routes._helpers as helpers
 
-        monkeypatch.chdir(pipeline_project)
+        use_project(pipeline_project)
 
         # Prevent the real file-watcher from starting (it depends on watchfiles
         # and would run forever).  We only care that entering the lifespan
@@ -152,7 +154,9 @@ class TestStartupPopulatesCache:
             return None
 
         with patch("haute.server._file_watcher", _noop_watcher):
-            from haute.server import _lifespan, app
+            from haute.server import _lifespan
+
+            app = project_app()
 
             async def _enter_lifespan() -> None:
                 async with _lifespan(app):
@@ -163,8 +167,8 @@ class TestStartupPopulatesCache:
                         "Pipeline index was still None after lifespan startup "
                         "— startup populate hook is missing."
                     )
-                    assert "pipeline_a" in helpers._pipeline_index
-                    assert "pipeline_b" in helpers._pipeline_index
+                    assert "pipeline_a" in helpers._pipeline_index[1]
+                    assert "pipeline_b" in helpers._pipeline_index[1]
 
             asyncio.run(_enter_lifespan())
 
@@ -180,7 +184,7 @@ class TestStartupPopulatesCache:
         ``discover_pipelines`` so we can assert it was NOT called during the
         lookup (only during startup).
         """
-        monkeypatch.chdir(pipeline_project)
+        use_project(pipeline_project)
 
         discover_calls: list[None] = []
         real_discover = None
@@ -201,7 +205,9 @@ class TestStartupPopulatesCache:
             patch.object(_discovery_mod, "discover_pipelines", side_effect=_counting_discover),
         ):
             from haute.routes._helpers import lookup_pipeline_by_name
-            from haute.server import _lifespan, app
+            from haute.server import _lifespan
+
+            app = project_app()
 
             async def _enter_and_lookup() -> Path | None:
                 async with _lifespan(app):
@@ -242,7 +248,7 @@ class TestCacheHits:
         """
         import haute.routes._helpers as helpers
 
-        monkeypatch.chdir(pipeline_project)
+        use_project(pipeline_project)
 
         # Prime the cache.
         helpers._ensure_pipeline_index()
@@ -281,11 +287,11 @@ class TestFileWatcherRebuildsCache:
 
         import haute.routes._helpers as helpers
 
-        monkeypatch.chdir(pipeline_project)
+        use_project(pipeline_project)
 
         # Prime the cache with only pipeline_a and pipeline_b.
         helpers._ensure_pipeline_index()
-        assert "pipeline_c" not in (helpers._pipeline_index or {})
+        assert helpers._pipeline_index is None or "pipeline_c" not in helpers._pipeline_index[1]
 
         # Write a third pipeline to disk — this is what the watcher would see.
         data_path = (pipeline_project / "data" / "input.parquet").as_posix()
@@ -328,7 +334,12 @@ pipeline.connect("source_c", "transform_c")
                 patch("watchfiles.awatch", _fake_awatch),
                 patch("haute.server.broadcast", _capture_broadcast),
                 patch("haute.server.is_self_write", return_value=False),
-                patch("haute.server.pipeline_dir", return_value=pipeline_project),
+                patch.object(
+                    ProjectContext,
+                    "pipeline_dir",
+                    new_callable=PropertyMock,
+                    return_value=pipeline_project,
+                ),
                 patch("haute.server._DEBOUNCE_SECONDS", 0),
             ):
                 from haute.server import _file_watcher
@@ -475,7 +486,7 @@ class TestConcurrentReadsDoNotRace:
         """
         import haute.routes._helpers as helpers
 
-        monkeypatch.chdir(pipeline_project)
+        use_project(pipeline_project)
 
         # Force an empty cache to guarantee both threads take the build path.
         helpers._pipeline_index = None
@@ -505,7 +516,7 @@ class TestConcurrentReadsDoNotRace:
                 errors.append(exc)
 
         with patch.object(_parser_mod, "parse_pipeline_file", side_effect=_slow_parse):
-            threads = [threading.Thread(target=_worker) for _ in range(2)]
+            threads = [context_thread(_worker) for _ in range(2)]
             for t in threads:
                 t.start()
             for t in threads:
@@ -559,7 +570,7 @@ class TestConcurrentReadsDoNotRace:
 
         monkeypatch.setattr(helpers, "read_user_text", _slow_read)
 
-        builder = threading.Thread(target=lambda: results.append(helpers._ensure_module_deps()))
+        builder = context_thread(lambda: results.append(helpers._ensure_module_deps()))
         builder.start()
         assert build_started.wait(2)
 
@@ -568,7 +579,7 @@ class TestConcurrentReadsDoNotRace:
             helpers.invalidate_pipeline_index()
             invalidation_finished.set()
 
-        invalidator = threading.Thread(target=_invalidate)
+        invalidator = context_thread(_invalidate)
         invalidator.start()
 
         assert invalidation_started.wait(1)
@@ -584,7 +595,9 @@ class TestConcurrentReadsDoNotRace:
         assert read_count == 2
         fresh = helpers._module_dep_key(pipeline_file.parent / "modules" / "fresh.py")
         assert results == [{fresh: {pipeline_file}}]
-        assert helpers._module_deps == {fresh: {pipeline_file}}
+        assert helpers._module_deps is not None and helpers._module_deps[1] == {
+            fresh: {pipeline_file}
+        }
 
     def test_reader_during_rebuild_never_sees_none(
         self,
@@ -610,12 +623,12 @@ class TestConcurrentReadsDoNotRace:
         """
         from haute.routes import _helpers
 
-        monkeypatch.chdir(pipeline_project)
+        use_project(pipeline_project)
 
         # Prime the cache so the rebuild path is exercised under a
         # "cache-present, about-to-swap" scenario rather than a cold start.
         _helpers._ensure_pipeline_index()
-        expected_keys = set(_helpers._pipeline_index or {})
+        expected_keys = set((_helpers._pipeline_index or (None, {}))[1])
         # Sanity: priming should have populated the two known pipelines.
         assert expected_keys == {"pipeline_a", "pipeline_b"}, (
             f"Prime step did not populate the expected pipelines; got {expected_keys}"
@@ -646,7 +659,7 @@ class TestConcurrentReadsDoNotRace:
                 if snapshot is None:
                     none_observations[0] += 1
                     continue
-                keys = set(snapshot)
+                keys = set(snapshot[1])
                 # The invariant we pin: if the reader sees a dict at all,
                 # it must be a fully-populated dict equal to the expected
                 # keyset.  A dict that is missing a key a previous reader
@@ -656,8 +669,8 @@ class TestConcurrentReadsDoNotRace:
                     partial_observations.append(keys)
                     return
 
-        rebuilder = threading.Thread(target=_rebuilder)
-        reader = threading.Thread(target=_reader)
+        rebuilder = context_thread(_rebuilder)
+        reader = context_thread(_reader)
         rebuilder.start()
         reader.start()
         rebuilder.join(timeout=5.0)

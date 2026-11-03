@@ -28,6 +28,7 @@ from haute.deploy._project_modules import ProjectModules
 from haute.deploy._request_rows import RequestRows
 from haute.deploy._validators import _TestQuoteCase, validate_deploy
 from tests._deploy_helpers import artifact_digests, resolved_paths
+from tests._project import use_project
 
 _MINIMAL_LIVE_QUOTE = (
     Path(__file__).resolve().parents[1]
@@ -169,7 +170,7 @@ model_name = "simple"
 
         project = tmp_path / "project"
         shutil.copytree(_MINIMAL_LIVE_QUOTE, project)
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         config = DeployConfig.from_toml(project / "haute.toml")
         before = dataclasses.replace(config)
 

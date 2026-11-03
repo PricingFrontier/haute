@@ -34,6 +34,7 @@ from haute.deploy._request_rows import RowRefusal, prove_request_rows, request_r
 from haute.deploy._schema import _read_sample_row, infer_output_schema
 from haute.deploy._scorer import QuoteRequest, reads_records, score_graph
 from haute.execution import ExecutionProfile, execute_lazy_graph
+from tests._project import use_project
 from tests.conftest import build_test_api_input_snapshots
 
 QUOTES: list[dict[str, Any]] = [
@@ -126,7 +127,7 @@ EXPECTED = [
 
 @pytest.fixture
 def sample(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
+    use_project(haute_scratch)
     path = haute_scratch / "request.json"
     path.write_text(json.dumps(QUOTES), encoding="utf-8")
     return path
@@ -474,7 +475,7 @@ def test_an_xml_sample_s_single_driver_is_a_list_of_one_in_the_dry_run(
     haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The request a deployment receives is JSON, so the sample quote takes its shape."""
-    monkeypatch.chdir(haute_scratch)
+    use_project(haute_scratch)
     sample = haute_scratch / "request.xml"
     sample.write_text(
         "<quotes><quote><quote_id>3</quote_id><region>N</region>"
@@ -523,8 +524,8 @@ def _load_app(root: Path, graph: PipelineGraph) -> Any:
 def test_quote_answers_one_quote_and_several_through_their_tables(
     sample, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    container = haute_scratch / "container"
-    container.mkdir()
+    # The served bundle is the project its request sample sits in, as a bundle ships it.
+    container = haute_scratch
     module = _load_app(container, _graph(sample))
 
     async def in_process(function, *args, config):
@@ -589,8 +590,8 @@ def test_json_and_ndjson_answer_with_the_same_rows(
             ],
         }
     )
-    container = haute_scratch / "container"
-    container.mkdir()
+    # The served bundle is the project its request sample sits in, as a bundle ships it.
+    container = haute_scratch
     module = _load_app(container, graph)
 
     async def in_process(function, *args, config):

@@ -28,7 +28,7 @@ from haute._execution_admission import create_admitted_execution_context
 from haute._node_apply import assemble_workbench_output_from_config
 from haute._output_assembler import render_output_document
 from haute._polars_utils import CollectEngine, execution_collect
-from haute._sandbox import _get_project_root, set_project_root
+from haute._project_context import current_project
 from haute._source_cache import new_staging_token
 from haute._types import (
     RESPONSE_NODE_TYPES,
@@ -56,6 +56,7 @@ from haute.executor import execute_graph
 from haute.parser import parse_pipeline_file
 from haute.routes._save_pipeline import SavePipelineService
 from haute.trace import execute_trace
+from tests._project import project_app, use_project
 from tests._workbench_helpers import (
     form_table,
     held_tables,
@@ -177,13 +178,12 @@ def _priced(response_tables: list[dict[str, Any]] | None = None) -> PipelineGrap
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """One temporary project for the generated modules."""
-    original = _get_project_root()
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    original = current_project().root
+    use_project(tmp_path)
     try:
         yield tmp_path
     finally:
-        set_project_root(original)
+        use_project(original)
 
 
 def _write(graph: PipelineGraph, project: Path, name: str = "") -> Path:
@@ -492,7 +492,7 @@ def test_the_preview_route_answers_every_table_asked_for_from_one_request(
 ) -> None:
     from fastapi.testclient import TestClient
 
-    from haute.server import app
+    app = project_app()
 
     # The graph as the editor holds it, which the route gives the tables the project's form
     # defines: each table leads with the quote's identity, null in the node's own tables.

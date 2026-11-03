@@ -83,7 +83,7 @@ from haute._json_shred._snapshots import (
 from haute._json_shred._source_proof import freshness_record
 from haute._logging import get_logger
 from haute._mlflow_io import DiskCachedRunModel, disk_cached_run_model
-from haute._path_resolution import current_runtime_project_root, runtime_project_root_scope
+from haute._project_context import current_project, graph_pipeline_dir
 from haute._rating import (
     RatingTableMissError,
     apply_banding_factors,
@@ -111,7 +111,7 @@ from haute.execution import (
     runtime_input_signed_paths,
     source_lineage_graph,
 )
-from haute.executor import _build_node_fn, _compile_preamble, _pipeline_dir
+from haute.executor import _build_node_fn, _compile_preamble
 from haute.routes._supersession import SupersededRequestError, SupersessionCoordinator
 from haute.routes.input_cache import input_snapshot_read_status
 
@@ -718,7 +718,9 @@ async def _bound(
     graph: PipelineGraph, plan_hash: str | None
 ) -> tuple[PipelineGraph, DataCheckBinding]:
     """The flattened graph and a binding naming its digest and scenario."""
-    flat = await asyncio.to_thread(flatten_with_form_tables, graph, project_root=Path.cwd())
+    flat = await asyncio.to_thread(
+        flatten_with_form_tables, graph, project_root=current_project().root
+    )
     digest = await asyncio.to_thread(graph_fingerprint, flat)
     return flat, DataCheckBinding(plan_hash, digest, graph.active_source)
 
@@ -1011,8 +1013,7 @@ def inspection_nodes(graph: PipelineGraph, flat: PipelineGraph, node: str) -> li
     top_level = {candidate.id for candidate in graph.nodes}
     if node not in top_level:
         raise ValueError(f"Node {node!r} is not a top-level node of the saved graph.")
-    with runtime_project_root_scope(graph.source_file):
-        lineage = _lineage(flat, node, graph.active_source)
+    lineage = _lineage(flat, node, graph.active_source)
     return [node_id for node_id in _canonical_order(lineage) if node_id in top_level]
 
 
@@ -1038,17 +1039,16 @@ def server_exclusions(
     """
     scenario = graph.active_source
     exclusions: dict[str, _Exclusion | None] = {}
-    with runtime_project_root_scope(graph.source_file):
-        base_dir = preparation_base_dir(flat)
-        for node_id in changed:
-            node_type = graph.node_map[node_id].data.nodeType
-            if node_type in (NodeType.SUBMODEL, NodeType.SUBMODEL_PORT):
-                exclusions[node_id] = _Exclusion("submodel")
-            elif node_type in SINK_ONLY_NODE_TYPES:
-                exclusions[node_id] = _Exclusion("sink_only")
-            else:
-                lineage = _lineage(flat, node_id, scenario)
-                exclusions[node_id] = _lineage_exclusion(lineage, base_dir)
+    base_dir = preparation_base_dir(flat)
+    for node_id in changed:
+        node_type = graph.node_map[node_id].data.nodeType
+        if node_type in (NodeType.SUBMODEL, NodeType.SUBMODEL_PORT):
+            exclusions[node_id] = _Exclusion("submodel")
+        elif node_type in SINK_ONLY_NODE_TYPES:
+            exclusions[node_id] = _Exclusion("sink_only")
+        else:
+            lineage = _lineage(flat, node_id, scenario)
+            exclusions[node_id] = _lineage_exclusion(lineage, base_dir)
     return exclusions
 
 
@@ -1219,47 +1219,46 @@ def measure_candidate(job: DataCheckJob, execution_context: ExecutionContext) ->
     interactive worker, inside the check's deadline.
     """
     graph = job.candidate_graph
-    with runtime_project_root_scope(graph.source_file):
-        flat = flatten_with_form_tables(graph, project_root=current_runtime_project_root())
-        lineages = {node: _lineage(flat, node, job.scenario) for node in job.candidates}
-        unreadable = _unreadable_inputs(flat, lineages.values())
-        records: dict[str, Mapping[str, object]] = {}
-        kept: set[str] = set()
-        for node_id in job.cap_order:
-            blocking = next(
-                (
-                    input_id
-                    for input_id in _canonical_order(lineages[node_id])
-                    if input_id in unreadable
-                ),
-                None,
-            )
-            if blocking is not None:
-                records[node_id] = _not_checked_record(node_id, _input_not_prepared(blocking))
-            elif len(kept) >= DATA_CHECK_MAX_NODES:
-                records[node_id] = _not_checked_record(node_id, _Exclusion("node_cap"))
-            else:
-                kept.add(node_id)
-        checked = [node_id for node_id in job.candidates if node_id in kept]
-        if not checked:
-            return WorkerOutcome("no_checkable_nodes", records)
-        lineage = _union_lineage(flat, [lineages[node_id] for node_id in checked])
-        start = read_binding(lineage, job.scenario)
-        queries = _DataCheckQueries(_ROW_BOUND, column=job.column)
-        walked = _measure(lineage, checked, job.scenario, queries, execution_context)
-        end = read_binding(lineage, job.scenario)
-        if end.source_generation != start.source_generation:
-            return WorkerOutcome("source_changed", binding=end)
-        judged = _Judgement(job, flat, queries, walked, checked)
-        records.update(judged.records)
-        column = None if job.column is None else judged.column_lineage(job.column)
-        return WorkerOutcome("checked", records, judged.findings(), end, column)
+    flat = flatten_with_form_tables(graph, project_root=current_project().root)
+    lineages = {node: _lineage(flat, node, job.scenario) for node in job.candidates}
+    unreadable = _unreadable_inputs(flat, lineages.values())
+    records: dict[str, Mapping[str, object]] = {}
+    kept: set[str] = set()
+    for node_id in job.cap_order:
+        blocking = next(
+            (
+                input_id
+                for input_id in _canonical_order(lineages[node_id])
+                if input_id in unreadable
+            ),
+            None,
+        )
+        if blocking is not None:
+            records[node_id] = _not_checked_record(node_id, _input_not_prepared(blocking))
+        elif len(kept) >= DATA_CHECK_MAX_NODES:
+            records[node_id] = _not_checked_record(node_id, _Exclusion("node_cap"))
+        else:
+            kept.add(node_id)
+    checked = [node_id for node_id in job.candidates if node_id in kept]
+    if not checked:
+        return WorkerOutcome("no_checkable_nodes", records)
+    lineage = _union_lineage(flat, [lineages[node_id] for node_id in checked])
+    start = read_binding(lineage, job.scenario)
+    queries = _DataCheckQueries(_ROW_BOUND, column=job.column)
+    walked = _measure(lineage, checked, job.scenario, queries, execution_context)
+    end = read_binding(lineage, job.scenario)
+    if end.source_generation != start.source_generation:
+        return WorkerOutcome("source_changed", binding=end)
+    judged = _Judgement(job, flat, queries, walked, checked)
+    records.update(judged.records)
+    column = None if job.column is None else judged.column_lineage(job.column)
+    return WorkerOutcome("checked", records, judged.findings(), end, column)
 
 
 def _cache_store() -> SourceCacheStore:
-    from haute._sandbox import _get_project_root
+    from haute._project_context import current_project
 
-    return SourceCacheStore(_get_project_root().resolve())
+    return SourceCacheStore(current_project().root)
 
 
 def _unreadable_inputs(flat: PipelineGraph, lineages: Iterable[PipelineGraph]) -> set[str]:
@@ -1328,7 +1327,9 @@ def _measure(
     build: Callable[..., Any] = _build_node_fn
     preamble_ns: dict[str, Any] | None = None
     try:
-        preamble_ns = _compile_preamble(lineage.preamble or "", pipeline_dir=_pipeline_dir(lineage))
+        preamble_ns = _compile_preamble(
+            lineage.preamble or "", pipeline_dir=graph_pipeline_dir(lineage)
+        )
     except PreambleError as exc:
         # As a preview does: the nodes that bind the preamble fail with it.
         build = partial(_preamble_failing_build, exc)
@@ -1423,7 +1424,7 @@ def data_check_visibility(result: DataCheckResult, graph: PipelineGraph) -> Find
     re-observes the tokens.
     """
     binding = result.binding
-    flat = flatten_with_form_tables(graph, project_root=Path.cwd())
+    flat = flatten_with_form_tables(graph, project_root=current_project().root)
     if graph_fingerprint(flat) != binding.graph_digest:
         return "other_graph"
     if graph.active_source != binding.scenario:
@@ -1435,17 +1436,16 @@ def data_check_visibility(result: DataCheckResult, graph: PipelineGraph) -> Find
     ]
     if not measured or binding.source_generation is None:
         return "current"
-    with runtime_project_root_scope(graph.source_file):
-        lineage = _union_lineage(
-            flat, [_lineage(flat, node_id, binding.scenario) for node_id in measured]
-        )
-        components = identity_components(lineage)
-        if components != dict(binding.identity_components):
+    lineage = _union_lineage(
+        flat, [_lineage(flat, node_id, binding.scenario) for node_id in measured]
+    )
+    components = identity_components(lineage)
+    if components != dict(binding.identity_components):
+        return "earlier_inputs"
+    for path, token in binding.freshness_tokens.items():
+        current = _freshness_token(path)
+        if token is None or current is None or current != token:
             return "earlier_inputs"
-        for path, token in binding.freshness_tokens.items():
-            current = _freshness_token(path)
-            if token is None or current is None or current != token:
-                return "earlier_inputs"
     return "current"
 
 

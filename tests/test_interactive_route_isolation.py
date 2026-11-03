@@ -7,12 +7,20 @@ import pytest
 from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
+from tests._project import project_app, use_project
+from tests._source_files import REPO_ROOT
 from tests.conftest import make_ready_file_input_config
 
 
 class _ConnectedClient:
     async def is_disconnected(self) -> bool:
         return False
+
+
+@pytest.fixture(autouse=True)
+def _repository_project() -> None:
+    """The graphs read the repository's fixture data, by a path from its root."""
+    use_project(REPO_ROOT)
 
 
 def _file_input_graph() -> dict[str, object]:
@@ -36,7 +44,8 @@ def test_preview_and_trace_execute_through_spawn_worker(
 ) -> None:
     """Production process mode must execute real, serialisable route targets."""
     from haute._interactive_workers import shutdown_interactive_worker_pool
-    from haute.server import app
+
+    app = project_app()
 
     monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "process")
     monkeypatch.setenv("HAUTE_INTERACTIVE_WORKER_COUNT", "1")
@@ -83,7 +92,8 @@ def test_rejected_node_config_is_a_422_through_the_spawn_worker(
     """Process mode, the production default: the worker must not flatten a
     public config rejection into a per-node result."""
     from haute._interactive_workers import shutdown_interactive_worker_pool
-    from haute.server import app
+
+    app = project_app()
 
     monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "process")
     monkeypatch.setenv("HAUTE_INTERACTIVE_WORKER_COUNT", "1")
@@ -133,7 +143,8 @@ def test_a_free_code_step_that_never_finishes_is_stopped_with_its_worker(
         interactive_worker_pool,
         shutdown_interactive_worker_pool,
     )
-    from haute.server import app
+
+    app = project_app()
 
     monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "process")
     monkeypatch.setenv("HAUTE_INTERACTIVE_WORKER_COUNT", "1")
@@ -671,13 +682,14 @@ def test_the_optimiser_estimate_counts_in_the_spawn_worker(
     The server-side scan is patched to fail; the spawned worker imports its own
     copy of the module, so only an in-process count would trip it.
     """
+    use_project(tmp_path)  # the scored data is the test's own
     from unittest.mock import patch
 
     import polars as pl
 
     from haute._interactive_workers import shutdown_interactive_worker_pool
-    from haute._sandbox import set_project_root
-    from haute.server import app
+
+    app = project_app()
     from tests.test_optimiser_routes_real_library import _online_graph
 
     path = tmp_path / "scored.parquet"
@@ -691,8 +703,7 @@ def test_the_optimiser_estimate_counts_in_the_spawn_worker(
         }
     ).write_parquet(path)
     # A spawned worker's project root is the working directory it starts in.
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "process")
     monkeypatch.setenv("HAUTE_INTERACTIVE_WORKER_COUNT", "1")
     monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")

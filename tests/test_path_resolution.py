@@ -14,13 +14,9 @@ from haute._path_resolution import (
     MalformedRuntimePathError,
     RuntimePathOutsideProjectError,
     _candidate_if_allowed,
-    _infer_project_root,
-    current_runtime_project_root,
     resolve_runtime_file_path,
-    runtime_project_root_scoped,
 )
-from haute._sandbox import set_project_root
-from haute._types import PipelineGraph
+from tests._project import use_project, work_elsewhere
 
 
 def test_prefers_project_candidate_when_both_exist(tmp_path: Path) -> None:
@@ -125,22 +121,28 @@ def test_missing_candidates_return_deterministic_preferred_path(tmp_path: Path) 
     assert pipeline_preferred == (pipeline_dir / "missing.json").resolve()
 
 
-def test_absolute_source_file_outside_cwd_infers_project_root_from_source_parent(
+def test_a_source_file_outside_the_installed_project_gives_it_no_root_of_its_own(
     tmp_path: Path,
 ) -> None:
+    """The root is the installed project's: a pipeline file elsewhere does not widen it,
+    so a relative path names the project's file, never one beside the outside pipeline."""
+    project = tmp_path / "project"
+    project.mkdir()
+    use_project(project)
     source_file = tmp_path / "external" / "pipelines" / "pricing.py"
     source_file.parent.mkdir(parents=True)
     source_file.write_text("# pipeline", encoding="utf-8")
+    (source_file.parent / "inputs").mkdir()
+    (source_file.parent / "inputs" / "data.parquet").write_text("outside", encoding="utf-8")
 
-    inferred = _infer_project_root(project_root=None, source_file=source_file)
     resolved = resolve_runtime_file_path(
         "inputs/data.parquet",
         source_file=source_file,
+        prefer="pipeline",
         enforce_project_root=True,
     )
 
-    assert inferred == source_file.parent.resolve()
-    assert resolved == (source_file.parent / "inputs" / "data.parquet").resolve()
+    assert resolved == (project / "inputs" / "data.parquet").resolve()
 
 
 def test_relative_source_file_uses_explicit_project_root(tmp_path: Path) -> None:
@@ -163,7 +165,7 @@ def test_relative_source_file_uses_explicit_project_root(tmp_path: Path) -> None
 def test_implicit_root_uses_configured_current_project(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
-    set_project_root(project_root)
+    use_project(project_root)
 
     resolved = resolve_runtime_file_path("inputs/data.parquet")
 
@@ -181,8 +183,9 @@ def test_relative_source_does_not_override_selected_project_with_working_directo
     source.write_text("# pipeline", encoding="utf-8")
     selected_root = tmp_path / "selected-project"
     selected_root.mkdir()
-    set_project_root(selected_root)
-    monkeypatch.chdir(working_directory)
+
+    use_project(selected_root)
+    work_elsewhere(working_directory)
 
     resolved = resolve_runtime_file_path(
         "inputs/data.parquet",
@@ -191,28 +194,6 @@ def test_relative_source_does_not_override_selected_project_with_working_directo
     )
 
     assert resolved == (selected_root / "inputs" / "data.parquet").resolve()
-
-
-def test_source_spelled_inside_project_cannot_resolve_outside(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project_root = (tmp_path / "project").resolve()
-    project_root.mkdir()
-    set_project_root(project_root)
-    source = project_root / "linked-pipeline.py"
-    escaped_source = (tmp_path / "outside" / "pipeline.py").resolve()
-    original_resolve = Path.resolve
-
-    def resolve_with_symlink_escape(path: Path, *args: object, **kwargs: object) -> Path:
-        if path == source:
-            return escaped_source
-        return original_resolve(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "resolve", resolve_with_symlink_escape)
-
-    with pytest.raises(ValueError, match="outside the project root"):
-        _infer_project_root(project_root=None, source_file=source)
 
 
 def test_relative_source_file_pipeline_preference_uses_source_parent(tmp_path: Path) -> None:
@@ -360,68 +341,3 @@ def test_candidate_if_allowed_returns_outside_path_when_not_enforced(tmp_path: P
     )
 
     assert resolved == outside.resolve()
-
-
-def test_runtime_project_root_scope_accepts_keyword_graph(tmp_path: Path) -> None:
-    source = tmp_path / "external" / "pipeline.py"
-    source.parent.mkdir()
-    graph = PipelineGraph(source_file=str(source))
-
-    @runtime_project_root_scoped
-    def selected_root(*, graph: PipelineGraph) -> Path:
-        return current_runtime_project_root()
-
-    assert selected_root(graph=graph) == source.parent.resolve()
-
-
-def test_runtime_project_root_scope_uses_first_positional_argument(tmp_path: Path) -> None:
-    source = tmp_path / "external" / "pipeline.py"
-    source.parent.mkdir()
-    graph = PipelineGraph(source_file=str(source))
-    marker = object()
-
-    @runtime_project_root_scoped
-    def selected_root(graph: PipelineGraph, value: object) -> tuple[Path, object]:
-        return current_runtime_project_root(), value
-
-    assert selected_root(graph, marker) == (source.parent.resolve(), marker)
-
-
-def test_runtime_project_root_scoped_preserves_wrapped_metadata() -> None:
-    def selected_root(graph: PipelineGraph) -> Path:
-        """Return the execution-scoped project root."""
-        return current_runtime_project_root()
-
-    decorated = runtime_project_root_scoped(selected_root)
-
-    assert decorated.__name__ == selected_root.__name__
-    assert decorated.__doc__ == selected_root.__doc__
-    assert decorated.__wrapped__ is selected_root
-
-
-def test_runtime_project_root_scope_rejects_non_graph_argument() -> None:
-    @runtime_project_root_scoped
-    def selected_root(graph: PipelineGraph) -> Path:
-        return current_runtime_project_root()
-
-    with pytest.raises(TypeError, match="PipelineGraph"):
-        selected_root("not-a-graph")  # type: ignore[arg-type]
-
-
-def test_a_standalone_run_inside_a_scoped_execution_keeps_that_root(tmp_path: Path) -> None:
-    """Deploy scopes its validated root before scoring; a standalone scope keeps it."""
-    from haute._path_resolution import (
-        runtime_project_root_scope,
-        standalone_project_root_scope,
-    )
-
-    with runtime_project_root_scope(None, project_root=tmp_path) as scoped:
-        with standalone_project_root_scope(tmp_path / "other" / "main.py") as standalone:
-            assert standalone == scoped
-
-
-def test_a_relative_pipeline_file_names_no_enclosing_project() -> None:
-    from haute._path_resolution import _enclosing_haute_project
-
-    assert _enclosing_haute_project("rating/main.py") is None
-    assert _enclosing_haute_project(None) is None

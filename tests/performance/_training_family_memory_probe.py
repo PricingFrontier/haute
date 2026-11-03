@@ -36,6 +36,8 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
+from haute._project_context import context_thread
+
 #: Training data shape: 30 numeric and 5 string categorical features, a Poisson
 #: frequency target and an exposure weight.
 NUMERIC_FEATURES = tuple(f"x{index:02d}" for index in range(30))
@@ -222,7 +224,7 @@ class _ResidentSampler:
         self._interval = interval_seconds
         self._stop = threading.Event()
         self.maxima: dict[str, int] = {}
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread = context_thread(self._run, daemon=True)
 
     def _sample(self) -> None:
         values = _status_bytes(_STATUS_FIELDS)
@@ -516,4 +518,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # A script entry point: it runs in the project holding its working directory.
+    from haute._project_context import standalone_project_scope
+
+    with standalone_project_scope(None):
+        raise SystemExit(main())

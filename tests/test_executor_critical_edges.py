@@ -18,6 +18,7 @@ from haute.executor import (
     execute_graph,
     write_data_output,
 )
+from tests._project import use_project
 from tests.conftest import (
     make_edge as _edge,
 )
@@ -61,7 +62,7 @@ def test_utility_error_outside_cwd_keeps_absolute_source_path(
     (utility_dir / "__init__.py").write_text("", encoding="utf-8")
     bad_module = utility_dir / "bad.py"
     bad_module.write_text("raise RuntimeError('outside cwd')\n", encoding="utf-8")
-    monkeypatch.chdir(cwd)
+    use_project(cwd)
 
     with pytest.raises(PreambleError) as exc_info:
         _compile_preamble(

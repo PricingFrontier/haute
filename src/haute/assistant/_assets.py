@@ -527,7 +527,7 @@ def _execute_fast_bundle(bundle: Traversable, manifest: dict[str, object]) -> No
     """Run a tiny materialized batch fixture through the production eager executor."""
     from haute._execution_context import ExecutionProfile
     from haute._input_providers import build_input_snapshot
-    from haute._sandbox import _get_project_root, set_project_root
+    from haute._project_context import ProjectContext, project_scope
     from haute._source_cache import SourceCacheStore
     from haute.executor import _preview_cache, execute_graph
     from haute.graph_utils import flatten_graph
@@ -538,91 +538,89 @@ def _execute_fast_bundle(bundle: Traversable, manifest: dict[str, object]) -> No
     with TemporaryDirectory(prefix="haute-assistant-example-fast-") as temp_dir:
         destination = Path(temp_dir) / bundle.name
         _materialize_resource_tree(bundle, destination)
-        graph = flatten_graph(parse_pipeline_to_graph(destination / str(manifest["source"])))
-        original_root = _get_project_root()
-        try:
-            # Bundles are independent installed projects. The process-wide
-            # preview cache must not carry a same-shaped prior bundle's
-            # materialized frames across that project boundary.
-            _preview_cache.clear()
-            set_project_root(destination)
-            store = SourceCacheStore(destination)
-            for node in graph.nodes:
-                if node.data.nodeType.value != "dataInput":
-                    continue
-                config = node.data.config
-                # Parser-side source helpers are deliberately present in the
-                # teaching source for authoring realism.  The production data
-                # input builder already resolves this canonical config; do not
-                # execute the helper body as user code in this bounded smoke.
-                config.pop("code", None)
-                path = config.get("path")
-                if isinstance(path, str):
-                    config["path"] = str((destination / path).resolve())
-                build_input_snapshot(
-                    config,
-                    store=store,
-                    base_dir=destination,
-                    profile=ExecutionProfile.PREVIEW_EAGER,
-                )
-            target = assertions["target"]
-            if not isinstance(target, str):
-                raise RuntimeError(
-                    f"Assistant example bundle {bundle.name!r} has an invalid assertion target."
-                )
-            result = execute_graph(graph, target_node_id=target, row_limit=10)[target]
-            if result.status != "ok":
-                raise RuntimeError(
-                    f"Assistant example bundle {bundle.name!r} fast execution failed: "
-                    f"{result.error}"
-                )
-            required_columns = assertions.get("required_columns", [])
-            column_names = {column.name for column in result.columns}
-            if not isinstance(required_columns, list) or not set(required_columns).issubset(
-                column_names
-            ):
-                raise RuntimeError(
-                    f"Assistant example bundle {bundle.name!r} fast schema assertion failed."
-                )
-            if "row_count" in assertions and result.row_count != assertions["row_count"]:
-                raise RuntimeError(
-                    f"Assistant example bundle {bundle.name!r} fast row-count assertion failed."
-                )
-            if "row_count" in golden and result.row_count != golden["row_count"]:
-                raise RuntimeError(
-                    f"Assistant example bundle {bundle.name!r} golden row count differs."
-                )
-            if "columns" in golden:
-                expected_columns = golden["columns"]
-                if (
-                    not isinstance(expected_columns, list)
-                    or not set(expected_columns) <= column_names
+        # Bundles are independent installed projects, each run as its own project.
+        with project_scope(ProjectContext.at(destination)):
+            graph = flatten_graph(parse_pipeline_to_graph(destination / str(manifest["source"])))
+            try:
+                # The process-wide preview cache must not carry a same-shaped prior
+                # bundle's materialized frames across that project boundary.
+                _preview_cache.clear()
+                store = SourceCacheStore(destination)
+                for node in graph.nodes:
+                    if node.data.nodeType.value != "dataInput":
+                        continue
+                    config = node.data.config
+                    # Parser-side source helpers are deliberately present in the
+                    # teaching source for authoring realism.  The production data
+                    # input builder already resolves this canonical config; do not
+                    # execute the helper body as user code in this bounded smoke.
+                    config.pop("code", None)
+                    path = config.get("path")
+                    if isinstance(path, str):
+                        config["path"] = str((destination / path).resolve())
+                    build_input_snapshot(
+                        config,
+                        store=store,
+                        base_dir=destination,
+                        profile=ExecutionProfile.PREVIEW_EAGER,
+                    )
+                target = assertions["target"]
+                if not isinstance(target, str):
+                    raise RuntimeError(
+                        f"Assistant example bundle {bundle.name!r} has an invalid assertion target."
+                    )
+                result = execute_graph(graph, target_node_id=target, row_limit=10)[target]
+                if result.status != "ok":
+                    raise RuntimeError(
+                        f"Assistant example bundle {bundle.name!r} fast execution failed: "
+                        f"{result.error}"
+                    )
+                required_columns = assertions.get("required_columns", [])
+                column_names = {column.name for column in result.columns}
+                if not isinstance(required_columns, list) or not set(required_columns).issubset(
+                    column_names
                 ):
                     raise RuntimeError(
-                        f"Assistant example bundle {bundle.name!r} golden columns differ."
+                        f"Assistant example bundle {bundle.name!r} fast schema assertion failed."
                     )
-            preview = result.preview or []
-            for column, expected_values in golden.items():
-                if column in {"row_count", "columns"}:
-                    continue
-                actual_values = [
-                    row[column] for row in preview if isinstance(row, dict) and column in row
-                ]
-                if actual_values != expected_values:
+                if "row_count" in assertions and result.row_count != assertions["row_count"]:
                     raise RuntimeError(
-                        f"Assistant example bundle {bundle.name!r} golden values differ "
-                        f"for {column!r}: expected {expected_values!r}, "
-                        f"got {actual_values!r}."
+                        f"Assistant example bundle {bundle.name!r} fast row-count assertion failed."
                     )
-            checks = assertions.get("checks")
-            assert isinstance(checks, list)
-            if "trace" in checks:
-                _verify_fast_trace(bundle, graph)
-            if "dry_run" in checks:
-                _verify_fast_dry_run(bundle, destination)
-        finally:
-            _preview_cache.clear()
-            set_project_root(original_root)
+                if "row_count" in golden and result.row_count != golden["row_count"]:
+                    raise RuntimeError(
+                        f"Assistant example bundle {bundle.name!r} golden row count differs."
+                    )
+                if "columns" in golden:
+                    expected_columns = golden["columns"]
+                    if (
+                        not isinstance(expected_columns, list)
+                        or not set(expected_columns) <= column_names
+                    ):
+                        raise RuntimeError(
+                            f"Assistant example bundle {bundle.name!r} golden columns differ."
+                        )
+                preview = result.preview or []
+                for column, expected_values in golden.items():
+                    if column in {"row_count", "columns"}:
+                        continue
+                    actual_values = [
+                        row[column] for row in preview if isinstance(row, dict) and column in row
+                    ]
+                    if actual_values != expected_values:
+                        raise RuntimeError(
+                            f"Assistant example bundle {bundle.name!r} golden values differ "
+                            f"for {column!r}: expected {expected_values!r}, "
+                            f"got {actual_values!r}."
+                        )
+                checks = assertions.get("checks")
+                assert isinstance(checks, list)
+                if "trace" in checks:
+                    _verify_fast_trace(bundle, graph)
+                if "dry_run" in checks:
+                    _verify_fast_dry_run(bundle, destination)
+            finally:
+                _preview_cache.clear()
 
 
 def _verify_fast_trace(
@@ -796,7 +794,7 @@ def _load_bundle(bundle: Traversable, manifest: dict[str, object]) -> dict[str, 
     with TemporaryDirectory(prefix="haute-assistant-example-") as temp_dir:
         destination = Path(temp_dir) / bundle.name
         _materialize_resource_tree(bundle, destination)
-        graph = parse_pipeline_to_graph(destination / source_path)
+        graph = parse_pipeline_to_graph(destination / source_path, project_root=destination)
 
     return {
         "name": manifest["id"],

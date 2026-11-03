@@ -15,6 +15,7 @@ import pytest
 from haute._pipeline_recovery import load_pipeline_editor_document, pipeline_document_fingerprint
 from haute._pipeline_repair import PipelineRepairError
 from haute._types import NodeType
+from tests._project import use_project
 
 BROKEN_INPUT = {
     "inputType": "file",
@@ -272,7 +273,7 @@ def test_scoped_save_that_adds_code_imports_polars_for_the_hook(tmp_path):
 def test_scoped_save_route_saves_and_rejects_stale_revisions(client, monkeypatch, tmp_path):
     _two_inputs(tmp_path)
     _recover(tmp_path, "source_b")
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
     target = next(node for node in document.nodes if node.authored_id == "source_b")
     body = {
@@ -307,7 +308,7 @@ def test_scoped_save_route_maps_io_failures_without_leaking_details(client, monk
     from haute.routes import pipeline as pipeline_routes
 
     _two_inputs(tmp_path)
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
 
     def fail_save(*_args: object, **_kwargs: object) -> None:
         raise PermissionError("private marker")
@@ -337,7 +338,7 @@ def test_scoped_save_route_rejects_malformed_discriminant_shapes(client, monkeyp
     # 4xx, never an unhandled TypeError, and must write nothing.
     _two_inputs(tmp_path)
     _recover(tmp_path, "source_b")
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
     target = next(node for node in document.nodes if node.authored_id == "source_b")
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
@@ -408,7 +409,7 @@ def test_scoped_save_refuses_a_scenario_expander_without_a_grid_size(client, mon
         config_file = tmp_path / rel_path
         config_file.parent.mkdir(parents=True, exist_ok=True)
         config_file.write_text(content)
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
     target = next(node for node in document.nodes if node.authored_id == "grid")
     assert target.scoped_editable is True
@@ -458,7 +459,7 @@ def test_scoped_save_refuses_an_undeclared_key_without_writing(
     undeclared one is refused, naming it, rather than silently dropping it."""
     _inputs_and_transform(tmp_path)
     _recover(tmp_path, "source_b")
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
     target = next(node for node in document.nodes if node.authored_id == authored_id)
     assert target.scoped_editable is True
@@ -530,7 +531,7 @@ def test_scoped_save_refuses_a_config_error_as_not_loadable(
     (tmp_path / "a.json").write_text(json.dumps(BROKEN_INPUT))
     (tmp_path / sidecar).parent.mkdir(parents=True)
     (tmp_path / sidecar).write_text(node_config_json(node_type, config, node_label="target"))
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
     target = next(node for node in document.nodes if node.authored_id == "target")
     assert target.scoped_editable is True
@@ -694,7 +695,7 @@ def test_scoped_save_refuses_a_binding_the_file_cannot_carry(
 ):
     _inputs_and_transform(tmp_path)
     _recover(tmp_path, "source_b")
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
     target = next(node for node in document.nodes if node.authored_id == "priced")
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}

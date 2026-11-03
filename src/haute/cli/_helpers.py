@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 
 import click
 
+from haute._project_context import current_project
+
 if TYPE_CHECKING:
     from haute.deploy._config import DeployConfig
 
@@ -189,7 +191,7 @@ def _find_frontend_dir() -> Path:
     ``None`` that previously forced every call-site to implement its own
     "dev-vs-prod" check.
     """
-    cwd = Path.cwd()
+    cwd = current_project().root
     for parent in [cwd, *cwd.parents]:
         candidate = parent / "frontend"
         if (candidate / "package.json").exists():

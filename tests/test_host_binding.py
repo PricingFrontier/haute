@@ -28,6 +28,18 @@ from haute.cli._serve import (
     _start_vite_subprocess,
     handle_serve,
 )
+from tests._project import use_project
+
+#: A project root for a ServeConfig, which only carries it.
+_PROJECT = Path("/project").resolve()
+
+
+@pytest.fixture(autouse=True)
+def _a_haute_project(tmp_path: Path) -> None:
+    """``haute serve`` serves the Haute project holding its directory, and refuses to
+    start outside one."""
+    (tmp_path / "haute.toml").write_text("[project]\n", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
 
 
 @pytest.fixture(autouse=True)
@@ -49,7 +61,7 @@ def test_cli_default_host_uses_browser_safe_localhost_authority() -> None:
 def test_loopback_hosts_are_accepted(host: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("haute.cli._serve._detect_dev_frontend_dir", lambda: None)
     monkeypatch.setattr("haute.cli._serve._run_prod_mode", lambda config: None)
-    handle_serve(ServeConfig(host=host, port=8000, no_browser=True))
+    handle_serve(ServeConfig(host=host, port=8000, no_browser=True, project_root=_PROJECT))
     assert os.environ[TRUSTED_HOSTS_ENV].split(",") == list(
         dict.fromkeys((*DEFAULT_TRUSTED_HOSTS, host))
     )
@@ -63,7 +75,7 @@ def test_direct_handler_rejects_non_loopback_before_startup(
         "haute.cli._serve._port_is_available", lambda *_: pytest.fail("port probed")
     )
     with pytest.raises(ClickException, match="only serves locally"):
-        handle_serve(ServeConfig(host=host, port=8000, no_browser=True))
+        handle_serve(ServeConfig(host=host, port=8000, no_browser=True, project_root=_PROJECT))
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.5", "8.8.8.8", "unresolved.example"])
@@ -83,7 +95,7 @@ def test_cli_flag_rejects_before_server_start(host: str) -> None:
 def test_config_host_rejects_before_server_start(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     (tmp_path / "haute.toml").write_text('[server]\nhost = "0.0.0.0"\n')
     with (
         patch("uvicorn.run") as uvicorn_run,
@@ -100,7 +112,7 @@ def test_cli_loopback_flag_overrides_non_loopback_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     (tmp_path / "haute.toml").write_text('[server]\nhost = "0.0.0.0"\n')
     with patch("haute.cli._serve.handle_serve") as handle:
         result = CliRunner().invoke(
@@ -113,7 +125,9 @@ def test_cli_loopback_flag_overrides_non_loopback_config(
 
 def test_loopback_replaces_stale_trusted_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(TRUSTED_HOSTS_ENV, "*")
-    _configure_trusted_hosts(ServeConfig(host="127.0.0.42", port=8000, no_browser=True))
+    _configure_trusted_hosts(
+        ServeConfig(host="127.0.0.42", port=8000, no_browser=True, project_root=_PROJECT)
+    )
     assert os.environ[TRUSTED_HOSTS_ENV].split(",") == [
         *DEFAULT_TRUSTED_HOSTS,
         "127.0.0.42",
@@ -128,7 +142,9 @@ def test_configured_bind_host_reaches_trusted_host_middleware(
         return PlainTextResponse("ok")
 
     monkeypatch.setenv(TRUSTED_HOSTS_ENV, "*")
-    _configure_trusted_hosts(ServeConfig(host="127.0.0.42", port=8000, no_browser=True))
+    _configure_trusted_hosts(
+        ServeConfig(host="127.0.0.42", port=8000, no_browser=True, project_root=_PROJECT)
+    )
     restricted = Starlette(
         routes=[
             Route("/", ok),
@@ -165,7 +181,7 @@ def test_vite_does_not_expose_session_token(
     ):
         _start_vite_subprocess(
             tmp_path,
-            ServeConfig(host="::1", port=8765, no_browser=True),
+            ServeConfig(host="::1", port=8765, no_browser=True, project_root=_PROJECT),
         )
     ensure_token.assert_called_once_with()
     assert "VITE_HAUTE_SESSION_TOKEN" not in popen.call_args.kwargs["env"]
@@ -181,4 +197,7 @@ def test_vite_does_not_expose_session_token(
     ],
 )
 def test_local_backend_url_formats_supported_loopback_hosts(host: str, expected: str) -> None:
-    assert _http_url(ServeConfig(host=host, port=8765, no_browser=True)) == expected
+    assert (
+        _http_url(ServeConfig(host=host, port=8765, no_browser=True, project_root=_PROJECT))
+        == expected
+    )

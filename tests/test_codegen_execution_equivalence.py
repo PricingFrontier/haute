@@ -42,11 +42,12 @@ from haute._config_io import collect_node_configs, config_path_for_node
 from haute._execution_admission import create_admitted_execution_context
 from haute._mlflow_io import ScoringModel
 from haute._model_scorer import _scenario_ctx
-from haute._sandbox import _get_project_root, set_project_root
+from haute._project_context import current_project
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code
 from haute.execution import ExecutionProfile, execute_lazy_graph
 from haute.executor import _compile_preamble
+from tests._project import use_project, work_elsewhere
 from tests.conftest import make_ready_file_input_config
 
 # ---------------------------------------------------------------------------
@@ -150,13 +151,12 @@ def isolated_project(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[Path]:
     """Keep generated modules and apiInput caches inside one temp project."""
-    original = _get_project_root()
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    original = current_project().root
+    use_project(tmp_path)
     try:
         yield tmp_path
     finally:
-        set_project_root(original)
+        use_project(original)
 
 
 def _column(name: str, path: str, type_: str = "int") -> dict:
@@ -969,16 +969,16 @@ def test_generated_and_canvas_inputs_share_project_anchor_outside_cwd(
         edges=[],
     )
 
-    original_root = _get_project_root()
-    set_project_root(project)
+    original_root = current_project().root
+    use_project(project)
     try:
         module = _write_and_import(graph, pipeline_dir)
-        monkeypatch.chdir(unrelated)
+        work_elsewhere(unrelated)
 
         generated = _collect(module.pipeline.run(source="batch"))
         canvas = _executor_frame(graph, "api", source="batch")
     finally:
-        set_project_root(original_root)
+        use_project(original_root)
 
     assert generated.to_dict(as_series=False) == {"value": [7]}
     assert_frame_equal(generated, canvas)

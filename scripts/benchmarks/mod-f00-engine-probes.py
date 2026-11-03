@@ -375,6 +375,14 @@ def _ebm(objective: str, classification: bool, **kwargs: Any) -> Any:
 
 
 def probe_ebm(frame: pd.DataFrame, workdir: Path) -> None:
+    from haute._project_context import ProjectContext, project_scope
+
+    # Haute's restricted loader reads only inside the installed project.
+    with project_scope(ProjectContext.at(workdir)):
+        _probe_ebm(frame, workdir)
+
+
+def _probe_ebm(frame: pd.DataFrame, workdir: Path) -> None:
     import interpret
     from interpret.glassbox import ExplainableBoostingRegressor
 
@@ -512,7 +520,6 @@ def probe_ebm(frame: pd.DataFrame, workdir: Path) -> None:
 
     from haute import _sandbox
 
-    _sandbox.set_project_root(workdir)
     try:
         _sandbox.safe_joblib_load(path)
         record("ebm", "haute_safe_joblib_load_unchanged", "loaded")

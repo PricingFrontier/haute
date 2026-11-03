@@ -27,6 +27,7 @@ from haute._scaffold import (
 )
 from haute.cli import cli
 from tests._git_helpers import git_run, install_hook
+from tests._project import use_project
 
 _VALUES = {
     "DATABRICKS_MLFLOW_HOST": "https://adb-9.azuredatabricks.net",
@@ -39,7 +40,7 @@ _VALUES = {
 @pytest.fixture
 def project(runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A Databricks project on GitHub, as ``haute init`` makes it, with no credentials."""
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     for name in _VALUES:
         monkeypatch.delenv(name, raising=False)
     result = runner.invoke(cli, ["init", "--target", "databricks", "--ci", "github"])
@@ -223,7 +224,7 @@ def test_without_the_github_cli_says_how_to_get_it(runner, project: Path) -> Non
 def test_another_provider_is_given_the_names_to_add(
     runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     assert runner.invoke(cli, ["init", "--ci", "gitlab"]).exit_code == 0
 
     result = runner.invoke(cli, ["ci", "secrets"])
@@ -433,7 +434,7 @@ def test_update_outside_a_repository_records_nothing(runner, project: Path) -> N
 @pytest.fixture
 def workbench_project(runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A workbench project on GitHub, as ``haute init`` makes it."""
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     result = runner.invoke(
         cli, ["init", "--workbench", "--store", "sqlserver", "--sign-in", "password"]
     )
@@ -579,7 +580,7 @@ def test_update_refuses_an_environment_the_providers_cannot_take(
 
 
 def test_update_outside_a_project_fails(runner, tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
 
     result = runner.invoke(cli, ["ci", "update"])
 
@@ -593,7 +594,7 @@ def test_update_outside_a_project_fails(runner, tmp_path: Path, monkeypatch) -> 
 
 
 def _container_project(runner, tmp_path: Path, monkeypatch, registry: str) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     assert runner.invoke(cli, ["init", "--target", "container", "--ci", "github"]).exit_code == 0
     toml = tmp_path / "haute.toml"
     text = toml.read_text(encoding="utf-8")
@@ -646,7 +647,7 @@ def test_registry_host_prints_an_empty_line_without_a_registry(
 
 
 def test_registry_host_outside_a_project_fails(runner, tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
 
     result = runner.invoke(cli, ["ci", "registry-host"])
 
@@ -663,7 +664,7 @@ def test_registry_host_outside_a_project_fails(runner, tmp_path: Path, monkeypat
 def test_init_names_the_secrets_the_first_deploy_needs(
     runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ci: str, command: bool
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
 
     result = runner.invoke(cli, ["init", "--ci", ci])
 
@@ -683,7 +684,7 @@ def test_a_usable_default_from_env_example_is_set_like_any_value(
         "AWS_SECRET_ACCESS_KEY": "aws-secret",
         "AWS_DEFAULT_REGION": "eu-west-1",
     }
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     for name in values:
         monkeypatch.delenv(name, raising=False)
     assert runner.invoke(cli, ["init", "--target", "aws-ecs", "--ci", "github"]).exit_code == 0

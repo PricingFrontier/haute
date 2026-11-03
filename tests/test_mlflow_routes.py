@@ -26,6 +26,8 @@ import structlog.testing
 from fastapi import HTTPException
 from mlflow.store.entities.paged_list import PagedList
 
+from tests._project import use_project
+
 
 def _mock_tracking(mlflow=None, client=None):
     """Patch ``_ensure_tracking`` to return ``(mlflow, client)``."""
@@ -1059,13 +1061,12 @@ class TestEnsureTrackingDirect:
         )
 
     def test_explicit_destination_resolves_that_backend(self, monkeypatch, tmp_path):
-        from haute._sandbox import set_project_root
         from haute.routes.mlflow import _ensure_tracking
 
         (tmp_path / "haute.toml").write_text(
             '[mlflow]\ntracking_uri = "http://server:5000"\n', encoding="utf-8"
         )
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
         with patch("mlflow.tracking.MlflowClient") as client_cls:
             _ensure_tracking("local")

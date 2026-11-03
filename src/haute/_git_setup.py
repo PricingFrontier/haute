@@ -7,9 +7,6 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-# The command core is the sole process boundary.  Its helpers are imported
-# explicitly into this domain's namespace so extracted functions retain their
-# original signatures and semantics without a facade dependency.
 from haute._git_core import (
     NO_HOOKS,
     GitDomainError,
@@ -40,6 +37,11 @@ from haute._git_core import (
 )
 from haute._gitignore_guard import ensure_gitignore_guards
 from haute._logging import get_logger
+
+# The command core is the sole process boundary.  Its helpers are imported
+# explicitly into this domain's namespace so extracted functions retain their
+# original signatures and semantics without a facade dependency.
+from haute._project_context import current_project
 from haute.schemas import GitPrefs, GitSetIdentityResponse, GitSetWorkingBranchResponse
 
 logger = get_logger(component="git")
@@ -300,7 +302,7 @@ def set_working_branch(
             seed_files = _outside_environments([f for f in listed.split("\0") if f], cwd)
             _refuse_implausible_seed(seed_files)
             # Nothing can later take a file out of the root commit's history.
-            _refuse_too_large_for_history(seed_files, cwd or Path.cwd(), "try again")
+            _refuse_too_large_for_history(seed_files, cwd or current_project().root, "try again")
             if seed_files:
                 # :(literal) so a filename containing glob characters cannot
                 # re-expand into a broader pathspec at add time.
@@ -398,7 +400,9 @@ def _install_project_hook(project_root: Path, cwd: Path | None) -> None:
     configured, _ = _run_git_ok("config", "--get", "core.hooksPath", cwd=cwd)
     if configured:
         return
-    target = (cwd or Path.cwd()) / _run_git("rev-parse", "--git-path", "hooks/pre-commit", cwd=cwd)
+    target = (cwd or current_project().root) / _run_git(
+        "rev-parse", "--git-path", "hooks/pre-commit", cwd=cwd
+    )
     if target.exists():
         return
     target.parent.mkdir(parents=True, exist_ok=True)

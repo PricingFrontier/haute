@@ -18,9 +18,9 @@ from polars.testing import assert_frame_equal
 from haute._execution_context import ExecutionProfile
 from haute._node_snapshots import NodeSnapshotStore
 from haute._pipeline_settings import update_pipeline_settings
-from haute._sandbox import set_project_root
 from haute._seed_plans import ListedSeed, open_listed_seed_plan, resolve_seed_plan
 from haute._types import NodeType
+from tests._project import project_app, use_project
 from tests.test_data_output_seeding import _graph as _output_graph
 from tests.test_data_output_seeding import _inline_worker, _result, _write
 from tests.test_seed_plans import _chain, _code, _diamond, _graph, _identity, _parquet, _publish
@@ -31,8 +31,7 @@ _ROWS = 120
 
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
-    set_project_root(haute_scratch)
+    use_project(haute_scratch)
     for profile in ("LAZY_SINK", "TRAINING", "NODE_SNAPSHOT"):
         monkeypatch.setenv(f"HAUTE_{profile}_MEMORY_LIMIT_MB", "1024")
     (haute_scratch / "main.py").write_text("# pipeline\n", encoding="utf-8")
@@ -196,7 +195,8 @@ def test_a_preview_runs_without_a_plan_and_writes_nothing(
 
     import haute.executor as executor
     from haute.executor import _preview_cache
-    from haute.server import app
+
+    app = project_app()
 
     # No plan at all, not merely an empty one: caching off skips the planning.
     opened: list[str] = []

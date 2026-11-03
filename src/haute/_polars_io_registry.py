@@ -1510,18 +1510,17 @@ def anchor_config_source_path(config: Mapping[str, Any], base_dir: Any = None) -
 
     from haute._path_resolution import (
         _normalise_path_text,
-        current_runtime_project_root,
         resolve_node_input_path,
     )
+    from haute._project_context import current_project
 
     result = dict(config)
     raw = result.get("path")
     if base_dir is not None and isinstance(raw, str) and raw.strip():
         if not Path(_normalise_path_text(raw)).is_absolute():
-            # A pipeline dir outside the runtime project is its own root, as
-            # ``_infer_project_root`` treats a pipeline outside the selected project.
+            # A pipeline dir outside the current project is its own root.
             pipeline_dir = Path(base_dir).resolve()
-            root = current_runtime_project_root()
+            root = current_project().root
             result["path"] = str(
                 resolve_node_input_path(
                     raw,

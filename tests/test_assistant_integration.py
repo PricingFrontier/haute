@@ -22,6 +22,7 @@ from haute.assistant._providers import ProviderUsage, TextDelta, ToolCallRequest
 from haute.assistant._session import SessionStore
 from haute.assistant._tools import build_tool_executor, get_pipeline
 from haute.routes._helpers import save_lock
+from tests._project import use_project
 
 PIPELINE_SOURCE = '''\
 import polars as pl
@@ -100,7 +101,7 @@ def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     from haute.assistant._ops import PlanStore
 
     monkeypatch.setattr(_tools, "_PLAN_STORE", PlanStore())
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     (tmp_path / "main.py").write_text(PIPELINE_SOURCE, encoding="utf-8")
     (tmp_path / "haute.toml").write_text(
         '[assistant]\nprovider = "openai"\nmodel = "test"\n'

@@ -88,6 +88,6 @@ def test_a_version_that_is_not_x_y_z_is_refused(
 
 
 def test_the_repository_declares_a_releasable_version_shape() -> None:
-    version = release.declared_version(Path("pyproject.toml"))
+    version = release.declared_version(Path(__file__).resolve().parents[1] / "pyproject.toml")
 
     assert release.check_release_version(version, []) == version

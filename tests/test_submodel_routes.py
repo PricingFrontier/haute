@@ -9,13 +9,15 @@ from unittest.mock import patch
 
 import pytest
 
+from tests._project import use_project
+
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
 from haute._config_io import config_path_for_node
 from haute.errors import ConfigError
 from haute.graph_utils import NodeType, PipelineGraph, _sanitize_func_name
-from haute.routes._helpers import invalidate_pipeline_index, pipeline_dir
+from haute.routes._helpers import invalidate_pipeline_index
 
 _CURRENT_REVISION = "revision-current"
 _SAVED_REVISION = "revision-saved"
@@ -27,8 +29,7 @@ ALIAS = "pricing"
 @pytest.fixture(autouse=True)
 def _isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Run every test in a temporary directory."""
-    monkeypatch.chdir(tmp_path)
-    pipeline_dir.cache_clear()
+    use_project(tmp_path)
     invalidate_pipeline_index()
 
 

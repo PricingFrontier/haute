@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import click
 
 from haute._project import resolve_pipeline_file
+from haute._project_context import current_project
 from haute.cli._helpers import EXPECTED_FAILURES
 from haute.errors import ConfigError
 
@@ -33,11 +34,10 @@ class LintConfig:
 
 
 def _lint_root(filepath: Path) -> Path:
-    """The root the editor saves *filepath* under: the working directory ``haute serve``
-    runs in when the file is inside it, else the file's own folder."""
-    cwd = Path.cwd().resolve()
-    # not contained_path: chooses the root; a file outside the working directory is its own
-    return cwd if filepath.is_relative_to(cwd) else filepath.parent
+    """The root the editor saves *filepath* under: the project holding it, which the
+    command runs in."""
+    del filepath
+    return current_project().root
 
 
 def _document_problems(filepath: Path, root: Path) -> tuple[list[str], list[str]]:
@@ -81,6 +81,14 @@ def _structural_problems(flattened: PipelineGraph) -> list[str]:
 
 
 def handle_lint(config: LintConfig) -> None:
+    """Run the command in the project holding its pipeline file."""
+    from haute._project_context import project_holding, project_scope
+
+    with project_scope(project_holding(Path(config.pipeline_file).resolve().parent)):
+        _handle_lint_in_project(config)
+
+
+def _handle_lint_in_project(config: LintConfig) -> None:
     """Check the pipeline as the editor's save does, without executing it.
 
     The file is parsed strictly, its editor document's diagnostics are read (with file
@@ -142,8 +150,9 @@ def lint(pipeline_file: str | None) -> None:
     reporting every problem found.
     """
     try:
+        # No file named: the pipeline the shell's working directory holds.
         resolved = resolve_pipeline_file(
-            Path(pipeline_file) if pipeline_file else None,
+            Path(pipeline_file) if pipeline_file else current_project().root
         )
     except (FileNotFoundError, ConfigError) as exc:
         click.echo(f"Error: {exc}", err=True)

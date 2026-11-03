@@ -20,10 +20,12 @@ from haute._graph_walker import (
     walk_graph,
 )
 from haute._node_snapshots import NodeSnapshotStore
+from haute._project_context import graph_pipeline_dir
 from haute._seed_plans import SeedPlan, SeedPlanRequest, open_seed_plan
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import ContractMismatchError, SnapshotPlanInputsChangedError
-from haute.executor import _build_node_fn, _compile_preamble, _pipeline_dir
+from haute.executor import _build_node_fn, _compile_preamble
+from tests._project import use_project
 from tests.test_snapshot_seeding import _context, _identity, _staging_dirs
 
 
@@ -154,7 +156,7 @@ def test_a_walk_result_needs_only_its_frames() -> None:
 
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
+    use_project(haute_scratch)
     (haute_scratch / "main.py").write_text("# pipeline\n", encoding="utf-8")
     return haute_scratch
 
@@ -193,7 +195,7 @@ def _walk_under(plan: SeedPlan, graph: PipelineGraph, context: ExecutionContext)
         _build_node_fn,
         policy=CollectPolicy.sink(),
         target_node_id="T",
-        preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+        preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph))
         or None,
         required_columns_by_node={"T": ["a1"]},
         execution_context=context,

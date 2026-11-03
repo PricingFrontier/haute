@@ -9,16 +9,18 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
+from tests._project import project_app, use_project
+
 
 @pytest.fixture()
 def work_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     return tmp_path
 
 
 @pytest.fixture()
 def client(work_dir: Path) -> TestClient:
-    from haute.server import app
+    app = project_app()
 
     return TestClient(app, raise_server_exceptions=False)
 
@@ -197,7 +199,7 @@ class TestBrowseFilesUnresolvedCwd:
     yields long-form entries, so an unresolved base made ``relative_to`` raise
     ``ValueError`` → HTTP 500 on ``/api/files``. POSIX ``getcwd`` resolves
     symlinks so it never bit locally; reproduced cross-platform here by
-    pointing ``Path.cwd`` at a symlink whose ``resolve()`` differs.
+    installing the project through a symlink whose ``resolve()`` differs.
     """
 
     @staticmethod
@@ -219,10 +221,10 @@ class TestBrowseFilesUnresolvedCwd:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         _real, link = self._symlinked_project(tmp_path)
-        # files.py reads ``Path.cwd()``; make it return the unresolved symlink.
-        monkeypatch.setattr(Path, "cwd", classmethod(lambda _cls: link))
+        # The project is installed through the unresolved symlink.
+        use_project(link)
 
-        from haute.server import app
+        app = project_app()
 
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get("/api/files", params={"dir": "data"})
@@ -238,9 +240,9 @@ class TestBrowseFilesUnresolvedCwd:
     ):
         real, link = self._symlinked_project(tmp_path)
         (real / "data" / "t.csv").write_text("x\n1\n", encoding="utf-8")
-        monkeypatch.setattr(Path, "cwd", classmethod(lambda _cls: link))
+        use_project(link)
 
-        from haute.server import app
+        app = project_app()
 
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get("/api/schema", params={"path": "data/t.csv"})

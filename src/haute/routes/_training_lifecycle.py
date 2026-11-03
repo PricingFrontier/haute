@@ -32,7 +32,7 @@ from haute._graph_utils import _sanitize_func_name
 from haute._logging import get_logger
 from haute._native_memory_limit import model_thread_address_space_allowance
 from haute._pipeline_settings import project_pipeline_settings
-from haute._sandbox import _get_project_root
+from haute._project_context import context_thread, current_project
 from haute._seed_plans import open_seed_plan
 from haute._types import PipelineGraph
 from haute._worker_isolation import (
@@ -396,7 +396,7 @@ class TrainService:
                 with self._preparation_threads_lock:
                     self._preparation_threads.pop(job_id, None)
 
-        thread = threading.Thread(target=run, name=f"haute-{kind}-prep-{job_id}", daemon=True)
+        thread = context_thread(run, name=f"haute-{kind}-prep-{job_id}", daemon=True)
         with self._preparation_threads_lock:
             self._preparation_threads[job_id] = thread
         try:
@@ -1398,12 +1398,13 @@ class TrainService:
 
     @staticmethod
     def _compile_preamble(graph: PipelineGraph) -> dict[str, Any] | None:
-        from haute.executor import _compile_preamble, _pipeline_dir
+        from haute._project_context import graph_pipeline_dir
+        from haute.executor import _compile_preamble
 
         return (
             _compile_preamble(
                 graph.preamble or "",
-                pipeline_dir=_pipeline_dir(graph),
+                pipeline_dir=graph_pipeline_dir(graph),
             )
             or None
         )
@@ -1626,7 +1627,6 @@ class TrainService:
             source=body.source,
             parquet_path=tmp_parquet,
             config=dict(body.graph.node_map[body.node_id].data.config),
-            project_root=str(_get_project_root()),
             row_limit=row_limit,
             project_to_keep_columns=project_to_keep_columns,
             keep_columns=list(keep_columns) if keep_columns else None,
@@ -2122,7 +2122,7 @@ class TrainService:
                 job_id=job_id,
                 node_label=str(stored.get("node_label", "")),
                 training_identity_sha256=identity,
-                project_root=_get_project_root(),
+                project_root=current_project().root,
                 node_id=stored.get("node_id"),
                 pipeline_source=stored.get("pipeline_source") or None,
             )

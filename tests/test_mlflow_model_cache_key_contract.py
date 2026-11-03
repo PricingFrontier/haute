@@ -30,6 +30,7 @@ from haute._mlflow_io import (
     load_mlflow_model,
 )
 from haute._mlflow_utils import resolve_backend
+from tests._project import use_project
 
 RUN_ID = "run_relog"
 ARTIFACT = "model.cbm"
@@ -95,7 +96,7 @@ class TestFastPathArtifactPerturbation:
 
     def test_relogged_artifact_bytes_invalidate_in_process_cache(self, tmp_path, monkeypatch):
         """Re-log under the same run ref → the NEW model is served, not stale."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         local = _artifact_cache_path(
             tmp_path / ".cache" / "models",
             resolve_backend("").digest,
@@ -121,7 +122,7 @@ class TestFastPathArtifactPerturbation:
 
     def test_unchanged_artifact_still_hits_cache(self, tmp_path, monkeypatch):
         """No perturbation → second call is an in-process hit (same object)."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         local = _artifact_cache_path(
             tmp_path / ".cache" / "models",
             resolve_backend("").digest,
@@ -213,7 +214,7 @@ class TestKeyContract:
 
     def test_targeted_clear_still_evicts_by_run_id(self, tmp_path, monkeypatch):
         """clear_model_cache(run_id=...) matches the run slot in the new key."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         key = _model_cache_key(
             source_type="run",
             run_id=RUN_ID,

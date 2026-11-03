@@ -13,6 +13,7 @@ from haute.errors import RequestRefusedError
 from haute.parser import parse_pipeline_source
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
+from tests._project import use_project
 from tests.conftest import current_source_revision, make_graph
 
 
@@ -429,7 +430,7 @@ def test_explicit_save_derives_new_definition_ownership(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     service = _service(tmp_path)
     service.save(_save_request(_flat_graph()))
 
@@ -533,7 +534,7 @@ def test_explicit_save_deletes_a_removed_uniquely_owned_definition(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     service = _service(tmp_path)
     service.save(_save_request(_flat_graph()))
     service.save(
@@ -554,7 +555,7 @@ def test_explicit_save_retains_removed_definition_referenced_by_another_pipeline
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     service = _service(tmp_path)
     service.save(_save_request(_flat_graph()))
     service.save(_save_request(_managed_graph()))
@@ -591,7 +592,7 @@ def test_explicit_save_retains_removed_definition_when_reference_audit_is_incomp
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     service = _service(tmp_path)
     service.save(_save_request(_flat_graph()))
     service.save(_save_request(_managed_graph()))

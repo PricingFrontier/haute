@@ -12,6 +12,7 @@ import pytest
 
 from tests._git_helpers import git_run as _git
 from tests._git_helpers import init_repo as _init_repo
+from tests._project import use_project
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -21,7 +22,7 @@ if TYPE_CHECKING:
 def _isolated_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Every test runs in an isolated git repo."""
     repo = _init_repo(tmp_path)
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     return repo
 
 
@@ -1062,7 +1063,7 @@ class TestWorkingBranchSeedGuards:
         _git(foreign, "config", "user.email", "test@example.com")
         (foreign / ".env").write_text("TOKEN=hunter2\n")
         (foreign / "main.py").write_text("x = 1\n")
-        monkeypatch.chdir(foreign)
+        use_project(foreign)
 
         res = client.post("/api/git/working-branch", json={"branch": "fresh", "create": True})
         assert res.status_code == 200

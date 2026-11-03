@@ -18,6 +18,7 @@ from haute._execution_context import current_execution_context
 from haute._json_shred import _shred, _writer
 from haute._json_shred._shred import _EmittingTableSpec
 from haute._logging import get_logger
+from haute._project_context import current_project
 from haute._source_cache import SourceCacheStore
 
 logger = get_logger(component="json_shred")
@@ -154,7 +155,7 @@ def _standalone_shred(
         Path(data_path),
         config,
         table_specs,
-        Path.cwd() / _STANDALONE_SPILL_ROOT,
+        current_project().root / _STANDALONE_SPILL_ROOT,
     )
     execution_context = current_execution_context()
     if execution_context is not None:

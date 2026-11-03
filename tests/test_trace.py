@@ -22,6 +22,7 @@ from haute.trace import (
     execute_trace,
     trace_result_to_dict,
 )
+from tests._project import use_project
 from tests.conftest import (
     make_edge as _edge,
 )
@@ -807,7 +808,7 @@ class TestExecuteTrace:
         _widen_sandbox_root,
     ):
         """Changing imported utility code must not serve stale trace rows."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         utility_dir = tmp_path / "utility"
         utility_dir.mkdir()
         (utility_dir / "__init__.py").write_text("", encoding="utf-8")

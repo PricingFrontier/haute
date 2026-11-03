@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
 
 from haute import _workbench_app_quotes, _workbench_app_store
+from haute._project_context import context_thread, current_project
 from haute._quote_store import (
     QuoteBook,
     QuoteStoreEnvironmentError,
@@ -30,7 +31,6 @@ from haute._quote_store import (
     open_book,
     store_url,
 )
-from haute._sandbox import _get_project_root, set_project_root
 from haute._types import PipelineGraph
 from haute._workbench_app import (
     EASY_AUTH_NAME,
@@ -45,6 +45,7 @@ from haute._workbench_config import ENVIRONMENT_ENV, StoreEnvironment
 from haute._workbench_form import QUOTE_DETAILS_ID, FormSpec, with_quote_details
 from haute._workbench_tables import input_tables
 from haute.deploy._utils import shipped_graph
+from tests._project import use_project
 from tests._store_servers import Target
 from tests.test_workbench_app import _graph
 from tests.test_workbench_routes import POLICY, PRICING, form
@@ -127,10 +128,10 @@ def _prepared(path: Path, release_dir: Path) -> str:
 
 @pytest.fixture()
 def release_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    original = _get_project_root()
-    monkeypatch.chdir(tmp_path)
+    original = current_project().root
+    use_project(tmp_path)
     yield _write_release(tmp_path / "release")
-    set_project_root(original)
+    use_project(original)
 
 
 @pytest.fixture()
@@ -890,11 +891,11 @@ def test_closing_the_quotes_on_an_unreachable_store_never_stalls_the_app(
     def ask(name: str, path: str) -> None:
         answers[name] = page.client.get(path, headers=ANA)
 
-    listing = threading.Thread(target=ask, args=("quotes", "/api/app/quotes?view=team"))
+    listing = context_thread(ask, args=("quotes", "/api/app/quotes?view=team"))
     listing.start()
     try:
         assert waiting.wait(10)
-        health = threading.Thread(target=ask, args=("health", "/health"))
+        health = context_thread(ask, args=("health", "/health"))
         health.start()
         health.join(5)
         assert not health.is_alive(), "the app stopped answering while the gate was held"
@@ -1036,7 +1037,7 @@ def test_with_an_edit_role_only_those_holding_it_change_quotes(tmp_path: Path) -
     directory = _write_release(tmp_path / "roles", edit_role="Quotes.Edit")
     editor = {**ANA, EASY_AUTH_PRINCIPAL: _principal("Quotes.Edit")}
     reader = {**JO, EASY_AUTH_PRINCIPAL: _principal("Quotes.Read")}
-    original = _get_project_root()
+    original = current_project().root
     try:
         url = _prepared(tmp_path / "roles.sqlite", directory)
         with TestClient(create_app(directory, store=StoreLocation(TEST, url))) as client:
@@ -1087,7 +1088,7 @@ def test_with_an_edit_role_only_those_holding_it_change_quotes(tmp_path: Path) -
                 assert unread.status_code == 401
                 assert EASY_AUTH_PRINCIPAL in unread.json()["detail"]
     finally:
-        set_project_root(original)
+        use_project(original)
 
 
 #: Where ``haute app serve`` is reached on the analyst's machine.

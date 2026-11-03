@@ -17,13 +17,13 @@ from fastapi.testclient import TestClient
 
 from haute import _project_storage
 from haute._project_storage import PushQueue
-from haute.server import app
+from tests._project import project_app, use_project
 
 
 @pytest.fixture(autouse=True)
 def _isolated_storage_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """Never touch the real repo or ambient hosted-storage env vars."""
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     monkeypatch.delenv(_project_storage.STATE_VOLUME_ENV, raising=False)
     monkeypatch.delenv(_project_storage.GIT_TOKEN_ENV, raising=False)
     monkeypatch.delenv(_project_storage.GIT_USERNAME_ENV, raising=False)
@@ -38,7 +38,7 @@ def _isolated_storage_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
 @pytest.fixture()
 def client() -> TestClient:
-    return TestClient(app, base_url="http://localhost", raise_server_exceptions=False)
+    return TestClient(project_app(), base_url="http://localhost", raise_server_exceptions=False)
 
 
 # ---------------------------------------------------------------------------

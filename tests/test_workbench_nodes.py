@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from haute._sandbox import _get_project_root, set_project_root
+from haute._project_context import current_project
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph, SubmodelDefinition
 from haute._workbench_config import WorkbenchConfigError
 from haute._workbench_form import WorkbenchFormError
@@ -20,6 +20,7 @@ from haute.deploy._config import DeployConfig, resolve_config
 from haute.deploy._utils import shipped_graph
 from haute.errors import RequestRefusedError
 from haute.routes._save_pipeline import SavePipelineService
+from tests._project import project_app, use_project, work_elsewhere
 from tests._workbench_helpers import tables_form, workbench_project
 from tests.test_workbench_output import FORM_SAMPLE, FORM_TABLES, _priced, _write
 
@@ -32,13 +33,12 @@ _POLICY = {"quote_reference": "PREVIEW", "quote_option": 1, "state": "NY", "limi
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     """A workbench project whose form defines `_priced`'s tables and sample, the working
     directory, its pipeline saved as the editor saves it."""
-    original = _get_project_root()
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    original = current_project().root
+    use_project(tmp_path)
     _write(_priced(), tmp_path, "main")
     workbench_project(tmp_path, FORM_TABLES, FORM_SAMPLE)
     yield tmp_path
-    set_project_root(original)
+    use_project(original)
 
 
 def _node(nid: str, node_type: NodeType, config: dict[str, Any] | None = None) -> GraphNode:
@@ -71,7 +71,7 @@ def _preview_policy(client: TestClient, **body: Any) -> Any:
 def test_a_browser_graph_runs_on_the_forms_tables_read_anew_for_each_request(
     project: Path,
 ) -> None:
-    from haute.server import app
+    app = project_app()
 
     client = TestClient(app)
     assert _preview_policy(client)["preview"] == [_POLICY]
@@ -83,7 +83,7 @@ def test_a_browser_graph_runs_on_the_forms_tables_read_anew_for_each_request(
 
 
 def test_the_form_a_pricing_posts_is_run_in_place_of_the_folders(project: Path) -> None:
-    from haute.server import app
+    app = project_app()
 
     folder = {path.name: path.read_bytes() for path in (project / "workbench").rglob("*.json")}
     unsaved = tables_form(FORM_TABLES, {"t_policy": [{"c_state": "TX", "c_limit": "7"}]})
@@ -125,7 +125,7 @@ def test_a_browser_graph_takes_the_tables_of_the_configured_project_not_the_cwd(
     from haute._flatten import flatten_executable_graph
 
     # The server's working directory is not its project (a serve started elsewhere).
-    monkeypatch.chdir(tmp_path_factory.mktemp("elsewhere"))
+    work_elsewhere(tmp_path_factory.mktemp("elsewhere"))
 
     given = flatten_executable_graph(_editor_graph())
 
@@ -151,7 +151,7 @@ def test_a_graph_without_a_workbench_node_reads_no_form(tmp_path: Path) -> None:
 def test_a_workbench_node_in_a_project_whose_workbench_is_off_is_refused(
     project: Path, graph: PipelineGraph, owner: str
 ) -> None:
-    from haute.server import app
+    app = project_app()
 
     (project / "haute.toml").write_text(
         '[project]\nname = "x"\npipeline = "main.py"\n\n[workbench]\nenabled = false\n',

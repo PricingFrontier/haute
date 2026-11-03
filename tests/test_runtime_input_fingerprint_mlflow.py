@@ -19,10 +19,10 @@ import polars as pl
 import pytest
 
 from haute._builders import _build_node_fn
-from haute._sandbox import set_project_root
 from haute.errors import MlflowConfigError
 from haute.execution import _runtime_input_fingerprint_entry, dataframe_graph_input_fingerprint
 from haute.modelling._mlflow_settings import TrackingConfig
+from tests._project import use_project
 from tests.conftest import make_graph
 
 _BASE_TOML = '[project]\nname = "main"\npipeline = "rating/main.py"\n'
@@ -63,7 +63,7 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     ):
         monkeypatch.delenv(var, raising=False)
     _write_settings(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     return tmp_path
 
 

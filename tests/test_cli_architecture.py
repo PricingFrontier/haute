@@ -39,6 +39,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from haute.cli import cli
+from tests._project import use_project
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -194,7 +195,7 @@ class TestDeployModelNameOptional:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Without --model-name, deploy reads the name from haute.toml."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _write_toml(tmp_path, model_name="my_toml_model")
         _touch_pipeline(tmp_path, "main.py")
 
@@ -218,7 +219,7 @@ class TestDeployModelNameOptional:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``--model-name cli_override`` beats the TOML value."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _write_toml(tmp_path, model_name="toml_model")
         _touch_pipeline(tmp_path, "main.py")
 
@@ -246,7 +247,7 @@ class TestDeployModelNameOptional:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Deploy resolves the configured pipeline, not a decoy ``main.py``."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         configured = _touch_pipeline(tmp_path, "configured.py")
         _touch_pipeline(tmp_path, "main.py")
         _write_toml(tmp_path, pipeline="configured.py")
@@ -273,7 +274,7 @@ class TestDeployModelNameOptional:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """No TOML + no flag must fail loudly with a user-facing hint."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         # No haute.toml, no --model-name.  The pipeline file resolution
         # should also fail, but the error message still needs to point
         # at the two options the user actually has.
@@ -302,7 +303,7 @@ class TestStatusModelNameOptional:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Without a positional arg, status uses the TOML model_name."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _write_toml(tmp_path, model_name="my_toml_model")
 
         mock_info = {
@@ -329,7 +330,7 @@ class TestStatusModelNameOptional:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Explicit positional arg replaces the TOML value."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _write_toml(tmp_path, model_name="toml_model")
 
         mock_info = {
@@ -355,7 +356,7 @@ class TestStatusModelNameOptional:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Without either source the user must be told how to fix it."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         result = runner.invoke(cli, ["status"])
         assert result.exit_code != 0
         msg = result.output.lower()
@@ -399,9 +400,9 @@ class TestProjectResolvePipelineFile:
         """``None`` → ``<cwd>/main.py`` (the project-wide default)."""
         from haute._project import resolve_pipeline_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _touch_pipeline(tmp_path, "main.py")
-        result = resolve_pipeline_file(None)
+        result = resolve_pipeline_file(tmp_path)
         assert result.resolve() == (tmp_path / "main.py").resolve()
 
     def test_explicit_existing_path_returns_absolute(
@@ -412,7 +413,7 @@ class TestProjectResolvePipelineFile:
         """Explicit path that exists → resolved absolute Path."""
         from haute._project import resolve_pipeline_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         pipeline = _touch_pipeline(tmp_path, "custom.py")
         result = resolve_pipeline_file(pipeline)
         assert result == pipeline.resolve()
@@ -426,7 +427,7 @@ class TestProjectResolvePipelineFile:
         """Non-existent explicit path → :class:`FileNotFoundError` w/ hint."""
         from haute._project import resolve_pipeline_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         missing = tmp_path / "nope.py"
         with pytest.raises(FileNotFoundError) as excinfo:
             resolve_pipeline_file(missing)
@@ -471,7 +472,7 @@ class TestProjectResolvePipelineFile:
         """Relative path → resolved against :func:`pathlib.Path.cwd`."""
         from haute._project import resolve_pipeline_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _touch_pipeline(tmp_path, "rel.py")
         result = resolve_pipeline_file(Path("rel.py"))
         assert result.is_absolute()
@@ -503,7 +504,7 @@ class TestProjectResolvePipelineFileAutoDiscovery:
         """``haute.toml [project].pipeline`` wins over auto-discovery / main.py."""
         from haute._project import resolve_pipeline_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "haute.toml").write_text(
             '[project]\nname = "demo"\npipeline = "custom.py"\n',
             encoding="utf-8",
@@ -516,7 +517,7 @@ class TestProjectResolvePipelineFileAutoDiscovery:
             "import haute\npipeline = haute.Pipeline('m')\n", encoding="utf-8"
         )
 
-        result = resolve_pipeline_file(None)
+        result = resolve_pipeline_file(tmp_path)
         assert result.resolve() == (tmp_path / "custom.py").resolve(), (
             "TOML [project].pipeline must win over main.py when both exist"
         )
@@ -534,14 +535,14 @@ class TestProjectResolvePipelineFileAutoDiscovery:
         """
         from haute._project import resolve_pipeline_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "motor.py").write_text(
             "import haute\npipeline = haute.Pipeline('motor')\n",
             encoding="utf-8",
         )
         # No main.py, no haute.toml.
 
-        result = resolve_pipeline_file(None)
+        result = resolve_pipeline_file(tmp_path)
         assert result.resolve() == (tmp_path / "motor.py").resolve(), (
             "A lone haute.Pipeline-containing .py file must be auto-discovered"
         )
@@ -560,7 +561,7 @@ class TestProjectResolvePipelineFileAutoDiscovery:
         """
         from haute._project import resolve_pipeline_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "motor.py").write_text(
             "import haute\npipeline = haute.Pipeline('motor')\n",
             encoding="utf-8",
@@ -570,7 +571,7 @@ class TestProjectResolvePipelineFileAutoDiscovery:
             encoding="utf-8",
         )
 
-        result = resolve_pipeline_file(None)
+        result = resolve_pipeline_file(tmp_path)
         # ``main.py`` is the conventional default — if discovery hadn't
         # been restored this test would be redundant with test_none_returns_cwd_main_py.
         assert result.resolve() == (tmp_path / "main.py").resolve(), (
@@ -590,9 +591,9 @@ class TestProjectResolvePipelineFileAutoDiscovery:
         """
         from haute._project import resolve_pipeline_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         with pytest.raises(FileNotFoundError) as excinfo:
-            resolve_pipeline_file(None)
+            resolve_pipeline_file(tmp_path)
         msg = str(excinfo.value).lower()
         assert "main.py" in msg, (
             f"Error must mention main.py so users know the default — got {excinfo.value!r}"
@@ -612,7 +613,7 @@ class TestProjectResolvePipelineFileAutoDiscovery:
         """
         from haute._project import resolve_pipeline_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "motor.py").write_text(
             "import haute\npipeline = haute.Pipeline('motor')\n",
             encoding="utf-8",
@@ -626,7 +627,7 @@ class TestProjectResolvePipelineFileAutoDiscovery:
             encoding="utf-8",
         )
 
-        result = resolve_pipeline_file(None)
+        result = resolve_pipeline_file(tmp_path)
         assert result.resolve() == (tmp_path / "main.py").resolve()
 
     def test_none_ambiguous_discovery_without_main_py_raises(
@@ -642,7 +643,7 @@ class TestProjectResolvePipelineFileAutoDiscovery:
         """
         from haute._project import resolve_pipeline_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "motor.py").write_text(
             "import haute\npipeline = haute.Pipeline('motor')\n",
             encoding="utf-8",
@@ -653,7 +654,7 @@ class TestProjectResolvePipelineFileAutoDiscovery:
         )
 
         with pytest.raises(FileNotFoundError) as excinfo:
-            resolve_pipeline_file(None)
+            resolve_pipeline_file(tmp_path)
         msg = str(excinfo.value)
         assert "motor.py" in msg and "rating.py" in msg, (
             f"Ambiguous discovery error must name the candidates — got {msg!r}"
@@ -672,13 +673,13 @@ class TestProjectResolvePipelineFileAutoDiscovery:
         """
         from haute._project import resolve_pipeline_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "motor.py").write_text(
             "import haute\npipeline = haute.Pipeline('motor')\n",
             encoding="utf-8",
         )
 
-        result = resolve_pipeline_file(None)
+        result = resolve_pipeline_file(tmp_path)
         assert result.resolve() == (tmp_path / "motor.py").resolve()
 
     def test_directory_path_uses_same_discovery(
@@ -745,13 +746,13 @@ class TestProjectResolvePipelineFileAutoDiscovery:
         """
         from haute._project import resolve_pipeline_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "haute.toml").write_text(
             '[project]\nname = "x"\npipeline = "typoed.py"\n',
             encoding="utf-8",
         )
         with pytest.raises(FileNotFoundError) as excinfo:
-            resolve_pipeline_file(None)
+            resolve_pipeline_file(tmp_path)
         assert "typoed.py" in str(excinfo.value)
 
     def test_toml_configured_plain_python_file_raises(
@@ -762,14 +763,14 @@ class TestProjectResolvePipelineFileAutoDiscovery:
         """``[project].pipeline`` must point at an actual Haute pipeline file."""
         from haute._project import resolve_pipeline_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "haute.toml").write_text(
             '[project]\nname = "x"\npipeline = "helpers.py"\n',
             encoding="utf-8",
         )
         (tmp_path / "helpers.py").write_text("VALUE = 1\n", encoding="utf-8")
         with pytest.raises(FileNotFoundError) as excinfo:
-            resolve_pipeline_file(None)
+            resolve_pipeline_file(tmp_path)
         msg = str(excinfo.value)
         assert "helpers.py" in msg
         assert "haute.Pipeline" in msg
@@ -782,7 +783,7 @@ class TestProjectResolvePipelineFileAutoDiscovery:
         from haute._project import resolve_pipeline_file
         from haute.errors import ConfigError
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "haute.toml").write_text("[project\n", encoding="utf-8")
         (tmp_path / "main.py").write_text(
             "import haute\npipeline = haute.Pipeline('decoy')\n",
@@ -790,7 +791,7 @@ class TestProjectResolvePipelineFileAutoDiscovery:
         )
 
         with pytest.raises(ConfigError, match="haute.toml"):
-            resolve_pipeline_file(None)
+            resolve_pipeline_file(tmp_path)
 
 
 class TestCliNoAdHocPipelineResolution:
@@ -1059,7 +1060,7 @@ class TestHandleStatusCallable:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Build a status config and assert it drives the mlflow lookup."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _write_toml(tmp_path, model_name="motor")
 
         import haute.cli._status as status_mod
@@ -1526,7 +1527,7 @@ class TestDeployFallbackStemDerivedModelName:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """No toml + pipeline file arg + no --model-name → stem is the model_name."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         # No haute.toml present.  A uniquely-named pipeline file is given
         # so its stem (``my_pipeline``) is the default model_name.
         pipeline = _touch_pipeline(tmp_path, "my_pipeline.py")
@@ -1552,7 +1553,7 @@ class TestDeployFallbackStemDerivedModelName:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """With no toml, an explicit ``--model-name`` still beats the stem."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         pipeline = _touch_pipeline(tmp_path, "my_pipeline.py")
 
         resolved = _mock_resolved()
@@ -1599,7 +1600,7 @@ class TestCliAutoDiscoveryEndToEnd:
 
         from haute._types import GraphNode, NodeData, PipelineGraph
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "motor.py").write_text(
             "import haute\npipeline = haute.Pipeline('motor')\n",
             encoding="utf-8",
@@ -1647,7 +1648,7 @@ class TestCliAutoDiscoveryEndToEnd:
         """``haute lint`` with a lone ``motor.py`` + no main.py → lints motor.py."""
         from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "motor.py").write_text(
             "import haute\npipeline = haute.Pipeline('motor')\n",
             encoding="utf-8",
@@ -1688,7 +1689,7 @@ class TestCliAutoDiscoveryEndToEnd:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Empty dir → error names ``main.py`` so the user knows the default."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         result = runner.invoke(cli, ["lint"])
         assert result.exit_code != 0
         assert "main.py" in result.output.lower()

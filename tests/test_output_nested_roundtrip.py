@@ -28,9 +28,10 @@ import polars as pl
 import pytest
 
 from haute._output_assembler import _prune, render_output_document
-from haute._sandbox import _get_project_root, set_project_root
+from haute._project_context import current_project
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
+from tests._project import use_project
 from tests.conftest import build_test_api_input_snapshots
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "output_assembler" / "data_model_example.json"
@@ -139,15 +140,15 @@ def _output_mapping() -> list[dict[str, Any]]:
 def project_with_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Materialise the example under ``<root>/data/`` (the runtime location)
     and point the sandbox project root at the isolated tree."""
-    monkeypatch.chdir(tmp_path)
-    original = _get_project_root()
-    set_project_root(tmp_path)
+    use_project(tmp_path)
+    original = current_project().root
+    use_project(tmp_path)
     _preview_cache.clear()
     data_path = tmp_path / "data" / "data_model_example.json"
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_text(_FIXTURE.read_text())
     yield tmp_path, data_path
-    set_project_root(original)
+    use_project(original)
     _preview_cache.clear()
 
 

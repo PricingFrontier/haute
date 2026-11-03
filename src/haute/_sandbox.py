@@ -32,44 +32,12 @@ from types import CodeType
 from typing import Any
 
 from haute._lru_cache import LRUCache
+from haute._project_context import current_project
 from haute.errors import HauteError, InvalidPathError, PathOutsideProjectError
 
 # ---------------------------------------------------------------------------
 # Project-root path validation
 # ---------------------------------------------------------------------------
-
-_PROJECT_ROOT: Path | None = None
-
-
-def _get_project_root() -> Path:
-    """Return the cached project root (cwd at import time)."""
-    global _PROJECT_ROOT
-    if _PROJECT_ROOT is None:
-        _PROJECT_ROOT = Path.cwd().resolve()
-    return _PROJECT_ROOT
-
-
-def set_project_root(root: Path) -> None:
-    """Override the project root (used by tests and CLI)."""
-    global _PROJECT_ROOT
-    _PROJECT_ROOT = root.resolve()
-
-
-@contextmanager
-def bound_project_root(root: Path) -> Iterator[Path]:
-    """Bind the project root to *root* for a block, then restore the previous one.
-
-    The root is process-wide and set lazily from the working directory, so a
-    caller that works in several projects in one process binds each one here
-    rather than leaving the root on a project it has already left.
-    """
-    previous = _get_project_root()
-    set_project_root(root)
-    try:
-        yield _get_project_root()
-    finally:
-        set_project_root(previous)
-
 
 _OUTSIDE_PROJECT = "Cannot access paths outside the project root"
 
@@ -127,13 +95,16 @@ def is_contained(root: Path, path: str | Path) -> bool:
 
 
 def validate_project_path(path: str | Path) -> Path:
-    """Resolve *path* (relative to the working directory) inside the project root.
+    """Resolve *path* inside the current project's root, and return where it leads.
 
     Used before a project file is deserialised. The path comes from project
-    configuration, not from a request, so it is resolved before
-    :func:`contained_path` compares it with :func:`_get_project_root`.
+    configuration, not from a request: a relative one names a file under the
+    project root, and an absolute one is resolved before :func:`contained_path`
+    compares it with the root. Callers read the returned path.
     """
-    return contained_path(_get_project_root(), Path(path).resolve())
+    root = current_project().root
+    raw = Path(path)
+    return contained_path(root, (raw if raw.is_absolute() else root / raw).resolve())
 
 
 # ---------------------------------------------------------------------------
