@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 import sys
 import tomllib
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -88,401 +88,85 @@ def _dependencies_contain_haute(deps: list[str]) -> bool:
     return False
 
 
-def _scan_table_headers(text: str) -> list[tuple[int, int, str]]:
-    """Yield ``(line_start, line_end, header_name)`` for every TOML table
-    header in *text* that lives OUTSIDE any string, comment, or
-    array-of-tables section.
-
-    ``line_start`` is the offset of the ``[`` at column 0. ``line_end`` is
-    the offset just past the closing ``\\n`` (or len(text)). The regex-based
-    scanner it replaces was fooled by ``[foo]`` lines inside triple-quoted
-    string bodies — this walker tracks string state so the same content
-    inside a string is ignored.
-    """
-    headers: list[tuple[int, int, str]] = []
-    i = 0
-    n = len(text)
-    at_line_start = True
-    while i < n:
-        c = text[i]
-        if c == "\n":
-            at_line_start = True
-            i += 1
-            continue
-        if c == "#":
-            nl = text.find("\n", i)
-            i = n if nl == -1 else nl
-            continue
-        if c == '"' or c == "'":
-            quote = c
-            if text[i : i + 3] == quote * 3:
-                end = text.find(quote * 3, i + 3)
-                if end == -1:
-                    return headers
-                i = end + 3
-                at_line_start = False
-                continue
-            i += 1
-            while i < n and text[i] != quote and text[i] != "\n":
-                if quote == '"' and text[i] == "\\":
-                    i += 2
-                    continue
-                i += 1
-            if i < n and text[i] == quote:
-                i += 1
-            at_line_start = False
-            continue
-        if at_line_start and c == "[":
-            if text[i : i + 2] == "[[":
-                i += 2
-                at_line_start = False
-                continue
-            close = text.find("]", i)
-            nl = text.find("\n", i)
-            if close == -1:
-                return headers
-            if nl != -1 and close > nl:
-                i = nl + 1
-                at_line_start = True
-                continue
-            header = text[i + 1 : close].strip()
-            line_end = n if nl == -1 else nl + 1
-            headers.append((i, line_end, header))
-            i = line_end
-            at_line_start = True
-            continue
-        if not c.isspace():
-            at_line_start = False
-        i += 1
-    return headers
-
-
-def _header_key_path(header: str) -> list[str]:
-    """Return the dotted-key path of a TOML table *header*'s bracket content.
-
-    The scanner hands us the raw text between the brackets, which may use any
-    TOML key syntax: bare (``project``), quoted (``"project"`` / ``'project'``),
-    or dotted (``project.optional-dependencies``). We resolve it to the same
-    key path tomllib would, so header matching agrees with the parser instead
-    of doing a brittle raw-string compare.
-
-    The caller has already validated the whole file as TOML, so *header* is
-    guaranteed to be syntactically valid key syntax.
-    """
-    parsed = tomllib.loads(header + " = 0")
-    path: list[str] = []
-    node: object = parsed
-    while isinstance(node, dict) and len(node) == 1:
-        key = next(iter(node))
-        path.append(key)
-        node = node[key]
-    return path
-
-
-def _find_project_table_bounds(text: str) -> tuple[int, int] | None:
-    """Return ``(start, end)`` byte offsets of the ``[project]`` table body.
-
-    ``start`` points to the first character *after* the ``[project]`` header
-    line. ``end`` points to the start of the next table header (or len(text)
-    if ``[project]`` is the final table). Returns ``None`` if no ``[project]``
-    table is present.
-
-    Header matching is normalised through :func:`_header_key_path` so a quoted
-    header (``["project"]``) is recognised as the project table while a dotted
-    subtable (``[project.optional-dependencies]``) is not.
-    """
-    headers = _scan_table_headers(text)
-    for idx, (line_start, line_end, name) in enumerate(headers):
-        if _header_key_path(name) == ["project"]:
-            start = line_end
-            if idx + 1 < len(headers):
-                end = headers[idx + 1][0]
-            else:
-                end = len(text)
-            return start, end
-    return None
-
-
-# Matches ``dependencies = [`` with arbitrary whitespace around ``=``. Must be
-# at the start of a line (after optional indentation) so we don't pick up
-# ``optional-dependencies`` or any other key that ends in ``dependencies``.
-# The optional leading ``[ \t]*`` lets us match an indented key inside a
-# [project] table body (TOML permits leading whitespace on key lines).
-_DEPENDENCIES_KEY_RE = re.compile(r"^[ \t]*dependencies\s*=\s*\[", re.MULTILINE)
-_DOTTED_PROJECT_DEPENDENCIES_KEY_RE = re.compile(
-    r"^[ \t]*project\s*\.\s*dependencies\s*=\s*\[",
-    re.MULTILINE,
-)
-
-
-def _toml_basic_string(value: str) -> str:
-    """Serialise *value* as a TOML basic string (double-quoted, escaped).
-
-    Dependency values are read back from :mod:`tomllib` as plain Python
-    strings, so re-emitting them requires proper escaping — a PEP 508
-    environment marker such as ``foo; python_version >= "3.11"`` contains
-    double quotes that would otherwise close the string early and produce
-    invalid TOML. Escapes backslash, double-quote, the named control-char
-    shorthands, and any remaining control characters as ``\\uXXXX``.
-    """
-    out = ['"']
-    for ch in value:
-        if ch == "\\":
-            out.append("\\\\")
-        elif ch == '"':
-            out.append('\\"')
-        elif ch == "\b":
-            out.append("\\b")
-        elif ch == "\t":
-            out.append("\\t")
-        elif ch == "\n":
-            out.append("\\n")
-        elif ch == "\f":
-            out.append("\\f")
-        elif ch == "\r":
-            out.append("\\r")
-        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
-            out.append(f"\\u{ord(ch):04X}")
-        else:
-            out.append(ch)
-    out.append('"')
-    return "".join(out)
-
-
-def _find_matching_bracket(text: str, open_idx: int) -> int:
-    """Return the index of the ``]`` that matches the ``[`` at *open_idx*.
-
-    Handles basic TOML string quoting so brackets inside strings don't
-    confuse the scan. Raises ``ValueError`` if the bracket is unbalanced.
-    """
-    assert text[open_idx] == "["
-    depth = 1
-    i = open_idx + 1
-    n = len(text)
-    while i < n:
-        c = text[i]
-        if c == '"' or c == "'":
-            # Skip to the matching closing quote (not escape-aware for simple
-            # basic strings, but TOML dependency entries don't contain escaped
-            # quotes in practice).
-            quote = c
-            # Handle triple-quoted strings.
-            if text[i : i + 3] == quote * 3:
-                end = text.find(quote * 3, i + 3)
-                if end == -1:
-                    raise ValueError("unterminated triple-quoted string in TOML")
-                i = end + 3
-                continue
-            # Basic string: find the next unescaped quote on the same logical
-            # line (TOML basic strings don't span lines).
-            i += 1
-            while i < n and text[i] != quote:
-                if quote == '"' and text[i] == "\\":
-                    i += 2
-                    continue
-                i += 1
-            if i >= n:
-                raise ValueError("unterminated string in TOML")
-            i += 1
-            continue
-        if c == "#":
-            # Comment — skip to end of line.
-            nl = text.find("\n", i)
-            i = n if nl == -1 else nl
-            continue
-        if c == "[":
-            depth += 1
-        elif c == "]":
-            depth -= 1
-            if depth == 0:
-                return i
-        i += 1
-    raise ValueError("unbalanced '[' in TOML")
-
-
-def _rewrite_dependencies_array_at(
-    text: str, open_bracket_abs: int, edit: Callable[[list[str]], list[str]]
-) -> str:
-    """Rewrite the TOML array beginning at *open_bracket_abs* as *edit* makes its entries."""
-    close_bracket_abs = _find_matching_bracket(text, open_bracket_abs)
-
-    # Replace the array content. Normalise to one item per line with a
-    # four-space indent for consistency with the existing scaffold style.
-    array_text = text[open_bracket_abs + 1 : close_bracket_abs]
-    # Re-parse the single-table slice to discover current entries structurally
-    # (tomllib on the full file already succeeded, so this slice is valid).
-    current_deps: list[str] = tomllib.loads("dependencies = [" + array_text + "]")["dependencies"]
-
-    new_deps = edit(current_deps)
-    # Preserve trailing newline conventions by formatting the replacement
-    # body as ``\n    "a",\n    "b",\n`` (one dep per line, trailing comma).
-    # Each dependency is escaped as a TOML basic string so values containing
-    # double quotes (env markers) or backslashes round-trip to valid TOML.
-    new_array_body = "\n" + "".join(f"    {_toml_basic_string(dep)},\n" for dep in new_deps)
-
-    return text[: open_bracket_abs + 1] + new_array_body + text[close_bracket_abs:]
-
-
-def _insert_root_dotted_project_dependencies(text: str, requirement: str = "haute") -> str:
-    """Insert a top-level ``project.dependencies`` key, listing *requirement*, before any
-    table header."""
-    headers = _scan_table_headers(text)
-    insert_at = headers[0][0] if headers else len(text)
-    prefix = text[:insert_at]
-    suffix = text[insert_at:]
-    before = "" if not prefix or prefix.endswith("\n") else "\n"
-    after = "" if not suffix or suffix.startswith("\n") else "\n"
-    insertion = f"project.dependencies = [\n    {_toml_basic_string(requirement)},\n]\n"
-    return prefix + before + insertion + after + suffix
-
-
-def _project_dependencies_bracket(text: str) -> int | None:
-    """The offset of the ``[`` opening ``[project].dependencies``' array in *text*, written in
-    a ``[project]`` table or as a root ``project.dependencies`` key; None when neither holds
-    one."""
-    bounds = _find_project_table_bounds(text)
-    if bounds is None:
-        # ``project.dependencies = [...]`` creates the parsed project table without a textual
-        # [project] header: its array is rewritten in place, since a second [project] table is
-        # refused as "Cannot declare ('project',) twice".
-        headers = _scan_table_headers(text)
-        root_end = headers[0][0] if headers else len(text)
-        dotted = _DOTTED_PROJECT_DEPENDENCIES_KEY_RE.search(text[:root_end])
-        return None if dotted is None else dotted.end() - 1
-    body_start, body_end = bounds
-    found = _DEPENDENCIES_KEY_RE.search(text[body_start:body_end])
-    return None if found is None else body_start + found.end() - 1
-
-
-def _rewrite_project_dependencies(text: str, requirement: str = "haute") -> str:
-    """Return *text* with *requirement*, ``"haute"`` or ``haute`` with an extra, injected
-    into ``[project].dependencies``.
-
-    This is a structural edit: it uses :mod:`tomllib` to validate the file and
-    locate the ``[project]`` table and its ``dependencies`` array, then rewrites
-    only the array literal. Comments outside the array and other tables are
-    preserved. Raises :class:`ValueError` if the TOML is malformed or the
-    ``[project]`` table cannot be located textually.
-
-    The caller is responsible for having verified that ``haute`` is not already
-    present in the parsed ``[project].dependencies`` list — this function is a
-    no-op wrapper for the textual edit and does not re-check.
-    """
-    # Validate that the file parses as TOML before we mutate it — better to
-    # fail loudly than silently corrupt a broken file further.
-    parsed = tomllib.loads(text)
-
-    open_bracket_abs = _project_dependencies_bracket(text)
-    if open_bracket_abs is not None:
-        return _rewrite_dependencies_array_at(
-            text, open_bracket_abs, lambda deps: [requirement, *deps]
-        )
-    bounds = _find_project_table_bounds(text)
-    if bounds is not None:
-        # [project] exists but no dependencies key — insert one right after the header.
-        body_start = bounds[0]
-        insertion = f"dependencies = [\n    {_toml_basic_string(requirement)},\n]\n"
-        return text[:body_start] + insertion + text[body_start:]
-    if isinstance(parsed.get("project"), dict):
-        return _insert_root_dotted_project_dependencies(text, requirement)
-    # No [project] table — append a fresh one.
-    sep = "" if text.endswith("\n") or not text else "\n"
-    listed = _toml_basic_string(requirement)
-    return text + sep + f"[project]\ndependencies = [\n    {listed},\n]\n"
-
-
-def _with_haute_extras(text: str, deps: list[str], extras: Collection[str]) -> str:
-    """*text*, whose ``[project].dependencies`` are *deps* and list ``haute``, with that
-    requirement given each of *extras* it lacks, its version specifier, marker and other
-    extras kept; *text* itself when it has them all. Raises :class:`ValueError` when the
-    array cannot be located textually to edit."""
-
-    def with_extras(dep: str) -> str:
-        if not isinstance(dep, str):
-            return dep
-        requirement = Requirement(dep)
-        if canonicalize_name(requirement.name) != "haute" or set(extras) <= requirement.extras:
-            return dep
-        requirement.extras |= set(extras)
-        return str(requirement)
-
-    if [with_extras(dep) for dep in deps] == deps:
-        return text
-    open_bracket_abs = _project_dependencies_bracket(text)
-    if open_bracket_abs is None:
-        raise ValueError(
-            "pyproject.toml lists haute where haute init cannot edit it: add the "
-            f"{', '.join(sorted(extras))} extras to it yourself."
-        )
-    return _rewrite_dependencies_array_at(
-        text, open_bracket_abs, lambda current: [with_extras(dep) for dep in current]
-    )
+def _with_extras(dependency: str, extras: Collection[str]) -> str:
+    """*dependency* given each of *extras* it lacks when it is a ``haute`` requirement, its
+    version specifier, marker and other extras kept; otherwise *dependency* as it is."""
+    requirement = Requirement(dependency)
+    if canonicalize_name(requirement.name) != "haute" or set(extras) <= requirement.extras:
+        return dependency
+    requirement.extras |= set(extras)
+    return str(requirement)
 
 
 def _ensure_haute_dependency(pyproject_path: Path, name: str, requirement: str = "haute") -> bool:
     """Make pyproject.toml's dependencies list *requirement*, ``haute`` or ``haute`` with
     extras; return whether the file changed.
 
-    If pyproject.toml exists, insert *requirement* into the ``[project].dependencies`` list
-    using a TOML-aware edit when no ``haute`` requirement is present, and give one that is
-    each of *requirement*'s extras it lacks, keeping its version specifier, marker and other
-    extras and taking none away. If it doesn't exist, create a minimal pyproject.toml.
+    An existing file is edited through :mod:`tomlkit`, which keeps its formatting and
+    comments: *requirement* goes first in ``[project].dependencies`` (created where there
+    is none) when no ``haute`` requirement is listed, and one that is gains each of
+    *requirement*'s extras it lacks, keeping its version specifier, marker and other
+    extras and losing none. A one-line array is laid out one entry a line once
+    *requirement* joins it. Without a file a minimal pyproject.toml is written.
 
-    Also ensures a ``[dependency-groups]`` dev section exists with
-    ruff, mypy, and pytest so that the generated CI workflows work.
-
-    Detection of ``haute`` as an existing dependency is structural — only
-    the parsed ``[project].dependencies`` array is inspected, so comments or
-    substring-match packages (e.g. ``haute-utils``) cannot produce false
-    positives.
+    A ``[dependency-groups]`` dev group of ruff, mypy and pytest and a ``[tool.mypy]``
+    table are added when the file has none, so the generated CI workflows work.
     """
+    import tomlkit
+    from tomlkit.items import AoT, Array
+
     if not pyproject_path.exists():
+        document = tomlkit.document()
+        new_project = tomlkit.table()
+        new_project["name"] = name
+        new_project["version"] = "0.1.0"
+        new_project["requires-python"] = ">=3.11"
+        new_project["dependencies"] = tomlkit.array().multiline(True)
+        new_project["dependencies"].append(requirement)
+        document["project"] = new_project
         pyproject_path.write_text(
-            f'[project]\nname = "{name}"\nversion = "0.1.0"\n'
-            f'requires-python = ">=3.11"\n'
-            f"dependencies = [\n    {_toml_basic_string(requirement)},\n]\n"
-            + _DEV_DEPS_BLOCK
-            + _MYPY_BLOCK,
-            encoding="utf-8",
+            tomlkit.dumps(document) + _DEV_DEPS_BLOCK + _MYPY_BLOCK, encoding="utf-8"
         )
         return True
 
     original = read_user_text(pyproject_path)
-
-    # Parse structurally to detect an existing ``haute`` entry.
-    parsed = tomllib.loads(original)
-    project = parsed.get("project")
-    if project is not None and not isinstance(project, dict):
-        # ``[[project]]`` (array-of-tables) makes ``parsed['project']`` a list.
-        # That is invalid for a PEP 621 pyproject and there is no single
-        # ``[project]`` table to edit — fail loudly rather than crash on a
-        # later attribute access or silently corrupt the file.
+    document = tomlkit.parse(original)
+    project = document.get("project")
+    if isinstance(project, AoT):
+        # Invalid for a PEP 621 pyproject, and there is no single table to edit.
         raise ValueError(
             "pyproject.toml [project] must be a table, not an array-of-tables ([[project]])."
         )
-    project_deps = project.get("dependencies", []) if project is not None else []
-    if not isinstance(project_deps, list):
-        project_deps = []
+    if project is None:
+        document["project"] = tomlkit.table()
+        project = document["project"]
+    dependencies = project.get("dependencies")
+    if dependencies is None:
+        project["dependencies"] = tomlkit.array().multiline(True)
+        dependencies = project["dependencies"]
+    if not isinstance(dependencies, Array):
+        raise ValueError("pyproject.toml [project].dependencies must be an array.")
 
-    if _dependencies_contain_haute(project_deps):
-        text = _with_haute_extras(original, project_deps, Requirement(requirement).extras)
+    if _dependencies_contain_haute(list(dependencies)):
+        extras = Requirement(requirement).extras
+        for index, dependency in enumerate(list(dependencies)):
+            if isinstance(dependency, str) and _with_extras(dependency, extras) != dependency:
+                dependencies[index] = _with_extras(dependency, extras)
     else:
-        text = _rewrite_project_dependencies(original, requirement)
+        one_line = "\n" not in dependencies.as_string()
+        dependencies.insert(0, requirement)
+        if one_line:
+            dependencies.multiline(True)
 
-    # Re-parse after mutation to validate and to check whether the remaining
-    # scaffold blocks are already present — we use structural checks (not raw
-    # string scans) so comments can't fool us.
-    parsed = tomllib.loads(text)
-    has_dep_groups = "dependency-groups" in parsed
-    has_tool_mypy = isinstance(parsed.get("tool", {}), dict) and "mypy" in parsed.get("tool", {})
-
-    if not has_dep_groups:
+    text = tomlkit.dumps(document)
+    if "dependency-groups" not in document:
         text += _DEV_DEPS_BLOCK
-    if not has_tool_mypy:
+    tool = document.get("tool")
+    if not (isinstance(tool, Mapping) and "mypy" in tool):
         text += _MYPY_BLOCK
-
     if text == original:
         return False
+    tomllib.loads(text)  # what is written must read back as TOML
     pyproject_path.write_text(text, encoding="utf-8")
     return True
 
@@ -552,8 +236,8 @@ def capture_new_files(project_dir: Path, written: Sequence[str]) -> None:
     Commit takes a new file only in the pipeline folder (specs/git-integration), so a
     workflow a newer Haute adds, or ``connections.toml``, would otherwise never reach version
     history, and a branch could merge without its deploy workflow. "Not tracked yet" is
-    untracked, or staged as an addition but never committed, as a capture whose commit a hook
-    refused leaves its files. What Haute changed in tracked files is left on disk, for review
+    untracked, or staged as an addition but never committed, as a capture whose commit
+    failed leaves its files. What Haute changed in tracked files is left on disk, for review
     and the next Commit. Recording checks the ledger out, so it is made only while the
     checkout is on the working branch's ledger, never from under another branch, whose files
     it would replace. A capture skipped (no working branch chosen, the checkout elsewhere, no
@@ -946,6 +630,24 @@ def _answers(
 # ── The scaffold ───────────────────────────────────────────────────────
 
 
+#: The root ``main.py`` ``uv init`` writes, whatever the project's name.
+_UV_INIT_PLACEHOLDER = re.compile(
+    re.escape('def main():\n    print("Hello from ')
+    + r'[^"\\\n]+'
+    + re.escape('!")\n\n\nif __name__ == "__main__":\n    main()\n')
+)
+
+
+def _is_uv_init_placeholder(path: Path) -> bool:
+    """Whether *path* holds exactly what ``uv init`` writes as a root ``main.py``, its
+    project name aside; a checkout's CRLF line endings count as its LF ones."""
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return _UV_INIT_PLACEHOLDER.fullmatch(text.replace("\r\n", "\n")) is not None
+
+
 def _is_haute_hook(path: Path) -> bool:
     """Whether the git hook at *path* is Haute's, of any version: it holds the comment that
     marks Haute's hook. Another is the team's own, which ``haute init`` leaves as it is."""
@@ -1038,7 +740,9 @@ def handle_init(config: InitConfig) -> None:
     # -- Resolve project name --------------------------------------------------
     # A re-run keeps the name haute.toml has, which names the model and the endpoint.
     pyproject_path = project_dir / "pyproject.toml"
-    name = project_dir.name.replace("-", "_").replace(" ", "_").lower()
+    # A package name (PEP 508) from the folder's: what it cannot hold becomes "_", and it
+    # starts and ends with a letter or digit, so ".my-project" is "my_project".
+    name = re.sub(r"[^a-z0-9.]+", "_", project_dir.name.lower()).strip("._")
 
     if pyproject_path.exists():
         with open(pyproject_path, "rb") as fh:
@@ -1049,6 +753,11 @@ def handle_init(config: InitConfig) -> None:
         named = _table(previous, "project").get("name")
         if isinstance(named, str) and named:
             name = named
+    if not name:
+        raise click.ClickException(
+            f"The folder name {project_dir.name!r} gives no project name: it needs a letter "
+            "or digit. Rename the folder, or create pyproject.toml with a [project] name."
+        )
 
     # -- rating/workbench/'s paths, checked before anything is written ---------
     # A form folder already there is the analyst's form: never a blank one in its place.
@@ -1083,11 +792,17 @@ def handle_init(config: InitConfig) -> None:
     # -- Directories -----------------------------------------------------------
     (project_dir / "data").mkdir(exist_ok=True)
 
-    # -- Remove the root placeholder created by tools such as ``uv init`` ------
+    # -- Remove the root placeholder ``uv init`` writes, and only that ----------
     root_main = project_dir / "main.py"
-    if root_main.exists():
-        root_main.unlink()
-        click.echo("  Removed root main.py (Haute uses rating/main.py).")
+    if root_main.is_file():
+        if _is_uv_init_placeholder(root_main):
+            root_main.unlink()
+            click.echo("  Removed root main.py, uv init's placeholder (Haute uses rating/main.py).")
+        else:
+            click.echo(
+                "  Kept root main.py: it is not uv init's placeholder. "
+                "The pipeline is rating/main.py."
+            )
 
     # -- rating/ and tests/ - a new project's starter files ---------------------
     # Each is written only where there is none, and a re-run writes none: the pipeline, its

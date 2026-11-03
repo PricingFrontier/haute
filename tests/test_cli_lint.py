@@ -74,3 +74,138 @@ class TestLintEdgeCases:
         result = runner.invoke(cli, ["lint"])
         assert result.exit_code == 1
         assert "main.py" in result.output
+
+
+class TestPipelineResolutionErrors:
+    """``haute.toml``'s pipeline that cannot be resolved is a clean CLI error for both
+    ``lint`` and ``run``: exit 1 naming the problem, no traceback."""
+
+    @pytest.mark.parametrize("command", ["lint", "run"])
+    @pytest.mark.parametrize(
+        ("toml", "named"),
+        [
+            ('[project]\npipeline = "../elsewhere/main.py"\n', "../elsewhere/main.py"),
+            ("[project\npipeline = \n", "haute.toml"),
+        ],
+        ids=["outside-the-project", "malformed"],
+    )
+    def test_exits_1_naming_the_problem(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        command: str,
+        toml: str,
+        named: str,
+    ) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "haute.toml").write_text(toml, encoding="utf-8")
+        monkeypatch.chdir(project)
+
+        result = runner.invoke(cli, [command])
+
+        assert result.exit_code == 1, result.output
+        assert isinstance(result.exception, SystemExit)
+        assert "Error: " in result.output
+        assert named in result.output
+
+
+_PROBE = """\
+import haute
+import polars as pl
+
+pipeline = haute.Pipeline("lint_probe")
+
+
+@pipeline.polars
+def source() -> pl.LazyFrame:
+    return pl.LazyFrame({"x": [1, 2]})
+
+
+@pipeline.polars
+def priced(source: pl.LazyFrame) -> pl.LazyFrame:
+    return source.with_columns(y=pl.col("x") * 2)
+
+
+pipeline.connect("source", "priced")
+"""
+
+
+class TestLintAppliesTheEditorsSave:
+    """``haute lint`` refuses what the editor's save refuses, with the save's message, and
+    names a statement a save would drop with its file and line (specs/cli)."""
+
+    def _write(self, tmp_path: Path, source: str) -> Path:
+        pipeline = tmp_path / "main.py"
+        pipeline.write_text(source, encoding="utf-8", newline="\n")
+        return pipeline
+
+    def test_a_clean_pipeline_passes(self, runner: CliRunner, tmp_path: Path) -> None:
+        result = runner.invoke(cli, ["lint", str(self._write(tmp_path, _PROBE))])
+        assert result.exit_code == 0, result.output
+        assert "No issues found." in result.output
+
+    def test_what_the_save_refuses_fails_with_the_saves_message(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        from haute.errors import InvalidRequestError
+        from haute.routes._helpers import parse_pipeline_to_graph
+        from haute.routes._save_pipeline import SavePipelineService
+
+        pipeline = self._write(
+            tmp_path,
+            _PROBE.replace('pl.col("x") * 2', 'pl.col("x") * global_constants.rate'),
+        )
+        graph = parse_pipeline_to_graph(pipeline, project_root=tmp_path)
+        with pytest.raises(InvalidRequestError) as refused:
+            SavePipelineService(tmp_path, tmp_path).validate_graph(graph, source_file="main.py")
+
+        result = runner.invoke(cli, ["lint", str(pipeline)])
+
+        assert result.exit_code == 1
+        assert f"✗ {refused.value}" in result.output
+        assert "reads global constant(s) ['rate']" in result.output
+
+    def test_a_node_whose_sidecar_is_a_reserved_device_name_fails(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        from tests.conftest import write_data_input_config
+
+        config = write_data_input_config(tmp_path, "normal_name", "data.parquet")
+        source = _PROBE.replace(
+            "@pipeline.polars\ndef source() -> pl.LazyFrame:\n"
+            '    return pl.LazyFrame({"x": [1, 2]})',
+            f'@pipeline.data_input(config="{config}")\ndef CON():\n    """Read data."""',
+        ).replace("source", "CON")
+
+        result = runner.invoke(cli, ["lint", str(self._write(tmp_path, source))])
+
+        assert result.exit_code == 1, result.output
+        assert "CON.json" in result.output
+
+    def test_a_statement_a_save_would_drop_is_named_with_its_line(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        source = _PROBE.replace(
+            "\n\n@pipeline.polars\ndef priced",
+            '\n\nprint("stray")\n\n\n@pipeline.polars\ndef priced',
+        )
+        pipeline = self._write(tmp_path, source)
+        line = source.splitlines().index('print("stray")') + 1
+
+        result = runner.invoke(cli, ["lint", str(pipeline)])
+
+        assert result.exit_code == 1
+        assert f'main.py:{line}: `print("stray")` is outside the preamble' in result.output
+
+    def test_every_problem_is_reported_in_one_run(self, runner: CliRunner, tmp_path: Path) -> None:
+        source = _PROBE.replace('pl.col("x") * 2', 'pl.col("x") * global_constants.rate').replace(
+            "\n\n@pipeline.polars\ndef priced",
+            '\n\nprint("stray")\n\n\n@pipeline.polars\ndef priced',
+        )
+
+        result = runner.invoke(cli, ["lint", str(self._write(tmp_path, source))])
+
+        assert result.exit_code == 1
+        assert "Found 2 issue(s)" in result.output

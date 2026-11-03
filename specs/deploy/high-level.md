@@ -74,7 +74,7 @@ the canonical project resolver and rejects a configured-project pipeline that re
 outside that project (including through a symlink). It then parses the pipeline into the graph that runs, each
 submodel occurrence expanded into its own nodes as `haute run` and the editor expand it,
 finds the single node marked as output, prunes the graph to that node's ancestors (keeping only the live
-branch of any `liveSwitch`), identifies the API input node(s), collects supported artefacts
+branch of any `liveSwitch` it reaches; a switch it does not reach is never inspected), identifies the API input node(s), collects supported artefacts
 the pruned path references, and dry-runs the graph once to infer input and output
 schemas. The result is a `ResolvedDeploy` — the single handoff object every backend
 target consumes. Snapshot-backed Data Inputs hold a cache-generation lease from
@@ -179,7 +179,9 @@ than silently disabling the gate. Every quote is scored through the resolved gra
 test-quote row wraps its request as `input`, with an optional `expected` output and
 `tolerance_pct` and any `_`-prefixed notes; a row without `input`, or with any other
 top-level key, is refused naming the row, and any row whose actual output falls outside
-tolerance fails the deploy. The starter JSON quote `haute init` writes takes the row shape,
+tolerance fails the deploy. Each file is read once, and every row that leaves out a column
+the request requires is named in the report, not only the first. A `test_quotes.dir` that is not a string, or is an empty one,
+is refused when `haute.toml` loads, never read as the default folder. The starter JSON quote `haute init` writes takes the row shape,
 so a new project's test quotes parse before the analyst replaces them. A workbench
 project, which `haute deploy` refuses, checks its test quotes in `haute app build`:
 the test quotes saved from Preview by the workbench's comparison, a moved output
@@ -337,13 +339,18 @@ definition file's own preamble, would be refused like any other unbundled projec
   and pointing at a container target, rather than shipping a promise the runtime cannot
   keep.
 - **Container**: generates a FastAPI app (`POST /quote`, `GET /health`) and a Dockerfile
-  pinned to dependency versions actually installed in the build environment, builds the
-  image, and pushes it to a registry if one is configured. The image installs `haute`
-  without its dependencies plus the pinned scoring runtime (see **Scoring runtime**), so
+  installing the dependency lock the bundle carries (see **Dependency locks**), builds the
+  image for `linux/amd64`, and pushes it to a registry if one is configured. The image
+  installs `haute` without its dependencies plus the locked scoring runtime (see **Scoring
+  runtime**), so
   it carries no assistant, tuning or editor package. `/quote` accepts a single JSON
   object or an array, enforces a byte limit before materialisation, and either returns a
   stable JSON envelope capped at 1,000 returned rows or streams all rows as ordered NDJSON
-  when requested through `Accept`. NDJSON is collected into a bounded-memory spooled
+  when requested through `Accept`. Either way the rows are the OUTPUT document as
+  `render_output_document` renders it (a null field and an empty collection left out, a
+  null inside an array kept) and encoded alike, a date or time as its ISO 8601 text and a
+  decimal as its exact digits, so
+  `Accept` changes the framing and the row limit, never a row. NDJSON is collected into a bounded-memory spooled
   temporary file in Starlette's worker threadpool before response headers are sent, so
   the event loop remains responsive during scoring and a scoring failure produces the
   same logged HTTP 500 contract as ordinary JSON instead of a misleading 200 with a
@@ -373,6 +380,12 @@ definition file's own preamble, would be refused like any other unbundled projec
   is an application-level admission and sampled-RSS guarantee, not a substitute for a
   platform hard limit; the batch worker's cap is a real one.
 
+Each build, of either backend, stages its bundle in a directory of its own under the
+project's `.haute_build`, wherever the deploy runs from, and removes it once the build has
+shipped or failed (`haute deploy --keep-build` keeps it); a bundle is written only into an
+empty directory, so it ships its own build's files and nothing else, and consecutive or
+concurrent builds from one checkout never share or remove each other's files.
+
 Three further container-platform targets (Azure Container Apps, AWS ECS, GCP Cloud Run)
 share the container build step and are build and push only: they require
 `container.registry`, push the image there, and finish successfully, reporting that the
@@ -384,7 +397,11 @@ both a staging and a production endpoint (Databricks serving or a container's `/
 HTTP endpoint), computes per-column percent-change statistics and categorical-segment
 breakdowns, and renders a terminal or Markdown report. This is advisory, not a deploy
 gate — it exists so a human reviewer can see exactly what a release changes before
-approving it.
+approving it. The quotes are paired by position, so every batch must be answered with one
+prediction per quote sent and every source must hold one row per sampled quote: any other
+count fails the analysis rather than comparing the wrong quotes. Production is left out only
+on an authoritative record that it has never been released (see [cli](../cli/high-level.md)),
+never because it could not be reached.
 
 ## Design rationale
 
@@ -431,15 +448,19 @@ approving it.
 - **Reproducible container builds.** `container.base_image` must be pinned to an explicit
   patch version or a digest (`src/haute/deploy/_config.py::_validate_base_image_pinning`) — floating tags
   like `python:3.11-slim` are rejected outright, because the image bytes tested today
-  must be the image bytes served tomorrow. Dockerfile dependency versions (`haute` and
-  every scoring-runtime package) are pinned to whatever is actually installed in the build
-  environment rather than left unpinned or hardcoded, so a build environment drift is
-  caught rather than silently propagated to a fresh, possibly incompatible pull.
+  must be the image bytes served tomorrow. The same holds for the Python packages: every
+  distribution the image installs is locked when the bundle is built (see **Dependency
+  locks**), never resolved at the image's build, so two builds of one bundle install the
+  same runtime.
 - **Schema-cache identity tracks served bytes, not just graph shape.** The output-schema
   dry-run cache key folds in `artifact_identity_fingerprint()` — the runtime fingerprint
   of every bundled artefact's resolved path, size, mtime, and shared content signature — so retraining a model in
   place under an unchanged `run_id`/`version="latest"` config still busts the cache
-  instead of baking a stale `ModelSignature` into the manifest.
+  instead of baking a stale `ModelSignature` into the manifest. The cache is the
+  project's (`<project root>/.haute_cache/output_schema.json`, wherever the deploy runs
+  from), holds one entry per fingerprint, so a project deploying several pipelines reuses
+  each unchanged one's, and is written atomically, so an interrupted or concurrent build
+  never leaves a partial file.
 - **Pipeline-relative source paths become container-relative manifest paths.**
   `_bundler.py::_resolve_path` deliberately prefers a source path resolved against the
   pipeline file's directory over one resolved against the developer process's working
@@ -515,18 +536,16 @@ approving it.
 
 ## Failure model
 
-> NOTE: Generated NDJSON responses currently bypass OUTPUT document pruning used by
-> JSON, so the same request can have a different nested response shape.
-> [DEP-R17](../roadmap/deploy.md#dep-r17--json-and-ndjson-preserve-the-same-output-document) owns response-mode parity.
-
 This codebase prefers loud failure over silent fallback, and deploy is where that matters
 most: a silent wrong answer here mis-prices real policies.
 
-- **Configuration errors** (unknown `haute.toml` keys, missing required CLI fields, an
+- **Configuration errors** (unknown `haute.toml` keys, a value of the wrong type, a
+  `[test_quotes] dir` that is empty, an environment override that is not a boolean where
+  one is read, an override key `DeployConfig` does not have, missing required CLI fields, an
   unpinned `container.base_image`, an unknown or not-yet-implemented deploy target) raise
   `ValueError`, `TypeError`, or `haute.errors.DeployError` at config-construction or
   resolve time — before any expensive work (pipeline parsing, artefact download, Docker
-  build) starts. `deploy()` explicitly validates the target *before* resolving the config,
+  build) starts. Each names the key or variable at fault; none is defaulted away. `deploy()` explicitly validates the target *before* resolving the config,
   so an unknown target never gets misreported as "no output node found".
 - **Missing, escaped, or drifted artefacts** raise `FileNotFoundError` (bundler: an
   in-project artefact file is absent on disk) or `haute.errors.DeployError` (a pipeline,
@@ -537,7 +556,8 @@ most: a silent wrong answer here mis-prices real policies.
   `FeatureMismatchError` when a live request schema disagrees with a bundled training-time
   feature contract).
 - **Structural graph errors** split across the two stages: no/multiple output nodes and an
-  explicitly mapped `liveSwitch` whose live input matches no connected node raise
+  explicitly mapped `liveSwitch` whose live input matches no connected node, or one the
+  output reaches that maps no input to `live`, raise
   `ValueError` from `_pruner.py`; zero or ambiguous fallback source nodes raise
   `ValueError` from `_config.resolve_config()`. An input node with incoming edges is a
   validation finding aggregated into `DeployError`, not a resolution-time `ValueError`.
@@ -571,11 +591,16 @@ most: a silent wrong answer here mis-prices real policies.
   error envelopes: oversized bodies → 413, malformed `Content-Length` → 400, JSON syntax
   errors → 422, admission/memory-limit rejection → 507, cancelled execution →
   499, bounded-streaming-unsupported → 422, and other caught runtime failures → 500 with
-  `error_code: "deploy_internal_error"` for anything else, logged via
-  `logger.exception`. The MLflow `pyfunc` path (`_model_code.py`) has no equivalent
+  `error_code: "deploy_internal_error"` for anything else. A 500 never carries the
+  exception's text, which can hold file paths and internal names: it gives a fixed message
+  and the request's `request_id`, and the failure is logged via `logger.exception` with that
+  id, so an operator finds the detail from the id a client reports. Every response carries
+  its request's id as the `X-Request-ID` header, a fresh one per request. The MLflow `pyfunc` path (`_model_code.py`) has no equivalent
   envelope — exceptions propagate to whatever the Databricks serving runtime does with
-  an unhandled `predict()` exception. Invalid UTF-8 currently escapes the structured body
-  parser, and invalid array element shapes can fail later during Polars materialisation.
+  an unhandled `predict()` exception. A body that cannot be read as JSON (malformed, not
+  UTF-8, an integer past Python's digit limit, nesting past its recursion limit) is the
+  422 `invalid_json` envelope; invalid array element shapes can fail later during Polars
+  materialisation.
 - **Docker/subprocess failures** (`docker info`, `docker build`, `docker push`) raise
   `DeployError` with the captured stderr; a `DeployError` telling the caller to run in
   CI is raised specifically when Docker itself isn't available. The `haute deploy` CLI
@@ -593,10 +618,13 @@ most: a silent wrong answer here mis-prices real policies.
   `.rsglm`, XGBoost `.ubj`, LightGBM `.lgbm`, EBM `.ebm`, t-boost `.tboost`), while a discovered MLflow pyfunc
   directory cannot currently be bundled and served by this path.
 - **Impact-analysis arithmetic** raises `ValueError` rather than producing a misleading
-  percentage when predictions contain non-finite values, or when a percent-change or
-  total-percent-change calculation would divide by a zero production baseline against a
-  non-zero staging value (`src/haute/deploy/_impact.py::_raise_for_non_finite_predictions`,
-  `_zero_baseline_change_count`, `_total_percent_change`).
+  percentage when predictions contain non-finite or missing values
+  (`src/haute/deploy/_impact.py::_raise_for_non_finite_predictions`). A quote production prices
+  at zero and staging does not has no percentage either, but it is an ordinary release event (a
+  newly priced cover, a reversed decline), so it is reported, not refused (decided
+  2 November 2026): counted as priced from zero beside each output's statistics and left out of
+  its percent figures, and a zero production total beside a non-zero staging total reads
+  "from zero" (`_from_zero`, `_total_percent_change`).
 
 ## Scoring runtime
 
@@ -608,14 +636,54 @@ MLflow stacks. A container image installs only what scoring imports (decided
 and `price-contour` — then `haute` itself with
 `--no-deps`. To that it adds each bundled artefact's model runtime by file suffix, and
 `mlflow` when the served graph has an optimiser apply that loads its artefact from MLflow
-at run time. Every package is pinned to the version installed in the deploying
-environment. `price-contour` is pinned to the version haute's compatibility guard verified
+at run time. Every one of these roots is pinned to the version installed in the deploying
+environment, and their whole closure is locked for the image (see **Dependency locks**),
+bounded by haute's own requirement ranges, since haute is installed beside it.
+`price-contour` is pinned to the version haute's compatibility guard verified
 (see [optimiser](../optimiser/low-level.md#the-price-contour-guard)); a build from an editable
 checkout or a direct URL refuses to deploy with a `DeployError`, because the container
 reinstalls from the package index by version and would not run the same solver code. A third-party package that the pipeline's own code imports, and that is
-neither in the runtime nor detected from an artefact, is not installed. A test serves
-the container smoke example in process with every other `haute` dependency made
-unimportable, and the weekly container-smoke lane builds and serves the real image.
+neither in the runtime nor detected from an artefact, is not installed. haute's own
+requirements the image leaves out are a reviewed list (`HAUTE_SCORING_OMISSIONS`: the
+editor, assistant, training, tuning, workbench-store and registry stacks, and the engines no
+artefact needs); `pip check` would report exactly those, so the image checks itself
+instead (below). A test serves the container smoke example in process with every other
+`haute` dependency made unimportable, and the weekly container-smoke lane builds and serves
+the real image.
+
+## Dependency locks
+
+A deployment installs a lock, never a resolution made where it is built (decided
+2 November 2026). One resolver (`haute.deploy._lock`, `uv pip compile`) locks each target's
+closure for the platform it runs on, Linux x86_64 (`x86_64-manylinux_2_28`), and its Python:
+a container image's (its official `python` base image's, else the project's) and the
+Databricks model's (the project's). Only wheels are accepted: a dependency without one for
+the target fails the build naming it, rather than being built from source there; a test
+resolves every profile against the index for each supported Python whenever the
+dependencies change, so a release without a wheel is caught before a deploy meets it. Every
+distribution is pinned by version and hash, the index is recorded without its credentials,
+and a deploying host on another platform (Windows, macOS) never decides what Linux installs:
+the lock is resolved for the target, so a Linux-only dependency such as `uvloop` is in it.
+Locking needs `uv` on the deploying host, which the generated CI installs.
+
+- **Container**: the bundle carries `requirements.lock` (the runtime), `haute.lock` (haute
+  alone: the bundled wheel by its digest, or the index release, hashed) and
+  `dependency_lock.json`, the record of what was resolved, for which Python and platform,
+  with which resolver and from which index. The image installs both locks with
+  `--no-deps --require-hashes`, so a changed file fails the build, and then checks itself
+  (`haute.deploy._runtime_check`): every locked distribution installed at its version and
+  nothing else but haute and the base image's tooling; every requirement of every locked
+  distribution, under this interpreter's markers and the extras the roots and the closure's
+  own requirements select,
+  installed at a version it admits; and each of haute's own requirements installed and
+  admitted, or one of the reviewed omissions. A missing transitive dependency or an
+  incompatible version fails the build. A rebuild of the bundle installs the same runtime.
+- **Databricks**: the logged `conda_env` names every distribution of the closure locked for
+  Model Serving (haute with all its dependencies, the served runtime and the bundled
+  engines), each at its locked version, so Model Serving resolves nothing; the manifest
+  records the lock. `pip check` holds for this full profile.
+- **Hosted app**: its bundle script locks haute with the `databricks` extra with the same
+  options ([hosted-databricks-app](../hosted-databricks-app/low-level.md)).
 
 ## Model families in deployment
 

@@ -122,8 +122,10 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the fifty-five packages delivered or settled since (thirteen by 28
-October 2026, twenty-five more on 29 October, two on 1 November, fifteen more by 2 November) have been removed from the sections below; the coverage table keeps the
+The findings of the seventy packages delivered or settled since (thirteen by 28
+October 2026, twenty-five more on 29 October, two on 1 November, thirty more by 2 November,
+the deploy roadmap's nine, the CLI roadmap's six and the background-jobs roadmap's three
+among them) have been removed from the sections below; the coverage table keeps the
 original counts.
 
 ## Validation — 25 October 2026
@@ -136,28 +138,14 @@ target dependency resolution. The component roadmaps now carry the resulting pla
 | Packages | Correction |
 |---|---|
 | `FSH-R07`, `FSH-R05` | Recover a save only from complete canonical saved-content equality, retain newer dirty edits, and distinguish intended other-tab broadcasts from watcher duplicates and self-echoes. |
-| `DEP-R11` | Check every response batch before positional pairing; require explicit first-deploy intent or authoritative absence, never infer absence from an outage. |
-| `DEP-R09` | Resolve and verify dependency locks for each target Python/platform and extras. |
 | `WB-43` | Shipped SQLite already has atomic insert-if-absent. Require a real selected-engine concurrency test and correct transaction recovery. |
 
-The build-directory work is split into `DEP-R12A` (P2, isolated owned bundles
-and cleanup) and `DEP-R12B` (P3, project-scoped schema caching). Unnamed stale artifacts
-are an isolation/disclosure concern; the loader reads manifest-named artifacts.
-Concurrent builds can interfere with named artifacts, so reassess the isolation
-priority if shared-checkout concurrency is an advertised deployment workflow.
-
-The roadmap chooses complete canonical content comparison for save recovery, uses
-explicit CLI intent for an HTTP first deployment, and excludes the saving socket while
-retaining fingerprint guards. These are planned rules to specify and test in the
+The roadmap chooses complete canonical content comparison for save recovery and excludes
+the saving socket while retaining fingerprint guards. These are planned rules to specify and test in the
 component specifications before code changes. WB-43's server-engine choice remains
 with the project's IT team; the audit does not choose one or present its generic
 branch as a current SQLite release defect.
 
-The follow-up plan review also required the dependency gate to preserve the existing
-minimal scoring container. DEP-R09 verifies the selected runtime closure with explicit
-accounting for Haute's intentionally omitted non-scoring requirements; it does not
-require installing the editor/training stacks merely to pass an unrestricted metadata
-check. The full pyfunc and hosted-app profiles keep their full dependency checks.
 
 Root validation probes reproduced literal-select row multiplication, malformed
 test-quote configuration disabling the gate, mismatched impact-row acceptance,
@@ -177,11 +165,6 @@ package, independently of the original finding count.
 Both Criticals, and the Majors whose packages were delivered, have been removed;
 these are the Majors still open.
 
-- **`haute init --force` overwrites the analyst's pipeline, utility code, tests
-  and form** (Major, `CLI-R01`), and a first `init` deletes a root `main.py` it
-  did not write.
-- **`haute run` is a full eager preview** (Major, `CLI-R02`): every node is
-  collected into memory at once under the preview profile.
 - **The assistant's SDK clients are built without the validated endpoint**
   (Major, `ASSIST-54`): `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` in the
   server's environment redirects the key, the prompt and project material to a
@@ -202,9 +185,8 @@ these are the Majors still open.
 
 ## Design choices the review asks the owner to confirm
 
-Three behaviours are specified and implemented as specified, and the review
-still puts them in front of the owner because of what they can cost in
-production:
+One behaviour is specified and implemented as specified, and the review still
+puts it in front of the owner because of what it can cost in production:
 
 - The assistant's dry run executes model-produced Python in the server process
   (the planned preamble, free-code steps and node bodies are compiled and run
@@ -213,26 +195,11 @@ production:
   egress ceiling, so a prompt-injected project document or a misbehaving model
   can run code on the server without saving. No package is filed; the choice
   is the owner's.
-- `haute run` executes the whole pipeline eagerly in memory (`CLI-R02`).
 
 ## Findings mapped to packages
 
 | Area | Findings | Package |
 |---|---|---|
-| Deploy | PM-16 | `DEP-R09` |
-| Deploy | PM-1, PM-2, PM-5 | `DEP-R10` |
-| Deploy | PM-37, PM-38 | `DEP-R11` |
-| Deploy | PM-7, PM-15, PM-25 | `DEP-R12A`, `DEP-R12B` |
-| Deploy | PM-3, PM-4, PM-8, PM-9, PM-10, PM-11, PM-17, PM-19, PM-20, PM-21 | `DEP-R13` |
-| Deploy | PM-6 | `DEP-R14` |
-| Deploy | PM-18 | `DEP-R15` |
-| Deploy | PM-39 | `DEP-R16` (Decision) |
-| CLI | PM-34 | `CLI-R01` |
-| CLI | EXE-1 | `CLI-R02` |
-| CLI | PM-36 | `CLI-R03` |
-| CLI | PM-35 | `CLI-R04` |
-| CLI | PM-27, PM-31, PM-32, PM-33 | `CLI-R05` |
-| CLI | PM-29 (templates), PM-30 | `CLI-R06` |
 | IO layer | CIO-5, CIO-11 | `IO-R06` |
 | Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
@@ -283,9 +250,9 @@ panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and
 `applyFrontierPointSummary`'s null handling (`FSH-R03`); in the workbench UI and
 the app shell, the
 chart theme observer written twice (`EDA-R03`), knip's export-only symbols (`ENGQ-R01`), browser-locale dates (`FSH-R08`), the bootstrap without
-a deadline (`FSH-R05`) and Ctrl+S inside a code box (`FSH-R07`); in the tests, scripts and CI, the floating
-action tags in the generated workflows (`CLI-R06`), the campaign-named test modules
-(`ENGQ-R05`), the test-only reset hooks in production code (`ENGQ-R01`), and the
+a deadline (`FSH-R05`) and Ctrl+S inside a code box (`FSH-R07`); in the tests, scripts
+and CI, the campaign-named test modules (`ENGQ-R05`), the test-only reset hooks in
+production code (`ENGQ-R01`), and the
 189 test modules that change directory because production resolves the project
 root from it (`PCFG-R04`).
 
@@ -341,8 +308,8 @@ All probes live outside the repository and wrote nothing into it.
 | Tool | Result |
 |---|---|
 | radon | 285 functions with cyclomatic complexity ≥ 20; 27 ≥ 50 (the largest in the optimiser service, the save service, the assistant tools and the RAM estimate). |
-| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `DEP-R13`, `CLI-R05` and `ENGQ-R01`. |
-| jscpd Python | 0.30 % duplicated, 41 clones; the production ones are in `DEP-R13`. |
+| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `ENGQ-R01`; the deploy, CLI and background-jobs ones are removed. |
+| jscpd Python | 0.30 % duplicated, 41 clones; the production ones, in deploy and the background jobs, are removed. |
 | jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `EDA-R03`. |
 | knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted (since declared); every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
 | sweeps | 35 campaign-named test modules (`ENGQ-R05`). |

@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 # explicitly into this domain's namespace so extracted functions retain their
 # original signatures and semantics without a facade dependency.
 from haute._git_core import (
+    NO_HOOKS,
     CompensationStep,
     GitDomainError,
     GitError,
@@ -88,16 +89,15 @@ def commit_save(
     working: str,
     cwd: Path | None = None,
     message: str | None = None,
-    *,
-    run_hooks: bool = True,
 ) -> str | None:
     """Record one save as one commit on the ledger of *working*.
 
     Pathspec-scoped: only *paths* enter the commit, regardless of any content
     the user may have staged in the meantime. Returns the new commit SHA, or
     None when none of *paths* changed (idempotent saves produce no empty
-    commits). The commit runs the project's git hooks, as any ``git commit`` does,
-    unless *run_hooks* is False: a save the milestone's own hook pass covers.
+    commits). A save runs none of the project's git hooks, so nothing they check
+    keeps a save out of version history: they run when a milestone is made
+    (:func:`commit_milestone`), over every save it records.
     """
     if not paths:
         return None
@@ -128,8 +128,7 @@ def commit_save(
     msg = message if message is not None else _generate_commit_message(changed)
     # `git commit -- <paths>` commits the working-tree state of exactly those
     # paths, bypassing unrelated index content the user may have pre-staged.
-    verify = () if run_hooks else ("--no-verify",)
-    _run_git("commit", *verify, "-m", msg, "--", *pathspecs, cwd=cwd)
+    _run_git(*NO_HOOKS, "commit", "-m", msg, "--", *pathspecs, cwd=cwd)
 
     sha = _run_git("rev-parse", "HEAD", cwd=cwd).strip()
     logger.info("save_committed", ledger=ledger, sha=sha, files=len(changed))
@@ -646,6 +645,14 @@ def _run_hook(name: str, *args: str, env: dict[str, str], cwd: Path | None) -> N
             f"This project has a {name} hook, and running it needs git 2.36 or later. "
             "Update git, then commit again."
         )
+    if name == "pre-commit":
+        # The scaffolded hook's ruff report, said node by node with what to do.
+        from haute._lint_refusal import explain_lint_refusal
+
+        repository = Path(_run_git("rev-parse", "--show-toplevel", cwd=cwd).strip())
+        explained = explain_lint_refusal(f"{result.stderr}\n{result.stdout}", repository)
+        if explained is not None:
+            raise GitDomainError(explained)
     raise GitDomainError(
         f"The project's {name} hook refused the milestone: {output or 'it gave no reason'}"
     )
@@ -704,7 +711,6 @@ def _run_commit_hooks(
             working,
             cwd=cwd,
             message="Changes made by the project's pre-commit hook",
-            run_hooks=False,
         )
     return message
 
@@ -767,7 +773,7 @@ def commit_milestone(
     # The milestone's hook pass below covers them.
     residual = _unrecorded_project_files(project_root, pipeline_folder, cwd)
     if residual:
-        commit_save(residual, working, cwd=cwd, message="Updated project files", run_hooks=False)
+        commit_save(residual, working, cwd=cwd, message="Updated project files")
 
     message = _run_commit_hooks(working, message, project_root, pipeline_folder, cwd)
     sha = merge_to_working(working, message, tag_label=version_label, cwd=cwd)

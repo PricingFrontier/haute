@@ -20,13 +20,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeAlias
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeAlias, cast
 
 from haute.errors import ConfigError
 
 if TYPE_CHECKING:
     from haute._mlflow_io import ScoringModel
     from haute._mlflow_utils import ResolvedBackend
+    from haute.modelling._feature_contract import Task
 
 MODEL_SOURCE_TYPES: tuple[str, ...] = ("run", "registered", "file")
 
@@ -74,6 +75,17 @@ class FileModelSource:
 
 
 ModelSource: TypeAlias = RunModelSource | RegisteredModelSource | FileModelSource
+
+
+def model_score_task(config: Mapping[str, Any]) -> Task:
+    """The task a Model Scoring node scores for: its ``task``, else regression."""
+    return cast("Task", config.get("task", "regression"))
+
+
+def model_score_output_column(config: Mapping[str, Any]) -> str:
+    """The column a Model Scoring node writes its prediction to: ``output_column``, else
+    ``prediction`` (an empty name too, which no frame can hold)."""
+    return str(config.get("output_column") or "prediction")
 
 
 def _optional_string(config: Mapping[str, Any], key: str) -> str:

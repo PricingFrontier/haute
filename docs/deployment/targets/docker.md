@@ -114,7 +114,7 @@ endpoint_url = "https://motor-pricing-staging.example.com"
 endpoint_url = "https://motor-pricing.example.com"
 ```
 
-Until the staging address is set, the smoke step stops with "No staging endpoint URL configured". Without a production address, the impact step reports a first deployment instead of a comparison.
+Until the staging address is set, the smoke step stops with "No staging endpoint URL configured". Until production is first released, the impact step reports a first deployment instead of a comparison: it reads that from your repository, where the production job tags each release `deploy/...`. After the first release, production must answer at its address; an unset address, an error status (404 included) or no answer fails the step.
 
 ---
 
@@ -171,7 +171,7 @@ As an analyst, **you can stop reading here** - your job is done after Step 5 abo
 
 ??? note "What Haute generates (click to expand)"
 
-    When Haute deploys, it creates a `.haute_build/` directory containing:
+    When Haute deploys, it builds the image from a directory of its own under the project's `.haute_build/`, containing:
 
     | File | Purpose |
     |---|---|
@@ -180,8 +180,10 @@ As an analyst, **you can stop reading here** - your job is done after Step 5 abo
     | `deploy_manifest.json` | Metadata about what was deployed (version, schemas, artifacts) |
     | `artifacts/` | Copies of model files |
     | `utility/` | Your project's utility package, when the pipeline imports it |
+    | `requirements.lock`, `haute.lock` | Every Python package the image installs, pinned by version and hash, resolved for Linux (`linux/amd64`) and the image's Python when Haute deploys; the image installs exactly these and resolves nothing |
+    | `dependency_lock.json` | What the lock was resolved for and from; the image checks its installed packages against it as it builds |
 
-    These are generated fresh on every deploy.
+    These are generated fresh on every deploy, in a new directory each time, which is removed once the image is built and pushed. Run `haute deploy --keep-build` to keep it for inspection.
 
 ??? note "API contract (click to expand)"
 
@@ -192,7 +194,7 @@ As an analyst, **you can stop reading here** - your job is done after Step 5 abo
     | `/quote` | `POST` | Send quote data (JSON object or array), receive premium results in a stable envelope |
     | `/health` | `GET` | Returns a JSON object with `"status": "ok"`, the model name, the Haute version and the input and output schemas - used by infrastructure to check the service is alive |
 
-    The `/quote` endpoint accepts a JSON object or array of quote objects and returns `{ "rows": [...], "row_count": n, "returned_rows": n, "truncated": false, "limit": 1000, "execution_metrics": {...} }`, one row per quote in the order sent. A pipeline that answers one quote per request (see [Requests with several quotes](../index.md#requests-with-several-quotes)) refuses an array of several quotes with HTTP 422 naming the nodes that stop it; `/health` reports which kind the deployment is under `request_rows`. For larger results, `rows` is capped at `limit`, `row_count` reports the full result size, and `truncated` is `true`. Send `Accept: application/x-ndjson` to receive every row as newline-delimited JSON instead. A request body over the size limit gets HTTP 413. No MLflow, no pandas - just JSON in, JSON out.
+    The `/quote` endpoint accepts a JSON object or array of quote objects and returns `{ "rows": [...], "row_count": n, "returned_rows": n, "truncated": false, "limit": 1000, "execution_metrics": {...} }`, one row per quote in the order sent. A pipeline that answers one quote per request (see [Requests with several quotes](../index.md#requests-with-several-quotes)) refuses an array of several quotes with HTTP 422 naming the nodes that stop it; `/health` reports which kind the deployment is under `request_rows`. For larger results, `rows` is capped at `limit`, `row_count` reports the full result size, and `truncated` is `true`. Send `Accept: application/x-ndjson` to receive every row as newline-delimited JSON instead. A request body over the size limit gets HTTP 413. A failure while scoring gets HTTP 500 with `"error_code": "deploy_internal_error"` and a `request_id`; the container's log holds the detail under that id, and every response carries its id in the `X-Request-ID` header. No MLflow, no pandas - just JSON in, JSON out.
 
 ??? note "Registry options (click to expand)"
 

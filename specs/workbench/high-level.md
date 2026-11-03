@@ -1501,7 +1501,9 @@ Out of scope:
   what a scoring container installs and the quote store's packages, SQLAlchemy and
   Alembic, with the driver of each provider the release's environments declare (mssql-python,
   which carries ODBC Driver 18, for `sqlserver`, psycopg for `postgresql`, and azure-identity
-  for a Microsoft Entra ID sign-in), pinned as the scoring runtime is, nothing more.
+  for a Microsoft Entra ID sign-in), pinned as the scoring runtime is and locked with it for
+  the image's Python and Linux x86_64 (so building the release needs `uv`, as a deploy does;
+  [deploy](../deploy/high-level.md), Dependency locks), nothing more.
   `haute app build --push` builds that image as `<registry>/<name>:<short commit>`, the
   registry `[deploy.container] registry` names, which it refuses to run without, as it does
   a project whose commit git cannot name, never tagging an image with no commit, and the

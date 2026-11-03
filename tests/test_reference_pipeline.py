@@ -54,7 +54,8 @@ def test_default_pipeline_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 
     assert result.exit_code == 0, result.output
     assert "Pipeline: reference (3 nodes)" in result.output
-    assert "priced: 6 rows \u00d7 4 cols" in result.output
+    assert "\u2713 priced: 4 cols" in result.output
+    assert "Output - priced (6 rows):" in result.output
     assert "\u2717" not in result.output
 
     # The same parse-and-execute path `haute run` takes, read back as records.

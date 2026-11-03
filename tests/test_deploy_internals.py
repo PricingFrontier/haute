@@ -20,7 +20,7 @@ import os
 import urllib.error
 import weakref
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -776,12 +776,12 @@ class TestInferOutputSchema:
         cache_dir = tmp_path / ".haute_cache"
         cache_dir.mkdir()
         cache_file = cache_dir / "output_schema.json"
-        cached = {"fingerprint": fp, "schema": {"premium": "Float64", "factor": "Int64"}}
+        cached = {"entries": {fp: {"premium": "Float64", "factor": "Int64"}}}
         cache_file.write_text(json.dumps(cached))
 
         # Should return cached schema without calling score_graph
         with patch("haute.deploy._scorer.score_graph") as mock_score:
-            result = infer_output_schema(graph, "out", ["src"])
+            result = infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
 
         mock_score.assert_not_called()
         assert result == {"premium": "Float64", "factor": "Int64"}
@@ -838,12 +838,20 @@ class TestInferOutputSchema:
         mock_result = pl.DataFrame({"result": [42.0]})
 
         with patch("haute.deploy._scorer.score_graph", return_value=mock_result):
-            result = infer_output_schema(graph, "out", ["src"])
+            result = infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
 
         assert result == {"result": "Float64"}
 
-    def test_corrupt_cache_logs_warning(self, tmp_path, monkeypatch):
-        """Corrupt cache JSON logs a warning with path and error details."""
+    @pytest.mark.parametrize(
+        ("cache_text", "error"),
+        [
+            ("NOT VALID JSON {{{{", "Expecting value"),
+            ('{"entries": []}', "entries is a list"),
+        ],
+        ids=["unparseable", "entries-not-a-mapping"],
+    )
+    def test_corrupt_cache_logs_warning(self, tmp_path, monkeypatch, cache_text, error):
+        """A cache that is not one logs a warning with path and error details."""
         from haute.deploy._schema import infer_output_schema
 
         monkeypatch.chdir(tmp_path)
@@ -887,7 +895,7 @@ class TestInferOutputSchema:
         cache_dir = tmp_path / ".haute_cache"
         cache_dir.mkdir()
         cache_file = cache_dir / "output_schema.json"
-        cache_file.write_text("NOT VALID JSON {{{{")
+        cache_file.write_text(cache_text)
 
         mock_result = pl.DataFrame({"result": [42.0]})
 
@@ -895,7 +903,7 @@ class TestInferOutputSchema:
             patch("haute.deploy._schema.logger") as mock_logger,
             patch("haute.deploy._scorer.score_graph", return_value=mock_result),
         ):
-            infer_output_schema(graph, "out", ["src"])
+            infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
 
         # Find the corrupt_schema_cache warning call
         warning_calls = [
@@ -905,8 +913,8 @@ class TestInferOutputSchema:
             f"Expected 1 corrupt_schema_cache warning, got {len(warning_calls)}"
         )
         kwargs = warning_calls[0][1]
-        assert "path" in kwargs
-        assert "error" in kwargs
+        assert kwargs["path"] == str(cache_file)
+        assert error in kwargs["error"]
 
     def test_cache_miss_writes_cache(self, tmp_path, monkeypatch):
         """Cache miss computes schema and writes cache file."""
@@ -953,7 +961,7 @@ class TestInferOutputSchema:
         mock_result = pl.DataFrame({"premium": [100.0]})
 
         with patch("haute.deploy._scorer.score_graph", return_value=mock_result):
-            result = infer_output_schema(graph, "out", ["src"])
+            result = infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
 
         assert result == {"premium": "Float64"}
 
@@ -961,7 +969,7 @@ class TestInferOutputSchema:
         cache_file = tmp_path / ".haute_cache" / "output_schema.json"
         assert cache_file.exists()
         cached = json.loads(cache_file.read_text())
-        assert cached["schema"] == {"premium": "Float64"}
+        assert list(cached["entries"].values()) == [{"premium": "Float64"}]
 
     def test_stale_cache_fingerprint_recomputes(self, tmp_path, monkeypatch):
         """Stale fingerprint in cache causes recomputation."""
@@ -1009,13 +1017,13 @@ class TestInferOutputSchema:
         cache_dir = tmp_path / ".haute_cache"
         cache_dir.mkdir()
         cache_file = cache_dir / "output_schema.json"
-        cached = {"fingerprint": "wrong_fingerprint", "schema": {"old_col": "String"}}
+        cached = {"entries": {"wrong_fingerprint": {"old_col": "String"}}}
         cache_file.write_text(json.dumps(cached))
 
         mock_result = pl.DataFrame({"premium": [100.0]})
 
         with patch("haute.deploy._scorer.score_graph", return_value=mock_result) as mock_score:
-            result = infer_output_schema(graph, "out", ["src"])
+            result = infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
 
         mock_score.assert_called_once()
         assert result == {"premium": "Float64"}
@@ -1043,7 +1051,7 @@ class TestInferOutputSchema:
             patch("haute.deploy._schema.logger") as mock_logger,
             patch("haute.deploy._scorer.score_graph", return_value=mock_result),
         ):
-            result = infer_output_schema(graph, "out", ["src"])
+            result = infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
 
         # Schema still returned truthfully despite the write failure.
         assert result == {"premium": "Float64"}
@@ -1066,10 +1074,10 @@ class TestInferOutputSchema:
         ``canonical_json``), which runs *before* the cache-write ``try`` — so
         that RuntimeError would propagate regardless of the ``except`` clause
         and the test would pass even against the pre-fix ``except Exception``.
-        Once ``score_graph`` is mocked, the cache write is the only
-        ``Path.write_text`` call left in ``infer_output_schema``, so patching
-        the write site pins the fix precisely. Asserting ``score_graph`` ran
-        proves the error came from the cache write, not from fingerprinting.
+        Once ``score_graph`` is mocked, the cache's ``atomic_write_text`` is the
+        write left in ``infer_output_schema``, so patching the write site pins the
+        fix precisely. Asserting ``score_graph`` ran proves the error came from the
+        cache write, not from fingerprinting.
         """
         from haute.deploy._schema import infer_output_schema
 
@@ -1083,12 +1091,12 @@ class TestInferOutputSchema:
         with (
             patch("haute.deploy._scorer.score_graph", mock_score),
             patch(
-                "pathlib.Path.write_text",
+                "haute.deploy._schema.atomic_write_text",
                 side_effect=RuntimeError("serialisation bug"),
             ),
             pytest.raises(RuntimeError, match="serialisation bug"),
         ):
-            infer_output_schema(graph, "out", ["src"])
+            infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
 
         # score_graph runs after graph_fingerprint and before the cache write,
         # so its having been called exactly once proves fingerprinting finished
@@ -2308,7 +2316,7 @@ class TestScoreGraphExternalFileRemap:
 
         mock_obj = MagicMock()
 
-        with patch("haute.deploy._scorer.load_external_object", return_value=mock_obj):
+        with patch("haute._io.load_external_object", return_value=mock_obj):
             result = score_graph(
                 graph=graph,
                 input_df=input_df,
@@ -2319,6 +2327,63 @@ class TestScoreGraphExternalFileRemap:
 
         assert "ext_val" in result.columns
         assert result["ext_val"].to_list() == [99]
+
+    def test_an_unbundled_external_file_is_the_builders_reading_its_configured_path(
+        self, tmp_path, _widen_sandbox_root
+    ):
+        """With no bundled copy, the Load File builder runs: it reads the configured file."""
+        from haute.deploy._scorer import score_graph
+
+        lookup = tmp_path / "lookup.json"
+        lookup.write_text(json.dumps({"base": 10.0}))
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
+                        },
+                    },
+                    {
+                        "id": "ext",
+                        "data": {
+                            "label": "ext",
+                            "nodeType": "externalFile",
+                            "config": {
+                                "path": str(lookup),
+                                "fileType": "json",
+                                "code": "df = df.with_columns(base=pl.lit(obj['base']))",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config(["x", "base"]),
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "ext", "sourceHandle": "src"},
+                    {"id": "e2", "source": "ext", "target": "out"},
+                ],
+            }
+        )
+
+        result = score_graph(
+            graph=graph,
+            input_df=pl.DataFrame({"x": [1.0]}),
+            input_node_ids=["src"],
+            output_node_id="out",
+            artifact_paths={"other__model.cbm": str(tmp_path / "model.cbm")},
+        )
+
+        assert result["base"].to_list() == [10.0]
 
     def test_external_file_code_sees_the_preamble_as_in_the_editor(
         self, tmp_path, _widen_sandbox_root
@@ -2621,8 +2686,9 @@ class TestScoreGraphOptimiserApplyRemap:
             [1.1, 1.1]
         )
 
-    def _ratebook_apply_remap_score(self, tmp_path):
-        """Score a deployed ratebook-apply graph and return the result frame."""
+    def _ratebook_apply_remap_score(self, tmp_path, *, bundled: bool = True):
+        """Score a deployed ratebook-apply graph and return the result frame: its artifact
+        bundled, or, with *bundled* False, read from its configured path."""
         from haute.deploy._scorer import score_graph
 
         artifact_path = tmp_path / "ratebook.json"
@@ -2694,7 +2760,9 @@ class TestScoreGraphOptimiserApplyRemap:
                             "nodeType": "optimiserApply",
                             "config": {
                                 "sourceType": "file",
-                                "artifact_path": "artifacts/ratebook.json",
+                                "artifact_path": (
+                                    "artifacts/ratebook.json" if bundled else str(artifact_path)
+                                ),
                                 "version_column": "__opt_v__",
                                 "optimised_value_column": "selected_factor",
                                 "ratebook_input": "band",
@@ -2741,8 +2809,20 @@ class TestScoreGraphOptimiserApplyRemap:
             ),
             input_node_ids=["src"],
             output_node_id="out",
-            artifact_paths={"opt__ratebook.json": str(artifact_path)},
+            artifact_paths=(
+                {"opt__ratebook.json": str(artifact_path)}
+                if bundled
+                else {"other__model.cbm": str(tmp_path / "model.cbm")}
+            ),
         )
+
+    def test_an_unbundled_file_apply_is_the_builders_reading_its_configured_path(
+        self, tmp_path, _widen_sandbox_root
+    ):
+        """With no bundled copy, the Optimiser Apply builder runs: it reads the configured
+        artifact and applies it, never passing the quotes through unpriced."""
+        result = self._ratebook_apply_remap_score(tmp_path, bundled=False)
+        assert result["selected_factor"].to_list() == [0.95, 1.05]
 
     def test_ratebook_apply_file_remap_routes_through_configured_input(self, tmp_path):
         """The configured ``ratebook_input`` is used for the factor-table lookup."""
@@ -4158,17 +4238,6 @@ class TestLoadEnv:
         assert os.environ["HAUTE_TEST_KEEP"] == "original"
 
 
-def _force_schema_cache_miss(tmp_path, monkeypatch) -> None:
-    """Point the on-disk output-schema cache at an empty temp location."""
-    from haute.deploy import _schema
-
-    monkeypatch.setattr(
-        _schema,
-        "_SCHEMA_CACHE_FILE",
-        str(tmp_path / "schema_cache" / "output_schema.json"),
-    )
-
-
 _STUB_EXECUTION_POLICY = {
     "schema_version": 1,
     "profile": "deploy_batch",
@@ -4319,7 +4388,6 @@ class TestResolveConfigEdgeCases:
         """
         from haute.deploy._config import ContainerConfig, DeployConfig, resolve_config
 
-        _force_schema_cache_miss(tmp_path, monkeypatch)
         # The capped dry-run really spawns; the child derives its project root
         # from the working directory it inherits.
         monkeypatch.chdir(tmp_path)
@@ -4361,7 +4429,6 @@ class TestResolveConfigEdgeCases:
         from haute.deploy._config import DeployConfig, resolve_config
         from haute.errors import DeployError
 
-        _force_schema_cache_miss(tmp_path, monkeypatch)
         graph = self._conservative_deploy_graph(tmp_path)
         config = DeployConfig(
             pipeline_file=self._tmp_pipeline_file(tmp_path),
@@ -4445,7 +4512,8 @@ class TestResolveConfigEdgeCases:
         ):
             resolved = resolve_config(config)
 
-        assert config.pipeline_file == pipeline.resolve()
+        assert resolved.pipeline_file == pipeline.resolve()
+        assert config.pipeline_file == configured
         # Parsed as it runs, every submodel occurrence expanded (BUG-18).
         parse.assert_called_once_with(pipeline.resolve(), flatten=True)
         resolved.close()
@@ -4955,21 +5023,39 @@ class TestBuildSignature:
 
 
 class TestCondaEnvAndPipRequirements:
-    """Tests for _conda_env() and _pip_requirements()."""
+    """Tests for served_lock(), _conda_env() and _pip_requirements()."""
+
+    @staticmethod
+    def _lock(resolved: Any, haute: str = "haute==0.6.0") -> Any:
+        from haute.deploy._mlflow import served_lock
+        from haute.deploy._served_haute import ServedHaute
+
+        return served_lock(resolved, ServedHaute(haute))
 
     def test_pip_requirements_pin_the_served_haute_and_the_served_runtime(self):
         """The haute that validated the deploy, and this environment's MLflow, Polars,
-        pandas and NumPy."""
+        pandas and NumPy, each at its locked version (the offline resolver adds none)."""
         from importlib.metadata import version
 
         from haute.deploy._mlflow import _pip_requirements
 
-        reqs = _pip_requirements("haute==0.6.0", _make_resolved())
+        reqs = _pip_requirements("haute==0.6.0", self._lock(_make_resolved()))
 
         assert reqs == [
             "haute==0.6.0",
-            *(f"{name}=={version(name)}" for name in ("mlflow", "polars", "pandas", "numpy")),
+            *sorted(f"{name}=={version(name)}" for name in ("mlflow", "polars", "pandas", "numpy")),
         ]
+
+    def test_the_served_closure_is_locked_for_model_serving(self, tmp_path):
+        """DEP-R09: resolved for Linux x86_64 and the project's Python, whatever the host."""
+        from haute._project_python import deployed_python_version
+
+        resolved = _make_resolved()
+        lock = self._lock(resolved)
+
+        assert lock.platform == "x86_64-manylinux_2_28"
+        assert lock.python_version == deployed_python_version(resolved.project_root)
+        assert lock.roots[0] == "haute==0.6.0"
 
     def test_pip_requirements_pin_each_bundled_engine_once(self, tmp_path):
         """DEP-R06: a bundled model serves under the engine release that trained it."""
@@ -4984,7 +5070,7 @@ class TestCondaEnvAndPipRequirements:
             }
         )
 
-        reqs = _pip_requirements("haute==0.6.0", resolved)
+        reqs = _pip_requirements("haute==0.6.0", self._lock(resolved))
 
         # The pins a container image of these artefacts carries: each engine's installed
         # distribution (XGBoost's may be xgboost-cpu) at its installed version.
@@ -4999,7 +5085,7 @@ class TestCondaEnvAndPipRequirements:
     def test_conda_env_structure(self):
         from haute.deploy._mlflow import _conda_env
 
-        env = _conda_env("3.13", "haute==0.6.0", _make_resolved())
+        env = _conda_env("3.13", "haute==0.6.0", self._lock(_make_resolved()))
 
         assert env["name"] == "mlflow-env"
         assert "conda-forge" in env["channels"]
@@ -5011,7 +5097,7 @@ class TestCondaEnvAndPipRequirements:
         """The model serves on the Python the project ran on, at the precision it names."""
         from haute.deploy._mlflow import _conda_env
 
-        env = _conda_env(version, "haute==0.6.0", _make_resolved())
+        env = _conda_env(version, "haute==0.6.0", self._lock(_make_resolved()))
         assert env["dependencies"][0] == f"python={version}"
 
 
@@ -5179,14 +5265,13 @@ class TestRunBatched:
         results = _run_batched(records, lambda batch: batch, batch_size=100, progress=None)
         assert results == [1, 2, 3]
 
-    def test_scalar_return_appended(self):
-        """Scalar results (not lists) should be appended, not extended."""
-        from haute.deploy._impact import _run_batched
+    def test_a_scalar_answers_a_one_quote_batch_only(self):
+        """DEP-R11: a scalar is one quote's prediction; for two quotes it is refused."""
+        from haute.deploy._impact import ImpactAlignmentError, _run_batched
 
-        records = [1, 2, 3]
-        results = _run_batched(records, lambda batch: sum(batch), batch_size=2, progress=None)
-        # Batch 1: [1,2] -> sum=3, Batch 2: [3] -> sum=3
-        assert results == [3, 3]
+        assert _run_batched([3], lambda batch: sum(batch), batch_size=2, progress=None) == [3]
+        with pytest.raises(ImpactAlignmentError, match="single value"):
+            _run_batched([1, 2, 3], lambda batch: sum(batch), batch_size=2, progress=None)
 
     def test_progress_called(self):
         from haute.deploy._impact import _run_batched
@@ -5299,61 +5384,34 @@ class TestBuildReport:
         )
 
         assert report.pipeline_name == "test"
-        assert report.scored_rows == 2
-        assert report.failed_rows == 0
+        assert report.sampled_rows == 2
         assert len(report.column_stats) >= 1
         assert report.column_stats[0].name == "premium"
 
-    def test_mismatched_lengths_truncated(self):
-        from haute.deploy._impact import build_report
+    def test_a_count_other_than_the_quotes_is_refused(self):
+        """DEP-R11: one endpoint answering fewer rows never shifts the pairs."""
+        from haute.deploy._impact import ImpactAlignmentError, build_report
 
         stg = [{"premium": 110.0}, {"premium": 220.0}, {"premium": 330.0}]
         prd = [{"premium": 100.0}, {"premium": 200.0}]
         input_df = pl.DataFrame({"age": [25, 30, 35]})
 
-        report = build_report(
-            stg,
-            prd,
-            input_df,
-            pipeline_name="test",
-            staging_endpoint="stg",
-            prod_endpoint="prod",
-            dataset_path="d.parquet",
-            total_rows=3,
-        )
-
-        assert report.scored_rows == 2
-        assert report.failed_rows == 1
-        assert report.sampled_rows == 3
-
-    def test_equal_prediction_lengths_shorter_than_inputs_stay_aligned(self):
-        """Both endpoints can drop the same row; segment inputs still align."""
-        from haute.deploy._impact import build_report
-
-        stg = [{"premium": float(i + 101)} for i in range(11)]
-        prd = [{"premium": float(i + 100)} for i in range(11)]
-        input_df = pl.DataFrame({"segment": ["A"] * 10 + ["B"] * 2})
-
-        report = build_report(
-            stg,
-            prd,
-            input_df,
-            pipeline_name="test",
-            staging_endpoint="stg",
-            prod_endpoint="prod",
-            dataset_path="d.parquet",
-            total_rows=12,
-        )
-
-        assert report.sampled_rows == 12
-        assert report.scored_rows == 11
-        assert report.failed_rows == 1
-        assert "segment" in report.segments
+        with pytest.raises(ImpactAlignmentError, match="staging answered 3 and production 2"):
+            build_report(
+                stg,
+                prd,
+                input_df,
+                pipeline_name="test",
+                staging_endpoint="stg",
+                prod_endpoint="prod",
+                dataset_path="d.parquet",
+                total_rows=3,
+            )
 
     def test_empty_predictions(self):
         from haute.deploy._impact import build_report
 
-        input_df = pl.DataFrame({"age": [25]})
+        input_df = pl.DataFrame({"age": []}, schema={"age": pl.Int64})
         report = build_report(
             [],
             [],
@@ -5362,10 +5420,10 @@ class TestBuildReport:
             staging_endpoint="stg",
             prod_endpoint="prod",
             dataset_path="d.parquet",
-            total_rows=1,
+            total_rows=0,
         )
 
-        assert report.scored_rows == 0
+        assert report.sampled_rows == 0
         assert len(report.column_stats) == 0
 
 
@@ -5379,6 +5437,7 @@ class TestFormatTerminal:
             name="premium",
             n_rows=100,
             n_changed=50,
+            n_from_zero=0,
             mean_change_pct=5.0,
             median_change_pct=4.0,
             max_increase_pct=20.0,
@@ -5399,8 +5458,6 @@ class TestFormatTerminal:
             dataset_path="data.parquet",
             total_rows=100,
             sampled_rows=100,
-            scored_rows=100,
-            failed_rows=0,
             column_stats=[stats],
             segments={},
         )
@@ -5421,11 +5478,9 @@ class TestFormatTerminal:
             dataset_path="d.parquet",
             total_rows=10,
             sampled_rows=10,
-            scored_rows=10,
-            failed_rows=0,
             column_stats=[],
             segments={},
-            is_first_deploy=True,
+            first_deploy="no production release is recorded.",
         )
 
         output = format_terminal(report)
@@ -5441,33 +5496,12 @@ class TestFormatTerminal:
             dataset_path="d.parquet",
             total_rows=1000,
             sampled_rows=100,
-            scored_rows=100,
-            failed_rows=0,
             column_stats=[],
             segments={},
         )
 
         output = format_terminal(report)
         assert "100 of 1,000 sampled" in output
-
-    def test_failed_rows_warning(self):
-        from haute.deploy._impact import ImpactReport, format_terminal
-
-        report = ImpactReport(
-            pipeline_name="test",
-            staging_endpoint="stg",
-            prod_endpoint="prod",
-            dataset_path="d.parquet",
-            total_rows=10,
-            sampled_rows=10,
-            scored_rows=8,
-            failed_rows=2,
-            column_stats=[],
-            segments={},
-        )
-
-        output = format_terminal(report)
-        assert "2 rows failed" in output
 
 
 class TestFormatMarkdown:
@@ -5480,6 +5514,7 @@ class TestFormatMarkdown:
             name="premium",
             n_rows=100,
             n_changed=50,
+            n_from_zero=0,
             mean_change_pct=5.0,
             median_change_pct=4.0,
             max_increase_pct=20.0,
@@ -5500,8 +5535,6 @@ class TestFormatMarkdown:
             dataset_path="data.parquet",
             total_rows=100,
             sampled_rows=100,
-            scored_rows=100,
-            failed_rows=0,
             column_stats=[stats],
             segments={},
         )
@@ -5523,11 +5556,9 @@ class TestFormatMarkdown:
             dataset_path="d.parquet",
             total_rows=10,
             sampled_rows=10,
-            scored_rows=10,
-            failed_rows=0,
             column_stats=[],
             segments={},
-            is_first_deploy=True,
+            first_deploy="no production release is recorded.",
         )
 
         output = format_markdown(report)

@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import importlib.resources
 import json
-import shutil
 import tempfile
-import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -40,9 +38,15 @@ from haute.deploy._databricks_serving import (
     serving_workspace_client,
     wait_for_endpoint,
 )
+from haute.deploy._lock import TARGET_PLATFORM, DependencyLock, lock_requirements
 from haute.deploy._request_rows import copy_verified
 from haute.deploy._served_haute import ServedHaute, served_haute
-from haute.deploy._utils import artifact_file_name, build_manifest, model_source_line
+from haute.deploy._utils import (
+    artifact_file_name,
+    build_manifest,
+    model_source_line,
+    owned_build_dir,
+)
 from haute.errors import DeployError, SchemaMismatchError
 
 logger = get_logger(component="deploy.mlflow")
@@ -50,24 +54,21 @@ logger = get_logger(component="deploy.mlflow")
 # Resolve the path to the models-from-code script shipped with the package
 _MODEL_CODE_PATH = str(importlib.resources.files("haute.deploy") / "_model_code.py")
 
-# One MLflow deploy at a time in this process: deploys share the pipeline's
-# ``.haute_build`` directory, and each picks the version it registered by
-# searching the registry after logging.
-_DEPLOY_LOCK = threading.Lock()
-
 if TYPE_CHECKING:
     from haute.deploy._config import DeployConfig
 
 
 @dataclass
 class DeployResult:
-    """Returned by deploy_to_mlflow()."""
+    """Returned by every deploy target."""
 
     model_name: str
-    model_version: int
+    model_version: str
+    """The registered model version (Databricks), or the image's tag (a container)."""
     model_uri: str
     endpoint_url: str | None
-    manifest_path: Path
+    build_dir: Path | None = None
+    """The build's directory when it was kept, else ``None``: removed once it shipped."""
 
 
 def build_uc_model_name(config: DeployConfig) -> str:
@@ -90,6 +91,8 @@ def build_experiment_name(config: DeployConfig) -> str:
 def deploy_to_mlflow(
     resolved: ResolvedDeploy,
     progress: Callable[[str], None] | None = None,
+    *,
+    keep_build: bool = False,
 ) -> DeployResult:
     """Deploy a resolved pipeline to MLflow + Databricks Model Serving.
 
@@ -103,6 +106,8 @@ def deploy_to_mlflow(
     Args:
         resolved: Fully resolved deployment config (from ``resolve_config()``).
         progress: Optional callback for step-by-step progress messages.
+        keep_build: Keep the build's directory (the manifest and the artefacts staged
+            for MLflow), named in the result, for inspection.
 
     Returns:
         DeployResult with model URI, version, and endpoint URL.
@@ -110,18 +115,11 @@ def deploy_to_mlflow(
     The experiment, the run, the manifest artifact, the run's terminal status and
     the version lookup go through a client bound to the MLflow destination; only
     ``mlflow.pyfunc.log_model`` (with its registration) holds MLflow's
-    process-global state, inside :func:`mlflow_fluent_operation`. Deploys run one
-    at a time in the process, because they share the pipeline's build directory
-    and read their registered version back from the registry.
+    process-global state, inside :func:`mlflow_fluent_operation`. Each deploy stages
+    its model in a directory of its own (``owned_build_dir``) and serves the version
+    its own log registered, so deploys in one process never share either.
     """
-    with _DEPLOY_LOCK:
-        return _deploy_to_mlflow(resolved, progress)
 
-
-def _deploy_to_mlflow(
-    resolved: ResolvedDeploy,
-    progress: Callable[[str], None] | None,
-) -> DeployResult:
     def _log(msg: str) -> None:
         if progress:
             progress(msg)
@@ -148,22 +146,21 @@ def _deploy_to_mlflow(
     # 1. Build deployment manifest
     manifest = build_manifest(resolved)
 
-    # 2. Write manifest to a persistent location (not a temp dir that gets deleted)
-    build_dir = config.pipeline_file.resolve().parent / ".haute_build"
-    build_dir.mkdir(exist_ok=True)
-
-    try:
-        manifest_path = build_dir / "deploy_manifest.json"
-        manifest_path.write_text(json.dumps(manifest, indent=2))
-
+    # 2. Stage the model in a directory this deploy owns under the project.
+    with owned_build_dir(resolved, keep=keep_build) as build_dir:
         # 3. The model to log: code, artefacts, project modules, signature, environment.
         # Its artefacts are staged under the digests resolution recorded, so MLflow
-        # copies the bytes the build checked.
+        # copies the bytes the build checked, and its environment is the closure locked
+        # for Model Serving's platform and the project's Python, recorded in the manifest.
         staging = Path(tempfile.mkdtemp(prefix="haute_mlflow_artifacts_", dir=build_dir))
         haute = served_haute(staging / "haute-wheel")
         _log(f"Served model installs {haute.requirement}")
+        lock = served_lock(resolved, haute)
+        manifest["dependency_lock"] = lock.provenance()
+        manifest_path = build_dir / "deploy_manifest.json"
+        manifest_path.write_text(json.dumps(manifest, indent=2))
         model_arguments = _pyfunc_model_arguments(
-            resolved, manifest_path, _stage_artifacts(resolved, staging), haute
+            resolved, manifest_path, _stage_artifacts(resolved, staging), haute, lock
         )
 
         for node_id, source in resolved.model_sources.items():
@@ -194,7 +191,6 @@ def _deploy_to_mlflow(
             status = "FINISHED"
         finally:
             client.set_terminated(run_id, status)
-            shutil.rmtree(staging, ignore_errors=True)
 
         # 6. The version this call registered. The registry's highest could be another
         # job's registration of the same name, which would then be served.
@@ -211,31 +207,30 @@ def _deploy_to_mlflow(
 
         _log(f"Model URI: {model_uri}")
 
-        # 7. Create or update the serving endpoint, and wait until it serves the version
-        endpoint_url = _create_or_update_serving_endpoint(
-            config=config,
-            uc_model_name=uc_model_name,
-            model_version=model_version,
-            progress=_log,
-        )
+    # 7. Create or update the serving endpoint, and wait until it serves the version
+    endpoint_url = _create_or_update_serving_endpoint(
+        config=config,
+        uc_model_name=uc_model_name,
+        model_version=model_version,
+        progress=_log,
+    )
 
-        logger.info(
-            "deploy_completed",
-            model_name=model_name,
-            model_uri=model_uri,
-            version=model_version,
-            endpoint=config.effective_endpoint_name,
-        )
-        return DeployResult(
-            model_name=model_name,
-            model_version=model_version,
-            model_uri=model_uri,
-            endpoint_url=endpoint_url,
-            manifest_path=manifest_path,
-        )
-    except BaseException:
-        shutil.rmtree(build_dir, ignore_errors=True)
-        raise
+    logger.info(
+        "deploy_completed",
+        model_name=model_name,
+        model_uri=model_uri,
+        version=model_version,
+        endpoint=config.effective_endpoint_name,
+    )
+    if keep_build:
+        _log(f"Build kept in {build_dir}")
+    return DeployResult(
+        model_name=model_name,
+        model_version=str(model_version),
+        model_uri=model_uri,
+        endpoint_url=endpoint_url,
+        build_dir=build_dir if keep_build else None,
+    )
 
 
 def get_deploy_status(
@@ -303,6 +298,7 @@ def _pyfunc_model_arguments(
     manifest_path: Path,
     staged_artifacts: Mapping[str, Path],
     haute: ServedHaute,
+    lock: DependencyLock,
 ) -> dict[str, Any]:
     """The pyfunc model a deploy logs: code, artefacts, project modules, signature, env.
 
@@ -322,13 +318,7 @@ def _pyfunc_model_arguments(
         "artifacts": artifacts,
         "code_paths": code_paths or None,
         "signature": _build_signature(resolved),
-        "conda_env": _conda_env(
-            deployed_python_version(
-                resolved.config.project_dir or resolved.config.pipeline_file.parent
-            ),
-            haute.requirement,
-            resolved,
-        ),
+        "conda_env": _conda_env(lock.python_version, haute.requirement, lock),
     }
 
 
@@ -399,37 +389,56 @@ def _build_signature(resolved: ResolvedDeploy) -> object:
 _SERVED_RUNTIME = ("mlflow", "polars", "pandas", "numpy")
 
 
-def _pip_requirements(haute_requirement: str, resolved: ResolvedDeploy) -> list[str]:
-    """Build pip requirements for the deployed model, each pinned and named once.
+def served_lock(resolved: ResolvedDeploy, haute: ServedHaute) -> DependencyLock:
+    """The served model's runtime closure, locked for Model Serving: Linux x86_64 and the
+    project's Python (``deployed_python_version``), wheels only.
 
-    Haute is the one that validated the deploy (``haute.deploy._served_haute``): a
-    release pinned by version, or a wheel the model carries. The served runtime and the
-    engine each bundled artefact loads under are pinned to the versions installed here,
-    as a container image pins them: a model loaded under another engine release than
-    the one that trained it can fail to load or price differently.
+    Its roots are the haute that validated the deploy (``haute.deploy._served_haute``,
+    resolved from the wheel the model carries when it ships one) with all its own
+    dependencies, and, each pinned to the version installed here, the served runtime and
+    the engine each bundled artefact loads under, as a container image pins them: a model
+    loaded under another engine release than the one that trained it can fail to load or
+    price differently. The rest of haute's closure is resolved here, once, never at
+    Model Serving's build.
     """
     from haute.deploy._container import _pinned_dockerfile_dependency, _pinned_extra_dockerfile_deps
 
-    pinned = [
+    roots = [
+        haute.requirement if haute.wheel is None else str(haute.wheel),
         *(_pinned_dockerfile_dependency(name, name) for name in _SERVED_RUNTIME),
         *_pinned_extra_dockerfile_deps(resolved),
     ]
-    return [haute_requirement, *dict.fromkeys(pinned)]
+    return lock_requirements(
+        list(dict.fromkeys(roots)),
+        python_version=deployed_python_version(resolved.project_root),
+        platform=TARGET_PLATFORM,
+    )
 
 
-def _conda_env(python_version: str, haute_requirement: str, resolved: ResolvedDeploy) -> dict:
+def _pip_requirements(haute_requirement: str, lock: DependencyLock) -> list[str]:
+    """The served model's pip requirements: *haute_requirement*, then every distribution
+    of *lock* but haute at its locked version, each named once."""
+    return [
+        haute_requirement,
+        *(f"{name}=={version}" for name, version in sorted(lock.pins.items()) if name != "haute"),
+    ]
+
+
+def _conda_env(python_version: str, haute_requirement: str, lock: DependencyLock) -> dict:
     """Build a conda environment dict for Databricks Model Serving.
 
     Databricks Model Serving builds the container from it. Python is the project's
     (``haute._project_python.deployed_python_version``), the one CI tested the pipeline
     on, never MLflow's guess from the host; ``3.13`` takes conda's newest 3.13 release.
+    Its pip requirements are the locked closure (:func:`served_lock`), so Model Serving
+    resolves nothing.
     """
     return {
         "channels": ["conda-forge"],
         "dependencies": [
             f"python={python_version}",
             "pip",
-            {"pip": _pip_requirements(haute_requirement, resolved)},
+            {"pip": _pip_requirements(haute_requirement, lock)},
         ],
         "name": "mlflow-env",
     }

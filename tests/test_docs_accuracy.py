@@ -149,8 +149,6 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
 )
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "assistant",
-    "cli",
-    "deploy",
     "docs",
     "engineering-quality",
     "explore-eda",
@@ -2192,13 +2190,19 @@ def _missing_haute_imports(surfaces: set[tuple[str, str | None]]) -> set[str]:
     return missing
 
 
+#: The root main.py `uv init` writes for my-project, which `haute init` removes.
+_UV_INIT_MAIN = (
+    'def main():\n    print("Hello from my-project!")\n\n\nif __name__ == "__main__":\n    main()\n'
+)
+
+
 def _scaffolded_docs_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     project = tmp_path / "my-project"
     project.mkdir(parents=True)
     (project / "pyproject.toml").write_text(
         '[project]\nname = "my-project"\nversion = "0.1.0"\n', encoding="utf-8"
     )
-    (project / "main.py").write_text("# sentinel root main.py\n", encoding="utf-8")
+    (project / "main.py").write_text(_UV_INIT_MAIN, encoding="utf-8")
     monkeypatch.chdir(project)
     handle_init(InitConfig(target="databricks", ci="github"))
     return project
@@ -2213,7 +2217,7 @@ def test_deployment_index_scaffold_trees_match_real_init(
     (before_project / "pyproject.toml").write_text(
         '[project]\nname = "my-project"\nversion = "0.1.0"\n', encoding="utf-8"
     )
-    (before_project / "main.py").write_text("# sentinel root main.py\n", encoding="utf-8")
+    (before_project / "main.py").write_text(_UV_INIT_MAIN, encoding="utf-8")
     before_tree = _tree_listing(before_project)
     project = _scaffolded_docs_project(tmp_path / "after", monkeypatch)
     text = index.read_text(encoding="utf-8")

@@ -395,22 +395,29 @@ def test_update_records_nothing_while_the_checkout_is_on_another_branch(
 
 
 def test_update_records_a_file_a_failed_capture_left_staged(runner, project: Path) -> None:
-    # A capture stages its files before committing: one whose commit a hook refused leaves
-    # them staged, no longer untracked, and the next run must still take them.
+    # A capture stages its files before committing: one whose commit failed leaves them
+    # staged, no longer untracked, and the next run must still take them.
     _in_a_repository(project, working_branch="pricing-dev")
     _to_provider(project, "gitlab")
-    hook = install_hook(project, "pre-commit", "#!/bin/sh\nexit 1\n")
+    (project / ".gitlab-ci.yml").write_text("# left by a failed capture\n", encoding="utf-8")
+    git_run(project, "add", ".gitlab-ci.yml")
 
-    failed = runner.invoke(cli, ["ci", "update"])
-
-    assert failed.exit_code == 0, failed.output
-    assert "Not yet in version history: .gitlab-ci.yml" in failed.output
-    hook.unlink()
     result = runner.invoke(cli, ["ci", "update"])
 
     assert result.exit_code == 0, result.output
     saved = git_run(project, "show", "--name-only", "--format=", "pricing-dev-save").splitlines()
     assert ".gitlab-ci.yml" in saved
+    assert "Recorded in version history: .gitlab-ci.yml" in result.output
+
+
+def test_a_capture_runs_no_project_hook(runner, project: Path) -> None:
+    _in_a_repository(project, working_branch="pricing-dev")
+    _to_provider(project, "gitlab")
+    install_hook(project, "pre-commit", "#!/bin/sh\nexit 1\n")
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
     assert "Recorded in version history: .gitlab-ci.yml" in result.output
 
 

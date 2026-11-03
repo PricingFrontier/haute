@@ -78,7 +78,6 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | P2 | Haute classifier pyfunc's label/probability table is flattened to 40 values for 20 input rows. | [MSC-11](model-scoring.md#msc-11--pyfunc-classification-outputs-have-an-explicit-scoring-shape) | Real saved/loaded CatBoost pyfunc, feature contract and scoring adapter. Explicit pyfunc selection is affected; automatic native selection may avoid it. |
 | P3 | Relationships target `__w=[10,20]` is overwritten by internal weight alias: means become `[1,1]`, strength 0. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual Parquet, data-point resolver and relationship service; ordinary-name equivalent requires means `[10,20]`, strength 1. |
 | P3 | Copied Explore node B receives cached result.node_id A for the same producer/card. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual pivot service/cache. Numbers are correct; browser stores them under B, so no numerical cross-node corruption claim. |
-| P2 | JSON omits an all-null nested pricing object while NDJSON returns pricing:null for the same quote. | [DEP-R17](deploy.md#dep-r17--json-and-ndjson-preserve-the-same-output-document) | Real generated FastAPI app, request shredder, scorer, assembler and materializer; no scorer mock. Batch variant is source-supported. |
 
 The first implementation pass should address the P1 packages before opportunistic
 cleanup. Each package includes the expected behaviour, scope, regression scenarios
@@ -189,7 +188,7 @@ adds a finding group or changes the 42-group count.
 | `_json_shred/_runtime_storage.py` source proof/freshness | **Unverified beyond that negative probe:** ordinary same-size modification was detected. Confirmation requires a concrete supported mutation with unchanged accepted proof that returns stale rows. No general claim that all same-size/open-writer changes are impossible. |
 | `frontend/src/panels/optimiser/solveActions.ts` solve request omits the active source | **Not a defect:** `solveActions` and the backend provenance path intentionally use the batch scenario; absence of an active-source field is not lost source identity. This is separate from FSH-R12's retained-success identity bug. |
 | Persisted trained-handle freshness after source/model changes | **Unverified and underspecified.** The batch note named no exact package or transition. Confirm through an actual restore/load that a stale persisted model handle survives a supported source/model change and is reused incorrectly. |
-| Raw pricing-error redaction in `src/haute/_workbench_app.py` | **Unverified and underspecified.** DEP-R15 owns generated-container error envelopes, but its scope does not establish ownership of this workbench hypothesis. Identify a supported pricing failure and show an externally returned sensitive/raw detail that the error contract forbids; no concrete payload was recorded. |
+| Raw pricing-error redaction in `src/haute/_workbench_app.py` | **Unverified and underspecified.** The generated container's 500 envelopes no longer carry exception text (they name a request id the log carries), but that does not establish this workbench hypothesis. Identify a supported pricing failure and show an externally returned sensitive/raw detail that the error contract forbids; no concrete payload was recorded. |
 
 ### Candidates already owned elsewhere
 
@@ -203,7 +202,7 @@ adds a finding group or changes the 42-group count.
 | non-SQLite form insertion | Duplicate **WB-43** for non-SQLite form insertion (the scratch spelling WB-R10 is not another package). The note gives no additional concrete database defect. |
 | sandbox project globals | Duplicate **PCFG-R04**. |
 | Assistant bounds, blocking tools, factual context, tool hygiene and provider handling | Duplicates **ASSIST-55**, **ASSIST-57**, **ASSIST-58**, **ASSIST-59**, **ASSIST-54** respectively. The recipe-consolidation note names no additional behavior. |
-| CLI/init/deploy existing gaps | Duplicates **DEP-R11** for impact alignment, **DEP-R12A** for build ownership, **DEP-R09** for dependency closure, and **CLI-R01**, **CLI-R04**, **CLI-R06** for init overwrite, TOML mutation and hook behavior. The scratch shorthand DEP-R12 predates its split; generic CLI errors/eager reads name no additional concrete case. |
+| CLI/init/deploy existing gaps | Delivered: impact alignment, build ownership and dependency closure (the retired deploy roadmap's DEP-R11, DEP-R12A and DEP-R09), and init overwrite, TOML mutation and hook behavior (the retired CLI roadmap's CLI-R01, CLI-R04 and CLI-R06). Generic CLI errors/eager reads name no additional concrete case. |
 | Hosted sign-in headers | Duplicate **WB-25**. |
 | Asynchronous assistant tool blocking | Duplicate **ASSIST-57**. |
 

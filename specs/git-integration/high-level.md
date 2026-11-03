@@ -99,13 +99,18 @@ The working
 branch's first-parent chain therefore reads as a clean sequence of deliberate milestones,
 while every individual save remains reachable through each merge's second parent.
 
-**The project's git hooks.** A save is a `git commit`, so it runs the project's hooks as any
-commit does; a hook that rewrites what the save wrote (the formatter `haute init` scaffolds)
-is answered with what it left, so the editor's next save is made against the file on disk. A
-milestone is the commit a person makes, so Commit runs the `pre-commit` and `commit-msg`
-hooks a `git commit` of it would: the pre-commit hook sees the milestone's changes staged on
-the working branch, what it rewrites is recorded as one more save before the milestone, and a
-hook that fails refuses the Commit with what it printed. A clone carries no installed hooks,
+**The project's git hooks.** A save, and the root commit a first working branch makes, are
+Haute's own commits and run none of the project's hooks: a save is recorded as it was
+written, so nothing a hook checks keeps work out of version history, and a missing `uv` or a
+problem in a node never fails a save. A milestone is the commit a person makes, so Commit runs
+the `pre-commit` and `commit-msg` hooks a `git commit` of it would, over everything the
+milestone records: the pre-commit hook sees the milestone's changes staged on the working
+branch, what it rewrites is recorded as one more save before the milestone, and a hook that
+fails refuses the Commit with what it printed. A refusal by the pre-commit hook `haute init`
+scaffolds, which reports each problem ruff cannot fix safely as `<file>:<line>:<column>:
+<code> <message>`, is said in the editor's terms instead: each problem under the node whose
+code holds it (by file and line outside a node), its line quoted, then how to fix it or keep
+it with `# noqa`, and the docs section on refused milestones. A clone carries no installed hooks,
 so choosing its working branch installs the project's tracked `.githooks/pre-commit` where
 none is set up.
 

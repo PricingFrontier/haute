@@ -459,11 +459,11 @@ def test_a_quote_input_without_a_root_table_cannot_answer_in_order(sample):
     assert [refusal.node_id for refusal in refusals] == ["out"]
 
 
-def test_the_dry_run_reads_the_sample_s_first_quote_into_the_tables(sample):
+def test_the_dry_run_reads_the_sample_s_first_quote_into_the_tables(sample, tmp_path):
     graph = _graph(sample)
 
     assert _read_sample_row(graph, ["request"]) == QuoteRequest((QUOTES[0],))
-    assert infer_output_schema(graph, "out", ["request"]) == {
+    assert infer_output_schema(graph, "out", ["request"], project_root=tmp_path) == {
         "quote_id": "Int64",
         "region": "String",
         "drivers": "List(Struct({'age': Int64, 'band': String}))",
@@ -490,9 +490,9 @@ def test_an_xml_sample_s_single_driver_is_a_list_of_one_in_the_dry_run(
     assert _read_sample_row(graph, ["request"]) == QuoteRequest(
         ({"quote_id": "3", "region": "N", "drivers": [{"age": "61"}]},)
     )
-    assert infer_output_schema(graph, "out", ["request"])["drivers"] == (
-        "List(Struct({'age': String, 'band': String}))"
-    )
+    assert infer_output_schema(graph, "out", ["request"], project_root=haute_scratch)[
+        "drivers"
+    ] == ("List(Struct({'age': String, 'band': String}))")
 
 
 def _load_app(root: Path, graph: PipelineGraph) -> Any:
@@ -551,6 +551,75 @@ def test_quote_answers_one_quote_and_several_through_their_tables(
     ]
     assert misfit.status_code == 422
     assert misfit.json()["error_code"] == "api_input_schema_invalid"
+
+
+def test_json_and_ndjson_answer_with_the_same_rows(
+    sample, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """DEP-R17: Accept changes the framing, never a row: a null premium leaves its pricing
+    object out, a quote without drivers its drivers, a date reads as ISO text and a decimal
+    as its exact digits, in both."""
+    graph = _graph(sample)
+    priced = (
+        "df = quote.with_columns("
+        "premium=pl.when(pl.col('region') == 'N').then(None)"
+        ".otherwise(pl.col('quote_id') * 10.0), issued=pl.date(2026, 1, 1),"
+        " fee=pl.lit('12.34').cast(pl.Decimal(10, 2)))"
+    )
+    out = graph.node_map["out"]
+    mapping = [
+        _entry("priced", "quote_id", "$[:].quote_id"),
+        _entry("priced", "premium", "$[:].pricing.premium"),
+        _entry("priced", "issued", "$[:].issued"),
+        _entry("priced", "fee", "$[:].fee"),
+        *(entry for entry in out.data.config["outputMapping"] if entry["source_port"] != "quote"),
+    ]
+    graph = PipelineGraph.model_validate(
+        {
+            "nodes": [
+                *(node.model_dump(mode="json") for node in graph.nodes if node.id != "out"),
+                _node("priced", "polars", {"code": priced}),
+                _node("out", "output", {"outputMapping": mapping}),
+            ],
+            "edges": [
+                {"id": "q", "source": "request", "target": "priced", "sourceHandle": "quote"},
+                {"id": "p", "source": "priced", "target": "out"},
+                {"id": "d", "source": "request", "target": "banded", "sourceHandle": "drivers"},
+                {"id": "b", "source": "banded", "target": "out"},
+            ],
+        }
+    )
+    container = haute_scratch / "container"
+    container.mkdir()
+    module = _load_app(container, graph)
+
+    async def in_process(function, *args, config):
+        del config
+        return function(*args)
+
+    monkeypatch.setattr(module, "run_isolated_worker_async", in_process)
+    client = TestClient(module.app)
+    ndjson = {"Accept": "application/x-ndjson"}
+
+    for request in (QUOTES[1], QUOTES):
+        as_json = client.post("/quote", json=request)
+        as_ndjson = client.post("/quote", json=request, headers=ndjson)
+        assert as_json.status_code == 200, as_json.text
+        assert as_ndjson.status_code == 200, as_ndjson.text
+        lines = [json.loads(line) for line in as_ndjson.text.splitlines()]
+        assert lines == as_json.json()["rows"]
+
+    fee = {"issued": "2026-01-01", "fee": "12.34"}
+    assert lines == [
+        {"quote_id": 7, **fee, "pricing": {"premium": 70.0}, **_drivers(0)},
+        {"quote_id": 3, **fee, **_drivers(1)},
+        {"quote_id": 5, **fee, "pricing": {"premium": 50.0}},
+    ]
+
+
+def _drivers(quote: int) -> dict[str, Any]:
+    """The banded drivers of ``QUOTES[quote]`` as :data:`EXPECTED` answers them."""
+    return {"drivers": EXPECTED[quote]["drivers"]}
 
 
 def test_the_databricks_model_hands_the_quote_input_its_records(sample):

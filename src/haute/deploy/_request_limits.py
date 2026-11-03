@@ -151,8 +151,9 @@ async def read_limited_json_body(
 
     try:
         return json.loads(b"".join(chunks))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        # A body that is not UTF-8 is no more JSON than malformed text.
+    except (ValueError, RecursionError) as exc:
+        # Not JSON Python can read: malformed text, a body that is not UTF-8, an integer
+        # past the interpreter's digit limit, or nesting past its recursion limit.
         raise RequestBodyParseError(operation=operation, reason="invalid_json") from exc
 
 

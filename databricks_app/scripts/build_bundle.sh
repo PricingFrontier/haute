@@ -5,7 +5,8 @@
 #
 # The lock is haute's dependencies with the databricks extra, resolved by uv for the
 # app's Python (HAUTE_APP_PYTHON, default 3.11) and platform (HAUTE_APP_PLATFORM,
-# default x86_64-manylinux_2_28), every distribution pinned by version and hash. It is
+# default x86_64-manylinux_2_28), from wheels only, every distribution pinned by version
+# and hash, as a deployment locks its runtime (haute.deploy._lock). It is
 # written as requirements.txt, which the platform installs at deploy and app.py
 # installs again at boot without resolving anything; the wheel then installs without
 # its dependencies, once app.py has checked it against wheel.sha256. The wheel,
@@ -53,7 +54,7 @@ printf '%s  %s\n' "$digest" "$wheel_name" > "$bundle_dir/wheel.sha256"
 compiled="$build_dir/requirements.txt"
 uv pip compile "$repo_root/pyproject.toml" --extra databricks \
   --python-version "$app_python" --python-platform "$app_platform" \
-  --generate-hashes --emit-index-url \
+  --generate-hashes --only-binary :all: --emit-index-url \
   --custom-compile-command "databricks_app/scripts/build_bundle.sh" \
   --quiet -o "$compiled"
 {

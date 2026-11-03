@@ -8,6 +8,7 @@ from unittest.mock import ANY, MagicMock, patch
 
 import numpy as np
 import pandas as pd
+import polars as pl
 import pytest
 
 from haute._config_validation import validate_node_config
@@ -298,6 +299,78 @@ class TestAliasInOptimiserApply:
 
 
 class TestDeployRecordsTheResolvedAlias:
+    def test_resolution_ships_the_bundled_file_without_rewriting_the_parsed_graph(
+        self, registry: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # DEP-R13: the shipped graph names the downloaded model file; the parsed graph,
+        # whose nodes it shares, keeps the config the pipeline file gave.
+        import json
+        import shutil
+
+        from haute.deploy import DeployConfig, resolve_config
+        from haute.deploy._scorer import score_graph
+        from haute.parser import parse_pipeline_file
+
+        example = Path(__file__).resolve().parents[1] / "src/haute/assistant/assets/examples"
+        shutil.copytree(example / "minimal_live_quote", tmp_path, dirs_exist_ok=True)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "data" / "quote.json").write_text('[{"quote_id": "q1", "age": 30.0}]')
+        request = json.loads((tmp_path / "config" / "request.json").read_text())
+        request["tables"][0]["columns"][1] |= {"name": "age", "path": "$[:].age", "type": "float"}
+        (tmp_path / "config" / "request.json").write_text(json.dumps(request))
+        score_config = {
+            "sourceType": "registered",
+            "registered_model": "freq",
+            "alias": "champion",
+            "task": "regression",
+            "output_column": "prediction",
+        }
+        (tmp_path / "config" / "score.json").write_text(json.dumps(score_config))
+        (tmp_path / "config" / "output.json").write_text(
+            json.dumps(
+                {
+                    "outputMapping": [
+                        {
+                            "source_port": "scored",
+                            "source_column": "prediction",
+                            "output_path": "$[:].prediction",
+                            "enabled": True,
+                        }
+                    ]
+                }
+            )
+        )
+        (tmp_path / "pipeline.py").write_text(
+            "import haute\n\n"
+            'pipeline = haute.Pipeline("freq_quote", description="Scores freq.")\n\n\n'
+            '@pipeline.api_input(config="config/request.json")\ndef quote(): ...\n\n\n'
+            '@pipeline.model_score(config="config/score.json")\ndef scored(quote): ...\n\n\n'
+            '@pipeline.output(config="config/output.json")\ndef response(scored): ...\n\n\n'
+            'pipeline.connect("quote", "scored", source_port="quote")\n'
+            'pipeline.connect("scored", "response")\n'
+        )
+
+        file_config = next(
+            node.data.config
+            for node in parse_pipeline_file(tmp_path / "pipeline.py", flatten=True).nodes
+            if node.id == "scored"
+        )
+        assert "artifact_path" not in file_config
+
+        with resolve_config(DeployConfig.from_toml(tmp_path / "haute.toml")) as resolved:
+            parsed = next(node for node in resolved.full_graph.nodes if node.id == "scored")
+            served = next(node for node in resolved.pruned_graph.nodes if node.id == "scored")
+            assert parsed.data.config == file_config
+            assert served.data.config == file_config | {"artifact_path": "model_1.cbm"}
+            answer = score_graph(
+                resolved.pruned_graph,
+                pl.DataFrame({"quote_id": ["q1"], "age": [30.0]}),
+                resolved.input_node_ids,
+                resolved.output_node_id,
+                artifact_paths={name: str(path) for name, path in resolved.artifacts.items()},
+            )
+        assert answer["prediction"].is_not_null().all()
+
     def test_the_bundle_records_alias_version_and_run(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

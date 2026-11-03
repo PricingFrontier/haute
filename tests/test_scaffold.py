@@ -337,7 +337,7 @@ class TestGithubCiYml:
 
     def test_uses_uv(self) -> None:
         result = github_ci_yml()
-        assert "astral-sh/setup-uv@v4" in result
+        assert "astral-sh/setup-uv@" in result
         assert "uv sync --frozen" in result
 
 
@@ -431,7 +431,7 @@ class TestGithubDeployYmlImprovements:
 
     def test_impact_report_uploaded_as_artifact(self) -> None:
         result = github_deploy_yml("databricks")
-        assert "upload-artifact@v4" in result
+        assert "actions/upload-artifact@" in result
         assert "impact-report" in result
 
     def test_deployed_sha_recorded(self) -> None:
@@ -995,10 +995,12 @@ class TestDockerfileStructure:
         from haute.deploy._project_modules import ProjectModules
         from haute.deploy._request_rows import RequestRows
         from haute.graph_utils import PipelineGraph
-        from tests._deploy_helpers import artifact_digests
+        from tests._deploy_helpers import artifact_digests, resolved_paths
 
+        config = DeployConfig(pipeline_file=Path("main.py"), model_name="test")
         resolved = ResolvedDeploy(
-            config=DeployConfig(pipeline_file=Path("main.py"), model_name="test"),
+            config=config,
+            **resolved_paths(config),
             full_graph=PipelineGraph(),
             pruned_graph=PipelineGraph(),
             input_node_ids=[],
@@ -1106,17 +1108,17 @@ class TestPreCommitHook:
         result = pre_commit_hook()
         assert "ruff format" in result
 
-    def test_contains_git_add(self) -> None:
+    def test_writes_the_fixed_staged_content_back_to_the_index(self) -> None:
         result = pre_commit_hook()
-        assert "git add" in result
+        assert "git update-index --cacheinfo" in result
+        assert "git add" not in result
+        assert "|| true" not in result
 
-    def test_valid_shell_syntax(self) -> None:
-        result = pre_commit_hook()
-        assert "#!/bin/sh" in result
-        assert "exit 0" in result
-        lines = result.strip().splitlines()
-        for line in lines:
-            assert line.count("$(") == line.count(")") or "#" in line or "2>/dev/null" in line
+    def test_is_valid_shell(self) -> None:
+        checked = subprocess.run(
+            [posix_shell(), "-n"], input=pre_commit_hook(), capture_output=True, text=True
+        )
+        assert checked.returncode == 0, checked.stderr
 
 
 class TestStarterTest:
@@ -1692,6 +1694,18 @@ class TestDatabricksReleaseAndDeployJobs:
         [tag] = [step for step in steps if step.get("displayName") == "Tag release"]
         assert tag["env"]["DATABRICKS_MLFLOW_TOKEN"] == "$(DATABRICKS_MLFLOW_TOKEN)"
 
+    def test_impact_reads_the_release_tags_the_production_job_pushes(self) -> None:
+        """DEP-R11: impact's first-deploy record is origin's deploy/ tags, so its job can
+        read origin: Azure DevOps keeps the pipeline's token only when asked."""
+        from haute._scaffold import RELEASE_TAG_PREFIX
+
+        assert f'TAG="{RELEASE_TAG_PREFIX}' in _release_tag_script("container", "")
+        assert f'git tag "{RELEASE_TAG_PREFIX}v' in _release_tag_script("databricks", "")
+        azure = yaml.safe_load(azure_devops_yml("container"))
+        [impact] = [s for s in azure["stages"] if s["stage"] == "ImpactAnalysis"]
+        steps = impact["jobs"][0]["steps"]
+        assert steps[0] == {"checkout": "self", "persistCredentials": True}
+
     def test_a_container_tag_step_is_given_no_secrets(self) -> None:
         workflow = yaml.safe_load(github_deploy_prod_yml("container"))
         steps = workflow["jobs"]["deploy-production"]["steps"]
@@ -1745,7 +1759,7 @@ class TestWorkbenchCiFiles:
         assert steps[-1] == {
             "name": "Upload test quotes report",
             "if": "always()",
-            "uses": "actions/upload-artifact@v4",
+            "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
             "with": {"name": "test-quotes-report", "path": "test_quotes_report.md"},
         }
 
@@ -1753,7 +1767,7 @@ class TestWorkbenchCiFiles:
         assert release["jobs"]["validate"]["steps"][-1] == {
             "name": "Upload test quotes report",
             "if": "always()",
-            "uses": "actions/upload-artifact@v4",
+            "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
             "with": {"name": "test-quotes-report", "path": "test_quotes_report.md"},
         }
         # PyYAML reads the bare key "on" as True.
@@ -1780,7 +1794,7 @@ class TestWorkbenchCiFiles:
         assert measured["run"] == "uv run haute app impact"
         assert set(measured["env"]) == self._SECRETS
         assert kept["if"] == "always()"
-        assert kept["uses"] == "actions/upload-artifact@v4"
+        assert kept["uses"] == "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
         assert kept["with"] == {"name": "impact-report", "path": "impact_report.md"}
 
         production = files[".github/workflows/release-production.yml"]

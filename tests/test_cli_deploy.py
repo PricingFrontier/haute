@@ -293,6 +293,7 @@ class TestDeploy:
 
         resolved = _mock_resolved()
         deploy_result = MagicMock()
+        deploy_result.build_dir = None
         deploy_result.model_name = "test-model"
         deploy_result.model_version = 2
         deploy_result.endpoint_url = "https://host/serving-endpoints/test-ep/invocations"
@@ -324,6 +325,7 @@ class TestDeploy:
         resolved = _mock_resolved()
         resolved.config.target = target
         deploy_result = MagicMock()
+        deploy_result.build_dir = None
         deploy_result.model_name = "test-model"
         deploy_result.model_version = 2
         deploy_result.endpoint_url = None
@@ -356,8 +358,9 @@ class TestDeploy:
         resolved = _mock_resolved()
         resolved.config.target = "container"
         deploy_result = MagicMock()
+        deploy_result.build_dir = None
         deploy_result.model_name = "test-model"
-        deploy_result.model_version = 2
+        deploy_result.model_version = "abc"
         deploy_result.endpoint_url = None
         deploy_result.model_uri = "test-model:abc"
 
@@ -369,9 +372,39 @@ class TestDeploy:
             result = runner.invoke(cli, ["deploy"])
 
         assert result.exit_code == 0, result.output
-        assert "Deployed: test-model v2" in result.output
+        assert "Deployed: test-model at abc" in result.output
         assert "Image: test-model:abc" in result.output
         assert "mlflow models serve" not in result.output
+
+    def test_keep_build_ships_with_the_build_kept_and_names_it(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # DEP-R12A: a build's directory is removed once it shipped, unless asked to keep it.
+        monkeypatch.chdir(tmp_path)
+        _make_toml(tmp_path)
+        monkeypatch.setenv("CI", "true")
+        resolved = _mock_resolved()
+        resolved.config.target = "container"
+        deploy_result = MagicMock()
+        deploy_result.model_name = "test-model"
+        deploy_result.model_version = "abc"
+        deploy_result.endpoint_url = None
+        deploy_result.model_uri = "test-model:abc"
+        deploy_result.build_dir = tmp_path / ".haute_build" / "test-model-x1"
+
+        with (
+            patch("haute.deploy._config.resolve_config", return_value=resolved),
+            patch("haute.deploy._validators.validate_deploy", return_value=[]),
+            patch("haute.deploy.deploy_resolved", return_value=deploy_result) as ship,
+        ):
+            result = runner.invoke(cli, ["deploy", "--keep-build"])
+
+        assert result.exit_code == 0, result.output
+        ship.assert_called_once_with(resolved, keep_build=True)
+        assert f"Build kept in {deploy_result.build_dir}" in result.output
 
     def test_non_dry_run_resolves_once_and_ships_validated_resolved_deploy(
         self,
@@ -387,6 +420,7 @@ class TestDeploy:
         validated_resolved = _mock_resolved()
         divergent_resolved = _mock_resolved()
         deploy_result = MagicMock()
+        deploy_result.build_dir = None
         deploy_result.model_name = "test-model"
         deploy_result.model_version = 7
         deploy_result.endpoint_url = "https://host/serving-endpoints/test-ep/invocations"
@@ -420,7 +454,7 @@ class TestDeploy:
         cli_validate.assert_called_once_with(validated_resolved)
         public_validate.assert_not_called()
         mock_score.assert_not_called()
-        backend.assert_called_once_with(validated_resolved)
+        backend.assert_called_once_with(validated_resolved, keep_build=False)
 
     def test_deploy_import_error(
         self,
@@ -511,3 +545,42 @@ class TestDeploy:
 
         assert result.exit_code == 0, result.output
         assert "-staging" in result.output
+
+
+class TestResolutionFailures:
+    """Resolution's expected failures are one line and exit 1; a defect keeps its traceback."""
+
+    @pytest.mark.parametrize(
+        "failure",
+        [DeployError("no output node"), ValueError("no output node"), FileNotFoundError("x")],
+    )
+    def test_an_expected_failure_is_one_line(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        failure: Exception,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        _make_toml(tmp_path)
+        with patch("haute.deploy._config.resolve_config", side_effect=failure):
+            result = runner.invoke(cli, ["deploy", "--dry-run"])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert f"Resolution failed: {failure}" in result.output
+
+    def test_a_type_error_reaches_the_terminal_with_its_traceback(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        _make_toml(tmp_path)
+        with patch(
+            "haute.deploy._config.resolve_config",
+            side_effect=TypeError("unsupported operand"),
+        ):
+            result = runner.invoke(cli, ["deploy", "--dry-run"])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, TypeError)
+        assert "Resolution failed" not in result.output
