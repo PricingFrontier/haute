@@ -5,7 +5,6 @@ import { makePreviewData } from "../utils/makePreviewData"
 import {
   ApiError,
   loadPipeline,
-  loadPipelineDocument,
   previewInputs,
   previewNode,
   previewRecoveryNode,
@@ -25,7 +24,7 @@ import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useNodeDataStore from "../stores/useNodeDataStore"
 import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
 import { trackPendingSave } from "../stores/pendingSaves"
-import { documentHoldsSave } from "../utils/savedDocument"
+import { operationKey } from "../utils/operationKey"
 import useUIStore from "../stores/useUIStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
@@ -1545,54 +1544,43 @@ export default function usePipelineAPI({
       status.setGraphSynchronized(true)
       useUIStore.getState().setSyncBanner(null)
     }
-    // A save whose answer was lost may still have been written: it is confirmed
-    // only by reading back a document that holds exactly what was sent.
-    const confirmLostSave = async (): Promise<string | null> => {
-      try {
-        const read = await loadPipelineDocument(savePipelineName)
-        const document = parsePipelineEditorDocument(read.document)
-        if (document.source_revision === null || !documentHoldsSave(document, {
-          sourceFile: saveSourceFile,
-          pipelineName: savePipelineName,
-          description: saveDescription,
-          snapshot: savedSnapshot,
-          constantsSent: globalConstantsError === null,
-          preservedBlocks: savePreservedBlocks,
-          sources: sc,
-          activeSource: as_,
-        })) return null
-        acknowledge(document.source_revision, read.documentFingerprint)
-        return document.source_file
-      } catch {
-        // The read failing leaves the save as unconfirmed as the lost answer did.
-        return null
-      }
+    const request = {
+      name: savePipelineName,
+      description: saveDescription,
+      graph: {
+        nodes: requestGraph.nodes,
+        edges: requestGraph.edges,
+        submodels: requestGraph.submodels,
+        ...(globalConstantsError === null
+          ? { global_constants: constantsPayload(saveConstants) }
+          : {}),
+      },
+      preamble: savePreamble,
+      source_file: sourceFileRef.current,
+      // A never-persisted document keeps an empty revision ref; the server wants null.
+      base_revision: saveSourceRevision || null,
+      sources: sc,
+      active_source: as_,
+      preserved_blocks: savePreservedBlocks,
+      connection_id: syncConnectionId(),
+      // A repeat under the same operation writes once: the server answers it with
+      // what the first request did when that one committed.
+      operation: operationKey(),
     }
-    // Live sync holds a frame of this file until the save, and any confirmation
-    // of a lost answer, has settled.
+    // Live sync holds a frame of this file until the save, its repeat included,
+    // has settled.
     let settleSave!: () => void
     trackPendingSave(saveSourceFile, new Promise<void>((resolve) => { settleSave = resolve }))
     try {
-      const data = await savePipeline({
-        name: savePipelineName,
-        description: saveDescription,
-        graph: {
-          nodes: requestGraph.nodes,
-          edges: requestGraph.edges,
-          submodels: requestGraph.submodels,
-          ...(globalConstantsError === null
-            ? { global_constants: constantsPayload(saveConstants) }
-            : {}),
-        },
-        preamble: savePreamble,
-        source_file: sourceFileRef.current,
-        // A never-persisted document keeps an empty revision ref; the server wants null.
-        base_revision: saveSourceRevision || null,
-        sources: sc,
-        active_source: as_,
-        preserved_blocks: savePreservedBlocks,
-        connection_id: syncConnectionId(),
-      })
+      let data: Awaited<ReturnType<typeof savePipeline>>
+      try {
+        data = await savePipeline(request)
+      } catch (err: unknown) {
+        // No answer: the save may have been written. Sent once more, exactly, its
+        // answer is the first request's if that committed, else the save made now.
+        if (!isLostAnswer(err)) throw err
+        data = await savePipeline(request)
+      }
       acknowledge(data.source_revision, data.document_fingerprint)
       addToast("success", `Saved → ${data.file}`)
       // The ledger commit, the warnings and the identity prompt, as every save reports them.
@@ -1617,13 +1605,6 @@ export default function usePipelineAPI({
           "Save rejected: the pipeline changed on disk. Reload the file or discard local edits first.",
         )
         return false
-      }
-      if (isLostAnswer(err)) {
-        const savedFile = await confirmLostSave()
-        if (savedFile !== null) {
-          addToast("success", `Saved → ${savedFile}`)
-          return true
-        }
       }
       const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Failed to save pipeline: ${detail}`)

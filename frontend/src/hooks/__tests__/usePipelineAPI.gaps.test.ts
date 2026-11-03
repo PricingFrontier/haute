@@ -308,10 +308,11 @@ describe("usePipelineAPI - gap tests", () => {
         preserved_blocks: ["# kept"],
       })
 
-      async function saveWithLostAnswer(readBack: ReturnType<typeof makePipelineEditorDocument>) {
+      /** A save whose first answer is lost, and whose repeat `repeat` answers. */
+      async function saveWithLostAnswer(repeat: () => ReturnType<typeof savePipeline>) {
         mockLoad.mockResolvedValue({ document: onDisk(), documentFingerprint: "fingerprint-loaded" })
         mockSave.mockRejectedValueOnce(new TypeError("Failed to fetch"))
-        vi.mocked(loadPipelineDocument).mockResolvedValueOnce({ document: readBack, documentFingerprint: "fingerprint-read" })
+        mockSave.mockImplementationOnce(repeat)
         const params = makeParams()
         const { result } = renderHook(() => usePipelineAPI(params))
         await waitFor(() => expect(result.current.loading).toBe(false))
@@ -320,30 +321,62 @@ describe("usePipelineAPI - gap tests", () => {
         return saved
       }
 
-      it("is acknowledged when the document read back holds exactly what was sent", async () => {
-        const saved = await saveWithLostAnswer({ ...onDisk(), source_revision: "revision-written" })
+      it("is sent again exactly, under the same operation, and acknowledged from the repeat's answer", async () => {
+        const saved = await saveWithLostAnswer(() => Promise.resolve({
+          file: "rating/main.py",
+          pipeline_name: "test",
+          source_revision: "revision-written",
+          document_fingerprint: "fingerprint-written",
+        } as Awaited<ReturnType<typeof savePipeline>>))
 
         expect(saved).toBe(true)
+        expect(mockSave).toHaveBeenCalledTimes(2)
+        const [first, repeat] = mockSave.mock.calls.map(([payload]) => payload)
+        expect(first.operation).toMatch(/^save-/)
+        expect(repeat).toEqual(first)
+        expect(loadPipelineDocument).not.toHaveBeenCalled()
         expect(useDocumentStatusStore.getState()).toMatchObject({
           sourceRevision: "revision-written",
-          documentFingerprint: "fingerprint-read",
+          documentFingerprint: "fingerprint-written",
         })
+        expect(useGraphStore.getState().dirty).toBe(false)
         expect(useToastStore.getState().toasts.at(-1)).toMatchObject({ type: "success", text: "Saved → rating/main.py" })
       })
 
-      it("stays unsaved when the document read back differs, adopting no other revision", async () => {
-        const saved = await saveWithLostAnswer({
-          ...onDisk(),
-          source_revision: "revision-other-writer",
-          preserved_blocks: ["# kept", "# another writer"],
-        })
+      it("sets the reload banner when the repeat is refused as stale", async () => {
+        const saved = await saveWithLostAnswer(() => Promise.reject(
+          new ApiError("Conflict", 409, "stale_document_revision: disk moved"),
+        ))
 
         expect(saved).toBe(false)
+        expect(useDocumentStatusStore.getState()).toMatchObject({
+          sourceRevision: "revision-test",
+          graphSynchronized: false,
+        })
+        expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/^Save rejected: the pipeline changed on disk/)
+      })
+
+      it("is reported failed when the repeat's answer is lost too", async () => {
+        const saved = await saveWithLostAnswer(() => Promise.reject(new TypeError("Failed to fetch")))
+
+        expect(saved).toBe(false)
+        expect(mockSave).toHaveBeenCalledTimes(2)
         expect(useDocumentStatusStore.getState()).toMatchObject({
           sourceRevision: "revision-test",
           documentFingerprint: "fingerprint-loaded",
         })
         expect(useToastStore.getState().toasts.at(-1)).toMatchObject({ type: "error", text: "Failed to save pipeline: Failed to fetch" })
+      })
+
+      it("is not sent again after an answer", async () => {
+        mockLoad.mockResolvedValue({ document: onDisk(), documentFingerprint: "fingerprint-loaded" })
+        mockSave.mockRejectedValueOnce(new ApiError("HTTP 400", 400, "bad graph"))
+        const params = makeParams()
+        const { result } = renderHook(() => usePipelineAPI(params))
+        await waitFor(() => expect(result.current.loading).toBe(false))
+        await act(async () => { await result.current.handleSave() })
+
+        expect(mockSave).toHaveBeenCalledTimes(1)
       })
     })
 

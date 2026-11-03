@@ -460,6 +460,7 @@ describe("retry: caller supplied policy", () => {
             base_revision: null,
             preserved_blocks: [],
             connection_id: null,
+            operation: "save-test-operation",
           },
           // @ts-expect-error retry policies are deliberately not exposed on
           // mutation helpers until a real idempotency-key contract exists.
@@ -651,6 +652,7 @@ describe("no retry: non-idempotent POST (default)", () => {
           base_revision: null,
           preserved_blocks: [],
           connection_id: null,
+          operation: "save-test-operation",
         }),
       ).rejects.toBeInstanceOf(TypeError)
 

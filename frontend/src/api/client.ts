@@ -1057,6 +1057,8 @@ export function savePipeline(
     preserved_blocks: string[]
     /** The tab's live-sync connection: the save's broadcast leaves this tab out. */
     connection_id: string | null
+    /** Makes a repeat of this save, after its answer was lost, write once. */
+    operation: string
   },
   options?: MutationOptions,
 ): Promise<SavePipelineResponse> {

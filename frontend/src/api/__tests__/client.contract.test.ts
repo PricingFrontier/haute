@@ -133,6 +133,7 @@ describe("client runtime contracts", () => {
         base_revision: null,
         preserved_blocks: [],
         connection_id: null,
+        operation: "save-test-operation",
       }),
     ).rejects.toThrow(/parseSavePipelineResponse/i)
   })

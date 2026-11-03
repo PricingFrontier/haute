@@ -1769,6 +1769,15 @@ class SavePipelineRequest(BaseModel):
             "broadcast of the saved document leaves that socket out."
         ),
     )
+    operation: str | None = Field(
+        default=None,
+        min_length=8,
+        max_length=64,
+        description=(
+            "Makes a repeated save write once: a save repeated with the operation of one "
+            "that committed is answered with that save's response."
+        ),
+    )
 
     @model_validator(mode="after")
     def _active_source_is_a_source(self) -> SavePipelineRequest:

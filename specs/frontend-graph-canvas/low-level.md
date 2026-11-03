@@ -86,7 +86,6 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/utils/nodeTypeRegistry.ts` | React Flow node-type registry built from canonical metadata, shared by editable and read-only canvases. |
 | `frontend/src/utils/graphSnapshot.ts` | Four-field graph snapshot serialization/cloning and canonical request projection: every graph sent to a canonical backend schema recursively strips editor-only identities and React Flow presentation without mutating live state; dirty serialization uses the same projection, while live history clones retain only the server-owned identity subset. |
 | `frontend/src/utils/structuralFingerprint.ts` | Pure structural fingerprint of a graph (node ids and kinds, edge endpoints, and every submodel definition's public port ids and labels) that the boundary-editing hook compares to decide whether the workspace changed while parent identities were resolving; positions, selection, dragging, and dimensions are excluded on purpose. |
-| `frontend/src/utils/savedDocument.ts` | `documentHoldsSave`: whether a document read back is the saved file and holds exactly what a save submitted (its `serializeSnapshot`, the graph as the file holds it (`asPersisted`: each node known and labelled by its server-resolved function name, edges ordered by target so each node's input order still counts), with the constants only when they were sent, plus pipeline name, description, preserved blocks, sources and active source), the test that confirms a save whose answer was lost. |
 | `frontend/src/utils/shallowNodeHash.ts` | Stable shallow data hashing used by structural and panel-context fingerprint calculations; Explore presentation keys and the modelling and optimiser export settings (`exportConfigKeysFor`) do not contribute to a node's config hash. |
 | `frontend/src/components/ComparisonInspector.tsx` | Read-only comparison-view config panel: renders the real node editor `inert` for the available side(s), with a Historical/Current switcher. |
 | `frontend/src/components/ComparisonView.tsx` | The historical-vs-current comparison canvas pair: fetches the historical pipeline (rendering `apiErrorMessage` on failure) and best-effort breadcrumb commit contexts (logging the status on failure), diffs it, and renders two non-interactive `ReactFlow` instances (`ReadonlyCanvas`) with diff-ring highlighting, a draggable split, and orientation toggle. |
@@ -915,30 +914,21 @@ reconciliation rather than dropping them or committing a second mutation.
     each backend save warning, including incomplete transforms found in either
     the root graph or an embedded submodel definition. Never throws; resolves
     `false` on any failure after toasting the detail.
-    A save whose answer was lost — the request failed with no HTTP answer (a
-    network failure or `ApiTimeoutError`) — may still have been written, so the
-    save re-reads the document (`loadPipelineDocument`, `GET /api/pipeline/{name}`
-    for the saved pipeline name) and acknowledges it only when that document is
-    the same source file and holds exactly what was submitted
-    (`documentHoldsSave`): its dirty-state serialisation (`serializeSnapshot`:
-    nodes with their layout, edges, preamble, submodels and, when the save sent
-    them, the global constants) equals the submitted snapshot's, compared as the
-    file holds the graph: each node known and labelled by its function name
-    (`_functionName`, which the server resolves from the label: a read gives it
-    as both id and label, while the canvas may hold a provisional id, an id from
-    before a rename, or a display label such as `Transform 3` for
-    `Transform_3`), and edges ordered by their target's name alone, so a node's
-    input order, which the file keeps, still counts; and its
-    pipeline name, description, preserved blocks, sources and active source
-    equal those submitted. The
-    submitted base revision proves nothing; it is the old version. A confirmed
-    save is acknowledged as an answered one is, under the same
+    Every save names a fresh `operation` (`crypto.randomUUID()`), which makes a
+    repeated save write once (`POST /api/pipeline/save` answers a repeat of a
+    save that committed with that save's response). A save whose answer was
+    lost — the request failed with no HTTP answer (a network failure or
+    `ApiTimeoutError`) — may still have been written, so it is sent once more,
+    exactly as it was, under the same operation: its answer is the first
+    request's when that one committed (even if another writer saved since), and
+    otherwise the save made now against the same base revision. That answer is
+    handled as the first one's would have been: acknowledged under the same
     `saveRequestSeq`/`appliedSaveSeq` and observed-revision fences, marking only
-    the submitted snapshot saved, so edits made meanwhile stay dirty, with the
-    revision and fingerprint of the document read. A document that differs (the
-    request never arrived, or another writer saved since), or a re-read that
-    fails, leaves the save unconfirmed and reports the failure; another writer's
-    revision is never adopted.
+    the submitted snapshot saved, so edits made meanwhile stay dirty; a stale
+    refusal (another writer saved before a first request that never arrived)
+    sets the reload banner; a second lost answer, or any other failure, is
+    reported as a failed save. The browser never compares a document read back
+    with what it sent.
 19. **WebSocket sync (`useWebSocketSync`).** Connects to the credential-free
     `/ws/sync` URL; the browser supplies its HttpOnly same-origin cookie during
     the handshake. On open, sends a `resync` message carrying
@@ -1752,9 +1742,10 @@ again through the editor and save paths.
     no-ops. `frontend/src/hooks/__tests__/useNodeHandlers.test.ts` and `frontend/src/hooks/__tests__/useEdgeHandlers.test.ts` pin the same
     fence for Duplicate and the drops (a drag or selection change applies, a new
     node refuses), `frontend/src/utils/__tests__/edgeJoinGraph.test.ts` the Edge Join rebase onto a live graph
-    whose positions, selection and other nodes changed, `frontend/src/utils/__tests__/savedDocument.test.ts`
-    the lost-answer comparison, and `frontend/src/hooks/__tests__/usePipelineAPI.gaps.test.ts` a lost save
-    acknowledged from a matching read and left unsaved by a differing one. On the real graph store, a copied, deleted and
+    whose positions, selection and other nodes changed, and
+    `frontend/src/hooks/__tests__/usePipelineAPI.gaps.test.ts` a lost save sent
+    again under its operation, acknowledged from the repeat's answer, refused as
+    stale with the banner, and reported failed when the repeat's answer is lost too. On the real graph store, a copied, deleted and
     pasted two-frame Quote Input keeps its two parallel connections under
     distinct ids; removing one through the canvas's edge changes leaves the
     other, and one undo restores exactly the removed one.

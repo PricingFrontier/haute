@@ -203,6 +203,11 @@ from haute.routes._isolated_worker_async import (
 )
 from haute.routes._preview_progress import preview_progress
 from haute.routes._runtime_path_errors import runtime_path_http_exception
+from haute.routes._save_operations import (
+    SaveOperationReusedError,
+    committed_saves,
+    save_request_digest,
+)
 from haute.routes._save_pipeline import SavePipelineService, StaleDocumentRevisionError
 from haute.routes._supersession import SupersededRequestError, SupersessionCoordinator
 from haute.routes._synchronous_analysis import await_until_disconnected
@@ -1314,6 +1319,14 @@ async def save_pipeline(body: SavePipelineRequest, request: Request) -> SavePipe
     """
     try:
         async with save_lock:
+            # A repeat of a committed save (its answer was lost) is answered with
+            # what that save did, before the file is read: it writes nothing.
+            operation = body.operation
+            digest = "" if operation is None else save_request_digest(body)
+            if operation is not None:
+                replayed = committed_saves.replay(operation, digest)
+                if replayed is not None:
+                    return replayed
             project_root = Path.cwd().resolve()
             # The service reads the file once, under the repository's lock; the
             # editor's Save refuses one that is not ready on disk.
@@ -1326,6 +1339,8 @@ async def save_pipeline(body: SavePipelineRequest, request: Request) -> SavePipe
             committed = svc.committed
             if committed is None:
                 raise RuntimeError("A save returned without the document it committed.")
+            if operation is not None:
+                committed_saves.record(operation, digest, response)
             exclude: DocumentUpdateExclusion | None = (
                 None
                 if body.connection_id is None
@@ -1358,6 +1373,8 @@ async def save_pipeline(body: SavePipelineRequest, request: Request) -> SavePipe
             for update in shared:
                 default_bus.publish("pipeline.document.update", update)
             return response
+    except SaveOperationReusedError as exc:
+        raise HTTPException(status_code=409, detail=f"save_operation_reused: {exc}") from None
     except StaleDocumentRevisionError as exc:
         # The client's document is behind the disk; nothing was written.
         # The detail keeps the repository's flat-string error shape and
