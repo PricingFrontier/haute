@@ -36,6 +36,7 @@ from haute._workbench_tables import (
     input_tables,
     output_tables,
     preset_column,
+    preset_rows,
     priced_tables,
     quote_request_rows,
     request_columns,
@@ -57,6 +58,12 @@ _IDENTITY_NAMES = ("quote_reference", "quote_option")
 KEPT_KEY = "$kept"
 #: Each input table's kept columns, by table name, each by its name and kind.
 KeptColumns = Mapping[str, Sequence[tuple[str, str]]]
+
+
+def _carries_kept(row: Mapping[str, Any]) -> bool:
+    """Whether *row* carries a kept field: a row whose cells are all empty still holds the
+    values in it, so a save keeps the row (only deleting it deletes them)."""
+    return row.get(KEPT_KEY) is not None
 
 
 def _kept_json(row: Mapping[str, Any], columns: Sequence[tuple[str, str]]) -> str | None:
@@ -151,7 +158,9 @@ def input_rows(
     under its number on the sheet. Refused (:class:`QuoteValuesError`), naming each cell, when
     any value is not of its column's type. With *kept*, the store's columns outside the form,
     each row also writes back the values its kept field carries (READ-05)."""
-    request, numbers = quote_request_rows(form, values)
+    request, numbers = quote_request_rows(
+        form, values, carried=None if kept is None else _carries_kept
+    )
     by_name = {table.name: table for table in input_tables(form)}
     reference, option = identity
     misfits: list[MisfitCell] = []
@@ -188,7 +197,9 @@ def input_rows(
             if many:
                 row[QUOTE_ROW] = sheet[place]
             if kept is not None and table.name != QUOTE_DETAILS_NAME:
-                typed = values.get(table.name) or []
+                # In the order the request's rows stand, a preset column's order included,
+                # so each row's kept field is its own.
+                typed = preset_rows(table, values.get(table.name) or [])
                 index = sheet[place] - 1 if many else 0
                 source = typed[index] if 0 <= index < len(typed) else {}
                 # Every row names each kept column, a value or null: one insert writes them.

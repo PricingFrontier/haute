@@ -2295,7 +2295,9 @@ Out of scope:
   inserts, deletes, edits made while a save is pending and the answer to a save replayed, and
   a save writes it back, refusing it, by name, for a column the form holds, one the store
   does not hold, or a value its column's kind does not hold. A new row has none; a deleted row
-  takes its values with it. `quote_details` is updated in place, and an output table is
+  takes its values with it, and only deleting it does: a row whose cells are all emptied
+  keeps its `$kept` values and is saved as a row with empty cells. A column giving its table a
+  row for each of its values moves each row, with its `$kept` field, to its value's place. `quote_details` is updated in place, and an output table is
   written afresh by each pricing, so an output column the form no longer holds is cleared by
   the quote's next save, priced or not; from the database,
   each other way its tables differ (a column taking a null otherwise, a table keyed or

@@ -157,6 +157,55 @@ def test_an_inserted_row_holds_no_kept_value_and_the_others_keep_theirs(
     assert _mileages(store) == [("REG1", 100), ("NEW", None), ("REG2", 200), ("REG3", 300)]
 
 
+def test_a_row_left_holding_only_kept_values_stays_a_row(
+    store: Target, before: tuple[str, int]
+) -> None:
+    """Its cells on the sheet emptied, a row still holds a value the form no longer shows,
+    so a save keeps it: only deleting the row deletes that value."""
+    with _open(store, NEW) as book:
+        rows = book.read(*before).values
+        rows["vehicles"][1] = {KEPT_KEY: rows["vehicles"][1][KEPT_KEY]}
+        saved = _save(book, before, rows, priced=False)
+        _save(book, before, saved.values, priced=False)
+
+    assert _mileages(store) == [("REG1", 100), (None, 200), ("REG3", 300)]
+
+
+def _preset(form: FormSpec, table: str, column: str, options: list[str]) -> FormSpec:
+    """*form* with *table*'s *column* giving the table a row for each of *options*."""
+    tables = [
+        each.model_copy(
+            update={
+                "columns": [
+                    c.model_copy(update={"options": options, "row_per_value": True})
+                    if c.name == column
+                    else c
+                    for c in each.columns
+                ]
+            }
+        )
+        if each.name == table
+        else each
+        for each in form.data_schema.tables
+    ]
+    return form.model_copy(
+        update={"data_schema": form.data_schema.model_copy(update={"tables": tables})}
+    )
+
+
+def test_a_row_moved_to_its_preset_place_takes_its_kept_value_with_it(
+    store: Target, before: tuple[str, int]
+) -> None:
+    """A column giving the table a row for each of its values puts the rows in the values'
+    order; each row's kept value follows it, not the place it was opened in."""
+    reordered = _preset(NEW, "vehicles", "reg", ["REG2", "REG1", "REG3"])
+    with _open(store, reordered) as book:
+        saved = _save(book, before, book.read(*before).values, priced=False)
+        _save(book, before, saved.values, priced=False)
+
+    assert _mileages(store) == [("REG2", 200), ("REG1", 100), ("REG3", 300)]
+
+
 def test_a_replayed_save_answers_the_rows_with_their_kept_values(
     store: Target, before: tuple[str, int]
 ) -> None:

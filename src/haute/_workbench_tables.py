@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -337,10 +337,14 @@ def sample_quote(
 
 
 def _quoted(
-    spec: FormSpec, hidden: Collection[tuple[str, str]], untyped: Collection[tuple[str, str]]
+    spec: FormSpec,
+    hidden: Collection[tuple[str, str]],
+    untyped: Collection[tuple[str, str]],
+    carried: Callable[[Mapping[str, Any]], bool] | None = None,
 ) -> tuple[dict[str, Any], dict[str, list[int]], bool]:
     """:func:`sample_quote`'s quote whatever is typed, each many-row table's rows' numbers on
-    the sheet, by its name, and whether anything is typed."""
+    the sheet, by its name, and whether anything is typed. A row nothing is typed in is left
+    out, unless *carried* says it holds something the sheets do not show."""
     sample: dict[str, Any] = {}
     numbers: dict[str, list[int]] = {}
     typed = False
@@ -369,7 +373,7 @@ def _quoted(
         numbered = [
             (number, record)
             for number, row in enumerate(rows, 1)
-            if (record := _record(columns, row, number))
+            if (record := _record(columns, row, number)) or (carried is not None and carried(row))
         ]
         if numbered:
             records = [record for _, record in numbered]
@@ -380,16 +384,22 @@ def _quoted(
 
 
 def quote_request_rows(
-    spec: FormSpec, values: Mapping[str, Any]
+    spec: FormSpec,
+    values: Mapping[str, Any],
+    *,
+    carried: Callable[[Mapping[str, Any]], bool] | None = None,
 ) -> tuple[dict[str, Any], dict[str, list[int]]]:
     """The request :func:`quote_request` builds from *values*, whatever is typed, and each
     many-row table's rows' numbers on the sheet, by its name, in the request's order: the
-    quote store keeps a row under its sheet number, so a grid opens as it was saved."""
+    quote store keeps a row under its sheet number, so a grid opens as it was saved. A row
+    *carried* says holds values the sheets do not show is a row too, its cells empty."""
     # Imported here: the visibility rules read cells as this module types them.
     from haute._workbench_visibility import visibility
 
     priced = spec.model_copy(update={"sample": dict(values)})
-    request, numbers, _ = _quoted(priced, visibility(priced, priced.sample).hidden, frozenset())
+    request, numbers, _ = _quoted(
+        priced, visibility(priced, priced.sample).hidden, frozenset(), carried
+    )
     return request, numbers
 
 
