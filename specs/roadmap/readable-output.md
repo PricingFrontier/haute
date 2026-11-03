@@ -22,7 +22,7 @@ The packages come from an investigation of [commercial-pricing pull request #1](
 
 The owner decided the following on 3 November 2026:
 - **Polars code lives only in `main.py`.** Haute rebuilds as many steps as it can from the code. Statements it cannot recognise become a code step, and the rest of the node stays as steps.
-- **Only commercial-pricing is converted to each new format.** No other project needs converting (`READ-20`).
+- **Only commercial-pricing is converted to each new format.** No other project needs converting.
 - **Workbench columns and tables have no ids.** Their names identify them. Following a rename in the quote store's SQL is left to a later package (`READ-33`).
 - **Sheets, sections and components have no random ids.** A sheet is identified by its file name, a section by its title, and a component by a number.
 - **`main.py` keeps its function order.** A new node's function goes just above the first function that uses it.
@@ -34,7 +34,7 @@ The owner decided the following on 3 November 2026:
 
 **Out of scope:** `haute init` rewrites `haute.toml` from scratch on a re-run, as decided on 1 November 2026, so editing that file in place is not planned.
 
-All the packages left are **format changes**. The loader accepts only the current format ([specification governance](../README.md)), and `READ-20` says how commercial-pricing moves to each new one.
+All the packages left are **format changes**. The loader accepts only the current format ([specification governance](../README.md)). Each change carries a one-off script in `scripts/one_off/` that converts Haute's fixtures in its pull request and, run once by the owner in a commit of its own, commercial-pricing. It converts each file still in the old form and leaves the rest, so it runs on a branch part-converted, and it is proven on commercial-pricing: the converted files load to the same values, a second save changes nothing, and every node's configuration matches what main's Haute reads from the original. The script is removed once it has run.
 
 Each package states its formats in its owning specification before behaviour changes, and names the contract it replaces there. Golden tests are written from those specifications, not from the implementation's output.
 
@@ -42,36 +42,11 @@ Each package states its formats in its owning specification before behaviour cha
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| READ-20 | Planned | P2 | Each format change comes with a one-off script that converts commercial-pricing and Haute's fixtures, proven before and after. |
 | READ-29 | Planned | P3 | Every key Haute's schemas own is snake_case on disk; keys the analyst names are untouched. |
 | READ-33 | Deferred | P2 | A column or table renamed against the project's default branch keeps its saved values in the quote store. |
 | READ-40 | Planned | P3 | Generated workflows declare each secret, setup and check once. |
 
 ## Planned improvements
-
-### READ-20 — Each format change converts commercial-pricing with a one-off script
-**Why:** The loader accepts only the current format. The canonical-only rule in the [specification governance](../README.md) forbids any production code that converts an old format: "Nothing migrates it". Each format change must still bring commercial-pricing across. The owner decided on 3 November 2026 that no other project needs converting, so the rule stays and Haute gets no `haute migrate` command.
-
-**Plan:**
-- Each format change's pull request carries a one-off conversion script. The script:
-  - converts Haute's own fixtures in that pull request;
-  - is run by the owner once on commercial-pricing, in a commit of its own;
-  - is not kept in Haute's code or tests once the pull request merges.
-- **File by file:** it converts each file still in the old format and leaves alone each file already in the new one. So it can run on a project in which some files are already converted. It refuses a file in neither format, naming it, and changes nothing.
-- **A commercial-pricing branch cut before a conversion** runs the script on itself, commits, then merges `main`. If the merge comes first, running the script afterwards converts the files the branch added in the old format.
-- A comparison against a revision older than a conversion, such as the schema pane's comparison with the default branch, is refused with a message naming the conversion. Today it would hand old bytes to the current parser.
-- Any new file a conversion creates is in the deploy bundle.
-
-**Acceptance:**
-- Each conversion is proven on the reference pipeline, the workbench fixture and commercial-pricing:
-  - the converted files load to the same values;
-  - saving twice gives identical bytes;
-  - against results recorded before the conversion, the sample prices the same, and every node's output columns and types match.
-- A branch that added and edited old-format files keeps both edits after it is converted and merged, in either order.
-
-**Dependencies:** None.
-
-**Evidence:** `specs/README.md`; `src/haute/_workbench_folder.py::form_at_ref`.
 
 ### READ-29 — Every key Haute's schemas own is snake_case
 **Why:** Configs mix camelCase keys (`outputColumn`, `defaultValue`, `onMissing`, `inputMapping`, `maintainOrder`) with snake_case keys (`output_column` on Model Score, `selected_columns`), while `main.py` uses snake_case throughout.
@@ -91,7 +66,7 @@ Each package states its formats in its owning specification before behaviour cha
 - A camelCase column name, categorical level and source name survive conversion and a save unchanged.
 - The assistant's catalogue test and the browser contract match.
 
-**Dependencies:** `READ-20`; `PCFG-R07` in the [pipeline-config roadmap](pipeline-config.md); `API-R03` in the [server API roadmap](server-api.md).
+**Dependencies:** `PCFG-R07` in the [pipeline-config roadmap](pipeline-config.md); `API-R03` in the [server API roadmap](server-api.md).
 
 **Evidence:** `src/haute/_config_io.py::node_config_json`; `src/haute/_banding_config.py`;
 `src/haute/assistant/_catalog.py`.
