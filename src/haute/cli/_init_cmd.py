@@ -24,6 +24,7 @@ from packaging.utils import canonicalize_name
 
 from haute._gitignore_guard import ensure_gitignore_guards
 from haute._io import read_user_text
+from haute._scaffold_files import ensure_gitattributes, lf_bytes, write_lf
 
 if TYPE_CHECKING:
     from haute._connections import Connection
@@ -124,9 +125,7 @@ def _ensure_haute_dependency(pyproject_path: Path, name: str, requirement: str =
         new_project["dependencies"] = tomlkit.array().multiline(True)
         new_project["dependencies"].append(requirement)
         document["project"] = new_project
-        pyproject_path.write_text(
-            tomlkit.dumps(document) + _DEV_DEPS_BLOCK + _MYPY_BLOCK, encoding="utf-8"
-        )
+        write_lf(pyproject_path, tomlkit.dumps(document) + _DEV_DEPS_BLOCK + _MYPY_BLOCK)
         return True
 
     original = read_user_text(pyproject_path)
@@ -167,7 +166,7 @@ def _ensure_haute_dependency(pyproject_path: Path, name: str, requirement: str =
     if text == original:
         return False
     tomllib.loads(text)  # what is written must read back as TOML
-    pyproject_path.write_text(text, encoding="utf-8")
+    write_lf(pyproject_path, text)
     return True
 
 
@@ -221,10 +220,10 @@ def write_generated_files(project_dir: Path, files: Mapping[str, str]) -> list[s
     changed: list[str] = []
     for rel, content in files.items():
         path = project_dir / rel
-        if path.is_file() and path.read_text(encoding="utf-8") == content:
+        if path.is_file() and path.read_bytes() == lf_bytes(content):
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        write_lf(path, content)
         changed.append(rel)
     return changed
 
@@ -787,7 +786,7 @@ def handle_init(config: InitConfig) -> None:
     python_version_file = project_dir / ".python-version"
     wrote_python_version = not python_version_file.exists()
     if wrote_python_version:
-        python_version_file.write_text(f"{python_version}\n", encoding="utf-8")
+        write_lf(python_version_file, f"{python_version}\n")
 
     # -- Directories -----------------------------------------------------------
     (project_dir / "data").mkdir(exist_ok=True)
@@ -826,7 +825,7 @@ def handle_init(config: InitConfig) -> None:
                 kept.append(relative)
                 continue
             starter.parent.mkdir(parents=True, exist_ok=True)
-            starter.write_text(content, encoding="utf-8")
+            write_lf(starter, content)
         # rating/config/ and rating/files/ - node settings, versioned data and models.
         (project_dir / "rating" / "config").mkdir(exist_ok=True)
         for sub in PIPELINE_FILES_SUBFOLDERS:
@@ -844,7 +843,7 @@ def handle_init(config: InitConfig) -> None:
     else:
         assert answers.target is not None
         toml_text = haute_toml(name, answers.target, ci, python_version=python_version)
-    haute_toml_path.write_text(toml_text, encoding="utf-8")
+    write_lf(haute_toml_path, toml_text)
 
     # -- rating/workbench/ - the workbench's blank form folder ------------------
     if form_files:
@@ -853,9 +852,7 @@ def handle_init(config: InitConfig) -> None:
     # -- connections.toml - each environment's database, for this machine -------
     if write_connections:
         assert answers.store is not None and answers.sign_in is not None
-        connections_path.write_text(
-            connections_toml(answers.store, answers.sign_in), encoding="utf-8"
-        )
+        write_lf(connections_path, connections_toml(answers.store, answers.sign_in))
 
     # -- .env.example, the pre-commit hook and the CI/CD workflow files ---------
     variables = connection_variables(project_dir)
@@ -895,7 +892,7 @@ def handle_init(config: InitConfig) -> None:
     own_hook = git_hooks_dir.is_dir() and installed.exists() and not _is_haute_hook(installed)
     hook_installed = git_hooks_dir.is_dir() and not own_hook
     if hook_installed:
-        installed.write_text(pre_commit_hook(), encoding="utf-8")
+        write_lf(installed, pre_commit_hook())
         # Same Windows caveat as above — see the comment near the .githooks
         # chmod. On Windows, run: git update-index --chmod=+x .git/hooks/pre-commit
         if sys.platform != "win32":
@@ -908,8 +905,9 @@ def handle_init(config: InitConfig) -> None:
     gitignore_path = project_dir / ".gitignore"
     wrote_gitignore = not gitignore_path.exists()
     if wrote_gitignore:
-        gitignore_path.write_text("__pycache__/\n*.pyc\n.venv/\n", encoding="utf-8")
+        write_lf(gitignore_path, "__pycache__/\n*.pyc\n.venv/\n")
     ensure_gitignore_guards(project_dir)
+    ensure_gitattributes(project_dir)
 
     # -- Summary ---------------------------------------------------------------
     kind = f"workbench on {credentials}" if workbench else credentials

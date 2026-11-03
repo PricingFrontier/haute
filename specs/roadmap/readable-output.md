@@ -35,7 +35,7 @@ The owner decided the following on 3 November 2026:
 **Out of scope:** `haute init` rewrites `haute.toml` from scratch on a re-run, as decided on 1 November 2026, so editing that file in place is not planned.
 
 The packages fall into three groups:
-- **Defect fixes:** `READ-03` to `READ-06`.
+- **Defect fixes:** `READ-04` to `READ-06`.
 - **Writing changes:** `READ-10` to `READ-13` change how files are written, but every file loads to the same values. The next save rewrites each file once, and no conversion is needed.
 - **Format changes:** `READ-20` onwards. The loader accepts only the current format ([specification governance](../README.md)), and `READ-20` says how commercial-pricing moves to each new one.
 
@@ -45,7 +45,6 @@ Each package states its formats in its owning specification before behaviour cha
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| READ-03 | Planned | P2 | Files a project's scaffold writes have LF line endings, at creation and at every checkout. |
 | READ-04 | Planned | P3 | Git ignores `test_quotes_report.md`. |
 | READ-05 | Planned | P1 | Saving a quote keeps its input values in store columns the form no longer holds; outputs are written afresh by each pricing. |
 | READ-06 | Planned | P1 | A rating table with two entries for the same levels is refused, not resolved by the last one. |
@@ -70,24 +69,6 @@ Each package states its formats in its owning specification before behaviour cha
 | READ-41 | Planned | P3 | A new project holds no `uv init` placeholders and no settings at their default values. |
 
 ## Planned improvements
-
-### READ-03 — Scaffold files have LF line endings, at creation and at every checkout
-**Why:** Scaffold files are written with text-mode `write_text`, which gives CRLF line endings on Windows, the `#!/bin/sh` pre-commit hook included. The form folder, by contrast, writes LF on purpose. So a project made on Windows mixes line endings. Writing LF once is not enough: a later checkout with `core.autocrlf=true` turns them back into CRLF, and a shell hook with CRLF line endings fails. Also, `uv.lock` (587 lines in the investigated pull request) is the largest file in a new project's first diff.
-
-**Plan:**
-- Write every scaffold file as UTF-8 bytes with LF line endings, through one writer.
-- Scaffold a `.gitattributes`:
-  - `eol=lf` for the text formats Haute writes (`*.py`, `*.json`, `*.toml`, `*.yml`, `*.md`) and for the extensionless `.githooks/pre-commit`;
-  - `uv.lock linguist-generated=true`, so GitHub collapses the lock file in pull requests.
-- Leave CSV files out of `.gitattributes`: analysts save parameter files from other tools.
-
-**Acceptance:**
-- A scaffold test finds no carriage return in any file `haute init` writes, on Windows as well.
-- A clone checked out with `core.autocrlf=true` holds LF bytes in the hook and in each listed format.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/cli/_init_cmd.py::write_generated_files`; `src/haute/_scaffold.py`.
 
 ### READ-04 — Git ignores the test quotes report
 **Why:** `haute app build` writes `test_quotes_report.md` at the project root, and CI keeps it as an artifact. The gitignore guard doesn't list it, so after every local build it shows up as an untracked file, ready to be committed by mistake.

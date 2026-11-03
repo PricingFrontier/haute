@@ -44,7 +44,7 @@ def ensure_gitignore_guards(project_dir: Path) -> list[str]:
     """
     gitignore_path = project_dir / ".gitignore"
     if not gitignore_path.exists():
-        gitignore_path.write_text("\n".join(GITIGNORE_GUARD_ENTRIES) + "\n", encoding="utf-8")
+        gitignore_path.write_bytes(("\n".join(GITIGNORE_GUARD_ENTRIES) + "\n").encode("utf-8"))
         return list(GITIGNORE_GUARD_ENTRIES)
 
     # User-authored files may carry non-UTF-8 bytes; replace instead of raising
@@ -53,6 +53,6 @@ def ensure_gitignore_guards(project_dir: Path) -> list[str]:
     existing = set(gitignore_path.read_text(encoding="utf-8", errors="replace").splitlines())
     missing = [entry for entry in GITIGNORE_GUARD_ENTRIES if entry not in existing]
     if missing:
-        with open(gitignore_path, "a", encoding="utf-8") as fh:
+        with open(gitignore_path, "a", encoding="utf-8", newline="\n") as fh:
             fh.write("\n# Haute\n" + "\n".join(missing) + "\n")
     return missing
