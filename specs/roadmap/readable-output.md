@@ -84,7 +84,8 @@ The parser infers edges from parameter names, but the runtime `Pipeline` takes e
 **Plan:**
 - Write one binding function, used by the parser and the runtime `Pipeline` alike. It turns a node's signature and its `connect()` calls into the node's inputs. It tells the inputs the decorator consumes from the parameters the function receives:
   - a parameter names the upstream node it reads, or the name `inputMapping` gives it;
-  - a frame hook (Data Input, Rating Step, Model Score, Scenario Expander and Explore) receives as `df` the frame its decorator makes from its first input. The first input is therefore named by no parameter, and its edge is stated by `connect()`. The remaining parameters name the other inputs;
+  - a Data Input hook receives as `df` the frame its decorator loads. It is a source and has no inputs, so `df` names no input and consumes no edge;
+  - a frame hook (Rating Step, Model Score, Scenario Expander and Explore) receives as `df` the frame its decorator makes from its first input. The first input is therefore named by no parameter, and its edge is stated by `connect()`. The remaining parameters name the other inputs;
   - External File's parameters name all of its inputs, and its keyword-only `obj` is the loaded object;
   - a ported input (`base`, `join`, a Workbench table) binds by its port.
 - Refuse four mismatches, naming the node and the parameter:
@@ -96,7 +97,8 @@ The parser infers edges from parameter names, but the runtime `Pipeline` takes e
 
 **Acceptance:**
 - A parser test for each of the four mismatches, each refused with the node and the parameter named. They run on a non-Polars declaration, on a frame hook with two inputs and on External File.
-- Tests for reversed connections, ported inputs and a submodel.
+- A Data Input hook with no incoming connections is accepted.
+- Tests for reversed connections, ported inputs, a Data Input hook and a submodel.
 - The reference pipeline gives every node the same output from `haute run`, from a standalone `import main` and from a dry-run deploy.
 
 **Dependencies:** None.
@@ -154,20 +156,26 @@ The parser infers edges from parameter names, but the runtime `Pipeline` takes e
 **Why:** When a column leaves the form, the SQL Haute writes for the store keeps the column: its `DROP` is left commented out. But saving a quote deletes each of its rows outside `quote_details` and writes them back with only the form's columns. So each quote loses its value in the kept column the next time it is saved. This happens today when a column is removed. After `READ-23`, every renamed column reads as removed and added, so it would happen on every rename.
 
 **Plan:**
-- A row's number is its place in the table, and inserting or deleting a row renumbers the rows after it. So a row's new number cannot find its old values.
-- The editor and the app send, with each row of a many-row table, the number it had when the quote was opened. A row added since has none.
-- When the quote is saved, each row takes, from the old row with that number, its values in store columns the form doesn't hold.
-- A row the underwriter deletes loses its values. A one-row table has one row, and `quote_details` is updated in place and keeps them already.
+- A row's number is its place in the table, and inserting or deleting a row renumbers the rows after it. So a row's number cannot find its old values.
+- Instead, the values travel with the row:
+  - opening a quote returns, with each row, its values in store columns the form doesn't hold, as a field of the row that no sheet shows and no pricing reads;
+  - the editor and the app keep that field on the row object, so it moves with the row through inserts, deletes, saves that keep edits made while they were pending, and replays after a lost response;
+  - the save writes the field back into those columns.
+- The save accepts the field only for store columns the form doesn't hold, typed as the store holds them, and refuses anything else by name.
+- A new row has no such values, and a deleted row takes its values with it.
+- A one-row table works the same way. `quote_details` is updated in place and keeps its values already.
 
 **Acceptance:** On SQLite and on a hosted engine, remove a column from the form and open a quote saved before the change. Then:
 - save and reopen it: the kept SQL column still holds every row's value;
-- delete the first row, or a middle row, and save: each remaining row keeps its own value;
-- insert a row before a remaining row and save: the new row holds none, and the others keep their own.
+- delete the first row, or a middle row, and save twice: each remaining row keeps its own value;
+- insert a row before a remaining row and save twice: the new row holds none, and the others keep their own;
+- type while a save is pending, and replay a save whose response was lost: every row keeps its own value.
+- The save refuses the field for a column the form holds and for a column the store doesn't hold.
 
 **Dependencies:** None. `READ-23` depends on it.
 
 **Evidence:** `src/haute/_quote_store/_book.py::_replace_rows`; `src/haute/_quote_store/_rows.py`;
-`frontend/src/workbench/sheet/FieldGrid.tsx`.
+`frontend/src/workbench/sheet/FieldGrid.tsx`; `frontend/src/app/useOpenQuoteStore.ts`.
 
 ### READ-06 — A rating table with two entries for the same levels is refused
 **Why:** A rating table can hold two entries whose levels are equal once converted to the factor column's type: by a hand edit, or levels such as `"25.0"` and `"25.00"` for a numeric column. The engine keeps the last entry silently (`keep="last"`), so a rate can change with no message.
@@ -559,7 +567,7 @@ The owner judged that the complexity isn't worth it.
 **Plan:**
 - Write a constant node as a map from name to value, one per line. A number is a JSON number and text stays text, as each runs today.
 - **Promotion to global constants:** the conversion promotes a constant node, turning its constants into global constants and removing the node and its join, only when its structure allows it. All of these must hold:
-  - the node's one consumer is a single join that adds its columns to one stepped Polars node's input;
+  - the node's one consumer is a single cross join, with no keys, that adds its columns to every row of one stepped Polars node's input. A keyed join can leave a row without the constant or drop it, so it never qualifies;
   - within that Polars node, every reference to a constant column is a column reference in a formula step outside any group-by or aggregation, where a column and a scalar behave alike;
   - no step assigns to a constant column, so every reference reads the original value;
   - no code step comes after the join, since Haute cannot tell what a code step reads;
@@ -577,6 +585,7 @@ The owner judged that the complexity isn't worth it.
   - a name collision;
   - a constant column reaching the node's output;
   - two consumers;
+  - a keyed left or inner join, even when every sampled row matches;
   - a reference inside an aggregation;
   - a code step after the join;
   - a step that overwrites a constant column only on rows the sample doesn't hold, so the sample alone would agree.
