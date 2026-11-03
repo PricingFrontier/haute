@@ -383,28 +383,38 @@ describe("useWebSocketSync - WS sync must not corrupt undo history (#8)", () => 
       expect(useDocumentStatusStore.getState().executionGeneration).toBe(generation)
     })
 
-    it("drops a frame of the document shown before the save instead of holding it", async () => {
+    it("holds a frame of the document shown before the save, and asks for the file once the save moved on", async () => {
       const { document } = loadSavedCanvas()
       const asLoaded = JSON.stringify(pipelineDocumentFrame(document, "fingerprint-as-loaded"))
       await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: asLoaded })) })
       vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockClear()
+      latestWS().send.mockClear()
       let answer!: () => void
       const saving = new Promise<void>((resolve) => { answer = resolve })
       trackPendingSave(SOURCE_FILE, saving)
 
-      // A git action broadcasts the unchanged document while the save is in flight.
+      // Another tab restores the version shown before the save (or a git action
+      // broadcasts it unchanged) while the save, or its repeat, is in flight.
       await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: asLoaded })) })
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
       await act(async () => {
         useDocumentStatusStore.getState().acknowledgeSave("revision-saved", "fingerprint-as-saved")
         answer()
         await saving
       })
 
+      // The held frame is not adopted, nor dropped as the document shown: the
+      // file is asked for with the save's fingerprint.
       expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
-      expect(useDocumentStatusStore.getState()).toMatchObject({
-        sourceRevision: "revision-saved",
-        documentFingerprint: "fingerprint-as-saved",
+      expect(latestWS().send).toHaveBeenCalledTimes(1)
+      expect(JSON.parse(latestWS().send.mock.calls[0][0] as string)).toMatchObject({
+        type: "resync",
+        document_fingerprint: "fingerprint-as-saved",
       })
+      // The file holds the restored version, so the answer is that document.
+      await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: asLoaded })) })
+      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledTimes(1)
+      expect(useDocumentStatusStore.getState().documentFingerprint).toBe("fingerprint-as-loaded")
     })
 
     it("asks for the document on disk instead of adopting a held frame the save's answer superseded", async () => {

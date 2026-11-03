@@ -388,15 +388,14 @@ export default function useWebSocketSync({
             useDocumentStatusStore.getState().graphSynchronized
             && frame.documentFingerprint === acceptedDocumentFingerprintFor(frame.sourceFile)
           )
-          if (showsFrame()) return
           // A frame that arrives while this tab's save is in flight was read at an
           // unknown point of it: before it, from what it wrote, or from what a
-          // formatting hook left after (which may even be the document shown
-          // before). It is never adopted: once the saves settle it is dropped if it
-          // is the document shown, and otherwise the document on disk is asked for
-          // again, with the fingerprint the saves left accepted, so the server
-          // answers nothing while the file is that one. A frame of the document
-          // shown was dropped above, so a held one never puts it back either.
+          // formatting hook left after; or it is another tab's change, perhaps back
+          // to the document shown before the save. It is never adopted, nor judged
+          // against the document the save is about to replace: once the saves
+          // settle it is dropped if it is the document shown, and otherwise the
+          // document on disk is asked for again with the fingerprint the saves left
+          // accepted, so the server answers nothing while the file is that one.
           const saves = pendingSavesSettled(currentDocumentSource() ?? frame.sourceFile)
           if (saves) {
             await saves
@@ -404,6 +403,7 @@ export default function useWebSocketSync({
             if (!showsFrame()) sendResync(true)
             return
           }
+          if (showsFrame()) return
           const updateSeq = ++graphUpdateSeq
           const graphState = useGraphStore.getState()
           const dirty = graphState.dirty
