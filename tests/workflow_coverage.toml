@@ -771,7 +771,7 @@ tests = [
   "tests/test_rating_key_agreement.py::TestDecimalFactorScale::test_decimal_matches_entry_authored_at_declared_scale",
   "tests/test_rating_miss_fail_loud.py::TestOptInNeutral::test_neutral_fills_multiply_and_warns_with_count",
   "tests/test_rating_miss_fail_loud.py::TestMissFailsLoudByDefault::test_renamed_band_label_raises_through_config_path",
-  "tests/test_rating.py::TestApplyRatingTableEdgeCases::test_duplicate_entries_keep_last",
+  "tests/test_rating.py::TestApplyRatingTableEdgeCases::test_duplicate_entries_are_refused",
   "tests/test_rating_step.py::TestRatingStepExecutor::test_combine_operations",
   "tests/test_rating_step_config_coverage.py::test_duplicate_table_output_columns_are_rejected_with_both_indices",
   "tests/test_rating.py::TestApplyRatingTableEdgeCases::test_nan_in_entries_rejected",

@@ -35,6 +35,7 @@ from haute._io import utf8_decode_failure
 from haute._logging import get_logger
 from haute._rating_step_config import (
     normalise_rating_step_config,
+    refuse_levels_equal_under_factor_dtypes,
 )
 from haute._sandbox import contained_path, is_contained
 from haute._types import (
@@ -186,7 +187,9 @@ def _prepare_config_for_sidecar(
     if node_type == NodeType.BANDING:
         return compact_banding_config_for_sidecar(filtered)
     if node_type == NodeType.RATING_STEP:
-        return normalise_rating_step_config(filtered)
+        normalised = normalise_rating_step_config(filtered)
+        refuse_levels_equal_under_factor_dtypes(normalised)
+        return normalised
     return filtered
 
 

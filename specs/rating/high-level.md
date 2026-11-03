@@ -202,10 +202,15 @@ Out of scope (owned by neighbouring components):
   factor order, entry order,
   scalar identity, outputs, defaults, miss policy, and optional
   `factorDtypes` metadata survive a canonical save/load round trip.
-- **Deduplicate before joining, not after.** A rating table's factor keys are
-  deduplicated (`keep="last"`) before the join, so a left join can never fan
-  out rows even if the config accidentally has two entries for the same
-  factor combination.
+- **Two entries for the same levels are refused, never resolved.** A rating
+  table holding two entries whose levels are equal once converted to the factor
+  columns' types is refused by the shared lookup every run path uses, naming the
+  table and the levels (`RatingDuplicateEntriesError`): no path keeps one of
+  them, a config built in code included, and a duplicate that appears only after
+  an upstream type change is refused at that run. Without duplicates the left
+  join cannot fan out rows. The save refuses entries whose levels are identical
+  as written and, where the table records `factorDtypes` for every factor,
+  entries equal under those types; the editor shows the save's refusal.
 - **One banding node holds many factors, rather than one node per factor or
   separate numeric/categorical node types.** A single pipeline step often
   bands several columns at once (age, vehicle age, property type, ...);

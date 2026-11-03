@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import math
+from collections import Counter
 from copy import deepcopy
 from typing import Any
 
@@ -176,7 +178,63 @@ def _normalise_entries_for_table(table: dict[str, Any], table_index: int) -> dic
             f"{_table_context(table_index)}.factors must be a non-empty list", setting="tables"
         )
     result["entries"] = _normalise_entry_rows(entries, factors, table_index)
+    _refuse_levels_written_twice(result, factors)
     return result
+
+
+def _refuse_levels_written_twice(table: dict[str, Any], factors: list[str]) -> None:
+    """Refuse two entries whose levels are identical as written (READ-06)."""
+    keys = [
+        tuple(json.dumps(row[factor], sort_keys=True) for factor in factors)
+        for row in table["entries"]
+    ]
+    counts = Counter(keys)
+    if all(count == 1 for count in counts.values()):
+        return
+    from haute._rating import RatingDuplicateEntriesError  # cycle: _rating imports this codec
+
+    raise RatingDuplicateEntriesError(
+        table,
+        [
+            {factor: row[factor] for factor in factors}
+            for row, key in zip(table["entries"], keys, strict=True)
+            if counts[key] > 1
+        ],
+    )
+
+
+def refuse_levels_equal_under_factor_dtypes(config: dict[str, Any]) -> None:
+    """Refuse a table whose entries' levels match once converted to its ``factorDtypes``.
+
+    The save's check (READ-06): a table that records a type for each factor is
+    held to the run's own conversion, so ``"25.0"`` and ``"25.00"`` for a
+    numeric factor are refused before a run meets them. A table without
+    ``factorDtypes`` for every factor is checked when it runs, against the
+    frame's types. Any other failure of the conversion is the run's to report.
+    """
+    import polars as pl
+
+    from haute._rating import (  # cycle: _rating imports this codec
+        RatingDuplicateEntriesError,
+        rating_dtype_from_descriptor,
+        rating_table_lookup,
+    )
+    from haute.errors import HauteError
+
+    for table in config.get("tables") or []:
+        dtypes = table.get("factorDtypes") if isinstance(table, dict) else None
+        factors = table.get("factors") if isinstance(table, dict) else None
+        if not isinstance(dtypes, dict) or not isinstance(factors, list):
+            continue
+        if not factors or any(factor not in dtypes for factor in factors):
+            continue
+        try:
+            schema = {factor: rating_dtype_from_descriptor(dtypes[factor]) for factor in factors}
+            rating_table_lookup(table, schema)
+        except RatingDuplicateEntriesError:
+            raise
+        except (ValueError, TypeError, HauteError, pl.exceptions.PolarsError):
+            continue
 
 
 def validate_unique_rating_table_outputs(tables: list[dict[str, Any]]) -> None:

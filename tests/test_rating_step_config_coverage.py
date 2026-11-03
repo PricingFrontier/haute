@@ -481,3 +481,45 @@ def test_table_without_entries_still_rejects_malformed_factors() -> None:
     config = {"tables": [{"factors": "age", "outputColumn": "f"}]}
     with pytest.raises(ValueError, match="factors must be a list"):
         normalise_rating_step_config(config)
+
+
+# ---------------------------------------------------------------------------
+# READ-06: a save refuses two entries for the same levels
+# ---------------------------------------------------------------------------
+
+
+def _age_table(*levels: object, dtypes: dict | None = None) -> dict:
+    table: dict = {
+        "name": "Age",
+        "factors": ["age"],
+        "outputColumn": "age_factor",
+        "entries": [{"age": level, "value": 1.0 + index} for index, level in enumerate(levels)],
+    }
+    if dtypes is not None:
+        table["factorDtypes"] = dtypes
+    return table
+
+
+def test_a_save_refuses_levels_identical_as_written() -> None:
+    from haute._rating import RatingDuplicateEntriesError
+
+    with pytest.raises(RatingDuplicateEntriesError, match="age='25'; age='25'"):
+        normalise_rating_step_config({"tables": [_age_table("25", "30", "25")]})
+
+
+def test_levels_written_differently_pass_without_factor_dtypes() -> None:
+    config = {"tables": [_age_table("25.0", "25.00")]}
+    assert normalise_rating_step_config(config) == config
+
+
+def test_a_save_refuses_levels_equal_under_the_tables_factor_dtypes() -> None:
+    from haute._config_io import _prepare_config_for_sidecar
+    from haute._rating import RatingDuplicateEntriesError
+    from haute._types import NodeType
+
+    config = {"tables": [_age_table("25.0", "25.00", dtypes={"age": {"kind": "Float64"}})]}
+    with pytest.raises(RatingDuplicateEntriesError, match="age='25.0'; age='25.00'"):
+        _prepare_config_for_sidecar(NodeType.RATING_STEP, config, node_label="rate")
+
+    as_text = {"tables": [_age_table("25.0", "25.00", dtypes={"age": {"kind": "String"}})]}
+    assert _prepare_config_for_sidecar(NodeType.RATING_STEP, as_text, node_label="rate")

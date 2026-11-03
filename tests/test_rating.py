@@ -9,6 +9,7 @@ import pytest
 
 from haute._polars_utils import streaming_collect
 from haute._rating import (
+    RatingDuplicateEntriesError,
     _apply_banding,
     _apply_rating_step_outputs,
     _apply_rating_table,
@@ -475,9 +476,9 @@ class TestApplyRatingTableNonNumericDefault:
 
 
 class TestApplyRatingTableDuplicateEntries:
-    """B14: Duplicate factor combos in entries must not duplicate main rows."""
+    """READ-06: two entries for the same factor combination are refused, never resolved."""
 
-    def test_duplicate_entries_no_fanout(self) -> None:
+    def test_duplicate_entries_are_refused(self) -> None:
         lf = pl.DataFrame({"region": ["North", "South"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
@@ -488,16 +489,11 @@ class TestApplyRatingTableDuplicateEntries:
                 {"region": "South", "value": 0.5},
             ],
         }
-        result = _apply_rating_table(lf, table).collect()
-        # Must NOT fan out: still 2 rows
-        assert result.height == 2
-        # keep="last" → the second North entry (2.0) wins
-        north_val = result.filter(pl.col("region") == "North")["factor"].to_list()
-        assert north_val == [2.0]
-        south_val = result.filter(pl.col("region") == "South")["factor"].to_list()
-        assert south_val == [0.5]
+        with pytest.raises(RatingDuplicateEntriesError, match="region='North'") as refused:
+            _apply_rating_table(lf, table)
+        assert refused.value.levels == [{"region": "North"}, {"region": "North"}]
 
-    def test_duplicate_multi_factor_no_fanout(self) -> None:
+    def test_duplicate_multi_factor_entries_are_refused(self) -> None:
         lf = pl.DataFrame(
             {
                 "region": ["North", "South"],
@@ -513,12 +509,8 @@ class TestApplyRatingTableDuplicateEntries:
                 {"region": "South", "tier": "silver", "value": 0.8},
             ],
         }
-        result = _apply_rating_table(lf, table).collect()
-        assert result.height == 2
-        north_gold = result.filter((pl.col("region") == "North") & (pl.col("tier") == "gold"))[
-            "rate"
-        ].to_list()
-        assert north_gold == [3.0]  # last entry wins
+        with pytest.raises(RatingDuplicateEntriesError, match="region='North', tier='gold'"):
+            _apply_rating_table(lf, table)
 
     def test_no_duplicates_unchanged(self) -> None:
         """When no duplicates exist, behaviour is unchanged."""
@@ -1568,7 +1560,7 @@ class TestApplyRatingTableEdgeCases:
         result = _apply_rating_table(lf, table).collect()
         assert result["factor"].to_list() == [1.2, 0.8]
 
-    def test_duplicate_entries_keep_last(self) -> None:
+    def test_duplicate_entries_are_refused(self) -> None:
         lf = pl.DataFrame({"region": ["North"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
@@ -1578,9 +1570,8 @@ class TestApplyRatingTableEdgeCases:
                 {"region": "North", "value": 9.9},
             ],
         }
-        result = _apply_rating_table(lf, table).collect()
-        assert result.height == 1
-        assert result["factor"].to_list() == [9.9]
+        with pytest.raises(RatingDuplicateEntriesError, match="more than one entry"):
+            _apply_rating_table(lf, table)
 
     def test_default_value_zero(self) -> None:
         lf = pl.DataFrame({"region": ["North", "Unknown"]}).lazy()

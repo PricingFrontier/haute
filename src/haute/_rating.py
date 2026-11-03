@@ -45,6 +45,32 @@ from haute.errors import (
 
 logger = get_logger(component="rating")
 
+
+class RatingDuplicateEntriesError(ConfigSettingError):
+    """A rating table with two entries for the same levels (READ-06).
+
+    Refused at run time once the levels are converted to the factor columns'
+    types, and on save for levels identical as written or equal under the
+    table's ``factorDtypes``; no path keeps one of the two. ``levels`` are the
+    entries' levels as written.
+    """
+
+    def __init__(self, table: Mapping[str, Any], levels: list[dict[str, Any]]) -> None:
+        name = table.get("name") or table.get("outputColumn") or "unnamed"
+        written = "; ".join(
+            ", ".join(f"{factor}={value!r}" for factor, value in level.items()) for level in levels
+        )
+        super().__init__(
+            f"Rating table {name!r} has more than one entry for the same levels: {written}. "
+            "Keep one entry for each combination of levels.",
+            setting="tables",
+            fix="Remove or merge the duplicate entries.",
+            values=tuple(levels),
+        )
+        self.table = name
+        self.levels = levels
+
+
 # ---------------------------------------------------------------------------
 # Banding
 # ---------------------------------------------------------------------------
@@ -1381,17 +1407,21 @@ def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTable
         ]
     )
 
-    # B14: Deduplicate the factor keys so a left join cannot fan out rows.
-    # keep="last" preserves the last-authored entry within a duplicate-key
-    # group, matching trace enrichment which walks entries in reverse to
-    # report the same winning row. Deduplication happens after strict
-    # originating-dtype coercion and key generation, so representational
-    # aliases such as Float64 entry strings "25.0" and "25.00" form one group.
-    # Rename "value" to an internal name to avoid collision with any
-    # input "value" column in the input frame (Bug #1/#2).
-    deduplicated = keyed_entries.unique(subset=key_columns, keep="last").rename(
-        {"value": lookup_value_column}
-    )
+    # READ-06: two entries for the same levels are refused, never resolved by
+    # one of them. The check runs after strict originating-dtype coercion and
+    # key generation, so representational aliases such as Float64 entry strings
+    # "25.0" and "25.00" are one level, and a duplicate an upstream dtype change
+    # creates is refused at that run. Without duplicates a left join cannot fan
+    # out rows. "value" is renamed to an internal name to avoid collision with
+    # any input "value" column in the input frame (Bug #1/#2).
+    duplicated = keyed_entries.select(pl.struct(key_columns).is_duplicated()).to_series()
+    if duplicated.any():
+        levels = [
+            {factor: row[factor] for factor in factors}
+            for row in lookup.filter(duplicated).select(factors).to_dicts()
+        ]
+        raise RatingDuplicateEntriesError(table, levels)
+    deduplicated = keyed_entries.rename({"value": lookup_value_column})
     return RatingTableLookup(
         factors=tuple(factors),
         output_column=output_col,

@@ -35,7 +35,7 @@ The owner decided the following on 3 November 2026:
 **Out of scope:** `haute init` rewrites `haute.toml` from scratch on a re-run, as decided on 1 November 2026, so editing that file in place is not planned.
 
 The packages fall into three groups:
-- **Defect fixes:** `READ-05` and `READ-06`.
+- **Defect fix:** `READ-05`.
 - **Writing changes:** `READ-10` to `READ-13` change how files are written, but every file loads to the same values. The next save rewrites each file once, and no conversion is needed.
 - **Format changes:** `READ-20` onwards. The loader accepts only the current format ([specification governance](../README.md)), and `READ-20` says how commercial-pricing moves to each new one.
 
@@ -46,7 +46,6 @@ Each package states its formats in its owning specification before behaviour cha
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | READ-05 | Planned | P1 | Saving a quote keeps its input values in store columns the form no longer holds; outputs are written afresh by each pricing. |
-| READ-06 | Planned | P1 | A rating table with two entries for the same levels is refused, not resolved by the last one. |
 | READ-10 | Planned | P2 | One printer writes every committed JSON file, with a fixed shape per kind of record. |
 | READ-11 | Planned | P2 | Node positions are whole numbers, on one line per node, and only a move changes them. |
 | READ-12 | Planned | P2 | Adding or removing a node leaves every unaffected function in `main.py` where it was. |
@@ -95,26 +94,6 @@ Each package states its formats in its owning specification before behaviour cha
 
 **Evidence:** `src/haute/_quote_store/_book.py::_replace_rows`; `src/haute/_quote_store/_rows.py`;
 `frontend/src/workbench/sheet/FieldGrid.tsx`; `frontend/src/app/useOpenQuoteStore.ts`.
-
-### READ-06 — A rating table with two entries for the same levels is refused
-**Why:** A rating table can hold two entries whose levels are equal once converted to the factor column's type: by a hand edit, or levels such as `"25.0"` and `"25.00"` for a numeric column. The engine keeps the last entry silently (`keep="last"`), so a rate can change with no message.
-
-**Plan:**
-- **At run time:** the shared lookup, which every run path uses, converts the levels to the factor column's type in the incoming frame, as it does today. It refuses a table in which two entries then match, naming the node, the table and the levels.
-  - This replaces `keep="last"`. No path keeps the last entry, a config built in code included.
-  - Since the column's type comes from the frame, a duplicate that appears only after an upstream type change is refused at that run.
-- **On save:** the editor and the save refuse entries whose levels are identical as written, and, where the table records `factorDtypes`, entries equal under those types. Without `factorDtypes` the run-time check is the one that applies.
-- Replace the "deduplicate before joining" contract in the [rating specification](../rating/high-level.md).
-
-**Acceptance:**
-- A save refuses an exact duplicate.
-- A run refuses a duplicate that appears only after conversion. Tests cover a config built in code and an upstream column whose type changed after a valid save.
-- A table without duplicates prices as before.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_rating.py::rating_table_lookup`;
-`src/haute/_rating_step_config.py::normalise_rating_step_config`.
 
 ### READ-10 — One printer writes every committed JSON file
 **Why:** Six writers follow four key-order rules and two rules for defaults:
@@ -446,7 +425,7 @@ The owner judged that the complexity isn't worth it.
   - a rate of 0 is a rate.
 - **What is kept:** levels keep their JSON type, so `25` and `"25"` stay distinct. `factorDtypes`, the outputs and the other table settings stay beside the grid.
 - **`defaultValue`** is written as a number, next to `onMissing`, so it is clear which applies.
-- **Conversion:** a table with duplicate entries is already refused (`READ-06`), so it converts only once fixed.
+- **Conversion:** a table with duplicate entries is already refused (see the [rating specification](../rating/high-level.md)), so it converts only once fixed.
 - **Contract:** replace the row-array contract in the [rating specification](../rating/high-level.md).
 
 **Acceptance:**
@@ -455,7 +434,7 @@ The owner judged that the complexity isn't worth it.
 - Changing one rate changes one line.
 - The reference pipeline prices the same after conversion.
 
-**Dependencies:** `READ-06`, `READ-20`.
+**Dependencies:** `READ-20`.
 
 **Evidence:** `src/haute/_rating.py::rating_table_lookup`;
 `src/haute/_rating_step_config.py::normalise_rating_step_config`;
