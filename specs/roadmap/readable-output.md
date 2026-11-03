@@ -50,7 +50,6 @@ Each package states its formats in its owning specification before behaviour cha
 | READ-25 | Planned | P2 | A column's sourced allowed values are stored only as a reference to their parameter file. |
 | READ-28 | Planned | P3 | Constants that only formulas read become global constants. |
 | READ-29 | Planned | P3 | Every key Haute's schemas own is snake_case on disk; keys the analyst names are untouched. |
-| READ-30 | Planned | P3 | `main.py` holds a `connect()` call only for an edge the signatures cannot express. |
 | READ-31 | Planned | P3 | Gaps, conditions and appearance on a sheet are written where a reader looks for them. |
 | READ-33 | Deferred | P2 | A column or table renamed against the project's default branch keeps its saved values in the quote store. |
 | READ-40 | Planned | P3 | Generated workflows declare each secret, setup and check once. |
@@ -323,25 +322,6 @@ The owner judged that the complexity isn't worth it.
 
 **Evidence:** `src/haute/_config_io.py::node_config_json`; `src/haute/_banding_config.py`;
 `src/haute/assistant/_catalog.py`.
-
-### READ-30 — `connect()` only where the signatures cannot say it
-**Why:** Of the 16 `connect()` calls in the investigated pipeline:
-- 6 carry no port, so they only repeat the signatures;
-- 5 carry only `base` or `join`, which is the parameter's position anyway;
-- 5 name a Workbench table that the parameter already names.
-
-**Plan:**
-- Signatures and edges are bound by one rule ([pipeline-config](../pipeline-config/high-level.md), Binding parameters to inputs), and the parser and the runtime `Pipeline` alike infer an edge from a parameter named after a node. Write `connect()` only for an edge that the signature cannot name exactly:
-  - an edge with a port the parameter's place doesn't give;
-  - the input a frame hook's decorator consumes, which no parameter names (for example `connect("source", "rate")` for `def rate(df)`).
-
-**Acceptance:**
-- The reference pipeline regenerates with only the needed calls, its frame hooks' calls kept.
-- `haute run`, a standalone `import main` and a dry-run deploy give every node the same output.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/pipeline.py::Pipeline`; `src/haute/_graph_builders.py::_build_edges`.
 
 ### READ-31 — A sheet's gaps, conditions and appearance are written plainly
 **Why:**

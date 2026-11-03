@@ -10,6 +10,7 @@ plain ``import main`` and the deploy scorer.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import subprocess
@@ -62,9 +63,37 @@ def _constant(nid: str, name: str, value: object) -> GraphNode:
     return _node(nid, NodeType.CONSTANT, {"values": [{"name": name, "value": value}]})
 
 
+def _explicit(code: str, graph: PipelineGraph) -> str:
+    """*code* with a ``connect()`` for every edge, in the graph's order, as a file written by
+    hand states them; codegen leaves out the ones the signatures say (READ-30)."""
+    lines = code.splitlines(keepends=True)
+    dropped: set[int] = set()
+    for statement in ast.parse(code).body:
+        if (
+            isinstance(statement, ast.Expr)
+            and isinstance(statement.value, ast.Call)
+            and ast.unparse(statement.value.func) == "pipeline.connect"
+        ):
+            dropped.update(range(statement.lineno - 1, statement.end_lineno or statement.lineno))
+    kept = "".join(line for index, line in enumerate(lines) if index not in dropped)
+    calls = []
+    for edge in graph.edges:
+        ports = "".join(
+            f', {name}="{port}"'
+            for name, port in (
+                ("source_port", edge.sourceHandle),
+                ("target_port", edge.targetHandle),
+            )
+            if port
+        )
+        calls.append(f'pipeline.connect("{edge.source}", "{edge.target}"{ports})')
+    return kept.rstrip("\n") + "\n\n\n" + "\n".join(calls) + "\n"
+
+
 def _write_project(graph: PipelineGraph, project: Path, edit: Callable[[str], str]) -> Path:
-    """Generate *graph* into *project*, edit its code by hand, and return the file."""
-    code = graph_to_code(graph, pipeline_name="bindings")
+    """Generate *graph* into *project*, state each edge with a ``connect()`` as a file written
+    by hand does, edit its code by hand, and return the file."""
+    code = _explicit(graph_to_code(graph, pipeline_name="bindings"), graph)
     for rel_path, content in collect_node_configs(graph).items():
         config_file = project / rel_path
         config_file.parent.mkdir(parents=True, exist_ok=True)
@@ -540,10 +569,10 @@ def test_a_submodel_node_reads_its_port_and_inner_inputs_by_name(project: Path) 
     """Its parameters name an inner input before its port input, against file order."""
     (project / "config" / "constant").mkdir(parents=True)
     (project / "config" / "constant" / "rows.json").write_text(
-        '{"values": [{"name": "x", "value": 4}]}', encoding="utf-8"
+        '{"values": {"x": 4}}', encoding="utf-8"
     )
     (project / "config" / "constant" / "factor.json").write_text(
-        '{"values": [{"name": "f", "value": 3}]}', encoding="utf-8"
+        '{"values": {"f": 3}}', encoding="utf-8"
     )
     (project / "modules").mkdir()
     (project / "modules" / "__init__.py").write_text("", encoding="utf-8")
@@ -626,3 +655,44 @@ def test_a_submodel_node_reads_its_port_and_inner_inputs_by_name(project: Path) 
 
     assert run.to_dicts() == [{"x": 4, "f": None}, {"x": None, "f": 3}]
     assert json.loads(standalone.stdout) == run.to_dicts()
+
+
+# ---------------------------------------------------------------------------
+# connect() only where the signatures cannot say it (READ-30)
+# ---------------------------------------------------------------------------
+
+
+def test_generated_code_states_only_the_edges_its_signatures_cannot(project: Path) -> None:
+    graph = _priced_graph(project)
+    code = graph_to_code(graph, pipeline_name="bindings")
+
+    # The Quote Input's table needs its port; the rates edges are said by the signatures.
+    assert code.count("pipeline.connect(") == 1
+    assert 'pipeline.connect("quotes", "priced", source_port="quotes")' in code
+
+
+def test_the_generated_form_runs_alike_in_every_context(project: Path) -> None:
+    graph = _priced_graph(project)
+    pipeline_file = project / f"bindings_{uuid.uuid4().hex[:8]}.py"
+    for rel_path, content in collect_node_configs(graph).items():
+        (project / rel_path).parent.mkdir(parents=True, exist_ok=True)
+        (project / rel_path).write_text(content, encoding="utf-8")
+    pipeline_file.write_text(graph_to_code(graph, pipeline_name="bindings"), encoding="utf-8")
+
+    parsed = parse_pipeline_file(pipeline_file)
+    run = _haute_run(parsed, "result", source="live")
+    standalone = _import(pipeline_file).pipeline.run(source="live")
+    deployed = score_graph(parsed, QuoteRequest(tuple(_RECORDS)), ["quotes"], "result")
+
+    assert sorted((e.source, e.target) for e in parsed.edges) == sorted(
+        (e.source, e.target) for e in graph.edges
+    )
+    assert_frame_equal(standalone, run)
+    assert_frame_equal(deployed, run)
+
+
+def test_a_frame_hook_keeps_the_connect_of_the_input_its_decorator_takes() -> None:
+    graph = _mismatch_graph()(_TARGETS["frame_hook"][0])
+    code = graph_to_code(graph, pipeline_name="bindings")
+    assert 'pipeline.connect("rows", "target")' in code
+    assert 'pipeline.connect("extra", "target")' not in code

@@ -32,8 +32,3 @@ def features(quotes: pl.LazyFrame) -> pl.LazyFrame:
 @pipeline.output(config="config/quote_response/priced.json")
 def priced(features):
     """Return the priced quote rows."""
-
-
-# Wire nodes together - edges define data flow
-pipeline.connect("quotes", "features")
-pipeline.connect("features", "priced")

@@ -569,6 +569,37 @@ def _kept_order(
     return [by_id[node_id] for node_id in order]
 
 
+def _positional_parameters(functions: Sequence[str]) -> dict[str, list[str]]:
+    """Each node function of *functions* by name, with its positional parameters."""
+    parameters: dict[str, list[str]] = {}
+    for code in functions:
+        try:
+            body = ast.parse(code).body
+        except SyntaxError:
+            continue
+        for statement in body:
+            if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
+                arguments = statement.args
+                parameters[statement.name] = [
+                    argument.arg for argument in (*arguments.posonlyargs, *arguments.args)
+                ]
+    return parameters
+
+
+def _signature_states(pair: _ConnectPair, parameters: Mapping[str, Sequence[str]]) -> bool:
+    """Whether the signatures already say *pair*'s edge (READ-30): it carries no port, and its
+    target, a function of this file, names its source, another function of this file, in its
+    parameters, so the parser and a standalone run infer it alike. A frame hook's first input,
+    which its decorator takes as ``df``, is named by no parameter, so its ``connect()`` stays."""
+    source, target, source_port, target_port = pair
+    return (
+        source_port is None
+        and target_port is None
+        and source in parameters
+        and source in parameters.get(target, ())
+    )
+
+
 def _call(head: str, entries: Sequence[Doc]) -> str:
     """One call statement, laid out as ruff lays it out."""
     return print_doc([head, arguments("(", list(entries), ")")])
@@ -788,6 +819,9 @@ def _render_module(
     if registrations:
         body.append(_Block("\n".join(registrations)))
     pairs = list(dict.fromkeys(connect_pairs)) if dedup_connects else connect_pairs
+    pairs = [
+        pair for pair in pairs if not _signature_states(pair, _positional_parameters(functions))
+    ]
     if pairs:
         calls = [_connect_call(obj_name, pair) for pair in pairs]
         body.append(_Block("\n".join(calls)))
