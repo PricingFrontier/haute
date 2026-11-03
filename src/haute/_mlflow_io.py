@@ -682,10 +682,7 @@ def catboost_class_labels(model: Any) -> tuple[Any, Any] | None:
 
     from haute.modelling._algorithms import CATBOOST_CLASS_LABELS_METADATA_KEY
 
-    try:
-        recorded = model.get_metadata().get(CATBOOST_CLASS_LABELS_METADATA_KEY)
-    except Exception:
-        recorded = None
+    recorded = model.get_metadata().get(CATBOOST_CLASS_LABELS_METADATA_KEY)
     if isinstance(recorded, str) and recorded:
         labels = json.loads(recorded)
         if not isinstance(labels, list) or len(labels) != 2:
@@ -1682,8 +1679,7 @@ def _load_with_bounded_retry(
     import random
     import time
 
-    from haute._sandbox import ArtifactVersionMismatchError
-    from haute.errors import ConfigError
+    from haute.errors import HauteError, HauteValidationError
 
     last_err: BaseException | None = None
     for attempt in range(1, _LOAD_MAX_ATTEMPTS + 1):
@@ -1703,17 +1699,13 @@ def _load_with_bounded_retry(
             )
             scoring_model.run_contract_path = contract_path
             return scoring_model
-        except (AttributeError, TypeError, KeyError, ConfigError, ArtifactVersionMismatchError):
-            # Programmer error — a missing attribute, wrong type, or
-            # unknown dict key is a bug in our dispatch code (or a
-            # breaking change in catboost / rustystats), not a corrupt
-            # artifact; a ConfigError (the node scores the model as the
-            # wrong task, or an EBM under a contract that does not describe
-            # it) and an ArtifactVersionMismatchError (a model written by
-            # another engine version) are readable models that
-            # re-downloading cannot fix.  Wrapping these as "persistently corrupt" would send
-            # on-call down the wrong path.  Re-raise so the real error
-            # surfaces.
+        except (AttributeError, TypeError, KeyError, HauteError, HauteValidationError):
+            # A missing attribute, wrong type or unknown key is a bug in the
+            # dispatch code (or a breaking library change), and every Haute
+            # error is a refusal of bytes Haute could read (the wrong task, a
+            # model without Haute's record, a contract that does not describe
+            # it, another engine version). Re-downloading fixes neither, and
+            # reporting them as a corrupt artifact would hide the real reason.
             raise
         except Exception as err:
             last_err = err

@@ -470,7 +470,11 @@ the scoring errors and the route returns them as `400`.
 Up to `_LOAD_MAX_ATTEMPTS` = 2 attempts. Each attempt resolves the local
 artifact path (re-downloading if a previous attempt deleted it) and tries
 to load it. `AttributeError`/`TypeError`/`KeyError` re-raise immediately
-(programmer/library-contract error, not corruption). Any other exception:
+(programmer/library-contract error, not corruption), and so does every
+`HauteError` and `HauteValidationError`: each is a refusal of bytes Haute
+could read (the wrong task, a file without Haute's record, a contract that
+does not describe the model, another engine version), which re-downloading
+cannot fix. Any other exception:
 log a warning, delete the cached file (so the next attempt re-downloads),
 and — if attempts remain — sleep `_LOAD_BACKOFF_BASE_S * 2**(attempt-1) +
 random.uniform(0, _LOAD_BACKOFF_JITTER_S)` before retrying. After the

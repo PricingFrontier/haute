@@ -2376,6 +2376,56 @@ class TestCatBoostTaskFromTheModelFile:
         ]
         assert Path(path).is_file()
 
+    def test_a_haute_refusal_is_not_retried_as_a_corrupt_download(self, tmp_path, monkeypatch):
+        """A Haute refusal of readable bytes keeps its own type and message."""
+        import lightgbm as lgb
+
+        from haute._mlflow_io import _load_with_bounded_retry
+        from haute.errors import HauteValidationError
+
+        monkeypatch.setattr("haute._mlflow_io._disk_cache_root", lambda: tmp_path / "cache")
+        rng = np.random.RandomState(3)
+        booster = lgb.train(
+            {"objective": "regression", "verbose": -1, "num_leaves": 2},
+            lgb.Dataset(rng.rand(40, 2), label=rng.rand(40)),
+            num_boost_round=2,
+        )
+        # Two Haute records: readable LightGBM text the loader refuses by name.
+        path = tmp_path / "model.lgbm"
+        path.write_text(booster.model_to_string() + "haute:{}\nhaute:{}\n", encoding="utf-8")
+        with (
+            patch("haute._mlflow_io._resolve_artifact_local", return_value=str(path)) as resolve,
+            patch("haute._mlflow_io._run_contract_if_logged", return_value=None),
+            pytest.raises(HauteValidationError, match="holds 2 'haute:' records") as refused,
+        ):
+            _load_with_bounded_retry(
+                mlflow_mod=MagicMock(),
+                client=MagicMock(),
+                backend=_FAKE_BACKEND,
+                run_id="r",
+                artifact="model.lgbm",
+                flavor="lightgbm",
+                task="regression",
+            )
+        assert "Persistently corrupt" not in str(refused.value)
+        assert resolve.call_count == 1
+        assert path.is_file()
+
+    def test_an_unreadable_class_label_record_is_raised_not_replaced(self, tmp_path, monkeypatch):
+        from catboost import CatBoostClassifier
+
+        from haute._mlflow_io import catboost_class_labels
+
+        model = CatBoostClassifier(iterations=2, verbose=0, allow_writing_files=False)
+        self._saved(tmp_path, model)
+
+        def unreadable(_model):
+            raise RuntimeError("metadata unreadable")
+
+        monkeypatch.setattr(CatBoostClassifier, "get_metadata", unreadable)
+        with pytest.raises(RuntimeError, match="metadata unreadable"):
+            catboost_class_labels(model)
+
 
 class TestRunContractIfLogged:
     """A run's contract is optional, but only a completed listing says it is absent."""

@@ -315,6 +315,9 @@ Out of scope (owned elsewhere):
   interrupted download, a disk hiccup); a hard ceiling after that means
   persistent corruption becomes a loud, diagnosable failure instead of an
   invisible retry loop burning time and bandwidth on-call would never see.
+  Only a failure Haute cannot explain is retried: a model Haute read and
+  refused (any `HauteError` or `HauteValidationError`) fails once with its
+  own message and keeps its cached file.
 - **The in-memory cache key includes local artifact byte identity, not just
   the source reference.** Keying only on run/version/path would let a
   long-lived process continue serving its old deserialised object after the
@@ -453,7 +456,8 @@ Out of scope (owned elsewhere):
 - `AttributeError` / `TypeError` / `KeyError` raised while loading a
   model are treated as a programming or library-contract error, not
   corruption — they are never retried and propagate immediately with
-  their real stack trace.
+  their real stack trace. A `HauteError` or `HauteValidationError` (a
+  readable model Haute refuses) likewise propagates on the first attempt.
 - A scoring input that fails the feature contract (missing features, a
   categorical column with numeric dtype, or a missing additive offset):
   `FeatureMismatchError` with the relevant expected/actual context. A categorical
