@@ -59,11 +59,11 @@ apply, save, MLflow log, frontier status, auto-range start and status, frontier
 select).
 
 **Remaining:** the responses that carry node configs or the editor document:
-pipeline load and save, preview, trace, submodel, recovery and repair
-(`PipelineRepairApplyResponse.document` is a `PipelineEditorDocument`), and
-JSON-cache inference (its tables merge into the API Input config). The execution
-metrics are one shared module (`execution-metrics`), which the preview response
-checks through `executionMetricsFromContract` as the converted groups do.
+pipeline load and save, trace, submodel, recovery and repair
+(`PipelineRepairApplyResponse.document` is a `PipelineEditorDocument`). The preview,
+its inputs and progress, a file's schema and JSON-cache inference are generated
+(`preview`, `io`, `input-cache`), and the execution metrics are one shared module
+(`execution-metrics`).
 
 **Acceptance:** Every response the client parses is validated by generated
 code; `guards.ts`, `trainGuards.ts` and `api/types.ts` contain no structural

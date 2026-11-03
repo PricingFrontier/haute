@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest"
 
+import {
+  validatePreviewInputsResponse,
+  validatePreviewNodeResponse,
+} from "../../generated/api-contracts.preview.validators.mjs"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 import { validateExecutionMetricsPayload } from "../../generated/api-contracts.execution-metrics.validators.mjs"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
@@ -10,20 +14,19 @@ import {
   makeRatebookFrontier,
 } from "../../panels/optimiser/__tests__/fixtures"
 import {
-  parsePreviewInputsResponse,
   parseDissolveSubmodelResponse,
   explorePivotMembersFromContract,
   explorePivotRunFromContract,
   explorePivotStatusFromContract,
   frontierAutoRangeStatusFromContract,
   optimiserStatusFromContract,
-  parseJsonCacheSchemaInferenceResponse,
-  parsePreviewNodeResponse,
   parseSavePipelineResponse,
   parseTraceResponse,
   parseSubmodelCreateResponse,
   parseSubmodelGraphResponse,
   parseExecutionStrategyDiagnostic,
+  previewFromContract,
+  type ExecutionMetricsValidator,
 } from "../guards"
 import {
   validateExplorePivotMembersResponse,
@@ -78,7 +81,10 @@ import {
 } from "../../generated/api-contracts.git.validators.mjs"
 import { makeGitWorkingBranch } from "../../test-utils/factories"
 import { expectGeneratedContract } from "../generatedContractValidation"
-import { validateInputCacheSnapshotStatusResponse } from "../../generated/api-contracts.input-cache.validators.mjs"
+import {
+  validateInputCacheSnapshotStatusResponse,
+  validateJsonCacheInferResponse,
+} from "../../generated/api-contracts.input-cache.validators.mjs"
 import { validateOutputAssembleDryRunResponse } from "../../generated/api-contracts.output.validators.mjs"
 
 // The input-cache and output responses are checked by their generated validators (API-R03).
@@ -215,6 +221,18 @@ function tunedTrainResponseFixture() {
 function executionMetricsFixture() {
   return makeExecutionMetricsFixture({ status: "completed", cache_direct_fallbacks: 1 })
 }
+
+// The preview, its inputs and JSON-cache inference are checked by their generated
+// validators (API-R03); the preview's execution metrics through the shared module.
+const parsePreviewNodeResponse = (value: unknown, validateMetrics: ExecutionMetricsValidator) =>
+  previewFromContract(
+    expectGeneratedContract("PreviewNodeResponse", validatePreviewNodeResponse, value),
+    validateMetrics,
+  )
+const parsePreviewInputsResponse = (value: unknown) =>
+  expectGeneratedContract("PreviewInputsResponse", validatePreviewInputsResponse, value)
+const parseJsonCacheSchemaInferenceResponse = (value: unknown) =>
+  expectGeneratedContract("JsonCacheInferResponse", validateJsonCacheInferResponse, value)
 
 // Explore and factor responses are checked by their generated validators
 // (API-R03); the pivot responses then get the UI's member-key and matrix checks.
@@ -581,66 +599,46 @@ describe("API response guards", () => {
     expect(() => parseDissolveSubmodelResponse({ ...dissolve, source_revision: "\t" })).toThrow(/source_revision/i)
   })
 
-  it("fills preview defaults for sparse error payloads", () => {
-    const parsed = parsePreviewNodeResponse({
-      status: "error",
-      node_id: "bad_node",
-      error: "contract mismatch",
-    }, validateExecutionMetricsPayload)
+  const previewFixture = () => loadUiContractFixture<Record<string, unknown>>("preview_node")
+  const parsePreview = (overrides: Record<string, unknown>) =>
+    parsePreviewNodeResponse({ ...previewFixture(), ...overrides }, validateExecutionMetricsPayload)
 
-    expect(parsed.timings).toEqual([])
-    expect(parsed.memory).toEqual([])
-    expect(parsed.node_statuses).toEqual({})
-    expect(parsed.error).toBe("contract mismatch")
+  it("rejects a preview that leaves out a field the server always sends", () => {
+    const { timings: _omitted, ...sparse } = previewFixture()
+    expect(() => parsePreviewNodeResponse(sparse, validateExecutionMetricsPayload)).toThrow(
+      "PreviewNodeResponse: invalid contract at /timings: required",
+    )
   })
 
   it("keeps the preview's notes", () => {
-    const parsed = parsePreviewNodeResponse({
-      status: "ok",
-      node_id: "n1",
-      notes: ["Showing the first 100 rows."],
-    }, validateExecutionMetricsPayload)
-
-    expect(parsed.notes).toEqual(["Showing the first 100 rows."])
+    expect(parsePreview({ notes: ["Showing the first 100 rows."] }).notes).toEqual([
+      "Showing the first 100 rows.",
+    ])
   })
 
   it("parses valid per-node statuses into the closed union", () => {
-    const parsed = parsePreviewNodeResponse({
-      status: "ok",
-      node_id: "n1",
-      node_statuses: { n1: "ok", n2: "error" },
-    }, validateExecutionMetricsPayload)
-
-    expect(parsed.node_statuses).toEqual({ n1: "ok", n2: "error" })
+    expect(parsePreview({ node_statuses: { n1: "ok", n2: "error" } }).node_statuses).toEqual({
+      n1: "ok",
+      n2: "error",
+    })
   })
 
-  it("rejects an unknown per-node status value (fails loud, no silent widening)", () => {
-    expect(() =>
-      parsePreviewNodeResponse({
-        status: "ok",
-        node_id: "n1",
-        node_statuses: { n1: "pending" },
-      }, validateExecutionMetricsPayload),
-    ).toThrow(/node_statuses\.n1/i)
-  })
-
-  it("rejects client-only running status in backend preview payloads", () => {
-    expect(() =>
-      parsePreviewNodeResponse({
-        status: "ok",
-        node_id: "n1",
-        node_statuses: { n1: "running" },
-      }, validateExecutionMetricsPayload),
-    ).toThrow(/node_statuses\.n1/i)
+  it.each(["pending", "running"])("rejects the per-node status %s", (status) => {
+    expect(() => parsePreview({ node_statuses: { n1: status } })).toThrow(
+      "PreviewNodeResponse: invalid contract at /node_statuses/n1",
+    )
   })
 
   it("rejects unknown top-level preview status values", () => {
-    expect(() =>
-      parsePreviewNodeResponse({
-        status: "running",
-        node_id: "n1",
-      }, validateExecutionMetricsPayload),
-    ).toThrow(/status/i)
+    expect(() => parsePreview({ status: "running" })).toThrow(
+      "PreviewNodeResponse: invalid contract at /status",
+    )
+  })
+
+  it("rejects malformed preview node ids", () => {
+    expect(() => parsePreview({ node_id: 42 })).toThrow(
+      "PreviewNodeResponse: invalid contract at /node_id",
+    )
   })
 
   it("parses the generations a preview was computed from", () => {
@@ -658,41 +656,18 @@ describe("API response guards", () => {
     ])
   })
 
-  it("defaults the seed plan to empty and rejects malformed entries", () => {
-    const { seed_plan: _omitted, ...withoutPlan } = loadUiContractFixture<Record<string, unknown>>(
-      "preview_node",
-    )
-    expect(parsePreviewNodeResponse(withoutPlan, validateExecutionMetricsPayload).seed_plan).toEqual([])
-
-    const fixture = loadUiContractFixture<{ seed_plan: Record<string, unknown>[] }>("preview_node")
-    const entry = fixture.seed_plan[0]
-    expect(() =>
-      parsePreviewNodeResponse({ ...fixture, seed_plan: [{ ...entry, kind: "borrowed" }] }, validateExecutionMetricsPayload),
-    ).toThrow(/kind/)
-    expect(() =>
-      parsePreviewNodeResponse({ ...fixture, seed_plan: [{ ...entry, port_label: "drivers" }] }, validateExecutionMetricsPayload),
-    ).toThrow(/port_label/)
-  })
-
   it.each([
-    ["an empty string", ""],
-    ["a whitespace-only string", "   "],
-    ["an omitted field", undefined],
-    ["a non-string value", 123],
-  ])(
-    "rejects a seed plan entry with %s generation_id",
-    (_label, invalidValue) => {
-      const fixture = loadUiContractFixture<{ seed_plan: Record<string, unknown>[] }>("preview_node")
-      const { generation_id: _omitted, ...entryWithoutGenId } = fixture.seed_plan[0]
-      const entry =
-        invalidValue === undefined
-          ? entryWithoutGenId
-          : { ...entryWithoutGenId, generation_id: invalidValue }
-      expect(() =>
-        parsePreviewNodeResponse({ ...fixture, seed_plan: [entry] }, validateExecutionMetricsPayload),
-      ).toThrow(/generation_id/)
-    },
-  )
+    ["kind", "borrowed"],
+    ["port_label", "drivers"],
+    ["generation_id", ""],
+    ["generation_id", 123],
+  ])("rejects a seed plan entry whose %s is %o", (field, value) => {
+    const fixture = loadUiContractFixture<{ seed_plan: Record<string, unknown>[] }>("preview_node")
+    const entry = { ...fixture.seed_plan[0], [field]: value }
+    expect(() => parsePreview({ seed_plan: [entry] })).toThrow(
+      `PreviewNodeResponse: invalid contract at /seed_plan/0/${field}`,
+    )
+  })
 
   it("parses the inputs a preview would read", () => {
     expect(parsePreviewInputsResponse({ input_node_ids: ["policies", "quotes"] })).toEqual({
@@ -1012,15 +987,6 @@ describe("API response guards", () => {
       ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
       execution_metrics: { ...executionMetricsFixture(), cache_direct_fallbacks: -1 },
     }, validateExecutionMetricsPayload)).toThrow(/cache_direct_fallbacks/i)
-  })
-
-  it("rejects malformed preview node ids", () => {
-    expect(() =>
-      parsePreviewNodeResponse({
-        status: "ok",
-        node_id: 42,
-      }, validateExecutionMetricsPayload),
-    ).toThrow(/node_id/i)
   })
 
   it("parses a git restore-version response", () => {

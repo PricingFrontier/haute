@@ -331,7 +331,7 @@ describe("PipelineNode", () => {
           ],
         },
         _status: "running",
-        _schemaWarnings: [{ column: "policy_id", status: "missing" }],
+        _schemaWarnings: [{ column: "policy_id", status: "missing", input: null, detail: null }],
       })
 
       const node = screen.getByTestId(`node-${nodeLabel}`)
@@ -877,7 +877,7 @@ describe("PipelineNode", () => {
       label: "Edge Join",
       nodeType: NODE_TYPES.EDGE_JOIN,
       _status: "running",
-      _schemaWarnings: [{ column: "policy_id", status: "missing" }],
+      _schemaWarnings: [{ column: "policy_id", status: "missing", input: null, detail: null }],
     })
 
     expect(screen.getByLabelText("Node running")).toHaveClass("animate-pulse-dot")
@@ -889,7 +889,7 @@ describe("PipelineNode", () => {
       label: "Edge Join",
       nodeType: NODE_TYPES.EDGE_JOIN,
       _status: "ok",
-      _schemaWarnings: [{ column: "policy_id", status: "missing" }],
+      _schemaWarnings: [{ column: "policy_id", status: "missing", input: null, detail: null }],
     })
 
     const status = screen.getByTestId("edge-join-status-indicator")
@@ -905,7 +905,7 @@ describe("PipelineNode", () => {
       label: "Edge Join",
       nodeType: NODE_TYPES.EDGE_JOIN,
       _status: "error",
-      _schemaWarnings: [{ column: "policy_id", status: "missing" }],
+      _schemaWarnings: [{ column: "policy_id", status: "missing", input: null, detail: null }],
     })
 
     expect(screen.getByLabelText("Node error")).toBeInTheDocument()
@@ -977,7 +977,7 @@ describe("PipelineNode", () => {
       label: "Warned Success",
       nodeType: NODE_TYPES.POLARS,
       _status: "ok",
-      _schemaWarnings: [{ column: "age", status: "missing" }],
+      _schemaWarnings: [{ column: "age", status: "missing", input: null, detail: null }],
     })
 
     const dot = screen.getByLabelText("Node warning")
@@ -1159,7 +1159,7 @@ describe("PipelineNode", () => {
     renderNode({
       label: "Warned",
       nodeType: NODE_TYPES.POLARS,
-      _schemaWarnings: [{ column: "age", status: "missing" }],
+      _schemaWarnings: [{ column: "age", status: "missing", input: null, detail: null }],
     })
     expect(screen.getByLabelText("Node has schema warnings")).toBeInTheDocument()
   })
@@ -1178,7 +1178,7 @@ describe("PipelineNode", () => {
       label: "Error Overrides",
       nodeType: NODE_TYPES.POLARS,
       _status: "error",
-      _schemaWarnings: [{ column: "x", status: "extra" }],
+      _schemaWarnings: [{ column: "x", status: "extra", input: null, detail: null }],
     })
     expect(screen.queryByLabelText("Node has schema warnings")).not.toBeInTheDocument()
   })

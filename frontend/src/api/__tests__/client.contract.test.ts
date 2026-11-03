@@ -139,9 +139,14 @@ describe("client runtime contracts", () => {
   })
 
   it("previewNode rejects malformed preview payloads", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ status: "ok", node_id: 42 }))
+    mockFetch.mockReturnValue(jsonResponse({
+      ...(loadUiContractFixture("preview_node") as Record<string, unknown>),
+      node_id: 42,
+    }))
 
-    await expect(previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })).rejects.toThrow(/parsePreviewNodeResponse/i)
+    await expect(previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })).rejects.toThrow(
+      "PreviewNodeResponse: invalid contract at /node_id: type",
+    )
   })
 
   it("writeOutput rejects malformed output payloads", async () => {
@@ -569,8 +574,7 @@ describe("client runtime contracts", () => {
   })
 
   it.each([
-    { input: "policy", column: null, status: "missing" },
-    { input: "rates", column: "x", status: "unavailable", detail: "Failed" },
+    { input: "policy", column: null, status: 7, detail: null },
     { input: "rates", column: null, status: "unavailable" },
   ])("previewNode refuses invalid schema warnings: %j", async (warning) => {
     mockFetch.mockReturnValue(jsonResponse({ ...(loadUiContractFixture("preview_node") as Record<string, unknown>), node_schema_warnings: { copy: [warning] } }))
@@ -677,7 +681,7 @@ describe("client runtime contracts", () => {
   it("fetchSchema rejects malformed schema payloads", async () => {
     mockFetch.mockReturnValue(jsonResponse({ path: "x.parquet", columns: "bad" }))
 
-    await expect(fetchSchema("x.parquet")).rejects.toThrow(/parseSchemaResponse/i)
+    await expect(fetchSchema("x.parquet")).rejects.toThrow("SchemaResponse: invalid contract")
   })
 
   it("trainModel accepts the tightened train contract", async () => {

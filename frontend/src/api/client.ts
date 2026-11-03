@@ -61,6 +61,7 @@ import type {
   GitWorkingBranchResponse,
   GraphPayload,
   IoCapabilitiesResponse,
+  JsonCacheInferResponse,
   ModellingGpuStatusResponse,
   InputCacheBuildRequest,
   InputCacheBuildResponse,
@@ -135,19 +136,15 @@ import {
   explorePivotRunFromContract,
   explorePivotStatusFromContract,
   nodeDataStatusFromContract,
-  parseJsonCacheSchemaInferenceResponse,
   parsePipelineResponse,
-  parsePreviewInputsResponse,
-  parsePreviewNodeResponse,
-  parsePreviewProgressResponse,
   parseSavePipelineResponse,
-  parseSchemaResponse,
   writeOutputFromContract,
   parseSubmodelCreateResponse,
   parseNodeInstanceCreateResponse,
   parseSubmodelGraphResponse,
   parseTraceResponse,
   isPlainObject,
+  previewFromContract,
   type ExecutionMetricsValidator,
 } from "../types/guards"
 import { expectGeneratedContract } from "../types/generatedContractValidation"
@@ -167,6 +164,7 @@ const modellingValidators = () => import("../generated/api-contracts.modelling.v
 const nodeDataValidators = () => import("../generated/api-contracts.node-data.validators.mjs")
 const optimiserValidators = () => import("../generated/api-contracts.optimiser.validators.mjs")
 const outputValidators = () => import("../generated/api-contracts.output.validators.mjs")
+const previewValidators = () => import("../generated/api-contracts.preview.validators.mjs")
 const sessionValidators = () => import("../generated/api-contracts.session.validators.mjs")
 const utilityValidators = () => import("../generated/api-contracts.utility.validators.mjs")
 const executionMetricsValidators = () =>
@@ -892,7 +890,10 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
       ...(requestId !== undefined ? { request_id: requestId } : {}),
     },
     { signal, timeout },
-  ).then(async (data) => parsePreviewNodeResponse(data, await metricsValidator()))
+  ).then(async (data) => previewFromContract(
+    expectGeneratedContract("PreviewNodeResponse", (await previewValidators()).validatePreviewNodeResponse, data),
+    await metricsValidator(),
+  ))
 }
 
 /**
@@ -905,12 +906,14 @@ export async function getPreviewProgress(
   options: { signal?: AbortSignal } = {},
 ): Promise<PreviewProgressResponse | null> {
   try {
-    return parsePreviewProgressResponse(
-      await request<unknown>(`/api/pipeline/preview/progress/${encodeURIComponent(requestId)}`, {
-        ...options,
-        timeout: 2_000,
-        retry: { maxRetries: 0 },
-      }),
+    const data = await request<unknown>(
+      `/api/pipeline/preview/progress/${encodeURIComponent(requestId)}`,
+      { ...options, timeout: 2_000, retry: { maxRetries: 0 } },
+    )
+    return expectGeneratedContract(
+      "PreviewProgressResponse",
+      (await previewValidators()).validatePreviewProgressResponse,
+      data,
     )
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) return null
@@ -946,7 +949,11 @@ export function previewInputs(args: PreviewInputsArgs): Promise<PreviewInputsRes
     },
     // Bounded by the server's pipeline time limit, which answers 504.
     { signal: args.signal, timeout: null },
-  ).then(parsePreviewInputsResponse)
+  ).then(async (data) => expectGeneratedContract(
+    "PreviewInputsResponse",
+    (await previewValidators()).validatePreviewInputsResponse,
+    data,
+  ))
 }
 
 export interface RenderPolarsStepsArgs {
@@ -1049,7 +1056,10 @@ export function previewRecoveryNode(
       ...(requestId !== undefined ? { request_id: requestId } : {}),
     },
     { signal, timeout },
-  ).then(async (data) => parsePreviewNodeResponse(data, await metricsValidator()))
+  ).then(async (data) => previewFromContract(
+    expectGeneratedContract("PreviewNodeResponse", (await previewValidators()).validatePreviewNodeResponse, data),
+    await metricsValidator(),
+  ))
 }
 
 export function savePipeline(
@@ -1284,7 +1294,7 @@ export function fetchSchema(
     ? `&format=${encodeURIComponent(reader.format)}&arguments=${encodeURIComponent(JSON.stringify(reader.arguments))}`
     : ""
   return request<unknown>(`/api/schema?path=${encodeURIComponent(path)}${query}`, options).then(
-    parseSchemaResponse,
+    async (data) => expectGeneratedContract("SchemaResponse", (await ioValidators()).validateSchemaResponse, data),
   )
 }
 
@@ -1945,12 +1955,16 @@ export const JSON_CACHE_INFER_TIMEOUT_MS = 1_800_000
 export function inferJsonCacheSchema(
   payload: { path: string; sample_size?: number },
   options?: { signal?: AbortSignal; timeout?: number },
-): Promise<{ tables: Array<Record<string, unknown>> }> {
+): Promise<JsonCacheInferResponse> {
   return post<unknown>(
     "/api/json-cache/infer",
     payload,
     { timeout: JSON_CACHE_INFER_TIMEOUT_MS, ...options },
-  ).then(parseJsonCacheSchemaInferenceResponse)
+  ).then(async (data) => expectGeneratedContract(
+    "JsonCacheInferResponse",
+    (await inputCacheValidators()).validateJsonCacheInferResponse,
+    data,
+  ))
 }
 
 // ---------------------------------------------------------------------------

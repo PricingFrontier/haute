@@ -9591,6 +9591,24 @@
       "title": "IoOutputCapability",
       "type": "object"
     },
+    "JsonCacheInferResponse": {
+      "description": "v2-shaped inference output: a list of table specs to merge into\nthe apiInput's config. Caller stitches in the apiInput's existing\n``path`` and ``contract`` metadata.",
+      "properties": {
+        "tables": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Tables",
+          "type": "array"
+        }
+      },
+      "required": [
+        "tables"
+      ],
+      "title": "JsonCacheInferResponse",
+      "type": "object"
+    },
     "LogExperimentResponse": {
       "properties": {
         "backend": {
@@ -10894,6 +10912,52 @@
         "profile"
       ],
       "title": "NodeDataStatusResponse",
+      "type": "object"
+    },
+    "NodeMemoryInfo": {
+      "properties": {
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "memory_bytes": {
+          "title": "Memory Bytes",
+          "type": "integer"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id",
+        "label",
+        "memory_bytes"
+      ],
+      "title": "NodeMemoryInfo",
+      "type": "object"
+    },
+    "NodeTimingInfo": {
+      "properties": {
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "timing_ms": {
+          "title": "Timing Ms",
+          "type": "number"
+        }
+      },
+      "required": [
+        "node_id",
+        "label",
+        "timing_ms"
+      ],
+      "title": "NodeTimingInfo",
       "type": "object"
     },
     "OptimiserAdjustmentBar": {
@@ -14033,6 +14097,450 @@
       "title": "PolarsStepsRenderResponse",
       "type": "object"
     },
+    "PortPreview": {
+      "description": "One frame's preview of a multi-frame target asked for several (``port_labels``):\nwhat a preview of that frame alone (``port_label``) answers in its ``row_count``,\n``columns``, ``preview`` and ``preview_truncated``.",
+      "properties": {
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/ColumnInfo"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "preview": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Preview",
+          "type": "array"
+        },
+        "preview_truncated": {
+          "default": false,
+          "title": "Preview Truncated",
+          "type": "boolean"
+        },
+        "row_count": {
+          "default": 0,
+          "title": "Row Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "row_count",
+        "columns",
+        "preview",
+        "preview_truncated"
+      ],
+      "title": "PortPreview",
+      "type": "object"
+    },
+    "PreviewInputsResponse": {
+      "description": "Snapshot-backed Data Inputs and structured API Inputs, in execution order.",
+      "properties": {
+        "input_node_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Input Node Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "input_node_ids"
+      ],
+      "title": "PreviewInputsResponse",
+      "type": "object"
+    },
+    "PreviewNodeResponse": {
+      "description": "Full preview response — extends ``NodeResult`` with graph-wide metadata.\n\nInherits all per-node fields (status, row_count, columns, preview, etc.)\nand adds ``node_id``, ``timings``, ``memory``, and ``node_statuses`` for\nthe full graph context.",
+      "properties": {
+        "available_columns": {
+          "items": {
+            "$ref": "#/$defs/ColumnInfo"
+          },
+          "title": "Available Columns",
+          "type": "array"
+        },
+        "column_count": {
+          "default": 0,
+          "title": "Column Count",
+          "type": "integer"
+        },
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/ColumnInfo"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "error_line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Line"
+        },
+        "execution_metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionMetricsPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "frame_columns": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/ColumnInfo"
+            },
+            "type": "array"
+          },
+          "title": "Frame Columns",
+          "type": "object"
+        },
+        "memory": {
+          "items": {
+            "$ref": "#/$defs/NodeMemoryInfo"
+          },
+          "title": "Memory",
+          "type": "array"
+        },
+        "memory_bytes": {
+          "default": 0,
+          "title": "Memory Bytes",
+          "type": "integer"
+        },
+        "node_available_columns": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/ColumnInfo"
+            },
+            "type": "array"
+          },
+          "title": "Node Available Columns",
+          "type": "object"
+        },
+        "node_columns": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/ColumnInfo"
+            },
+            "type": "array"
+          },
+          "title": "Node Columns",
+          "type": "object"
+        },
+        "node_frame_columns": {
+          "additionalProperties": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/$defs/ColumnInfo"
+              },
+              "type": "array"
+            },
+            "type": "object"
+          },
+          "title": "Node Frame Columns",
+          "type": "object"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "node_schema_warnings": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/SchemaWarning"
+            },
+            "type": "array"
+          },
+          "title": "Node Schema Warnings",
+          "type": "object"
+        },
+        "node_statuses": {
+          "additionalProperties": {
+            "enum": [
+              "ok",
+              "error"
+            ],
+            "type": "string"
+          },
+          "title": "Node Statuses",
+          "type": "object"
+        },
+        "notes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Notes",
+          "type": "array"
+        },
+        "port_previews": {
+          "additionalProperties": {
+            "$ref": "#/$defs/PortPreview"
+          },
+          "title": "Port Previews",
+          "type": "object"
+        },
+        "preview": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Preview",
+          "type": "array"
+        },
+        "preview_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Preview Columns",
+          "type": "array"
+        },
+        "preview_row_count": {
+          "default": 0,
+          "title": "Preview Row Count",
+          "type": "integer"
+        },
+        "preview_row_limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preview Row Limit"
+        },
+        "preview_truncated": {
+          "default": false,
+          "title": "Preview Truncated",
+          "type": "boolean"
+        },
+        "row_count": {
+          "default": 0,
+          "title": "Row Count",
+          "type": "integer"
+        },
+        "schema_warnings": {
+          "items": {
+            "$ref": "#/$defs/SchemaWarning"
+          },
+          "title": "Schema Warnings",
+          "type": "array"
+        },
+        "seed_plan": {
+          "items": {
+            "$ref": "#/$defs/PreviewSeedPlanEntry"
+          },
+          "title": "Seed Plan",
+          "type": "array"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "timing_ms": {
+          "default": 0,
+          "title": "Timing Ms",
+          "type": "number"
+        },
+        "timings": {
+          "items": {
+            "$ref": "#/$defs/NodeTimingInfo"
+          },
+          "title": "Timings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "status",
+        "row_count",
+        "column_count",
+        "columns",
+        "available_columns",
+        "frame_columns",
+        "preview",
+        "preview_columns",
+        "preview_row_count",
+        "preview_row_limit",
+        "preview_truncated",
+        "port_previews",
+        "error",
+        "error_line",
+        "timing_ms",
+        "memory_bytes",
+        "schema_warnings",
+        "notes",
+        "node_id",
+        "timings",
+        "memory",
+        "node_statuses",
+        "node_columns",
+        "node_available_columns",
+        "node_frame_columns",
+        "node_schema_warnings",
+        "execution_metrics",
+        "seed_plan"
+      ],
+      "title": "PreviewNodeResponse",
+      "type": "object"
+    },
+    "PreviewProgressResponse": {
+      "description": "A running preview's step progress (``GET /api/pipeline/preview/progress/{id}``).\n\n``preparing`` until its execution plan is known; then ``running`` with the\nplanned heavy steps completed of the total, and the step now running.",
+      "properties": {
+        "done": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Done"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "phase": {
+          "enum": [
+            "preparing",
+            "running"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "total": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total"
+        }
+      },
+      "required": [
+        "request_id",
+        "phase",
+        "done",
+        "total",
+        "label"
+      ],
+      "title": "PreviewProgressResponse",
+      "type": "object"
+    },
+    "PreviewSeedPlanEntry": {
+      "description": "One snapshot generation a preview's collected rows were computed from.\n\n``seeded``: read instead of computing the node. ``captured``: computed by\nthis preview, published, and read by everything below it. ``columns`` is\nthe generation's column set, ``None`` for all columns; ``port_label`` is\nalways ``None``, since only node outputs are seeded or captured.",
+      "properties": {
+        "columns": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Columns"
+        },
+        "created_at": {
+          "title": "Created At",
+          "type": "string"
+        },
+        "generation_id": {
+          "minLength": 1,
+          "title": "Generation Id",
+          "type": "string"
+        },
+        "identity_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Identity Digest",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "seeded",
+            "captured"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "node_label": {
+          "title": "Node Label",
+          "type": "string"
+        },
+        "port_label": {
+          "default": null,
+          "title": "Port Label",
+          "type": "null"
+        }
+      },
+      "required": [
+        "node_id",
+        "port_label",
+        "node_label",
+        "identity_digest",
+        "generation_id",
+        "columns",
+        "created_at",
+        "kind"
+      ],
+      "title": "PreviewSeedPlanEntry",
+      "type": "object"
+    },
     "ProjectFileDeleteResponse": {
       "description": "A deleted file, with the save-ledger capture of a pipeline-place delete.",
       "properties": {
@@ -14895,6 +15403,60 @@
       "title": "SchemaListResponse",
       "type": "object"
     },
+    "SchemaResponse": {
+      "properties": {
+        "column_count": {
+          "title": "Column Count",
+          "type": "integer"
+        },
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/ColumnInfo"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "preview": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Preview",
+          "type": "array"
+        },
+        "row_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Row Count"
+        },
+        "row_count_estimated": {
+          "default": false,
+          "title": "Row Count Estimated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "columns",
+        "row_count",
+        "row_count_estimated",
+        "column_count",
+        "preview"
+      ],
+      "title": "SchemaResponse",
+      "type": "object"
+    },
     "SchemaTable": {
       "additionalProperties": false,
       "properties": {
@@ -14940,6 +15502,58 @@
         "columns"
       ],
       "title": "SchemaTable",
+      "type": "object"
+    },
+    "SchemaWarning": {
+      "properties": {
+        "column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Column"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "input": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "column",
+        "status",
+        "input",
+        "detail"
+      ],
+      "title": "SchemaWarning",
       "type": "object"
     },
     "Section": {
@@ -19968,6 +20582,9 @@
     "IoCapabilitiesResponse": {
       "$ref": "#/$defs/IoCapabilitiesResponse"
     },
+    "JsonCacheInferResponse": {
+      "$ref": "#/$defs/JsonCacheInferResponse"
+    },
     "LogExperimentResponse": {
       "$ref": "#/$defs/LogExperimentResponse"
     },
@@ -20064,6 +20681,15 @@
     "PolarsStepsRenderResponse": {
       "$ref": "#/$defs/PolarsStepsRenderResponse"
     },
+    "PreviewInputsResponse": {
+      "$ref": "#/$defs/PreviewInputsResponse"
+    },
+    "PreviewNodeResponse": {
+      "$ref": "#/$defs/PreviewNodeResponse"
+    },
+    "PreviewProgressResponse": {
+      "$ref": "#/$defs/PreviewProgressResponse"
+    },
     "ProjectFileDeleteResponse": {
       "$ref": "#/$defs/ProjectFileDeleteResponse"
     },
@@ -20084,6 +20710,9 @@
     },
     "SchemaListResponse": {
       "$ref": "#/$defs/SchemaListResponse"
+    },
+    "SchemaResponse": {
+      "$ref": "#/$defs/SchemaResponse"
     },
     "SessionStatusResponse": {
       "$ref": "#/$defs/SessionStatusResponse"
@@ -20297,10 +20926,15 @@
     "InputCacheJobStatusResponse",
     "InputCacheCancelResponse",
     "InputCacheSnapshotStatusResponse",
+    "JsonCacheInferResponse",
     "WriteOutputResponse",
     "OutputDestinationResponse",
     "OutputAssembleDryRunResponse",
     "IoCapabilitiesResponse",
+    "SchemaResponse",
+    "PreviewNodeResponse",
+    "PreviewInputsResponse",
+    "PreviewProgressResponse",
     "ExecutionMetricsPayload",
     "WorkbenchStatusResponse",
     "WorkbenchTablesResponse",
@@ -20428,10 +21062,12 @@
       "InputCacheBuildResponse",
       "InputCacheJobStatusResponse",
       "InputCacheCancelResponse",
-      "InputCacheSnapshotStatusResponse"
+      "InputCacheSnapshotStatusResponse",
+      "JsonCacheInferResponse"
     ],
     "io": [
-      "IoCapabilitiesResponse"
+      "IoCapabilitiesResponse",
+      "SchemaResponse"
     ],
     "mlflow": [
       "MlflowDestinationsResponse",
@@ -20474,6 +21110,11 @@
       "WriteOutputResponse",
       "OutputDestinationResponse",
       "OutputAssembleDryRunResponse"
+    ],
+    "preview": [
+      "PreviewNodeResponse",
+      "PreviewInputsResponse",
+      "PreviewProgressResponse"
     ],
     "session": [
       "SessionStatusResponse",

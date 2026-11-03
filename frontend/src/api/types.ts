@@ -4,8 +4,6 @@ import type { toCanonicalGraphPayload } from "../utils/graphSnapshot"
 
 // Re-export canonical types from their source locations
 import type {
-  BackendNodeStatus,
-  ColumnInfo,
   NodeTypeValue,
   PipelineEdge,
   PipelineGraph,
@@ -24,6 +22,7 @@ import type {
   MlflowDestinationEntry as GeneratedMlflowDestinationEntry,
   MlflowTestConnectionResponse as GeneratedMlflowTestConnectionResponse,
   NodeDataStatusResponse as GeneratedNodeDataStatusResponse,
+  PreviewNodeResponse as GeneratedPreviewNodeResponse,
   WriteOutputResponse as GeneratedWriteOutputResponse,
   OptimiserFrontierAutoRangeStatusResponse as GeneratedOptimiserFrontierAutoRangeStatusResponse,
   OptimiserFrontierResponse as GeneratedOptimiserFrontierResponse,
@@ -76,18 +75,6 @@ export type {
   PolarsFreeCodeColumnsResponse,
   PolarsStepsRenderResponse,
 } from "../generated/api-contracts.generated"
-export type SchemaWarning = {
-  column: string
-  status: string
-  input?: string | null
-  detail?: string | null
-} | {
-  column?: null
-  status: "unavailable"
-  input: string
-  detail: string
-}
-
 export type ExecutionMemoryPressureEvent = ExecutionMemoryPressureEventPayload
 
 export type ExecutionStrategyStatus = GeneratedExecutionStrategyDiagnostic["status"]
@@ -129,64 +116,23 @@ export type ExecutionMetrics = Omit<ExecutionMetricsPayload, "execution_strategy
   execution_strategy: ExecutionStrategyDiagnostic | null
 }
 
-/**
- * One frame's preview of a multi-frame target asked for several (`port_labels`): what a
- * preview of that frame alone answers.
- */
-export interface PortPreview {
-  row_count: number
-  columns: ColumnInfo[]
-  preview: Record<string, unknown>[]
-  preview_truncated: boolean
+// The preview, the inputs it reads and its progress are generated; its execution metrics
+// are checked through the shared module.
+export type PreviewNodeResponse = Omit<GeneratedPreviewNodeResponse, "execution_metrics"> & {
+  execution_metrics: ExecutionMetrics | null
 }
 
-export interface NodeResult {
-  status: BackendNodeStatus
-  row_count?: number
-  column_count?: number
-  columns?: ColumnInfo[]
-  available_columns?: ColumnInfo[]
-  /** Per-frame column schema for a multi-frame producer (a multi-table
-   * apiInput today), keyed by emit-table label. Empty for single-frame
-   * nodes; additive to `columns`, never replaces it. */
-  frame_columns?: Record<string, ColumnInfo[]>
-  preview?: Record<string, unknown>[]
-  preview_columns?: string[]
-  preview_row_count?: number
-  preview_row_limit?: number | null
-  preview_truncated?: boolean
-  /** Each frame asked for (`port_labels`) of a multi-frame target, by label, from one run. */
-  port_previews?: Record<string, PortPreview>
-  error?: string | null
-  error_line?: number | null
-  timing_ms?: number
-  memory_bytes?: number
-  timings?: NodeTiming[]
-  memory?: NodeMemory[]
-  schema_warnings?: SchemaWarning[]
-  /** What the node's result rests on that its rows do not show, one line each
-   * (a Model Score whose input had no exposure priced it as a full policy term). */
-  notes?: string[]
-  node_statuses?: Record<string, BackendNodeStatus>
-  node_columns?: Record<string, ColumnInfo[]>
-  node_available_columns?: Record<string, ColumnInfo[]>
-  /** Per-output-handle columns of every multi-frame producer the preview ran. */
-  node_frame_columns?: Record<string, Record<string, ColumnInfo[]>>
-  node_schema_warnings?: Record<string, SchemaWarning[]>
-  execution_metrics?: ExecutionMetrics | null
-}
-
-export interface NodeTiming {
-  node_id: string
-  label: string
-  timing_ms: number
-}
-
-export interface NodeMemory {
-  node_id: string
-  label: string
-  memory_bytes: number
-}
+export type {
+  NodeMemoryInfo as NodeMemory,
+  NodeTimingInfo as NodeTiming,
+  JsonCacheInferResponse,
+  PortPreview,
+  PreviewInputsResponse,
+  PreviewProgressResponse,
+  PreviewSeedPlanEntry,
+  SchemaResponse as SchemaResult,
+  SchemaWarning,
+} from "../generated/api-contracts.generated"
 
 export interface SavePipelineResponse {
   status?: string
@@ -206,57 +152,12 @@ export interface SavePipelineResponse {
   uncaptured?: string[]
 }
 
-/** One shared-snapshot generation a preview's collected rows were computed from. */
-export interface PreviewSeedPlanEntry {
-  node_id: string
-  /** Always null: only node outputs are seeded or captured. */
-  port_label: null
-  node_label: string
-  identity_digest: string
-  generation_id: string
-  /** The generation's column set; null means all columns. */
-  columns: string[] | null
-  /** ISO-8601 UTC. */
-  created_at: string
-  /** `seeded`: read instead of computing the node. `captured`: computed by
-   * this preview, written, and read by everything below it. */
-  kind: "seeded" | "captured"
-}
-
-export interface PreviewNodeResponse extends NodeResult {
-  node_id: string
-  /** Per-frame column schemas for multi-frame producers, keyed
-   * node_id → frame label → columns. Only nodes that emit 2+ frames appear;
-   * single-frame nodes are absent. Additive to `node_columns`. */
-  node_frame_columns?: Record<string, Record<string, ColumnInfo[]>>
-  /** Every snapshot generation the rows were computed from, in topological
-   * order; empty when the preview read no snapshot. */
-  seed_plan?: PreviewSeedPlanEntry[]
-}
-
 /** One generation a trace reads: an entry of the preview's `seed_plan`. */
 export interface TraceSeedPlanEntry {
   node_id: string
   port_label: null
   identity_digest: string
   generation_id: string
-}
-
-/** The inputs a preview would read, so only those are prepared before it. */
-export interface PreviewInputsResponse {
-  input_node_ids: string[]
-}
-
-/**
- * A running preview's step progress: `preparing` until its execution plan is
- * known, then `running` with its planned heavy steps completed of the total.
- */
-export interface PreviewProgressResponse {
-  request_id: string
-  phase: "preparing" | "running"
-  done: number | null
-  total: number | null
-  label: string | null
 }
 
 export interface SubmodelCreateResponse {
@@ -311,16 +212,6 @@ export type {
   OutputAssembleDryRunResponse,
   OutputDestinationResponse,
 } from "../generated/api-contracts.generated"
-
-/** Schema info returned by the schema endpoint. */
-export interface SchemaResult {
-  path: string
-  columns: ColumnInfo[]
-  row_count: number | null
-  row_count_estimated?: boolean
-  column_count: number
-  preview: Record<string, unknown>[]
-}
 
 // ---------------------------------------------------------------------------
 // Data In/Out capabilities (GET /api/io-capabilities)

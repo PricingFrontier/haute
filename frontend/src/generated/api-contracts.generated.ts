@@ -1406,6 +1406,16 @@ export interface InputCacheCancelResponse {
   status:
     'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
 }
+/**
+ * v2-shaped inference output: a list of table specs to merge into
+ * the apiInput's config. Caller stitches in the apiInput's existing
+ * ``path`` and ``contract`` metadata.
+ */
+export interface JsonCacheInferResponse {
+  tables: {
+    [k: string]: unknown;
+  }[];
+}
 export interface IoCapabilitiesResponse {
   groups: IoCapabilityGroup[];
   schema_version: 1;
@@ -1457,6 +1467,16 @@ export interface IoFieldCapability {
   label: string;
   name: string;
   required: boolean;
+}
+export interface SchemaResponse {
+  column_count: number;
+  columns: ColumnInfo[];
+  path: string;
+  preview: {
+    [k: string]: unknown;
+  }[];
+  row_count: number | null;
+  row_count_estimated: boolean;
 }
 export interface MlflowDestinationsResponse {
   destinations: MlflowDestinationEntry[];
@@ -2235,6 +2255,127 @@ export interface OutputAssembleDryRunResponse {
   error: string | null;
   row_count: number;
   status: 'ok' | 'error';
+}
+/**
+ * Full preview response — extends ``NodeResult`` with graph-wide metadata.
+ *
+ * Inherits all per-node fields (status, row_count, columns, preview, etc.)
+ * and adds ``node_id``, ``timings``, ``memory``, and ``node_statuses`` for
+ * the full graph context.
+ */
+export interface PreviewNodeResponse {
+  available_columns: ColumnInfo[];
+  column_count: number;
+  columns: ColumnInfo[];
+  error: string | null;
+  error_line: number | null;
+  execution_metrics: ExecutionMetricsPayload | null;
+  frame_columns: {
+    [k: string]: ColumnInfo[];
+  };
+  memory: NodeMemoryInfo[];
+  memory_bytes: number;
+  node_available_columns: {
+    [k: string]: ColumnInfo[];
+  };
+  node_columns: {
+    [k: string]: ColumnInfo[];
+  };
+  node_frame_columns: {
+    [k: string]: {
+      [k: string]: ColumnInfo[];
+    };
+  };
+  node_id: string;
+  node_schema_warnings: {
+    [k: string]: SchemaWarning[];
+  };
+  node_statuses: {
+    [k: string]: 'ok' | 'error';
+  };
+  notes: string[];
+  port_previews: {
+    [k: string]: PortPreview;
+  };
+  preview: {
+    [k: string]: unknown;
+  }[];
+  preview_columns: string[];
+  preview_row_count: number;
+  preview_row_limit: number | null;
+  preview_truncated: boolean;
+  row_count: number;
+  schema_warnings: SchemaWarning[];
+  seed_plan: PreviewSeedPlanEntry[];
+  status: 'ok' | 'error';
+  timing_ms: number;
+  timings: NodeTimingInfo[];
+}
+export interface NodeMemoryInfo {
+  label: string;
+  memory_bytes: number;
+  node_id: string;
+}
+export interface SchemaWarning {
+  column: string | null;
+  detail: string | null;
+  input: string | null;
+  status: string;
+}
+/**
+ * One frame's preview of a multi-frame target asked for several (``port_labels``):
+ * what a preview of that frame alone (``port_label``) answers in its ``row_count``,
+ * ``columns``, ``preview`` and ``preview_truncated``.
+ */
+export interface PortPreview {
+  columns: ColumnInfo[];
+  preview: {
+    [k: string]: unknown;
+  }[];
+  preview_truncated: boolean;
+  row_count: number;
+}
+/**
+ * One snapshot generation a preview's collected rows were computed from.
+ *
+ * ``seeded``: read instead of computing the node. ``captured``: computed by
+ * this preview, published, and read by everything below it. ``columns`` is
+ * the generation's column set, ``None`` for all columns; ``port_label`` is
+ * always ``None``, since only node outputs are seeded or captured.
+ */
+export interface PreviewSeedPlanEntry {
+  columns: string[] | null;
+  created_at: string;
+  generation_id: string;
+  identity_digest: string;
+  kind: 'seeded' | 'captured';
+  node_id: string;
+  node_label: string;
+  port_label: null;
+}
+export interface NodeTimingInfo {
+  label: string;
+  node_id: string;
+  timing_ms: number;
+}
+/**
+ * Snapshot-backed Data Inputs and structured API Inputs, in execution order.
+ */
+export interface PreviewInputsResponse {
+  input_node_ids: string[];
+}
+/**
+ * A running preview's step progress (``GET /api/pipeline/preview/progress/{id}``).
+ *
+ * ``preparing`` until its execution plan is known; then ``running`` with the
+ * planned heavy steps completed of the total, and the step now running.
+ */
+export interface PreviewProgressResponse {
+  done: number | null;
+  label: string | null;
+  phase: 'preparing' | 'running';
+  request_id: string;
+  total: number | null;
 }
 export interface SessionStatusResponse {
   ok: boolean;

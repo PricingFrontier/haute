@@ -709,3 +709,46 @@ export function makeInputCacheSnapshot(
     ...overrides,
   }
 }
+
+// ---------------------------------------------------------------------------
+// makePreviewResponse — a whole POST /api/pipeline/preview answer
+// ---------------------------------------------------------------------------
+
+import type { PreviewNodeResponse } from "../api/types"
+
+/** A preview response as the server sends it, every field present. */
+export function makePreviewResponse(
+  overrides: Partial<PreviewNodeResponse> = {},
+): PreviewNodeResponse {
+  return {
+    status: "ok",
+    node_id: "n1",
+    row_count: 0,
+    column_count: 0,
+    columns: [],
+    available_columns: [],
+    frame_columns: {},
+    preview: [],
+    preview_columns: [],
+    preview_row_count: 0,
+    preview_row_limit: null,
+    preview_truncated: false,
+    port_previews: {},
+    error: null,
+    error_line: null,
+    timing_ms: 0,
+    memory_bytes: 0,
+    schema_warnings: [],
+    notes: [],
+    timings: [],
+    memory: [],
+    node_statuses: {},
+    node_columns: {},
+    node_available_columns: {},
+    node_frame_columns: {},
+    node_schema_warnings: {},
+    execution_metrics: null,
+    seed_plan: [],
+    ...overrides,
+  }
+}

@@ -27,6 +27,7 @@ import type {
   ExplorePivotRunResponse as GeneratedExplorePivotRunResponse,
   ExplorePivotStatusResponse as GeneratedExplorePivotStatusResponse,
   NodeDataStatusResponse as GeneratedNodeDataStatusResponse,
+  PreviewNodeResponse as GeneratedPreviewNodeResponse,
   WriteOutputResponse as GeneratedWriteOutputResponse,
 } from "../generated/api-contracts.generated"
 import type {
@@ -49,14 +50,8 @@ import type {
   FrontierResponse,
   NodeDataStatusResponse,
   OptimiserStatusResponse,
-  PortPreview,
-  PreviewInputsResponse,
   PreviewNodeResponse,
-  SchemaWarning,
-  PreviewProgressResponse,
-  PreviewSeedPlanEntry,
   SavePipelineResponse,
-  SchemaResult,
   WriteOutputResponse,
   SubmodelCreateResponse,
   SubmodelGraphResponse,
@@ -68,8 +63,6 @@ import {
 } from "./generatedContractValidation"
 import {
   PIPELINE_NODE_TYPES,
-  type BackendNodeStatus,
-  type ColumnInfo,
   type PipelineEdge,
 } from "./node"
 import type {
@@ -316,92 +309,14 @@ function optionalStringArray(
   return value === undefined ? defaultValue : parseStringArray(parser, value, `field \`${key}\``)
 }
 
-function parsePlainObjectArray(
-  parser: string,
-  value: unknown,
-  field: string,
-): Record<string, unknown>[] {
-  return parseArray(parser, value, field, (item, itemField) => expectPlainObject(parser, item, itemField))
-}
-
-function optionalPlainObjectArray(
-  parser: string,
-  obj: Record<string, unknown>,
-  key: string,
-  defaultValue: Record<string, unknown>[] = [],
-): Record<string, unknown>[] {
-  const value = obj[key]
-  return value === undefined ? defaultValue : parsePlainObjectArray(parser, value, `field \`${key}\``)
-}
 
 
 
-const NODE_STATUS_VALUES = ["ok", "error"] as const
 
-/** Parse a `Record<string, BackendNodeStatus>`, validating every value against the
- *  closed status set so a drifting backend fails loud here rather than at an
- *  unchecked `as` cast downstream (usePipelineAPI). */
-function optionalNodeStatusRecord(
-  parser: string,
-  obj: Record<string, unknown>,
-  key: string,
-  defaultValue: Record<string, BackendNodeStatus> = {},
-): Record<string, BackendNodeStatus> {
-  const value = obj[key]
-  if (value === undefined) return defaultValue
-  const inner = expectPlainObject(parser, value, `field \`${key}\``)
-  const result: Record<string, BackendNodeStatus> = {}
-  for (const [nodeId, status] of Object.entries(inner)) {
-    result[nodeId] = expectStringLiteral(parser, status, `${key}.${nodeId}`, NODE_STATUS_VALUES)
-  }
-  return result
-}
 
-function parseArrayRecord<T>(
-  parser: string,
-  value: unknown,
-  field: string,
-  itemParser: (value: unknown, field: string) => T,
-): Record<string, T[]> {
-  const obj = expectPlainObject(parser, value, field)
-  const result: Record<string, T[]> = {}
-  for (const [recordKey, item] of Object.entries(obj)) {
-    result[recordKey] = parseArray(parser, item, `${field}.${recordKey}`, itemParser)
-  }
-  return result
-}
 
-function optionalArrayRecord<T>(
-  parser: string,
-  obj: Record<string, unknown>,
-  key: string,
-  itemParser: (value: unknown, field: string) => T,
-  defaultValue: Record<string, T[]> = {},
-): Record<string, T[]> {
-  const value = obj[key]
-  return value === undefined
-    ? defaultValue
-    : parseArrayRecord(parser, value, `field \`${key}\``, itemParser)
-}
 
-/** Parse a doubly-nested record `Record<string, Record<string, T[]>>` —
- * used by `node_frame_columns` (node_id → frame label → columns). */
-function optionalNestedArrayRecord<T>(
-  parser: string,
-  obj: Record<string, unknown>,
-  key: string,
-  itemParser: (value: unknown, field: string) => T,
-  defaultValue: Record<string, Record<string, T[]>> = {},
-): Record<string, Record<string, T[]>> {
-  const value = obj[key]
-  if (value === undefined) return defaultValue
-  const outer = expectPlainObject(parser, value, `field \`${key}\``)
-  const result: Record<string, Record<string, T[]>> = {}
-  for (const [recordKey, inner] of Object.entries(outer)) {
-    result[recordKey] = parseArrayRecord(parser, inner, `field \`${key}\`.${recordKey}`, itemParser)
-  }
-  return result
-}
+
 
 export function optionalNullableObject(
   parser: string,
@@ -413,52 +328,9 @@ export function optionalNullableObject(
   return expectPlainObject(parser, value, `field \`${key}\``)
 }
 
-function parseColumnInfo(value: unknown, field: string): ColumnInfo {
-  const obj = expectPlainObject("parseColumnInfo", value, field)
-  return {
-    name: expectString("parseColumnInfo", obj.name, `${field}.name`),
-    dtype: expectString("parseColumnInfo", obj.dtype, `${field}.dtype`),
-  }
-}
 
-function parseNodeTiming(value: unknown, field: string): { node_id: string; label: string; timing_ms: number } {
-  const obj = expectPlainObject("parsePreviewNodeResponse", value, field)
-  return {
-    node_id: expectString("parsePreviewNodeResponse", obj.node_id, `${field}.node_id`),
-    label: expectString("parsePreviewNodeResponse", obj.label, `${field}.label`),
-    timing_ms: expectNumber("parsePreviewNodeResponse", obj.timing_ms, `${field}.timing_ms`),
-  }
-}
 
-function parseNodeMemory(value: unknown, field: string): { node_id: string; label: string; memory_bytes: number } {
-  const obj = expectPlainObject("parsePreviewNodeResponse", value, field)
-  return {
-    node_id: expectString("parsePreviewNodeResponse", obj.node_id, `${field}.node_id`),
-    label: expectString("parsePreviewNodeResponse", obj.label, `${field}.label`),
-    memory_bytes: expectNumber("parsePreviewNodeResponse", obj.memory_bytes, `${field}.memory_bytes`),
-  }
-}
 
-function parseSchemaWarning(value: unknown, field: string): SchemaWarning {
-  const parser = "parsePreviewNodeResponse"
-  const obj = expectPlainObject(parser, value, field)
-  const status = expectString(parser, obj.status, `${field}.status`)
-  if (status === "unavailable") {
-    if (obj.column != null) throw new Error(`${parser}: ${field}.column must be absent for an unavailable schema`)
-    return {
-      status,
-      column: optionalNullableString(parser, obj, "column"),
-      input: expectNonBlankString(parser, obj.input, `${field}.input`),
-      detail: expectNonBlankString(parser, obj.detail, `${field}.detail`),
-    }
-  }
-  return {
-    column: expectString(parser, obj.column, `${field}.column`),
-    status,
-    input: optionalNullableString(parser, obj, "input"),
-    detail: optionalNullableString(parser, obj, "detail"),
-  }
-}
 
 
 
@@ -907,123 +779,19 @@ export function parseDissolveSubmodelResponse(value: unknown): DissolveSubmodelR
   }
 }
 
-/** Parse `port_previews`: each frame's preview, by its label. */
-function optionalPortPreviews(parser: string, obj: Record<string, unknown>, key: string): Record<string, PortPreview> {
-  const value = obj[key]
-  if (value === undefined) return {}
-  const record = expectPlainObject(parser, value, `field \`${key}\``)
-  return Object.fromEntries(
-    Object.entries(record).map(([label, port]) => {
-      const item = expectPlainObject(parser, port, `field \`${key}.${label}\``)
-      return [
-        label,
-        {
-          row_count: optionalNumber(parser, item, "row_count"),
-          columns: optionalArray(parser, item, "columns", parseColumnInfo),
-          preview: optionalPlainObjectArray(parser, item, "preview"),
-          preview_truncated: optionalBoolean(parser, item, "preview_truncated"),
-        },
-      ]
-    }),
-  )
-}
 
-export function parsePreviewNodeResponse(
-  value: unknown,
+
+
+
+
+/** A preview response, its execution metrics checked through the shared module. */
+export function previewFromContract(
+  response: GeneratedPreviewNodeResponse,
   validateMetrics: ExecutionMetricsValidator,
 ): PreviewNodeResponse {
-  const obj = expectPlainObject("parsePreviewNodeResponse", value)
   return {
-    status: expectStringLiteral(
-      "parsePreviewNodeResponse",
-      obj.status,
-      "field `status`",
-      NODE_STATUS_VALUES,
-    ),
-    node_id: expectString("parsePreviewNodeResponse", obj.node_id, "field `node_id`"),
-    row_count: optionalNumber("parsePreviewNodeResponse", obj, "row_count"),
-    column_count: optionalNumber("parsePreviewNodeResponse", obj, "column_count"),
-    columns: optionalArray("parsePreviewNodeResponse", obj, "columns", parseColumnInfo),
-    available_columns: optionalArray("parsePreviewNodeResponse", obj, "available_columns", parseColumnInfo),
-    frame_columns: optionalArrayRecord(
-      "parsePreviewNodeResponse",
-      obj,
-      "frame_columns",
-      parseColumnInfo,
-    ),
-    preview: optionalPlainObjectArray("parsePreviewNodeResponse", obj, "preview"),
-    preview_columns: optionalStringArray("parsePreviewNodeResponse", obj, "preview_columns"),
-    preview_row_count: optionalNumber("parsePreviewNodeResponse", obj, "preview_row_count"),
-    preview_row_limit: optionalNullableNumber("parsePreviewNodeResponse", obj, "preview_row_limit"),
-    preview_truncated: optionalBoolean("parsePreviewNodeResponse", obj, "preview_truncated"),
-    port_previews: optionalPortPreviews("parsePreviewNodeResponse", obj, "port_previews"),
-    error: optionalNullableString("parsePreviewNodeResponse", obj, "error"),
-    error_line: optionalNullableNumber("parsePreviewNodeResponse", obj, "error_line"),
-    timing_ms: optionalNumber("parsePreviewNodeResponse", obj, "timing_ms"),
-    memory_bytes: optionalNumber("parsePreviewNodeResponse", obj, "memory_bytes"),
-    timings: optionalArray("parsePreviewNodeResponse", obj, "timings", parseNodeTiming),
-    memory: optionalArray("parsePreviewNodeResponse", obj, "memory", parseNodeMemory),
-    schema_warnings: optionalArray("parsePreviewNodeResponse", obj, "schema_warnings", parseSchemaWarning),
-    node_statuses: optionalNodeStatusRecord("parsePreviewNodeResponse", obj, "node_statuses"),
-    node_columns: optionalArrayRecord(
-      "parsePreviewNodeResponse",
-      obj,
-      "node_columns",
-      parseColumnInfo,
-    ),
-    node_available_columns: optionalArrayRecord(
-      "parsePreviewNodeResponse",
-      obj,
-      "node_available_columns",
-      parseColumnInfo,
-    ),
-    node_schema_warnings: optionalArrayRecord(
-      "parsePreviewNodeResponse",
-      obj,
-      "node_schema_warnings",
-      parseSchemaWarning,
-    ),
-    node_frame_columns: optionalNestedArrayRecord(
-      "parsePreviewNodeResponse",
-      obj,
-      "node_frame_columns",
-      parseColumnInfo,
-    ),
-    execution_metrics: executionMetricsFromContract(validateMetrics, obj.execution_metrics),
-    seed_plan: optionalArray("parsePreviewNodeResponse", obj, "seed_plan", parsePreviewSeedPlanEntry),
-    notes: optionalStringArray("parsePreviewNodeResponse", obj, "notes"),
-  }
-}
-
-const PREVIEW_SEED_KINDS = ["seeded", "captured"] as const
-
-export function parsePreviewSeedPlanEntry(value: unknown, field: string): PreviewSeedPlanEntry {
-  const parser = "parsePreviewNodeResponse"
-  const obj = expectPlainObject(parser, value, field)
-  if (obj.port_label !== null && obj.port_label !== undefined) {
-    throw new Error(`${parser}: expected ${field}.port_label to be null`)
-  }
-  return {
-    node_id: expectNonBlankString(parser, obj.node_id, `${field}.node_id`),
-    port_label: null,
-    node_label: expectString(parser, obj.node_label, `${field}.node_label`),
-    identity_digest: expectNonBlankString(parser, obj.identity_digest, `${field}.identity_digest`),
-    generation_id: expectNonBlankString(parser, obj.generation_id, `${field}.generation_id`),
-    columns:
-      obj.columns === null ? null : parseStringArray(parser, obj.columns, `${field}.columns`),
-    created_at: expectNonBlankString(parser, obj.created_at, `${field}.created_at`),
-    kind: expectStringLiteral(parser, obj.kind, `${field}.kind`, PREVIEW_SEED_KINDS),
-  }
-}
-
-export function parsePreviewInputsResponse(value: unknown): PreviewInputsResponse {
-  const obj = expectPlainObject("parsePreviewInputsResponse", value)
-  return {
-    input_node_ids: parseStringArray(
-      "parsePreviewInputsResponse",
-      obj.input_node_ids,
-      "field `input_node_ids`",
-    ),
+    ...response,
+    execution_metrics: executionMetricsFromContract(validateMetrics, response.execution_metrics),
   }
 }
 
@@ -1345,31 +1113,7 @@ export function parseTraceResponse(value: unknown): TraceResponse {
 // Schema + modelling contracts
 // ---------------------------------------------------------------------------
 
-export function parseSchemaResponse(value: unknown): SchemaResult {
-  const obj = expectPlainObject("parseSchemaResponse", value)
-  return {
-    path: expectString("parseSchemaResponse", obj.path, "field `path`"),
-    columns: obj.columns === undefined ? [] : parseArray("parseSchemaResponse", obj.columns, "field `columns`", parseColumnInfo),
-    row_count: optionalNullableNumber("parseSchemaResponse", obj, "row_count"),
-    row_count_estimated: optionalBoolean("parseSchemaResponse", obj, "row_count_estimated"),
-    column_count: expectNumber("parseSchemaResponse", obj.column_count, "field `column_count`"),
-    preview: optionalPlainObjectArray("parseSchemaResponse", obj, "preview"),
-  }
-}
 
-export function parsePreviewProgressResponse(value: unknown): PreviewProgressResponse {
-  const p = "parsePreviewProgressResponse"
-  const obj = expectPlainObject(p, value)
-  const count = (field: "done" | "total") =>
-    obj[field] === null || obj[field] === undefined ? null : expectNumber(p, obj[field], `field \`${field}\``)
-  return {
-    request_id: expectString(p, obj.request_id, "field `request_id`"),
-    phase: expectStringLiteral(p, obj.phase, "field `phase`", ["preparing", "running"]),
-    done: count("done"),
-    total: count("total"),
-    label: obj.label === undefined ? null : expectNullableString(p, obj.label, "field `label`"),
-  }
-}
 // ---------------------------------------------------------------------------
 // Explore contracts
 // ---------------------------------------------------------------------------
@@ -1673,10 +1417,6 @@ export function frontierAutoRangeStatusFromContract(
 // Databricks / cache / git contracts
 // ---------------------------------------------------------------------------
 
-export function parseJsonCacheSchemaInferenceResponse(value: unknown): { tables: Array<Record<string, unknown>> } {
-  const obj = expectPlainObject("parseJsonCacheSchemaInferenceResponse", value)
-  return { tables: parsePlainObjectArray("parseJsonCacheSchemaInferenceResponse", obj.tables, "field `tables`") }
-}
 
 // ---------------------------------------------------------------------------
 // React Flow node validation

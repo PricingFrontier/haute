@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { makePreviewResponse as makeCompletePreviewResponse } from "../../test-utils/factories"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import {
   ApiError,
@@ -127,23 +128,14 @@ const dummyGraph = {
 }
 
 function makePreviewResponse() {
-  return {
-    status: "ok",
+  return makeCompletePreviewResponse({
     node_id: "node1",
     row_count: 1,
     column_count: 1,
     columns: [{ name: "x", dtype: "Int64" }],
     available_columns: [{ name: "x", dtype: "Int64" }],
     preview: [{ x: 1 }],
-    error: null,
-    error_line: null,
-    timing_ms: 0,
-    memory_bytes: 0,
-    timings: [],
-    memory: [],
-    schema_warnings: [],
-    node_statuses: {},
-  }
+  })
 }
 
 function makeSavePipelineResponse() {

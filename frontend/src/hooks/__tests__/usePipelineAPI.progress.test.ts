@@ -2,6 +2,7 @@
  * A running preview's step progress: polled by its own request id and shown on
  * the loading panel, with the upstream previews a Refresh runs first labelled.
  */
+import { makePreviewResponse } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
@@ -94,14 +95,14 @@ function hangUntilAborted({ signal }: { signal?: AbortSignal }) {
   })
 }
 
-const okPreview = {
+const okPreview = makePreviewResponse({
   node_id: "A",
   status: "ok" as const,
   row_count: 3,
   column_count: 1,
   columns: [{ name: "x", dtype: "i64" }],
   preview: [{ x: 1 }, { x: 2 }, { x: 3 }],
-}
+})
 
 async function renderPipelineAPI(nodes: Node[], edges: Edge[] = []) {
   mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
