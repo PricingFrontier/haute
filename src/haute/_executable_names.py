@@ -23,12 +23,12 @@ from __future__ import annotations
 
 import builtins
 import sys
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from haute._graph_utils import _sanitize_func_name, edge_input_name
-from haute._node_specs import REQUEST_INPUT_NODE_TYPES
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES, node_spec, node_type_table
 from haute._types import GLOBAL_CONSTANTS_NAME, GraphNode, NodeType, PipelineGraph
 
 #: The names a generated module binds itself, with what it binds them to.
@@ -49,7 +49,12 @@ BUILTIN_NAMES: frozenset[str] = frozenset(
 #: Where a party sits: the root pipeline module, or a submodel definition.
 ROOT_MODULE = "the pipeline"
 
-_STRUCTURAL_TYPES = (NodeType.SUBMODEL_PORT,)
+
+def _structural_role(node: GraphNode) -> str | None:
+    """The part of a submodel *node* is: a Port has no function name, an occurrence
+    is named by its alias."""
+    return node_spec(node.data.nodeType).structural_role
+
 
 ViolationKind = Literal[
     "duplicate",
@@ -218,7 +223,7 @@ def _named_parties(graph: PipelineGraph) -> Iterator[tuple[str, NameParty]]:
     """Every node function name and occurrence alias, with its party."""
     for module, scoped in _named_graphs(graph):
         for node in scoped.nodes:
-            if node.data.nodeType in _STRUCTURAL_TYPES:
+            if _structural_role(node) == "port":
                 continue
             party = NameParty(node_id=node.id, label=node.data.label, module=module)
             yield _function_name(node), party
@@ -239,7 +244,7 @@ def _name_claims(graph: PipelineGraph) -> Iterator[_NameClaim]:
     for module, scoped in _named_graphs(graph):
         for occurrence in scoped.nodes:
             config = occurrence.data.config
-            if occurrence.data.nodeType != NodeType.SUBMODEL or config.get("instanceOf") is None:
+            if _structural_role(occurrence) != "occurrence" or config.get("instanceOf") is None:
                 continue
             definition_id = config.get("definitionId")
             alias = config.get("alias")
@@ -251,7 +256,7 @@ def _name_claims(graph: PipelineGraph) -> Iterator[_NameClaim]:
                 continue
             instance_party = NameParty(occurrence.id, occurrence.data.label, module)
             for child in definition.graph.nodes:
-                if child.data.nodeType in _STRUCTURAL_TYPES:
+                if _structural_role(child) == "port":
                     continue
                 child_party = NameParty(child.id, child.data.label, definition_id)
                 yield _NameClaim(
@@ -343,7 +348,7 @@ def _edge_inputs(module: str, scoped: PipelineGraph) -> dict[str, list[ReceivedI
             origin = f"frame {name!r} of {source.data.label!r}"
             if edge.sourceHandle is not None:
                 binding = FrameBinding(module, source.id, edge.sourceHandle)
-        elif source.data.nodeType == NodeType.SUBMODEL:
+        elif _structural_role(source) == "occurrence":
             origin = f"output port {name!r} of {source.data.label!r}"
         else:
             origin = f"from {source.data.label!r}"
@@ -432,6 +437,38 @@ def data_output_destination(
     return (identity.casefold() if sys.platform in ("win32", "darwin") else identity), display
 
 
+#: Where a node of each type writes, for the types that write a destination of
+#: their own; ``None`` for every other type.
+_OUTPUT_DESTINATION: Mapping[
+    NodeType, Callable[[PipelineGraph, Mapping[str, Any]], tuple[str, str] | None] | None
+] = node_type_table(
+    "output destination",
+    {
+        NodeType.API_INPUT: None,
+        NodeType.WORKBENCH_INPUT: None,
+        NodeType.WORKBENCH_OUTPUT: None,
+        NodeType.DATA_INPUT: None,
+        NodeType.DATA_OUTPUT: data_output_destination,
+        NodeType.POLARS: None,
+        NodeType.EDGE_JOIN: None,
+        NodeType.MODEL_SCORE: None,
+        NodeType.BANDING: None,
+        NodeType.RATING_STEP: None,
+        NodeType.OUTPUT: None,
+        NodeType.EXPLORE: None,
+        NodeType.EXTERNAL_FILE: None,
+        NodeType.LIVE_SWITCH: None,
+        NodeType.MODELLING: None,
+        NodeType.OPTIMISER: None,
+        NodeType.SCENARIO_EXPANDER: None,
+        NodeType.OPTIMISER_APPLY: None,
+        NodeType.CONSTANT: None,
+        NodeType.SUBMODEL: None,
+        NodeType.SUBMODEL_PORT: None,
+    },
+)
+
+
 def data_output_violations(graph: PipelineGraph) -> list[NameViolation]:
     """Two Data Output nodes writing one destination, submodel occurrences expanded.
 
@@ -442,7 +479,8 @@ def data_output_violations(graph: PipelineGraph) -> list[NameViolation]:
     displays: dict[str, str] = {}
 
     def record(node: GraphNode, module: str) -> None:
-        destination = data_output_destination(graph, node.data.config)
+        destination_of = _OUTPUT_DESTINATION[node.data.nodeType]
+        destination = None if destination_of is None else destination_of(graph, node.data.config)
         if destination is not None:
             identity, display = destination
             displays.setdefault(identity, display)
@@ -451,15 +489,15 @@ def data_output_violations(graph: PipelineGraph) -> list[NameViolation]:
 
     definitions = graph.submodels or {}
     for node in graph.nodes:
-        if node.data.nodeType == NodeType.DATA_OUTPUT:
+        if _OUTPUT_DESTINATION[node.data.nodeType] is not None:
             record(node, ROOT_MODULE)
-        elif node.data.nodeType == NodeType.SUBMODEL:
+        elif _structural_role(node) == "occurrence":
             definition_id = node.data.config.get("definitionId")
             definition = definitions.get(str(definition_id))
             if definition is None:
                 continue
             for child in definition.graph.nodes:
-                if child.data.nodeType == NodeType.DATA_OUTPUT:
+                if _OUTPUT_DESTINATION[child.data.nodeType] is not None:
                     record(child, str(definition_id))
     return [
         NameViolation(kind="output_destination", name=displays[identity], parties=tuple(parties))

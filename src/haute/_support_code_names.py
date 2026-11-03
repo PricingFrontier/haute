@@ -44,12 +44,13 @@ from haute._executable_names import (
     received_inputs,
 )
 from haute._io import read_user_text
+from haute._node_specs import node_spec
 from haute._submodel_paths import (
     SUBMODEL_PACKAGE,
     MalformedSubmodelPathError,
     submodel_module_name,
 )
-from haute._types import NodeType, PipelineGraph
+from haute._types import PipelineGraph
 
 #: Reads ``utility/<module>.py`` as the executor would resolve it, or ``None``
 #: when no such file exists. Nothing else is read, and nothing is imported.
@@ -444,7 +445,11 @@ def support_code_violations(
             )
 
     helpers = {name: bindings[-1] for name, bindings in by_name.items()}
-    occurrences = {node.id for node in graph.nodes if node.data.nodeType == NodeType.SUBMODEL}
+    occurrences = {
+        node.id
+        for node in graph.nodes
+        if node_spec(node.data.nodeType).structural_role == "occurrence"
+    }
     function_names: set[str] = set()
     for name, party in _named_parties(graph):
         function_names.add(name)

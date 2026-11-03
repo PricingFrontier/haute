@@ -37,6 +37,8 @@ from haute._execution_context import (
 from haute._file_ops import PATH_TOO_LONG_REMEDIATION, path_too_long_error
 from haute._logging import get_logger
 from haute._native_memory_limit import current_native_memory_backend
+from haute._node_specs import node_type_table
+from haute._node_type import NodeType
 from haute._pipeline_settings import project_pipeline_settings
 from haute._polars_io_registry import PolarsIoConfigError, data_input_is_direct
 from haute._source_cache import (
@@ -311,6 +313,36 @@ def build_input_snapshot_worker(
 
 InputKind = Literal["data_input", "api_input"]
 
+#: The kind of input snapshot a node type executes from, when it can: a request
+#: input's tables (a structured one's) or a Data Input's source (a snapshot-backed
+#: one's); ``None`` for every other type.
+_SNAPSHOT_INPUT_KIND: Mapping[NodeType, InputKind | None] = node_type_table(
+    "input snapshot kind",
+    {
+        NodeType.API_INPUT: "api_input",
+        NodeType.WORKBENCH_INPUT: "api_input",
+        NodeType.WORKBENCH_OUTPUT: None,
+        NodeType.DATA_INPUT: "data_input",
+        NodeType.DATA_OUTPUT: None,
+        NodeType.POLARS: None,
+        NodeType.EDGE_JOIN: None,
+        NodeType.MODEL_SCORE: None,
+        NodeType.BANDING: None,
+        NodeType.RATING_STEP: None,
+        NodeType.OUTPUT: None,
+        NodeType.EXPLORE: None,
+        NodeType.EXTERNAL_FILE: None,
+        NodeType.LIVE_SWITCH: None,
+        NodeType.MODELLING: None,
+        NodeType.OPTIMISER: None,
+        NodeType.SCENARIO_EXPANDER: None,
+        NodeType.OPTIMISER_APPLY: None,
+        NodeType.CONSTANT: None,
+        NodeType.SUBMODEL: None,
+        NodeType.SUBMODEL_PORT: None,
+    },
+)
+
 
 def _is_structured_api_input(config: Mapping[str, Any]) -> bool:
     """A JSON, JSONL, NDJSON, or XML API Input with a v2 table schema."""
@@ -335,21 +367,20 @@ def snapshot_backed_inputs(
     runtime path resolved through the node builder's project-root guard.
     """
     from haute._builders import _config_with_resolved_data_path
-    from haute._node_specs import REQUEST_INPUT_NODE_TYPES
-    from haute.schemas import NodeType
 
     found: list[tuple[str, InputKind, Mapping[str, Any]]] = []
     for node_id in order:
         node = node_map.get(node_id)
         if node is None:
             continue
-        if node.data.nodeType in REQUEST_INPUT_NODE_TYPES:
+        kind = _SNAPSHOT_INPUT_KIND[node.data.nodeType]
+        if kind == "api_input":
             if _is_structured_api_input(node.data.config):
                 found.append(
                     (node_id, "api_input", _config_with_resolved_data_path(node.data.config))
                 )
             continue
-        if node.data.nodeType != NodeType.DATA_INPUT:
+        if kind != "data_input":
             continue
         config = node.data.config
         if not config.get("inputType"):

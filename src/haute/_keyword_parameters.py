@@ -17,6 +17,7 @@ from typing import Any
 
 from haute._executable_names import RESERVED_NAMES
 from haute._node_config_models import KeywordParameter
+from haute._node_specs import node_spec
 from haute._types import NodeType
 from haute.errors import ConfigError, ParseError
 
@@ -85,7 +86,7 @@ def keyword_parameters_from_signature(
     pairs = list(zip(arguments.kwonlyargs, arguments.kw_defaults, strict=True))
     if not pairs:
         return []
-    if node_type is NodeType.EXTERNAL_FILE:
+    if node_spec(node_type).code == "object_hook":
         obj, default = pairs[0]
         if len(pairs) == 1 and obj.arg == "obj" and default is None:
             return []
@@ -96,7 +97,7 @@ def keyword_parameters_from_signature(
             f"default, but declares {extra.arg!r}. Remove it, and read settings from the "
             "preamble or global constants.",
         )
-    if node_type is not NodeType.POLARS or stepped:
+    if node_spec(node_type).code != "transform" or stepped:
         where = "a Transform built from steps" if stepped else f"a {node_type.value} node"
         raise refuse(
             pairs[0][0],

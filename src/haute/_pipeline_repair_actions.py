@@ -16,6 +16,7 @@ from haute._config_io import (
     palette_default_config,
 )
 from haute._config_validation import reject_unrecognized_config_keys
+from haute._node_specs import STRUCTURAL_NODE_TYPES, node_spec
 from haute._pipeline_recovery import _recovery_artifacts, load_pipeline_editor_document
 from haute._pipeline_repair import (
     PipelineRepairError,
@@ -58,6 +59,14 @@ if TYPE_CHECKING:
 
 def _unsupported(message: str) -> PipelineRepairError:
     return PipelineRepairError("repair_action_unsupported", message)
+
+
+def _is_occurrence(node_type: str) -> bool:
+    """Whether a recovered node's type is a submodel occurrence; not for an unknown type."""
+    try:
+        return node_spec(node_type).structural_role == "occurrence"
+    except KeyError:
+        return False
 
 
 def _replace_spans(
@@ -177,7 +186,7 @@ def _reset_node(
     from haute._graph_utils import executable_input_name
     from haute.codegen import _node_to_code
 
-    if target.node_type is None or target.node_type in {NodeType.SUBMODEL, "submodelPort"}:
+    if target.node_type is None or target.node_type in STRUCTURAL_NODE_TYPES:
         raise _unsupported(
             "Only supported ordinary nodes can be reset; submodels retain their contents."
         )
@@ -224,7 +233,8 @@ def _reset_node(
     # A node inside a submodel is also fed by the definition's public input
     # ports, which bind it by the port's name; they are not edges of its graph.
     port_inputs = _definition_port_inputs(document, target)
-    if node_type == NodeType.EDGE_JOIN:
+    joins = bool(node_spec(node_type).input_roles)
+    if joins:
         handles = [edge.target_handle for edge in incoming] + [h for _n, h in port_inputs]
         if set(handles) != {"base", "join"} or len(handles) != 2:
             raise _unsupported("An Edge Join reset requires its base and join connections.")
@@ -249,7 +259,7 @@ def _reset_node(
             )
         instance_of = None
         source_handles = None
-        if source.node_type == NodeType.SUBMODEL:
+        if _is_occurrence(source.node_type):
             source_config = source.config or {}
             definition_id = source_config.get("definitionId")
             definitions = graph.submodels or {}
@@ -274,12 +284,12 @@ def _reset_node(
             )
         )
     named_inputs.extend((handle, name) for name, handle in port_inputs)
-    if node_type == NodeType.EDGE_JOIN:
+    if joins:
         named_inputs.sort(key=lambda item: item[0] != "base")
     source_names = [name for _handle, name in named_inputs]
     if len(set(source_names)) != len(source_names):
         raise _unsupported("Incoming node names are ambiguous.")
-    if replacement_config is None and node_type is NodeType.EDGE_JOIN:
+    if replacement_config is None and joins:
         # A new join has no keys until they are chosen, and a join without keys
         # cannot be written; Recover settings keeps the join's own.
         raise _unsupported(
@@ -433,7 +443,7 @@ def _recover_node(
     from haute._node_config_recovery import reconcile_config
     from haute._recovery_sources import read_raw_node_settings
 
-    if target.node_type is None or target.node_type in {NodeType.SUBMODEL, "submodelPort"}:
+    if target.node_type is None or target.node_type in STRUCTURAL_NODE_TYPES:
         raise _unsupported("Only supported ordinary nodes can be recovered.")
     node_type, raw, raw_changes = read_raw_node_settings(root, document, target)
     # Engine issues are completeness for a direct recover, never a plan gate.

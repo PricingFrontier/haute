@@ -1643,6 +1643,41 @@ class ModelScorer:
 
 
 # ----------------------------------------------------------------------
+# model_scorer — the one interpretation of a Model Scoring config
+# ----------------------------------------------------------------------
+
+
+def model_scorer(
+    config: Mapping[str, Any],
+    model_source: ModelSource,
+    *,
+    base_dir: str | Path | None,
+    source: str,
+    **options: Any,
+) -> ModelScorer:
+    """The scorer a Model Scoring config describes, for its parsed *model_source*.
+
+    The config gives the task, the output column and, with *base_dir* (where a
+    relative model file and contract resolve), the feature contract the model is
+    bound to. The canvas builder and :func:`score_from_config` both construct
+    through here; each keeps its own rules around it (the canvas's incomplete-steps
+    check, its no-source passthrough and its *options*; the standalone run's
+    refusal of a config with no source and its hook).
+    """
+    from haute._model_source import scoring_contract_path
+
+    return ModelScorer(
+        model_source=model_source,
+        task=model_score_task(config),
+        output_col=model_score_output_column(config),
+        source=source,
+        feature_contract_path=scoring_contract_path(model_source, config, base_dir),
+        base_dir=base_dir,
+        **options,
+    )
+
+
+# ----------------------------------------------------------------------
 # score_from_config — thin delegation target for codegen
 # ----------------------------------------------------------------------
 
@@ -1683,16 +1718,8 @@ def score_from_config(
     except PathOutsideProjectError:
         raise ValueError(f"Config path {config!r} resolves outside project root") from None
     cfg = load_node_config(resolved, node_type=NodeType.MODEL_SCORE)
-    from haute._model_source import scoring_contract_path
-
-    model_source = require_model_source(cfg)
-    scorer = ModelScorer(
-        model_source=model_source,
-        task=model_score_task(cfg),
-        output_col=model_score_output_column(cfg),
-        source=_scenario_ctx.get(),
-        feature_contract_path=scoring_contract_path(model_source, cfg, base_dir),
-        base_dir=base_dir,
+    scorer = model_scorer(
+        cfg, require_model_source(cfg), base_dir=base_dir, source=_scenario_ctx.get()
     )
     return scorer.score(*dfs)
 

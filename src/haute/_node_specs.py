@@ -86,6 +86,10 @@ PassThrough = Literal["none", "first", "selected"]
 #: A group a pipeline holds at most one node of.
 SingletonGroup = Literal["request_input", "response"]
 
+#: The part of a submodel a structural type is: the Submodel is an ``occurrence``
+#: of a definition, the Port a definition's public input ``port``.
+StructuralRole = Literal["occurrence", "port"]
+
 
 @dataclass(frozen=True)
 class SteppedSurface:
@@ -158,10 +162,13 @@ class NodeSpec:
     pass_through: PassThrough = "none"
     #: A standalone run returns one of its inputs.
     standalone_passthrough: bool = False
-    #: The structural types' roles: the Submodel occurrence (named by alias, carries
-    #: ``instanceOf``, expanded into its definition) and its Port.
-    structural_role: Literal["occurrence", "port"] | None = None
-    #: Its scorer writes its whole output into one batch-scored capture (Model Score).
+    #: A structural type's part of a submodel. An ``occurrence`` (the Submodel) is
+    #: named by its alias, may be an ``instanceOf`` another occurrence, outputs on
+    #: ``out__<port>`` handles and is expanded into its definition's nodes; a ``port``
+    #: (the Port) is a definition's public input, named by its handle.
+    structural_role: StructuralRole | None = None
+    #: Scores its input a batch at a time: a capture below it drains its whole
+    #: scored output into its own capture kind (the Model Scoring's scorer).
     batch_scored: bool = False
 
 
@@ -494,6 +501,8 @@ def _validate_node_specs(specs: Mapping[NodeType, NodeSpec]) -> None:
                 "a behavioural type is never a standalone passthrough: route it through "
                 "the executor's shared apply_*_from_config helper"
             )
+        if spec.structural != (spec.structural_role is not None):
+            problem("exactly the structural types have a structural role")
     if problems:
         raise RuntimeError("NODE_SPECS is inconsistent:\n  " + "\n  ".join(problems))
 

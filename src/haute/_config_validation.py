@@ -9,7 +9,8 @@ dropped or reaching the engine.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 from pydantic import ValidationError
@@ -17,7 +18,7 @@ from pydantic import ValidationError
 from haute._api_input_schema import ApiInputSchemaError
 from haute._contracts import DEPLOY_ANSWER_PER_ROW_CONFIG_KEY, DEPLOY_PRIVATE_CONFIG_KEYS
 from haute._node_config_models import NODE_CONFIG_MODELS
-from haute._node_specs import node_spec
+from haute._node_specs import node_spec, node_type_table
 from haute._output_assembler import OutputMappingSchemaError
 from haute._types import NodeType
 from haute.errors import ConfigError, NodeConfigError, ParseError
@@ -43,33 +44,99 @@ CONFIG_REFUSALS: tuple[type[Exception], ...] = (
 )
 
 
-_REMOVED_INPUT_IDENTITY_KEYS: dict[NodeType, frozenset[str]] = {
-    NodeType.EDGE_JOIN: frozenset({"baseInput", "joinInput"}),
-    NodeType.OPTIMISER: frozenset({"scored_input", "factors_input"}),
-}
-_REMOVED_REGISTRY_KEYS: dict[NodeType, frozenset[str]] = {
-    NodeType.MODELLING: frozenset({"model_name"}),
-    NodeType.OPTIMISER: frozenset({"model_name"}),
-}
-_REMOVED_FEATURE_SELECTION_KEYS: dict[NodeType, frozenset[str]] = {
-    NodeType.MODELLING: frozenset({"exclude"}),
-}
-_REMOVED_COLUMN_MAPPING_KEYS: dict[NodeType, frozenset[str]] = {
-    NodeType.WORKBENCH_OUTPUT: frozenset({"mapping"}),
-}
-_REMOVED_RESPONSE_FORMAT_KEYS: dict[NodeType, frozenset[str]] = {
-    NodeType.OUTPUT: frozenset({"outputFormat"}),
-}
-_REMOVED_EVALUATION_KEYS: dict[NodeType, tuple[str, ...]] = {
-    NodeType.MODELLING: ("split", "cross_validation"),
-}
+@dataclass(frozen=True)
+class RemovedConfigKeys:
+    """The retired config fields of one node type, grouped by the guidance their refusal
+    gives (:func:`reject_removed_config_keys`)."""
+
+    #: ``instanceOf`` is refused, except on the Submodel, whose occurrence carries it.
+    instance_of: bool = True
+    #: Removed input-identity fields, with the replacement the refusal names.
+    input_identity: frozenset[str] = frozenset()
+    input_identity_guidance: str = ""
+    #: The removed ``model_name``.
+    registry: frozenset[str] = frozenset()
+    #: The removed ``exclude``.
+    feature_selection: frozenset[str] = frozenset()
+    #: The removed column ``mapping``.
+    column_mapping: frozenset[str] = frozenset()
+    #: The removed ``outputFormat``.
+    response_format: frozenset[str] = frozenset()
+    #: The removed evaluation fields, in the order the refusal names them.
+    evaluation: tuple[str, ...] = ()
+
+
+_NONE_REMOVED = RemovedConfigKeys()
+
+#: Each node type's retired config fields.
+REMOVED_CONFIG_KEYS: Mapping[NodeType, RemovedConfigKeys] = node_type_table(
+    "removed config keys",
+    {
+        NodeType.API_INPUT: _NONE_REMOVED,
+        NodeType.WORKBENCH_INPUT: _NONE_REMOVED,
+        NodeType.WORKBENCH_OUTPUT: RemovedConfigKeys(column_mapping=frozenset({"mapping"})),
+        NodeType.DATA_INPUT: _NONE_REMOVED,
+        NodeType.DATA_OUTPUT: _NONE_REMOVED,
+        NodeType.POLARS: _NONE_REMOVED,
+        NodeType.EDGE_JOIN: RemovedConfigKeys(
+            input_identity=frozenset({"baseInput", "joinInput"}),
+            input_identity_guidance="use incoming target ports 'base' and 'join'",
+        ),
+        NodeType.MODEL_SCORE: _NONE_REMOVED,
+        NodeType.BANDING: _NONE_REMOVED,
+        NodeType.RATING_STEP: _NONE_REMOVED,
+        NodeType.OUTPUT: RemovedConfigKeys(response_format=frozenset({"outputFormat"})),
+        NodeType.EXPLORE: _NONE_REMOVED,
+        NodeType.EXTERNAL_FILE: _NONE_REMOVED,
+        NodeType.LIVE_SWITCH: _NONE_REMOVED,
+        NodeType.MODELLING: RemovedConfigKeys(
+            registry=frozenset({"model_name"}),
+            feature_selection=frozenset({"exclude"}),
+            evaluation=("split", "cross_validation"),
+        ),
+        NodeType.OPTIMISER: RemovedConfigKeys(
+            input_identity=frozenset({"scored_input", "factors_input"}),
+            input_identity_guidance=(
+                "use data_input and banding_source with exact connected input names"
+            ),
+            registry=frozenset({"model_name"}),
+        ),
+        NodeType.SCENARIO_EXPANDER: _NONE_REMOVED,
+        NodeType.OPTIMISER_APPLY: _NONE_REMOVED,
+        NodeType.CONSTANT: _NONE_REMOVED,
+        NodeType.SUBMODEL: RemovedConfigKeys(instance_of=False),
+        NodeType.SUBMODEL_PORT: _NONE_REMOVED,
+    },
+)
 #: The keys a workbench node is given from the project's form wherever the pipeline runs
 #: (``haute._workbench_nodes``), so a config file or a saved config never holds them: an
-#: earlier Haute kept copies there (specs/workbench).
-FORM_GIVEN_KEYS: dict[NodeType, frozenset[str]] = {
-    NodeType.WORKBENCH_INPUT: frozenset({"tables", "sample"}),
-    NodeType.WORKBENCH_OUTPUT: frozenset({"tables"}),
-}
+#: earlier Haute kept copies there (specs/workbench). Empty for every other type.
+FORM_GIVEN_KEYS: Mapping[NodeType, frozenset[str]] = node_type_table(
+    "form-given keys",
+    {
+        NodeType.API_INPUT: frozenset(),
+        NodeType.WORKBENCH_INPUT: frozenset({"tables", "sample"}),
+        NodeType.WORKBENCH_OUTPUT: frozenset({"tables"}),
+        NodeType.DATA_INPUT: frozenset(),
+        NodeType.DATA_OUTPUT: frozenset(),
+        NodeType.POLARS: frozenset(),
+        NodeType.EDGE_JOIN: frozenset(),
+        NodeType.MODEL_SCORE: frozenset(),
+        NodeType.BANDING: frozenset(),
+        NodeType.RATING_STEP: frozenset(),
+        NodeType.OUTPUT: frozenset(),
+        NodeType.EXPLORE: frozenset(),
+        NodeType.EXTERNAL_FILE: frozenset(),
+        NodeType.LIVE_SWITCH: frozenset(),
+        NodeType.MODELLING: frozenset(),
+        NodeType.OPTIMISER: frozenset(),
+        NodeType.SCENARIO_EXPANDER: frozenset(),
+        NodeType.OPTIMISER_APPLY: frozenset(),
+        NodeType.CONSTANT: frozenset(),
+        NodeType.SUBMODEL: frozenset(),
+        NodeType.SUBMODEL_PORT: frozenset(),
+    },
+)
 
 
 def removed_node_instance_error(form: str) -> ParseError:
@@ -101,30 +168,24 @@ def reject_removed_config_keys(
 ) -> None:
     """Reject retired config fields instead of silently migrating or ignoring them."""
     nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
-    if nt != NodeType.SUBMODEL and "instanceOf" in config:
+    removed = REMOVED_CONFIG_KEYS[nt]
+    if removed.instance_of and "instanceOf" in config:
         raise removed_node_instance_error("instanceOf")
-    removed_identity = sorted(
-        _REMOVED_INPUT_IDENTITY_KEYS.get(nt, frozenset()).intersection(config)
-    )
+    removed_identity = sorted(removed.input_identity.intersection(config))
     if removed_identity:
-        if nt == NodeType.EDGE_JOIN:
-            guidance = "use incoming target ports 'base' and 'join'"
-        else:
-            guidance = "use data_input and banding_source with exact connected input names"
         raise ConfigError(
-            f"{nt.value} config contains removed input identity fields; {guidance}.",
+            f"{nt.value} config contains removed input identity fields; "
+            f"{removed.input_identity_guidance}.",
             removed_config_keys=removed_identity,
         )
-    removed_registry = sorted(_REMOVED_REGISTRY_KEYS.get(nt, frozenset()).intersection(config))
+    removed_registry = sorted(removed.registry.intersection(config))
     if removed_registry:
         raise ConfigError(
             f"{nt.value} config contains the removed model_name field. Haute no longer "
             "registers models: remove the field and register or promote runs outside haute.",
             removed_config_keys=removed_registry,
         )
-    removed_selection = sorted(
-        _REMOVED_FEATURE_SELECTION_KEYS.get(nt, frozenset()).intersection(config)
-    )
+    removed_selection = sorted(removed.feature_selection.intersection(config))
     if removed_selection:
         raise ConfigError(
             f"{nt.value} config contains the removed exclude field. Features are opt-in: "
@@ -132,7 +193,7 @@ def reject_removed_config_keys(
             "pane) and remove exclude.",
             removed_config_keys=removed_selection,
         )
-    removed_mapping = sorted(_REMOVED_COLUMN_MAPPING_KEYS.get(nt, frozenset()).intersection(config))
+    removed_mapping = sorted(removed.column_mapping.intersection(config))
     if removed_mapping:
         raise ConfigError(
             f"{nt.value} config contains the removed mapping field. Each table column is "
@@ -140,14 +201,14 @@ def reject_removed_config_keys(
             "columns as the workbench does upstream and remove mapping.",
             removed_config_keys=removed_mapping,
         )
-    removed_format = sorted(_REMOVED_RESPONSE_FORMAT_KEYS.get(nt, frozenset()).intersection(config))
+    removed_format = sorted(removed.response_format.intersection(config))
     if removed_format:
         raise ConfigError(
             f"{nt.value} config contains the removed outputFormat field. The response "
             "document is always JSON: remove outputFormat.",
             removed_config_keys=removed_format,
         )
-    removed_evaluation = [key for key in _REMOVED_EVALUATION_KEYS.get(nt, ()) if key in config]
+    removed_evaluation = [key for key in removed.evaluation if key in config]
     if removed_evaluation:
         names = " and ".join(repr(key) for key in removed_evaluation)
         plural = len(removed_evaluation) > 1
@@ -166,14 +227,12 @@ def reject_form_given_keys(node_type: NodeType | str, config: Mapping[str, Any])
     holds them, given.
     """
     nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
-    given = FORM_GIVEN_KEYS.get(nt, frozenset())
+    given = FORM_GIVEN_KEYS[nt]
     held = [key for key in ("tables", "sample") if key in given and key in config]
     if not held:
         return
-    if nt is NodeType.WORKBENCH_INPUT:
-        reads = "A Workbench Input reads its tables and sample from the form folder"
-    else:
-        reads = "A Workbench Output reads its tables from the form folder"
+    given_fields = " and ".join(key for key in ("tables", "sample") if key in given)
+    reads = f"A {node_spec(nt).display_name} reads its {given_fields} from the form folder"
     fields = " and ".join(held)
     raise ConfigError(
         f"{nt.value} config contains the removed {fields} "
@@ -347,37 +406,79 @@ def validate_optimiser_input_selectors(
     always ``None``.
     """
     nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
-    if nt is NodeType.OPTIMISER:
-        data_input = resolve_optimiser_data_input(config, source_names, node_label=node_label)
-        validate_exact_input_selector(
-            config.get("banding_source"),
-            source_names,
-            required=config.get("mode") == "ratebook",
-            node_label=node_label,
-            field_name="banding_source",
-        )
-        validate_exact_input_selector(
-            config.get("analysis_input"),
-            source_names,
-            required=False,
-            node_label=node_label,
-            field_name="analysis_input",
-        )
-        return data_input
+    validate = _INPUT_SELECTORS[nt]
+    if validate is None:
+        raise ValueError(f"Unsupported optimiser selector node type: {nt.value!r}.")
+    return validate(config, source_names, node_label)
 
-    if nt is NodeType.OPTIMISER_APPLY:
-        optimiser_mode = config.get("optimiser_mode")
-        if optimiser_mode != "online":
-            validate_exact_input_selector(
-                config.get("ratebook_input"),
-                source_names,
-                required=optimiser_mode == "ratebook",
-                node_label=node_label,
-                field_name="ratebook_input",
-            )
-        return None
 
-    raise ValueError(f"Unsupported optimiser selector node type: {nt.value!r}.")
+def _optimiser_selectors(
+    config: Mapping[str, Any], source_names: Sequence[str], node_label: str
+) -> str | None:
+    data_input = resolve_optimiser_data_input(config, source_names, node_label=node_label)
+    validate_exact_input_selector(
+        config.get("banding_source"),
+        source_names,
+        required=config.get("mode") == "ratebook",
+        node_label=node_label,
+        field_name="banding_source",
+    )
+    validate_exact_input_selector(
+        config.get("analysis_input"),
+        source_names,
+        required=False,
+        node_label=node_label,
+        field_name="analysis_input",
+    )
+    return data_input
+
+
+def _optimiser_apply_selectors(
+    config: Mapping[str, Any], source_names: Sequence[str], node_label: str
+) -> str | None:
+    optimiser_mode = config.get("optimiser_mode")
+    if optimiser_mode != "online":
+        validate_exact_input_selector(
+            config.get("ratebook_input"),
+            source_names,
+            required=optimiser_mode == "ratebook",
+            node_label=node_label,
+            field_name="ratebook_input",
+        )
+    return None
+
+
+#: How each node type that names its inputs by exact-edge selectors
+#: (:attr:`haute._node_specs.NodeSpec.input_selectors`) validates them; ``None``
+#: for a type with none.
+_INPUT_SELECTORS: Mapping[
+    NodeType, Callable[[Mapping[str, Any], Sequence[str], str], str | None] | None
+] = node_type_table(
+    "input selector validation",
+    {
+        NodeType.API_INPUT: None,
+        NodeType.WORKBENCH_INPUT: None,
+        NodeType.WORKBENCH_OUTPUT: None,
+        NodeType.DATA_INPUT: None,
+        NodeType.DATA_OUTPUT: None,
+        NodeType.POLARS: None,
+        NodeType.EDGE_JOIN: None,
+        NodeType.MODEL_SCORE: None,
+        NodeType.BANDING: None,
+        NodeType.RATING_STEP: None,
+        NodeType.OUTPUT: None,
+        NodeType.EXPLORE: None,
+        NodeType.EXTERNAL_FILE: None,
+        NodeType.LIVE_SWITCH: None,
+        NodeType.MODELLING: None,
+        NodeType.OPTIMISER: _optimiser_selectors,
+        NodeType.SCENARIO_EXPANDER: None,
+        NodeType.OPTIMISER_APPLY: _optimiser_apply_selectors,
+        NodeType.CONSTANT: None,
+        NodeType.SUBMODEL: None,
+        NodeType.SUBMODEL_PORT: None,
+    },
+)
 
 
 # ---------------------------------------------------------------------------
@@ -413,7 +514,7 @@ def reject_unrecognized_config_keys(
     Raises:
         ConfigError: naming the node, its type and every undeclared key.
     """
-    if node_type != NodeType.SUBMODEL and "instanceOf" in config:
+    if REMOVED_CONFIG_KEYS[node_type].instance_of and "instanceOf" in config:
         raise removed_node_instance_error("instanceOf")
     unrecognized = unrecognized_config_keys(node_type, config)
     if unrecognized:
@@ -667,7 +768,7 @@ def _without_deploy_private_keys(nt: NodeType, config: Mapping[str, Any]) -> Map
     Each is checked: a list of distinct non-empty column names, or the
     answer-per-row flag, which is ``True``.
     """
-    private = DEPLOY_PRIVATE_CONFIG_KEYS.get(nt, frozenset())
+    private = DEPLOY_PRIVATE_CONFIG_KEYS[nt]
     held = private.intersection(config)
     if not held:
         return config

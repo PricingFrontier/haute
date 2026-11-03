@@ -23,6 +23,7 @@ from haute._file_ops import atomic_write_text
 from haute._git_lock import repository_mutation
 from haute._io import read_user_text
 from haute._logging import get_logger
+from haute._node_specs import node_spec
 from haute._pipeline_recovery import (
     load_pipeline_editor_document,
     pipeline_document_fingerprint,
@@ -718,7 +719,7 @@ def _sidecar_position_key(node: GraphNode) -> str:
     Submodel occurrences return their alias (the id restored after a rename),
     falling back to node.id only when the config has no alias.
     """
-    if node.data.nodeType == NodeType.SUBMODEL:
+    if node_spec(node.data.nodeType).structural_role == "occurrence":
         alias = node.data.config.get("alias")
         if isinstance(alias, str) and alias:
             return alias

@@ -12,6 +12,7 @@ import ast
 import io
 import json
 import tokenize
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +33,15 @@ from haute._explore_overview import validate_explore_overview
 from haute._explore_pivots import validate_explore_pivot_state
 from haute._logging import get_logger
 from haute._node_config_models import COLUMN_CONFIG_KEYS
-from haute._node_specs import CODE_NODE_TYPES, NODE_TYPE_TO_FOLDER, STEPPED_NODE_TYPES
+from haute._node_specs import (
+    CODE_NODE_TYPES,
+    DEFAULT_NODE_TYPE,
+    NODE_SPECS,
+    NODE_TYPE_TO_FOLDER,
+    STEPPED_NODE_TYPES,
+    node_spec,
+    node_type_table,
+)
 from haute._polars_steps import (
     JOIN_MAINTAIN_ORDER,
     STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
@@ -73,6 +82,90 @@ def _copy_config_keys(
             config[key] = kwargs[key]
 
 
+def _edge_join_decorator_config(
+    decorator_kwargs: dict[str, Any], body: str, param_names: list[str]
+) -> dict[str, Any]:
+    return dict(normalise_edge_join_decorator_kwargs(decorator_kwargs))
+
+
+def _explore_decorator_config(
+    decorator_kwargs: dict[str, Any], body: str, param_names: list[str]
+) -> dict[str, Any]:
+    config: dict[str, Any] = {}
+    code = extract_user_code(body, kind="hook") if body else ""
+    if code:
+        config["code"] = code
+    # Explore has no sidecar: its steps travel as a decorator argument
+    # beside its pivots and charts, and are reconciled with the body after
+    # (``_reconcile_steps``).
+    if "steps" in decorator_kwargs:
+        config["steps"] = decorator_kwargs["steps"]
+    if "overview" in decorator_kwargs:
+        overview = validate_explore_overview(
+            decorator_kwargs["overview"],
+            context="explore decorator",
+        )
+        if overview:
+            config["overview"] = dict(overview)
+    if "pivots" in decorator_kwargs or "pivot_formulas" in decorator_kwargs:
+        shared_formulas, pivots = validate_explore_pivot_state(
+            decorator_kwargs.get("pivot_formulas"),
+            decorator_kwargs.get("pivots", []),
+            context="explore decorator",
+        )
+        if shared_formulas:
+            config["pivot_formulas"] = shared_formulas
+        if pivots:
+            config["pivots"] = pivots
+    if "charts" in decorator_kwargs:
+        charts = validate_explore_charts(
+            decorator_kwargs["charts"],
+            context="explore decorator",
+        )
+        if charts:
+            config["charts"] = charts
+    return config
+
+
+def _transform_decorator_config(
+    decorator_kwargs: dict[str, Any], body: str, param_names: list[str]
+) -> dict[str, Any]:
+    return {"code": extract_user_code(body, kind="polars", param_names=param_names) if body else ""}
+
+
+#: Reads a node's config from its decorator keywords, body and parameters.
+_DecoratorConfigReader = Callable[[dict[str, Any], str, list[str]], dict[str, Any]]
+
+#: How each node type that keeps its settings on its decorator reads them; ``None``
+#: for a type whose settings live in a JSON sidecar (or nowhere).
+_DECORATOR_CONFIG: Mapping[NodeType, _DecoratorConfigReader | None] = node_type_table(
+    "decorator-held config",
+    {
+        NodeType.API_INPUT: None,
+        NodeType.WORKBENCH_INPUT: None,
+        NodeType.WORKBENCH_OUTPUT: None,
+        NodeType.DATA_INPUT: None,
+        NodeType.DATA_OUTPUT: None,
+        NodeType.POLARS: _transform_decorator_config,
+        NodeType.EDGE_JOIN: _edge_join_decorator_config,
+        NodeType.MODEL_SCORE: None,
+        NodeType.BANDING: None,
+        NodeType.RATING_STEP: None,
+        NodeType.OUTPUT: None,
+        NodeType.EXPLORE: _explore_decorator_config,
+        NodeType.EXTERNAL_FILE: None,
+        NodeType.LIVE_SWITCH: None,
+        NodeType.MODELLING: None,
+        NodeType.OPTIMISER: None,
+        NodeType.SCENARIO_EXPANDER: None,
+        NodeType.OPTIMISER_APPLY: None,
+        NodeType.CONSTANT: None,
+        NodeType.SUBMODEL: None,
+        NodeType.SUBMODEL_PORT: None,
+    },
+)
+
+
 def _build_node_config(
     node_type: str,
     decorator_kwargs: dict[str, Any],
@@ -81,52 +174,16 @@ def _build_node_config(
 ) -> dict[str, Any]:
     """Build the config of a node that keeps its settings on its decorator.
 
-    Only an Edge Join, an Explore and a transform do: every other node type
-    keeps them in a JSON sidecar, which ``_resolve_node_config`` loads, or
-    refuses the node for lacking, before this runs.
+    Only an Edge Join, an Explore and a transform do (:data:`_DECORATOR_CONFIG`):
+    every other node type keeps them in a JSON sidecar, which
+    ``_resolve_node_config`` loads, or refuses the node for lacking, before this
+    runs.
     """
     reject_removed_config_keys(node_type, decorator_kwargs)
-    config: dict[str, Any] = {}
-    if node_type == NodeType.EDGE_JOIN:
-        config.update(normalise_edge_join_decorator_kwargs(decorator_kwargs))
-    elif node_type == NodeType.EXPLORE:
-        code = extract_user_code(body, kind="hook") if body else ""
-        if code:
-            config["code"] = code
-        # Explore has no sidecar: its steps travel as a decorator argument
-        # beside its pivots and charts, and are reconciled with the body below.
-        if "steps" in decorator_kwargs:
-            config["steps"] = decorator_kwargs["steps"]
-        if "overview" in decorator_kwargs:
-            overview = validate_explore_overview(
-                decorator_kwargs["overview"],
-                context="explore decorator",
-            )
-            if overview:
-                config["overview"] = dict(overview)
-        if "pivots" in decorator_kwargs or "pivot_formulas" in decorator_kwargs:
-            shared_formulas, pivots = validate_explore_pivot_state(
-                decorator_kwargs.get("pivot_formulas"),
-                decorator_kwargs.get("pivots", []),
-                context="explore decorator",
-            )
-            if shared_formulas:
-                config["pivot_formulas"] = shared_formulas
-            if pivots:
-                config["pivots"] = pivots
-        if "charts" in decorator_kwargs:
-            charts = validate_explore_charts(
-                decorator_kwargs["charts"],
-                context="explore decorator",
-            )
-            if charts:
-                config["charts"] = charts
-    elif node_type == NodeType.POLARS:
-        config["code"] = (
-            extract_user_code(body, kind="polars", param_names=param_names) if body else ""
-        )
-    else:
+    read = _DECORATOR_CONFIG.get(NodeType(node_type))
+    if read is None:
         raise ValueError(f"{node_type!r} nodes keep their settings in a JSON sidecar.")
+    config = read(decorator_kwargs, body, param_names)
     _copy_config_keys(config, decorator_kwargs, COLUMN_CONFIG_KEYS)
     # ``inputMapping`` is also used by ordinary Polars transforms to retain a
     # stable logical input name across topology rewrites.  Keep the decorator
@@ -167,6 +224,46 @@ def _is_contract_resolve_fallback_exception(exc: BaseException) -> bool:
     return isinstance(exc, MlflowException)
 
 
+def _model_score_parse_time_contract(node_type: NodeType, config: dict[str, Any]) -> Contract:
+    """A Model Scoring's outputs alone: its input columns are model-artifact metadata,
+    whose derivation calls MLflow."""
+    output = config.get("output_column", "prediction")
+    outputs = frozenset({output} if output else {"prediction"})
+    return Contract(inputs=None, outputs=outputs)
+
+
+#: How each node type's contract is derived while parsing: its builder's, except
+#: where that would read a remote artifact.
+_PARSE_TIME_CONTRACT: Mapping[NodeType, Callable[[NodeType, dict[str, Any]], Contract]] = (
+    node_type_table(
+        "parse-time contract",
+        {
+            NodeType.API_INPUT: get_node_contract,
+            NodeType.WORKBENCH_INPUT: get_node_contract,
+            NodeType.WORKBENCH_OUTPUT: get_node_contract,
+            NodeType.DATA_INPUT: get_node_contract,
+            NodeType.DATA_OUTPUT: get_node_contract,
+            NodeType.POLARS: get_node_contract,
+            NodeType.EDGE_JOIN: get_node_contract,
+            NodeType.MODEL_SCORE: _model_score_parse_time_contract,
+            NodeType.BANDING: get_node_contract,
+            NodeType.RATING_STEP: get_node_contract,
+            NodeType.OUTPUT: get_node_contract,
+            NodeType.EXPLORE: get_node_contract,
+            NodeType.EXTERNAL_FILE: get_node_contract,
+            NodeType.LIVE_SWITCH: get_node_contract,
+            NodeType.MODELLING: get_node_contract,
+            NodeType.OPTIMISER: get_node_contract,
+            NodeType.SCENARIO_EXPANDER: get_node_contract,
+            NodeType.OPTIMISER_APPLY: get_node_contract,
+            NodeType.CONSTANT: get_node_contract,
+            NodeType.SUBMODEL: get_node_contract,
+            NodeType.SUBMODEL_PORT: get_node_contract,
+        },
+    )
+)
+
+
 def _derive_parse_time_contract(node_type: NodeType, config: dict[str, Any]) -> Contract:
     """Return the contract shape that is safe to derive while parsing.
 
@@ -174,13 +271,10 @@ def _derive_parse_time_contract(node_type: NodeType, config: dict[str, Any]) -> 
     them calls MLflow.  Parsing runs during ``haute serve`` startup, before
     the backend has bound its port, and must not block on remote model I/O.
     The output side remains a local config value, so we can still validate
-    that part of a user-declared contract immediately.
+    that part of a user-declared contract immediately
+    (:data:`_PARSE_TIME_CONTRACT`).
     """
-    if node_type == NodeType.MODEL_SCORE:
-        output = config.get("output_column", "prediction")
-        outputs = frozenset({output} if output else {"prediction"})
-        return Contract(inputs=None, outputs=outputs)
-    return get_node_contract(node_type, config)
+    return _PARSE_TIME_CONTRACT[node_type](node_type, config)
 
 
 def resolve_parse_time_contract(node_type: NodeType, config: dict[str, Any]) -> Contract:
@@ -287,21 +381,25 @@ def _sidecar_required_error(node_type: NodeType, func_name: str) -> ConfigError:
     )
 
 
-#: The extraction kind of each node type whose function may carry code.
-_EXTRACTION_KIND_BY_CODE_TYPE: dict[NodeType, str] = {
-    NodeType.POLARS: "polars",
-    NodeType.DATA_INPUT: "hook",
-    NodeType.EXTERNAL_FILE: "external",
-    NodeType.RATING_STEP: "hook",
-    NodeType.MODEL_SCORE: "hook",
-    NodeType.SCENARIO_EXPANDER: "hook",
-    NodeType.EXPLORE: "hook",
+#: The extraction kind of each code surface (``haute._code_extraction``'s matchers).
+_EXTRACTION_KIND_BY_CODE_SURFACE: Mapping[str, str] = {
+    "transform": "polars",
+    "frame_hook": "hook",
+    "object_hook": "external",
+}
+
+#: The extraction kind of each node type whose function may carry code, by its
+#: code surface.
+_EXTRACTION_KIND_BY_CODE_TYPE: Mapping[NodeType, str] = {
+    node_type: _EXTRACTION_KIND_BY_CODE_SURFACE[spec.code]
+    for node_type, spec in NODE_SPECS.items()
+    if spec.code in _EXTRACTION_KIND_BY_CODE_SURFACE
 }
 
 
 def _is_hook(node_type: NodeType, param_names: list[str], edge_param_names: list[str]) -> bool:
     """Whether a code-carrying node's signature marks a hook its decorator calls."""
-    if node_type == NodeType.EXTERNAL_FILE:
+    if node_spec(node_type).code == "object_hook":
         return "obj" in param_names[len(edge_param_names) :]
     return edge_param_names[:1] == ["df"]
 
@@ -319,7 +417,7 @@ def uncalled_function_body(
     declarations took one of these forms. The parser rejects such a function
     (:func:`_validate_node_function`); recovery replaces it.
     """
-    if node_type == NodeType.POLARS or is_declaration_body(body):
+    if node_spec(node_type).code == "transform" or is_declaration_body(body):
         return False
     return node_type not in CODE_NODE_TYPES or not _is_hook(
         node_type, param_names, edge_param_names
@@ -342,7 +440,7 @@ def _validate_node_function(
     declaration and always calls a hook, so any other shape would run
     differently there than in the canvas.
     """
-    if node_type == NodeType.POLARS:
+    if node_spec(node_type).code == "transform":
         return
     declaration = is_declaration_body(body)
     if node_type not in CODE_NODE_TYPES:
@@ -358,7 +456,7 @@ def _validate_node_function(
             )
         return
     is_hook = _is_hook(node_type, param_names, edge_param_names)
-    if node_type == NodeType.EXTERNAL_FILE:
+    if node_spec(node_type).code == "object_hook":
         marker = "obj"
         advice = (
             "To add code, keep the inputs as parameters, add the keyword-only parameter "
@@ -488,8 +586,68 @@ def _reconcile_steps(
     )
     return {k: v for k, v in config.items() if k != "steps"}, NodeEditorState(
         steps_discarded=f"Steps were discarded because {reason}.",
-        discarded_sidecar=config_ref if node_type == NodeType.POLARS else None,
+        discarded_sidecar=config_ref if node_spec(node_type).sidecar == "optional" else None,
     )
+
+
+def _record_switch_inputs(
+    config: dict[str, Any], *, node_type: NodeType, edge_param_names: list[str], func_name: str
+) -> None:
+    """A Source Switch records its inputs, in connection order."""
+    config["inputs"] = edge_param_names
+
+
+def _require_join_order(
+    config: dict[str, Any], *, node_type: NodeType, edge_param_names: list[str], func_name: str
+) -> None:
+    """An Edge Join states its joined rows' order.
+
+    The order has no incomplete form (a new join carries its type's), so a file
+    without one predates the rule: the editor opens it for recovery, and Recover
+    settings gives the join its type's order.
+    """
+    try:
+        require_edge_join_order(config)
+    except ConfigError as exc:
+        orders = ", ".join(repr(order) for order in JOIN_MAINTAIN_ORDER)
+        raise ConfigError(
+            f"Edge Join {func_name!r} does not state its joined rows' order: set "
+            f"maintain_order on its decorator to one of {orders}.",
+            func_name=func_name,
+            node_type=node_type.value,
+            maintainOrder=exc.context["maintainOrder"],
+        ) from exc
+
+
+#: A parsed config's last step for its node type, before its contract is checked:
+#: what the type's config takes from the function's signature, or a rule a file
+#: written before it may break; ``None`` for a type with neither.
+_AFTER_PARSE: Mapping[NodeType, Callable[..., None] | None] = node_type_table(
+    "after parse",
+    {
+        NodeType.API_INPUT: None,
+        NodeType.WORKBENCH_INPUT: None,
+        NodeType.WORKBENCH_OUTPUT: None,
+        NodeType.DATA_INPUT: None,
+        NodeType.DATA_OUTPUT: None,
+        NodeType.POLARS: None,
+        NodeType.EDGE_JOIN: _require_join_order,
+        NodeType.MODEL_SCORE: None,
+        NodeType.BANDING: None,
+        NodeType.RATING_STEP: None,
+        NodeType.OUTPUT: None,
+        NodeType.EXPLORE: None,
+        NodeType.EXTERNAL_FILE: None,
+        NodeType.LIVE_SWITCH: _record_switch_inputs,
+        NodeType.MODELLING: None,
+        NodeType.OPTIMISER: None,
+        NodeType.SCENARIO_EXPANDER: None,
+        NodeType.OPTIMISER_APPLY: None,
+        NodeType.CONSTANT: None,
+        NodeType.SUBMODEL: None,
+        NodeType.SUBMODEL_PORT: None,
+    },
+)
 
 
 def _resolve_node_config(
@@ -521,7 +679,7 @@ def _resolve_node_config(
     reject_removed_node_reuse_kwargs(decorator_kwargs)
     # Work on a copy to avoid mutating the caller's dict.
     decorator_kwargs = dict(decorator_kwargs)
-    node_type = explicit_node_type or NodeType.POLARS
+    node_type = explicit_node_type or DEFAULT_NODE_TYPE
     editor = NodeEditorState()
     _validate_node_function(
         node_type,
@@ -609,24 +767,16 @@ def _resolve_node_config(
             # Decorator-carried steps (Explore) reconcile with the body the same way.
             config, editor = _reconcile_steps(config, node_type, param_names, None, func_name)
 
-    if node_type == NodeType.LIVE_SWITCH:
-        config["inputs"] = list(edge_param_names if edge_param_names is not None else param_names)
-
-    if node_type == NodeType.EDGE_JOIN:
-        # The order has no incomplete form (a new join carries its type's), so
-        # a file without one predates the rule: the editor opens it for
-        # recovery, and Recover settings gives the join its type's order.
-        try:
-            require_edge_join_order(config)
-        except ConfigError as exc:
-            orders = ", ".join(repr(order) for order in JOIN_MAINTAIN_ORDER)
-            raise ConfigError(
-                f"Edge Join {func_name!r} does not state its joined rows' order: set "
-                f"maintain_order on its decorator to one of {orders}.",
-                func_name=func_name,
-                node_type=node_type.value,
-                maintainOrder=exc.context["maintainOrder"],
-            ) from exc
+    finish = _AFTER_PARSE[node_type]
+    if finish is not None:
+        finish(
+            config,
+            node_type=node_type,
+            edge_param_names=list(
+                edge_param_names if edge_param_names is not None else param_names
+            ),
+            func_name=func_name,
+        )
 
     # Cross-check a user-declared contract against the builder's.  A
     # mismatch raises ``ContractMismatchError`` — a typo in the

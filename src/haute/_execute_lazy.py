@@ -45,7 +45,7 @@ from haute._graph_utils import (
     upstream_node_ids,
 )
 from haute._logging import get_logger
-from haute._node_specs import REQUEST_INPUT_NODE_TYPES
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES, node_spec, node_type_table
 from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_utils import (
     current_streaming_chunk_size,
@@ -100,6 +100,37 @@ def _edge_join_recipe(
     return JoinRecipe(frames[base_index], frames[join_index], join_config, finish=finish)
 
 
+#: The node types whose own work is Polars code over their one input frame, which a
+#: full write can slice: a Transform's code, and a Data Input's post-load code over
+#: the scan it opened.
+_SLICES_ITS_CODE: Mapping[NodeType, bool] = node_type_table(
+    "code-slice write recipe",
+    {
+        NodeType.API_INPUT: False,
+        NodeType.WORKBENCH_INPUT: False,
+        NodeType.WORKBENCH_OUTPUT: False,
+        NodeType.DATA_INPUT: True,
+        NodeType.DATA_OUTPUT: False,
+        NodeType.POLARS: True,
+        NodeType.EDGE_JOIN: False,
+        NodeType.MODEL_SCORE: False,
+        NodeType.BANDING: False,
+        NodeType.RATING_STEP: False,
+        NodeType.OUTPUT: False,
+        NodeType.EXPLORE: False,
+        NodeType.EXTERNAL_FILE: False,
+        NodeType.LIVE_SWITCH: False,
+        NodeType.MODELLING: False,
+        NodeType.OPTIMISER: False,
+        NodeType.SCENARIO_EXPANDER: False,
+        NodeType.OPTIMISER_APPLY: False,
+        NodeType.CONSTANT: False,
+        NodeType.SUBMODEL: False,
+        NodeType.SUBMODEL_PORT: False,
+    },
+)
+
+
 def _write_recipe(
     fn: Callable[..., Any],
     node: GraphNode,
@@ -119,7 +150,7 @@ def _write_recipe(
     operator without a function. The recipe ends with the node's own column
     step (selected columns, then renames), matching how edge joins finish.
     """
-    if node.data.nodeType not in (NodeType.POLARS, NodeType.DATA_INPUT) or len(input_frames) != 1:
+    if not _SLICES_ITS_CODE[node.data.nodeType] or len(input_frames) != 1:
         return None
     frame = input_frames[0]
     input_lf = frame.lazy() if isinstance(frame, pl.DataFrame) else frame
@@ -691,7 +722,7 @@ def _is_plain_model_score(node: GraphNode) -> bool:
     """Return whether a model-score node has no output-shaping overrides."""
     config = node.data.config
     return (
-        node.data.nodeType == NodeType.MODEL_SCORE
+        node_spec(node.data.nodeType).batch_scored
         and not config.get("code")
         and not config.get("column_renames")
         and not config.get("selected_columns")
@@ -704,7 +735,7 @@ def _assert_simple_join_key_dtypes_compatible(
     input_lfs: Sequence[_Frame],
 ) -> None:
     """Validate dtype parity for simple inferred multi-parent Polars joins."""
-    if node.data.nodeType != NodeType.POLARS or len(input_ids) < 2:
+    if node_spec(node.data.nodeType).code != "transform" or len(input_ids) < 2:
         return
     joins = projection_planner.simple_join_calls_for_parent_inputs(node, input_ids)
     if not joins:
@@ -929,7 +960,7 @@ def _runtime_selector_demands(
     input frame's runtime schema supplies both. Nodes whose static lineage fails
     for any other reason are left to the static plan.
     """
-    if node.data.nodeType is not NodeType.POLARS:
+    if node_spec(node.data.nodeType).code != "transform":
         return {}
     edge_key = projection_planner.ProjectionEdgeKey.from_edge(edge)
     if existing_edge_demands.get(edge_key) is not None:
@@ -1027,7 +1058,8 @@ def _runtime_lineage_demands(
 
     left_keys: set[str]
     right_keys: set[str]
-    if node.data.nodeType is NodeType.EDGE_JOIN:
+    spec = node_spec(node.data.nodeType)
+    if spec.input_roles:
         base_index, join_index = resolve_edge_join_role_indices(
             [edge.targetHandle for edge in incoming_edges]
         )
@@ -1039,7 +1071,7 @@ def _runtime_lineage_demands(
         kwargs = build_edge_join_kwargs(node.data.config)
         how = str(kwargs["how"])
         suffix = str(kwargs["suffix"])
-    elif node.data.nodeType is NodeType.POLARS:
+    elif spec.code == "transform":
         # Preserve the engine's typed missing-key/dtype diagnostics before
         # asking lineage analysis for an optimisation.  This validator is a
         # no-op for port-distinct edges that share one source node; those are
@@ -1111,19 +1143,48 @@ def _runtime_lineage_demands(
     return {left_key: left_demand, right_key: right_demand}
 
 
+#: The node types whose output is a lazy scan a runtime edge demand can project:
+#: the request inputs, the Data Input and the Load File.
+_PROJECTABLE_SCAN: Mapping[NodeType, bool] = node_type_table(
+    "runtime-projectable scan",
+    {
+        NodeType.API_INPUT: True,
+        NodeType.WORKBENCH_INPUT: True,
+        NodeType.WORKBENCH_OUTPUT: False,
+        NodeType.DATA_INPUT: True,
+        NodeType.DATA_OUTPUT: False,
+        NodeType.POLARS: False,
+        NodeType.EDGE_JOIN: False,
+        NodeType.MODEL_SCORE: False,
+        NodeType.BANDING: False,
+        NodeType.RATING_STEP: False,
+        NodeType.OUTPUT: False,
+        NodeType.EXPLORE: False,
+        NodeType.EXTERNAL_FILE: True,
+        NodeType.LIVE_SWITCH: False,
+        NodeType.MODELLING: False,
+        NodeType.OPTIMISER: False,
+        NodeType.SCENARIO_EXPANDER: False,
+        NodeType.OPTIMISER_APPLY: False,
+        NodeType.CONSTANT: False,
+        NodeType.SUBMODEL: False,
+        NodeType.SUBMODEL_PORT: False,
+    },
+)
+
+
 def _runtime_projectable_source_ids(
     demands_by_edge: Mapping[projection_planner.ProjectionEdgeKey, Iterable[str]],
     node_map: Mapping[str, GraphNode],
 ) -> frozenset[str]:
     """Return source parents whose lazy scans can absorb their runtime edge demand."""
-    source_types = REQUEST_INPUT_NODE_TYPES | {NodeType.DATA_INPUT, NodeType.EXTERNAL_FILE}
     demand_by_parent: dict[str, set[str]] = {}
     for edge_key, columns in demands_by_edge.items():
         demand_by_parent.setdefault(edge_key.source, set()).update(columns)
     projectable: set[str] = set()
     for parent_id, demand in demand_by_parent.items():
         parent = node_map[parent_id]
-        if parent.data.nodeType not in source_types:
+        if not _PROJECTABLE_SCAN[parent.data.nodeType]:
             continue
         code = parent.data.config.get("code")
         if not isinstance(code, str) or not code.strip():
@@ -1295,7 +1356,7 @@ class _PlannedCaptures:
         config = node.data.config
         if (
             capture is None
-            or node.data.nodeType != NodeType.MODEL_SCORE
+            or not node_spec(node.data.nodeType).batch_scored
             or scenario == "live"
             or str(config.get("code") or "").strip()
             or config.get("selected_columns")
@@ -1696,7 +1757,7 @@ def _declared_api_input_frame_schema_items(
         list,
     ):
         return {}
-    if node.data.nodeType is NodeType.WORKBENCH_INPUT:
+    if node_spec(node.data.nodeType).workbench:
         from haute._workbench_input import workbench_input_tables
 
         return {

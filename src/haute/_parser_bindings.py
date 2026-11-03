@@ -14,9 +14,18 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from haute._graph_utils import incoming_edge_bindings
-from haute._node_specs import REQUEST_INPUT_KINDS
-from haute._types import NodeType, PipelineGraph, SubmodelInputPort
+from haute._node_specs import REQUEST_INPUT_KINDS, node_spec
+from haute._types import PipelineGraph, SubmodelInputPort
 from haute.errors import ParseError
+
+
+def _is_transform(node_type: object) -> bool:
+    """Whether *node_type* is the Transform, whose function's signature is its inputs."""
+    try:
+        return node_spec(str(node_type)).code == "transform"
+    except KeyError:
+        return False
+
 
 _REMEDIATION_MESSAGE = (
     "Name each parameter after the node or frame connected to it, "
@@ -104,7 +113,7 @@ def assert_polars_parameters_bound(
     """
     node_map = graph.node_map
     for raw_node in raw_nodes:
-        if raw_node.get("node_type") != NodeType.POLARS:
+        if not _is_transform(raw_node.get("node_type")):
             continue
         node_id = str(raw_node["func_name"])
         graph_node = node_map.get(node_id)
@@ -162,7 +171,7 @@ def assert_definition_parameters_bound(
     """
     edge_params = graph._parser_edge_parameter_names
     for child_node in graph.nodes:
-        if child_node.data.nodeType != NodeType.POLARS:
+        if not _is_transform(child_node.data.nodeType):
             continue
         connected = [
             *_port_bound_inputs(input_ports, child_node.id),

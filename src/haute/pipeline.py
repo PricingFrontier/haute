@@ -30,7 +30,13 @@ from haute._global_constants import (
 )
 from haute._graph_utils import _edge_id, _sanitize_func_name, executable_input_name
 from haute._logging import get_logger
-from haute._node_specs import REQUEST_INPUT_NODE_TYPES, RESPONSE_NODE_TYPES, SOURCE_NODE_TYPES
+from haute._node_specs import (
+    DEFAULT_NODE_TYPE,
+    REQUEST_INPUT_NODE_TYPES,
+    RESPONSE_NODE_TYPES,
+    SOURCE_NODE_TYPES,
+    node_spec,
+)
 from haute._project_context import standalone_project_scope
 from haute._standalone_nodes import (
     FunctionKind,
@@ -55,6 +61,12 @@ from haute.errors import ExecutionError
 from haute.graph_utils import topo_sort_ids
 
 logger = get_logger(component="pipeline")
+
+
+def _is_workbench_input(node_type: NodeType) -> bool:
+    """Whether *node_type* is the request input given its tables by the workbench's form."""
+    spec = node_spec(node_type)
+    return spec.request_input and spec.workbench
 
 
 @dataclass
@@ -89,7 +101,7 @@ class Node:
     @property
     def node_type(self) -> NodeType:
         """The node's type, from its decorator (``polars`` when it has none)."""
-        return NodeType(self.config.get("_node_type", NodeType.POLARS))
+        return NodeType(self.config.get("_node_type", DEFAULT_NODE_TYPE))
 
     @property
     def is_deploy_input(self) -> bool:
@@ -109,7 +121,7 @@ class Node:
     def runs_unconnected(self) -> bool:
         """Whether the node runs with nothing connected to it: a Workbench Output, whose
         tables nothing fills are nulls (specs/workbench)."""
-        return self.node_type is NodeType.WORKBENCH_OUTPUT
+        return node_spec(self.node_type).runs_unconnected
 
     @property
     def is_live_switch(self) -> bool:
@@ -382,8 +394,8 @@ class NodeRegistry:
         )
 
         reject_removed_node_reuse_kwargs(config)
-        declared_type = NodeType(config.get("_node_type", NodeType.POLARS))
-        if declared_type in (NodeType.EDGE_JOIN, NodeType.EXPLORE):
+        declared_type = NodeType(config.get("_node_type", DEFAULT_NODE_TYPE))
+        if node_spec(declared_type).sidecar == "decorator":
             # Their settings are the decorator's keywords, held to the config model's
             # keys and shape as the parse holds the same keywords in a file.
             from haute._contracts import declared_contract_json
@@ -399,7 +411,7 @@ class NodeRegistry:
             )
 
         def _register(f: Callable) -> Callable:
-            node_type = NodeType(config.get("_node_type", NodeType.POLARS))
+            node_type = NodeType(config.get("_node_type", DEFAULT_NODE_TYPE))
             if is_configured(node_type, config):
                 # A configured source's hook takes df, yet it has no inputs.
                 is_source = node_type in SOURCE_NODE_TYPES
@@ -653,7 +665,7 @@ class Pipeline(NodeRegistry):
         """Get inbound edges in the runtime argument order for *node_name*."""
         incoming = [edge for edge in self._edges if edge.target == node_name]
         node = self._node_map.get(node_name)
-        if node is None or node.config.get("_node_type") != NodeType.EDGE_JOIN or not incoming:
+        if node is None or not node_spec(node.node_type).input_roles or not incoming:
             return incoming
         target_handles = [edge.target_port for edge in incoming]
         base_index, join_index = resolve_edge_join_role_indices(target_handles)
@@ -668,7 +680,7 @@ class Pipeline(NodeRegistry):
         """
         inactive: set[RegisteredEdge] = set()
         for node in self._nodes:
-            if node.node_type is not NodeType.LIVE_SWITCH or not is_configured(
+            if not node_spec(node.node_type).scenario_router or not is_configured(
                 node.node_type, node.config
             ):
                 continue
@@ -699,11 +711,7 @@ class Pipeline(NodeRegistry):
     def _workbench_quote(order: list[Node], outputs: Mapping[str, Any]) -> Any:
         """The Workbench Input's frames by table as the run holds them, or None without one."""
         return next(
-            (
-                outputs.get(n.name)
-                for n in order
-                if n.config.get("_node_type") == NodeType.WORKBENCH_INPUT
-            ),
+            (outputs.get(n.name) for n in order if _is_workbench_input(n.node_type)),
             None,
         )
 
@@ -1029,7 +1037,7 @@ class Pipeline(NodeRegistry):
                 seed_nodes = deploy_inputs or sources
                 seed_names = {n.name for n in seed_nodes}
                 for n in seed_nodes:
-                    if n.node_type is NodeType.WORKBENCH_INPUT:
+                    if _is_workbench_input(n.node_type):
                         self._check_seeded_workbench_input(n)
                 connected_ports = list(
                     dict.fromkeys(
@@ -1108,7 +1116,7 @@ class Pipeline(NodeRegistry):
             raw_nodes.append(
                 {
                     "func_name": node.name,
-                    "node_type": node.config.get("_node_type", NodeType.POLARS),
+                    "node_type": node.config.get("_node_type", DEFAULT_NODE_TYPE),
                     "description": node.description,
                     "config": {
                         key: value for key, value in node.config.items() if not key.startswith("_")

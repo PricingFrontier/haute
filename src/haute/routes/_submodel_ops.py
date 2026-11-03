@@ -10,7 +10,12 @@ from pydantic import ValidationError
 
 from haute._editor_identities import NamingCandidate, name_candidates
 from haute._graph_utils import _edge_id, edge_input_name
-from haute._node_specs import SINGLETON_NODE_GROUPS, SINK_ONLY_NODE_TYPES
+from haute._node_specs import (
+    SINGLETON_NODE_GROUPS,
+    SINK_ONLY_NODE_TYPES,
+    node_spec,
+    node_type_table,
+)
 from haute._submodel_instances import rewrite_boundary_input_names
 from haute._support_code_names import UtilityReader
 from haute._types import (
@@ -429,9 +434,40 @@ class NodeInstanceGraphResult:
     instance_name: str
 
 
+#: Whether a node type cannot be wrapped as a node instance, besides a node of a
+#: singleton group (which a pipeline holds once): the submodel's own structure, a
+#: Source Switch and a Data Output.
+_REFUSES_NODE_INSTANCE = node_type_table(
+    "refuses a node instance",
+    {
+        NodeType.API_INPUT: False,
+        NodeType.WORKBENCH_INPUT: False,
+        NodeType.WORKBENCH_OUTPUT: False,
+        NodeType.DATA_INPUT: False,
+        NodeType.DATA_OUTPUT: True,
+        NodeType.POLARS: False,
+        NodeType.EDGE_JOIN: False,
+        NodeType.MODEL_SCORE: False,
+        NodeType.BANDING: False,
+        NodeType.RATING_STEP: False,
+        NodeType.OUTPUT: False,
+        NodeType.EXPLORE: False,
+        NodeType.EXTERNAL_FILE: False,
+        NodeType.LIVE_SWITCH: True,
+        NodeType.MODELLING: False,
+        NodeType.OPTIMISER: False,
+        NodeType.SCENARIO_EXPANDER: False,
+        NodeType.OPTIMISER_APPLY: False,
+        NodeType.CONSTANT: False,
+        NodeType.SUBMODEL: True,
+        NodeType.SUBMODEL_PORT: True,
+    },
+)
+
+
 def instance_source_node(graph: PipelineGraph, node_id: str) -> GraphNode:
     """Validate the parent-view selection before allocating any names."""
-    if any(node.data.nodeType == NodeType.SUBMODEL_PORT for node in graph.nodes):
+    if any(node_spec(node.data.nodeType).structural_role == "port" for node in graph.nodes):
         raise SubmodelValidationError(
             code="drilled_definition",
             status_code=400,
@@ -444,14 +480,10 @@ def instance_source_node(graph: PipelineGraph, node_id: str) -> GraphNode:
             status_code=400,
             detail=f"Node {node_id!r} is not in the parent graph. Reload and select a node.",
         )
-    if any(
-        node.data.nodeType in group for group, _ in SINGLETON_NODE_GROUPS
-    ) or node.data.nodeType in {
-        NodeType.SUBMODEL,
-        NodeType.SUBMODEL_PORT,
-        NodeType.LIVE_SWITCH,
-        NodeType.DATA_OUTPUT,
-    }:
+    if (
+        any(node.data.nodeType in group for group, _ in SINGLETON_NODE_GROUPS)
+        or _REFUSES_NODE_INSTANCE[node.data.nodeType]
+    ):
         raise SubmodelValidationError(
             code="unsupported_instance",
             status_code=400,

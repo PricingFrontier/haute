@@ -225,6 +225,12 @@ def test_the_input_cardinalities_keep_the_assistants_distinctions() -> None:
     assert node_spec(T.OPTIMISER_APPLY).input_selectors == ("ratebook_input",)
 
 
+def test_the_submodel_roles_and_the_batch_scorer_keep_their_members() -> None:
+    roles = {key: s.structural_role for key, s in NODE_SPECS.items() if s.structural_role}
+    assert roles == {T.SUBMODEL: "occurrence", T.SUBMODEL_PORT: "port"}
+    assert {key for key, s in NODE_SPECS.items() if s.batch_scored} == {T.MODEL_SCORE}
+
+
 # ---------------------------------------------------------------------------
 # Import-time invariants: each planted violation is refused
 # ---------------------------------------------------------------------------
@@ -289,6 +295,12 @@ def _with(key: NodeType, **changes: object) -> dict[NodeType, specs.NodeSpec]:
         ),
         pytest.param(
             _with(T.DATA_OUTPUT, behavioural=True), "behavioural", id="behavioural-passthrough"
+        ),
+        pytest.param(
+            _with(T.SUBMODEL_PORT, structural_role=None), "structural role", id="role-missing"
+        ),
+        pytest.param(
+            _with(T.BANDING, structural_role="port"), "structural role", id="role-on-executed"
         ),
     ],
 )

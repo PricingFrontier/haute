@@ -12,7 +12,7 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-from types import UnionType
+from types import MappingProxyType, UnionType
 from typing import Any, Literal, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
@@ -21,6 +21,7 @@ from haute._config_io import palette_default_config
 from haute._config_validation import CONFIG_REFUSALS, FORM_GIVEN_KEYS, VALID_KEYS
 from haute._contracts import Contract
 from haute._node_config_models import NODE_CONFIG_MODELS, branch_values, shape_variants
+from haute._node_specs import STRUCTURAL_NODE_TYPES, node_type_table
 from haute._polars_steps import DEFAULT_JOIN_ORDER
 from haute._recovery_schemas import RecoveryFieldChange, RecoveryIssue
 from haute._types import NodeType
@@ -34,7 +35,7 @@ class ConfigRecoveryResult:
     issues: list[RecoveryIssue]
 
 
-_STRUCTURAL = {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
+_STRUCTURAL = STRUCTURAL_NODE_TYPES
 
 
 def _discriminant(node_type: NodeType) -> tuple[str, frozenset[str]] | None:
@@ -421,10 +422,84 @@ def validate_recovery_config(
 
 # Fields besides the discriminant that select a Data Input/Output branch: the
 # palette is a parquet scan/sink, whose defaults do not fit another format or mode.
-_PALETTE_BRANCH_FIELDS = {
-    NodeType.DATA_INPUT: ("format", "mode"),
-    NodeType.DATA_OUTPUT: ("format", "mode"),
-}
+_PALETTE_BRANCH_FIELDS: Mapping[NodeType, tuple[str, ...]] = node_type_table(
+    "palette branch fields",
+    {
+        NodeType.API_INPUT: (),
+        NodeType.WORKBENCH_INPUT: (),
+        NodeType.WORKBENCH_OUTPUT: (),
+        NodeType.DATA_INPUT: ("format", "mode"),
+        NodeType.DATA_OUTPUT: ("format", "mode"),
+        NodeType.POLARS: (),
+        NodeType.EDGE_JOIN: (),
+        NodeType.MODEL_SCORE: (),
+        NodeType.BANDING: (),
+        NodeType.RATING_STEP: (),
+        NodeType.OUTPUT: (),
+        NodeType.EXPLORE: (),
+        NodeType.EXTERNAL_FILE: (),
+        NodeType.LIVE_SWITCH: (),
+        NodeType.MODELLING: (),
+        NodeType.OPTIMISER: (),
+        NodeType.SCENARIO_EXPANDER: (),
+        NodeType.OPTIMISER_APPLY: (),
+        NodeType.CONSTANT: (),
+        NodeType.SUBMODEL: (),
+        NodeType.SUBMODEL_PORT: (),
+    },
+)
+
+
+@dataclass(frozen=True)
+class _DependentDefault:
+    """A missing field whose default depends on the rest of the recovered config."""
+
+    value: Callable[[Mapping[str, Any], Any], Any]
+    reason: str
+
+
+def _join_order_default(candidate: Mapping[str, Any], default: Any) -> Any:
+    # The order a new join of this type gets, as the editor writes it.
+    return DEFAULT_JOIN_ORDER.get(str(candidate.get("how")), default)
+
+
+_NO_DEPENDENT_DEFAULTS: Mapping[str, _DependentDefault] = MappingProxyType({})
+
+#: The fields of each node type whose palette default is replaced by one the
+#: recovered config implies (an Edge Join's order, by its join type).
+_DEPENDENT_DEFAULTS: Mapping[NodeType, Mapping[str, _DependentDefault]] = node_type_table(
+    "dependent recovery defaults",
+    {
+        NodeType.API_INPUT: _NO_DEPENDENT_DEFAULTS,
+        NodeType.WORKBENCH_INPUT: _NO_DEPENDENT_DEFAULTS,
+        NodeType.WORKBENCH_OUTPUT: _NO_DEPENDENT_DEFAULTS,
+        NodeType.DATA_INPUT: _NO_DEPENDENT_DEFAULTS,
+        NodeType.DATA_OUTPUT: _NO_DEPENDENT_DEFAULTS,
+        NodeType.POLARS: _NO_DEPENDENT_DEFAULTS,
+        NodeType.EDGE_JOIN: MappingProxyType(
+            {
+                "maintainOrder": _DependentDefault(
+                    _join_order_default,
+                    "Missing from the saved configuration; the order for this join type was used.",
+                )
+            }
+        ),
+        NodeType.MODEL_SCORE: _NO_DEPENDENT_DEFAULTS,
+        NodeType.BANDING: _NO_DEPENDENT_DEFAULTS,
+        NodeType.RATING_STEP: _NO_DEPENDENT_DEFAULTS,
+        NodeType.OUTPUT: _NO_DEPENDENT_DEFAULTS,
+        NodeType.EXPLORE: _NO_DEPENDENT_DEFAULTS,
+        NodeType.EXTERNAL_FILE: _NO_DEPENDENT_DEFAULTS,
+        NodeType.LIVE_SWITCH: _NO_DEPENDENT_DEFAULTS,
+        NodeType.MODELLING: _NO_DEPENDENT_DEFAULTS,
+        NodeType.OPTIMISER: _NO_DEPENDENT_DEFAULTS,
+        NodeType.SCENARIO_EXPANDER: _NO_DEPENDENT_DEFAULTS,
+        NodeType.OPTIMISER_APPLY: _NO_DEPENDENT_DEFAULTS,
+        NodeType.CONSTANT: _NO_DEPENDENT_DEFAULTS,
+        NodeType.SUBMODEL: _NO_DEPENDENT_DEFAULTS,
+        NodeType.SUBMODEL_PORT: _NO_DEPENDENT_DEFAULTS,
+    },
+)
 
 
 def _palette_is_branch_of(
@@ -436,7 +511,7 @@ def _palette_is_branch_of(
         return False
     return all(
         field not in source or source[field] == defaults.get(field)
-        for field in _PALETTE_BRANCH_FIELDS.get(node_type, ())
+        for field in _PALETTE_BRANCH_FIELDS[node_type]
     )
 
 
@@ -546,12 +621,10 @@ def reconcile_config(
             if key in source or key == "steps":
                 continue
             reason = "Missing from the saved configuration; the palette default was used."
-            if node_type is NodeType.EDGE_JOIN and key == "maintainOrder":
-                # The order a new join of this type gets, as the editor writes it.
-                default = DEFAULT_JOIN_ORDER.get(str(candidate.get("how")), default)
-                reason = (
-                    "Missing from the saved configuration; the order for this join type was used."
-                )
+            dependent = _DEPENDENT_DEFAULTS[node_type].get(key)
+            if dependent is not None:
+                default = dependent.value(candidate, default)
+                reason = dependent.reason
             candidate[key] = default
             changes.append(
                 RecoveryFieldChange(path=_pointer("", key), outcome="defaulted", reason=reason)

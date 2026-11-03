@@ -20,12 +20,42 @@ from haute._config_io import (
     reject_duplicate_keys_hook,
 )
 from haute._keyword_parameters import KEYWORD_PARAMETERS_KEY, keyword_parameters_from_signature
-from haute._node_specs import CODE_NODE_TYPES, STEPPED_NODE_TYPES
+from haute._node_specs import CODE_NODE_TYPES, STEPPED_NODE_TYPES, node_spec, node_type_table
 from haute._recovery_schemas import RecoveryFieldChange
 from haute._source_layout import python_lines
 from haute._types import NodeType
 from haute.errors import ConfigError, ParseError
 from haute.schemas import PipelineEditorDocument, RecoveryPipelineNode
+
+#: Whether recovery reads a node type's sidecar back through its codec before it
+#: reconciles it: a Banding's compacted factors are expanded; any other type's
+#: sidecar is reconciled as written, so recovery sees what is malformed in it.
+_RECOVERY_DECODES_SIDECAR = node_type_table(
+    "recovery decodes sidecar",
+    {
+        NodeType.API_INPUT: False,
+        NodeType.WORKBENCH_INPUT: False,
+        NodeType.WORKBENCH_OUTPUT: False,
+        NodeType.DATA_INPUT: False,
+        NodeType.DATA_OUTPUT: False,
+        NodeType.POLARS: False,
+        NodeType.EDGE_JOIN: False,
+        NodeType.MODEL_SCORE: False,
+        NodeType.BANDING: True,
+        NodeType.RATING_STEP: False,
+        NodeType.OUTPUT: False,
+        NodeType.EXPLORE: False,
+        NodeType.EXTERNAL_FILE: False,
+        NodeType.LIVE_SWITCH: False,
+        NodeType.MODELLING: False,
+        NodeType.OPTIMISER: False,
+        NodeType.SCENARIO_EXPANDER: False,
+        NodeType.OPTIMISER_APPLY: False,
+        NodeType.CONSTANT: False,
+        NodeType.SUBMODEL: False,
+        NodeType.SUBMODEL_PORT: False,
+    },
+)
 
 
 def read_raw_node_settings(
@@ -98,7 +128,7 @@ def read_raw_node_settings(
                 if not isinstance(value, dict):
                     raise ValueError("The configuration is not an object.")
                 raw = {**value, **raw}
-                if node_type == NodeType.BANDING:
+                if _RECOVERY_DECODES_SIDECAR[node_type]:
                     raw = _normalise_loaded_config(raw, node_type)
             except (ValueError, UnicodeError) as exc:
                 # There is no archive to fall back to: replacing an unreadable
@@ -177,7 +207,9 @@ def _uncalled_reason(node_type: NodeType) -> str:
     )
     if node_type not in CODE_NODE_TYPES:
         return f"This node type ({node_type.value}) carries no code, {replaced}"
-    marker = "keyword-only obj" if node_type == NodeType.EXTERNAL_FILE else "first parameter df"
+    marker = (
+        "keyword-only obj" if node_spec(node_type).code == "object_hook" else "first parameter df"
+    )
     return (
         f"The function is not a hook ({marker}), {replaced} "
         "Add any custom code back in the node's editor."

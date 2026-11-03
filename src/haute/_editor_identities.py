@@ -10,9 +10,14 @@ from typing import Any
 from haute._config_io import config_path_for_node, has_config_folder
 from haute._executable_names import ROOT_MODULE
 from haute._graph_utils import _sanitize_func_name, executable_input_name, is_frame_label
-from haute._node_specs import REQUEST_INPUT_NODE_TYPES
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES, STRUCTURAL_NODE_TYPES, node_spec
 from haute._support_code_names import UtilityReader, name_violations
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+
+
+def _is_occurrence(node_type: NodeType | str) -> bool:
+    """Whether *node_type* is a submodel occurrence, which its alias names."""
+    return node_spec(node_type).structural_role == "occurrence"
 
 
 @dataclass(frozen=True)
@@ -65,7 +70,7 @@ def recoverable_request_input_source_handles(
     runs (specs/workbench), and an edge out of it takes its handle as its input name
     (:func:`haute._graph_utils.executable_input_name`), which the editor derives alike.
     """
-    if node_type is NodeType.WORKBENCH_INPUT:
+    if node_spec(node_type).workbench:
         return ()
     return recoverable_api_input_source_handles(config)
 
@@ -91,7 +96,7 @@ def resolve_editor_identity(
         config_reference = config_path_for_node(kind, function_name).as_posix()
     else:
         config_reference = None
-    special = REQUEST_INPUT_NODE_TYPES | {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
+    special = REQUEST_INPUT_NODE_TYPES | STRUCTURAL_NODE_TYPES
     default_input_name = (
         None
         if kind in special
@@ -101,7 +106,7 @@ def resolve_editor_identity(
             source_handle=None,
         )
     )
-    if kind == NodeType.SUBMODEL:
+    if _is_occurrence(kind):
         if not isinstance(alias, str) or not alias:
             raise ValueError(f"Submodel node {label!r} requires an alias.")
     mapping = {
@@ -164,7 +169,7 @@ def _located(graph: PipelineGraph, candidate: NamingCandidate) -> str:
 
 def _with_name(graph: PipelineGraph, candidate: NamingCandidate, label: str) -> PipelineGraph:
     """*graph* with the candidate present under *label* (and alias, for an occurrence)."""
-    alias = label if candidate.node_type == NodeType.SUBMODEL else None
+    alias = label if _is_occurrence(candidate.node_type) else None
 
     def renamed(node: GraphNode) -> GraphNode:
         config = dict(node.data.config)
@@ -213,7 +218,7 @@ def _suffixed(candidate: NamingCandidate, base: str, attempt: int) -> str:
     if attempt == 1:
         return base
     # An occurrence's alias stays a canonical identifier.
-    return f"{base}_{attempt}" if candidate.node_type == NodeType.SUBMODEL else f"{base} {attempt}"
+    return f"{base}_{attempt}" if _is_occurrence(candidate.node_type) else f"{base} {attempt}"
 
 
 def name_candidates(
@@ -233,7 +238,7 @@ def name_candidates(
     read_utility = functools.cache(read_utility)
     named: list[NamedCandidate] = []
     for candidate in candidates:
-        base = candidate.alias if candidate.node_type == NodeType.SUBMODEL else candidate.label
+        base = candidate.alias if _is_occurrence(candidate.node_type) else candidate.label
         if base is None:
             raise ValueError(f"Submodel node {candidate.label!r} requires an alias.")
         attempts = range(1, _MAX_ALLOCATION_ATTEMPTS + 1) if allocate else range(1, 2)
@@ -246,6 +251,6 @@ def name_candidates(
         else:
             raise ValueError(f"No free name for node {candidate.label!r}.")
         graph = trial
-        alias = label if candidate.node_type == NodeType.SUBMODEL else None
+        alias = label if _is_occurrence(candidate.node_type) else None
         named.append(NamedCandidate(label=label, alias=alias, collision=problem))
     return named, graph

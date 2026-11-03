@@ -73,6 +73,132 @@ SINGLE_TYPE_ENDPOINTS: Mapping[tuple[str, str], tuple[str, str]] = {
         "MODELLING",
         "the Model Training RAM estimate: a tree model target trains only its selected columns",
     ),
+    # The shared configured operations, one per type: each loads its type's sidecar.
+    ("_node_apply.py", "resolve_api_input_from_config"): ("API_INPUT", "the Quote Input's read"),
+    ("_node_apply.py", "resolve_workbench_input_from_config"): (
+        "WORKBENCH_INPUT",
+        "the Workbench Input's tables",
+    ),
+    ("_node_apply.py", "workbench_input_ports_from_config"): (
+        "WORKBENCH_INPUT",
+        "the Workbench Input's ports",
+    ),
+    ("_node_apply.py", "load_external_object_from_config"): (
+        "EXTERNAL_FILE",
+        "the Load File's object",
+    ),
+    ("_node_apply.py", "expand_scenarios_from_config"): (
+        "SCENARIO_EXPANDER",
+        "the Expander's expansion",
+    ),
+    ("_node_apply.py", "apply_optimiser_apply_from_config"): (
+        "OPTIMISER_APPLY",
+        "the Apply Optimisation's apply",
+    ),
+    ("_node_apply.py", "assemble_output_from_config"): ("OUTPUT", "the Quote Response's document"),
+    ("_node_apply.py", "assemble_workbench_output_from_config"): (
+        "WORKBENCH_OUTPUT",
+        "the Workbench Output's tables",
+    ),
+    ("_rating.py", "apply_banding_from_config"): ("BANDING", "the Banding's apply"),
+    ("_rating.py", "apply_rating_step_from_config"): ("RATING_STEP", "the Rating Step's apply"),
+    ("_model_scorer.py", "score_from_config"): (
+        "MODEL_SCORE",
+        "the Model Scoring's standalone run",
+    ),
+    ("_input_providers.py", "resolve_data_input_from_config"): (
+        "DATA_INPUT",
+        "the Data Input's standalone read",
+    ),
+    ("_builders.py", "external_file_node_fn"): (
+        "EXTERNAL_FILE",
+        "the Load File's body, shared with deploy's bundled builder, which has no node",
+    ),
+    ("_standalone_nodes.py", "seeded_workbench_input_ports"): (
+        "WORKBENCH_INPUT",
+        "the ports score() seeds a Workbench Input with",
+    ),
+    ("_standalone_nodes.py", "live_switch_routes"): (
+        "LIVE_SWITCH",
+        "a Source Switch's routes, read from its sidecar",
+    ),
+    # A type's own config rules: each is registered for its type in NODE_CONFIG_MODELS.
+    ("_model_source.py", "parse_model_source"): ("MODEL_SCORE", "a Model Scoring's model source"),
+    ("_edge_join.py", "build_edge_join_kwargs"): ("EDGE_JOIN", "an Edge Join's join keywords"),
+    ("_node_config_models.py", "_transform_gaps"): ("POLARS", "the Transform's completeness"),
+    ("_node_config_models.py", "_check_model_score"): ("MODEL_SCORE", "the Model Scoring's check"),
+    ("_node_config_models.py", "_optimiser_inputs"): ("OPTIMISER", "the Optimisation's selectors"),
+    ("_node_config_models.py", "_check_optimiser_apply"): (
+        "OPTIMISER_APPLY",
+        "the Apply Optimisation's check",
+    ),
+    ("_node_config_models.py", "_optimiser_apply_inputs"): (
+        "OPTIMISER_APPLY",
+        "the Apply Optimisation's selectors",
+    ),
+    ("modelling/_train_config.py", "validate_modelling_config_values"): (
+        "MODELLING",
+        "the Model Training's value rules",
+    ),
+    # Building nodes of one type.
+    ("_parser_submodels.py", "_merge_registered_submodels"): (
+        "SUBMODEL",
+        "builds each registered submodel's occurrence node",
+    ),
+    ("_pipeline_recovery.py", "_recover_ast_submodel_registrations"): (
+        "SUBMODEL",
+        "recovers each submodel registration as an occurrence candidate",
+    ),
+    ("_pipeline_recovery.py", "_recover_registered_submodels"): (
+        "SUBMODEL",
+        "recovers each registered submodel as an occurrence candidate",
+    ),
+    ("_seed_plans.py", "SeedPlan.estimation_graph"): (
+        "DATA_INPUT",
+        "estimates each seed as the Data Input scanning its generation's Parquet parts",
+    ),
+    ("routes/_submodel_ops.py", "create_submodel_graph"): (
+        "SUBMODEL",
+        "the create-submodel route: refuses nesting and builds the occurrence",
+    ),
+    ("routes/_submodel_ops.py", "create_node_instance_graph"): (
+        "SUBMODEL",
+        "the node-instance route: builds the owner and instance occurrences",
+    ),
+    # Routes and guards for one type.
+    ("executor.py", "_data_output_config"): ("DATA_OUTPUT", "the Data Output write's config"),
+    ("routes/pipeline.py", "_prepare_data_output_request"): (
+        "DATA_OUTPUT",
+        "the Data Output write route",
+    ),
+    ("routes/output_assemble.py", "output_assemble_dry_run"): (
+        "OUTPUT",
+        "the Quote Response dry-run route",
+    ),
+    ("routes/input_cache.py", "_safe_config"): (
+        "DATA_INPUT",
+        "the input-cache routes' Data Input source config",
+    ),
+    ("routes/_optimiser_input.py", "_find_optimiser_node"): (
+        "OPTIMISER",
+        "the optimiser routes' node lookup",
+    ),
+    ("routes/_optimiser_service.py", "OptimiserSolveService._validate_config"): (
+        "OPTIMISER",
+        "the solve route's Optimisation config",
+    ),
+    ("routes/_optimiser_solver.py", "_ratebook_factor_level_order"): (
+        "BANDING",
+        "a ratebook's factor levels come from its Banding source",
+    ),
+    ("routes/_training_lifecycle.py", "TrainService._validate_config"): (
+        "MODELLING",
+        "the train route's Model Training config",
+    ),
+    ("routes/_training_preparation.py", "_find_modelling_node"): (
+        "MODELLING",
+        "the training routes' node lookup",
+    ),
 }
 
 #: Node-type-looking strings that are not about node types:
@@ -106,85 +232,229 @@ NOT_NODE_TYPES: Mapping[tuple[str, str, str, str], tuple[int, str]] = {
         1,
         "a banding factor's banding-mode config key",
     ),
+    # Python names: the polars module, and a submodel file's ``submodel`` receiver.
+    ("_ast_helpers.py", "_get_decorator_node_type", "submodel", "compare:decorator.value.id"): (
+        1,
+        "the submodel file's receiver name",
+    ),
+    ("_ast_helpers.py", "_module_boundaries", "polars", "compare:imported_names"): (
+        1,
+        "the polars module",
+    ),
+    ("_ast_helpers.py", "_is_generated_call", "submodel", "compare:method"): (
+        1,
+        "the pipeline.submodel(...) method",
+    ),
+    ("_ast_helpers.py", "_is_standard_import", "polars", "compare:alias.name"): (
+        1,
+        "the polars module",
+    ),
+    ("_ast_helpers.py", "_extract_preamble", "submodel", "compare:receiver"): (
+        1,
+        "the receiver names",
+    ),
+    ("_executable_names.py", "<module>", "submodel", "dict-key"): (
+        1,
+        "the name a submodel file binds itself",
+    ),
+    ("_expression_parser.py", "<module>", "polars", "set"): (1, "the polars module's names"),
+    ("_lint_refusal.py", "<module>", "submodel", "set"): (1, "the receiver names"),
+    ("_parser_submodels.py", "_registration_definition", "submodel", "compare:definition.attr"): (
+        1,
+        "the <module>.submodel attribute",
+    ),
+    ("_parser_submodels.py", "registered_modules", "submodel", "compare:definition.attr"): (
+        1,
+        "the <module>.submodel attribute",
+    ),
+    ("_pipeline_recovery.py", "_recover_file_graph", "submodel", "compare:receiver"): (
+        1,
+        "the receiver name",
+    ),
+    (
+        "_submodel_recovery.py",
+        "submodel_registration_evidence",
+        "submodel",
+        "compare:call.func.attr",
+    ): (
+        1,
+        "the pipeline.submodel(...) method",
+    ),
+    (
+        "_submodel_recovery.py",
+        "submodel_registration_evidence",
+        "submodel",
+        "compare:positional.attr",
+    ): (
+        1,
+        "the <module>.submodel attribute",
+    ),
+    (
+        "_polars_environment.py",
+        "apply_polars_process_environment",
+        "polars",
+        "compare:sys.modules",
+    ): (
+        1,
+        "the polars module",
+    ),
+    ("_polars_io_schema.py", "_installed_callable", "polars", "compare:owner"): (
+        1,
+        "the polars module",
+    ),
+    ("_polars_selectors.py", "preamble_selector_aliases", "polars", "compare:statement.module"): (
+        1,
+        "the polars module",
+    ),
+    ("_mlflow_io.py", "_prepare_predict_frame", "polars", "compare:predict_frame"): (
+        1,
+        "a model family's predict-frame kind",
+    ),
+    ("_code_extraction.py", "<module>", "polars", "dict-key"): (
+        1,
+        "the code-extraction kind of a Transform's body",
+    ),
+    # Column names, operand kinds, table roles and record keys.
+    ("_builders.py", "_constant_columns", "constant", "set"): (1, "the Constant's default column"),
+    ("_node_apply.py", "constant_frame", "constant", "dict-key"): (
+        1,
+        "the Constant's default column",
+    ),
+    (
+        "_global_constants.py",
+        "step_constant_reads.visit",
+        "constant",
+        "compare:value.get('kind')",
+    ): (
+        1,
+        "a step operand of kind constant",
+    ),
+    ("_polars_steps.py", "_Renderer._operand", "constant", "compare:kind"): (
+        1,
+        "a step operand of kind constant",
+    ),
+    ("_polars_steps.py", "_Renderer._function_arg", "constant", "compare:operand.get('kind')"): (
+        1,
+        "a step operand of kind constant",
+    ),
+    ("_optimiser_apply_explainability.py", "_explain_online", "output", "dict-key"): (
+        1,
+        "the explanation record's output entry",
+    ),
+    ("_optimiser_apply_explainability.py", "_explain_ratebook", "output", "dict-key"): (
+        1,
+        "the explanation record's output entry",
+    ),
+    ("_polars_io_registry.py", "registry_capabilities", "output", "dict-key"): (
+        1,
+        "a format's output capability",
+    ),
+    ("_quote_store/_rows.py", "output_rows", "output", "compare:table.role"): (
+        1,
+        "a workbench table's role",
+    ),
+    ("_quote_store/_rows.py", "rendered_outputs", "output", "compare:table.role"): (
+        1,
+        "a workbench table's role",
+    ),
+    ("_workbench_compare.py", "_output_tables", "output", "compare:table.get('role', 'input')"): (
+        1,
+        "a workbench table's role",
+    ),
+    ("_workbench_folder.py", "_table_file_model", "output", "compare:table.role"): (
+        1,
+        "a workbench table's role",
+    ),
+    (
+        "_workbench_folder_files.py",
+        "TableFile._holds_its_own_columns",
+        "output",
+        "compare:self.role",
+    ): (
+        1,
+        "a workbench table's role",
+    ),
+    ("_workbench_visibility.py", "condition_fits", "output", "compare:own.role"): (
+        1,
+        "a workbench table's role",
+    ),
+    ("_workbench_visibility.py", "_on_price", "output", "compare:table.role"): (
+        1,
+        "a workbench table's role",
+    ),
+    ("_workbench_visibility.py", "_list_fits", "output", "compare:table.role"): (
+        1,
+        "a workbench table's role",
+    ),
+    (
+        "routes/_training_artifacts.py",
+        "_validate_training_artifacts",
+        "output",
+        "compare:relative.parts[0]",
+    ): (
+        1,
+        "the staged artifacts' output folder",
+    ),
+    ("routes/_job_store.py", "<module>", "optimiser", "set"): (1, "a job store prefix"),
+    ("routes/_job_store.py", "<module>", "explore", "set"): (1, "a job store prefix"),
+    ("routes/mlflow.py", "_run_summaries._match", "optimiser", "compare:artifact_filter"): (
+        1,
+        "the MLflow run browser's artifact filter",
+    ),
+    # Message labels the refusals have always used.
+    (
+        "_builders.py",
+        "_select_optimiser_apply_input",
+        "optimiserApply",
+        "call:resolve_exact_input_index",
+    ): (
+        1,
+        "the ratebook-input refusal's node label",
+    ),
+    (
+        "_node_config_models.py",
+        "_optimiser_apply_inputs",
+        "optimiserApply",
+        "call:validate_optimiser_input_selectors",
+    ): (
+        1,
+        "the selector refusal's node label",
+    ),
+    # The input-cache HTTP contract's source kinds: how a source is read (a Workbench
+    # Input's tables are sent as apiInput), spelled as the types they were named after.
+    ("schemas.py", "InputCacheSourceRequest", "dataInput", "literal:Tuple"): (
+        1,
+        "the input-cache request's source kind",
+    ),
+    ("schemas.py", "InputCacheSourceRequest", "apiInput", "literal:Tuple"): (
+        1,
+        "the input-cache request's source kind",
+    ),
+    ("schemas.py", "InputCacheSourceRequest", "dataInput", "literal:AnnAssign"): (
+        1,
+        "the input-cache request's default source kind",
+    ),
+    ("routes/input_cache.py", "build_input_cache", "apiInput", "compare:body.node_type"): (
+        1,
+        "the input-cache request's source kind",
+    ),
+    ("routes/input_cache.py", "build_input_cache", "apiInput", "literal:Dict"): (
+        1,
+        "the build's identity payload names the source kind",
+    ),
+    ("routes/input_cache.py", "get_input_cache_status", "apiInput", "compare:body.node_type"): (
+        1,
+        "the input-cache request's source kind",
+    ),
+    ("routes/input_cache.py", "clear_input_cache", "apiInput", "compare:body.node_type"): (
+        2,
+        "the input-cache request's source kind",
+    ),
 }
 
 #: Each module's remaining flagged sites while the concerns are converted. It may
 #: only shrink, and it must equal the scan (a lower count updates it here).
-BASELINE: Mapping[str, int] = {
-    "_ast_helpers.py": 5,
-    "_builders.py": 18,
-    "_cache.py": 4,
-    "_code_extraction.py": 1,
-    "_codegen_builders.py": 4,
-    "_config_builder.py": 19,
-    "_config_io.py": 4,
-    "_config_validation.py": 16,
-    "_contracts.py": 3,
-    "_data_points.py": 7,
-    "_edge_join.py": 1,
-    "_editor_identities.py": 8,
-    "_executable_names.py": 7,
-    "_execute_lazy.py": 11,
-    "_expression_parser.py": 1,
-    "_global_constants.py": 1,
-    "_graph_builders.py": 1,
-    "_graph_utils.py": 3,
-    "_graph_walker.py": 8,
-    "_input_preparation.py": 1,
-    "_input_providers.py": 1,
-    "_keyword_parameters.py": 2,
-    "_lint_refusal.py": 1,
-    "_mlflow_io.py": 1,
-    "_model_scorer.py": 1,
-    "_model_source.py": 1,
-    "_node_apply.py": 10,
-    "_node_config_models.py": 13,
-    "_node_config_recovery.py": 5,
-    "_optimiser_apply_explainability.py": 2,
-    "_parser_bindings.py": 2,
-    "_parser_submodels.py": 3,
-    "_pipeline_recovery.py": 18,
-    "_pipeline_repair_actions.py": 8,
-    "_polars_environment.py": 1,
-    "_polars_io_registry.py": 1,
-    "_polars_io_schema.py": 1,
-    "_polars_selectors.py": 1,
-    "_polars_steps.py": 2,
-    "_quote_store/_rows.py": 2,
-    "_rating.py": 2,
-    "_recovery_sources.py": 2,
-    "_seed_plans.py": 8,
-    "_standalone_nodes.py": 25,
-    "_submodel_instances.py": 4,
-    "_submodel_recovery.py": 2,
-    "_support_code_names.py": 1,
-    "_workbench_compare.py": 1,
-    "_workbench_folder.py": 1,
-    "_workbench_folder_files.py": 1,
-    "_workbench_nodes.py": 3,
-    "_workbench_visibility.py": 3,
-    "codegen.py": 4,
-    "execution.py": 19,
-    "executor.py": 7,
-    "modelling/_train_config.py": 1,
-    "pipeline.py": 11,
-    "routes/_helpers.py": 1,
-    "routes/_job_store.py": 2,
-    "routes/_optimiser_input.py": 1,
-    "routes/_optimiser_service.py": 1,
-    "routes/_optimiser_solver.py": 1,
-    "routes/_save_pipeline.py": 5,
-    "routes/_submodel_ops.py": 12,
-    "routes/_training_artifacts.py": 1,
-    "routes/_training_lifecycle.py": 1,
-    "routes/_training_preparation.py": 1,
-    "routes/input_cache.py": 6,
-    "routes/mlflow.py": 1,
-    "routes/output_assemble.py": 1,
-    "routes/pipeline.py": 5,
-    "routes/submodel.py": 1,
-    "schemas.py": 8,
-}
+BASELINE: Mapping[str, int] = {}
 
 
 # ---------------------------------------------------------------------------

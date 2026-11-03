@@ -149,19 +149,6 @@ def _allowed(tree: ast.Module, path: str) -> set[int]:
         # The specification table names each type in its own entry; the request
         # inputs are derived from its ``request_input`` flags.
         allowed |= _everything(_assigned(tree.body, "NODE_SPECS"))
-    if path == "execution.py":
-        # The file each node type reads: a Workbench Input reads none.
-        for name in (
-            "_SOURCE_PATH_CONFIG_BY_NODE_TYPE",
-            "_LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE",
-        ):
-            mapping = _assigned(tree.body, name)
-            if isinstance(mapping, ast.Dict):
-                allowed |= {
-                    id(key)
-                    for key in mapping.keys
-                    if key is not None and _is_member(key, "API_INPUT")
-                }
     if path == "pipeline.py":
         registry = _named(tree.body, ast.ClassDef, "NodeRegistry")
         method = _named(registry.body, ast.FunctionDef, "api_input") if registry else None

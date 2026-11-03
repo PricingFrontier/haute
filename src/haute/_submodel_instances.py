@@ -10,6 +10,7 @@ from haute._graph_utils import (
     _edge_id,
     edge_input_name,
 )
+from haute._node_specs import node_spec, node_type_table
 from haute._polars_steps import (
     PolarsStepError,
     rename_step_inputs,
@@ -30,10 +31,34 @@ from haute._types import (
 )
 from haute.errors import ParseError
 
-_INPUT_SELECTOR_FIELDS: dict[NodeType, frozenset[str]] = {
-    NodeType.OPTIMISER: frozenset({"data_input", "banding_source", "analysis_input"}),
-    NodeType.OPTIMISER_APPLY: frozenset({"ratebook_input"}),
-}
+#: Whether a node type's ``outputMapping`` names its inputs by their ports (the
+#: Quote Response's), so a boundary rename rewrites them.
+_NAMES_INPUTS_IN_OUTPUT_MAPPING = node_type_table(
+    "inputs named in outputMapping",
+    {
+        NodeType.API_INPUT: False,
+        NodeType.WORKBENCH_INPUT: False,
+        NodeType.WORKBENCH_OUTPUT: False,
+        NodeType.DATA_INPUT: False,
+        NodeType.DATA_OUTPUT: False,
+        NodeType.POLARS: False,
+        NodeType.EDGE_JOIN: False,
+        NodeType.MODEL_SCORE: False,
+        NodeType.BANDING: False,
+        NodeType.RATING_STEP: False,
+        NodeType.OUTPUT: True,
+        NodeType.EXPLORE: False,
+        NodeType.EXTERNAL_FILE: False,
+        NodeType.LIVE_SWITCH: False,
+        NodeType.MODELLING: False,
+        NodeType.OPTIMISER: False,
+        NodeType.SCENARIO_EXPANDER: False,
+        NodeType.OPTIMISER_APPLY: False,
+        NodeType.CONSTANT: False,
+        NodeType.SUBMODEL: False,
+        NodeType.SUBMODEL_PORT: False,
+    },
+)
 
 
 @dataclass(frozen=True)
@@ -74,7 +99,7 @@ def _definition_registry(graph: PipelineGraph) -> dict[str, SubmodelDefinition]:
 
 
 def _parse_instance_config(node: GraphNode) -> SubmodelInstanceConfig | None:
-    if node.data.nodeType != NodeType.SUBMODEL:
+    if node_spec(node.data.nodeType).structural_role != "occurrence":
         return None
     try:
         return SubmodelInstanceConfig.model_validate(node.data.config)
@@ -368,10 +393,10 @@ def rewrite_boundary_input_names(
         if not renames:
             rewritten.append(node)
             continue
-        fields = _INPUT_SELECTOR_FIELDS.get(node.data.nodeType, frozenset())
+        fields = node_spec(node.data.nodeType).input_selectors
         config = dict(node.data.config)
         changed = False
-        if node.data.nodeType == NodeType.OUTPUT and "outputMapping" in config:
+        if _NAMES_INPUTS_IN_OUTPUT_MAPPING[node.data.nodeType] and "outputMapping" in config:
             raw_output_mapping = config["outputMapping"]
             if not isinstance(raw_output_mapping, list):
                 raise ParseError(

@@ -17,6 +17,7 @@ from haute._global_constants import ConstantReads, graph_constant_reads
 from haute._hashing import content_hash_bytes
 from haute._json_shred._source_proof import file_signature
 from haute._logging import get_logger
+from haute._node_specs import node_spec, node_type_table
 from haute._project_context import graph_pipeline_dir
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 
@@ -697,16 +698,35 @@ _MODEL_PICKER_BROWSE_STATE = frozenset({"experiment_id", "experiment_name", "run
 # The persisted config fields no execution reads. An execution identity signs
 # a node's whole config but these, so a new setting is covered the moment it
 # is declared; the specification says why each one is left out.
-PRESENTATION_CONFIG_FIELDS: Mapping[NodeType, frozenset[str]] = MappingProxyType(
+PRESENTATION_CONFIG_FIELDS: Mapping[NodeType, frozenset[str]] = node_type_table(
+    "presentation config fields",
     {
+        NodeType.API_INPUT: frozenset(),
+        NodeType.WORKBENCH_INPUT: frozenset(),
+        NodeType.WORKBENCH_OUTPUT: frozenset(),
+        NodeType.DATA_INPUT: frozenset(),
+        NodeType.DATA_OUTPUT: frozenset(),
+        NodeType.POLARS: frozenset(),
+        NodeType.EDGE_JOIN: frozenset(),
         # The model picker writes the experiment it is browsing without changing
         # the selected model, which execution finds by its stable ids.
         NodeType.MODEL_SCORE: _MODEL_PICKER_BROWSE_STATE,
-        NodeType.OPTIMISER_APPLY: _MODEL_PICKER_BROWSE_STATE,
+        NodeType.BANDING: frozenset(),
+        NodeType.RATING_STEP: frozenset(),
+        NodeType.OUTPUT: frozenset(),
         # Overview, Pivot and Chart cards present the explored frame; choosing
         # one never changes it.
         NodeType.EXPLORE: frozenset({"overview", "pivot_formulas", "pivots", "charts"}),
-    }
+        NodeType.EXTERNAL_FILE: frozenset(),
+        NodeType.LIVE_SWITCH: frozenset(),
+        NodeType.MODELLING: frozenset(),
+        NodeType.OPTIMISER: frozenset(),
+        NodeType.SCENARIO_EXPANDER: frozenset(),
+        NodeType.OPTIMISER_APPLY: _MODEL_PICKER_BROWSE_STATE,
+        NodeType.CONSTANT: frozenset(),
+        NodeType.SUBMODEL: frozenset(),
+        NodeType.SUBMODEL_PORT: frozenset(),
+    },
 )
 
 
@@ -967,7 +987,7 @@ def _canonical_edge_record(edge: GraphEdge, memo: GraphFingerprintMemo | None) -
 def _node_config_for_execution_fingerprint(node: GraphNode) -> dict[str, Any]:
     """Return the node's config without the fields only its editor presents."""
 
-    presentation = PRESENTATION_CONFIG_FIELDS.get(node.data.nodeType, frozenset())
+    presentation = PRESENTATION_CONFIG_FIELDS[node.data.nodeType]
     return {key: value for key, value in node.data.config.items() if key not in presentation}
 
 
@@ -1105,7 +1125,7 @@ def selected_live_switch_path(prepared: Any) -> tuple[dict[str, object], ...]:
     switches: list[dict[str, object]] = []
     for switch_id in sorted(relevant_ids):
         node = prepared.node_map.get(switch_id)
-        if node is None or node.data.nodeType != NodeType.LIVE_SWITCH:
+        if node is None or not node_spec(node.data.nodeType).scenario_router:
             continue
         incoming = [
             _lineage_edge_identity(edge)

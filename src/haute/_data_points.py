@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -39,7 +39,7 @@ from haute._node_snapshots import (
     node_snapshot_signature,
     pipeline_source_file_key,
 )
-from haute._node_specs import REQUEST_INPUT_NODE_TYPES
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES, node_spec, node_type_table
 from haute._project_context import current_project
 from haute._source_cache import (
     SourceCacheGenerationMissingError,
@@ -143,6 +143,12 @@ def _single_input_point(graph: PipelineGraph, node: GraphNode) -> DataPoint:
     return DataPoint(edge.source, None)
 
 
+def _is_workbench_input(node: GraphNode) -> bool:
+    """Whether *node* is the request input whose tables the workbench's form gives."""
+    spec = node_spec(node.data.nodeType)
+    return spec.request_input and spec.workbench
+
+
 def _banding_demand(node: GraphNode) -> NodeSnapshotColumns:
     from haute._banding_config import normalise_banding_factors
 
@@ -189,18 +195,92 @@ class PointColumnsMissingError(ValueError):
         self.missing = missing
 
 
+def _banding_point(graph: PipelineGraph, node: GraphNode) -> ConsumerPoint:
+    return ConsumerPoint(node.id, _single_input_point(graph, node), _banding_demand(node))
+
+
+def _rating_step_point(graph: PipelineGraph, node: GraphNode) -> ConsumerPoint:
+    return ConsumerPoint(node.id, _single_input_point(graph, node), _rating_step_demand(node))
+
+
+def _explore_point(graph: PipelineGraph, node: GraphNode) -> ConsumerPoint | None:
+    if str(node.data.config.get("code") or "").strip():
+        return None
+    # A blank-code Explore node returns its input unchanged.
+    return ConsumerPoint(node.id, _single_input_point(graph, node), NodeSnapshotColumns.all())
+
+
+#: The data point a consumer node of each type reads from its single input, with its
+#: column demand, for the types that read it directly (``None`` from the reader: the
+#: node reads its own output, as every other type does).
+_INPUT_POINT: Mapping[
+    NodeType, Callable[[PipelineGraph, GraphNode], ConsumerPoint | None] | None
+] = node_type_table(
+    "consumer data point",
+    {
+        NodeType.API_INPUT: None,
+        NodeType.WORKBENCH_INPUT: None,
+        NodeType.WORKBENCH_OUTPUT: None,
+        NodeType.DATA_INPUT: None,
+        NodeType.DATA_OUTPUT: None,
+        NodeType.POLARS: None,
+        NodeType.EDGE_JOIN: None,
+        NodeType.MODEL_SCORE: None,
+        NodeType.BANDING: _banding_point,
+        NodeType.RATING_STEP: _rating_step_point,
+        NodeType.OUTPUT: None,
+        NodeType.EXPLORE: _explore_point,
+        NodeType.EXTERNAL_FILE: None,
+        NodeType.LIVE_SWITCH: None,
+        NodeType.MODELLING: None,
+        NodeType.OPTIMISER: None,
+        NodeType.SCENARIO_EXPANDER: None,
+        NodeType.OPTIMISER_APPLY: None,
+        NodeType.CONSTANT: None,
+        NodeType.SUBMODEL: None,
+        NodeType.SUBMODEL_PORT: None,
+    },
+)
+
+
 def consumer_point(graph: PipelineGraph, consumer_node_id: str) -> ConsumerPoint:
     """Map a consumer node to the data point it reads and its column demand."""
     node = _node(graph, consumer_node_id)
-    node_type = node.data.nodeType
-    if node_type == NodeType.BANDING:
-        return ConsumerPoint(node.id, _single_input_point(graph, node), _banding_demand(node))
-    if node_type == NodeType.RATING_STEP:
-        return ConsumerPoint(node.id, _single_input_point(graph, node), _rating_step_demand(node))
-    if node_type == NodeType.EXPLORE and not str(node.data.config.get("code") or "").strip():
-        # A blank-code Explore node returns its input unchanged.
-        return ConsumerPoint(node.id, _single_input_point(graph, node), NodeSnapshotColumns.all())
+    reads_input = _INPUT_POINT[node.data.nodeType]
+    point = None if reads_input is None else reads_input(graph, node)
+    if point is not None:
+        return point
     return ConsumerPoint(node.id, DataPoint(node.id, None), NodeSnapshotColumns.all())
+
+
+#: The kind of data point a node type's own output is when it runs no code: a Data
+#: Input's is the data it opens; every other type's is its node output.
+_POINT_KIND: Mapping[NodeType, PointKind] = node_type_table(
+    "data point kind",
+    {
+        NodeType.API_INPUT: "node_output",
+        NodeType.WORKBENCH_INPUT: "node_output",
+        NodeType.WORKBENCH_OUTPUT: "node_output",
+        NodeType.DATA_INPUT: "data_input",
+        NodeType.DATA_OUTPUT: "node_output",
+        NodeType.POLARS: "node_output",
+        NodeType.EDGE_JOIN: "node_output",
+        NodeType.MODEL_SCORE: "node_output",
+        NodeType.BANDING: "node_output",
+        NodeType.RATING_STEP: "node_output",
+        NodeType.OUTPUT: "node_output",
+        NodeType.EXPLORE: "node_output",
+        NodeType.EXTERNAL_FILE: "node_output",
+        NodeType.LIVE_SWITCH: "node_output",
+        NodeType.MODELLING: "node_output",
+        NodeType.OPTIMISER: "node_output",
+        NodeType.SCENARIO_EXPANDER: "node_output",
+        NodeType.OPTIMISER_APPLY: "node_output",
+        NodeType.CONSTANT: "node_output",
+        NodeType.SUBMODEL: "node_output",
+        NodeType.SUBMODEL_PORT: "node_output",
+    },
+)
 
 
 def point_kind(graph: PipelineGraph, point: DataPoint) -> PointKind:
@@ -212,7 +292,11 @@ def point_kind(graph: PipelineGraph, point: DataPoint) -> PointKind:
         raise NodeDataPointInvalidError(
             f"Node {node.data.label!r} has no output port {point.port_label!r}."
         )
-    if node_type == NodeType.DATA_INPUT and not str(node.data.config.get("code") or "").strip():
+    if (
+        _POINT_KIND[node_type] == "data_input"
+        and not str(node.data.config.get("code") or "").strip()
+    ):
+        # A Data Input with no post-load code: its output is the data it opens.
         return "data_input"
     return "node_output"
 
@@ -298,7 +382,7 @@ class DataPointResolver:
         :class:`NodeDataPointInvalidError` saying so.
         """
         node = _node(self.graph, node_id)
-        if node.data.nodeType is NodeType.WORKBENCH_INPUT:
+        if _is_workbench_input(node):
             from haute._workbench_input import workbench_table_labels
             from haute._workbench_tables import WorkbenchTablesError
 
@@ -405,7 +489,7 @@ class DataPointResolver:
         from haute._node_apply import _anchored_required_path
 
         node = _node(self.graph, point.producer_node_id)
-        if node.data.nodeType is NodeType.WORKBENCH_INPUT:
+        if _is_workbench_input(node):
             return self._resolve_workbench_table(point, demand, node)
         config = dict(node.data.config)
         tables = config.get("tables")
@@ -568,10 +652,7 @@ class DataPointResolver:
             raise CacheRequiredError(resolution)
         assert resolution.data_version is not None
         producer = _node(self.graph, point.producer_node_id)
-        if (
-            resolution.kind == "api_input_table"
-            and producer.data.nodeType is NodeType.WORKBENCH_INPUT
-        ):
+        if resolution.kind == "api_input_table" and _is_workbench_input(producer):
             from haute._workbench_input import workbench_table_frames
 
             assert point.port_label is not None

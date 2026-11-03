@@ -16,10 +16,11 @@ This module provides:
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
+from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 from typing import Any, cast
@@ -33,7 +34,7 @@ from haute._banding_config import (
 from haute._graph_utils import _sanitize_func_name
 from haute._io import utf8_decode_failure
 from haute._logging import get_logger
-from haute._node_specs import FOLDER_TO_NODE_TYPE, NODE_TYPE_TO_FOLDER, node_spec
+from haute._node_specs import FOLDER_TO_NODE_TYPE, NODE_TYPE_TO_FOLDER, node_spec, node_type_table
 from haute._rating_step_config import (
     normalise_rating_step_config,
 )
@@ -120,17 +121,58 @@ def _config_node_type_from_path(path: Path) -> NodeType | None:
     return FOLDER_TO_NODE_TYPE.get(path.parent.name)
 
 
-def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None) -> dict[str, Any]:
-    if node_type is not None:
-        from haute._config_validation import reject_form_given_keys, reject_removed_config_keys
+@dataclass(frozen=True)
+class _SidecarCodec:
+    """How a node type's config is held in its sidecar: read back, and written."""
 
-        reject_removed_config_keys(node_type, config)
-        reject_form_given_keys(node_type, config)
-    if node_type == NodeType.BANDING:
-        return expand_banding_config_from_sidecar(config)
-    if node_type == NodeType.RATING_STEP:
-        return normalise_rating_step_config(config)
-    return config
+    load: Callable[[dict[str, Any]], dict[str, Any]]
+    dump: Callable[[dict[str, Any]], dict[str, Any]]
+
+
+#: The node types whose sidecar holds their config in a form of its own (a
+#: compacted banding, a normalised rating step); ``None`` for a type whose
+#: sidecar holds its config as it is.
+_SIDECAR_CODECS: Mapping[NodeType, _SidecarCodec | None] = node_type_table(
+    "sidecar codec",
+    {
+        NodeType.API_INPUT: None,
+        NodeType.WORKBENCH_INPUT: None,
+        NodeType.WORKBENCH_OUTPUT: None,
+        NodeType.DATA_INPUT: None,
+        NodeType.DATA_OUTPUT: None,
+        NodeType.POLARS: None,
+        NodeType.EDGE_JOIN: None,
+        NodeType.MODEL_SCORE: None,
+        NodeType.BANDING: _SidecarCodec(
+            load=expand_banding_config_from_sidecar, dump=compact_banding_config_for_sidecar
+        ),
+        NodeType.RATING_STEP: _SidecarCodec(
+            load=normalise_rating_step_config, dump=normalise_rating_step_config
+        ),
+        NodeType.OUTPUT: None,
+        NodeType.EXPLORE: None,
+        NodeType.EXTERNAL_FILE: None,
+        NodeType.LIVE_SWITCH: None,
+        NodeType.MODELLING: None,
+        NodeType.OPTIMISER: None,
+        NodeType.SCENARIO_EXPANDER: None,
+        NodeType.OPTIMISER_APPLY: None,
+        NodeType.CONSTANT: None,
+        NodeType.SUBMODEL: None,
+        NodeType.SUBMODEL_PORT: None,
+    },
+)
+
+
+def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None) -> dict[str, Any]:
+    if node_type is None:
+        return config
+    from haute._config_validation import reject_form_given_keys, reject_removed_config_keys
+
+    reject_removed_config_keys(node_type, config)
+    reject_form_given_keys(node_type, config)
+    codec = _SIDECAR_CODECS[node_type]
+    return config if codec is None else codec.load(config)
 
 
 def _prepare_config_for_sidecar(
@@ -153,11 +195,8 @@ def _prepare_config_for_sidecar(
         k: deepcopy(v) for k, v in config.items() if k not in CODE_CONFIG_KEYS and k != "contract"
     }
 
-    if node_type == NodeType.BANDING:
-        return compact_banding_config_for_sidecar(filtered)
-    if node_type == NodeType.RATING_STEP:
-        return normalise_rating_step_config(filtered)
-    return filtered
+    codec = _SIDECAR_CODECS[node_type]
+    return filtered if codec is None else codec.dump(filtered)
 
 
 def node_config_json(node_type: NodeType, config: dict[str, Any], *, node_label: str) -> str:

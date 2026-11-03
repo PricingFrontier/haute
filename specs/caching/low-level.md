@@ -9,8 +9,8 @@
 | `src/haute/_lru_cache.py` | Thread-safe entry/TTL/byte bounded LRU with pinning. |
 | `src/haute/_stat_gated_cache.py` | Bounded LRU, per-key single-flight cache gated by backing-file metadata. |
 | `src/haute/routes/json_cache.py` | Structured API-input (JSON/JSONL/NDJSON/XML) schema inference HTTP surface. |
-| `src/haute/_data_points.py` | Consumer-to-data-point mapping, point kinds and states, data versions, point identity digests, and leased point reads. |
-| `src/haute/_seed_plans.py` | Seed plans for bounded executions: which node outputs a run reads from shared snapshots and which it captures, column negotiation, ancestry agreement, the plan fingerprint, and leased plans with their worker handoff. |
+| `src/haute/_data_points.py` | Consumer-to-data-point mapping, point kinds and states, data versions, point identity digests, and leased point reads. A consumer's point and demand are its `_INPUT_POINT` row, a blank-code node's kind its `_POINT_KIND` row. |
+| `src/haute/_seed_plans.py` | Seed plans for bounded executions: which node outputs a run reads from shared snapshots and which it captures, column negotiation, ancestry agreement, the plan fingerprint, and leased plans with their worker handoff. A source's own cost is its `_SOURCE_COST` row. |
 | `src/haute/_analysis_results.py` | Analysis documents keyed by data version under `.haute_cache/analyses`, and the in-process memo of synchronous analyses. |
 | `src/haute/_source_cache.py` | Cross-component dependency owned by [io-layer](../io-layer/low-level.md); IO-layer-owned source snapshot store consumed for canonical cache identity and immutable generations. |
 
@@ -20,7 +20,8 @@ layer is primary and caching is a consumer.
 ## Key types and data structures
 
 - `CacheConsumerContract` and `CheckedCacheInputs` define exact, versioned key fields.
-- `PRESENTATION_CONFIG_FIELDS` names the persisted config fields no execution reads; every
+- `PRESENTATION_CONFIG_FIELDS`, a `node_type_table`, names the persisted config fields no
+  execution reads (none for most types); every
   identity that covers a node's config signs the whole config but these (see
   [Node config in identities](#node-config-in-identities)).
 - `GraphFingerprintMemo` pins utility-file hashes consistently within one request while the
@@ -102,8 +103,8 @@ than the config (`PRESENTATION_CONFIG_FIELDS`):
 
 A runtime-input entry (`runtime_input_entry`) signs, beside the files and model state it
 reads, only the scalar config fields that say which external data, file or model a node
-reads (its source file's field from `execution._SOURCE_PATH_CONFIG_BY_NODE_TYPE` and the
-fields `_RUNTIME_INPUT_CONFIG_FIELDS` lists: an API Input's `path`; a Data Input's
+reads (the `config_fields` of its `src/haute/execution.py::_RUNTIME_INPUTS` row, its source
+file's field first: an API Input's `path`; a Data Input's
 `code`, `connection`, `format`, `http_path`, `inputType`, `mode`, `path`, `query`, `table`
 and `uri`; an External File's `code` and `path`; a Model Score's or Optimiser Apply's MLflow
 source fields, with Model Score's `code`, `feature_contract_path` and `model_path` and
