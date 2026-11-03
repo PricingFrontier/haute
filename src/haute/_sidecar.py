@@ -18,6 +18,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from haute._logging import get_logger
+from haute._types import GraphNode, NodeType
 
 logger = get_logger(component="sidecar")
 
@@ -78,6 +79,29 @@ class SidecarReadResult:
     state: SidecarReadState
     data: SidecarModel | None = None
     error_type: str | None = None
+
+
+def with_unfinished_steps(nodes: list[GraphNode], unfinished: Any) -> list[GraphNode]:
+    """*nodes* with each transform saved with an unfinished step list given its steps
+    from the sidecar (READ-22): one whose body is the placeholder, which loads with no
+    code and no steps. An entry for any other node is ignored; the next save drops it.
+    Every loader of a pipeline file applies it, the editor's document included."""
+    if not isinstance(unfinished, dict) or not unfinished:
+        return nodes
+    given: list[GraphNode] = []
+    for node in nodes:
+        steps = unfinished.get(node.id)
+        config = node.data.config
+        if (
+            node.data.nodeType == NodeType.POLARS
+            and isinstance(steps, list)
+            and not config.get("code")
+            and "steps" not in config
+        ):
+            given.append(node.with_config({**config, "steps": steps}))
+        else:
+            given.append(node)
+    return given
 
 
 def _read_sidecar_json(

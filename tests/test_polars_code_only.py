@@ -18,6 +18,7 @@ import polars as pl
 import pytest
 
 from haute._config_io import collect_node_configs
+from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._polars_steps import render_polars_steps
 from haute.codegen import graph_to_code
 from haute.errors import ConfigError
@@ -179,7 +180,13 @@ def test_an_unfinished_middle_step_waits_in_the_sidecar_and_the_node_fails_to_ru
     sidecar = json.loads(pipeline.with_suffix(".haute.json").read_text(encoding="utf-8"))
     assert sidecar["unfinished_steps"] == {"t": UNFINISHED}
 
-    # The editor gives the node its steps back, the complete ones around the unfinished.
+    # The editor's document, which the canvas opens, gives the node its steps back, the
+    # complete ones around the unfinished; so does the graph a run loads.
+    document = load_pipeline_editor_document(pipeline, project_root=tmp_path)
+    opened = next(node for node in document.nodes if node.recovery_id == "t")
+    assert opened.config is not None
+    assert opened.config["steps"] == UNFINISHED
+    assert opened.editor.steps_error is not None
     loaded = next(node for node in parse_pipeline_to_graph(pipeline).nodes if node.id == "t")
     assert loaded.data.config["steps"] == UNFINISHED
     # Anything that runs the module runs the placeholder: `haute run`, a standalone run.

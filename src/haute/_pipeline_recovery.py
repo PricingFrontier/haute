@@ -67,6 +67,7 @@ from haute._sidecar import (
     SidecarReadResult,
     _normalise_sidecar_sources,
     read_sidecar_state,
+    with_unfinished_steps,
 )
 from haute._source_layout import python_lines
 from haute._submodel_paths import resolve_submodel_reference, submodel_source_key
@@ -1187,6 +1188,22 @@ def _sidecar_values(
     return result.data.positions, sources, active, True
 
 
+def _editor_sidecar(
+    source_path: Path,
+    *,
+    source_file: str,
+    captures: _SourceCaptures,
+    diagnostics: list[PipelineRecoveryDiagnostic],
+) -> SidecarReadResult:
+    """One file's editor sidecar, read through *captures*; a corrupt or unreadable one
+    is diagnosed and gives no positions and no unfinished steps."""
+    sidecar = read_sidecar_state(source_path, read_bytes=captures.read_bytes)
+    issue = _sidecar_diagnostic(sidecar, source_file=source_file)
+    if issue is not None:
+        diagnostics.append(issue)
+    return sidecar
+
+
 def _editor_sidecar_positions(
     source_path: Path,
     *,
@@ -1194,14 +1211,10 @@ def _editor_sidecar_positions(
     captures: _SourceCaptures,
     diagnostics: list[PipelineRecoveryDiagnostic],
 ) -> dict[str, dict[str, float]]:
-    """The canvas positions in one file's editor sidecar, read through *captures*.
-
-    A corrupt or unreadable sidecar is diagnosed and gives no positions.
-    """
-    sidecar = read_sidecar_state(source_path, read_bytes=captures.read_bytes)
-    issue = _sidecar_diagnostic(sidecar, source_file=source_file)
-    if issue is not None:
-        diagnostics.append(issue)
+    """The canvas positions in one file's editor sidecar, read through *captures*."""
+    sidecar = _editor_sidecar(
+        source_path, source_file=source_file, captures=captures, diagnostics=diagnostics
+    )
     return _sidecar_values(sidecar)[0]
 
 
@@ -1214,8 +1227,13 @@ def _canonical_snapshot(
     captures: _SourceCaptures,
 ) -> RecoveryGraphSnapshot:
     source_file = _wire_path(source_path, project_root)
-    positions = _editor_sidecar_positions(
+    sidecar = _editor_sidecar(
         source_path, source_file=source_file, captures=captures, diagnostics=diagnostics
+    )
+    positions = _sidecar_values(sidecar)[0]
+    # A transform saved with an unfinished step list keeps the list in the sidecar.
+    graph_nodes = with_unfinished_steps(
+        graph.nodes, None if sidecar.data is None else sidecar.data.unfinished_steps
     )
 
     connected_handles_by_source: dict[str, list[str]] = {}
@@ -1245,7 +1263,7 @@ def _canonical_snapshot(
         return []
 
     nodes: list[RecoveryPipelineNode] = []
-    for node in graph.nodes:
+    for node in graph_nodes:
         source_handles = source_handles_for(node)
         identity = resolve_editor_identity(
             node_type=node.data.nodeType,

@@ -39,6 +39,7 @@ from haute._sidecar import (
     _normalise_sidecar_sources,
     _read_sidecar_json,
     read_sidecar_state,
+    with_unfinished_steps,
 )
 from haute._submodel_paths import resolve_submodel_reference
 from haute.errors import InvalidRequestError, NotFoundError, ParseError
@@ -711,28 +712,6 @@ def load_sidecar_positions(py_path: Path) -> dict[str, Any]:
     """Return only the positions dict for submodel sidecar loading."""
     result = load_sidecar(py_path).get("positions", {})
     return dict(result) if isinstance(result, dict) else {}
-
-
-def with_unfinished_steps(nodes: list[GraphNode], unfinished: Any) -> list[GraphNode]:
-    """*nodes* with each transform saved with an unfinished step list given its steps
-    from the sidecar (READ-22): one whose body is the placeholder, which loads with no
-    code and no steps. An entry for any other node is ignored; the next save drops it."""
-    if not isinstance(unfinished, dict) or not unfinished:
-        return nodes
-    given: list[GraphNode] = []
-    for node in nodes:
-        steps = unfinished.get(node.id)
-        config = node.data.config
-        if (
-            node.data.nodeType == NodeType.POLARS
-            and isinstance(steps, list)
-            and not config.get("code")
-            and "steps" not in config
-        ):
-            given.append(node.with_config({**config, "steps": steps}))
-        else:
-            given.append(node)
-    return given
 
 
 def _sidecar_position_key(node: GraphNode) -> str:
