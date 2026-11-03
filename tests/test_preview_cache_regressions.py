@@ -5,25 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from haute._project_context import current_project
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.execution import execute_lazy_graph
 from haute.executor import _normalise_requested_preview_columns, execute_graph
 from tests._project import use_project
 from tests.conftest import make_ready_file_input_config
-
-
-@pytest.fixture(autouse=True)
-def _restore_project_root():
-    """Snapshot and restore the sandbox project root around each test.
-
-    Tests in this file call ``set_project_root(tmp_path)`` to widen the
-    sandbox; without this fixture the global mutation leaks into later
-    tests in the session that expect the real project root.
-    """
-    original = current_project().root
-    yield
-    use_project(original)
 
 
 def _make_graph(data_path: Path, artifact_path: Path) -> PipelineGraph:

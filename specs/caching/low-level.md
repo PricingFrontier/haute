@@ -296,14 +296,21 @@ snapshot, selected by `node_type: "apiInput"` on the request:
 
 A Data Input's `build` takes no profile: `_chosen_build` asks the IO registry for the
 config's build class (`input_snapshot_build_class(..., allow_admitted_eager=True)`) and
-builds a `bounded` class under `LAZY_SINK` and an `admitted_eager` class under
-`PREVIEW_EAGER` in the hard-capped worker. A config that cannot build a snapshot answers
+admits a `bounded` class under `LAZY_SINK` and an `admitted_eager` class under
+`PREVIEW_EAGER`, and builds either in the hard-capped worker
+([explicit builds](../io-layer/low-level.md#explicit-builds)). A config that cannot build a snapshot answers
 400 `snapshot_build_unsupported`. Every build response, including one that joins a running
 build, carries the job's `build_class`.
 
 `api_input_table_build_running(table digest)` reports whether a running build
 writes a table, for the data-point `building` probe. Schema inference stays on
 `POST /api/json-cache/infer`.
+
+Every `/api/input-cache/*` and `/api/json-cache/*` request anchors a relative locator to
+the served project's root (`current_project().root`, the root automatic preparation and
+the store use) and the pipeline directory its `haute.toml` names under that root
+(`current_project().pipeline_dir`), never to the process's current directory, and the
+input-cache routes open the store under that root.
 
 ### Data points
 

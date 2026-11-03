@@ -153,7 +153,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "docs",
     "engineering-quality",
     "explore-eda",
-    "io-layer",
     "model-scoring",
     "modelling",
     "optimiser-validation",

@@ -1255,8 +1255,10 @@ failure is attached to the primary error via `add_note()` rather than replacing 
 is the error when there was none. Work the caller owns (staged files, admission) is
 released by the caller, not through the worker's configuration.
 
-`HAUTE_WORKER_MEMORY_ENFORCEMENT` has only `best_effort|required` and defaults to
-`required`. Configuration is
+`HAUTE_WORKER_MEMORY_ENFORCEMENT` has only `best_effort|required`. Unset,
+`resolve_worker_memory_enforcement()` resolves `required` where
+`process_memory_caps_supported()` and `best_effort` where not (macOS), logging
+`worker_memory_supervised_without_cap` once per process for the latter. Configuration is
 resolved before spawn from plain admitted-context fields; the child constructs a
 fresh context rather than receiving the parent object. The envelope carries the
 parent's effective admitted growth headroom (which may be narrower than the profile
@@ -1276,9 +1278,11 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
 `IsolatedWorkerTerminationError`, never reported as successful cancellation.
 
 macOS exposes resource-limit symbols but does not provide a dependable hard
-per-process memory ceiling for this contract. Required mode therefore rejects it;
-macOS callers and cross-platform transport tests must opt into `best_effort`
-explicitly, retaining RSS supervision without claiming native enforcement.
+per-process memory ceiling for this contract. Required mode therefore rejects it, and
+the unset default there is `best_effort`, retaining RSS supervision without claiming
+native enforcement. The test suite pins `required` (`tests/conftest.py`) so a test
+means the same on every host; a test of supervision sets `best_effort`, and a test of
+the host-dependent default removes the variable.
 
 The active native lease exposes only its bounded backend kind within the worker's
 execution context. Code that may create descendants can do so only under an aggregate

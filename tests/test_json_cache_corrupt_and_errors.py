@@ -33,7 +33,7 @@ def _built_frames(data_path: Path, config: dict[str, Any]) -> dict[str, Any]:
 
 
 @pytest.fixture()
-def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+def client(tmp_path: Path) -> TestClient:
     use_project(tmp_path)
     app = project_app()
 

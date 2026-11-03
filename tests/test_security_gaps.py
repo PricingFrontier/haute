@@ -354,7 +354,9 @@ class TestPathTraversalJsonCache:
     """
 
     @pytest.fixture()
-    def client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def client(self, tmp_path: Path):
+        # The route anchors paths to the installed project's root, not the
+        # working directory; this project's root is tmp_path.
         use_project(tmp_path)
         (tmp_path / "main.py").write_text("")
         from fastapi.testclient import TestClient

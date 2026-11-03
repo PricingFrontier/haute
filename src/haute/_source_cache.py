@@ -808,11 +808,20 @@ class SourceCacheStore:
             raise SourceCacheCorruptError("source-cache current pointer is corrupt") from exc
 
     def _metadata_from_path(
-        self, identity: SourceCacheIdentity, generation_id: str
+        self,
+        identity: SourceCacheIdentity,
+        generation_id: str,
+        *,
+        directory: Path | None = None,
     ) -> SourceCacheGeneration:
+        """Validate one generation, published or (*directory*) still staged."""
         try:
             generation_id = _validate_generation_id(generation_id)
-            generation_dir = self.identity_path(identity) / "generations" / generation_id
+            generation_dir = (
+                self.identity_path(identity) / "generations" / generation_id
+                if directory is None
+                else directory
+            )
             metadata_path = generation_dir / "meta.json"
             try:
                 generation_dir.lstat()
@@ -1062,7 +1071,13 @@ class SourceCacheStore:
             # Sliced a chunk at a time where the source can be sliced. A map
             # column becomes a list of key-value structs with the entries Polars
             # read (see haute._map_columns).
-            written = write_parts(directory, map_entries_frame(output), fast_checkpoint=True)
+            # Each part's rows count toward the build's progress as it is written.
+            written = write_parts(
+                directory,
+                map_entries_frame(output),
+                fast_checkpoint=True,
+                on_part=context.advance,
+            )
             return written.digests
         path = directory / part_name(0)
         if isinstance(output, pl.DataFrame) or not isinstance(output, Iterable):
@@ -1173,26 +1188,32 @@ class SourceCacheStore:
                 )
                 metadata_path = staging / "meta.json"
                 atomic_write_text(metadata_path, canonical_json(metadata.to_dict()))
+                # Validate the staged generation with the validator every lease uses,
+                # before the lease lock every lease and release in every process
+                # waits on. The digests were just recorded, so it reads footers and
+                # schemas, not whole parts; the memos it fills key on the parts, which
+                # the rename keeps, so the published generation is never read again.
+                with self._lock:
+                    self._verified_generations.add(
+                        _verification_key(
+                            identity.digest,
+                            generation_id,
+                            parts,
+                            tuple((staging / part.name).stat() for part in parts),
+                        )
+                    )
+                staged = self._metadata_from_path(identity, generation_id, directory=staging)
                 context.checkpoint()
-                # Self-validate the staged directory using the same strict validator after rename.
                 with self._retiring() as retired:
+                    # Cancelled or past its deadline while it waited for the lock:
+                    # nothing is published.
+                    context.checkpoint()
                     if replacing is not None and self._pointed_generation_id(identity) != replacing:
                         raise _Superseded(replacing)
                     if not context.defer_retirement:
                         retired.extend(self._retire_unleased_locked(identity))
                     final_dir = generations_dir / generation_id
                     staging.replace(final_dir)
-                    with self._lock:
-                        self._verified_generations.add(
-                            _verification_key(
-                                identity.digest,
-                                generation_id,
-                                parts,
-                                tuple((final_dir / part.name).stat() for part in parts),
-                            )
-                        )
-                    generation = self._metadata_from_path(identity, generation_id)
-                    context.checkpoint()
                     atomic_write_text(
                         self._pointer_path(identity),
                         canonical_json(
@@ -1202,13 +1223,19 @@ class SourceCacheStore:
                     published = True
                 if not context.defer_retirement:
                     self.retire_unleased(identity)
-                return generation
+                return SourceCacheGeneration(
+                    generation_id,
+                    tuple(final_dir / path.name for path in staged.data_paths),
+                    final_dir / staged.metadata_path.name,
+                    staged.metadata,
+                )
             except BaseException:
                 shutil.rmtree(staging, ignore_errors=True)
+                if not published:
+                    self._forget_verified(identity.digest, generation_id)
                 if final_dir is not None and not published:
                     with self._lease_lock:
                         if not self._has_live_holders_locked(final_dir):
-                            self._forget_verified(identity.digest, generation_id)
                             shutil.rmtree(final_dir, ignore_errors=True)
                 raise
 

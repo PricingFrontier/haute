@@ -229,10 +229,11 @@ def cache_nodes(body: CacheNodesRequest) -> CacheNodesResponse:
 
 @router.get("/usage", response_model=CacheUsageResponse)
 def cache_usage() -> CacheUsageResponse:
-    """The store's size, for the preview status bar.
+    """The store's size, shown beside the cached-data inventory in Pipeline settings.
 
     One pass over the store with one small metadata read per generation and no
-    point resolution, so the status bar can ask each time a preview settles.
+    point resolution. It is read with each inventory read, and kept in no memo,
+    so a size read after a Clear or a Refresh is the store's size then.
     """
     usage = NodeSnapshotStore(current_project().root).usage()
     return CacheUsageResponse(

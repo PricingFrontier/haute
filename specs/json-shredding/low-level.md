@@ -636,9 +636,13 @@ planning, so an admitted execution sizes the generation it will read.
    snapshot of the learned structure to each range. Each range makes its own
    copy and compiles its own native type; later learning cannot mutate another
    range's starting structure. The initial compilation counts toward the eight
-   compilation limit. Existing byte ranges are retained, so the short prefix
-   is parsed again during the parallel scan without repeating its full inference
-   walk when it matches. This avoids learning 10,000 records independently in
+   compilation limit. The prefix pass also returns the byte offset just past the
+   last line it read (blank and non-object lines included), and the ranges start
+   there: a range wholly inside the prefix is dropped and the one holding the
+   offset starts at it, so no prefix line is parsed or walked twice. When the
+   prefix reached the end of the file (a file with fewer than 10,000 object
+   records) inference returns the prefix's evidence and starts no worker pool.
+   This avoids learning 10,000 records independently in
    every range, while preserving first-observation ordering and complete input
    validation. Serial and explicitly sampled inference learn from up to 10,000
    records within their existing scan limit. Filters remain local to each stream;
@@ -932,7 +936,9 @@ Shred / inference / table snapshots (the `_json_shred/` package):
   without a parent rewrite; a missing part or a part whose footer row count differs
   from the worker's report fails before publication. Dispatch is witnessed in both directions for inference and build alike:
   an eligible source must actually take the parallel path, and a single-range
-  or explicitly sampled source must stay serial.
+  or explicitly sampled source must stay serial. Parallel inference hands its
+  workers ranges that tile the file from the prefix pass's offset to its end,
+  and a multi-range file shorter than the prefix starts no worker pool.
 - `tests/test_json_shred_w1_conservation.py` — fail-loud/accounting regressions:
   reserved-key rejection, `$value`/sibling-column rejection, empty-array type
   non-poisoning.

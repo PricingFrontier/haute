@@ -331,6 +331,7 @@ class _Parts:
         execution_context: ExecutionContext | None,
         node_id: str | None,
         internal: bool,
+        on_part: Callable[[int], None] | None,
     ) -> None:
         self.directory = directory
         self.schema = schema
@@ -338,6 +339,7 @@ class _Parts:
         self.execution_context = execution_context
         self.node_id = node_id
         self.internal = internal
+        self.on_part = on_part
         self.names: list[str] = []
         self.digests: dict[str, str] = {}
 
@@ -361,6 +363,8 @@ class _Parts:
         self.digests[name] = digest
         if self.execution_context is not None:
             self.execution_context.record_chunk()
+        if self.on_part is not None:
+            self.on_part(pq.read_metadata(self.directory / name).num_rows)
 
     def ensure_one(self) -> None:
         if not self.names:
@@ -524,6 +528,7 @@ def write_parts(
     execution_context: ExecutionContext | None = None,
     node_id: str | None = None,
     internal: bool = False,
+    on_part: Callable[[int], None] | None = None,
 ) -> ChunkedWrite:
     """Write ``frame`` into ``directory`` as ordered part files.
 
@@ -534,7 +539,8 @@ def write_parts(
     The directory must exist and hold no parts yet. Inputs the write stages are
     kept in a private subdirectory and removed before returning. A 128-bit
     integer is refused, since pyarrow cannot open a file holding one, unless the
-    parts are *internal*: a staging copy only Polars reads back.
+    parts are *internal*: a staging copy only Polars reads back. *on_part*, when
+    given, receives each part's row count (its footer's) once the part is written.
     """
     rows = _chunk_rows(chunk_rows)
     execution_context = execution_context or current_execution_context()
@@ -552,6 +558,7 @@ def write_parts(
         execution_context=execution_context,
         node_id=node_id,
         internal=internal,
+        on_part=on_part,
     )
     native_reason: str | None = None
     if join is not None:

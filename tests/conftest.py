@@ -344,6 +344,18 @@ def _isolate_mlflow_fluent_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[No
 
 
 @pytest.fixture(autouse=True)
+def _required_worker_memory_enforcement(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Require a native worker memory cap on every host, unless a test says otherwise.
+
+    Unset, the policy follows the host: ``required`` where a native cap exists,
+    ``best_effort`` where none does (macOS). Pinning the stricter one makes a
+    test mean the same on every CI platform; a test of supervision sets
+    ``best_effort``, and a test of the host-dependent default removes the variable.
+    """
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "required")
+
+
+@pytest.fixture(autouse=True)
 def _no_mlflow_telemetry(monkeypatch: pytest.MonkeyPatch):
     """Keep the suite hermetic: MLflow must not phone home from a test.
 

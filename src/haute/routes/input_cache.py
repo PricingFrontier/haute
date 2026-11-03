@@ -2,7 +2,9 @@
 
 A Data Input has one snapshot. A structured API Input (JSON, JSONL, NDJSON,
 XML) has one per emitting table; its requests act on the node's tables
-together, and its build shreds the source once in a hard-capped worker.
+together, and its build shreds the source once. Every build is admitted and
+runs in an isolated worker, never in this process: hard-capped where the host
+can install a cap, supervised by its parent where it cannot (macOS).
 """
 
 from __future__ import annotations
@@ -40,7 +42,6 @@ from haute._input_preparation import (
     run_supervised_data_input_build,
 )
 from haute._input_providers import (
-    build_input_snapshot,
     input_snapshot_build_class,
     source_cache_identity,
     source_signature,
@@ -61,7 +62,9 @@ from haute._source_cache import (
 )
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
+    IsolatedWorkerRemoteError,
     WorkerTerminalReason,
+    isolated_worker_failure_is_cap_unavailable,
     isolated_worker_failure_is_memory,
     isolated_worker_failure_is_path_too_long,
     isolated_worker_memory_detail,
@@ -131,7 +134,7 @@ def _max_concurrent_builds() -> int:
 
 
 def _provider_error_diagnostic(
-    exc: Exception,
+    text: str,
     config: dict[str, Any],
 ) -> str:
     """Return a useful provider diagnostic without resolved credential material."""
@@ -140,7 +143,7 @@ def _provider_error_diagnostic(
     if isinstance(connection, str):
         secret_references.add(connection)
     return redact_sensitive_text(
-        str(exc),
+        text,
         known_secrets=(
             value for reference in secret_references if (value := os.environ.get(reference, ""))
         ),
@@ -467,8 +470,8 @@ def _job_response(job_id: str, job: Mapping[str, Any]) -> InputCacheJobStatusRes
     )
 
 
-class _AdmittedEagerWorkerError(Exception):
-    """Terminal outcome of one supervised admitted-eager build worker.
+class _WorkerBuildError(Exception):
+    """Terminal outcome of one supervised build worker.
 
     Carries the lifecycle state, user-facing message, and job fields the
     supervisor already decided, so ``_run_build`` performs exactly one
@@ -483,6 +486,7 @@ class _AdmittedEagerWorkerError(Exception):
         error_code: str,
         phase: str,
         fields: dict[str, Any] | None = None,
+        diagnostic: tuple[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.terminal = terminal
@@ -490,17 +494,31 @@ class _AdmittedEagerWorkerError(Exception):
         self.error_code = error_code
         self.phase = phase
         self.fields = fields or {}
+        # A failed build's own error, type and text, for the server log only.
+        self.diagnostic = diagnostic
 
 
-def _admitted_eager_failure(
+def _worker_build_failure(
     exc: BaseException,
     *,
     budget: IsolatedExecutionBudget,
     token: Any,
-) -> _AdmittedEagerWorkerError:
+) -> _WorkerBuildError:
     """Map one worker failure onto this job's terminal lifecycle state."""
+    if isolated_worker_failure_is_cap_unavailable(exc):
+        # Not a memory outcome: nothing ran, because the cap could not be installed.
+        return _WorkerBuildError(
+            terminal="error",
+            message=(
+                "This import needs a native memory cap, which this host could not "
+                "install, so it did not run. Set HAUTE_WORKER_MEMORY_ENFORCEMENT="
+                "best_effort to import under memory supervision instead."
+            ),
+            error_code="cap_unavailable",
+            phase="failed",
+        )
     if isolated_worker_failure_is_memory(exc):
-        return _AdmittedEagerWorkerError(
+        return _WorkerBuildError(
             terminal="memory_limited",
             message=(
                 "The input snapshot build needs more memory than this server "
@@ -521,7 +539,7 @@ def _admitted_eager_failure(
     reason = token.terminal_reason if token.cancelled else getattr(exc, "terminal_reason", None)
     if reason in {"cancelled", "superseded", "timed_out"}:
         timed_out = reason == "timed_out"
-        return _AdmittedEagerWorkerError(
+        return _WorkerBuildError(
             terminal=cast(WorkerTerminalReason, reason),
             message=(
                 "Input snapshot build exceeded its deadline."
@@ -532,11 +550,16 @@ def _admitted_eager_failure(
             phase="cancelled",
         )
     message, error_code = _build_failure(exc)
-    return _AdmittedEagerWorkerError(
+    return _WorkerBuildError(
         terminal="error",
         message=message,
         error_code=error_code,
         phase="failed",
+        diagnostic=(
+            (exc.remote_type, exc.remote_message)
+            if isinstance(exc, IsolatedWorkerRemoteError)
+            else (type(exc).__name__, str(exc))
+        ),
     )
 
 
@@ -564,7 +587,7 @@ def _job_worker_config(budget: IsolatedExecutionBudget, token: Any) -> IsolatedW
     )
 
 
-def _supervise_admitted_eager_build(
+def _supervise_data_input_build(
     *,
     config: dict[str, Any],
     identity: SourceCacheIdentity,
@@ -572,13 +595,15 @@ def _supervise_admitted_eager_build(
     profile: ExecutionProfile,
     execution_context: ExecutionContext,
     token: Any,
+    progress: Callable[[int, int], None],
 ) -> SourceCacheGeneration:
-    """Run one admitted-eager explicit build in a hard-capped spawn worker.
+    """Run one explicit Data Input build in a hard-capped spawn worker.
 
     The parent chooses the generation id and the staging token, so after a
     worker failure or death it reconciles exactly that build: a generation the
     child already published is the job's result, and anything unpublished is
-    removed without touching the previous current generation.
+    removed without touching the previous current generation. The rows the
+    child writes reach *progress* while it runs.
     """
     store = _cache_store()
     budget = isolated_execution_budget(execution_context)
@@ -592,9 +617,10 @@ def _supervise_admitted_eager_build(
         refresh=refresh,
         budget=budget,
         worker_config=_job_worker_config(budget, token),
+        progress=progress,
     )
     if build.failure is not None:
-        raise _admitted_eager_failure(build.failure, budget=budget, token=token) from build.failure
+        raise _worker_build_failure(build.failure, budget=budget, token=token) from build.failure
     published_data_input(store, identity, build)
     return store.open_generation(identity)
 
@@ -641,7 +667,7 @@ def _supervise_api_input_build(
             spawn=run_isolated_worker,
         )
     except Exception as exc:
-        raise _admitted_eager_failure(exc, budget=budget, token=token) from exc
+        raise _worker_build_failure(exc, budget=budget, token=token) from exc
 
 
 def _run_build(
@@ -665,7 +691,6 @@ def _run_build(
 
     started_at = time.monotonic()
     execution_context: ExecutionContext | None = None
-    deadline = started_at + timeout
     timeout_timer = threading.Timer(
         timeout,
         lambda: jobs.cancel(job_id, reason="timed_out"),
@@ -673,7 +698,8 @@ def _run_build(
     timeout_timer.daemon = True
     timeout_timer.start()
 
-    def progress(units: int) -> None:
+    def progress(rows: int, batches: int = 1) -> None:
+        """Add *rows* written in *batches* to the running job's counts."""
         job = store.get_job(job_id)
         if job is None or job.get("status") != "running":
             return
@@ -684,8 +710,8 @@ def _run_build(
             {
                 "progress": {
                     "phase": "building",
-                    "rows": int(previous.get("rows", 0)) + units,
-                    "batches": int(previous.get("batches", 0)) + 1,
+                    "rows": int(previous.get("rows", 0)) + rows,
+                    "batches": int(previous.get("batches", 0)) + batches,
                     "bytes": int(previous.get("bytes", 0)),
                 }
             },
@@ -736,36 +762,23 @@ def _run_build(
             _complete_api_input_job(job_id, api_input, lifecycle, store, started_at)
             return
         assert identity is not None
-        if build_class == "admitted_eager":
-            execution_context = create_admitted_execution_context(
-                operation="input_snapshot_build",
-                profile=profile,
-                job_id=job_id,
-                cancellation_token=token.execution_token,
-            )
-            # An admitted-eager build materialises: it runs in a hard-capped
-            # spawn worker, never on this server thread. The child owns its own
-            # progress, so this job keeps the `building` phase until completion.
-            generation = _supervise_admitted_eager_build(
-                config=config,
-                identity=identity,
-                refresh=refresh,
-                profile=profile,
-                execution_context=execution_context,
-                token=token,
-            )
-        else:
-            generation = build_input_snapshot(
-                config,
-                store=_cache_store(),
-                base_dir=current_project().pipeline_dir,
-                profile=profile,
-                refresh=refresh,
-                cancellation=token.event,
-                deadline=deadline,
-                progress=progress,
-                execution_context=execution_context,
-            )
+        execution_context = create_admitted_execution_context(
+            operation="input_snapshot_build",
+            profile=profile,
+            job_id=job_id,
+            cancellation_token=token.execution_token,
+        )
+        # Never on this server thread: an isolated worker, as for automatic
+        # preparation, relaying the rows it writes.
+        generation = _supervise_data_input_build(
+            config=config,
+            identity=identity,
+            refresh=refresh,
+            profile=profile,
+            execution_context=execution_context,
+            token=token,
+            progress=progress,
+        )
         timeout_timer.cancel()
         metadata = generation.metadata
         snapshot = InputCacheSnapshotStatusResponse(
@@ -789,13 +802,22 @@ def _run_build(
             },
             elapsed_seconds=time.monotonic() - started_at,
         )
-    except _AdmittedEagerWorkerError as failure:
+    except _WorkerBuildError as failure:
         logger.warning(
             "input_cache_worker_build_stopped",
             job_id=job_id,
             reason=failure.terminal,
             error_code=failure.error_code,
         )
+        if failure.diagnostic is not None:
+            # As an in-process failure is logged: the worker's own error, redacted.
+            error_type, error_text = failure.diagnostic
+            logger.error(
+                "input_cache_build_failed",
+                job_id=job_id,
+                error_type=error_type,
+                error=_provider_error_diagnostic(error_text, config),
+            )
         fail_build(
             failure.terminal,
             failure.message,
@@ -856,7 +878,7 @@ def _run_build(
             "input_cache_build_failed",
             job_id=job_id,
             error_type=type(exc).__name__,
-            error=_provider_error_diagnostic(exc, config),
+            error=_provider_error_diagnostic(str(exc), config),
         )
         message, error_code = _build_failure(exc)
         fail_build("error", message, error_code=error_code, phase="failed")

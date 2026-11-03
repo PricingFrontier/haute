@@ -48,6 +48,7 @@ def _api_input_schema_error_response(err: ApiInputSchemaError) -> JSONResponse:
 
 
 def _resolve_data_path(path: str) -> str:
+    """Anchor *path* as the input-cache routes and execution do: to the project root."""
     try:
         return str(
             resolve_node_input_path(

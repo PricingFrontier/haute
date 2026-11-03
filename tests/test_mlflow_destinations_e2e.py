@@ -17,7 +17,7 @@ forbid Databricks resolution outright while a local-folder load runs, so
 "never consulted another backend" is asserted rather than assumed.
 
 Fixture pattern follows ``tests/test_mlflow_log_button_roundtrip.py`` (real
-local file store rooted in ``tmp_path``, ``set_project_root``, a seeded
+local file store rooted in the ``tmp_path`` project, a seeded
 completed job driven through the FastAPI test client).
 """
 

@@ -122,12 +122,12 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the seventy-seven packages delivered or settled since (thirteen by 28
+The findings of the seventy-eight packages delivered or settled since (thirteen by 28
 October 2026, twenty-five more on 29 October, two on 1 November, thirty more by 2 November,
 the deploy roadmap's nine, the CLI roadmap's six and the background-jobs roadmap's three
-among them, and the frontend-shared roadmap's six and the pipeline-config roadmap's
-`PCFG-R16` on 3 November) have been removed from
-the sections below; the coverage table keeps the original counts.
+among them, and the frontend-shared roadmap's six, `IO-R06` and the pipeline-config
+roadmap's `PCFG-R16` on 3 November) have been removed from the sections below; the
+coverage table keeps the original counts.
 
 ## Validation — 25 October 2026
 
@@ -190,7 +190,6 @@ puts it in front of the owner because of what it can cost in production:
 
 | Area | Findings | Package |
 |---|---|---|
-| IO layer | CIO-5, CIO-11 | `IO-R06` |
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
 | Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |
 | Assistant | ASA-3, ASA-4, ASA-6, ASA-9 | `ASSIST-55` |
