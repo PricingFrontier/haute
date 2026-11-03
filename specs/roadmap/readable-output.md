@@ -35,7 +35,7 @@ The owner decided the following on 3 November 2026:
 **Out of scope:** `haute init` rewrites `haute.toml` from scratch on a re-run, as decided on 1 November 2026, so editing that file in place is not planned.
 
 The packages fall into three groups:
-- **Defect fixes:** `READ-02` to `READ-06`.
+- **Defect fixes:** `READ-03` to `READ-06`.
 - **Writing changes:** `READ-10` to `READ-13` change how files are written, but every file loads to the same values. The next save rewrites each file once, and no conversion is needed.
 - **Format changes:** `READ-20` onwards. The loader accepts only the current format ([specification governance](../README.md)), and `READ-20` says how commercial-pricing moves to each new one.
 
@@ -45,7 +45,6 @@ Each package states its formats in its owning specification before behaviour cha
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| READ-02 | Planned | P1 | A module docstring written by hand in `main.py` is kept on save. |
 | READ-03 | Planned | P2 | Files a project's scaffold writes have LF line endings, at creation and at every checkout. |
 | READ-04 | Planned | P3 | Git ignores `test_quotes_report.md`. |
 | READ-05 | Planned | P1 | Saving a quote keeps its input values in store columns the form no longer holds; outputs are written afresh by each pricing. |
@@ -71,21 +70,6 @@ Each package states its formats in its owning specification before behaviour cha
 | READ-41 | Planned | P3 | A new project holds no `uv init` placeholders and no settings at their default values. |
 
 ## Planned improvements
-
-### READ-02 — A hand-written module docstring is kept on save
-**Why:** Codegen writes its own module docstring at the top of `main.py` and replaces one the analyst wrote, without notice. Also, `haute init` writes a different docstring from codegen's, so a new project's first save always rewrites it.
-
-**Plan:**
-- Keep the module docstring the file holds, and write codegen's only when there is none.
-- Make the scaffolded `main.py` start with the docstring codegen would write.
-
-**Acceptance:**
-- A codegen round-trip test keeps a hand-written docstring byte for byte.
-- A project fresh from `haute init` saves with no change to its docstring.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/codegen.py::_render_module`; `src/haute/_scaffold.py::starter_pipeline`.
 
 ### READ-03 — Scaffold files have LF line endings, at creation and at every checkout
 **Why:** Scaffold files are written with text-mode `write_text`, which gives CRLF line endings on Windows, the `#!/bin/sh` pre-commit hook included. The form folder, by contrast, writes LF on purpose. So a project made on Windows mixes line endings. Writing LF once is not enough: a later checkout with `core.autocrlf=true` turns them back into CRLF, and a shell hook with CRLF line endings fails. Also, `uv.lock` (587 lines in the investigated pull request) is the largest file in a new project's first diff.

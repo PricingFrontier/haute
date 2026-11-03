@@ -744,6 +744,40 @@ def _render_module(
     return _join_blocks([*head, *body])
 
 
+def _module_docstring_text(source: str) -> tuple[str, int] | None:
+    """The module docstring as written in *source*, and the line it ends on, or None."""
+    try:
+        body = ast.parse(source).body
+    except SyntaxError:
+        return None
+    first = body[0] if body else None
+    if not (
+        isinstance(first, ast.Expr)
+        and isinstance(first.value, ast.Constant)
+        and isinstance(first.value.value, str)
+    ):
+        return None
+    text = ast.get_source_segment(source, first.value)
+    if text is None or first.col_offset != 0:
+        return None
+    return text, first.end_lineno or first.lineno
+
+
+def keep_module_docstring(generated: str, existing: str) -> str:
+    """*generated* with the module docstring *existing* holds in place of its own.
+
+    Codegen writes its own docstring only for a file that has none: a docstring
+    the analyst wrote is kept byte for byte (READ-02). *generated* always opens
+    with codegen's docstring, which ends the first statement.
+    """
+    kept = _module_docstring_text(existing.replace("\r\n", "\n"))
+    own = _module_docstring_text(generated)
+    if kept is None or own is None:
+        return generated
+    rest = generated.split("\n")[own[1] :]
+    return "\n".join([kept[0], *rest])
+
+
 # ---------------------------------------------------------------------------
 # Public orchestration API
 # ---------------------------------------------------------------------------

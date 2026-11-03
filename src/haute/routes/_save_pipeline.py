@@ -1582,6 +1582,9 @@ class SavePipelineService:
         touched: list[_TouchedFile],
     ) -> None:
         """Write generated ``.py`` files through the shared output allowlist."""
+        from haute._io import read_user_source
+        from haute.codegen import keep_module_docstring
+
         # Resolve and collision-check every path BEFORE any write, comparing
         # casefolded for the same reason as the config-sidecar guards:
         # distinct rel-paths like ``modules/Pricing.py`` / ``modules/pricing.py``
@@ -1602,6 +1605,10 @@ class SavePipelineService:
                     "default to. Rename one of the modules before saving."
                 )
             seen[folded] = rel_path
+            if out_path.is_file():
+                # A docstring the analyst wrote is kept; codegen's is written only
+                # for a file that has none (READ-02).
+                code = keep_module_docstring(code, read_user_source(out_path)[1])
             resolved.append((out_path, code))
         for out_path, code in resolved:
             self._stage_write(out_path, code, touched)

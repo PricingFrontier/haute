@@ -341,6 +341,12 @@ Out of scope (owned by neighbouring components):
   blank lines inside a completed module block are stripped, and unmatched
   module-level starts are ignored.
 
+  A module docstring the file holds is kept byte for byte: the save writes it in place of
+  codegen's `"""Pipeline: <name>"""` (`"""Submodel: <name>"""` for a submodel file), which it
+  writes only for a file with none (`codegen.keep_module_docstring`, applied to each file the
+  save overwrites). `haute init` scaffolds `main.py` with codegen's docstring, so a new
+  project's first save leaves it as it is.
+
   Regeneration keeps only the docstring, the `haute`/`polars` imports (and `from haute import
   <constructor>`, which `haute.<constructor>` replaces), the preamble, preserved blocks,
   and from the constructor on the constructor, the `global_constants` binding, node functions,

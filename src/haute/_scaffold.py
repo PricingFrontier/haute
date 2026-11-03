@@ -2118,12 +2118,12 @@ exit $status
 
 
 def starter_pipeline(name: str) -> str:
-    """Generate a valid, discoverable pipeline with an empty canvas."""
-    return f'''\
-"""Pipeline: {name}
+    """Generate a valid, discoverable pipeline with an empty canvas.
 
-Blank pipeline scaffolded by ``haute init``. Add nodes in the Haute editor.
-"""
+    It opens with the docstring codegen writes, so the first save keeps it as it is.
+    """
+    return f'''\
+"""Pipeline: {name}"""
 
 import haute
 
