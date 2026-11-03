@@ -1693,6 +1693,8 @@ def _trace_payload(
     It is serialised where it runs, so the event loop never walks the full trace, and
     validated there too: ``JSONResponse`` bypasses response-model validation, so this is
     where the typed omission, waterfall and provenance contract meets the HTTP boundary.
+    The payload is the validated model's serialization, every declared field present, as
+    the browser's generated validator requires.
     """
     with _trace_node_failures(graph):
         result = execute_trace(
@@ -1708,9 +1710,8 @@ def _trace_payload(
             seed_plan=_listed_seeds(body),
             port_label=body.port_label,
         )
-    trace_payload = trace_result_to_dict(result)
-    TraceResponse.model_validate({"status": "ok", "trace": trace_payload})
-    return trace_payload
+    response = TraceResponse.model_validate({"status": "ok", "trace": trace_result_to_dict(result)})
+    return response.trace.model_dump(mode="json")
 
 
 def _execute_trace_worker(

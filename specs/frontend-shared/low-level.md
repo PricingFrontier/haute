@@ -1210,8 +1210,11 @@ rule, message, positive `total_count`, optional parent and operation) field by f
 unknown fields inside it are dropped like any other additive field.
 
 Consumers ignore unknown additive fields only within version 1. Missing or malformed required
-fields and unknown version-1 enum values throw; unsupported higher versions produce diagnostic
-unavailable. Neither path is preserved as an unknown success status. Guard tests pin every mapping,
+fields and unknown version-1 enum values throw; a standalone diagnostic of an unsupported higher
+version (`parseExecutionStrategyDiagnostic`) produces diagnostic unavailable. Inside execution
+metrics the diagnostic is part of the shared execution-metrics contract, which pins version 1
+(server and browser ship together), so a metrics payload carrying another version fails that
+contract. Neither path is preserved as an unknown success status. Guard tests pin every mapping,
 all schema-version paths, all wrapper/detail states, Unicode primary-tuple ordering, every
 equal-primary permutation and duplicate retention, the 32/128 cap boundaries, over-cap rejection
 without client truncation, additive
