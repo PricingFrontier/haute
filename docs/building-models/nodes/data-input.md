@@ -44,11 +44,27 @@ For a **CSV** file, the tab also shows the columns and types Haute detects in th
 
 | Field | What it does |
 |---|---|
+| **CONNECTION** | How Haute signs in to the workspace, read from the project's `.env` (see *Signing in to Databricks* below): a personal access token, a service principal, the Databricks CLI's sign-in, or a named CLI profile. When nothing is set, it lists what to set. **Test** signs in and shows who Haute signs in as, and the sign-in's kind; a failed sign-in is reported in words that name the fix, such as the `databricks auth login` command to run. If the workspace cannot be reached, **Test** says so within about thirty seconds. |
 | **SQL WAREHOUSE** | The SQL warehouse's HTTP path, such as `/sql/1.0/warehouses/abc123`; your Databricks administrator can provide it. Type it, or click **Browse** to list the workspace's warehouses (each with its state and size) and pick one. |
 | **TABLE** | The table to read, chosen in three lists: **Select catalog...**, then **Select schema...**, then **Select table...**. The full name, `catalog.schema.table`, shows underneath. |
 | **SELECT CLAUSE** | Optional. A `SELECT` clause without `FROM`, such as `SELECT policy_id, premium`; Haute appends `FROM` and the chosen table ("Optional. A SELECT list without FROM, such as SELECT policy_id, premium. Haute adds FROM and the chosen table."). It must start with `SELECT` and must not contain `FROM`, semicolons, SQL comments or write keywords. Leave it empty to read every column. |
 
 A Databricks input has no format.
+
+#### Signing in to Databricks
+
+Databricks credentials never go in the node. Haute reads them from the project's `.env` (or the shell that started it) when it browses the workspace, reads a table, or writes one; the same setting serves every Databricks Data Input and Data Output in the project. Set `DATABRICKS_HOST` to the workspace URL and exactly one of these:
+
+| Sign in as | Set | Notes |
+|---|---|---|
+| Yourself, through the Databricks CLI | `DATABRICKS_AUTH_TYPE=databricks-cli` | Run `databricks auth login --host <workspace URL>` once; it opens the browser for you to sign in, then keeps a refreshable sign-in in your keychain, and Haute asks the CLI for a token when it needs one. Your own Unity Catalog grants apply, and no secret is written to the project or its `.env`. The sign-in lasts about a week before the CLI asks you to run the login again; **Test** and **Browse** tell you when that is. The `databricks` command must be on the path of the shell that starts Haute, or named by `DATABRICKS_CLI_PATH`; **Test** says so when it cannot be found. |
+| A named CLI profile | `DATABRICKS_CONFIG_PROFILE=<profile>` in place of `DATABRICKS_HOST` | The profile in `~/.databrickscfg` (or the file `DATABRICKS_CONFIG_FILE` names) supplies the host and the sign-in it holds: the CLI's (`auth_type = databricks-cli`, which `databricks auth login --profile <profile>` writes), a token, or a service principal's client id and secret. A profile that names only a host is refused, because Haute never lets the SDK guess a sign-in. A profile is set on its own: Haute refuses it beside a host, token, service principal or auth type, so that there is never a doubt which workspace and identity it uses. Each profile has only its own settings, as the SDK reads the file; `DEFAULT` is a profile like any other, and Haute does not pick it unless you name it. A profile declaring any other kind of sign-in is refused. |
+| A personal access token | `DATABRICKS_TOKEN` | A token from the workspace's user settings. Some workspaces no longer issue them. |
+| A service principal | `DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET` | Haute acts as the principal, so grant it the tables it needs. A Databricks App injects this pair itself. A token set as well takes precedence. |
+
+Haute does not run the SDK's own browser sign-in (`auth_type = external-browser`) and refuses a profile that declares it: that sign-in waits for the browser with no time limit and cannot be cancelled, so an abandoned attempt would leave a request waiting for good. The browser sign-in you want is `databricks auth login`, which runs in the CLI's own process.
+
+MLflow has its own credentials (`DATABRICKS_MLFLOW_HOST` and `DATABRICKS_MLFLOW_TOKEN`, or `MLFLOW_TRACKING_URI=databricks://<profile>`), and they are never taken from the settings above. Because MLflow itself also reads `DATABRICKS_CONFIG_PROFILE`, Haute refuses that variable beside the MLflow pair; to use one profile for both, select it for MLflow with `MLFLOW_TRACKING_URI=databricks://<profile>`.
 
 ### Inline
 

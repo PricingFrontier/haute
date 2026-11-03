@@ -219,6 +219,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/CatalogListResponse"},
         },
     },
+    "/api/databricks/connection": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/DatabricksConnectionResponse"},
+        },
+    },
     "/api/databricks/schemas": {
         "GET": {
             "request_ref": None,
@@ -229,6 +235,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         "GET": {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/TableListResponse"},
+        },
+    },
+    "/api/databricks/test-connection": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/DatabricksTestConnectionResponse"},
         },
     },
     "/api/databricks/warehouses": {

@@ -222,7 +222,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // The frontend node editors roadmap (FNED-R01 to FNED-R07): the shared params-files and
 // row-key hooks, now chunks of their own, the inline grid-issue marks and the source-bound
 // inference bring it to 1,773.8 KiB; 1,774 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1774
+// The Databricks connection line in the Data Input editor (the sign-in in words and
+// its Test) adds about 1.0 KiB on top of that, measured on CI's Node 22.14.0 (a newer
+// local Node compresses the same files about 3 KiB smaller), to 1,774.3 KiB; 1,775 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1775
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

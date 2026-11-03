@@ -195,7 +195,13 @@ def test_databricks_warehouses_route_succeeds_with_installed_sdk_and_mocked_clie
     fake_client = SimpleNamespace(
         warehouses=SimpleNamespace(list=lambda: [fake_warehouse]),
     )
-    monkeypatch.setattr("haute.routes.databricks._get_databricks_client", lambda: fake_client)
+    # The browsing routes resolve the sign-in before they ask for the client, and
+    # hand it the credentials; a token in the environment satisfies the first.
+    monkeypatch.setenv("DATABRICKS_HOST", "https://workspace.example")
+    monkeypatch.setenv("DATABRICKS_TOKEN", "token")
+    monkeypatch.setattr(
+        "haute.routes.databricks._get_databricks_client", lambda credentials=None: fake_client
+    )
 
     resp = client.get("/api/databricks/warehouses")
 
@@ -238,7 +244,11 @@ def test_databricks_browsing_routes_succeed_with_installed_sdk_and_mocked_client
             ]
         ),
     )
-    monkeypatch.setattr("haute.routes.databricks._get_databricks_client", lambda: fake_client)
+    monkeypatch.setenv("DATABRICKS_HOST", "https://workspace.example")
+    monkeypatch.setenv("DATABRICKS_TOKEN", "token")
+    monkeypatch.setattr(
+        "haute.routes.databricks._get_databricks_client", lambda credentials=None: fake_client
+    )
 
     catalogs = client.get("/api/databricks/catalogs")
     schemas = client.get("/api/databricks/schemas", params={"catalog": "main"})

@@ -24,15 +24,23 @@ from typing import Any
 class WorkspaceStub:
     host: str
     accepted_secret: str
+    #: When set, every API request must carry ``Authorization: Bearer <this>``;
+    #: any other bearer is refused with 401, as a workspace refuses a stale token.
+    accepted_bearer: str | None = None
     #: Clients built against it: each does OIDC discovery once.
     discoveries: int = 0
     token_requests: list[str] = field(default_factory=list)
+    #: Every API request served: its path and the Authorization header it carried.
+    requests: list[tuple[str, str]] = field(default_factory=list)
 
 
 @contextmanager
-def workspace_stub(accepted_secret: str) -> Iterator[WorkspaceStub]:
-    """Serve a workspace whose token endpoint takes only *accepted_secret*."""
-    stub = WorkspaceStub(host="", accepted_secret=accepted_secret)
+def workspace_stub(
+    accepted_secret: str, *, accepted_bearer: str | None = None
+) -> Iterator[WorkspaceStub]:
+    """Serve a workspace whose token endpoint takes only *accepted_secret*, and whose
+    API takes only *accepted_bearer* when one is given."""
+    stub = WorkspaceStub(host="", accepted_secret=accepted_secret, accepted_bearer=accepted_bearer)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: Any) -> None:
@@ -56,8 +64,19 @@ def workspace_stub(accepted_secret: str) -> Iterator[WorkspaceStub]:
                         "token_endpoint": f"{stub.host}/oidc/v1/token",
                     },
                 )
+                return
+            authorization = self.headers.get("Authorization", "")
+            stub.requests.append((self.path, authorization))
+            if stub.accepted_bearer is not None and authorization != (
+                f"Bearer {stub.accepted_bearer}"
+            ):
+                self._json(
+                    401, {"error_code": "UNAUTHENTICATED", "message": "Invalid access token."}
+                )
             elif self.path.startswith("/api/2.1/unity-catalog/catalogs"):
                 self._json(200, {"catalogs": [{"name": "main"}]})
+            elif self.path.startswith("/api/2.0/preview/scim/v2/Me"):
+                self._json(200, {"userName": "nick@example.com", "displayName": "Nick"})
             elif self.path.startswith("/api/2.0/fs/directories/"):
                 self._json(200, {"contents": []})
             else:

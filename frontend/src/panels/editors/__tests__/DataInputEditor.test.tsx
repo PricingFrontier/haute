@@ -18,6 +18,10 @@ vi.mock("../../../api/client", () => ({
   getCatalogs: vi.fn(() => Promise.resolve({ catalogs: [] })),
   getSchemas: vi.fn(() => Promise.resolve({ schemas: [] })),
   getTables: vi.fn(() => Promise.resolve({ tables: [] })),
+  getDatabricksConnection: vi.fn(() =>
+    Promise.resolve({ configured: true, auth_mode: "pat", profile: "", sdk_auth_type: "", detail: "" }),
+  ),
+  testDatabricksConnection: vi.fn(),
 }))
 
 vi.mock("../CodeEditor", () => ({

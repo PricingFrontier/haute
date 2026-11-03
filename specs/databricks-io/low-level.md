@@ -4,10 +4,10 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/_databricks_credentials.py` | Single environment-to-credentials boundary: redaction-safe `DatabricksCredentials`, `DatabricksConfigError`, host normalisation, completeness validation, PAT-over-service-principal precedence, and `credentials_rejected`, which tells a refusal of the credentials (the SDK's Unauthenticated error, or the ValueError its OAuth exchange raises for a refused service principal) from any other failure. |
+| `src/haute/_databricks_credentials.py` | Single environment-to-credentials boundary: redaction-safe `DatabricksCredentials`, `DatabricksConfigError`, host normalisation, completeness validation, the five sign-in forms and their precedence and refusals, the CLI config file's profile reader, `databricks_sdk_config` (the SDK `Config` that performs a user sign-in, whose failure is `DatabricksSignInError`), `databricks_workspace_client`, and `credentials_rejected`, which tells a refusal of the credentials (a `DatabricksSignInError`, the SDK's Unauthenticated error, or the ValueError its OAuth exchange raises for a refused service principal) from any other failure. |
 | `src/haute/_databricks_io.py` | SQL-connector adaptation, table/projection validation, canonical table identity, bounded Arrow batch iteration, retries, and integrity checks. It raises `DatabricksConfigError` from `src/haute/_databricks_credentials.py`. |
 | `src/haute/_databricks_output.py` | Data Output writes to a Unity Catalog table: Spark-compatible dtype casts, the staged Parquet upload, the overwrite/append load SQL, staged-file cleanup, and `DatabricksWriteError`. |
-| `src/haute/routes/databricks.py` | `/api/databricks` Unity Catalog browsing endpoints. |
+| `src/haute/routes/databricks.py` | `/api/databricks` endpoints: the connection (which sign-in is selected), the connection test, and Unity Catalog browsing. |
 
 `src/haute/_input_providers.py`, `src/haute/_source_cache.py`, and
 `src/haute/routes/input_cache.py` are owned by IO/server components and consume
@@ -16,12 +16,23 @@
 ## Key types and data structures
 
 - `DatabricksCredentials` is a frozen, slotted internal dataclass containing the
-  normalised workspace host, bare SQL hostname, selected auth mode, and the
-  selected credential fields. Token, client id, and client secret fields are
-  excluded from its representation.
+  normalised workspace host, bare SQL hostname, selected auth mode (`pat`,
+  `service_principal`, `cli_login` or `profile`), the selected credential fields,
+  the profile name (mode `profile`) and the SDK auth type (`DATABRICKS_AUTH_TYPE`'s
+  value, or the one pinned for the profile). Token, client id, and client secret
+  fields are excluded from its representation. `signs_in_as_user` is true for the
+  two user sign-ins; `sign_in_failure()` is the problem and the remedy, in haute's
+  words, when one cannot be completed (the `databricks auth login` command for the
+  CLI forms, naming the profile or `DATABRICKS_HOST` rather than the host; checking
+  the profile's own credentials for a profile pinned to a token or pair).
 - `DatabricksConfigError(HauteError)` reports missing host/authentication/http-path
   configuration or an unavailable OAuth provider dependency. The class is owned
   by `src/haute/_databricks_credentials.py` and re-exported by `src/haute/_databricks_io.py`.
+- `DatabricksSignInError(DatabricksConfigError)` is a user sign-in the SDK could not
+  complete, raised by `databricks_sdk_config` from the SDK's construction-time
+  `ValueError`, which it keeps as its cause for the log. It carries `problem` and
+  `remedy` separately so a route can set the problem in its own sentence; its
+  message is `"<problem>: <remedy>."`.
 - `FetchIntegrityError(HauteError)` reports an unprovable complete/schema-bearing result.
 - `DatabricksSnapshotBuilder` validates config once and exposes `build(context)`.
 - `_TABLE_NAME_RE` accepts three dot-separated, optionally backtick-quoted identifier parts.
@@ -104,36 +115,130 @@ detection compares `_canonical_table()` spellings.
 ### Credentials
 
 `resolve_databricks_credentials()` is the only reader of `DATABRICKS_HOST`,
-`DATABRICKS_TOKEN`, `DATABRICKS_CLIENT_ID`, and `DATABRICKS_CLIENT_SECRET`.
-A non-empty token wins; otherwise both service-principal fields are required.
+`DATABRICKS_TOKEN`, `DATABRICKS_CLIENT_ID`, `DATABRICKS_CLIENT_SECRET`,
+`DATABRICKS_AUTH_TYPE`, `DATABRICKS_CONFIG_PROFILE` and `DATABRICKS_CONFIG_FILE`. It
+selects, in this order:
+
+1. A named profile (`DATABRICKS_CONFIG_PROFILE`, mode `profile`). The profile is read
+   from the Databricks CLI's config file (`DATABRICKS_CONFIG_FILE`, else
+   `~/.databrickscfg`) with `configparser`, as the SDK reads it: each profile has only
+   its own keys, and `DEFAULT` is a profile of its own, inherited by none (the parser
+   is given an impossible default-section name so `[DEFAULT]` is ordinary). Its
+   `host` is required. Its sign-in is pinned, and only to a form whose material the
+   profile itself holds: `databricks-cli`; `pat` with a `token` in the section;
+   `oauth-m2m` with a `client_id` and `client_secret` in the section (undeclared, a
+   token implies `pat` and a pair `oauth-m2m`). A profile naming only a host is
+   refused, as is one declaring any other type (`external-browser`, `basic`,
+   `azure-cli`, ...) or declaring `pat` or `oauth-m2m` without its material, so the
+   SDK never merges ambient credentials under a name the profile gave. Reading the
+   file here, with the standard library, keeps
+   resolution free of the SDK and of any sign-in side effect. A missing file, an
+   unknown profile, a profile without a host, an unparseable file, a host-only
+   profile and a browser profile are each refused naming the file and the profile
+   (never a line of the file) with the `databricks auth login ... --profile` command
+   that writes a complete one. A profile beside any of the other five variables is
+   refused naming both, because the SDK merges the environment over a profile and
+   the identity haute acts as would otherwise be a quiet merge.
+2. An auth type (`DATABRICKS_AUTH_TYPE`): `databricks-cli` selects mode `cli_login`;
+   any other value, `external-browser` included, is refused naming the accepted one.
+   `DATABRICKS_HOST` is required. An auth type beside a token or a service-principal
+   field is refused naming both.
+3. A non-empty token (mode `pat`); otherwise both service-principal fields (mode
+   `service_principal`). A token beside the pair simply wins, because a Databricks
+   App's injected pair must be overridable. When neither is present the missing
+   message names the token, the missing pair fields, and the user sign-ins as the
+   alternative.
+
 The resolver strips surrounding whitespace and trailing slashes from the host,
 preserves an optional protocol for the workspace SDK, derives a protocol-free
 hostname for the SQL connector, and passes selected authentication values
-byte-for-byte rather than rewriting secret material. Errors report only
-environment-variable names—never their values. Callers may add named non-secret
-requirements to the same aggregated configuration error.
+byte-for-byte rather than rewriting secret material. Errors report
+environment-variable names and profile names—never values read from the environment,
+and never a host. Callers may add named non-secret requirements to the same
+aggregated configuration error.
 MLflow never uses these variables: its Databricks credentials are the dedicated
 `DATABRICKS_MLFLOW_HOST`/`DATABRICKS_MLFLOW_TOKEN` pair
 ([modelling](../modelling/low-level.md)), so a data token and an MLflow token
-can carry different scopes.
+can carry different scopes. MLflow itself reads `DATABRICKS_CONFIG_PROFILE` for a bare
+`databricks` tracking URI, which is why the modelling component refuses that variable
+beside the MLflow pair; one profile serves both through
+`MLFLOW_TRACKING_URI=databricks://<profile>`.
+
+`databricks_sdk_config(credentials, retry_timeout_seconds=None)` is the SDK `Config`
+for a user sign-in: `Config(profile=..., auth_type=<pinned>)` for mode `profile`,
+`Config(host=..., auth_type="databricks-cli")` for mode `cli_login`; the auth type is
+always passed, so the SDK never walks its default chain. Building it signs in (the
+SDK runs `databricks auth token`), so it is called only where a connection is about
+to be made. The SDK's construction-time `ValueError` becomes `DatabricksSignInError`
+with `credentials.sign_in_failure()`'s words, except when the failure is that there
+is no `databricks` executable (a `FileNotFoundError` in the cause chain for a
+`DATABRICKS_CLI_PATH` that does not exist, or the SDK's "cannot configure default
+credentials" when its CLI provider found nothing on the PATH), which is worded as
+the CLI not being found, with the PATH and `DATABRICKS_CLI_PATH` as the remedy,
+rather than as an expired sign-in. A refresh the CLI refuses after the client was
+built is the SDK token source's plain `OSError("cannot get access token: ...")`;
+`cli_refused_a_refresh` recognises it, `credentials_rejected` counts it, and the
+connector's header factory (`_user_sign_in_credentials`) raises it as
+`DatabricksSignInError`, so a long fetch fails with the remedy instead of retrying
+an expired sign-in. The remedy follows the CLI's own message
+(`sign_in_failure(cli_said)`): only a message reporting a missing or expired login
+(`_LOGIN_NEEDED_RE`: "refresh token", "reauthenticate", "auth login", "not logged
+in", "no token") earns the `databricks auth login` command; any other CLI failure
+(a locked keychain, a proxy, a workspace restricting the CLI's app) is worded as
+the CLI not producing a token, with the server log as the place to read why. `databricks_workspace_client(credentials,
+retry_timeout_seconds=None)` builds `WorkspaceClient(host, token)`,
+`WorkspaceClient(host, client_id, client_secret)` or
+`WorkspaceClient(config=databricks_sdk_config(...))` by mode; the optional retry
+deadline bounds how long the SDK retries an unreachable workspace (its default is
+300 s).
 
 `_resolve_connection(http_path, node_label=...)` passes the mandatory node
 `http_path` as such an additional requirement; there is no `DATABRICKS_HTTP_PATH`
-fallback. `_sql_auth_kwargs` adapts the resolved credentials into either
-`access_token` or the SDK OAuth M2M callback built by
-`_service_principal_credentials()`; the Data Input's batch reader and the Data
-Output's writer both connect through the two. The browsing route calls the same resolver
-and adapts the selected form into `WorkspaceClient` through
-`databricks_workspace_client`. Returned
-secrets and providers stay in connector-call scope.
+fallback. `_sql_auth_kwargs` adapts the resolved credentials into `access_token`, the
+SDK OAuth M2M callback built by `_service_principal_credentials()`, or, for a user
+sign-in, `_user_sign_in_credentials()`: a zero-argument provider that builds the SDK
+config when the connector first asks and hands it the config's `authenticate` as the
+header factory, so the sign-in happens at connection time and the SDK refreshes the
+token during a long fetch. The Data Input's batch reader and the Data Output's writer
+both connect through these. The browsing route calls the same resolver and adapts
+the selected form into `WorkspaceClient` through `databricks_workspace_client`.
+Returned secrets and providers stay in connector-call scope.
 
 ### Browsing
 
 `src/haute/routes/databricks.py` creates a Databricks `WorkspaceClient` and maps SDK objects into the
 shared warehouse/catalog/schema/table response models. Browsing does not fetch table data
 or publish snapshots. Each of the four routes lists inside `_browsing(subject, within=...)`,
-which yields `_get_databricks_client()`'s client and turns a `DatabricksError` raised while
-the listing is consumed (the SDK's listings are lazy) into `_browsing_failure`'s answer.
+which resolves the credentials once (`_resolved_credentials`, a 503 when incomplete),
+builds `_get_databricks_client()`'s client from them inside its guarded block (a user
+sign-in fails as the client is built, and must answer like any other refused credential,
+not as a server error) and turns a `DatabricksError` or refused credential raised there
+or while the listing is consumed (the SDK's listings are lazy) into `_browsing_failure`'s
+answer, handing it the same credentials, so a `.env` or profile rewritten meanwhile cannot
+change which form the answer names or which values its log scrubs.
+
+### Connection and its test
+
+`GET /api/databricks/connection` (`DatabricksConnectionResponse`) answers from
+`resolve_databricks_credentials()` alone: `configured`, the `auth_mode`, the `profile`
+name and the `sdk_auth_type` when there is one, or `configured: false` with the
+resolver's message as `detail`. No SDK is imported and no network call is made, so a
+page load can never run the CLI; only the test, a listing or a fetch signs in. The
+host is not answered.
+
+`POST /api/databricks/test-connection` (`DatabricksTestConnectionResponse`) signs in
+through `databricks_workspace_client` with `retry_timeout_seconds=_TEST_RETRY_SECONDS`
+(30) and calls `current_user.me()`, on a worker thread bounded by `_TEST_WALL_SECONDS`
+(45): the SDK runs the Databricks CLI with no timeout of its own, and a locked keychain
+or a corporate helper can hold that call for good, so a sign-in that does not finish is
+left to end on its own and the test answers `ok: false` ("did not answer within 45 s").
+Otherwise it answers `ok: true` with the `identity` (the user name, else the display
+name, which a service principal has) and the SDK config's `auth_type`. A missing SDK, a
+configuration failure, a sign-in failure, refused credentials, an unreachable workspace
+(the SDK's `TimeoutError` once the retry deadline is spent, or a `requests` connection
+error or timeout it lets through: `_workspace_unreachable`), a missing grant and any
+other SDK failure answer `ok: false` with `detail` worded as the browsing answers are
+(below), never a 5xx, and are logged as `databricks_connection_test_failed`.
 
 ## Edge cases and invariants
 
@@ -146,6 +251,10 @@ the listing is consumed (the SDK's listings are lazy) into `_browsing_failure`'s
 - Retried fetches must prove cursor position equality at every later boundary.
 - Host and credential values are absent from configs, identity, metadata, logs, and API
   responses. Credential object representations omit every token, client id, and secret.
+  A profile name, and the SDK's name for a sign-in, are not credentials and may appear.
+- Resolution never signs in: reading the environment and the CLI config file has no
+  side effect, so the connection endpoint and cache-identity derivation can never open
+  a browser or run the CLI.
 
 ## Error handling
 
@@ -164,23 +273,60 @@ preserve deliberate `HTTPException` responses (the 503s for a missing SDK or mis
 credentials) and answer an SDK failure with a message written for it, by its class:
 refused credentials 401, naming `DATABRICKS_TOKEN`, or `DATABRICKS_CLIENT_ID` and
 `DATABRICKS_CLIENT_SECRET`, by the credential form `resolve_databricks_credentials`
-selects. `credentials_rejected` (`_databricks_credentials.py`, shared with the UC
-transport) recognises them: a refused token is the SDK's `Unauthenticated`, while a
+selects, or, for a user sign-in, the `DatabricksSignInError`'s own problem and remedy
+("Databricks sign-in for profile 'work' failed or has expired, so the catalogs could not
+be listed: run `databricks auth login --profile work` and try again."); a user sign-in
+whose token the workspace refused after the SDK produced it gets the same remedy.
+`credentials_rejected` (`_databricks_credentials.py`, shared with the UC
+transport) recognises them: a `DatabricksSignInError`; a refused token, the SDK's
+`Unauthenticated`; while a
 refused service principal never reaches the API, because the SDK's OAuth token
 exchange raises a plain `ValueError("<code>: <description>")` from the token
 endpoint's answer, which counts only for the codes that refuse the client or its grant
 (`invalid_client`, `invalid_grant`, `unauthorized_client`); then `PermissionDenied` 403, naming what was listed; `NotFound` from a listing inside
 a catalog or schema 404, naming that catalog or schema; any other `DatabricksError` 502.
-Each is logged as `databricks_browsing_failed` with the error type and the SDK's text,
-the token and client secret scrubbed (`redact_sensitive_text`).
+Each is logged as `databricks_browsing_failed` with the error type and the SDK's text
+(a sign-in failure's SDK text is its cause, logged with it), the token, the client id,
+the client secret and the workspace host scrubbed (`redact_sensitive_text` with all five
+as known secrets: the SDK appends `Config: host=..., profile=...` to a sign-in failure,
+and the component keeps host values out of its logs). For a profile pinned to `pat` or
+`oauth-m2m` the token or secret lives in the CLI's config file, where haute never reads
+it and so cannot scrub it: the SDK's text is withheld for such a profile and only haute's
+own words are logged (`sdk_text_withheld=True`).
 
 ## Testing
 
 - `tests/test_databricks_credentials.py` covers the shared resolver's host
   projections, PAT precedence, incomplete-pair failures, aggregated named
   requirements, representation/error redaction, and which failures count as a refusal
-  of the credentials (no other `ValueError` does).
-- `tests/test_databricks_io.py` covers SQL credential adaptation, table/projection validation,
+  of the credentials (no other `ValueError` does); the user sign-ins: a profile read
+  from a config file named by `DATABRICKS_CONFIG_FILE` (host and declared auth type;
+  no `DEFAULT` inheritance, as the SDK; `DEFAULT` as a profile of its own; the sign-in
+  pinned from a token, a pair or a declared type), a missing file, an unknown
+  profile, a profile without a host, an unparseable file, a host-only profile (even
+  with `DATABRICKS_USERNAME`/`DATABRICKS_PASSWORD` set) and a profile declaring
+  `external-browser` each refused by name without a line of the file, a profile
+  beside each other selector refused by name, the CLI auth type selected, an auth
+  type without a host and any other auth type refused, an auth type beside a token
+  or pair field refused, the missing message naming every form; and the SDK handoff
+  through a fake `databricks` executable (`DATABRICKS_CLI_PATH`, one class skipped
+  on Windows): the header is the token the CLI prints, byte for byte, a profile's
+  pinned sign-in wins over ambient basic-auth variables, a profile is signed in with
+  the profile's host, an exiting CLI with the "refresh token is invalid" text
+  becomes `DatabricksSignInError` with the login command, the auth-type form's
+  failure names `DATABRICKS_HOST` rather than the host, and a CLI path that does not
+  exist or a CLI missing from the PATH is worded as the CLI not found, never as an
+  expired sign-in. The handoff tests record the SDK version they were observed under.
+- `tests/test_databricks_io.py` covers SQL credential adaptation (token, service
+  principal, and a user sign-in whose provider builds the SDK config only when the
+  connector asks and whose header factory returns the config's headers; a profile
+  connects to the profile's host; a refresh the CLI refuses mid-fetch is raised as
+  the sign-in error with the remedy; and the real connector's own auth chain,
+  `get_python_sql_connector_auth_provider`, built with haute's provider, puts the
+  sign-in's header on a request and, once the token's own `exp` has passed, asks
+  the provider again, which is when the SDK refreshes; the connector keeps a header
+  until then, so a long fetch's refresh happens at the token's expiry, not per
+  request), table/projection validation,
   cancellation before execute, batch streaming, retries, empty-schema behaviour, row-loss
   detection, identity-independent batch sizing, and builder-through-store publication.
 - `tests/test_databricks_output.py` covers output config validation, the load SQL,
@@ -196,8 +342,25 @@ the token and client secret scrubbed (`redact_sensitive_text`).
   SDK mapping, and the browsing error answers: a missing catalog and a missing schema
   404 naming them, a refused token 401 naming its variable, a service principal that a
   stub token endpoint refuses through the real SDK 401 naming its pair, and listing
-  again once the secret is corrected, a missing grant 403, and any other SDK failure 502 with its text logged,
-  the token scrubbed.
+  again once the secret is corrected, an expired CLI sign-in 401 naming the profile
+  and the login command, a missing grant 403, and any other SDK failure 502 with its text logged,
+  the token scrubbed; a sign-in failure's log keeping the SDK's text but not the host,
+  while browsing and while testing; the connection endpoint (the token form without
+  the host, a profile with its pinned sign-in, what is missing, and that a CLI
+  sign-in never builds a client); and the connection test (the identity and sign-in
+  kind, the display-name fallback, an expired sign-in, a refused token, an
+  unreachable workspace answered within seconds under a one-second retry deadline,
+  any other SDK failure with its text logged and the token scrubbed, missing
+  configuration and a missing SDK, each `ok: false` and never a 5xx); and, through
+  the real SDK with a fake CLI against the stub workspace (one class skipped on
+  Windows), the CLI's token as the bearer on every request the catalog listing and
+  the connection test make, a token the workspace refuses answered 401 with the
+  login command, and a refresh the CLI refuses after the client was built answered
+  401 rather than 500. `tests/_databricks_workspace_stub.py` records each request's
+  path and bearer, serves the current-user endpoint, and refuses any bearer but the
+  accepted one when one is given. These three files are in
+  `scripts/core_test_files.txt`, so the dependency-floors and unlocked-resolve lanes
+  exercise the SDK and connector versions they resolve.
 - `tests/test_databricks_routes_auth.py` proves the browsing adapter consumes
   the shared resolution result for both auth modes and preserves normalised
   workspace hosts.

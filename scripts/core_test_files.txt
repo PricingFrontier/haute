@@ -38,6 +38,11 @@
 # unlocked-resolve lanes install price-contour away from the lockfile, and the
 # guard's own tests (plus the session-wide verification in conftest) prove the
 # resolved build satisfies the pinned range and exposes every symbol haute calls.
+# The three Databricks sign-in files are here by design too: they drive the real
+# databricks-sdk (through a fake CLI and a stub workspace) and the real SQL
+# connector's auth chain, so the dependency-floors and unlocked-resolve lanes
+# prove the SDK and connector versions they resolve still take haute's
+# credentials the way haute hands them over. ~10s.
 tests/test_git_engine.py
 tests/test_model_scorer.py
 tests/test_optimiser_routes.py
@@ -49,3 +54,6 @@ tests/test_optional_dependency_extras.py
 tests/test_polars_io_interface_contracts.py
 tests/test_price_contour_guard.py
 tests/test_assistant_providers.py
+tests/test_databricks_credentials.py
+tests/test_databricks_io.py
+tests/test_databricks_endpoints.py

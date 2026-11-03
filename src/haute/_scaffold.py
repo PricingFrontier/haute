@@ -34,6 +34,12 @@ TARGETS: dict[str, _TargetConfig] = {
 # Data access credentials — SQL warehouse reads and writes, workspace browsing
 DATABRICKS_HOST=https://adb-1234567890123456.12.azuredatabricks.net
 DATABRICKS_TOKEN=your_databricks_token_here
+# To sign in as yourself instead, with no secret in this file, run
+# `databricks auth login --host <workspace URL>` (it opens the browser), then
+# remove DATABRICKS_TOKEN and set beside DATABRICKS_HOST:
+#   DATABRICKS_AUTH_TYPE=databricks-cli
+# or name the Databricks CLI profile the login wrote, in place of both:
+#   DATABRICKS_CONFIG_PROFILE=<profile>
 
 # MLflow credentials — experiment tracking, the model registry, loading logged
 # models, and deploy's model registration. MLflow never uses the data access

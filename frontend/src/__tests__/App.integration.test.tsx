@@ -178,6 +178,8 @@ vi.mock("../api/client", async () => {
     getCatalogs: vi.fn(() => Promise.resolve({ catalogs: [] })),
     getSchemas: vi.fn(() => Promise.resolve({ schemas: [] })),
     getTables: vi.fn(() => Promise.resolve({ tables: [] })),
+    getDatabricksConnection: vi.fn(() => Promise.resolve({ configured: true, auth_mode: "pat", profile: "", sdk_auth_type: "", detail: "" })),
+    testDatabricksConnection: vi.fn(() => Promise.resolve({ ok: true, identity: "", sdk_auth_type: "", detail: "" })),
     // Input snapshots (a structured API Input's tables)
     getInputCacheStatus: vi.fn(() => Promise.resolve({ schema_version: 1, identity_digest: "digest", state: "missing", freshness: "unknown", generation: null, tables: [] })),
     buildInputCache: vi.fn(() => Promise.resolve({})),
