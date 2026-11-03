@@ -353,8 +353,12 @@ class TestPathTraversalJsonCache:
     """
 
     @pytest.fixture()
-    def client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.chdir(tmp_path)
+    def client(self, tmp_path: Path):
+        # The route anchors paths to the configured project root, not the
+        # working directory; this project's root is tmp_path.
+        from haute._sandbox import set_project_root
+
+        set_project_root(tmp_path)
         (tmp_path / "main.py").write_text("")
         from fastapi.testclient import TestClient
 
