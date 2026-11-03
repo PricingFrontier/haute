@@ -12,6 +12,7 @@ from types import MappingProxyType
 from typing import Any, cast
 
 from haute._graph_utils import _sanitize_func_name
+from haute.assistant._node_descriptions import recipe_node_type
 from haute.assistant._wire_ops import OpValidationError, parse_ops
 
 
@@ -414,7 +415,8 @@ def _output_operations(
     return [
         {
             "op": "add_node",
-            "node_type": "output",
+            # The response output every recipe adds is the node `response_output` creates.
+            "node_type": recipe_node_type("response_output").value,
             "name": output_name,
             "ref": ref,
             "config": {"outputMapping": mappings},
@@ -622,7 +624,7 @@ def expand_recipe(recipe_id: str, args: object, *, ref: str) -> list[dict[str, o
         operations = [
             {
                 "op": "add_node",
-                "node_type": "banding",
+                "node_type": recipe_node_type(recipe_id).value,
                 "name": values["name"],
                 "ref": ref,
                 "config": {
@@ -662,7 +664,7 @@ def expand_recipe(recipe_id: str, args: object, *, ref: str) -> list[dict[str, o
         operations = [
             {
                 "op": "add_node",
-                "node_type": "edgeJoin",
+                "node_type": recipe_node_type(recipe_id).value,
                 "name": values["name"],
                 "ref": ref,
                 "config": {
@@ -688,7 +690,7 @@ def expand_recipe(recipe_id: str, args: object, *, ref: str) -> list[dict[str, o
         operations = [
             {
                 "op": "add_node",
-                "node_type": "ratingStep",
+                "node_type": recipe_node_type(recipe_id).value,
                 "name": values["name"],
                 "ref": ref,
                 "config": _rating_config(values),

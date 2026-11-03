@@ -6,7 +6,8 @@
 |---|---|
 | `src/haute/assistant/__init__.py` | Public package seam; re-exports only `assistant_readiness`. The FastAPI router remains in the routes package and is not re-exported here. |
 | `src/haute/assistant/_config.py` | Resolves assistant configuration: the outer `[assistant]` table is closed to provider/model/base URL/egress and the required nested `[assistant.egress]` table is closed to trust, maximum sensitivity, and the three `allow_*` booleans. It validates endpoint/trust combinations and credential-free OpenAI URLs before SDK/key probing. The first-class Databricks mode rejects `base_url`, reads DATABRICKS_HOST / DATABRICKS_TOKEN, validates a credential-free HTTPS workspace-root host, and derives `<host>/serving-endpoints`. Other credentials come from their named environment variables. It produces `AssistantConfig`/`AssistantReadiness` including safe endpoint host, trust, and sensitivity status. It owns `ADAPTIVE_THINKING_MODELS`, the Claude models the Anthropic adapter runs, and `unsupported_anthropic_model`, the not-ready reason for any other Anthropic model, which readiness reports and the adapter raises. |
-| `src/haute/assistant/_catalog.py` | The versioned capability registry, the assistant's one node catalogue. It derives mechanical node facts and resolved JSON Schemas from Haute's canonical types, config validation, config I/O, node registry, Polars I/O registry, and save validation; owns completeness-checked semantic metadata; declares the closed operation descriptors consumed by the tool layer; serves each node type's card from `_node_cards.py` as its descriptor's `card`, and at import refuses a card configuration whose keys fall outside that type's closed config schema; computes canonical manifest identity; and caches immutable manifests by installed version plus capability hash. It also holds the activity-row titles and the running tool call's progress reporter (`report_tool_progress`, which a tool calls to retitle its row, and `tool_progress_reporter`, which the loop sets for each call). |
+| `src/haute/assistant/_catalog.py` | The versioned capability registry, the assistant's one node catalogue. It derives mechanical node facts and resolved JSON Schemas from Haute's canonical types, config validation, config I/O, node registry, Polars I/O registry, and save validation, and each node type's display name and input cardinality from the node specification (`haute._node_specs`); reads the hand-authored semantic metadata (summary, usage note, schema effect, ports, wiring, anti-patterns, examples, recipes) from `_node_descriptions.py`; declares the closed operation descriptors consumed by the tool layer; serves each node type's card from `_node_cards.py` as its descriptor's `card`, and at import refuses a card configuration whose keys fall outside that type's closed config schema; computes canonical manifest identity; and caches immutable manifests by installed version plus capability hash. It also holds the activity-row titles and the running tool call's progress reporter (`report_tool_progress`, which a tool calls to retitle its row, and `tool_progress_reporter`, which the loop sets for each call). |
+| `src/haute/assistant/_node_descriptions.py` | The assistant's per-type table, `ASSISTANT_NODE_DESCRIPTIONS`: a `haute._node_specs.node_type_table` holding one frozen `AssistantNodeDescription` per `NodeType`, so a type without a description fails at import. It gathers what only the assistant needs about a type: the descriptor prose (summary, usage note, schema effect, input and output ports in words, the wiring rule or its type-specific sentences, anti-patterns, linked examples and recipes, a non-lazy execution class), the graph-edit facts (the field naming each config list's entries, a workbench type's wire-to-its-tables hint, an Explore's pivot-step fix, Quote Response's `outputMapping` rows), the config parser a written node must pass, the readiness check (training or file load), and the data check's parts (the structured configuration it measures, whether the builder binds the preamble, the Load File types it never opens, the artifact a preview would fetch). Facts other modules also read (display name, input cardinality and roles, request input, workbench, structural role, scenario router, code surface) stay on the node specification. It also holds `INPUT_NAMING_RULE` and `recipe_node_type`, the type a recipe creates (the one whose `recipes` lists it). It sits below every assistant module that reads it, importing only the node specification at import (a config parser loads its parser when it runs), and at import refuses a description that disagrees with the specification: a read-only hint exactly on the workbench types, input ports in words exactly on the types taking several, optional or structural inputs, and each recipe creating one type. |
 | `src/haute/assistant/_node_cards.py` | Loads and validates the packaged node cards (read via `importlib.resources`, cached). Exactly one card per `NodeType` must exist, each a closed JSON object: an authorable card has `fields` (config path to meaning), `inputs` (edge, optional source and target handles, column-to-dtype map), `configs` (exactly `minimal` then `realistic`, each with `intent`, `config`, `produces` and optionally its own `inputs`) and a `fixture`; a card for a type the assistant cannot author has only `authorable: false` and a `note`. A missing, unexpected or malformed card raises `NodeCardError`. `node_card(node_type)` returns the model-facing card without its fixture; `node_card_fixture(node_type)` returns the fixture for the CI harness, or nothing for a non-authorable card. |
 | `src/haute/assistant/assets/node_cards/<nodeType>.json` | One node card per node type, library content with no project data. Its closed `fixture` holds `frames` (tiny rows, with `dates` naming string columns to parse as Date, each written to `data/<name>.parquet` and added as a Data Input only when the plan reads it), `files` (project paths to JSON values or text), `upstream` and `downstream` operations placed around the card node, `model_run` (the frame and features of a tiny CatBoost model logged to the project's local MLflow folder, whose run id replaces the card's `run_id` placeholder), and `expect` (per-configuration expected rows of produced columns). |
 | `src/haute/assistant/_assets.py` | Loader and verifier for the assistant's packaged knowledge assets (read via `importlib.resources`): resource enumeration, `authoring_guide()`, and `example_index()` are cached; `example_index()` lists only bundles whose manifest sets `teaching: true`, and `load_example(name)` refuses any other name as an unknown example; for a teaching bundle it materialises the complete example tree for validation, then returns only a self-contained model-facing attribution/narrative/rendered-graph view, its node configurations rendered with their values, with no inaccessible resource inventory. `validate_example_bundles()` checks closed manifests, content digests, evidence-resource roles, graph/schema assertions, positional golden output, and the declared installed-package fast checks; `materialize_example_bundle()` copies one already-validated project into an empty destination for specialist ordinary/negative checks. The guide fails loudly if missing/empty, index summaries come from the first module-docstring line, and an unknown name is a structured error listing valid names. |
@@ -83,18 +84,25 @@ orphaned halves).
   Source-ness comes from `haute._node_specs.SOURCE_NODE_TYPES`, types
   with no output from `haute._node_specs.SINK_ONLY_NODE_TYPES` (held
   equal to the editor's `SINK_ONLY_TYPES` by test), first-input pass-through from
-  `haute._node_specs.STANDALONE_PASSTHROUGH_TYPES`, and the single-input types
-  are held equal to the palette's `maxInputs: 1` entries by test; every
-  `NodeType` has an explicit input cardinality, and one without it fails at
-  import. So Load File takes its first input as `df` plus further inputs by
+  `haute._node_specs.STANDALONE_PASSTHROUGH_TYPES`, and the input cardinality is
+  the node specification's (`haute._node_specs.NodeSpec`'s `inputs`), whose
+  `exactly_one` types are held equal to the palette's `maxInputs: 1` entries by
+  test; `_catalog` words each cardinality ("zero", "exactly one", "exactly two",
+  "zero or more", "one or more, subject to the descriptor configuration",
+  "structural boundary; not directly wireable") and fails at import when one has
+  no words. So Load File takes its first input as `df` plus further inputs by
   edge name and exposes the loaded object as `obj`; Model Training,
   Optimisation, Explore, Data Output and Quote Response have no outputs;
   Rating Step rates its one input; Apply Optimisation takes several inputs and
   picks a ratebook artifact's frame by `ratebook_input`. `display_name` is the
-  palette name (held equal to `NODE_TYPE_META` in
-  `frontend/src/utils/nodeTypes.ts` by test), `summary` is a one-line purpose,
-  and `usage` is the longer authoring note; all three are completeness-checked
-  at import. The Polars `usage` ends with `_catalog.INPUT_NAMING_RULE`, the
+  node specification's palette name (held equal to `NODE_TYPE_META` in
+  `frontend/src/utils/nodeTypes.ts` by test); `summary` is a one-line purpose
+  and `usage` the longer authoring note, both from the type's
+  `AssistantNodeDescription` in
+  `src/haute/assistant/_node_descriptions.py::ASSISTANT_NODE_DESCRIPTIONS`, a
+  `node_type_table` that lists every type, so none is missing at import. A
+  config model whose shape is a union of branches (Data Input's, Data Output's)
+  gives the descriptor its `oneOf` branches. The Polars `usage` ends with `_catalog.INPUT_NAMING_RULE`, the
   input-naming rule of `haute._graph_utils.executable_input_name` in words (an
   input is named after its incoming edge: the upstream node's name, except that
   an edge from a Quote Input or Workbench Input frame, which `add_edge`'s `source_handle` selects,
@@ -2316,7 +2324,9 @@ fixture for route tests). The implemented coverage is:
   stale/altered-plan rejection before save,
   unrelated-diff detection, and truthful verification evidence.
 - **`tests/test_assistant_catalog.py`** — completeness against `NodeType` (mirror of the
-  registry-completeness test); folder/decorator facts agree with `_types`/`_config_io`.
+  registry-completeness test; a descriptions table missing a type or holding a stray key
+  is refused, and each description that contradicts the node specification is planted
+  and refused); folder/decorator facts agree with `_types`/`_config_io`.
   Source, sink-only and single-input sets and palette names are asserted equal to the
   product registries and to the editor's `nodeTypes.ts` declarations, read from source.
   Also pins merged I/O enums, palette defaults, resolved schema agreement, closed operation

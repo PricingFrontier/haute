@@ -72,7 +72,20 @@ SINGLE_TYPE_ENDPOINTS: Mapping[tuple[str, str], tuple[str, str]] = {}
 
 #: Node-type-looking strings that are not about node types:
 #: ``(module, qualname, value, context) -> (count, reason)``.
-NOT_NODE_TYPES: Mapping[tuple[str, str, str, str], tuple[int, str]] = {}
+NOT_NODE_TYPES: Mapping[tuple[str, str, str, str], tuple[int, str]] = {
+    ("assistant/_change_record.py", "_not_checked_words", "submodel", "compare:reason"): (
+        1,
+        "the data check's not-checked reason for a submodel",
+    ),
+    ("assistant/_data_check.py", "_Judgement._record", "banding", "dict-key"): (
+        1,
+        "the data check record's banding field",
+    ),
+    ("assistant/_recipes.py", "expand_recipe", "banding", "dict-key"): (
+        1,
+        "a banding factor's banding-mode config key",
+    ),
+}
 
 #: Each module's remaining flagged sites while the concerns are converted. It may
 #: only shrink, and it must equal the scan (a lower count updates it here).
@@ -134,15 +147,6 @@ BASELINE: Mapping[str, int] = {
     "_workbench_folder_files.py": 1,
     "_workbench_nodes.py": 3,
     "_workbench_visibility.py": 3,
-    "assistant/_application.py": 8,
-    "assistant/_assets.py": 1,
-    "assistant/_catalog.py": 140,
-    "assistant/_change_record.py": 1,
-    "assistant/_data_check.py": 19,
-    "assistant/_loop.py": 1,
-    "assistant/_ops.py": 16,
-    "assistant/_recipes.py": 3,
-    "assistant/_tools.py": 5,
     "codegen.py": 4,
     "deploy/_bundler.py": 8,
     "deploy/_config.py": 1,

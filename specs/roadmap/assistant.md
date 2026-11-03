@@ -309,8 +309,8 @@ turn's brief; the summary and the loader agree on the file types.
 
 **Evidence:** `src/haute/assistant/_data_check.py::_replaced`;
 `src/haute/assistant/_tools.py::_brief_nodes`;
-`src/haute/assistant/_catalog.py::_SUMMARIES`;
-`src/haute/assistant/_catalog.py::_USAGE_NOTES`; `src/haute/_io.py::EXTERNAL_FILE_TYPES`;
+`src/haute/assistant/_node_descriptions.py::ASSISTANT_NODE_DESCRIPTIONS` (the summaries and
+usage notes); `src/haute/_io.py::EXTERNAL_FILE_TYPES`;
 `specs/assistant/low-level.md`.
 
 ### ASSIST-59 — Tool hygiene

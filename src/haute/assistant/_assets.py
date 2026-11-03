@@ -529,6 +529,7 @@ def _execute_fast_bundle(bundle: Traversable, manifest: dict[str, object]) -> No
     from haute._input_providers import build_input_snapshot
     from haute._project_context import ProjectContext, project_scope
     from haute._source_cache import SourceCacheStore
+    from haute.assistant._node_descriptions import ASSISTANT_NODE_DESCRIPTIONS
     from haute.executor import _preview_cache, execute_graph
     from haute.graph_utils import flatten_graph
     from haute.routes._helpers import parse_pipeline_to_graph
@@ -547,7 +548,7 @@ def _execute_fast_bundle(bundle: Traversable, manifest: dict[str, object]) -> No
                 _preview_cache.clear()
                 store = SourceCacheStore(destination)
                 for node in graph.nodes:
-                    if node.data.nodeType.value != "dataInput":
+                    if not ASSISTANT_NODE_DESCRIPTIONS[node.data.nodeType].example_input_snapshot:
                         continue
                     config = node.data.config
                     # Parser-side source helpers are deliberately present in the

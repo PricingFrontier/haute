@@ -9,22 +9,34 @@ source of truth.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import re
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
 from haute._config_validation import VALID_KEYS
-from haute._node_specs import NODE_TYPE_TO_DECORATOR, NODE_TYPE_TO_FOLDER, SINGLETON_NODE_GROUPS
+from haute._node_specs import (
+    NODE_TYPE_TO_DECORATOR,
+    NODE_TYPE_TO_FOLDER,
+    SINGLETON_NODE_GROUPS,
+    InputCardinality,
+    node_spec,
+    node_type_table,
+)
 from haute._types import NodeType
 from haute.assistant import _catalog
 from haute.assistant._catalog import (
     NodeCapabilityDescriptor,
     capability_manifest,
     compact_manifest,
-    validate_manifest_complete,
+)
+from haute.assistant._node_descriptions import (
+    ASSISTANT_NODE_DESCRIPTIONS,
+    _validate_descriptions,
 )
 
 
@@ -41,20 +53,41 @@ class TestNodeDescriptors:
         for node_id, descriptor in nodes.items():
             assert descriptor.usage.strip(), f"{node_id} has no usage note"
 
-    def test_a_missing_usage_note_fails_manifest_validation(self, monkeypatch: pytest.MonkeyPatch):
-        notes = dict(_catalog._USAGE_NOTES)
-        del notes[NodeType.POLARS]
-        monkeypatch.setattr(_catalog, "_USAGE_NOTES", notes)
-        with pytest.raises(RuntimeError, match="polars"):
-            validate_manifest_complete()
+    def test_a_type_without_a_description_fails_at_import(self):
+        descriptions = dict(ASSISTANT_NODE_DESCRIPTIONS)
+        del descriptions[NodeType.POLARS]
+        with pytest.raises(RuntimeError, match=r"'assistant node descriptions'.*'polars'"):
+            node_type_table("assistant node descriptions", descriptions)
 
-    def test_an_unexpected_usage_note_fails_manifest_validation(
-        self, monkeypatch: pytest.MonkeyPatch
+    def test_an_unexpected_description_fails_at_import(self):
+        descriptions = {
+            **ASSISTANT_NODE_DESCRIPTIONS,
+            "not-a-node-type": ASSISTANT_NODE_DESCRIPTIONS[NodeType.POLARS],
+        }
+        with pytest.raises(RuntimeError, match="not-a-node-type"):
+            node_type_table("assistant node descriptions", descriptions)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        ("node_type", "change", "problem"),
+        [
+            (
+                NodeType.BANDING,
+                {"read_only_wiring": "Wire to it."},
+                "exactly a workbench type is read-only",
+            ),
+            (NodeType.WORKBENCH_INPUT, {"read_only_wiring": None}, "read-only"),
+            (NodeType.BANDING, {"input_ports": "one frame"}, "describes its input ports"),
+            (NodeType.POLARS, {"input_ports": None}, "describes its input ports"),
+            (NodeType.CONSTANT, {"recipes": ("rating_step",)}, "also creates"),
+        ],
+    )
+    def test_a_description_contradicting_the_specification_fails_at_import(
+        self, node_type: NodeType, change: dict[str, object], problem: str
     ):
-        notes = {**_catalog._USAGE_NOTES, "not-a-node-type": "stray"}
-        monkeypatch.setattr(_catalog, "_USAGE_NOTES", notes)
-        with pytest.raises(RuntimeError, match="Unexpected"):
-            validate_manifest_complete()
+        descriptions = dict(ASSISTANT_NODE_DESCRIPTIONS)
+        descriptions[node_type] = dataclasses.replace(descriptions[node_type], **change)
+        with pytest.raises(RuntimeError, match=problem):
+            _validate_descriptions(descriptions)
 
     def test_decorators_agree_with_the_type_registry(self):
         for node_type in NodeType:
@@ -697,12 +730,11 @@ class TestRegistryFacts:
         assert apply.input_cardinality == "one or more, subject to the descriptor configuration"
         assert "ratebook_input" in apply.wiring_rules
 
-    def test_every_node_type_has_an_explicit_input_cardinality(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(_catalog, "_SINGLE_INPUT_TYPES", frozenset())
-        with pytest.raises(RuntimeError, match="input cardinality"):
-            _catalog._input_cardinality(NodeType.BANDING)
+    def test_every_input_cardinality_has_its_words(self) -> None:
+        assert set(_catalog._INPUT_CARDINALITY_TEXT) == set(get_args(InputCardinality))
+        for node_type, descriptor in _descriptors().items():
+            spec = node_spec(node_type)
+            assert descriptor.input_cardinality == _catalog._INPUT_CARDINALITY_TEXT[spec.inputs]
 
 
 class TestPaletteFacts:
