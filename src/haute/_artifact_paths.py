@@ -68,7 +68,9 @@ def ordinary_path_problem(
         current = current / part
         try:
             info = current.lstat()
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):
+            # Not there yet, or under a file (POSIX reports that as ENOTDIR, Windows as
+            # not found): the caller refuses what it cannot create.
             continue
         if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
             return current, "link"
